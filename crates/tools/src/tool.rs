@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -174,27 +174,24 @@ pub enum ConfirmationResult {
 }
 
 pub struct SafetyGateway {
-    whitelist: Mutex<HashSet<String>>,
-    session_trusted: Arc<Mutex<HashSet<String>>>,
+    min_risk_level: RwLock<RiskLevel>,
+    session_trusted_levels: RwLock<HashSet<RiskLevel>>,
 }
 
 impl SafetyGateway {
-    pub fn new(whitelist: Vec<String>) -> Self {
+    pub fn new(min_risk_level: RiskLevel) -> Self {
         Self {
-            whitelist: Mutex::new(whitelist.into_iter().collect()),
-            session_trusted: Arc::new(Mutex::new(HashSet::new())),
+            min_risk_level: RwLock::new(min_risk_level),
+            session_trusted_levels: RwLock::new(HashSet::new()),
         }
     }
 
-    /// Hot-replace the user-configured tool whitelist (design §4.6.5).
-    /// Clears any session trusts so users see the confirmation prompt
-    /// once when re-adding a tool to the whitelist after a policy change.
-    pub async fn set_whitelist(&self, whitelist: Vec<String>) {
-        let mut guard = self.whitelist.lock().await;
-        guard.clear();
-        guard.extend(whitelist);
-        drop(guard);
-        self.session_trusted.lock().await.clear();
+    /// Update the minimum risk level threshold.
+    /// Operations below this level auto-approve; at or above require confirmation.
+    /// Resets any session trusts on change.
+    pub async fn set_min_risk_level(&self, level: RiskLevel) {
+        *self.min_risk_level.write().await = level;
+        self.session_trusted_levels.write().await.clear();
     }
 
     pub async fn check(
@@ -203,16 +200,18 @@ impl SafetyGateway {
         params: &Value,
         risk_level: RiskLevel,
     ) -> ConfirmationResult {
-        if risk_level == RiskLevel::Safe {
+        let min_level = *self.min_risk_level.read().await;
+
+        // Below threshold → auto approved
+        if risk_level < min_level {
             return ConfirmationResult::AutoApproved;
         }
-        if self.whitelist.lock().await.contains(tool_name) {
+
+        // Session-trusted risk levels → auto approved
+        if self.session_trusted_levels.read().await.contains(&risk_level) {
             return ConfirmationResult::AutoApproved;
         }
-        let trusted = self.session_trusted.lock().await;
-        if trusted.contains(tool_name) {
-            return ConfirmationResult::AutoApproved;
-        }
+
         ConfirmationResult::RequiresConfirmation {
             tool_name: tool_name.into(),
             params: params.clone(),
@@ -220,8 +219,9 @@ impl SafetyGateway {
         }
     }
 
-    pub async fn trust_session(&self, tool_name: &str) {
-        self.session_trusted.lock().await.insert(tool_name.into());
+    /// Trust a risk level for the remainder of the session.
+    pub async fn trust_risk_level(&self, level: RiskLevel) {
+        self.session_trusted_levels.write().await.insert(level);
     }
 }
 
@@ -421,8 +421,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_new() {
-        let gw = SafetyGateway::new(Vec::new());
+    async fn test_safety_gateway_new_default_threshold() {
+        let gw = SafetyGateway::new(RiskLevel::Low);
+        // Safe is below Low → auto approved
         let result = gw
             .check("tool1", &json!({}), RiskLevel::Safe)
             .await;
@@ -430,17 +431,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_safe_auto_approved() {
-        let gw = SafetyGateway::new(Vec::new());
+    async fn test_safety_gateway_below_threshold_auto_approved() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        // Low is below Medium → auto approved
         let result = gw
-            .check("tool1", &json!({}), RiskLevel::Safe)
+            .check("tool1", &json!({}), RiskLevel::Low)
             .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_medium_no_whitelist() {
-        let gw = SafetyGateway::new(Vec::new());
+    async fn test_safety_gateway_at_threshold_requires_confirmation() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        // Medium is at the threshold → requires confirmation
         let result = gw
             .check("tool1", &json!({}), RiskLevel::Medium)
             .await;
@@ -451,27 +454,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_high_in_whitelist() {
-        let gw = SafetyGateway::new(vec!["tool1".into()]);
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::High)
-            .await;
-        assert!(matches!(result, ConfirmationResult::AutoApproved));
-    }
-
-    #[tokio::test]
-    async fn test_safety_gateway_high_trust_session() {
-        let gw = SafetyGateway::new(Vec::new());
-        gw.trust_session("tool1").await;
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::High)
-            .await;
-        assert!(matches!(result, ConfirmationResult::AutoApproved));
-    }
-
-    #[tokio::test]
-    async fn test_safety_gateway_high_no_whitelist() {
-        let gw = SafetyGateway::new(Vec::new());
+    async fn test_safety_gateway_above_threshold_requires_confirmation() {
+        let gw = SafetyGateway::new(RiskLevel::Low);
+        // High is above Low → requires confirmation
         let result = gw
             .check("tool1", &json!({}), RiskLevel::High)
             .await;
@@ -482,15 +467,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_set_whitelist_clears_trust() {
-        let gw = SafetyGateway::new(Vec::new());
-        gw.trust_session("tool1").await;
+    async fn test_safety_gateway_trusted_risk_level_auto_approved() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.trust_risk_level(RiskLevel::Medium).await;
         let result = gw
-            .check("tool1", &json!({}), RiskLevel::High)
+            .check("tool1", &json!({}), RiskLevel::Medium)
+            .await;
+        assert!(matches!(result, ConfirmationResult::AutoApproved));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_set_threshold_clears_trust() {
+        let gw = SafetyGateway::new(RiskLevel::Low);
+        gw.trust_risk_level(RiskLevel::Medium).await;
+        // Medium is >= Low → check against threshold should pass since trusted
+        let result = gw
+            .check("tool1", &json!({}), RiskLevel::Medium)
             .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
 
-        gw.set_whitelist(vec![]).await;
+        // Raising threshold clears session trusts
+        gw.set_min_risk_level(RiskLevel::High).await;
+        // Medium is below High → auto approved anyway (below threshold)
+        let result = gw
+            .check("tool1", &json!({}), RiskLevel::Medium)
+            .await;
+        assert!(matches!(result, ConfirmationResult::AutoApproved));
+
+        // High is at threshold, trust was cleared → requires confirmation
         let result = gw
             .check("tool1", &json!({}), RiskLevel::High)
             .await;

@@ -195,8 +195,8 @@
 				clearTaskMessages(taskId);
 			}
 			addNotification('任务已删除', 'success', 2000);
-		} catch {
-			addNotification('删除任务失败', 'error', 3000);
+		} catch (e) {
+			addNotification(`删除失败: ${e}`, 'error', 4000);
 		}
 		deleteTarget = null;
 	}

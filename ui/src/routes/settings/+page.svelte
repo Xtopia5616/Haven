@@ -35,7 +35,7 @@
 
 	let task = $state({ max_concurrent: 3, max_steps: 30 });
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
-	let security = $state({ confirmation_mode: 'always', whitelist: '' });
+	let security = $state({ confirmation_mode: 'always', min_risk_level: 'low' });
 
 	let stt = $state({ provider: 'mcp', mcp_server: '', timeout_secs: 30 });
 	let notification = $state({
@@ -65,7 +65,7 @@
 				memory = settings.memory || memory;
 				security = {
 					confirmation_mode: settings.security?.confirmation_mode || 'always',
-					whitelist: (settings.security?.whitelist || []).join(', '),
+					min_risk_level: settings.security?.min_risk_level || 'low',
 				};
 				stt = {
 					provider: settings.stt?.provider || 'mcp',
@@ -75,13 +75,19 @@
 				notification = settings.notification || notification;
 				log = settings.log || log;
 			}
-		} catch {}
+		} catch (e) {
+			console.warn('load settings error:', e);
+		}
 		try {
 			keyConfigured = await invoke('get_api_key_status');
-		} catch {}
+		} catch (e) {
+			console.warn('get_api_key_status error:', e);
+		}
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
-		} catch {}
+		} catch (e) {
+			console.warn('is_autostart_enabled error:', e);
+		}
 		await loadPreferences();
 	});
 
@@ -100,7 +106,9 @@
 		try {
 			await invoke('delete_preference', { key });
 			preferences = preferences.filter(([k]) => k !== key);
-		} catch {}
+		} catch (e) {
+			console.warn('delete preference error:', e);
+		}
 	}
 
 	async function saveSettings() {
@@ -126,11 +134,11 @@
 						session_window_size: memory.session_window_size,
 						history_retention_days: memory.history_retention_days,
 					},
-					security: {
-						confirmation_mode: security.confirmation_mode,
-						whitelist: security.whitelist.split(',').map((s) => s.trim()).filter(Boolean),
-						encrypt_sensitive: true,
-					},
+				security: {
+					confirmation_mode: security.confirmation_mode,
+					min_risk_level: security.min_risk_level,
+					encrypt_sensitive: true,
+				},
 					stt: {
 						provider: stt.provider,
 						mcp_server: stt.mcp_server || null,
@@ -416,13 +424,16 @@
 	<div class="section">
 		<h2>Security</h2>
 		<div class="form-row">
-			<label for="security-confirmation-mode">Confirmation Mode</label>
-			<MaterialSelect id="security-confirmation-mode" value={security.confirmation_mode} options={[{ value: 'always', label: 'Always' }, { value: 'session_trust', label: 'Session Trust' }, { value: 'whitelist', label: 'Whitelist' }]} onChange={(v) => { security.confirmation_mode = v; }} />
+			<label for="security-min-level">Minimum Confirmation Level</label>
+			<MaterialSelect id="security-min-level" value={security.min_risk_level} options={[
+				{ value: 'safe', label: 'None (all auto-approved)' },
+				{ value: 'low', label: 'Low & above' },
+				{ value: 'medium', label: 'Medium & above' },
+				{ value: 'high', label: 'High & above' },
+				{ value: 'critical', label: 'Critical only' },
+			]} onChange={(v) => { security.min_risk_level = v; }} />
 		</div>
-		<div class="form-row">
-			<label for="security-whitelist">Whitelist (comma-sep)</label>
-			<input id="security-whitelist" type="text" class="md-input" bind:value={security.whitelist} placeholder="tool_name1, tool_name2" />
-		</div>
+		<p class="model-hint">Operations at or above this risk level will require your confirmation. Low-level operations (file read, window list) will auto-approve.</p>
 	</div>
 
 	<div class="section notification-section">

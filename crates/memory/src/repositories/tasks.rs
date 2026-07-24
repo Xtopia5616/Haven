@@ -194,7 +194,10 @@ impl Database {
             self.delete_session_messages(session_id).ok();
         }
         let conn = self.conn();
-        conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+        let affected = conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+        if affected == 0 {
+            anyhow::bail!("task '{}' not found in database", id);
+        }
         self.cache_invalidate_tasks();
         Ok(())
     }
@@ -530,7 +533,8 @@ mod tests {
     fn test_delete_task_nonexistent() {
         let db = create_db();
         let result = db.delete_task("non-existent");
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
     #[test]

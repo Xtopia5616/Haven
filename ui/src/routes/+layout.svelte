@@ -78,7 +78,9 @@
 	async function cancelRecording() {
 		try {
 			await invoke('cancel_recording');
-		} catch {}
+		} catch (e) {
+			console.warn('cancel_recording error:', e);
+		}
 		setOverlay({
 			visible: false,
 			isRecording: false,

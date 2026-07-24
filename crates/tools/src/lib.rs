@@ -43,7 +43,7 @@ impl ToolsManager {
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
             ))),
-            safety_gateway: SafetyGateway::new(Vec::new()),
+            safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
         }
     }
@@ -58,7 +58,7 @@ impl ToolsManager {
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
             ))),
-            safety_gateway: SafetyGateway::new(Vec::new()),
+            safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
         }
     }

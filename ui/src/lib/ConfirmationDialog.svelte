@@ -1,15 +1,22 @@
 <script>
 	let { stepId, toolName, taskId, riskLevel, onConfirm } = $props();
-	let trustSession = $state(false);
 
-	function handle(approved) {
-		onConfirm?.({ stepId, approved, trustSession });
+	function handleCancel() {
+		onConfirm?.({ stepId, approved: false, trustSession: false });
+	}
+
+	function handleOnce() {
+		onConfirm?.({ stepId, approved: true, trustSession: false });
+	}
+
+	function handleSession() {
+		onConfirm?.({ stepId, approved: true, trustSession: true });
 	}
 
 	function handleOverlayKeydown(event) {
 		if (event.key === 'Enter' || event.key === ' ') {
 			event.preventDefault();
-			handle(false);
+			handleCancel();
 		}
 	}
 </script>
@@ -19,10 +26,9 @@
 		class="overlay"
 		role="button"
 		tabindex="0"
-		onclick={() => handle(false)}
+		onclick={handleCancel}
 		onkeydown={handleOverlayKeydown}
 	>
-		<!-- 内层 dialog：阻止冒泡 -->
 		<div class="dialog" role="presentation" tabindex="-1" onclick={(e) => e.stopPropagation()}>
 			<h3>High-Risk Operation</h3>
 			<div class="detail">
@@ -32,14 +38,12 @@
 					<span class="risk risk-{riskLevel || 'medium'}">{riskLevel || 'medium'}</span>
 				</div>
 			</div>
-			<label class="trust">
-				<input type="checkbox" bind:checked={trustSession} />
-				Trust this tool for this session
-			</label>
 			<div class="actions">
-				<!-- 内部按钮：使用原生 button 标签，语义更准确 -->
-				<button class="btn-deny" onclick={() => handle(false)}>Cancel</button>
-				<button class="btn-approve" onclick={() => handle(true)}>Confirm</button>
+				<button class="btn-deny" onclick={handleCancel}>Cancel</button>
+				<div class="btn-group">
+					<button class="btn-once" onclick={handleOnce}>仅本次同意</button>
+					<button class="btn-session" onclick={handleSession}>本对话同意</button>
+				</div>
 			</div>
 		</div>
 	</div>
@@ -58,12 +62,8 @@
 		animation: fadeIn var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	@keyframes fadeIn {
-		from {
-			opacity: 0;
-		}
-		to {
-			opacity: 1;
-		}
+		from { opacity: 0; }
+		to { opacity: 1; }
 	}
 	.dialog {
 		background: var(--md-sys-color-surface-container-high);
@@ -75,14 +75,8 @@
 			var(--md-sys-motion-easing-emphasized);
 	}
 	@keyframes dialogIn {
-		from {
-			opacity: 0;
-			transform: scale(0.92);
-		}
-		to {
-			opacity: 1;
-			transform: scale(1);
-		}
+		from { opacity: 0; transform: scale(0.92); }
+		to { opacity: 1; transform: scale(1); }
 	}
 	h3 {
 		color: var(--md-sys-color-error);
@@ -91,47 +85,30 @@
 		margin-bottom: var(--md-sys-space-lg);
 	}
 	.detail {
-		margin-bottom: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-lg);
 		font-size: 13px;
 		color: var(--md-sys-color-on-surface-variant);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 	}
-	.detail strong {
-		color: var(--md-sys-color-on-surface);
-	}
-	.risk {
-		font-weight: 700;
-		text-transform: capitalize;
-	}
-	.risk-high,
-	.risk-critical {
-		color: var(--md-sys-color-error);
-	}
-	.risk-medium {
-		color: var(--md-sys-color-warning);
-	}
-	.risk-low {
-		color: var(--md-sys-color-success);
-	}
-	.trust {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		font-size: 12px;
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-lg);
-		cursor: pointer;
-	}
+	.detail strong { color: var(--md-sys-color-on-surface); }
+	.risk { font-weight: 700; text-transform: capitalize; }
+	.risk-high, .risk-critical { color: var(--md-sys-color-error); }
+	.risk-medium { color: var(--md-sys-color-warning); }
+	.risk-low { color: var(--md-sys-color-success); }
 	.actions {
 		display: flex;
 		gap: var(--md-sys-space-sm);
 		justify-content: flex-end;
+		align-items: center;
 	}
-	.btn-deny,
-	.btn-approve {
-		padding: 0 var(--md-sys-space-xl);
+	.btn-group {
+		display: flex;
+		gap: var(--md-sys-space-sm);
+	}
+	.btn-deny, .btn-once, .btn-session {
+		padding: 0 var(--md-sys-space-lg);
 		height: 40px;
 		border: none;
 		border-radius: var(--md-sys-shape-small);
@@ -142,19 +119,21 @@
 		transition: background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		white-space: nowrap;
 	}
 	.btn-deny {
 		background: var(--md-sys-color-surface-container-highest);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.btn-deny:hover {
-		box-shadow: var(--md-sys-elevation-1);
+	.btn-deny:hover { box-shadow: var(--md-sys-elevation-1); }
+	.btn-once {
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-primary);
 	}
-	.btn-approve {
+	.btn-once:hover { box-shadow: var(--md-sys-elevation-1); }
+	.btn-session {
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
 	}
-	.btn-approve:hover {
-		box-shadow: var(--md-sys-elevation-1);
-	}
+	.btn-session:hover { box-shadow: var(--md-sys-elevation-1); }
 </style>

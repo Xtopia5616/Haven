@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, TaskPriority};
+use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, RiskLevel, TaskPriority};
 
 // ---------------------------------------------------------------------------
 // Sub-config structures
@@ -190,7 +190,7 @@ impl Default for MemoryConfig {
 #[serde(default)]
 pub struct SecurityConfig {
     pub confirmation_mode: ConfirmationMode,
-    pub whitelist: Vec<String>,
+    pub min_risk_level: RiskLevel,
     pub encrypt_sensitive: bool,
 }
 
@@ -198,7 +198,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             confirmation_mode: ConfirmationMode::Always,
-            whitelist: Vec::new(),
+            min_risk_level: RiskLevel::Low,
             encrypt_sensitive: true,
         }
     }

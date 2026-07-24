@@ -298,7 +298,7 @@ pub async fn resolve_confirmation(
         .confirm_step(&step_id, confirmed)
         .map_err(|e| e.to_string())?;
     if trust_session.unwrap_or(false) && confirmed {
-        // Trust this tool for the session
+        // Trust this risk level for the session
         let tasks = state.executor.list_tasks().await;
         if let Some(task) = tasks
             .iter()
@@ -308,7 +308,7 @@ pub async fn resolve_confirmation(
             state
                 .tools
                 .safety_gateway
-                .trust_session(&step.tool_name)
+                .trust_risk_level(step.risk_level)
                 .await;
         }
     }
@@ -808,7 +808,7 @@ pub async fn execute_skill(
         state
             .tools
             .safety_gateway
-            .trust_session(&format!("skill:{}", name))
+            .trust_risk_level(risk_level)
             .await;
     } else {
         match state
@@ -1143,7 +1143,7 @@ pub async fn update_settings(
     }
 
     // Reload MCP servers from config
-    let (mcp_servers, mcp_discovery, task_max_steps, llm_config, security_whitelist) = {
+    let (mcp_servers, mcp_discovery, task_max_steps, llm_config, min_risk_level) = {
         let cfg = state.config_loader.lock().map_err(|e| e.to_string())?;
         let config = cfg.config();
         (
@@ -1151,7 +1151,7 @@ pub async fn update_settings(
             config.mcp_discovery.clone(),
             config.task.max_steps,
             config.llm.clone(),
-            config.security.whitelist.clone(),
+            config.security.min_risk_level,
         )
     };
     state.tools.load_mcp_from_config(&mcp_servers).await;
@@ -1160,7 +1160,7 @@ pub async fn update_settings(
     state.agent.set_max_steps(task_max_steps);
     let new_router = Arc::new(LlmRouter::new(llm_config));
     state.agent.replace_router(new_router);
-    state.tools.safety_gateway.set_whitelist(security_whitelist).await;
+    state.tools.safety_gateway.set_min_risk_level(min_risk_level).await;
 
     // Propagate log level to tracing subscriber
     let level = settings.log.level.as_str();

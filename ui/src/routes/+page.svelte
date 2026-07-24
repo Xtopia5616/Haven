@@ -21,7 +21,9 @@
 		if (!cancelConfirm.taskId) return;
 		try {
 			await invoke('cancel_task', { taskId: cancelConfirm.taskId });
-		} catch {}
+		} catch (e) {
+			addNotification(`取消失败: ${e}`, 'error', 3000);
+		}
 		cancelConfirm = { open: false, taskId: '', taskTitle: '' };
 	}
 
@@ -294,7 +296,9 @@
 				const data = event.payload;
 				addNotification(`Fallback: ${data.reason}`, 'warning');
 			});
-		} catch {}
+		} catch (e) {
+			console.warn('safeListen error:', e);
+		}
 	});
 
 	onDestroy(() => {
@@ -317,7 +321,8 @@
 					}
 				}
 			}
-		} catch {
+		} catch (e) {
+			console.warn('loadTasks error:', e);
 		}
 	}
 
@@ -369,7 +374,9 @@
 				confirmed: approved,
 				trustSession: trustSession || false,
 			});
-		} catch {}
+		} catch (e) {
+			addNotification(`确认失败: ${e}`, 'error', 3000);
+		}
 		confirmDialog = { stepId: null, toolName: '', taskId: '', riskLevel: 'medium' };
 	}
 </script>

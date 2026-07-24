@@ -20,6 +20,25 @@ haven-memory = { path = "../memory" }
 haven-common = { path = "../common" }
 jsonschema = "0.18"
 governor = "0.6"
+sysinfo = "0.33"
+arboard = "3.4"
+winreg = "0.52"
+ignore = "0.4"
+regex = "1"
+walkdir = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Power",
+] }
+windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_Foundation",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

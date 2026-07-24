@@ -39,7 +39,7 @@ pub enum TaskPriority {
 }
 
 /// Risk level for a tool invocation.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, PartialOrd, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
     #[default]
