@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capability for Haven app",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "global-shortcut:default",
+    "autostart:default",
+    "notification:default"
+  ]
+}

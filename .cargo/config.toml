@@ -1,0 +1,17 @@
+[alias]
+    # Run all tests
+    t = "test"
+    # Run tests with stdout output
+    ts = "test -- --nocapture"
+    # Quick check (no tests)
+    c = "check"
+    # Check + all tests
+    ci = "test --no-fail-fast"
+    # Single crate test
+    tc = "test -p"
+    # Run tests for a specific test name
+    tf = "test --"
+    # Run clippy
+    cl = "clippy -- -D warnings"
+    # Format check
+    fmt = "fmt --check"

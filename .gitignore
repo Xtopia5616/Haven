@@ -1,0 +1,7 @@
+/target/
+/ui/node_modules/
+/ui/build/
+/ui/.svelte-kit/
+*.db
+*.db-journal
+.env

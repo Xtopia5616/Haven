@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="color-scheme" content="dark light" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
+		<title>Haven</title>
+		<script>
+			(function() {
+				try {
+					var saved = localStorage.getItem('haven.theme');
+					var theme = (saved === 'dark' || saved === 'light')
+						? saved
+						: (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+				} catch(e) {
+					var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+				}
+				document.documentElement.setAttribute('data-theme', theme);
+			})();
+		</script>
+		%sveltekit.head%
+	</head>
+	<body>
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

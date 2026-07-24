@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/memory",
+    
+    "crates/tools",
+    "crates/task",
+    "crates/agent",
+    "crates/input",
+    "crates/desktop",
+    "crates/llm",
+    "crates/app-binary",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.52", features = ["full", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-appender = "0.2"
+anyhow = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+cpal = "0.15"
+tract-onnx = "0.21"
+ndarray = "0.16"
+base64 = "0.22"
+async-trait = "0.1"
+tokio-util = "0.7"
+futures-util = "0.3"
+tempfile = "3"
+encoding_rs = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,750 @@
+/* ============================================================================
+ * Haven — Material Design 3 Expressive token system
+ * Tokens: color (light/dark), shape, typography, elevation, motion, spacing.
+ * Theme is selected via [data-theme="light|dark"] on the <html> element.
+ * ========================================================================== */
+
+:root {
+	/* ---------- Typography ---------- */
+	--md-sys-typescale-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+		'Helvetica Neue', Arial, sans-serif;
+	--md-sys-typescale-mono: 'Consolas', 'SF Mono', 'Courier New', monospace;
+	--md-ref-typeface-brand: 'Segoe UI Display', -apple-system, BlinkMacSystemFont, sans-serif;
+
+	/* ---------- Shape scale (M3 expressive, large rounded) ---------- */
+	--md-sys-shape-extra-small: 4px;
+	--md-sys-shape-small: 8px;
+	--md-sys-shape-medium: 12px;
+	--md-sys-shape-large: 16px;
+	--md-sys-shape-extra-large: 28px;
+	--md-sys-shape-full: 9999px;
+
+	/* ---------- Component sizing constants (M3 expressive) ---------- */
+	--md-comp-button-small-height: 40px;
+	--md-comp-button-touch-height: 48px;
+	--md-comp-button-hpadding: 16px;
+	--md-comp-button-pressed-radius: 8px;
+	--md-comp-textfield-container-height: 40px;
+	--md-comp-textfield-corner: 8px;
+	--md-comp-tab-container-height: 48px;
+	--md-comp-tab-indicator-height: 3px;
+	--md-comp-tab-indicator-min-width: 24px;
+	--md-comp-tab-indicator-inset: 2px;
+	--md-comp-icon-button-size: 40px;
+	--md-comp-icon-button-touch: 48px;
+	--md-sys-icon-size: 20px;
+
+	/* ---------- State-layer opacity (M3 spec) ---------- */
+	--md-sys-state-hover-opacity: 0.08;
+	--md-sys-state-focus-opacity: 0.12;
+	--md-sys-state-pressed-opacity: 0.16;
+
+	/* ---------- Spacing scale ---------- */
+	--md-sys-space-0: 0;
+	--md-sys-space-2xs: 2px;
+	--md-sys-space-xs: 4px;
+	--md-sys-space-sm: 8px;
+	--md-sys-space-md: 12px;
+	--md-sys-space-lg: 16px;
+	--md-sys-space-xl: 20px;
+	--md-sys-space-2xl: 24px;
+	--md-sys-space-3xl: 32px;
+	--md-sys-space-4xl: 48px;
+
+	/* ---------- Motion (expressive spring-like) ---------- */
+	--md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+	--md-sys-motion-easing-emphasized: cubic-bezier(0.3, 0, 0, 1);
+	--md-sys-motion-easing-decelerated: cubic-bezier(0, 0, 0, 1);
+	--md-sys-motion-easing-accelerated: cubic-bezier(0.3, 0, 1, 1);
+	--md-sys-motion-duration-fast: 100ms;
+	--md-sys-motion-duration-short: 200ms;
+	--md-sys-motion-duration-medium: 300ms;
+	--md-sys-motion-duration-long: 450ms;
+
+	--md-sys-z-drawer: 1000;
+	--md-sys-z-dialog: 1100;
+	--md-sys-z-toast: 1200;
+}
+
+/* ============================================================================
+ * LIGHT THEME (Material 3 expressive light scheme)
+ * ========================================================================== */
+:root,
+[data-theme='light'] {
+	/* Primary */
+	--md-sys-color-primary: #3378d6;
+	--md-sys-color-on-primary: #ffffff;
+	--md-sys-color-primary-container: #d7e3ff;
+	--md-sys-color-on-primary-container: #001b3e;
+	--md-sys-color-primary-fixed: #d7e3ff;
+	--md-sys-color-on-primary-fixed: #001b3e;
+
+	/* Secondary */
+	--md-sys-color-secondary: #545f70;
+	--md-sys-color-on-secondary: #ffffff;
+	--md-sys-color-secondary-container: #dae2f9;
+	--md-sys-color-on-secondary-container: #111c2b;
+
+	/* Tertiary */
+	--md-sys-color-tertiary: #735b6c;
+	--md-sys-color-on-tertiary: #ffffff;
+	--md-sys-color-tertiary-container: #ffd8ec;
+	--md-sys-color-on-tertiary-container: #2a1226;
+
+	/* Error */
+	--md-sys-color-error: #ba1a1a;
+	--md-sys-color-on-error: #ffffff;
+	--md-sys-color-error-container: #ffdad6;
+	--md-sys-color-on-error-container: #410002;
+
+	/* Success (custom, M3-aligned) */
+	--md-sys-color-success: #2e7d32;
+	--md-sys-color-success-container: #c8efd0;
+	--md-sys-color-on-success-container: #00210b;
+
+	/* Warning (custom, M3-aligned) */
+	--md-sys-color-warning: #7d5700;
+	--md-sys-color-warning-container: #ffddb0;
+	--md-sys-color-on-warning-container: #281800;
+
+	/* Background & surfaces */
+	--md-sys-color-background: #faf8ff;
+	--md-sys-color-on-background: #1a1b22;
+	--md-sys-color-surface: #faf8ff;
+	--md-sys-color-on-surface: #1a1b22;
+	--md-sys-color-surface-variant: #e3e1ec;
+	--md-sys-color-on-surface-variant: #46464f;
+	--md-sys-color-surface-dim: #dbd9e0;
+	--md-sys-color-surface-bright: #faf8ff;
+	--md-sys-color-surface-container-lowest: #ffffff;
+	--md-sys-color-surface-container-low: #f4f2f9;
+	--md-sys-color-surface-container: #eeecf3;
+	--md-sys-color-surface-container-high: #e8e7ee;
+	--md-sys-color-surface-container-highest: #e3e1e9;
+
+	/* Outline */
+	--md-sys-color-outline: #777680;
+	--md-sys-color-outline-variant: #c7c5d0;
+
+	/* Scrim */
+	--md-sys-color-scrim: #000000;
+	--md-sys-color-shadow: rgba(0, 0, 0, 0.18);
+	--md-sys-color-shadow-strong: rgba(0, 0, 0, 0.28);
+
+	/* Inverse */
+	--md-sys-color-inverse-surface: #2f3036;
+	--md-sys-color-inverse-on-surface: #f0f0f7;
+	--md-sys-color-inverse-primary: #a5c8ff;
+
+	color-scheme: light;
+}
+
+/* ============================================================================
+ * DARK THEME
+ * ========================================================================== */
+[data-theme='dark'] {
+	--md-sys-color-primary: #a5c8ff;
+	--md-sys-color-on-primary: #003062;
+	--md-sys-color-primary-container: #0f4792;
+	--md-sys-color-on-primary-container: #d7e3ff;
+	--md-sys-color-primary-fixed: #d7e3ff;
+	--md-sys-color-on-primary-fixed: #001b3e;
+
+	--md-sys-color-secondary: #bec6dc;
+	--md-sys-color-on-secondary: #283041;
+	--md-sys-color-secondary-container: #3e4759;
+	--md-sys-color-on-secondary-container: #dae2f9;
+
+	--md-sys-color-tertiary: #e7b9d1;
+	--md-sys-color-on-tertiary: #44263b;
+	--md-sys-color-tertiary-container: #5c3c52;
+	--md-sys-color-on-tertiary-container: #ffd8ec;
+
+	--md-sys-color-error: #ffb4ab;
+	--md-sys-color-on-error: #690005;
+	--md-sys-color-error-container: #93000a;
+	--md-sys-color-on-error-container: #ffdad6;
+
+	--md-sys-color-success: #7fd391;
+	--md-sys-color-success-container: #13571f;
+	--md-sys-color-on-success-container: #a8f6b3;
+
+	--md-sys-color-warning: #f5bd4d;
+	--md-sys-color-warning-container: #5d4100;
+	--md-sys-color-on-warning-container: #ffddb0;
+
+	--md-sys-color-background: #121318;
+	--md-sys-color-on-background: #e3e2e9;
+	--md-sys-color-surface: #121318;
+	--md-sys-color-on-surface: #e3e2e9;
+	--md-sys-color-surface-variant: #46464f;
+	--md-sys-color-on-surface-variant: #c7c5d0;
+	--md-sys-color-surface-dim: #121318;
+	--md-sys-color-surface-bright: #38393f;
+	--md-sys-color-surface-container-lowest: #0d0e13;
+	--md-sys-color-surface-container-low: #1a1b22;
+	--md-sys-color-surface-container: #1e1f26;
+	--md-sys-color-surface-container-high: #292a31;
+	--md-sys-color-surface-container-highest: #34343c;
+
+	--md-sys-color-outline: #90909a;
+	--md-sys-color-outline-variant: #46464f;
+
+	--md-sys-color-scrim: #000000;
+	--md-sys-color-shadow: rgba(0, 0, 0, 0.4);
+	--md-sys-color-shadow-strong: rgba(0, 0, 0, 0.6);
+
+	--md-sys-color-inverse-surface: #e3e2e9;
+	--md-sys-color-inverse-on-surface: #2f3036;
+	--md-sys-color-inverse-primary: #3378d6;
+
+	color-scheme: dark;
+}
+
+/* ============================================================================
+ * Elevation shadow tokens (state-layer opacity built into shadows)
+ * ========================================================================== */
+:root {
+	--md-sys-elevation-0: none;
+	--md-sys-elevation-1: 0 1px 2px var(--md-sys-color-shadow);
+	--md-sys-elevation-2: 0 1px 2px var(--md-sys-color-shadow),
+		0 1px 3px 1px var(--md-sys-color-shadow);
+	--md-sys-elevation-3: 0 1px 3px var(--md-sys-color-shadow),
+		0 4px 8px 3px var(--md-sys-color-shadow);
+	--md-sys-elevation-4: 0 2px 3px var(--md-sys-color-shadow),
+		0 6px 10px 4px var(--md-sys-color-shadow-strong);
+	--md-sys-elevation-5: 0 4px 4px var(--md-sys-color-shadow),
+		0 8px 12px 6px var(--md-sys-color-shadow-strong);
+}
+
+/* ============================================================================
+ * Global reset & base
+ * ========================================================================== */
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+}
+
+body {
+	font-family: var(--md-sys-typescale-body);
+	background: var(--md-sys-color-background);
+	color: var(--md-sys-color-on-surface);
+	overflow: hidden;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	transition: background-color var(--md-sys-motion-duration-medium)
+			var(--md-sys-motion-easing-standard),
+		color var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
+}
+
+::selection {
+	background: var(--md-sys-color-primary-container);
+	color: var(--md-sys-color-on-primary-container);
+}
+
+/* Scrollbars — hidden globally */
+* {
+	scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+	display: none;
+}
+
+/* ============================================================================
+ * Shared component utilities — Material 3 Expressive baseline
+ * Spec references:
+ *   - Buttons  : m3.material.io/components/buttons (round default, pressed morph, 40dp small)
+ *   - Outlined text field : m3.material.io/components/text-fields (transparent container, 4dp corner, 2dp focused outline)
+ *   - Primary tabs : m3.material.io/components/tabs (48dp container, active indicator 3dp full-rounded inset 2dp min 24dp)
+ *   - Icon buttons : 40dp visual, 48dp touch target
+ * ========================================================================== */
+
+/* ---------- Buttons: common ---------- */
+.md-btn {
+	--_btn-bg: transparent;
+	--_btn-fg: var(--md-sys-color-primary);
+	--_btn-border: none;
+	--_btn-state: currentColor;
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--md-sys-space-sm);
+	height: var(--md-comp-button-small-height);
+	min-width: var(--md-comp-button-touch-height);
+	padding: 0 var(--md-comp-button-hpadding);
+	font-family: inherit;
+	font-size: 14px;
+	font-weight: 600;
+	letter-spacing: 0.1px;
+	line-height: 1;
+	border: var(--_btn-border);
+	border-radius: var(--md-sys-shape-small);
+	background: var(--_btn-bg);
+	color: var(--_btn-fg);
+	cursor: pointer;
+	user-select: none;
+	overflow: hidden;
+	transition: background-color var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard),
+		box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		border-radius var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized),
+		transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+}
+.md-btn svg {
+	width: var(--md-sys-icon-size);
+	height: var(--md-sys-icon-size);
+}
+/* M3 expressive: shape morph to square-ish on press. */
+.md-btn:active {
+	border-radius: var(--md-sys-shape-small);
+	transform: scale(0.97);
+}
+.md-btn:disabled {
+	opacity: 0.38;
+	cursor: default;
+	box-shadow: none;
+}
+/* State layer (M3 pattern) using currentColor tint. */
+.md-btn::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: var(--_btn-state);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.md-btn:hover::after {
+	opacity: var(--md-sys-state-hover-opacity);
+}
+.md-btn:focus-visible::after {
+	opacity: var(--md-sys-state-focus-opacity);
+}
+.md-btn:active::after {
+	opacity: var(--md-sys-state-pressed-opacity);
+}
+
+/* — Filled (highest emphasis) — */
+.md-btn--filled,
+.md-btn--primary {
+	--_btn-bg: var(--md-sys-color-primary);
+	--_btn-fg: var(--md-sys-color-on-primary);
+	--_btn-state: var(--md-sys-color-on-primary);
+}
+.md-btn--filled:hover,
+.md-btn--primary:hover {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* — Filled tonal — */
+.md-btn--tonal,
+.md-btn--secondary {
+	--_btn-bg: var(--md-sys-color-secondary-container);
+	--_btn-fg: var(--md-sys-color-on-secondary-container);
+	--_btn-state: var(--md-sys-color-on-secondary-container);
+}
+.md-btn--tonal:hover,
+.md-btn--secondary:hover {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* — Elevated — */
+.md-btn--elevated {
+	--_btn-bg: var(--md-sys-color-surface-container-low);
+	--_btn-fg: var(--md-sys-color-primary);
+	--_btn-state: var(--md-sys-color-primary);
+	box-shadow: var(--md-sys-elevation-1);
+}
+.md-btn--elevated:hover {
+	box-shadow: var(--md-sys-elevation-2);
+}
+.md-btn--elevated:active {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* — Outlined — */
+.md-btn--outlined {
+	--_btn-bg: transparent;
+	--_btn-fg: var(--md-sys-color-primary);
+	--_btn-border: 1px solid var(--md-sys-color-outline);
+	--_btn-state: var(--md-sys-color-primary);
+}
+
+/* — Text — */
+.md-btn--text {
+	--_btn-bg: transparent;
+	--_btn-fg: var(--md-sys-color-primary);
+	--_btn-state: var(--md-sys-color-primary);
+	padding: 0 var(--md-sys-space-md);
+}
+
+/* — Danger (filled variant using error) — */
+.md-btn--danger {
+	--_btn-bg: var(--md-sys-color-error);
+	--_btn-fg: var(--md-sys-color-on-error);
+	--_btn-state: var(--md-sys-color-on-error);
+}
+.md-btn--danger:hover {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* Extra small variant (24dp icon, 32dp height) */
+.md-btn--xs {
+	height: 32px;
+	min-width: 32px;
+	padding: 0 var(--md-sys-space-sm);
+	font-size: 13px;
+}
+
+/* ---------- Icon buttons ---------- */
+.md-icon-button {
+	--_ib-fg: var(--md-sys-color-on-surface-variant);
+	--_ib-bg: transparent;
+	--_ib-state: var(--md-sys-color-on-surface);
+	width: var(--md-comp-icon-button-size);
+	height: var(--md-comp-icon-button-size);
+	min-width: var(--md-comp-icon-button-touch);
+	min-height: var(--md-comp-icon-button-touch);
+	padding: calc((var(--md-comp-icon-button-touch) - var(--md-comp-icon-button-size)) / 2);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: none;
+	background: var(--_ib-bg);
+	color: var(--_ib-fg);
+	border-radius: var(--md-sys-shape-small);
+	cursor: pointer;
+	overflow: visible;
+	transition: background-color var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard),
+		border-radius var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
+}
+.md-icon-button > svg {
+	width: var(--md-sys-icon-size);
+	height: var(--md-sys-icon-size);
+}
+.md-icon-button::after {
+	content: '';
+	position: absolute;
+}
+.md-icon-button {
+	position: relative;
+	overflow: hidden;
+}
+.md-icon-button::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	margin: auto;
+	width: var(--md-comp-icon-button-size);
+	height: var(--md-comp-icon-button-size);
+	border-radius: var(--md-sys-shape-small);
+	background: var(--_ib-state);
+	opacity: 0;
+	transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	pointer-events: none;
+}
+.md-icon-button:hover::after {
+	opacity: var(--md-sys-state-hover-opacity);
+}
+.md-icon-button:focus-visible::after {
+	opacity: var(--md-sys-state-focus-opacity);
+}
+.md-icon-button:active {
+	border-radius: var(--md-sys-shape-small);
+}
+.md-icon-button:active::after {
+	opacity: var(--md-sys-state-pressed-opacity);
+}
+.md-icon-button svg {
+	pointer-events: none;
+	position: relative;
+	z-index: 1;
+}
+.md-icon-button--filled {
+	--_ib-fg: var(--md-sys-color-on-primary);
+	--_ib-bg: var(--md-sys-color-primary);
+	--_ib-state: var(--md-sys-color-on-primary);
+}
+.md-icon-button--filled:hover {
+	box-shadow: var(--md-sys-elevation-1);
+}
+
+/* ---------- Outlined text fields ---------- */
+.md-input,
+.md-textarea,
+.md-select,
+input.md-input,
+select.md-select,
+textarea.md-textarea {
+	width: 100%;
+	font-family: inherit;
+	font-size: 15px;
+	padding: 0 var(--md-sys-space-lg);
+	height: var(--md-comp-textfield-container-height);
+	background: transparent;
+	border: 1px solid var(--md-sys-color-outline);
+	border-radius: var(--md-comp-textfield-corner);
+	color: var(--md-sys-color-on-surface);
+	outline: none;
+	transition: border-color var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard),
+		border-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-emphasized);
+}
+.md-textarea {
+	height: auto;
+	min-height: 96px;
+	padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+	resize: vertical;
+	line-height: 1.45;
+}
+select.md-select {
+	appearance: none;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+	background-position: calc(100% - 8px) center;
+	background-size: 20px;
+	background-repeat: no-repeat;
+	padding-right: 36px;
+	color: var(--md-sys-color-on-surface);
+	opacity: 1;
+	cursor: pointer;
+}
+.md-select option {
+	background: var(--md-sys-color-surface-container);
+	color: var(--md-sys-color-on-surface);
+	font-size: 14px;
+	padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+}
+.md-select optgroup {
+	background: var(--md-sys-color-surface-container);
+	color: var(--md-sys-color-on-surface-variant);
+	font-size: 12px;
+	font-weight: 600;
+}
+.md-select:disabled {
+	color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+	cursor: default;
+}
+.md-input:hover,
+.md-textarea:hover,
+.md-select:hover {
+	border-color: var(--md-sys-color-on-surface);
+}
+.md-input:focus,
+.md-textarea:focus,
+.md-select:focus {
+	border-color: var(--md-sys-color-primary);
+	border-width: 2px;
+	/* keep outer size stable against the 1px→2px border change. */
+	padding: 0 calc(var(--md-sys-space-lg) - 1px);
+}
+.md-textarea:focus {
+	padding: calc(var(--md-sys-space-md) - 1px) calc(var(--md-sys-space-lg) - 1px);
+}
+.md-input::placeholder,
+.md-textarea::placeholder {
+	color: var(--md-sys-color-on-surface-variant);
+}
+.md-input:disabled,
+.md-textarea:disabled {
+	color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+	border-color: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+	pointer-events: none;
+}
+
+/* ---------- Cards ---------- */
+.md-card {
+	background: var(--md-sys-color-surface-container-low);
+	border-radius: var(--md-sys-shape-large);
+	padding: var(--md-sys-space-xl);
+	transition: box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.md-card--elevated {
+	box-shadow: var(--md-sys-elevation-1);
+}
+.md-card--elevated:hover {
+	box-shadow: var(--md-sys-elevation-2);
+}
+.md-card--outlined {
+	border: 1px solid var(--md-sys-color-outline-variant);
+}
+
+/* ---------- Chips ---------- */
+.md-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--md-sys-space-xs);
+	padding: 0 var(--md-sys-space-md);
+	height: 32px;
+	font-size: 12px;
+	font-weight: 600;
+	font-family: inherit;
+	border-radius: var(--md-sys-shape-small);
+	border: 1px solid var(--md-sys-color-outline);
+	background: transparent;
+	color: var(--md-sys-color-on-surface-variant);
+	cursor: default;
+}
+
+/* ---------- Divider ---------- */
+.md-divider {
+	height: 1px;
+	background: var(--md-sys-color-outline-variant);
+	border: none;
+}
+
+/* ---------- Primary tab row (Material 3 specs) ----------
+   Container height 48dp, full-width, divided into equal sections.
+   Active indicator: 3dp, inset 2dp per side, full-rounded, min 24dp,
+   centered horizontally, colored `primary`.
+   Inactive label: `on-surface-variant`; hover/focus add 8% state layer.
+*/
+.md-tabs {
+	display: flex;
+	align-items: stretch;
+	height: var(--md-comp-tab-container-height);
+	background: var(--md-sys-color-surface);
+	border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	gap: 0;
+}
+.md-tab {
+	position: relative;
+	flex: 1 1 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 var(--md-sys-space-lg);
+	min-width: 0;
+	border: none;
+	background: transparent;
+	color: var(--md-sys-color-on-surface-variant);
+	font-family: inherit;
+	font-size: 14px;
+	font-weight: 600;
+	letter-spacing: 0.1px;
+	text-decoration: none;
+	cursor: pointer;
+	user-select: none;
+	overflow: hidden;
+	transition: color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.md-tab::after {
+	/* hover/focus/pressed state layer */
+	content: '';
+	position: absolute;
+	inset: var(--md-sys-space-xs);
+	border-radius: 0;
+	background: var(--md-sys-color-on-surface-variant);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.md-tab:hover::after {
+	opacity: var(--md-sys-state-hover-opacity);
+}
+.md-tab:focus-visible::after {
+	opacity: var(--md-sys-state-focus-opacity);
+}
+.md-tab.active {
+	color: var(--md-sys-color-primary);
+}
+.md-tab.active::before {
+	/* Active indicator bar: rectangular */
+	content: '';
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	transform: none;
+	height: var(--md-comp-tab-indicator-height);
+	width: 100%;
+	max-width: none;
+	border-radius: 0;
+	background: var(--md-sys-color-primary);
+	pointer-events: none;
+}
+.md-tab .md-tab__icon {
+	width: var(--md-sys-icon-size);
+	height: var(--md-sys-icon-size);
+	margin-right: var(--md-sys-space-sm);
+}
+
+/*---------- Toggle / Switch (M3) ---------- */
+.md-switch {
+	--_switch-track: var(--md-sys-color-surface-container-highest);
+	--_switch-thumb: var(--md-sys-color-outline);
+	position: relative;
+	display: inline-block;
+	width: 52px;
+	height: 32px;
+	border: 2px solid var(--_switch-thumb);
+	border-radius: var(--md-sys-shape-small);
+	background: var(--_switch-track);
+	cursor: pointer;
+	transition: background var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	flex-shrink: 0;
+}
+.md-switch::after {
+	content: '';
+	position: absolute;
+	top: 50%;
+	left: 8px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: var(--_switch-thumb);
+	transform: translateY(-50%);
+	transition: left var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
+		width var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized),
+		background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+}
+.md-switch--on {
+	--_switch-track: var(--md-sys-color-primary);
+	--_switch-thumb: var(--md-sys-color-on-primary);
+	border-color: transparent;
+}
+.md-switch--on::after {
+	left: 24px;
+	width: 24px;
+}
+
+/*---------- Snackbar/Toast container default ---------- */
+.md-snackbar {
+	background: var(--md-sys-color-inverse-surface);
+	color: var(--md-sys-color-inverse-on-surface);
+	border-radius: var(--md-sys-shape-extra-small);
+	padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+	font-size: 14px;
+	box-shadow: var(--md-sys-elevation-3);
+}
+
+/* State layer helper (interactive surfaces) */
+.state-layer {
+	position: relative;
+	overflow: hidden;
+}
+.state-layer::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: currentColor;
+	opacity: 0;
+	transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	pointer-events: none;
+}
+.state-layer:hover::after {
+	opacity: var(--md-sys-state-hover-opacity);
+}
+.state-layer:focus-visible::after {
+	opacity: var(--md-sys-state-focus-opacity);
+}
+.state-layer:active::after {
+	opacity: var(--md-sys-state-pressed-opacity);
+}

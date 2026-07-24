@@ -1,0 +1,38 @@
+[package]
+name = "haven-app-binary"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "haven_app_binary_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+haven-memory = { path = "../memory" }
+haven-tools = { path = "../tools" }
+haven-task = { path = "../task" }
+haven-agent = { path = "../agent" }
+haven-input = { path = "../input" }
+haven-desktop = { path = "../desktop" }
+haven-common = { path = "../common" }
+haven-llm = { path = "../llm" }
+async-trait = "0.1"
+tokio-util.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"

@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@vscode/ripgrep-win32-x64": "^1.18.0",
+    "tsc": "^2.0.4"
+  }
+}
