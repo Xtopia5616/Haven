@@ -744,6 +744,42 @@ impl McpManager {
         }
     }
 
+    /// Dynamically connect a single MCP server from config.
+    /// Used by the `load_mcp` builtin tool. Returns an error if already connected.
+    pub async fn connect_server(&self, config: &haven_common::McpServerConfig) -> anyhow::Result<()> {
+        let name = &config.name;
+        {
+            let clients = self.clients.lock().await;
+            if clients.contains_key(name) {
+                anyhow::bail!("MCP server '{}' is already loaded", name);
+            }
+        }
+
+        let client = Arc::new(McpClient::new(
+            name,
+            &config.command,
+            &config.args,
+            &config.env,
+        ));
+
+        let listener_client = client.clone();
+        listener_client.start_notification_listener(move |server_name: &str| {
+            info!("MCP server '{}' pushed tools/list_changed", server_name);
+        });
+
+        client.connect().await.map_err(|e| {
+            anyhow::anyhow!("failed to connect MCP server '{}': {}", name, e)
+        })?;
+
+        self.clients.lock().await.insert(name.clone(), client);
+        let _ = self.status_tx.send(McpStatusChangeEvent {
+            name: name.clone(),
+            status: McpClientStatus::Connected,
+        });
+
+        Ok(())
+    }
+
     /// Start health-monitor + auto-reconnect loops for all connected clients.
     pub async fn start_monitors(&self, config: &haven_common::McpDiscoveryConfig) {
         let clients = self.clients.lock().await;

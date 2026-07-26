@@ -332,6 +332,7 @@ mod tests {
             tool_call_id: None,
             is_compacted: false,
             compaction_id: None,
+            parent_message_id: None,
         }
     }
 

@@ -3,12 +3,10 @@ resolver = "2"
 members = [
     "crates/common",
     "crates/memory",
-    
-    "crates/tools",
     "crates/task",
+    "crates/tools",
     "crates/agent",
     "crates/input",
-    "crates/desktop",
     "crates/llm",
     "crates/app-binary",
 ]

@@ -100,7 +100,7 @@ impl Default for ModelEndpoint {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LlmConfig {
-    #[serde(alias = "classifier")]
+    #[serde(alias = "namer")]
     pub small_model: ModelEndpoint,
     #[serde(alias = "reasoner")]
     pub default_model: ModelEndpoint,
@@ -279,6 +279,8 @@ impl Default for SkillsExecConfig {
 pub struct ToolConfig {
     pub timeout_secs: u64,
     pub max_output_chars: usize,
+    pub max_retries: u32,
+    pub retry_backoff_secs: u64,
     pub allowed_paths: Vec<String>,
     pub disabled_operations: Vec<String>,
     pub risk_override: Option<String>,
@@ -289,6 +291,8 @@ impl Default for ToolConfig {
         Self {
             timeout_secs: 30,
             max_output_chars: 100_000,
+            max_retries: 0,
+            retry_backoff_secs: 2,
             allowed_paths: Vec::new(),
             disabled_operations: Vec::new(),
             risk_override: None,
@@ -568,10 +572,14 @@ impl ConfigLoader {
         Self::load_from(&Self::default_path())
     }
 
-    /// Persist current config to disk.
+    /// Persist current config to disk atomically.
+    /// Writes to a temporary file first, then renames to prevent partial writes
+    /// from concurrent save() calls or process crashes from corrupting the file.
     pub fn save(&self) -> crate::error::HavenResult<()> {
         let toml_str = toml::to_string_pretty(&self.config)?;
-        std::fs::write(&self.path, toml_str)?;
+        let tmp_path = self.path.with_extension("tmp");
+        std::fs::write(&tmp_path, &toml_str)?;
+        std::fs::rename(&tmp_path, &self.path)?;
         Ok(())
     }
 

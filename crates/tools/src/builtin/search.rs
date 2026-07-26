@@ -113,17 +113,17 @@ fn search_files(
                 }
                 let path = entry.path();
                 // Quick read and check
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    if content.contains(&pattern_owned) {
-                        let mut results_guard = results.lock().unwrap();
-                        if results_guard.len() >= max {
-                            found_flag.store(true, Ordering::Relaxed);
-                            break;
-                        }
-                        results_guard.push(serde_json::json!({
-                            "path": path.to_string_lossy(),
-                        }));
+                if let Ok(content) = std::fs::read_to_string(path)
+                    && content.contains(&pattern_owned)
+                {
+                    let mut results_guard = results.lock().unwrap();
+                    if results_guard.len() >= max {
+                        found_flag.store(true, Ordering::Relaxed);
+                        break;
                     }
+                    results_guard.push(serde_json::json!({
+                        "path": path.to_string_lossy(),
+                    }));
                 }
             }
         }
@@ -196,7 +196,7 @@ fn glob_to_regex(glob: &str) -> String {
     for ch in glob.chars() {
         match ch {
             '*' => regex.push_str(".*"),
-            '?' => regex.push_str("."),
+            '?' => regex.push('.'),
             '.' => regex.push_str("\\."),
             '+' => regex.push_str("\\+"),
             '\\' => regex.push_str("\\\\"),
@@ -205,11 +205,11 @@ fn glob_to_regex(glob: &str) -> String {
             '$' => regex.push_str("\\$"),
             '(' => regex.push_str("\\("),
             ')' => regex.push_str("\\)"),
-            '[' => regex.push_str("["),
-            ']' => regex.push_str("]"),
+            '[' => regex.push('['),
+            ']' => regex.push(']'),
             '{' => regex.push_str("\\{"),
             '}' => regex.push_str("\\}"),
-            '!' => regex.push_str("!"),
+            '!' => regex.push('!'),
             c => regex.push(c),
         }
     }

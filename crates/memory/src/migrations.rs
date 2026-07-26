@@ -147,6 +147,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id)", [])?;
     }
 
+    // §2: add parent_message_id column to messages table for tree structure
+    let has_parent_message_id: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='parent_message_id'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_parent_message_id {
+        conn.execute("ALTER TABLE messages ADD COLUMN parent_message_id TEXT REFERENCES messages(id)", [])?;
+    }
+
     // §3.2: create compaction_entries table
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS compaction_entries (

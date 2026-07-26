@@ -22,14 +22,13 @@ thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 haven-memory = { path = "../memory" }
-haven-tools = { path = "../tools" }
 haven-task = { path = "../task" }
+haven-tools = { path = "../tools" }
 haven-agent = { path = "../agent" }
 haven-input = { path = "../input" }
-haven-desktop = { path = "../desktop" }
 haven-common = { path = "../common" }
 haven-llm = { path = "../llm" }
-async-trait = "0.1"
+async-trait.workspace = true
 tokio-util.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"

@@ -13,7 +13,6 @@ use haven_common::config::LlmConfig;
 
 #[derive(Debug, Clone, Copy)]
 pub enum EndpointRole {
-    SmallModel,
     DefaultModel,
     BalancedModel,
 }
@@ -142,51 +141,45 @@ impl EndpointHealth {
 
 pub struct LlmRouter {
     config: Arc<RwLock<LlmConfig>>,
-    pub classifier: Arc<dyn LlmClient>,
     pub reasoner: Arc<dyn LlmClient>,
     pub fallback: Arc<dyn LlmClient>,
     fallback_active: AtomicBool,
-    // §5.3: per-endpoint health
-    health: RwLock<[EndpointHealth; 3]>,
+    // §5.3: per-endpoint health (index 0 = reasoner, 1 = fallback)
+    health: RwLock<[EndpointHealth; 2]>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
 }
 
 impl LlmRouter {
     pub fn new(config: LlmConfig) -> Self {
-        let classifier = Arc::new(HttpLlmClient::new(config.small_model.clone()));
         let reasoner = Arc::new(HttpLlmClient::new(config.default_model.clone()));
         let fallback = Arc::new(HttpLlmClient::new(config.balanced_model.clone()));
         Self {
             config: Arc::new(RwLock::new(config)),
-            classifier,
             reasoner,
             fallback,
             fallback_active: AtomicBool::new(false),
-            health: RwLock::new([EndpointHealth::new(), EndpointHealth::new(), EndpointHealth::new()]),
+            health: RwLock::new([EndpointHealth::new(), EndpointHealth::new()]),
             stream_rules: RwLock::new(Vec::new()),
         }
     }
 
     pub fn new_with_clients(
-        classifier: Arc<dyn LlmClient>,
         reasoner: Arc<dyn LlmClient>,
         fallback: Arc<dyn LlmClient>,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(LlmConfig::default())),
-            classifier,
             reasoner,
             fallback,
             fallback_active: AtomicBool::new(false),
-            health: RwLock::new([EndpointHealth::new(), EndpointHealth::new(), EndpointHealth::new()]),
+            health: RwLock::new([EndpointHealth::new(), EndpointHealth::new()]),
             stream_rules: RwLock::new(Vec::new()),
         }
     }
 
     pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
         match role {
-            EndpointRole::SmallModel => self.classifier.clone(),
             EndpointRole::DefaultModel => self.reasoner.clone(),
             EndpointRole::BalancedModel => self.fallback.clone(),
         }
@@ -194,9 +187,8 @@ impl LlmRouter {
 
     fn health_index(role: &EndpointRole) -> usize {
         match role {
-            EndpointRole::SmallModel => 0,
-            EndpointRole::DefaultModel => 1,
-            EndpointRole::BalancedModel => 2,
+            EndpointRole::DefaultModel => 0,
+            EndpointRole::BalancedModel => 1,
         }
     }
 
@@ -267,12 +259,12 @@ impl LlmRouter {
         drop(cfg);
 
         let primary_result = if tools.is_empty() {
-            with_retry(3, base, factor, max_secs, jitter, || async {
+            with_retry(3, base, factor, max_secs, jitter, None, || async {
                 primary.chat(messages.clone()).await
             })
             .await
         } else {
-            with_retry(3, base, factor, max_secs, jitter, || async {
+            with_retry(3, base, factor, max_secs, jitter, None, || async {
                 primary
                     .chat_with_tools(messages.clone(), tools.clone())
                     .await
@@ -283,7 +275,7 @@ impl LlmRouter {
         match primary_result {
             Ok(v) => {
                 self.record_success(role).await;
-                self.fallback_active.store(false, Ordering::Relaxed);
+                self.fallback_active.store(false, Ordering::SeqCst);
                 Ok(v)
             }
             Err(primary_err) => {
@@ -294,16 +286,16 @@ impl LlmRouter {
                     "primary endpoint failed: {}, attempting fallback",
                     primary_msg
                 );
-                self.fallback_active.store(true, Ordering::Relaxed);
+                self.fallback_active.store(true, Ordering::SeqCst);
 
                 // §2.11: fallback also gets retry
                 let fallback_result = if tools.is_empty() {
-                    with_retry(2, base, factor, max_secs, jitter, || async {
+                    with_retry(2, base, factor, max_secs, jitter, None, || async {
                         self.fallback.chat(messages.clone()).await
                     })
                     .await
                 } else {
-                    with_retry(2, base, factor, max_secs, jitter, || async {
+                    with_retry(2, base, factor, max_secs, jitter, None, || async {
                         self.fallback
                             .chat_with_tools(messages.clone(), tools.clone())
                             .await
@@ -368,13 +360,13 @@ impl LlmRouter {
         match primary.chat_stream(messages.clone()).await {
             Ok(stream) => {
                 self.record_success(&role).await;
-                self.fallback_active.store(false, Ordering::Relaxed);
+                self.fallback_active.store(false, Ordering::SeqCst);
                 Ok(stream)
             }
             Err(e) => {
                 self.record_failure(&role).await;
                 warn!("primary chat_stream failed: {}, attempting fallback", e);
-                self.fallback_active.store(true, Ordering::Relaxed);
+                self.fallback_active.store(true, Ordering::SeqCst);
                 self.fallback.chat_stream(messages).await
             }
         }
@@ -395,7 +387,10 @@ impl LlmRouter {
         .await
     }
 
-    /// Stream-chat with cancellation and retry (§2.10, §2.11).
+    /// Stream-chat with cancellation and fallback (§2.10, §2.11).
+    /// Applies `max_total_duration_secs` as an overall deadline (§2.12).
+    /// Each endpoint is tried at most once (no retry) to avoid duplicating
+    /// thought/reasoning chunks in the shared `on_chunk` callback.
     pub async fn chat_stream_with_tools_aggregated_cancellable(
         &self,
         role: EndpointRole,
@@ -405,70 +400,60 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.check_circuit(&role).await?;
+        tracing::info!("router streaming LLM call, role={:?} messages={} tools={}", role, messages.len(), tools.len());
         let primary = self.select_endpoint(role);
 
-        let cfg = self.config.read().await;
-        let base = cfg.retry_base_secs;
-        let factor = cfg.retry_factor;
-        let max_secs = cfg.retry_max_secs;
-        let jitter = cfg.retry_jitter;
-        drop(cfg);
-
-        // §2.10: retry stream before fallback
-        let mut last_err = None;
-        for attempt in 0..=2 {
-            if cancel.is_cancelled() {
-                return Err(LlmError::Cancelled);
-            }
-            match Self::aggregate_stream_cancellable(
-                primary.clone(),
-                messages.clone(),
-                tools.clone(),
-                &mut on_chunk,
-                cancel.clone(),
-            )
-            .await
-            {
-                Ok(resp) => {
-                    self.record_success(&role).await;
-                    self.fallback_active.store(false, Ordering::Relaxed);
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    if cancel.is_cancelled() {
-                        return Err(LlmError::Cancelled);
-                    }
-                    if !e.is_retryable() || attempt == 2 {
-                        last_err = Some(e);
-                        break;
-                    }
-                    let backoff = ((base as u64) * (factor.pow(attempt) as u64)).min(max_secs);
-                    let jitter_ms = (backoff as f32 * jitter * 1000.0) as u64;
-                    let delay = Duration::from_secs(backoff) + Duration::from_millis(jitter_ms);
-                    tracing::trace!("llm stream retry {} after {:?}", attempt + 1, delay);
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-
-        // All retries exhausted, try fallback
-        if cancel.is_cancelled() {
-            return Err(LlmError::Cancelled);
-        }
-        let e = last_err.unwrap_or_else(|| LlmError::Unknown("stream failed".into()));
-        warn!(
-            "primary stream failed after retries: {}, attempting fallback with tools",
-            e
-        );
-        self.fallback_active.store(true, Ordering::Relaxed);
-        Self::aggregate_stream_cancellable(
-            self.fallback.clone(),
-            messages,
-            tools,
-            &mut on_chunk,
-            cancel,
+        // Primary: single attempt with cancellation
+        let primary_result = Self::aggregate_stream_cancellable(
+            primary, messages.clone(), tools.clone(), &mut on_chunk, cancel.clone(),
         )
-        .await
+        .await;
+
+        match primary_result {
+            Ok(resp) => {
+                self.record_success(&role).await;
+                self.fallback_active.store(false, Ordering::SeqCst);
+                Ok(resp)
+            }
+            Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(LlmError::Cancelled);
+                }
+                if !e.is_retryable() {
+                    return Err(e);
+                }
+                self.record_failure(&role).await;
+                tracing::info!(
+                    "primary stream failed: {}, waiting before fallback", e
+                );
+
+                // Delay before fallback to allow transient issues to settle
+                let cfg = self.config.read().await;
+                let base = cfg.retry_base_secs;
+                let jitter = cfg.retry_jitter;
+                drop(cfg);
+                let jitter_ms = (base as f32 * jitter * 1000.0) as u64;
+                tokio::time::sleep(Duration::from_secs(base) + Duration::from_millis(jitter_ms)).await;
+
+                if cancel.is_cancelled() {
+                    return Err(LlmError::Cancelled);
+                }
+                self.fallback_active.store(true, Ordering::SeqCst);
+
+                // Fallback: single attempt with cancellation
+                let fb_result = Self::aggregate_stream_cancellable(
+                    self.fallback.clone(), messages, tools, &mut on_chunk, cancel,
+                )
+                .await;
+
+                match fb_result {
+                    Ok(resp) => Ok(resp),
+                    Err(fb_err) => {
+                        Err(LlmError::AllEndpointsFailed(e.to_string(), fb_err.to_string()))
+                    }
+                }
+            }
+        }
     }
 
     async fn aggregate_stream_cancellable(
@@ -479,6 +464,7 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
+        tracing::info!("aggregate_stream_cancellable start");
         let mut text = String::new();
         let mut tool_calls = Vec::new();
         let mut finish_reason: Option<FinishReason> = None;
@@ -549,14 +535,14 @@ impl LlmRouter {
     }
 
     pub fn fallback_active(&self) -> bool {
-        self.fallback_active.load(Ordering::Relaxed)
+        self.fallback_active.load(Ordering::SeqCst)
     }
 
     /// §5.4: run health check on fallback endpoint
     pub async fn background_health_check(&self) -> bool {
         match self.fallback.health_check().await {
             Ok(()) => {
-                self.fallback_active.store(false, Ordering::Relaxed);
+                self.fallback_active.store(false, Ordering::SeqCst);
                 true
             }
             Err(_) => false,
@@ -649,7 +635,6 @@ mod tests {
     fn router_selects_correct_endpoint() {
         let cfg = LlmConfig::default();
         let router = LlmRouter::new(cfg);
-        let _cl = router.select_endpoint(EndpointRole::SmallModel);
         let _re = router.select_endpoint(EndpointRole::DefaultModel);
         let _fa = router.select_endpoint(EndpointRole::BalancedModel);
     }
@@ -705,7 +690,7 @@ mod tests {
             chunks,
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(client.clone(), client.clone(), client);
+        let router = LlmRouter::new_with_clients(client.clone(), client);
 
         let mut seen_text = String::new();
         let resp = router
@@ -752,7 +737,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
-        let router = LlmRouter::new_with_clients(failing.clone(), failing, ok);
+        let router = LlmRouter::new_with_clients(failing, ok);
 
         let resp = router
             .chat(EndpointRole::DefaultModel, Vec::new())
@@ -780,7 +765,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
-        let router = LlmRouter::new_with_clients(failing.clone(), failing, ok);
+        let router = LlmRouter::new_with_clients(failing, ok);
 
         // First 3 calls should fail and trigger circuit breaker
         for _ in 0..3 {
@@ -915,7 +900,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
         let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client);
+            LlmRouter::new_with_clients(client.clone(), client);
         let result = router.health_check(EndpointRole::DefaultModel).await;
         assert!(result.is_ok());
     }
@@ -927,7 +912,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
         let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client);
+            LlmRouter::new_with_clients(client.clone(), client);
         let rule = StreamRule::new(
             "forbidden",
             r"secret_key",
@@ -950,16 +935,12 @@ mod tests {
     #[test]
     fn endpoint_role_health_index_mapping() {
         assert_eq!(
-            LlmRouter::health_index(&EndpointRole::SmallModel),
+            LlmRouter::health_index(&EndpointRole::DefaultModel),
             0
         );
         assert_eq!(
-            LlmRouter::health_index(&EndpointRole::DefaultModel),
-            1
-        );
-        assert_eq!(
             LlmRouter::health_index(&EndpointRole::BalancedModel),
-            2
+            1
         );
     }
 
@@ -970,7 +951,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
         let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client);
+            LlmRouter::new_with_clients(client.clone(), client);
         let resp = router
             .chat_stream_with_tools_aggregated(
                 EndpointRole::DefaultModel,
@@ -1004,7 +985,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
         let router =
-            LlmRouter::new_with_clients(failing.clone(), failing, ok);
+            LlmRouter::new_with_clients(failing, ok);
         let resp = router
             .chat_stream(EndpointRole::DefaultModel, vec![])
             .await;
@@ -1028,7 +1009,7 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
         let router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client);
+            LlmRouter::new_with_clients(client.clone(), client);
         let result = router
             .chat_stream(EndpointRole::DefaultModel, vec![])
             .await;

@@ -19,11 +19,11 @@
 
 	const todayISO = $derived(new Date().toISOString().slice(0, 10));
 
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.js';
-	import { taskMessagesStore, setTaskMessages, getTaskMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, addNotification } from '$lib/stores.js';
+	import { taskMessagesStore, updateTaskMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, addNotification } from '$lib/stores.js';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -39,6 +39,10 @@
 
 	onMount(async () => {
 		await loadHistory();
+	});
+
+	onDestroy(() => {
+		if (searchTimer) clearTimeout(searchTimer);
 	});
 
 	function filterParams(extra) {
@@ -111,13 +115,13 @@
 		try {
 			const result = await invoke('get_task_for_review', { taskId: task.id });
 			const dbMessages = buildReviewMessages(result);
-			// Preserve in-memory streaming messages that haven't been persisted
-			// to DB yet (e.g. currently-running task output).
-			const liveMessages = getTaskMessages(task.id);
-			const streaming = liveMessages.filter((m) => m.streaming);
-			const dbIds = new Set(dbMessages.map((m) => m.id));
-			const merged = [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
-			setTaskMessages(task.id, merged);
+			// Atomically merge DB messages with any in-memory streaming messages
+			// that arrived concurrently (e.g. from background task streaming).
+			updateTaskMessages(task.id, (existing) => {
+				const dbIds = new Set(dbMessages.map((m) => m.id));
+				const streaming = existing.filter((m) => m.streaming);
+				return [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
+			});
 			reviewTargetStore.set({ taskId: task.id, summary: task.input_text });
 			await goto('/');
 		} catch (e) {
@@ -144,8 +148,8 @@
 			});
 		}
 
-		// Supplement with action/observation from steps (thoughts are already
-		// part of assistant messages in session data).
+		// Supplement with action/observation from steps (thoughts are now
+		// persisted as session messages by the agent).
 		for (const step of data.steps || []) {
 			if (step.action_tool) {
 				const toolId = `tool-${step.id}`;
@@ -413,17 +417,17 @@
 								{/if}
 							</div>
 						</div>
-						<div class="history-actions">
-							<button class="md-btn md-btn--xs md-btn--tonal" onclick={() => reviewTask(task)}>
-								Review
-							</button>
-							<button
-								class="md-btn md-btn--xs md-btn--danger"
-								onclick={() => (deleteTarget = task)}
-							>
-								Delete
-							</button>
-						</div>
+							<div class="history-actions">
+								<button class="md-btn md-btn--xs md-btn--tonal" onclick={() => reviewTask(task)}>
+									Review
+								</button>
+								<button
+									class="md-btn md-btn--xs md-btn--danger"
+									onclick={() => (deleteTarget = task)}
+								>
+									Delete
+								</button>
+							</div>
 					</div>
 				{/if}
 			{/each}

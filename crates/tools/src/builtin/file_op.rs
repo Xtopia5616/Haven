@@ -38,13 +38,13 @@ impl Tool for FileOpTool {
         "file".into()
     }
     fn description(&self) -> String {
-        "File operations: read, write, copy, move, delete, list".into()
+        "File operations: read, write, edit, copy, move, delete, list".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("delete") => RiskLevel::High,
-            Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
+            Some("edit") | Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
     }
@@ -53,10 +53,12 @@ impl Tool for FileOpTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "copy", "move", "delete", "list"] },
+                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list"] },
                 "path": { "type": "string" },
                 "destination": { "type": "string" },
-                "content": { "type": "string" }
+                "content": { "type": "string" },
+                "old_string": { "type": "string", "description": "Text to search for (edit operation)" },
+                "new_string": { "type": "string", "description": "Replacement text (edit operation)" }
             },
             "required": ["operation", "path"]
         })
@@ -93,6 +95,47 @@ impl Tool for FileOpTool {
                 }
                 Ok(ToolResult::ok(
                     serde_json::json!({"written": true, "path": path}),
+                ))
+            }
+            "edit" => {
+                let old = input["old_string"].as_str().ok_or_else(|| {
+                    anyhow::anyhow!("'old_string' is required for edit operation")
+                })?;
+                let new = input["new_string"].as_str().unwrap_or("");
+                let content = tokio::fs::read_to_string(&path).await?;
+                let positions: Vec<usize> = content.match_indices(old).map(|(i, _)| i).collect();
+                if positions.is_empty() {
+                    anyhow::bail!("old_string not found in '{}'", path);
+                }
+                if positions.len() > 1 {
+                    let lines: Vec<usize> = positions.iter().map(|&p| content[..p].matches('\n').count() + 1).collect();
+                    let snippet = |pos: usize| -> String {
+                        let start = pos.saturating_sub(40);
+                        let end = (pos + old.len() + 40).min(content.len());
+                        let mut s = String::new();
+                        if start > 0 { s.push('…'); }
+                        s.push_str(&content[start..end]);
+                        if end < content.len() { s.push('…'); }
+                        s
+                    };
+                    let matches: Vec<serde_json::Value> = lines.iter().zip(positions.iter()).map(|(&l, &p)| {
+                        serde_json::json!({"line": l, "snippet": snippet(p)})
+                    }).collect();
+                    return Ok(ToolResult {
+                        success: true,
+                        output: serde_json::json!({
+                            "warning": format!("old_string appears {} times; provide more context in old_string to disambiguate", positions.len()),
+                            "matches": matches,
+                        }),
+                        error: None,
+                        truncated: false,
+                    });
+                }
+                let result = content.replace(old, new);
+                tokio::fs::write(&path, &result).await?;
+                let line = content[..positions[0]].matches('\n').count() + 1;
+                Ok(ToolResult::ok(
+                    serde_json::json!({"edited": true, "path": path, "line": line}),
                 ))
             }
             "copy" => {
@@ -188,12 +231,14 @@ mod tests {
     #[test]
     fn test_file_op_description() {
         assert!(FileOpTool.description().contains("File operations"));
+        assert!(FileOpTool.description().contains("edit"));
     }
 
     #[test]
     fn test_file_op_risk_level() {
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "delete"})), RiskLevel::High);
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "write"})), RiskLevel::Medium);
+        assert_eq!(FileOpTool.risk_level(&json!({"operation": "edit"})), RiskLevel::Medium);
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "move"})), RiskLevel::Medium);
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "copy"})), RiskLevel::Medium);
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "read"})), RiskLevel::Low);
@@ -212,6 +257,7 @@ mod tests {
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(ops.contains(&"read"));
         assert!(ops.contains(&"write"));
+        assert!(ops.contains(&"edit"));
         assert!(ops.contains(&"copy"));
         assert!(ops.contains(&"move"));
         assert!(ops.contains(&"delete"));
@@ -250,6 +296,61 @@ mod tests {
         assert!(result.output["written"].as_bool().unwrap());
         let content = tokio::fs::read_to_string(&file).await.unwrap();
         assert_eq!(content, "written content");
+    }
+
+    #[tokio::test]
+    async fn test_file_op_execute_edit() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("edit.txt");
+        tokio::fs::write(&file, "hello\nworld\nfoo\n").await.unwrap();
+        let path_str = file.to_string_lossy().to_string();
+
+        let result = FileOpTool
+            .execute(
+                json!({"operation": "edit", "path": path_str, "old_string": "world", "new_string": "there"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["line"].as_u64().unwrap(), 2);
+        let content = tokio::fs::read_to_string(&file).await.unwrap();
+        assert_eq!(content, "hello\nthere\nfoo\n");
+    }
+
+    #[tokio::test]
+    async fn test_file_op_execute_edit_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("edit.txt");
+        tokio::fs::write(&file, "hello\nworld\n").await.unwrap();
+        let path_str = file.to_string_lossy().to_string();
+
+        let result = FileOpTool
+            .execute(
+                json!({"operation": "edit", "path": path_str, "old_string": "nope", "new_string": "x"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_op_execute_edit_multiple_matches() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("edit.txt");
+        tokio::fs::write(&file, "foo\nfoo\n").await.unwrap();
+        let path_str = file.to_string_lossy().to_string();
+
+        let result = FileOpTool
+            .execute(
+                json!({"operation": "edit", "path": path_str, "old_string": "foo", "new_string": "bar"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["warning"].as_str().unwrap().contains("2 times"));
+        assert_eq!(result.output["matches"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

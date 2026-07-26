@@ -116,6 +116,9 @@ pub struct CanonicalMessage {
     pub tool_calls: Option<Vec<CanonicalToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Parent message ID for tree-structured conversation history (§2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,7 +218,9 @@ mod tests {
             content: vec![ContentPart::text("system prompt")],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
+        
         assert_eq!(msg.role, CanonicalRole::System);
         assert_eq!(msg.content.len(), 1);
         assert!(msg.tool_calls.is_none());
@@ -229,6 +234,7 @@ mod tests {
             content: vec![ContentPart::text("use this tool")],
             tool_calls: None,
             tool_call_id: Some("call_abc".into()),
+            parent_message_id: None,
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -244,7 +250,9 @@ mod tests {
                 arguments: serde_json::json!({"cmd": "ls"}),
             }]),
             tool_call_id: None,
+            parent_message_id: None,
         };
+        
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
     }
 
@@ -255,7 +263,9 @@ mod tests {
             content: vec![ContentPart::text("tool output")],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
+        
         assert_eq!(msg.role, CanonicalRole::Tool);
     }
 
@@ -364,7 +374,9 @@ mod tests {
             content: vec![ContentPart::text("hello")],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
+        
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: CanonicalMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.role, CanonicalRole::User);
@@ -382,7 +394,9 @@ mod tests {
                 arguments: serde_json::json!({"path": "/tmp"}),
             }]),
             tool_call_id: None,
+            parent_message_id: None,
         };
+        
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: CanonicalMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.tool_calls.unwrap()[0].name, "exec");

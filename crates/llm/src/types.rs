@@ -12,12 +12,23 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
         .map(|m| {
             let role = match m.role {
                 CanonicalRole::System => LlmRole::System,
-                CanonicalRole::User | CanonicalRole::Tool => LlmRole::User,
+                CanonicalRole::User => LlmRole::User,
                 CanonicalRole::Assistant => LlmRole::Assistant,
+                CanonicalRole::Tool => LlmRole::Tool,
             };
             LlmMessage {
                 role,
                 content: m.content,
+                tool_call_id: m.tool_call_id,
+                tool_calls: m.tool_calls.map(|calls| {
+                    calls.into_iter()
+                        .map(|tc| ToolCall {
+                            id: tc.id,
+                            name: tc.name,
+                            arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                        })
+                        .collect()
+                }),
             }
         })
         .collect()
@@ -27,6 +38,12 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
 pub struct LlmMessage {
     pub role: LlmRole,
     pub content: Vec<ContentPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Tool calls from this (assistant) message, forwarded to the API so
+    /// subsequent tool responses can be linked by tool_call_id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,6 +52,7 @@ pub enum LlmRole {
     System,
     User,
     Assistant,
+    Tool,
 }
 
 impl std::fmt::Display for LlmRole {
@@ -43,6 +61,7 @@ impl std::fmt::Display for LlmRole {
             LlmRole::System => write!(f, "system"),
             LlmRole::User => write!(f, "user"),
             LlmRole::Assistant => write!(f, "assistant"),
+            LlmRole::Tool => write!(f, "tool"),
         }
     }
 }
@@ -87,13 +106,16 @@ impl fmt::Display for FinishReason {
 }
 
 impl FinishReason {
+    /// Parse a finish_reason string from any OpenAI-compatible provider.
+    /// Accepts standard OpenAI values plus common non-standard variants
+    /// from Ollama, vLLM, Google Gemini, Anthropic, etc.
     pub fn from_openai(s: &str) -> Option<Self> {
         match s {
-            "stop" => Some(FinishReason::Stop),
-            "length" => Some(FinishReason::Length),
-            "tool_calls" => Some(FinishReason::ToolCalls),
-            "content_filter" => Some(FinishReason::ContentFilter),
+            "stop" | "end" | "end_turn" | "completed" | "done" => Some(FinishReason::Stop),
+            "length" | "max_tokens" | "incomplete" | "max_length" => Some(FinishReason::Length),
+            "tool_calls" | "tool_use" | "tools" => Some(FinishReason::ToolCalls),
             "function_call" => Some(FinishReason::FunctionCall),
+            "content_filter" | "safety" | "blocked" | "moderation" => Some(FinishReason::ContentFilter),
             _ => None,
         }
     }
@@ -288,6 +310,7 @@ mod tests {
         assert_eq!(LlmRole::System.to_string(), "system");
         assert_eq!(LlmRole::User.to_string(), "user");
         assert_eq!(LlmRole::Assistant.to_string(), "assistant");
+        assert_eq!(LlmRole::Tool.to_string(), "tool");
     }
 
     #[test]
@@ -300,6 +323,8 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::System,
             content: vec![ContentPart::Text("system prompt".into())],
+            tool_call_id: None,
+            tool_calls: None,
         };
         assert_eq!(msg.role.to_string(), "system");
         assert_eq!(msg.content.len(), 1);
@@ -310,6 +335,8 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::User,
             content: vec![ContentPart::text("hello")],
+            tool_call_id: None,
+            tool_calls: None,
         };
         assert_eq!(msg.role.to_string(), "user");
         assert_eq!(msg.content.len(), 1);
@@ -320,6 +347,8 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::Assistant,
             content: vec![],
+            tool_call_id: None,
+            tool_calls: None,
         };
         assert_eq!(msg.role.to_string(), "assistant");
         assert!(msg.content.is_empty());
@@ -503,6 +532,7 @@ mod tests {
             content: vec![ContentPart::Text("system prompt".into())],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs.len(), 1);
@@ -516,21 +546,24 @@ mod tests {
             content: vec![ContentPart::text("hi")],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "user");
     }
 
     #[test]
-    fn convert_to_llm_tool_maps_to_user_role() {
+    fn convert_to_llm_tool_maps_to_tool_role() {
         let cm = CanonicalMessage {
             role: CanonicalRole::Tool,
             content: vec![ContentPart::Text("tool result".into())],
             tool_calls: None,
             tool_call_id: Some("tid".into()),
+            parent_message_id: None,
         };
         let msgs = convert_to_llm(vec![cm]);
-        assert_eq!(msgs[0].role.to_string(), "user");
+        assert_eq!(msgs[0].role.to_string(), "tool");
+        assert_eq!(msgs[0].tool_call_id.as_deref(), Some("tid"));
     }
 
     #[test]
@@ -540,6 +573,7 @@ mod tests {
             content: vec![ContentPart::text("answer")],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "assistant");
@@ -555,6 +589,7 @@ mod tests {
             ],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].content.len(), 2);
@@ -568,12 +603,14 @@ mod tests {
                 content: vec![ContentPart::Text("prompt".into())],
                 tool_calls: None,
                 tool_call_id: None,
+                parent_message_id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
                 content: vec![ContentPart::text("question")],
                 tool_calls: None,
                 tool_call_id: None,
+                parent_message_id: None,
             },
         ];
         let msgs = convert_to_llm(cms);

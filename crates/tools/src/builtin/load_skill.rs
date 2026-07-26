@@ -7,13 +7,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::skills::SkillsEngine;
 use crate::{Tool, ToolResult};
-use crate::adapters::SkillToolAdapter;
 use crate::skills::runner::SkillRunner;
-use crate::ToolRegistry;
 
 pub struct LoadSkillTool {
     pub skills_engine: SkillsEngine,
-    pub registry: ToolRegistry,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
 }
 
@@ -66,12 +63,7 @@ impl Tool for LoadSkillTool {
             }
         });
 
-        // Dynamically register the SkillToolAdapter so the LLM can call it
-        let runner = self.skill_runner.read().await.clone();
-        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        self.registry.register(Arc::new(adapter)).await;
-
-        Ok(ToolResult::ok(serde_json::json!({"skill": schema, "status": "loaded"})))
+        Ok(ToolResult::ok(serde_json::json!({"skill": schema, "status": "loaded", "skill_name": skill.name()})))
     }
 }
 
@@ -85,7 +77,6 @@ mod tests {
 
     #[test]
     fn test_load_skill_name() {
-        let registry = ToolRegistry::new();
         let skills_engine = SkillsEngine::new();
         let temp_dir = TempDir::new().unwrap();
         let exec_config = SkillsExecConfig {
@@ -101,7 +92,6 @@ mod tests {
 
         let tool = LoadSkillTool {
             skills_engine,
-            registry,
             skill_runner,
         };
         assert_eq!(tool.name(), "load_skill");

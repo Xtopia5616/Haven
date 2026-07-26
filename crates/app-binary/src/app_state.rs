@@ -1,6 +1,6 @@
 use haven_agent::AgentLayer;
 use haven_common::config::ConfigLoader;
-use haven_desktop::DesktopShell;
+use crate::desktop::DesktopShell;
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_memory::Database;

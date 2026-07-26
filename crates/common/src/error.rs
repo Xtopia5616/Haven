@@ -152,7 +152,7 @@ mod tests {
         use serde::ser::Error as _;
         let errors: Vec<HavenError> = vec![
             HavenError::Config("cfg".into()),
-            HavenError::Io(std::io::Error::new(std::io::ErrorKind::Other, "io")),
+            HavenError::Io(std::io::Error::other("io")),
             HavenError::Serde(serde_json::from_str::<i32>("\"\"").unwrap_err()),
             HavenError::TomlParse("key=value".parse::<toml::Value>().unwrap_err()),
             HavenError::TomlSerialize(toml::ser::Error::custom("x")),

@@ -363,6 +363,7 @@ mod tests {
             tool_call_id: None,
             compaction_id: None,
             is_compacted: false,
+            parent_message_id: None,
         }
     }
 

@@ -1,11 +1,19 @@
 <script>
 	import { onMount } from 'svelte';
 
-	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '' } = $props();
+	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, onContextMenu = null } = $props();
 
 	let md = $state(null);
 	let mdHtml = $state('');
 	let streamRef = { active: false };
+
+	function handleContextMenu(e) {
+		if (onContextMenu) {
+			e.preventDefault();
+			e.stopPropagation();
+			onContextMenu({ x: e.clientX, y: e.clientY, messageId, stepNumber, role, content, type: msgType });
+		}
+	}
 
 	onMount(async () => {
 		const [MarkdownIt, hljs, javascript, typescript, bash, json, css, xml, rust, yaml] = await Promise.all([
@@ -60,6 +68,9 @@
 	class:user={role === 'user'}
 	class:assistant={role === 'assistant'}
 	class:streaming
+	role="button"
+	tabindex="0"
+	oncontextmenu={handleContextMenu}
 >
 	<div class="bubble-header">
 		<span class="bubble-role">
@@ -267,6 +278,8 @@
 	}
 	.md-content :global(table) {
 		border-collapse: collapse;
+		display: block;
+		overflow-x: auto;
 		width: 100%;
 		margin: 0 0 0.75em;
 		font-size: 12px;

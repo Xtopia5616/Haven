@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -9,34 +10,33 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod compactor;
 use compactor::ContextCompactor;
 
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+pub use haven_task::{RunHandler, TaskExecutor, TaskInfo, TaskPriority, TaskStatus};
+
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_llm::{
-    EndpointRole, FinishReason, LlmMessage, LlmResponse, LlmRole, LlmRouter, ToolDefinition,
+    EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition,
     ToolFunction,
 };
 use haven_memory::Database;
-use haven_task::{RunHandler, TaskExecutor, TaskInfo, TaskPriority, TaskStatus};
 use serde::{Deserialize, Serialize};
+
+/// Branch point saved before tool execution, used for rollback (§2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchPoint {
+    pub canonical: Vec<CanonicalMessage>,
+    pub history: Vec<ReActStep>,
+    pub step_number: u32,
+}
 
 /// Serializable snapshot of the ReAct loop state for pause/resume (§1.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ReActSnapshot {
-    canonical: Vec<CanonicalMessage>,
-    history: Vec<ReActStep>,
-    step_number: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Classification {
-    NewTask {
-        summary: String,
-        priority: TaskPriority,
-        suggested_tools: Vec<String>,
-    },
-    AppendToTask {
-        task_id: String,
-        additional_context: String,
-    },
+pub struct ReActSnapshot {
+    pub canonical: Vec<CanonicalMessage>,
+    pub history: Vec<ReActStep>,
+    pub step_number: u32,
+    /// Branch points keyed by step number for tree-structured rollback (§2).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub branch_points: HashMap<u32, BranchPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,38 +52,78 @@ pub struct Action {
     pub tool_name: String,
     pub tool_input: Value,
     pub is_final: bool,
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentEvent {
+    Thought {
+        task_id: String,
+        thought: String,
+        step_number: u32,
+        run_id: u64,
+    },
+    Action {
+        task_id: String,
+        tool_name: String,
+        input: Value,
+        step_number: u32,
+        run_id: u64,
+    },
+    Observation {
+        task_id: String,
+        observation: String,
+        tool_name: String,
+        step_number: u32,
+        run_id: u64,
+        silent: bool,
+    },
+    TaskCreated(TaskInfo),
+    TaskCompleted {
+        task_id: String,
+        title: String,
+    },
+    TaskError {
+        task_id: String,
+        error: String,
+    },
+    FallbackActivated {
+        task_id: String,
+        reason: String,
+    },
+    ThoughtChunk {
+        task_id: String,
+        delta: String,
+        step_number: u32,
+        run_id: u64,
+    },
+    ReasoningChunk {
+        task_id: String,
+        delta: String,
+        step_number: u32,
+        run_id: u64,
+    },
+    Supplement {
+        task_id: String,
+        additional_context: String,
+        step_number: u32,
+        run_id: u64,
+    },
+    TaskUpdated {
+        task_id: String,
+        status: String,
+    },
+    Compaction {
+        task_id: String,
+        summary: String,
+        tokens_before: u32,
+        tokens_after: u32,
+    },
 }
 
 #[async_trait]
 pub trait AgentEventEmitter: Send + Sync {
-    async fn on_thought(&self, task_id: &str, thought: &str, step_number: u32, run_id: u64);
-    async fn on_action(&self, _task_id: &str, _tool_name: &str, _input: &Value, _step_number: u32, _run_id: u64) {}
-    async fn on_observation(
-        &self,
-        _task_id: &str,
-        _observation: &str,
-        _tool_name: &str,
-        _step_number: u32,
-        _run_id: u64,
-        _silent: bool,
-    ) {}
-    async fn on_task_created(&self, task: &TaskInfo);
-    async fn on_task_completed(&self, task_id: &str, title: &str);
-    async fn on_task_error(&self, task_id: &str, error: &str);
-    async fn on_fallback_activated(&self, task_id: &str, reason: &str);
-    /// Incremental Reasoner text delta for the streaming Thought UI (design
-    /// §4.4.3). Default no-op so existing emitters keep compiling.
-    async fn on_thought_chunk(&self, _task_id: &str, _delta: &str, _step_number: u32, _run_id: u64) {}
-    /// Incremental reasoning/chain-of-thought delta (e.g. DeepSeek-R1's
-    /// reasoning_content). Default no-op for backward compat.
-    async fn on_reasoning_chunk(&self, _task_id: &str, _delta: &str, _step_number: u32, _run_id: u64) {}
-    /// User appended additional context to an in-flight task (design
-    /// §4.5.3). Default no-op so existing emitters keep compiling.
-    async fn on_supplement(&self, _task_id: &str, _additional_context: &str, _step_number: u32, _run_id: u64) {}
-    /// Task status changed. Default no-op so existing emitters keep compiling.
-    async fn on_task_updated(&self, _task_id: &str, _status: &str) {}
-    /// Context compaction occurred (§3.1). Default no-op.
-    async fn on_compaction(&self, _task_id: &str, _summary: &str, _tokens_before: u32, _tokens_after: u32) {}
+    async fn emit(&self, event: AgentEvent);
 }
 
 pub struct AgentLayer {
@@ -145,26 +185,26 @@ impl AgentLayer {
     /// Create a new session and switch the agent to it. Returns the new session
     /// ID. Each new task gets its own session so conversation history does not
     /// leak between tasks.
+    /// Holds session_id lock across the entire operation to prevent a concurrent
+    /// ensure_session or persist_message from seeing a stale session ID.
     pub fn start_new_session(&self) -> anyhow::Result<String> {
-        // Close old session if it exists and is active
-        {
-            let guard = self.session_id.lock().unwrap();
-            if *guard != "default" {
-                let _ = self.db.close_session(&guard);
-            }
+        let mut guard = self.session_id.lock().unwrap();
+        if *guard != "default" {
+            let _ = self.db.close_session(&guard);
         }
         let session = self.db.create_session(None)?;
-        let mut guard = self.session_id.lock().unwrap();
         *guard = session.id.clone();
         Ok(session.id)
     }
 
     /// Persist a message to the active session with the configured window size.
+    /// Holds the session_id lock across the DB write to prevent a TOCTOU race
+    /// with concurrent start_new_session / supplement_task calls.
     fn persist_message(&self, role: &str, content: &str, message_type: Option<&str>) {
-        let session_id = self.session_id.lock().unwrap().clone();
         let window_size = self.session_window_size;
+        let guard = self.session_id.lock().unwrap();
         let _ = self.db.add_message_with_window(
-            &session_id,
+            &guard,
             role,
             content,
             message_type,
@@ -193,21 +233,23 @@ impl AgentLayer {
             self.executor.add_supplement(task_id, text).await?;
         }
         let state = self.executor.get_task_state(task_id).await;
-        if state == haven_task::TaskStatus::Paused {
+        if state == TaskStatus::Paused {
             // The ReAct loop has already exited (status set to Paused and
             // returned).  Always hand off to the dispatcher by setting
             // Pending — the supplement_queue will cause take_next_pending to
             // pick it up within 100 ms regardless of dispatched_once.
             self.executor
-                .update_task_status(task_id, haven_task::TaskStatus::Pending)
+                .update_task_status(task_id, TaskStatus::Pending)
                 .await?;
-        } else if state == haven_task::TaskStatus::Completed
-            || state == haven_task::TaskStatus::Error
-            || state == haven_task::TaskStatus::Cancelled
+            self.emit_task_updated(task_id, "pending").await;
+        } else if state == TaskStatus::Completed
+            || state == TaskStatus::Error
+            || state == TaskStatus::Cancelled
         {
             self.executor
-                .update_task_status(task_id, haven_task::TaskStatus::Pending)
+                .update_task_status(task_id, TaskStatus::Pending)
                 .await?;
+            self.emit_task_updated(task_id, "pending").await;
         }
         Ok(())
     }
@@ -251,9 +293,9 @@ impl AgentLayer {
     /// Load the most recent conversation messages from DB as text lines that
     /// get fed into the ReAct system prompt as Conversation History.
     fn load_conversation_history(&self) -> Vec<String> {
-        let session_id = self.session_id.lock().unwrap().clone();
+        let guard = self.session_id.lock().unwrap();
         self.db
-            .get_session_messages_limit(&session_id, self.session_window_size)
+            .get_session_messages_limit(&guard, self.session_window_size)
             .ok()
             .unwrap_or_default()
             .into_iter()
@@ -261,10 +303,77 @@ impl AgentLayer {
             .collect()
     }
 
+    /// Get the branch points for a task (for frontend UI).
+    pub async fn get_branch_points(&self, task_id: &str) -> Vec<u32> {
+        if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
+            && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
+        {
+            let mut steps: Vec<u32> = snapshot.branch_points.keys().copied().collect();
+            steps.sort();
+            steps
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Roll back a task to a specific branch point. The task state is
+    /// replaced with the branch point snapshot and the task is set back
+    /// to Pending so the dispatcher re-executes it.
+    pub async fn rollback_task(&self, task_id: &str, target_step: u32) -> anyhow::Result<()> {
+        let state_json = self.db.get_react_state(task_id)?
+            .ok_or_else(|| anyhow::anyhow!("no saved state for task {}", task_id))?;
+        let mut snapshot: ReActSnapshot = serde_json::from_str(&state_json)?;
+        let bp = snapshot.branch_points.get(&target_step)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no branch point at step {}", target_step))?;
+
+        snapshot.canonical = bp.canonical;
+        snapshot.history = bp.history;
+        snapshot.step_number = bp.step_number;
+        let json = serde_json::to_string(&snapshot)?;
+        self.db.save_react_state(task_id, &json)?;
+        self.executor
+            .update_task_status(task_id, TaskStatus::Pending)
+            .await?;
+        self.emit_task_updated(task_id, "pending").await;
+        tracing::info!("rollback_task {} to step {}: task set to Pending", task_id, target_step);
+        Ok(())
+    }
+
+    /// Fork a task into a new session. Creates a new task in a branched
+    /// session and copies the current ReAct snapshot so the fork continues
+    /// from the same point.
+    pub async fn fork_task(&self, task_id: &str) -> anyhow::Result<String> {
+        let task = self.executor.list_tasks().await
+            .into_iter()
+            .find(|t| t.id == task_id)
+            .ok_or_else(|| anyhow::anyhow!("task '{}' not found", task_id))?;
+
+        let parent_session_id = self.session_id.lock().unwrap().clone();
+        let new_session_id = self.db.create_session(Some(&parent_session_id))?.id;
+
+        let forked = self.executor.create_task_with_summary(
+            &task.input,
+            &task.classification,
+            task.priority,
+            &task.summary,
+            Some(&new_session_id),
+        ).await?;
+
+        if let Ok(Some(state_json)) = self.db.get_react_state(task_id) {
+            self.db.save_react_state(&forked.id, &state_json)?;
+        }
+
+        self.emit_task_created(&forked).await;
+        tracing::info!("fork_task {} -> {} in session {}", task_id, forked.id, new_session_id);
+        Ok(forked.id)
+    }
+
     /// Dispatcher entrypoint. Looks up the task by id, fills in the
     /// classifier summary (description) and original transcript (context),
     /// loads conversation history, then runs the ReAct loop.
     pub async fn run_task_from_id(&self, task_id: &str) -> anyhow::Result<Vec<ReActStep>> {
+        tracing::info!("run_task_from_id: task_id={}", task_id);
         let task = self
             .executor
             .list_tasks()
@@ -273,8 +382,8 @@ impl AgentLayer {
             .find(|t| t.id == task_id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found by dispatcher", task_id))?;
 
-        let run_id = self.run_counter.fetch_add(1, Ordering::Relaxed);
-        self.current_run_id.store(run_id, Ordering::Relaxed);
+        let run_id = self.run_counter.fetch_add(1, Ordering::SeqCst);
+        self.current_run_id.store(run_id, Ordering::SeqCst);
 
         let description = if task.summary.is_empty() {
             task.input.clone()
@@ -320,21 +429,41 @@ impl AgentLayer {
         conversation_history: &[String],
     ) -> String {
         let mut prompt = String::from(
-            "You are Haven, a PC voice assistant. Your goal is to help users accomplish tasks by using available tools.\n\n\
-             Available Tools:\n",
+            "You are Haven, a PC voice assistant. You help users accomplish tasks using available tools.\n\n\
+             Available tools:\n",
+        );
+
+        // Built-in tools: full schema injected into prompt
+        prompt.push_str(
+            "You have access to the following built-in tools:\n\n",
         );
         for tool in self.build_tool_definitions().await {
             let name = &tool.function.name;
+            if name.starts_with("mcp::") || name.starts_with("skill::") { continue; }
             let desc = &tool.function.description;
             let params =
                 serde_json::to_string_pretty(&tool.function.parameters).unwrap_or_default();
-            prompt.push_str(&format!("- {}: {}\n  Parameters: {}\n", name, desc, params));
+            prompt.push_str(&format!("- {}: {}\n  {}\n", name, desc, params));
         }
 
-        // Skill Index — progressive skill loading (refine §4.7)
+        // MCP tools: concise listing
+        let schemas = self.executor.get_tools().registry.list_schemas().await;
+        let mcp_tools: Vec<_> = schemas.iter().filter(|s| {
+            s["name"].as_str().is_some_and(|n| n.starts_with("mcp::"))
+        }).collect();
+        if !mcp_tools.is_empty() {
+            prompt.push_str("\nMCP tools (external, prefixed with `mcp::<server>::`):\n");
+            for tool in &mcp_tools {
+                let name = tool["name"].as_str().unwrap_or("");
+                let desc = tool["description"].as_str().unwrap_or("");
+                prompt.push_str(&format!("  - {}: {}\n", name, desc));
+            }
+        }
+
+        // Skill index: concise listing (Pi-style)
         let skill_index = self.executor.get_tools().build_skill_index().await;
         if !skill_index.is_empty() {
-            prompt.push_str("\nSkill Index (name + description only; use `load_skill` to get full schema):\n");
+            prompt.push_str("\nInstallable skills (use `load_skill` to activate):\n");
             for entry in &skill_index {
                 prompt.push_str(&format!(
                     "  - {}: {}\n",
@@ -342,69 +471,81 @@ impl AgentLayer {
                     entry["description"].as_str().unwrap_or("")
                 ));
             }
-            prompt.push_str("\nTo use a skill, call `load_skill` with its name to retrieve the full schema, then call the skill tool with the appropriate parameters.\n");
         }
 
-// Inject known facts about the user (subject = "user") as background
-        // knowledge so the agent can reason about preferences, paths, etc.
-        // (design §4.7.5). Distinguish user-defined vs inferred facts (M6-04).
-        if let Ok(facts) = self.db.get_facts("user")
-            && !facts.is_empty()
-        {
-            prompt.push_str("\nUser Facts (background knowledge):\n");
-            for fact in facts.iter().take(20) {
-                let prefix = if fact.source == "user" { "[user-defined]" } else { "[inferred]" };
+        // MCP server index: concise listing for progressive loading
+        let mcp_index = self.executor.get_tools().build_mcp_index().await;
+        if !mcp_index.is_empty() {
+            prompt.push_str("\nAvailable MCP servers (use `load_mcp` to activate):\n");
+            for entry in &mcp_index {
                 prompt.push_str(&format!(
-                    "  {} {} {} {}\n",
-                    prefix, fact.predicate, fact.object, fact.confidence
+                    "  - {}: {}\n",
+                    entry["name"].as_str().unwrap_or(""),
+                    entry["description"].as_str().unwrap_or(""),
                 ));
             }
         }
 
-        // Surface auto-learned preferences such as most frequently used tools,
-        // preferred language, working directory, etc. (design §4.7.3, M6-02).
-        if let Ok(summary) = self.db.get_preference_summary()
-            && !summary.is_empty()
+        // User facts (concise, subject = "user")
+        if let Ok(facts) = self.db.get_facts("user")
+            && !facts.is_empty()
         {
-            prompt.push_str("\nUser Preferences:\n");
-            for (key, value) in &summary {
-                prompt.push_str(&format!("  {} = {}\n", key, value));
+            prompt.push_str("\nAbout the user:");
+            for fact in facts.iter().take(10) {
+                prompt.push_str(&format!(
+                    " [{}] {} {}",
+                    if fact.source == "user" { "defined" } else { "inferred" },
+                    fact.predicate,
+                    fact.object,
+                ));
             }
             prompt.push('\n');
         }
 
-        prompt.push_str("\nInstructions:\n");
-        prompt.push_str("1. ANALYZE the user's request and decide the next step.\n");
-        prompt.push_str("2. If you need to use a tool, call it with the correct parameters.\n");
-        prompt.push_str("3. After each tool call, you will receive the output (observation).\n");
-        prompt.push_str("4. When the task is complete, respond with a summary - do NOT call a tool named 'final_answer'.\n");
+        // Preferences (concise)
+        if let Ok(summary) = self.db.get_preference_summary()
+            && !summary.is_empty()
+        {
+            prompt.push_str("Preferences:");
+            for (key, value) in &summary {
+                prompt.push_str(&format!(" {}={}", key, value));
+            }
+            prompt.push('\n');
+        }
+
         prompt.push_str(
-            "5. If no tool fits the request, respond with a natural language answer directly.\n",
+            "\nGuidelines:\n\
+             1. Think step by step. Decide what to do, then call the right tool.\n\
+             2. After each tool call you will receive the result. Use it to decide next.\n\
+             3. When the task is complete, respond with a summary of what was done.\n\
+             4. If no tool is needed, answer directly.\n\
+             5. Never call the same tool with identical parameters twice in a row.\n\n",
         );
-        prompt.push_str("6. NEVER call the same tool with the same parameters twice in a row.\n\n");
 
-        prompt.push_str(&format!("Current Task: {}\n\n", task_description));
+        prompt.push_str(&format!("Current task: {}\n\n", task_description));
 
+        // Conversation history accumulated during pause
         if !conversation_history.is_empty() {
-            prompt.push_str("Conversation History:\n");
+            prompt.push_str("Additional context:\n");
             for msg in conversation_history {
                 prompt.push_str(&format!("  {}\n", msg));
             }
             prompt.push('\n');
         }
 
+        // Previous steps
         if !history.is_empty() {
-            prompt.push_str("Previous Steps:\n");
+            prompt.push_str("Steps so far:\n");
             for step in history {
                 if let Some(ref thought) = step.thought {
-                    prompt.push_str(&format!("Thought {}: {}\n", step.step_number, thought));
+                    prompt.push_str(&format!("  Thought {}: {}\n", step.step_number, thought));
                 }
                 if let Some(ref action) = step.action {
                     if action.is_final {
-                        prompt.push_str(&format!("Action {}: [Final Answer]\n", step.step_number));
+                        prompt.push_str(&format!("  Action {}: done\n", step.step_number));
                     } else {
                         prompt.push_str(&format!(
-                            "Action {}: call {} with {}\n",
+                            "  Action {}: {} {}\n",
                             step.step_number,
                             action.tool_name,
                             serde_json::to_string(&action.tool_input).unwrap_or_default()
@@ -412,7 +553,7 @@ impl AgentLayer {
                     }
                 }
                 if let Some(ref obs) = step.observation {
-                    prompt.push_str(&format!("Observation {}: {}\n", step.step_number, obs));
+                    prompt.push_str(&format!("  Result {}: {}\n", step.step_number, obs));
                 }
             }
         }
@@ -421,132 +562,44 @@ impl AgentLayer {
         prompt
     }
 
-    fn build_classifier_prompt(text: &str, has_active_task: bool) -> String {
-        if has_active_task {
-            format!(
-                "You are classifying user input for a PC voice assistant.\n\
-                 The user currently has an active task in progress.\n\n\
-                 User input: \"{}\"\n\n\
-                 Classify as:\n\
-                 - NEW_TASK: This is a completely new, independent task (does not relate to the active task)\n\
-                 - APPEND_TO_TASK: This supplements or adds context to the currently active task\n\n\
-                 Respond with JSON only: {{\"classification\":\"NEW_TASK\"}} or {{\"classification\":\"APPEND_TO_TASK\",\"additional_context\":\"...\"}}",
-                text
-            )
-        } else {
-            format!(
-                "You are classifying user input for a PC voice assistant.\n\
-                 No active task exists.\n\n\
-                 User input: \"{}\"\n\n\
-                 Summarize the task in one sentence.\n\n\
-                 Respond with JSON only: {{\"classification\":\"NEW_TASK\",\"summary\":\"brief summary\",\"suggested_tools\":[]}}",
-                text
-            )
-        }
-    }
-
-    fn parse_classification_response(text: &str, active_task_id: Option<&str>) -> Classification {
-        if let Ok(v) = serde_json::from_str::<Value>(text)
-            && let Some(class) = v["classification"].as_str()
-        {
-            match class {
-                "APPEND_TO_TASK" => {
-                    let ctx = v["additional_context"].as_str().unwrap_or("").to_string();
-                    let tid = active_task_id.unwrap_or("active").to_string();
-                    return Classification::AppendToTask {
-                        task_id: tid,
-                        additional_context: ctx,
-                    };
-                }
-                "NEW_TASK" => {
-                    let summary = v["summary"].as_str().unwrap_or(text).to_string();
-                    let tools: Vec<String> = v["suggested_tools"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|t| t.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let priority = match v["priority"].as_str() {
-                        Some("critical") => TaskPriority::Critical,
-                        Some("high") => TaskPriority::High,
-                        Some("low") => TaskPriority::Low,
-                        _ => TaskPriority::Normal,
-                    };
-                    return Classification::NewTask {
-                        summary,
-                        priority,
-                        suggested_tools: tools,
-                    };
-                }
-                _ => {}
-            }
-        }
-        Classification::NewTask {
-            summary: text.to_string(),
-            priority: TaskPriority::Normal,
-            suggested_tools: Vec::new(),
-        }
-    }
-
-    pub async fn classify_intent(
-        &self,
-        text: &str,
-        active_task_id: Option<&str>,
-    ) -> Classification {
-        let prompt = Self::build_classifier_prompt(text, active_task_id.is_some());
-        let messages = vec![LlmMessage {
-            role: LlmRole::User,
-            content: vec![ContentPart::text(prompt)],
-        }];
-        let router = self.router();
-        match router.chat(EndpointRole::SmallModel, messages).await {
-            Ok(resp) => {
-                let content = resp.text.trim().to_string();
-                let start = content.find('{').unwrap_or(0);
-                let end = content.rfind('}').map(|i| i + 1).unwrap_or(content.len());
-                let json = &content[start..end];
-                Self::parse_classification_response(json, active_task_id)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Classifier LLM call failed: {}, falling back to heuristic",
-                    e
-                );
-                Self::parse_classification_response(text, active_task_id)
-            }
-        }
-    }
-
-    async fn emit_thought(&self, task_id: &str, thought: &str, step_number: u32) {
-        let run_id = self.current_run_id.load(Ordering::Relaxed);
+    async fn emit_thought(&self, task_id: &str, thought: &str, step_number: u32, run_id: u64) {
+        tracing::info!("emit_thought: task={} step={} run={} thought_len={}", task_id, step_number, run_id, thought.len());
         let _ = self
             .db
             .create_thought_step(task_id, step_number as i32, thought);
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_thought(task_id, thought, step_number, run_id).await;
+            emitter.emit(AgentEvent::Thought {
+                task_id: task_id.into(),
+                thought: thought.into(),
+                step_number,
+                run_id,
+            }).await;
         }
     }
 
-    async fn emit_supplement(&self, task_id: &str, additional_context: &str, step_number: u32) {
-        let run_id = self.current_run_id.load(Ordering::Relaxed);
+    async fn emit_supplement(&self, task_id: &str, additional_context: &str, step_number: u32, run_id: u64) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter
-                .on_supplement(task_id, additional_context, step_number, run_id)
-                .await;
+            emitter.emit(AgentEvent::Supplement {
+                task_id: task_id.into(),
+                additional_context: additional_context.into(),
+                step_number,
+                run_id,
+            }).await;
         }
     }
 
-    async fn emit_action(&self, task_id: &str, tool_name: &str, input: &Value, step_number: u32, _silent: bool) {
-        let run_id = self.current_run_id.load(Ordering::Relaxed);
+    async fn emit_action(&self, task_id: &str, tool_name: &str, input: &Value, step_number: u32, run_id: u64, _silent: bool) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter
-                .on_action(task_id, tool_name, input, step_number, run_id)
-                .await;
+            emitter.emit(AgentEvent::Action {
+                task_id: task_id.into(),
+                tool_name: tool_name.into(),
+                input: input.clone(),
+                step_number,
+                run_id,
+            }).await;
         }
     }
 
@@ -556,21 +609,26 @@ impl AgentLayer {
         observation: &str,
         tool_name: &str,
         step_number: u32,
+        run_id: u64,
         silent: bool,
     ) {
-        let run_id = self.current_run_id.load(Ordering::Relaxed);
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter
-                .on_observation(task_id, observation, tool_name, step_number, run_id, silent)
-                .await;
+            emitter.emit(AgentEvent::Observation {
+                task_id: task_id.into(),
+                observation: observation.into(),
+                tool_name: tool_name.into(),
+                step_number,
+                run_id,
+                silent,
+            }).await;
         }
     }
 
     async fn emit_task_created(&self, task: &TaskInfo) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_task_created(task).await;
+            emitter.emit(AgentEvent::TaskCreated(task.clone())).await;
         }
     }
 
@@ -578,14 +636,20 @@ impl AgentLayer {
         self.fallback_notified.lock().unwrap().remove(task_id);
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_task_completed(task_id, title).await;
+            emitter.emit(AgentEvent::TaskCompleted {
+                task_id: task_id.into(),
+                title: title.into(),
+            }).await;
         }
     }
 
     async fn emit_task_updated(&self, task_id: &str, status: &str) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_task_updated(task_id, status).await;
+            emitter.emit(AgentEvent::TaskUpdated {
+                task_id: task_id.into(),
+                status: status.into(),
+            }).await;
         }
     }
 
@@ -593,7 +657,10 @@ impl AgentLayer {
         self.fallback_notified.lock().unwrap().remove(task_id);
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_task_error(task_id, error).await;
+            emitter.emit(AgentEvent::TaskError {
+                task_id: task_id.into(),
+                error: error.into(),
+            }).await;
         }
     }
 
@@ -606,14 +673,22 @@ impl AgentLayer {
         }
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_fallback_activated(task_id, reason).await;
+            emitter.emit(AgentEvent::FallbackActivated {
+                task_id: task_id.into(),
+                reason: reason.into(),
+            }).await;
         }
     }
 
     async fn emit_compaction(&self, task_id: &str, summary: &str, tokens_before: u32, tokens_after: u32) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.on_compaction(task_id, summary, tokens_before, tokens_after).await;
+            emitter.emit(AgentEvent::Compaction {
+                task_id: task_id.into(),
+                summary: summary.into(),
+                tokens_before,
+                tokens_after,
+            }).await;
         }
     }
 
@@ -663,6 +738,7 @@ impl AgentLayer {
                         tool_name: tc.name.clone(),
                         tool_input: args,
                         is_final,
+                        tool_call_id: Some(tc.id.clone()),
                     }
                 })
                 .collect()
@@ -674,6 +750,7 @@ impl AgentLayer {
                 tool_name: "final_answer".into(),
                 tool_input: Value::Null,
                 is_final: true,
+                tool_call_id: None,
             }]
         } else {
             Vec::new()
@@ -683,14 +760,63 @@ impl AgentLayer {
     }
 
     /// Save the current ReAct loop state to DB for pause/resume.
+    #[allow(dead_code)]
     fn save_snapshot(&self, task_id: &str, canonical: &[CanonicalMessage], history: &[ReActStep], step_number: u32) {
+        self.save_snapshot_with_branches(task_id, canonical, history, step_number, &HashMap::new());
+    }
+
+    /// Save snapshot including branch points for tree-structured rollback (§2).
+    fn save_snapshot_with_branches(
+        &self,
+        task_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        step_number: u32,
+        branch_points: &HashMap<u32, BranchPoint>,
+    ) {
         let snapshot = ReActSnapshot {
             canonical: canonical.to_vec(),
             history: history.to_vec(),
             step_number,
+            branch_points: branch_points.clone(),
         };
         if let Ok(json) = serde_json::to_string(&snapshot) {
             let _ = self.db.save_react_state(task_id, &json);
+        }
+    }
+
+    /// Save a branch point at the current step before tool execution (§2).
+    fn save_branch_point(
+        &self,
+        task_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        step_number: u32,
+        branch_points: &mut HashMap<u32, BranchPoint>,
+    ) {
+        branch_points.insert(step_number, BranchPoint {
+            canonical: canonical.to_vec(),
+            history: history.to_vec(),
+            step_number,
+        });
+        self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points);
+    }
+
+    /// Roll back to a branch point by restoring canonical and history (§2).
+    /// Returns true if the branch point was found and restored.
+    #[allow(dead_code)]
+    fn rollback_to_step(
+        branch_points: &HashMap<u32, BranchPoint>,
+        target_step: u32,
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &mut Vec<ReActStep>,
+    ) -> bool {
+        if let Some(bp) = branch_points.get(&target_step) {
+            *canonical = bp.canonical.clone();
+            *history = bp.history.clone();
+            true
+        } else {
+            false
         }
     }
 
@@ -705,6 +831,7 @@ impl AgentLayer {
         let mut history = snapshot.history;
         let mut canonical = snapshot.canonical;
         let start_step = snapshot.step_number;
+        let mut branch_points = snapshot.branch_points;
 
         // Inject conversation history messages that accumulated during the
         // pause period into the canonical message stream (design §4.7.4).
@@ -717,6 +844,7 @@ impl AgentLayer {
                     content: vec![ContentPart::text(format!("[conversation] {}", msg))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
         }
@@ -726,20 +854,26 @@ impl AgentLayer {
 
         // Outer loop: after the inner ReAct loop finishes, check for
         // follow-up items before exiting (refine §1.2).
+        let mut last_step = start_step;
+        // branch_points restored from snapshot in §2 above
         loop {
             for step_num in start_step..=max_steps {
+                last_step = step_num;
                 // Pause/cancel/error check with state save
             loop {
                 let state = self.executor.get_task_state(task_id).await;
                 match state {
-                    TaskStatus::Cancelled | TaskStatus::Error | TaskStatus::Completed => {
+                    TaskStatus::Cancelled => {
+                        return Ok(history);
+                    }
+                    TaskStatus::Error | TaskStatus::Completed => {
                         if state != TaskStatus::Completed {
                             self.emit_task_error(task_id, "task interrupted").await;
                         }
                         return Ok(history);
                     }
                     TaskStatus::Paused => {
-                        self.save_snapshot(task_id, &canonical, &history, step_num);
+                        self.save_snapshot_with_branches(task_id, &canonical, &history, step_num, &branch_points);
                     }
                     _ => break,
                 }
@@ -754,9 +888,10 @@ impl AgentLayer {
                 }
             }
 
+            let run_id = self.current_run_id.load(Ordering::SeqCst);
             let supplements = self.executor.get_supplements(task_id).await;
             for supplement in &supplements {
-                self.emit_supplement(task_id, supplement, step_num).await;
+                self.emit_supplement(task_id, supplement, step_num, run_id).await;
                 let _ = self.db.create_thought_step(
                     task_id,
                     history.len() as i32,
@@ -770,15 +905,26 @@ impl AgentLayer {
                     ))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
 
-            // Check context pressure and auto-compact if needed (§3.1)
-            self.maybe_compact(task_id, &mut canonical).await;
+            // Check for steering items before invoking the LLM
+            let steering = self.executor.get_steering(task_id).await;
+            for s in &steering {
+                self.emit_supplement(task_id, s, step_num, run_id).await;
+                canonical.push(CanonicalMessage {
+                    role: CanonicalRole::User,
+                    content: vec![ContentPart::text(format!("Steering: {}", s))],
+                    tool_calls: None,
+                    tool_call_id: None,
+                    parent_message_id: None,
+                });
+            }
 
             let mut thought_chunks: Vec<String> = Vec::new();
+            let mut reasoning_chunks: Vec<String> = Vec::new();
             let emitter = self.emitter.lock().unwrap().clone();
-            let run_id = self.current_run_id.load(Ordering::Relaxed);
             let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String, u32, u64)>();
             let (reasoning_tx, mut reasoning_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String, u32, u64)>();
             let consumer_handle = emitter.as_ref().map(|em| {
@@ -789,12 +935,22 @@ impl AgentLayer {
                     while !(thought_done && reasoning_done) {
                         if thought_done {
                             while let Some((tid, delta, sn, rid)) = reasoning_rx.recv().await {
-                                em_clone.on_reasoning_chunk(&tid, &delta, sn, rid).await;
+                                em_clone.emit(AgentEvent::ReasoningChunk {
+                                    task_id: tid,
+                                    delta,
+                                    step_number: sn,
+                                    run_id: rid,
+                                }).await;
                             }
                             reasoning_done = true;
                         } else if reasoning_done {
                             while let Some((tid, delta, sn, rid)) = chunk_rx.recv().await {
-                                em_clone.on_thought_chunk(&tid, &delta, sn, rid).await;
+                                em_clone.emit(AgentEvent::ThoughtChunk {
+                                    task_id: tid,
+                                    delta,
+                                    step_number: sn,
+                                    run_id: rid,
+                                }).await;
                             }
                             thought_done = true;
                         } else {
@@ -802,13 +958,23 @@ impl AgentLayer {
                                 biased;
                                 val = chunk_rx.recv() => {
                                     match val {
-                                        Some((tid, delta, sn, rid)) => em_clone.on_thought_chunk(&tid, &delta, sn, rid).await,
+                                        Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ThoughtChunk {
+                                            task_id: tid,
+                                            delta,
+                                            step_number: sn,
+                                            run_id: rid,
+                                        }).await,
                                         None => thought_done = true,
                                     }
                                 }
                                 val = reasoning_rx.recv() => {
                                     match val {
-                                        Some((tid, delta, sn, rid)) => em_clone.on_reasoning_chunk(&tid, &delta, sn, rid).await,
+                                        Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ReasoningChunk {
+                                            task_id: tid,
+                                            delta,
+                                            step_number: sn,
+                                            run_id: rid,
+                                        }).await,
                                         None => reasoning_done = true,
                                     }
                                 }
@@ -831,6 +997,7 @@ impl AgentLayer {
                             let _ = chunk_tx.send((task_id.to_string(), t.clone(), step_num, run_id));
                         }
                         if let Some(r) = &c.reasoning {
+                            reasoning_chunks.push(r.clone());
                             let _ = reasoning_tx.send((task_id.to_string(), r.clone(), step_num, run_id));
                         }
                     },
@@ -863,13 +1030,23 @@ impl AgentLayer {
                                         biased;
                                         val = chunk_rx2.recv() => {
                                             match val {
-                                                Some((tid, delta, sn, rid)) => em_clone.on_thought_chunk(&tid, &delta, sn, rid).await,
+                                                Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ThoughtChunk {
+                                task_id: tid.clone(),
+                                delta: delta.clone(),
+                                step_number: sn,
+                                run_id: rid,
+                            }).await,
                                                 None => thought_done = true,
                                             }
                                         }
                                         val = reasoning_rx2.recv() => {
                                             match val {
-                                                Some((tid, delta, sn, rid)) => em_clone.on_reasoning_chunk(&tid, &delta, sn, rid).await,
+                                                Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ReasoningChunk {
+                                task_id: tid.clone(),
+                                delta: delta.clone(),
+                                step_number: sn,
+                                run_id: rid,
+                            }).await,
                                                 None => reasoning_done = true,
                                             }
                                         }
@@ -877,6 +1054,15 @@ impl AgentLayer {
                                 }
                             })
                         });
+                        // Replay already-collected chunks so the UI preserves continuity
+                        for chunk in &thought_chunks {
+                            let _ = chunk_tx2.send((task_id.to_string(), chunk.clone(), step_num, run_id));
+                        }
+                        for chunk in &reasoning_chunks {
+                            let _ = reasoning_tx2.send((task_id.to_string(), chunk.clone(), step_num, run_id));
+                        }
+                        // Brief delay before retry to let transient API issues settle
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         let llm_messages2 = haven_llm::types::convert_to_llm(canonical.clone());
                         match router
                             .chat_stream_with_tools_aggregated_cancellable(
@@ -889,6 +1075,7 @@ impl AgentLayer {
                                         let _ = chunk_tx2.send((task_id.to_string(), t.clone(), step_num, run_id));
                                     }
                                     if let Some(r) = &c.reasoning {
+                                        reasoning_chunks.push(r.clone());
                                         let _ = reasoning_tx2.send((task_id.to_string(), r.clone(), step_num, run_id));
                                     }
                                 },
@@ -905,11 +1092,11 @@ impl AgentLayer {
                                 retry_resp
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
-                                self.emit_task_error(task_id, "task cancelled by user").await;
                                 return Ok(history);
                             }
                             Err(e2) => {
                                 let err_msg = format!("Compaction retry also failed: {}", e2);
+                                tracing::info!("run_task LLM error: {}", err_msg);
                                 self.emit_task_error(task_id, &err_msg).await;
                                 self.executor
                                     .update_task_status(task_id, TaskStatus::Error)
@@ -919,6 +1106,7 @@ impl AgentLayer {
                         }
                     } else {
                         let err_msg = "context length exceeded but compaction failed".to_string();
+                        tracing::info!("run_task LLM error: {}", err_msg);
                         self.emit_task_error(task_id, &err_msg).await;
                         self.executor
                             .update_task_status(task_id, TaskStatus::Error)
@@ -927,11 +1115,11 @@ impl AgentLayer {
                     }
                 }
                 Err(haven_llm::LlmError::Cancelled) => {
-                    self.emit_task_error(task_id, "task cancelled by user").await;
                     return Ok(history);
                 }
                 Err(e) => {
                     let err_msg = format!("Both reasoner and fallback failed: {}", e);
+                    tracing::info!("run_task LLM error: {}", err_msg);
                     self.emit_task_error(task_id, &err_msg).await;
                     self.executor
                         .update_task_status(task_id, TaskStatus::Error)
@@ -946,29 +1134,31 @@ impl AgentLayer {
                 let _ = handle.await;
             }
 
+            tracing::info!("run_task LLM response received: text_len={} tool_calls={} finish_reason={:?}", response.text.len(), response.tool_calls.len(), response.finish_reason);
+
+            // Persist reasoning chain-of-thought for history review.
+            if !reasoning_chunks.is_empty() {
+                let text: String = reasoning_chunks.concat();
+                self.persist_message("assistant", &text, Some("reasoning"));
+            }
+
             let (thought, actions) = self.parse_reasoner_response(&response, step_num);
+            tracing::info!("parsed thought_len={} actions={}", thought.as_ref().map_or(0, |t| t.len()), actions.len());
 
             if let Some(ref t) = thought {
-                let thought_text = t
-                    .lines()
-                    .filter(|l| !l.starts_with("Action:") && !l.starts_with("Final Answer:"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !thought_text.trim().is_empty() {
-                    self.emit_thought(task_id, &thought_text, step_num).await;
-
-                    history.push(ReActStep {
-                        step_number: step_num,
-                        thought: Some(thought_text),
-                        action: None,
-                        observation: None,
-                    });
-                }
+                self.emit_thought(task_id, t, step_num, run_id).await;
+                history.push(ReActStep {
+                    step_number: step_num,
+                    thought: Some(t.clone()),
+                    action: None,
+                    observation: None,
+                });
             }
 
             if actions.is_empty() {
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
-                self.emit_thought(task_id, &msg, step_num).await;
+                tracing::info!("no actions, setting final_answer (paused): msg={}", &msg[..msg.len().min(100)]);
+                self.emit_thought(task_id, &msg, step_num, run_id).await;
                 history.push(ReActStep {
                     step_number: step_num,
                     thought: Some(msg.clone()),
@@ -980,11 +1170,13 @@ impl AgentLayer {
                         tool_name: "final_answer".into(),
                         tool_input: Value::Null,
                         is_final: true,
+                        tool_call_id: None,
                     });
                     if last.observation.is_none() {
                         last.observation = Some(msg.clone());
                     }
                 }
+                tracing::info!("final_answer reached for task {}", task_id);
                 self.executor
                     .update_task_status(task_id, TaskStatus::Paused)
                     .await?;
@@ -992,7 +1184,7 @@ impl AgentLayer {
                 self.persist_message("assistant", &msg, Some("text"));
                 self.run_fact_inference();
                 self.run_preference_inference();
-                let _ = self.db.save_react_state(task_id, "");
+                self.save_snapshot_with_branches(task_id, &canonical, &history, last_step + 1, &branch_points);
                 return Ok(history);
             }
 
@@ -1011,86 +1203,140 @@ impl AgentLayer {
                 self.persist_message("assistant", &final_text, Some("text"));
                 self.run_fact_inference();
                 self.run_preference_inference();
+                self.save_snapshot_with_branches(task_id, &canonical, &history, step_num + 1, &branch_points);
                 return Ok(history);
             }
 
+            // Persist the assistant's thought text that accompanied tool
+            // calls so history review can display it alongside tools.
+            if let Some(ref t) = thought {
+                let text = t.trim();
+                if !text.is_empty() {
+                    self.persist_message("assistant", text, Some("text"));
+                }
+            }
+
             let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
+            tracing::info!("non_final tool actions: {}", non_final.len());
             // Emit "Calling X" for each tool immediately, before execution.
             for action in &non_final {
                 let silent = action.tool_input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.emit_action(task_id, &action.tool_name, &action.tool_input, step_num, silent).await;
+                self.emit_action(task_id, &action.tool_name, &action.tool_input, step_num, run_id, silent).await;
             }
 
-            let results: Vec<(String, String)> = futures_util::future::join_all(
-                non_final.iter().map(|action| {
-                    let task_id = task_id.to_string();
-                    let tool_name = action.tool_name.clone();
-                    let tool_input = action.tool_input.clone();
-                    let max_obs = self.max_observation_chars;
-                    let db = self.db.clone();
-                    let executor = self.executor.clone();
-                    async move {
-                        let tool_name_for_err = tool_name.clone();
-                        executor
-                            .execute_step(&task_id, &tool_name, tool_input.clone())
-                            .await
-                            .map(|result| {
-                                let _ = db.record_tool_usage(&tool_name, &tool_input, result.success);
-                                let mut text = if result.success {
-                                    serde_json::to_string(&result.output)
-                                        .unwrap_or_else(|_| "success".into())
-                                } else {
-                                    result.error.unwrap_or_else(|| "unknown failure".into())
-                                };
-                                if text.len() > max_obs {
-                                    text = format!(
-                                        "{}[... truncated {} chars omitted]",
-                                        &text[..max_obs],
-                                        text.len() - max_obs
-                                    );
-                                }
-                                (tool_name, text)
-                            })
-                            .unwrap_or_else(|e| (tool_name_for_err, e.to_string()))
-                    }
-                }),
-            )
-            .await;
+            // Push assistant message once with tool_calls for this step
+            if !non_final.is_empty() {
+                let tool_calls: Option<Vec<CanonicalToolCall>> = if response.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(response.tool_calls.iter().map(|tc| CanonicalToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: serde_json::from_str(&tc.arguments).unwrap_or(Value::Null),
+                    }).collect())
+                };
+                canonical.push(CanonicalMessage {
+                    role: CanonicalRole::Assistant,
+                    content: vec![ContentPart::text(response.text.clone())],
+                    tool_calls,
+                    tool_call_id: None,
+                    parent_message_id: None,
+                });
+            }
 
-            for (idx, action) in non_final.iter().enumerate() {
-                let (ref tool_name, ref step_result) = results[idx];
+            // Save a branch point before tool execution for potential rollback (§2).
+            self.save_branch_point(task_id, &canonical, &history, step_num, &mut branch_points);
+
+            use futures_util::StreamExt;
+
+            let mut tool_futures = futures_util::stream::FuturesUnordered::new();
+            for action in &non_final {
+                let task_id = task_id.to_string();
+                let tool_name = action.tool_name.clone();
+                let tool_input = action.tool_input.clone();
+                let action = (*action).clone();
+                let max_obs = self.max_observation_chars;
+                let db = self.db.clone();
+                let executor = self.executor.clone();
+                tool_futures.push(async move {
+                    let result = executor
+                        .execute_step(&task_id, &tool_name, tool_input.clone())
+                        .await;
+                    let (text, is_error) = match result {
+                        Ok(r) => {
+                            let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
+                            let text = if r.success {
+                                serde_json::to_string(&r.output)
+                                    .unwrap_or_else(|_| "success".into())
+                            } else {
+                                r.error.unwrap_or_else(|| "unknown failure".into())
+                            };
+                            let text = if text.len() > max_obs {
+                                format!(
+                                    "{}[... truncated {} chars omitted]",
+                                    &text[..max_obs],
+                                    text.len() - max_obs
+                                )
+                            } else {
+                                text
+                            };
+                            (text, !r.success)
+                        }
+                        Err(e) => (e.to_string(), true),
+                    };
+                    (action, tool_name, text, is_error)
+                });
+            }
+
+            let mut any_tool_failure = false;
+            while let Some((action, tool_name, step_result, is_error)) = tool_futures.next().await {
+                if is_error {
+                    any_tool_failure = true;
+                }
                 let silent = action.tool_input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.emit_observation(task_id, step_result, tool_name, step_num, silent)
-                    .await;
+                self.emit_observation(task_id, &step_result, &tool_name, step_num, run_id, silent).await;
 
                 if let Some(last) = history.last_mut() {
-                    last.action = Some((*action).clone());
+                    last.action = Some(action.clone());
                     last.observation = Some(step_result.clone());
                 } else {
                     history.push(ReActStep {
                         step_number: step_num,
                         thought: None,
-                        action: Some((*action).clone()),
+                        action: Some(action.clone()),
                         observation: Some(step_result.clone()),
                     });
                 }
 
-                let obs_msg = format!("Tool '{}' result: {}", tool_name, step_result);
                 canonical.push(CanonicalMessage {
-                    role: CanonicalRole::Assistant,
-                    content: vec![ContentPart::text(response.text.clone())],
+                    role: CanonicalRole::Tool,
+                    content: vec![ContentPart::text(step_result)],
                     tool_calls: None,
-                    tool_call_id: None,
+                    tool_call_id: action.tool_call_id.clone(),
+                    parent_message_id: None,
                 });
+            }
+
+            // §10: if any tool failed, inject an alternative approach message
+            // to steer the LLM away from retrying the same failed strategy.
+            if any_tool_failure && step_num < max_steps - 1 {
+                tracing::info!("tool failure at step {}, injecting alternative approach hint", step_num);
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
-                    content: vec![ContentPart::text(obs_msg)],
+                    content: vec![ContentPart::text(
+                        "The previous approach encountered errors. Please try a completely different approach this time."
+                    )],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
 
             let state = self.executor.get_task_state(task_id).await;
+            if state == TaskStatus::Paused {
+                self.save_snapshot_with_branches(task_id, &canonical, &history, step_num, &branch_points);
+                return Ok(history);
+            }
             if state == TaskStatus::Cancelled || state == TaskStatus::Error || state == TaskStatus::Completed {
                 return Ok(history);
             }
@@ -1108,6 +1354,7 @@ impl AgentLayer {
                     content: vec![ContentPart::text(format!("Follow-up: {}", f))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
         }
@@ -1119,7 +1366,7 @@ impl AgentLayer {
         self.persist_message("assistant", "Task completed.", Some("text"));
         self.run_fact_inference();
         self.run_preference_inference();
-        let _ = self.db.save_react_state(task_id, "");
+        self.save_snapshot_with_branches(task_id, &canonical, &history, last_step + 1, &branch_points);
         Ok(history)
     }
 
@@ -1130,24 +1377,28 @@ impl AgentLayer {
         context: &str,
         conversation_history: &[String],
     ) -> anyhow::Result<Vec<ReActStep>> {
+        tracing::info!("run_task start: task_id={:?} context={:?}", task_id, context);
         let mut history: Vec<ReActStep> = Vec::new();
         let system_prompt = self
             .build_system_prompt(description, &[], conversation_history)
             .await;
+        tracing::info!("run_task: system_prompt {} chars", system_prompt.len());
 
         let mut canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage {
                 role: CanonicalRole::System,
                 content: vec![ContentPart::text(system_prompt)],
                 tool_calls: None,
-                tool_call_id: None,
-            },
+                    tool_call_id: None,
+                    parent_message_id: None,
+                },
             CanonicalMessage {
                 role: CanonicalRole::User,
                 content: vec![ContentPart::text(context.to_string())],
                 tool_calls: None,
-                tool_call_id: None,
-            },
+                    tool_call_id: None,
+                    parent_message_id: None,
+                },
         ];
 
         let tools = self.build_tool_definitions().await;
@@ -1155,22 +1406,28 @@ impl AgentLayer {
 
         // Outer loop: after the inner ReAct loop finishes, check for
         // follow-up items before exiting (refine §1.2).
+        let mut last_step = 0u32;
+        let mut branch_points: HashMap<u32, BranchPoint> = HashMap::new();
         loop {
             // --- Inner: ReAct tool-call loop ---
             for step_num in 1..=max_steps {
+            last_step = step_num;
             // Between steps: honor pauses, cancellations, and any user
             // supplements that have been queued since the last step.
             loop {
                 let state = self.executor.get_task_state(task_id).await;
                 match state {
-                    TaskStatus::Cancelled | TaskStatus::Error | TaskStatus::Completed => {
+                    TaskStatus::Cancelled => {
+                        return Ok(history);
+                    }
+                    TaskStatus::Error | TaskStatus::Completed => {
                         if state != TaskStatus::Completed {
                             self.emit_task_error(task_id, "task interrupted").await;
                         }
                         return Ok(history);
                     }
                     TaskStatus::Paused => {
-                        self.save_snapshot(task_id, &canonical, &history, step_num);
+                        self.save_snapshot_with_branches(task_id, &canonical, &history, step_num, &branch_points);
                     }
                     _ => break,
                 }
@@ -1186,12 +1443,13 @@ impl AgentLayer {
                 }
             }
 
+            let run_id = self.current_run_id.load(Ordering::SeqCst);
             let supplements = self.executor.get_supplements(task_id).await;
             for supplement in &supplements {
                 // Surface the user's added context to the UI as a dedicated
                 // supplement event before re-injecting it into the ReAct
                 // message stream (design §4.5.3).
-                self.emit_supplement(task_id, supplement, step_num).await;
+                self.emit_supplement(task_id, supplement, step_num, run_id).await;
                 let _ = self.db.create_thought_step(
                     task_id,
                     history.len() as i32,
@@ -1205,6 +1463,7 @@ impl AgentLayer {
                     ))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
 
@@ -1212,12 +1471,13 @@ impl AgentLayer {
             // Steering interrupts the current tool sequence immediately.
             let steering = self.executor.get_steering(task_id).await;
             for s in &steering {
-                self.emit_supplement(task_id, s, step_num).await;
+                self.emit_supplement(task_id, s, step_num, run_id).await;
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
                     content: vec![ContentPart::text(format!("Steering: {}", s))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
 
@@ -1229,8 +1489,8 @@ impl AgentLayer {
             // arguments are accumulated server-side by the router so the
             // ReAct loop sees the final `LlmResponse` once the stream ends.
             let mut thought_chunks: Vec<String> = Vec::new();
+            let mut reasoning_chunks: Vec<String> = Vec::new();
             let emitter = self.emitter.lock().unwrap().clone();
-            let run_id = self.current_run_id.load(Ordering::Relaxed);
             let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String, u32, u64)>();
             let (reasoning_tx, mut reasoning_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String, u32, u64)>();
             let consumer_handle = emitter.as_ref().map(|em| {
@@ -1241,12 +1501,22 @@ impl AgentLayer {
                     while !(thought_done && reasoning_done) {
                         if thought_done {
                             while let Some((tid, delta, sn, rid)) = reasoning_rx.recv().await {
-                                em_clone.on_reasoning_chunk(&tid, &delta, sn, rid).await;
+                                em_clone.emit(AgentEvent::ReasoningChunk {
+                                    task_id: tid,
+                                    delta,
+                                    step_number: sn,
+                                    run_id: rid,
+                                }).await;
                             }
                             reasoning_done = true;
                         } else if reasoning_done {
                             while let Some((tid, delta, sn, rid)) = chunk_rx.recv().await {
-                                em_clone.on_thought_chunk(&tid, &delta, sn, rid).await;
+                                em_clone.emit(AgentEvent::ThoughtChunk {
+                                    task_id: tid,
+                                    delta,
+                                    step_number: sn,
+                                    run_id: rid,
+                                }).await;
                             }
                             thought_done = true;
                         } else {
@@ -1254,13 +1524,23 @@ impl AgentLayer {
                                 biased;
                                 val = chunk_rx.recv() => {
                                     match val {
-                                        Some((tid, delta, sn, rid)) => em_clone.on_thought_chunk(&tid, &delta, sn, rid).await,
+                                        Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ThoughtChunk {
+                                            task_id: tid,
+                                            delta,
+                                            step_number: sn,
+                                            run_id: rid,
+                                        }).await,
                                         None => thought_done = true,
                                     }
                                 }
                                 val = reasoning_rx.recv() => {
                                     match val {
-                                        Some((tid, delta, sn, rid)) => em_clone.on_reasoning_chunk(&tid, &delta, sn, rid).await,
+                                        Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ReasoningChunk {
+                                            task_id: tid,
+                                            delta,
+                                            step_number: sn,
+                                            run_id: rid,
+                                        }).await,
                                         None => reasoning_done = true,
                                     }
                                 }
@@ -1272,6 +1552,7 @@ impl AgentLayer {
             let router = self.router();
             let cancel_res = self.executor.cancellation_token(task_id).await;
             let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
+            tracing::info!("ReAct step {} calling LLM, messages count: {}", step_num, llm_messages.len());
             let response = match router
                 .chat_stream_with_tools_aggregated_cancellable(
                     EndpointRole::DefaultModel,
@@ -1283,6 +1564,7 @@ impl AgentLayer {
                             let _ = chunk_tx.send((task_id.to_string(), t.clone(), step_num, run_id));
                         }
                         if let Some(r) = &c.reasoning {
+                            reasoning_chunks.push(r.clone());
                             let _ = reasoning_tx.send((task_id.to_string(), r.clone(), step_num, run_id));
                         }
                     },
@@ -1315,13 +1597,23 @@ impl AgentLayer {
                                         biased;
                                         val = chunk_rx2.recv() => {
                                             match val {
-                                                Some((tid, delta, sn, rid)) => em_clone.on_thought_chunk(&tid, &delta, sn, rid).await,
+                                                Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ThoughtChunk {
+                                task_id: tid.clone(),
+                                delta: delta.clone(),
+                                step_number: sn,
+                                run_id: rid,
+                            }).await,
                                                 None => thought_done = true,
                                             }
                                         }
                                         val = reasoning_rx2.recv() => {
                                             match val {
-                                                Some((tid, delta, sn, rid)) => em_clone.on_reasoning_chunk(&tid, &delta, sn, rid).await,
+                                                Some((tid, delta, sn, rid)) => em_clone.emit(AgentEvent::ReasoningChunk {
+                                task_id: tid.clone(),
+                                delta: delta.clone(),
+                                step_number: sn,
+                                run_id: rid,
+                            }).await,
                                                 None => reasoning_done = true,
                                             }
                                         }
@@ -1329,6 +1621,15 @@ impl AgentLayer {
                                 }
                             })
                         });
+                        // Replay already-collected chunks so the UI preserves continuity
+                        for chunk in &thought_chunks {
+                            let _ = chunk_tx2.send((task_id.to_string(), chunk.clone(), step_num, run_id));
+                        }
+                        for chunk in &reasoning_chunks {
+                            let _ = reasoning_tx2.send((task_id.to_string(), chunk.clone(), step_num, run_id));
+                        }
+                        // Brief delay before retry to let transient API issues settle
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         let llm_messages2 = haven_llm::types::convert_to_llm(canonical.clone());
                         match router
                             .chat_stream_with_tools_aggregated_cancellable(
@@ -1341,6 +1642,7 @@ impl AgentLayer {
                                         let _ = chunk_tx2.send((task_id.to_string(), t.clone(), step_num, run_id));
                                     }
                                     if let Some(r) = &c.reasoning {
+                                        reasoning_chunks.push(r.clone());
                                         let _ = reasoning_tx2.send((task_id.to_string(), r.clone(), step_num, run_id));
                                     }
                                 },
@@ -1357,11 +1659,11 @@ impl AgentLayer {
                                 retry_resp
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
-                                self.emit_task_error(task_id, "task cancelled by user").await;
                                 return Ok(history);
                             }
                             Err(e2) => {
                                 let err_msg = format!("Compaction retry also failed: {}", e2);
+                                tracing::info!("run_task LLM error: {}", err_msg);
                                 self.emit_task_error(task_id, &err_msg).await;
                                 self.executor
                                     .update_task_status(task_id, TaskStatus::Error)
@@ -1371,6 +1673,7 @@ impl AgentLayer {
                         }
                     } else {
                         let err_msg = "context length exceeded but compaction failed".to_string();
+                        tracing::info!("run_task LLM error: {}", err_msg);
                         self.emit_task_error(task_id, &err_msg).await;
                         self.executor
                             .update_task_status(task_id, TaskStatus::Error)
@@ -1379,11 +1682,11 @@ impl AgentLayer {
                     }
                 }
                 Err(haven_llm::LlmError::Cancelled) => {
-                    self.emit_task_error(task_id, "task cancelled by user").await;
                     return Ok(history);
                 }
                 Err(e) => {
                     let err_msg = format!("Both reasoner and fallback failed: {}", e);
+                    tracing::info!("run_task LLM error: {}", err_msg);
                     self.emit_task_error(task_id, &err_msg).await;
                     self.executor
                         .update_task_status(task_id, TaskStatus::Error)
@@ -1398,29 +1701,31 @@ impl AgentLayer {
                 let _ = handle.await;
             }
 
+            tracing::info!("run_task LLM response received: text_len={} tool_calls={} finish_reason={:?}", response.text.len(), response.tool_calls.len(), response.finish_reason);
+
+            // Persist reasoning chain-of-thought for history review.
+            if !reasoning_chunks.is_empty() {
+                let text: String = reasoning_chunks.concat();
+                self.persist_message("assistant", &text, Some("reasoning"));
+            }
+
             let (thought, actions) = self.parse_reasoner_response(&response, step_num);
+            tracing::info!("parsed thought_len={} actions={}", thought.as_ref().map_or(0, |t| t.len()), actions.len());
 
             if let Some(ref t) = thought {
-                let thought_text = t
-                    .lines()
-                    .filter(|l| !l.starts_with("Action:") && !l.starts_with("Final Answer:"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !thought_text.trim().is_empty() {
-                    self.emit_thought(task_id, &thought_text, step_num).await;
-
-                    history.push(ReActStep {
-                        step_number: step_num,
-                        thought: Some(thought_text),
-                        action: None,
-                        observation: None,
-                    });
-                }
+                self.emit_thought(task_id, t, step_num, run_id).await;
+                history.push(ReActStep {
+                    step_number: step_num,
+                    thought: Some(t.clone()),
+                    action: None,
+                    observation: None,
+                });
             }
 
             if actions.is_empty() {
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
-                self.emit_thought(task_id, &msg, step_num).await;
+                tracing::info!("no actions, setting final_answer (paused): msg={}", &msg[..msg.len().min(100)]);
+                self.emit_thought(task_id, &msg, step_num, run_id).await;
                 history.push(ReActStep {
                     step_number: step_num,
                     thought: Some(msg.clone()),
@@ -1432,6 +1737,7 @@ impl AgentLayer {
                         tool_name: "final_answer".into(),
                         tool_input: Value::Null,
                         is_final: true,
+                        tool_call_id: None,
                     });
                     if last.observation.is_none() {
                         last.observation = Some(msg.clone());
@@ -1444,7 +1750,7 @@ impl AgentLayer {
                 self.persist_message("assistant", &msg, Some("text"));
                 self.run_fact_inference();
                 self.run_preference_inference();
-                let _ = self.db.save_react_state(task_id, "");
+                self.save_snapshot_with_branches(task_id, &canonical, &history, last_step + 1, &branch_points);
                 return Ok(history);
             }
 
@@ -1463,86 +1769,140 @@ impl AgentLayer {
                 self.persist_message("assistant", &final_text, Some("text"));
                 self.run_fact_inference();
                 self.run_preference_inference();
+                self.save_snapshot_with_branches(task_id, &canonical, &history, step_num + 1, &branch_points);
                 return Ok(history);
             }
 
+            // Persist the assistant's thought text that accompanied tool
+            // calls so history review can display it alongside tools.
+            if let Some(ref t) = thought {
+                let text = t.trim();
+                if !text.is_empty() {
+                    self.persist_message("assistant", text, Some("text"));
+                }
+            }
+
             let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
+            tracing::info!("non_final tool actions: {}", non_final.len());
             // Emit "Calling X" for each tool immediately, before execution.
             for action in &non_final {
                 let silent = action.tool_input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.emit_action(task_id, &action.tool_name, &action.tool_input, step_num, silent).await;
+                self.emit_action(task_id, &action.tool_name, &action.tool_input, step_num, run_id, silent).await;
             }
 
-            let results: Vec<(String, String)> = futures_util::future::join_all(
-                non_final.iter().map(|action| {
-                    let task_id = task_id.to_string();
-                    let tool_name = action.tool_name.clone();
-                    let tool_input = action.tool_input.clone();
-                    let max_obs = self.max_observation_chars;
-                    let db = self.db.clone();
-                    let executor = self.executor.clone();
-                    async move {
-                        let tool_name_for_err = tool_name.clone();
-                        executor
-                            .execute_step(&task_id, &tool_name, tool_input.clone())
-                            .await
-                            .map(|result| {
-                                let _ = db.record_tool_usage(&tool_name, &tool_input, result.success);
-                                let mut text = if result.success {
-                                    serde_json::to_string(&result.output)
-                                        .unwrap_or_else(|_| "success".into())
-                                } else {
-                                    result.error.unwrap_or_else(|| "unknown failure".into())
-                                };
-                                if text.len() > max_obs {
-                                    text = format!(
-                                        "{}[... truncated {} chars omitted]",
-                                        &text[..max_obs],
-                                        text.len() - max_obs
-                                    );
-                                }
-                                (tool_name, text)
-                            })
-                            .unwrap_or_else(|e| (tool_name_for_err, e.to_string()))
-                    }
-                }),
-            )
-            .await;
+            // Push assistant message once with tool_calls for this step
+            if !non_final.is_empty() {
+                let tool_calls: Option<Vec<CanonicalToolCall>> = if response.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(response.tool_calls.iter().map(|tc| CanonicalToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: serde_json::from_str(&tc.arguments).unwrap_or(Value::Null),
+                    }).collect())
+                };
+                canonical.push(CanonicalMessage {
+                    role: CanonicalRole::Assistant,
+                    content: vec![ContentPart::text(response.text.clone())],
+                    tool_calls,
+                    tool_call_id: None,
+                    parent_message_id: None,
+                });
+            }
 
-            for (idx, action) in non_final.iter().enumerate() {
-                let (ref tool_name, ref step_result) = results[idx];
+            // Save a branch point before tool execution for potential rollback (§2).
+            self.save_branch_point(task_id, &canonical, &history, step_num, &mut branch_points);
+
+            use futures_util::StreamExt;
+
+            let mut tool_futures = futures_util::stream::FuturesUnordered::new();
+            for action in &non_final {
+                let task_id = task_id.to_string();
+                let tool_name = action.tool_name.clone();
+                let tool_input = action.tool_input.clone();
+                let action = (*action).clone();
+                let max_obs = self.max_observation_chars;
+                let db = self.db.clone();
+                let executor = self.executor.clone();
+                tool_futures.push(async move {
+                    let result = executor
+                        .execute_step(&task_id, &tool_name, tool_input.clone())
+                        .await;
+                    let (text, is_error) = match result {
+                        Ok(r) => {
+                            let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
+                            let text = if r.success {
+                                serde_json::to_string(&r.output)
+                                    .unwrap_or_else(|_| "success".into())
+                            } else {
+                                r.error.unwrap_or_else(|| "unknown failure".into())
+                            };
+                            let text = if text.len() > max_obs {
+                                format!(
+                                    "{}[... truncated {} chars omitted]",
+                                    &text[..max_obs],
+                                    text.len() - max_obs
+                                )
+                            } else {
+                                text
+                            };
+                            (text, !r.success)
+                        }
+                        Err(e) => (e.to_string(), true),
+                    };
+                    (action, tool_name, text, is_error)
+                });
+            }
+
+            let mut any_tool_failure = false;
+            while let Some((action, tool_name, step_result, is_error)) = tool_futures.next().await {
+                if is_error {
+                    any_tool_failure = true;
+                }
                 let silent = action.tool_input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.emit_observation(task_id, step_result, tool_name, step_num, silent)
-                    .await;
+                self.emit_observation(task_id, &step_result, &tool_name, step_num, run_id, silent).await;
 
                 if let Some(last) = history.last_mut() {
-                    last.action = Some((*action).clone());
+                    last.action = Some(action.clone());
                     last.observation = Some(step_result.clone());
                 } else {
                     history.push(ReActStep {
                         step_number: step_num,
                         thought: None,
-                        action: Some((*action).clone()),
+                        action: Some(action.clone()),
                         observation: Some(step_result.clone()),
                     });
                 }
 
-                let obs_msg = format!("Tool '{}' result: {}", tool_name, step_result);
                 canonical.push(CanonicalMessage {
-                    role: CanonicalRole::Assistant,
-                    content: vec![ContentPart::text(response.text.clone())],
+                    role: CanonicalRole::Tool,
+                    content: vec![ContentPart::text(step_result)],
                     tool_calls: None,
-                    tool_call_id: None,
+                    tool_call_id: action.tool_call_id.clone(),
+                    parent_message_id: None,
                 });
+            }
+
+            // §10: if any tool failed, inject an alternative approach message
+            // to steer the LLM away from retrying the same failed strategy.
+            if any_tool_failure && step_num < max_steps - 1 {
+                tracing::info!("tool failure at step {}, injecting alternative approach hint", step_num);
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
-                    content: vec![ContentPart::text(obs_msg)],
+                    content: vec![ContentPart::text(
+                        "The previous approach encountered errors. Please try a completely different approach this time."
+                    )],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
 
             let state = self.executor.get_task_state(task_id).await;
+            if state == TaskStatus::Paused {
+                self.save_snapshot_with_branches(task_id, &canonical, &history, step_num, &branch_points);
+                return Ok(history);
+            }
             if state == TaskStatus::Cancelled || state == TaskStatus::Error || state == TaskStatus::Completed {
                 return Ok(history);
             }
@@ -1561,6 +1921,7 @@ impl AgentLayer {
                     content: vec![ContentPart::text(format!("Follow-up: {}", f))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
             }
         }
@@ -1568,17 +1929,19 @@ impl AgentLayer {
         self.executor
             .update_task_status(task_id, TaskStatus::Paused)
             .await?;
+        self.emit_task_updated(task_id, "paused").await;
         self.persist_message("assistant", "Task completed.", Some("text"));
         self.run_fact_inference();
         self.run_preference_inference();
+        self.save_snapshot_with_branches(task_id, &canonical, &history, last_step + 1, &branch_points);
         Ok(history)
     }
 
     /// Run fact inference from the current session messages (M6-04).
     /// Uses rule-based extraction and optionally LLM-assisted inference.
     fn run_fact_inference(&self) {
-        let session_id = self.session_id.lock().unwrap().clone();
-        if let Ok(messages) = self.db.get_session_messages(&session_id) {
+        let guard = self.session_id.lock().unwrap();
+        if let Ok(messages) = self.db.get_session_messages(&guard) {
             let inferred = self.db.infer_facts_from_messages(&messages);
             for (subject, predicate, object, confidence) in inferred {
                 let _ = self.db.insert_fact(&subject, &predicate, &object, "inferred", confidence);
@@ -1593,8 +1956,8 @@ impl AgentLayer {
     /// and verbosity from the conversation messages and persists them as
     /// `inferred.*` preference keys. User-set keys always take precedence.
     fn run_preference_inference(&self) {
-        let session_id = self.session_id.lock().unwrap().clone();
-        if let Ok(messages) = self.db.get_session_messages(&session_id) {
+        let guard = self.session_id.lock().unwrap();
+        if let Ok(messages) = self.db.get_session_messages(&guard) {
             let inferred = self.db.infer_preferences_from_messages(&messages);
             let _ = self.db.save_inferred_preferences(&inferred);
         }
@@ -1605,73 +1968,52 @@ impl AgentLayer {
         transcript: &str,
         active_task_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
-        // No active task → always NewTask, skip the classifier round-trip.
-        let classification = if active_task_id.is_none() {
-            Classification::NewTask {
-                summary: transcript.to_string(),
-                priority: TaskPriority::Normal,
-                suggested_tools: Vec::new(),
-            }
-        } else {
-            self.classify_intent(transcript, active_task_id.as_deref())
-                .await
-        };
+        tracing::info!("process_input: text={:?} active_task_id={:?}", transcript, active_task_id);
+        self.persist_message("user", transcript, Some("text"));
 
-        match classification {
-            Classification::AppendToTask {
-                task_id,
-                additional_context,
-            } => {
-                self.persist_message("user", transcript, Some("text"));
-                let was_in_memory = self.executor.add_supplement(&task_id, &additional_context).await.is_ok();
-                if !was_in_memory {
-                    self.executor.ensure_task_loaded(&task_id).await?;
-                    self.executor.add_supplement(&task_id, &additional_context).await?;
-                }
-                let state = self.executor.get_task_state(&task_id).await;
-                if state == haven_task::TaskStatus::Completed
-                    || state == haven_task::TaskStatus::Error
-                    || state == haven_task::TaskStatus::Cancelled
-                {
-                    self.executor
-                        .update_task_status(&task_id, haven_task::TaskStatus::Pending)
-                        .await?;
-                } else if state == haven_task::TaskStatus::Running
-                {
-                    self.executor
-                        .add_steering(&task_id, &additional_context)
-                        .await?;
-                } else if state == haven_task::TaskStatus::Paused {
-                    if was_in_memory {
-                        // Loop is alive (blocked on Notify), wake it directly.
-                        self.executor
-                            .update_task_status(&task_id, haven_task::TaskStatus::Running)
-                            .await?;
-                    } else {
-                        // No running loop (app restart), hand off to dispatcher.
-                        self.executor
-                            .update_task_status(&task_id, haven_task::TaskStatus::Pending)
-                            .await?;
-                    }
-                }
-                Ok(ProcessResult::Supplemented)
-            }
-            Classification::NewTask {
-                summary,
-                priority,
-                suggested_tools: _,
-            } => {
-                let session_id = self.start_new_session().unwrap_or_else(|_| self.ensure_session());
-                self.persist_message("user", transcript, Some("text"));
-                let task = self
-                    .executor
-                    .create_task_with_summary(transcript, "NewTask", priority, &summary, Some(&session_id))
+        if let Some(task_id) = active_task_id {
+            let state = self.executor.get_task_state(&task_id).await;
+
+            if state == TaskStatus::Running {
+                self.executor
+                    .add_steering(&task_id, transcript)
                     .await?;
-                self.emit_task_created(&task).await;
-                // The background dispatcher will pick the task up respecting
-                // priority/FIFO and the semaphore-bounded `max_concurrent`.
-                Ok(ProcessResult::TaskCreated(task.id))
+            } else {
+                let was_in_memory = self.executor.add_supplement(&task_id, transcript).await.is_ok();
+                if !was_in_memory {
+                    // Task may be stale/deleted — fall back to creating a new task
+                    if self.executor.ensure_task_loaded(&task_id).await.is_err() {
+                        let session_id = self.start_new_session().unwrap_or_else(|_| self.ensure_session());
+                        let task = self
+                            .executor
+                            .create_task_with_summary(transcript, "NewTask", TaskPriority::Normal, transcript, Some(&session_id))
+                            .await?;
+                        self.emit_task_created(&task).await;
+                        return Ok(ProcessResult::TaskCreated(task.id));
+                    }
+                    self.executor.add_supplement(&task_id, transcript).await?;
+                }
+                if state == TaskStatus::Completed
+                    || state == TaskStatus::Error
+                    || state == TaskStatus::Cancelled
+                    || state == TaskStatus::Paused
+                {
+                    self.executor
+                        .update_task_status(&task_id, TaskStatus::Pending)
+                        .await?;
+                    self.emit_task_updated(&task_id, "pending").await;
+                }
             }
+            Ok(ProcessResult::Supplemented)
+        } else {
+            let session_id = self.start_new_session().unwrap_or_else(|_| self.ensure_session());
+            let task = self
+                .executor
+                .create_task_with_summary(transcript, "NewTask", TaskPriority::Normal, transcript, Some(&session_id))
+                .await?;
+            tracing::info!("process_input created task: id={:?}", task.id);
+            self.emit_task_created(&task).await;
+            Ok(ProcessResult::TaskCreated(task.id))
         }
     }
 }
@@ -1687,7 +2029,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::stream;
-    use haven_llm::{LlmClient, LlmError, StreamChunk, ToolCall};
+    use haven_llm::{LlmClient, LlmError, LlmMessage, StreamChunk, ToolCall};
     use haven_tools::ToolsManager;
     use std::pin::Pin;
 
@@ -1762,22 +2104,22 @@ mod tests {
 
     #[async_trait]
     impl AgentEventEmitter for RecordingEmitter {
-        async fn on_thought(&self, _: &str, thought: &str, _: u32, _: u64) {
-            self.thoughts.lock().unwrap().push(thought.into());
-        }
-        async fn on_action(&self, _: &str, _: &str, _: &Value, _: u32, _: u64) {}
-        async fn on_observation(&self, _: &str, _: &str, _: &str, _: u32, _: u64, _: bool) {}
-        async fn on_task_created(&self, _: &TaskInfo) {}
-        async fn on_task_completed(&self, _: &str, _: &str) {
-            *self.completed.lock().unwrap() = true;
-        }
-        async fn on_task_updated(&self, _: &str, _: &str) {
-            *self.completed.lock().unwrap() = true;
-        }
-        async fn on_task_error(&self, _: &str, _: &str) {}
-        async fn on_fallback_activated(&self, _: &str, _: &str) {}
-        async fn on_supplement(&self, _: &str, ctx: &str, _: u32, _: u64) {
-            self.supplements.lock().unwrap().push(ctx.into());
+        async fn emit(&self, event: AgentEvent) {
+            match event {
+                AgentEvent::Thought { thought, .. } => {
+                    self.thoughts.lock().unwrap().push(thought);
+                }
+                AgentEvent::TaskCompleted { .. } => {
+                    *self.completed.lock().unwrap() = true;
+                }
+                AgentEvent::TaskUpdated { .. } => {
+                    *self.completed.lock().unwrap() = true;
+                }
+                AgentEvent::Supplement { additional_context, .. } => {
+                    self.supplements.lock().unwrap().push(additional_context);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1788,7 +2130,6 @@ mod tests {
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
-            client.clone(),
             client.clone(),
             client,
         ));
@@ -1825,7 +2166,7 @@ mod tests {
         let state = executor.get_task_state(&task.id).await;
         assert_eq!(
             state,
-            haven_task::TaskStatus::Paused,
+            TaskStatus::Paused,
             "task should be paused (not completed) when supplements were processed"
         );
     }
@@ -1840,7 +2181,6 @@ mod tests {
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
-            client.clone(),
             client.clone(),
             client,
         ));
@@ -1857,7 +2197,6 @@ mod tests {
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
-            client.clone(),
             client.clone(),
             client,
         ));
@@ -1901,7 +2240,6 @@ mod tests {
         let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router_a = Arc::new(LlmRouter::new_with_clients(
             client_a.clone(),
-            client_a.clone(),
             client_a,
         ));
         let agent = Arc::new(AgentLayer::new(db, executor, router_a, 10, 20, 4000));
@@ -1909,7 +2247,6 @@ mod tests {
         // Create a new router via the same mock client factory
         let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router_b = Arc::new(LlmRouter::new_with_clients(
-            client_b.clone(),
             client_b.clone(),
             client_b,
         ));
@@ -1931,75 +2268,6 @@ mod tests {
         // The mock will terminate in one step regardless
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
-    }
-
-    #[test]
-    fn parse_classification_response_new_task() {
-        let json = r#"{"classification":"NEW_TASK","summary":"open calculator","suggested_tools":["shell"]}"#;
-        let result = AgentLayer::parse_classification_response(json, None);
-        match result {
-            Classification::NewTask { summary, priority, suggested_tools } => {
-                assert_eq!(summary, "open calculator");
-                assert_eq!(priority, TaskPriority::Normal);
-                assert_eq!(suggested_tools, vec!["shell"]);
-            }
-            _ => panic!("expected NewTask"),
-        }
-    }
-
-    #[test]
-    fn parse_classification_response_append_to_task() {
-        let json = r#"{"classification":"APPEND_TO_TASK","additional_context":"also check disk"}"#;
-        let result = AgentLayer::parse_classification_response(json, Some("task-123"));
-        match result {
-            Classification::AppendToTask { task_id, additional_context } => {
-                assert_eq!(task_id, "task-123");
-                assert_eq!(additional_context, "also check disk");
-            }
-            _ => panic!("expected AppendToTask"),
-        }
-    }
-
-    #[test]
-    fn parse_classification_response_fallback_on_invalid_json() {
-        let result = AgentLayer::parse_classification_response("not json at all", None);
-        match result {
-            Classification::NewTask { summary, priority, suggested_tools } => {
-                assert_eq!(summary, "not json at all");
-                assert_eq!(priority, TaskPriority::Normal);
-                assert!(suggested_tools.is_empty());
-            }
-            _ => panic!("expected fallback NewTask"),
-        }
-    }
-
-    #[test]
-    fn parse_classification_response_priority_field() {
-        let json = r#"{"classification":"NEW_TASK","summary":"urgent","priority":"critical"}"#;
-        let result = AgentLayer::parse_classification_response(json, None);
-        match result {
-            Classification::NewTask { priority, .. } => {
-                assert_eq!(priority, TaskPriority::Critical);
-            }
-            _ => panic!("expected NewTask with critical priority"),
-        }
-    }
-
-    #[test]
-    fn build_classifier_prompt_with_active_task() {
-        let prompt = AgentLayer::build_classifier_prompt("remind me", true);
-        assert!(prompt.contains("active task"));
-        assert!(prompt.contains("remind me"));
-        assert!(prompt.contains("NEW_TASK"));
-        assert!(prompt.contains("APPEND_TO_TASK"));
-    }
-
-    #[test]
-    fn build_classifier_prompt_without_active_task() {
-        let prompt = AgentLayer::build_classifier_prompt("open notepad", false);
-        assert!(prompt.contains("No active task exists"));
-        assert!(prompt.contains("open notepad"));
-        assert!(prompt.contains("NEW_TASK"));
     }
 
     #[tokio::test]
@@ -2040,7 +2308,6 @@ mod tests {
             let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(
                 client.clone(),
-                client.clone(),
                 client,
             ));
             AgentLayer::new(db, executor, router, 10, 20, 4000)
@@ -2071,7 +2338,6 @@ mod tests {
             let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
             let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(
-                client.clone(),
                 client.clone(),
                 client,
             ));
@@ -2111,7 +2377,6 @@ mod tests {
             let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
             let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(
-                client.clone(),
                 client.clone(),
                 client,
             ));
@@ -2169,69 +2434,6 @@ mod tests {
                 assert_eq!(state, TaskStatus::Pending);
             }
             ProcessResult::Supplemented => panic!("expected TaskCreated"),
-        }
-    }
-
-    /// Mock classifier that returns a valid classification JSON.
-    struct ClassifierOkMock;
-
-    #[async_trait]
-    impl LlmClient for ClassifierOkMock {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
-            Ok(LlmResponse {
-                text: r#"{"classification":"NEW_TASK","summary":"test summary","priority":"normal"}"#.into(),
-                tool_calls: vec![],
-                finish_reason: Some(FinishReason::Stop),
-                usage: haven_llm::Usage { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, model_name: None, cost: None },
-                model: None,
-                reasoning: None,
-            })
-        }
-        async fn chat_with_tools(&self, _: Vec<LlmMessage>, _: Vec<ToolDefinition>) -> Result<LlmResponse, LlmError> {
-            Err(LlmError::Unknown("not implemented".into()))
-        }
-        async fn chat_stream(&self, _: Vec<LlmMessage>) -> Result<Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-            Err(LlmError::Unknown("not implemented".into()))
-        }
-        async fn chat_stream_with_tools(&self, _: Vec<LlmMessage>, _: Vec<ToolDefinition>) -> Result<Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-            Err(LlmError::Unknown("not implemented".into()))
-        }
-        async fn health_check(&self) -> Result<(), LlmError> { Ok(()) }
-    }
-
-    #[tokio::test]
-    async fn classify_intent_returns_new_task_on_success() {
-        let mut p = std::env::temp_dir();
-        p.push(format!("haven_agent_classify_{}.db", uuid::Uuid::new_v4()));
-        let db = Arc::new(Database::open(&p).unwrap());
-        let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
-        let classifier = Arc::new(ClassifierOkMock) as Arc<dyn LlmClient>;
-        let reasoner = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router = Arc::new(LlmRouter::new_with_clients(
-            reasoner.clone(), reasoner, classifier,
-        ));
-        let agent = AgentLayer::new(db, executor, router, 10, 20, 4000);
-
-        let result = agent.classify_intent("open calculator", None).await;
-        match result {
-            Classification::NewTask { summary, priority, .. } => {
-                assert_eq!(summary, "test summary");
-                assert_eq!(priority, TaskPriority::Normal);
-            }
-            _ => panic!("expected NewTask"),
-        }
-    }
-
-    #[tokio::test]
-    async fn classify_intent_fallback_on_llm_error() {
-        let (agent, _) = make_test_agent();
-        let result = agent.classify_intent("some input", Some("task-1")).await;
-        match result {
-            Classification::NewTask { summary, .. } => {
-                assert_eq!(summary, "some input");
-            }
-            _ => panic!("expected NewTask fallback on LLM error"),
         }
     }
 

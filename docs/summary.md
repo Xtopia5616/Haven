@@ -1,7 +1,7 @@
 # Haven — PC 语音助手需求摘要
 
 ## 项目定位
-基于 Pi Coding Agent 架构的 Windows PC 语音助手。热键唤醒、语音输入、MCP/Skills/本地工具调用、UI+通知输出。
+基于 ReAct 架构的 Windows PC 语音助手。热键唤醒、语音输入、MCP/Skills/本地工具调用、UI+通知输出。
 
 ## 交互方式
 - 唤醒：热键 Push-to-Talk（按住说话/按一下切换，两种模式）
@@ -15,7 +15,7 @@
 - **前端**：Tauri + SvelteKit SPA
 - **持久化**：SQLite
 - **音频捕获**：CPAL
-- **LLM**：云端优先，本地备选，多模型路由（classifier / reasoner / fallback）
+- **LLM**：云端优先，本地备选，多模型路由（namer / reasoner / fallback）
 - **STT**：通过 MCP（优先，用户自配 STT 服务器）或自定义 LLM 完成，不内置引擎
 
 ## 核心能力

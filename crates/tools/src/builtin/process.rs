@@ -48,31 +48,30 @@ impl Tool for ProcessTool {
 
         match op {
             "list" => {
-                let system = sysinfo::System::new_all();
-                tokio::task::yield_now().await;
-
-                let mut processes: Vec<Value> = system
-                    .processes()
-                    .iter()
-                    .map(|(pid, proc)| {
-                        serde_json::json!({
-                            "pid": pid.as_u32(),
-                            "name": proc.name(),
-                            "cpu": proc.cpu_usage(),
-                            "memory": proc.memory(),
-                            "status": format!("{:?}", proc.status()),
+                let processes: Vec<Value> = tokio::task::spawn_blocking(move || {
+                    let system = sysinfo::System::new_all();
+                    let mut processes: Vec<Value> = system
+                        .processes()
+                        .iter()
+                        .map(|(pid, proc)| {
+                            serde_json::json!({
+                                "pid": pid.as_u32(),
+                                "name": proc.name(),
+                                "cpu": proc.cpu_usage(),
+                                "memory": proc.memory(),
+                                "status": format!("{:?}", proc.status()),
+                            })
                         })
-                    })
-                    .collect();
+                        .collect();
 
-                // Sort by memory descending
-                processes.sort_by(|a, b| {
-                    b["memory"].as_u64().unwrap_or(0)
-                        .cmp(&a["memory"].as_u64().unwrap_or(0))
-                });
-
-                // Limit to top 200 to avoid huge output
-                processes.truncate(200);
+                    processes.sort_by(|a, b| {
+                        b["memory"].as_u64().unwrap_or(0)
+                            .cmp(&a["memory"].as_u64().unwrap_or(0))
+                    });
+                    processes.truncate(200);
+                    processes
+                })
+                .await?;
 
                 let output = serde_json::json!({"processes": processes, "count": processes.len()});
                 let text = serde_json::to_string(&output).unwrap_or_default();
@@ -94,31 +93,21 @@ impl Tool for ProcessTool {
                 if pid == 0 {
                     anyhow::bail!("valid pid is required");
                 }
-
-                #[cfg(target_os = "windows")]
-                {
+                tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                     let system = sysinfo::System::new_all();
-                    if let Some(proc) = system.process(sysinfo::Pid::from_u32(pid)) {
-                        if !proc.kill() {
-                            anyhow::bail!("failed to kill process {}", pid);
-                        }
-                    } else {
-                        anyhow::bail!("process {} not found", pid);
+                    let proc = system.process(sysinfo::Pid::from_u32(pid))
+                        .ok_or_else(|| anyhow::anyhow!("process {} not found", pid))?;
+                    #[cfg(target_os = "windows")]
+                    if !proc.kill() {
+                        anyhow::bail!("failed to kill process {}", pid);
                     }
-                }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    let system = sysinfo::System::new_all();
-                    if let Some(proc) = system.process(sysinfo::Pid::from_u32(pid)) {
-                        if !proc.kill_with(sysinfo::Signal::Term) {
-                            anyhow::bail!("failed to kill process {}", pid);
-                        }
-                    } else {
-                        anyhow::bail!("process {} not found", pid);
+                    #[cfg(not(target_os = "windows"))]
+                    if !proc.kill_with(sysinfo::Signal::Term) {
+                        anyhow::bail!("failed to kill process {}", pid);
                     }
-                }
-
+                    Ok(())
+                })
+                .await??;
                 if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
                 Ok(ToolResult::ok(serde_json::json!({"killed": pid})))
             }

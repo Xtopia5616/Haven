@@ -73,12 +73,20 @@ export function seqLastSeen(stepId, seq) {
 	return false;
 }
 
+export function clearSeqMap(taskId) {
+	for (const key of seqMap.keys()) {
+		if (key.includes(taskId)) seqMap.delete(key);
+	}
+}
+
 export function getTaskMessages(taskId) {
 	const all = get(taskMessagesStore);
 	return all[taskId] || [];
 }
 
 export function clearTaskMessages(taskId) {
+	if (!taskId) return;
+	clearSeqMap(taskId);
 	taskMessagesStore.update((m) => {
 		const next = { ...m };
 		delete next[taskId];
@@ -92,7 +100,7 @@ export function adoptDraftMessages(taskId) {
 		const draft = m[DRAFT_KEY] || [];
 		if (draft.length === 0) return m;
 		const next = { ...m };
-		delete next[DRAFT_KEY];
+		next[DRAFT_KEY] = [];
 		next[taskId] = [...(next[taskId] || []), ...draft];
 		return next;
 	});

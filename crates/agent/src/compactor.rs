@@ -1,12 +1,16 @@
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::{EndpointRole, LlmMessage, LlmRole, LlmRouter};
+use std::sync::LazyLock;
 use std::sync::Arc;
+use tiktoken_rs::o200k_base;
 
-/// Rough token estimation: ~4 characters per token for English/Chinese mixed text.
-/// This avoids a dependency on a tokenizer crate.
+static TOKENIZER: LazyLock<tiktoken_rs::CoreBPE> = LazyLock::new(|| {
+    o200k_base().expect("failed to initialize o200k_base tokenizer")
+});
+
+/// Token estimation using o200k_base tokenizer for accurate counts.
 pub fn estimate_tokens(text: &str) -> u32 {
-    let len = text.len() as f64;
-    (len / 4.0).ceil() as u32
+    TOKENIZER.encode_with_special_tokens(text).len() as u32
 }
 
 /// Estimate tokens in a list of canonical messages by summing the content text.
@@ -70,8 +74,7 @@ impl ContextCompactor {
     /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
     fn build_summary_prompt(prefix: &[CanonicalMessage]) -> String {
         let mut text = String::from(
-            "Please summarize the following conversation history concisently, \
-             preserving key facts, decisions, user preferences, and task context:\n\n"
+            "Summarize this conversation. Keep key facts, decisions, and context:\n\n"
         );
         for msg in prefix {
             let role = match msg.role {
@@ -126,15 +129,10 @@ impl ContextCompactor {
         let prompt = Self::build_summary_prompt(prefix);
         let llm_messages = vec![
             LlmMessage {
-                role: LlmRole::System,
-                content: vec![ContentPart::text(
-                    "You are a conversation summarizer. Extract key facts, decisions, \
-                     user preferences, and any context needed to continue the conversation.",
-                )],
-            },
-            LlmMessage {
                 role: LlmRole::User,
                 content: vec![ContentPart::text(prompt)],
+                tool_call_id: None,
+                tool_calls: None,
             },
         ];
 
@@ -154,6 +152,7 @@ impl ContextCompactor {
                     ))],
                     tool_calls: None,
                     tool_call_id: None,
+                    parent_message_id: None,
                 });
                 compacted.extend_from_slice(suffix);
 
@@ -186,6 +185,7 @@ mod tests {
             content: vec![ContentPart::text(text)],
             tool_calls: None,
             tool_call_id: None,
+            parent_message_id: None,
         }
     }
 
@@ -208,11 +208,11 @@ mod tests {
     #[test]
     fn needs_compaction_returns_true_when_exceeded() {
         let compactor = ContextCompactor::new(100, 20);
+        let text = "This is a long conversation history that should exceed the compaction threshold. ".repeat(10);
         let msgs = vec![
-            make_msg(CanonicalRole::System, "X".repeat(200).as_str()),
-            make_msg(CanonicalRole::User, "Y".repeat(200).as_str()),
+            make_msg(CanonicalRole::System, &text),
+            make_msg(CanonicalRole::User, &text),
         ];
-        // 400 chars / 4 = ~100 tokens, context_window=100, reserve=20 -> threshold=80
         assert!(compactor.needs_compaction(&msgs));
     }
 

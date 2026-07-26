@@ -31,7 +31,13 @@
 	let modelState = $state('ready'); // ready | waiting | streaming | tool | fallback
 	let modelStateTimer;
 
-	let notifyCfg = $state(null);
+	let notifyCfg = $state({
+		task_created: { in_app: true },
+		task_completed: { in_app: true },
+		task_paused: { in_app: true },
+		task_error: { in_app: true },
+		task_cancelled: { in_app: true },
+	});
 
 	recordingOverlay.subscribe((v) => (overlay = v));
 
@@ -109,7 +115,9 @@
 	onMount(async () => {
 		// Load notify config in background — don't block listener registration.
 		invoke('get_settings').then((settings) => {
-			notifyCfg = settings?.notification || null;
+			if (settings?.notification) {
+				notifyCfg = { ...notifyCfg, ...settings.notification };
+			}
 		}).catch(() => {});
 
 		await safeListen('recording:started', (event) => {
@@ -232,7 +240,7 @@
 			modelState = 'waiting';
 			if (modelStateTimer) clearTimeout(modelStateTimer);
 			modelStateTimer = setTimeout(() => {
-				if (modelState === 'waiting') modelState = 'waiting';
+				if (modelState === 'waiting') modelState = 'ready';
 			}, 5000);
 		});
 		await safeListen('task:completed', (event) => {
@@ -245,10 +253,12 @@
 		});
 		await safeListen('task:error', (event) => {
 			const data = event.payload;
+			const errMsg = data.error || data.task_id;
 			if (notifyCfg?.task_error?.in_app !== false) {
-				addNotification(`任务出错: ${data.task_id}`, 'error');
+				addNotification(`任务出错: ${errMsg}`, 'error', 5000);
 			}
 			modelState = 'ready';
+			if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
 		});
 		await safeListen('agent:thought_chunk', () => {
 			if (modelState !== 'streaming') modelState = 'streaming';
@@ -271,6 +281,10 @@
 		});
 		await safeListen('agent:observation', () => {
 			modelState = 'streaming';
+			if (modelStateTimer) { clearTimeout(modelStateTimer); }
+			modelStateTimer = setTimeout(() => {
+				if (modelState === 'streaming' || modelState === 'waiting') modelState = 'ready';
+			}, 2000);
 		});
 		await safeListen('task:updated', (event) => {
 			const data = event.payload;
@@ -283,11 +297,13 @@
 				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
 			}
 			if (data.status === 'pending') {
-				addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
+				if (notifyCfg?.task_paused?.in_app !== false) {
+					addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
+				}
 				modelState = 'waiting';
 				if (modelStateTimer) clearTimeout(modelStateTimer);
 				modelStateTimer = setTimeout(() => {
-					if (modelState === 'waiting') modelState = 'waiting';
+					if (modelState === 'waiting') modelState = 'ready';
 				}, 5000);
 			}
 			if (data.status === 'completed') {
@@ -298,6 +314,10 @@
 				if (notifyCfg?.task_cancelled?.in_app !== false) {
 					addNotification(`任务已取消: ${title}`, 'warning');
 				}
+				modelState = 'ready';
+				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
+			}
+			if (data.status === 'error') {
 				modelState = 'ready';
 				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
 			}
@@ -322,6 +342,8 @@
 		});
 		await safeListen('agent:fallback', (event) => {
 			const data = event.payload;
+			const activeId = get(activeTaskIdStore);
+			if (data.task_id && activeId && data.task_id !== activeId) return;
 			modelState = 'fallback';
 			addNotification(`Fallback: ${data.reason}`, 'warning');
 		});
@@ -330,6 +352,7 @@
 	onDestroy(() => {
 		stopTimer();
 		if (processingTimer) clearTimeout(processingTimer);
+		if (modelStateTimer) clearTimeout(modelStateTimer);
 		unlisteners.forEach((u) => u && u());
 	});
 

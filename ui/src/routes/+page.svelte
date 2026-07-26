@@ -1,12 +1,13 @@
 <script>
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
+	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
-	import { tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
 	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
+	import BranchDialog from '$lib/BranchDialog.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import Logo from '$lib/Logo.svelte';
 
@@ -16,6 +17,81 @@
 	let confirmDialog = $state({ stepId: null, toolName: '', taskId: '', riskLevel: 'medium' });
 	let cancelConfirm = $state({ open: false, taskId: '', taskTitle: '' });
 	let activeTaskId = $state(get(activeTaskIdStore));
+	let branchDialog = $state({ open: false, type: 'rollback', stepNumber: null });
+
+	// Right-click context menu state
+	let ctxMenu = $state({ open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '' });
+
+	function handleContextMenu(ev) {
+		ctxMenu = { open: true, x: ev.x, y: ev.y, stepNumber: ev.stepNumber, content: ev.content, role: ev.role, msgId: ev.messageId };
+	}
+
+	// Rollback: find step number from click context or parse from message id
+	function getStepForCtxMenu() {
+		if (ctxMenu.stepNumber != null) return ctxMenu.stepNumber;
+		if (!ctxMenu.msgId) return null;
+		const parts = ctxMenu.msgId.split('-');
+		if (parts.length >= 4 && !isNaN(Number(parts[parts.length - 2]))) {
+			return Number(parts[parts.length - 2]);
+		}
+		return null;
+	}
+
+	function handleCtxRollback() {
+		const step = getStepForCtxMenu();
+		if (step == null) { addNotification('无法确定此消息对应的步骤', 'error', 3000); closeCtxMenu(); return; }
+		branchDialog = { open: true, type: 'rollback', stepNumber: step };
+		closeCtxMenu();
+	}
+
+	function handleCtxFork() {
+		branchDialog = { open: true, type: 'fork', stepNumber: null };
+		closeCtxMenu();
+	}
+
+	async function handleCtxCopy() {
+		if (ctxMenu.content) {
+			try { await navigator.clipboard.writeText(ctxMenu.content); addNotification('已复制', 'info', 1500); }
+			catch { addNotification('复制失败', 'error', 2000); }
+		}
+		closeCtxMenu();
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '' };
+	}
+
+	function handleWindowClick(e) {
+		if (!ctxMenu.open) return;
+		const el = document.querySelector('.ctx-menu');
+		if (el && !el.contains(e.target)) closeCtxMenu();
+	}
+
+	function handleWindowContextMenu(e) {
+		if (ctxMenu.open) closeCtxMenu();
+	}
+
+	// Merged into existing onMount/onDestroy below
+
+	async function confirmBranchAction() {
+		const { type, stepNumber } = branchDialog;
+		branchDialog = { open: false, type: 'rollback', stepNumber: null };
+		try {
+			if (type === 'rollback') {
+				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber });
+				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
+			} else {
+				const newId = await invoke('fork_task', { taskId: activeTaskId });
+				addNotification('已创建分支任务', 'success', 3000);
+				clearTaskMessages(activeTaskId);
+				activeTaskId = newId;
+				activeTaskIdStore.set(newId);
+			}
+		} catch (e) {
+			addNotification(`${type === 'rollback' ? '回退' : '分支'}失败: ${e}`, 'error', 5000);
+		}
+		await loadTasks();
+	}
 
 	async function doCancelTask() {
 		if (!cancelConfirm.taskId) return;
@@ -30,6 +106,7 @@
 	function newTask() {
 		if (activeTaskId) clearTaskMessages(activeTaskId);
 		activeTaskId = null;
+		activeTaskIdStore.set(null);
 	}
 
 	function endTask() {
@@ -38,11 +115,12 @@
 			clearTaskMessages(activeTaskId);
 		}
 		activeTaskId = null;
+		activeTaskIdStore.set(null);
 	}
 
 	let unlisteners = [];
 	let messagesEl;
-	let scrollPending = false;
+	let userScrolledUp = false;
 	let dead = false;
 
 	// Sync the Svelte store to a $state variable — $effect does NOT track
@@ -79,10 +157,14 @@
 		tasks.filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused'),
 	);
 
-	// Auto-scroll to the newest message whenever the list changes.
+	// Auto-scroll to the newest message whenever messages change
+	// or when any message is still streaming.
 	$effect(() => {
 		const _ = messages;
-		scrollToBottom();
+		const hasStreaming = messages.some((m) => m.streaming);
+		if (hasStreaming || messages.length > 0) {
+			scrollToBottom();
+		}
 	});
 
 	// Persist activeTaskId across page navigations via store.
@@ -91,15 +173,21 @@
 	});
 
 	function scrollToBottom() {
-		if (!messagesEl || scrollPending || dead) return;
-		scrollPending = true;
+		if (!messagesEl || userScrolledUp || dead) return;
 		tick().then(() => {
 			requestAnimationFrame(() => {
-				scrollPending = false;
 				if (dead) return;
 				messagesEl.scrollTop = messagesEl.scrollHeight;
 			});
 		});
+	}
+
+	function onScroll() {
+		if (!messagesEl) return;
+		const threshold = 100;
+		const atBottom =
+			messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+		userScrolledUp = !atBottom;
 	}
 
 	onMount(async () => {
@@ -108,6 +196,7 @@
 		const reviewTarget = get(reviewTargetStore);
 		if (reviewTarget && reviewTarget.taskId) {
 			activeTaskId = reviewTarget.taskId;
+			activeTaskIdStore.set(activeTaskId);
 			// Defer clearing so it survives rapid remounts during init.
 			setTimeout(() => reviewTargetStore.set(null), 0);
 		}
@@ -116,6 +205,7 @@
 
 		if (!reviewTarget && activeTaskId && !tasks.some(t => t.id === activeTaskId)) {
 			activeTaskId = null;
+			activeTaskIdStore.set(null);
 		}
 
 		try {
@@ -148,7 +238,7 @@
 					}
 					return [...reasoningFixed, {
 						id: stepId, role: 'assistant', content: data.thought,
-						type: undefined, voice: false,
+						type: undefined, voice: false, stepNumber: data.step_number,
 						time: new Date().toLocaleTimeString(), streaming: false,
 					}];
 				});
@@ -194,6 +284,7 @@
 							content: delta,
 							type: undefined,
 							voice: false,
+							stepNumber: data.step_number,
 							time: new Date().toLocaleTimeString(),
 							streaming: true,
 						},
@@ -231,6 +322,7 @@
 						content: delta,
 						type: 'reasoning',
 						voice: false,
+						stepNumber: data.step_number,
 						time: new Date().toLocaleTimeString(),
 						streaming: true,
 					}];
@@ -253,6 +345,7 @@
 						toolName: data.tool_name,
 						type: 'tool',
 						voice: false,
+						stepNumber: data.step_number,
 						time: new Date().toLocaleTimeString(),
 						streaming: true,
 					}];
@@ -270,14 +363,14 @@
 						next[idx] = { ...next[idx], content: data.observation, streaming: false };
 						return next;
 					}
-					return [...m, {
+				return [...m, {
 						id: toolId,
 						role: 'assistant',
 						content: data.observation,
 						toolName: data.tool_name,
 						type: 'tool',
 						voice: false,
-						time: new Date().toLocaleTimeString(),
+						stepNumber: data.step_number,
 						streaming: false,
 					}];
 				});
@@ -292,18 +385,23 @@
 					riskLevel: data.risk_level || 'medium',
 				};
 			});
-			await safeListen('agent:fallback', (event) => {
-				const data = event.payload;
-				addNotification(`Fallback: ${data.reason}`, 'warning');
-			});
 		} catch (e) {
 			console.warn('safeListen error:', e);
+		}
+
+		if (browser) {
+			window.addEventListener('click', handleWindowClick);
+			window.addEventListener('contextmenu', handleWindowContextMenu);
 		}
 	});
 
 	onDestroy(() => {
 		dead = true;
 		unlisteners.forEach((u) => u());
+		if (browser) {
+			window.removeEventListener('click', handleWindowClick);
+			window.removeEventListener('contextmenu', handleWindowContextMenu);
+		}
 	});
 
 	async function loadTasks() {
@@ -352,6 +450,7 @@
 				if (result && result.TaskCreated) {
 					adoptDraftMessages(result.TaskCreated);
 					activeTaskId = result.TaskCreated;
+					activeTaskIdStore.set(activeTaskId);
 				}
 				loadTasks();
 			}
@@ -390,6 +489,34 @@
 		onConfirm={handleConfirm}
 	/>
 
+	<BranchDialog
+		open={branchDialog.open}
+		type={branchDialog.type}
+		stepNumber={branchDialog.stepNumber}
+		taskSummary={tasks.find(t => t.id === activeTaskId)?.summary || ''}
+		onConfirm={confirmBranchAction}
+		onClose={() => (branchDialog = { open: false, type: 'rollback', stepNumber: null })}
+	/>
+
+	<!-- Right-click context menu -->
+	{#if ctxMenu.open}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="ctx-menu" style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;">
+			<button class="ctx-item" onclick={handleCtxRollback}>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
+				回退到此消息
+			</button>
+			<button class="ctx-item" onclick={handleCtxFork}>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="21" r="3" /><line x1="18" y1="9" x2="18" y2="21" /></svg>
+				创建分支
+			</button>
+			<button class="ctx-item" onclick={handleCtxCopy}>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+				复制
+			</button>
+		</div>
+	{/if}
+
 	<MaterialDialog
 		open={cancelConfirm.open}
 		onClose={() => { cancelConfirm = { open: false, taskId: '', taskTitle: '' }; }}
@@ -410,7 +537,7 @@
 		{/snippet}
 	</MaterialDialog>
 
-	<div class="messages-area" bind:this={messagesEl}>
+	<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
 		{#if messages.length === 0}
 			<div class="welcome" in:fly={{ y: 12, duration: 220 }}>
 				<Logo size={48} />
@@ -428,6 +555,9 @@
 						time={msg.time}
 						streaming={msg.streaming}
 						toolName={msg.toolName ?? ''}
+						messageId={msg.id}
+						stepNumber={msg.stepNumber}
+						onContextMenu={handleContextMenu}
 					/>
 				{/each}
 			</div>
@@ -677,6 +807,29 @@
 		border-radius: var(--md-sys-shape-medium);
 	}
 	.send-btn {
+		flex-shrink: 0;
+	}
+	.ctx-menu {
+		position: fixed; z-index: 1000;
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		padding: var(--md-sys-space-xs);
+		box-shadow: var(--md-sys-elevation-2);
+		min-width: 160px;
+	}
+	.ctx-item {
+		display: flex; align-items: center; gap: var(--md-sys-space-sm);
+		width: 100%; padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: none; background: transparent; color: var(--md-sys-color-on-surface);
+		font-size: 13px; font-family: inherit; cursor: pointer;
+		border-radius: var(--md-sys-shape-small);
+		transition: background var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.ctx-item:hover {
+		background: var(--md-sys-color-surface-container-highest);
+	}
+	.ctx-item svg {
 		flex-shrink: 0;
 	}
 </style>

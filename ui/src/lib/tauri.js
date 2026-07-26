@@ -6,19 +6,20 @@ const isTauri = () => typeof window !== 'undefined' && !!(/** @type {any} */ (wi
 
 async function init() {
 	if (_initialized) return;
-	_initialized = true;
+	if (!isTauri()) return;
 	try {
 		const mod = await import('@tauri-apps/api/core');
 		_tauriInvoke = mod.invoke;
 	} catch {
-		/* not in Tauri */
+		return;
 	}
 	try {
 		const mod = await import('@tauri-apps/api/event');
 		_tauriListen = mod.listen;
 	} catch {
-		/* not in Tauri */
+		return;
 	}
+	_initialized = true;
 }
 
 export async function invoke(cmd, args) {

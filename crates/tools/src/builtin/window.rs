@@ -115,10 +115,10 @@ mod imp {
         unsafe {
             EnumWindows(Some(enum_callback), &mut windows as *mut _ as LPARAM);
 
-            if let Some(pid) = filter_pid {
-                if pid != 0 {
-                    windows.retain(|w| w["pid"].as_u64() == Some(pid as u64));
-                }
+            if let Some(pid) = filter_pid
+                && pid != 0
+            {
+                windows.retain(|w| w["pid"].as_u64() == Some(pid as u64));
             }
 
             windows.retain(|w| !w["title"].as_str().unwrap_or("").is_empty());

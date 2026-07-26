@@ -13,6 +13,7 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     pub is_compacted: bool,
     pub compaction_id: Option<String>,
+    pub parent_message_id: Option<String>,
 }
 
 impl Database {
@@ -62,6 +63,7 @@ impl Database {
             tool_call_id: tool_call_id.map(String::from),
             is_compacted: false,
             compaction_id: None,
+            parent_message_id: None,
         })
     }
 
@@ -72,7 +74,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id
+                    is_compacted, compaction_id, parent_message_id
              FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -86,6 +88,7 @@ impl Database {
                 tool_call_id: row.get(6)?,
                 is_compacted: row.get::<_, i32>(7)? != 0,
                 compaction_id: row.get(8)?,
+                parent_message_id: row.get(9)?,
             })
         })?;
         let mut msgs = Vec::new();
@@ -104,7 +107,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id
+                    is_compacted, compaction_id, parent_message_id
              FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text')
              ORDER BY created_at DESC LIMIT ?2",
         )?;
@@ -119,6 +122,7 @@ impl Database {
                 tool_call_id: row.get(6)?,
                 is_compacted: row.get::<_, i32>(7)? != 0,
                 compaction_id: row.get(8)?,
+                parent_message_id: row.get(9)?,
             })
         })?;
         let mut msgs = Vec::new();

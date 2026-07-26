@@ -6,13 +6,13 @@ edition = "2024"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
-chrono.workspace = true
 toml = "0.8"
 async-trait.workspace = true
 encoding_rs.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+uuid.workspace = true
 

@@ -1,6 +1,7 @@
 use haven_common::types::RiskLevel;
+pub use haven_common::types::TaskPriority;
 use haven_memory::Database;
-use haven_tools::{ConfirmationResult, ToolResult, ToolsManager};
+use haven_tools::{ConfirmationResult, McpToolAdapter, SkillToolAdapter, ToolResult, ToolsManager};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -16,27 +17,8 @@ use tokio_util::sync::CancellationToken;
 pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-const DISPATCH_POLL_MS: u64 = 100;
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
-pub enum TaskPriority {
-    Low,
-    #[default]
-    Normal,
-    High,
-    Critical,
-}
-
-impl TaskPriority {
-    fn order(&self) -> u8 {
-        match self {
-            TaskPriority::Critical => 0,
-            TaskPriority::High => 1,
-            TaskPriority::Normal => 2,
-            TaskPriority::Low => 3,
-        }
-    }
-}
+const DISPATCH_POLL_MS: u64 = 1000;
+const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum TaskStatus {
@@ -150,8 +132,16 @@ impl TaskExecutor {
     }
 
     fn insert_by_priority(tasks: &mut Vec<TaskInfo>, task: TaskInfo) {
-        let order = task.priority.order();
-        let pos = tasks.iter().position(|t| t.priority.order() > order);
+        fn order(p: TaskPriority) -> u8 {
+            match p {
+                TaskPriority::Critical => 0,
+                TaskPriority::High => 1,
+                TaskPriority::Normal => 2,
+                TaskPriority::Low => 3,
+            }
+        }
+        let o = order(task.priority);
+        let pos = tasks.iter().position(|t| order(t.priority) > o);
         match pos {
             Some(i) => tasks.insert(i, task),
             None => tasks.push(task),
@@ -221,7 +211,12 @@ impl TaskExecutor {
     pub fn start_dispatcher(self: Arc<Self>, handler: RunHandler) {
         let exec = self.clone();
         tokio::spawn(async move {
+            let mut log_counter: u64 = 0;
             loop {
+                log_counter += 1;
+                if log_counter.is_multiple_of(DISPATCH_LOG_INTERVAL) {
+                    tracing::info!("dispatcher heartbeat (iter {})", log_counter);
+                }
                 let permit = match exec.semaphore.clone().acquire_owned().await {
                     Ok(p) => p,
                     Err(_) => {
@@ -252,6 +247,7 @@ impl TaskExecutor {
 
                 let exec_inner = exec.clone();
                 let handler_inner = handler.clone();
+                tracing::info!("dispatcher spawning handler for task: {:?}", task_id);
                 tokio::spawn(async move {
                     if let Err(e) = handler_inner(task_id.clone()).await {
                         tracing::error!("dispatcher task {} failed: {}", task_id, e);
@@ -272,6 +268,7 @@ impl TaskExecutor {
     /// the pending set conceptually: returns the id; caller will mark_running.
     async fn take_next_pending(&self) -> Option<String> {
         let mut tasks = self.tasks.lock().await;
+        tracing::info!("take_next_pending scanning {} tasks", tasks.len());
         for task in tasks.iter_mut() {
             if task.status == TaskStatus::Pending {
                 // A task that has already been dispatched but
@@ -283,6 +280,7 @@ impl TaskExecutor {
                 {
                     continue;
                 }
+                tracing::info!("take_next_pending found: {:?}", task.id);
                 return Some(task.id.clone());
             }
         }
@@ -303,11 +301,23 @@ impl TaskExecutor {
     }
 
     /// Remove a task from the running set. Terminal status updates are
-    /// performed by the handler / agent loop.
+    /// performed by the handler / agent loop. Also removes terminal-status
+    /// tasks from the in-memory list so `take_next_pending` only counts
+    /// active (Pending / Running) tasks.
     async fn unmark_running(&self, task_id: &str) {
         self.running_tasks.lock().await.remove(task_id);
         self.task_permits.lock().await.remove(task_id);
         self.task_cancellations.lock().await.remove(task_id);
+        // Remove terminal tasks from the in-memory list so they don't clutter
+        // the pending scan or the frontend task list.
+        let mut tasks = self.tasks.lock().await;
+        if let Some(pos) = tasks.iter().position(|t| t.id == task_id)
+            && (tasks[pos].status == TaskStatus::Error
+                || tasks[pos].status == TaskStatus::Completed
+                || tasks[pos].status == TaskStatus::Cancelled)
+        {
+            tasks.remove(pos);
+        }
     }
 
     pub async fn running_count(&self) -> usize {
@@ -378,16 +388,20 @@ impl TaskExecutor {
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> anyhow::Result<()> {
+        // Cancel the token first, before mutating any task list. This prevents
+        // a TOCTOU race where ensure_task_loaded re-inserts the task between
+        // the list removal and token cancellation (the re-inserted task would
+        // have no active token, so cancelling the old one is harmless).
+        if let Some(token) = self.task_cancellations.lock().await.remove(task_id) {
+            token.cancel();
+        }
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.status = TaskStatus::Cancelled;
+            task.updated_at = chrono::Utc::now().to_rfc3339();
             self.running_tasks.lock().await.remove(task_id);
             self.db.update_task_status(task_id, "cancelled")?;
-            drop(tasks);
             self.task_permits.lock().await.remove(task_id);
-            if let Some(token) = self.task_cancellations.lock().await.remove(task_id) {
-                token.cancel();
-            }
         } else {
             // Task not in memory (e.g. after restart) — update DB directly.
             self.db.update_task_status(task_id, "cancelled")?;
@@ -403,18 +417,21 @@ impl TaskExecutor {
         // Cancel the running token first to interrupt any active ReAct loop.
         let cancel = self.cancellation_token(task_id).await;
         cancel.cancel();
-        // Notify any waiter (paused loop) before removing the notifier.
-        if let Some(notify) = self.task_notify.lock().await.get(task_id) {
-            notify.notify_waiters();
-        }
+        // Acquire tasks lock BEFORE task_notify to prevent ABBA deadlock with
+        // update_task_status (which locks tasks → task_notify). Notifying and
+        // status update happen under the tasks lock scope.
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.status = TaskStatus::Completed;
             task.updated_at = chrono::Utc::now().to_rfc3339();
             self.db.update_task_status(task_id, status_str)?;
+            drop(tasks);
             self.running_tasks.lock().await.remove(task_id);
             self.task_permits.lock().await.remove(task_id);
-            self.task_notify.lock().await.remove(task_id);
+            if let Some(notify) = self.task_notify.lock().await.remove(task_id) {
+                notify.notify_waiters();
+            }
+            self.task_cancellations.lock().await.remove(task_id);
         } else {
             // Task not in memory (e.g. after restart) — update DB directly.
             self.db.update_task_status(task_id, status_str)?;
@@ -509,6 +526,7 @@ impl TaskExecutor {
                 self.task_permits.lock().await.remove(task_id);
                 self.task_cancellations.lock().await.remove(task_id);
                 self.task_notify.lock().await.remove(task_id);
+                self.tools.unregister_task(task_id).await;
             }
         }
         Ok(())
@@ -554,7 +572,11 @@ impl TaskExecutor {
             dispatched_once: true,
         };
         let mut tasks = self.tasks.lock().await;
-        Self::insert_by_priority(&mut tasks, task);
+        // Re-check: another thread may have inserted this task between the
+        // check above and the DB query.
+        if !tasks.iter().any(|t| t.id == task_id) {
+            Self::insert_by_priority(&mut tasks, task);
+        }
         Ok(())
     }
 
@@ -577,6 +599,7 @@ impl TaskExecutor {
         tool_name: &str,
         input: Value,
     ) -> anyhow::Result<ToolResult> {
+        tracing::info!("execute_step: task={} tool={} input={:?}", task_id, tool_name, input);
         {
             let mut tasks = self.tasks.lock().await;
             if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
@@ -587,10 +610,37 @@ impl TaskExecutor {
         let cancel = self.cancellation_token(task_id).await;
         let result = self
             .tools
-            .execute_tool(tool_name, input.clone(), cancel)
+            .execute_tool(Some(task_id), tool_name, input.clone(), cancel)
             .await?;
+        tracing::info!("execute_step result: tool={} success={}", tool_name, result.success);
 
-        let risk_level = self.tools.get_risk_level(tool_name, &input).await;
+        let risk_level = self.tools.get_risk_level(Some(task_id), tool_name, &input).await;
+
+        // Register skill adapter per-task on successful load_skill
+        // instead of polluting the global registry (refine §6).
+        if result.success && tool_name == "load_skill"
+            && let Some(skill_name) = result.output["skill"]["name"].as_str()
+        {
+            let clean_name = skill_name.strip_prefix("skill::").unwrap_or(skill_name);
+            if let Some(skill) = self.tools.skills_engine.get_skill(clean_name).await {
+                let runner = self.tools.skill_runner.read().await.clone();
+                let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
+                self.tools.register_for_task(task_id, Arc::new(adapter)).await;
+            }
+        }
+
+        // Register MCP tool adapters per-task on successful load_mcp
+        if result.success && tool_name == "load_mcp"
+            && let Some(server_name) = result.output["server_name"].as_str()
+            && let Some(client) = self.tools.mcp_manager.get_client(server_name).await
+        {
+            let tools = client.tools_cache().await;
+            for info in tools {
+                let adapter = McpToolAdapter::new(client.clone(), server_name, info);
+                self.tools.register_for_task(task_id, Arc::new(adapter)).await;
+            }
+        }
+
         let step_index: i32;
         {
             let mut tasks = self.tasks.lock().await;
@@ -782,7 +832,7 @@ impl TaskExecutor {
             let cancel = CancellationToken::new();
             let result = self
                 .tools
-                .execute_tool(tool_name, input.clone(), cancel)
+                .execute_tool(Some(task_id), tool_name, input.clone(), cancel)
                 .await;
 
             let mut tasks = self.tasks.lock().await;

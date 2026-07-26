@@ -55,6 +55,7 @@ impl Default for ShellState {
     }
 }
 
+#[allow(dead_code)]
 pub struct DesktopShell {
     state: Arc<Mutex<ShellState>>,
     pub on_recording_start: Callback,
@@ -69,6 +70,7 @@ pub struct DesktopShell {
     pub on_notify: CallbackNotify,
 }
 
+#[allow(dead_code)]
 impl DesktopShell {
     pub fn new() -> Self {
         Self {
@@ -387,7 +389,6 @@ mod tests {
         let shell = DesktopShell::new();
         shell.start_recording().await;
         shell.hold_press().await;
-        // should still be recording, not double-invoke
         let state = shell.get_state().await;
         assert!(state.is_recording);
     }
@@ -396,7 +397,6 @@ mod tests {
     async fn test_hold_release_noop_when_not_recording() {
         let shell = DesktopShell::new();
         shell.hold_release().await;
-        // should not crash, state unchanged
         let state = shell.get_state().await;
         assert!(!state.is_recording);
     }

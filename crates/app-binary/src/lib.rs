@@ -1,11 +1,12 @@
 mod app_state;
 mod commands;
+mod desktop;
 mod events;
 
 use app_state::AppState;
-use haven_agent::AgentEventEmitter;
+use haven_agent::{AgentEvent, AgentEventEmitter};
 use haven_common::config::LogConfig;
-use haven_desktop::TrayStatus;
+use crate::desktop::TrayStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -70,199 +71,195 @@ struct TauriEmitter {
 
 #[async_trait::async_trait]
 impl AgentEventEmitter for TauriEmitter {
-    async fn on_thought(&self, task_id: &str, thought: &str, step_number: u32, run_id: u64) {
-        let _ = self.handle.emit(
-            "agent:thought",
-            serde_json::json!({
-                "task_id": task_id,
-                "thought": thought,
-                "step_number": step_number,
-                "run_id": run_id,
-            }),
-        );
-    }
-
-    async fn on_action(
-        &self,
-        task_id: &str,
-        tool_name: &str,
-        input: &serde_json::Value,
-        step_number: u32,
-        run_id: u64,
-    ) {
-        let silent = input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-        let _ = self.handle.emit(
-            "agent:action",
-            serde_json::json!({
-                "task_id": task_id,
-                "tool_name": tool_name,
-                "input": input,
-                "step_number": step_number,
-                "run_id": run_id,
-                "silent": silent,
-            }),
-        );
-    }
-
-    async fn on_observation(
-        &self,
-        task_id: &str,
-        observation: &str,
-        tool_name: &str,
-        step_number: u32,
-        run_id: u64,
-        silent: bool,
-    ) {
-        let _ = self.handle.emit(
-            "agent:observation",
-            serde_json::json!({
-                "task_id": task_id,
-                "observation": observation,
-                "tool_name": tool_name,
-                "step_number": step_number,
-                "run_id": run_id,
-                "silent": silent,
-            }),
-        );
-    }
-
-    async fn on_task_created(&self, task: &haven_task::TaskInfo) {
-        let _ = self.handle.emit(
-            "task:created",
-            serde_json::json!({
-                "task_id": task.id,
-                "status": task.status.as_str(),
-                "title": task.input,
-            }),
-        );
-        let notify = self.handle.state::<Arc<AppState>>()
-            .config_loader.lock().map(|c| c.config().notification.task_created.windows).unwrap_or(false);
-        if notify {
-            let display = if task.input.is_empty() { &task.id } else { task.input.as_str() };
-            let _ = self.handle.notification()
-                .builder()
-                .title("Haven")
-                .body(format!("New task: {}", display))
-                .show();
+    async fn emit(&self, event: AgentEvent) {
+        match event {
+            AgentEvent::Thought { task_id, thought, step_number, run_id } => {
+                tracing::info!("TauriEmitter::on_thought: task={} step={} run={} len={}", task_id, step_number, run_id, thought.len());
+                let _ = self.handle.emit(
+                    "agent:thought",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "thought": thought,
+                        "step_number": step_number,
+                        "run_id": run_id,
+                    }),
+                );
+            }
+            AgentEvent::Action { task_id, tool_name, input, step_number, run_id } => {
+                let silent = input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
+                tracing::info!("TauriEmitter::on_action: task={} tool={} step={} run={}", task_id, tool_name, step_number, run_id);
+                let _ = self.handle.emit(
+                    "agent:action",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "tool_name": tool_name,
+                        "input": input,
+                        "step_number": step_number,
+                        "run_id": run_id,
+                        "silent": silent,
+                    }),
+                );
+            }
+            AgentEvent::Observation { task_id, observation, tool_name, step_number, run_id, silent } => {
+                tracing::info!("TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}", task_id, tool_name, step_number, run_id, silent);
+                let _ = self.handle.emit(
+                    "agent:observation",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "observation": observation,
+                        "tool_name": tool_name,
+                        "step_number": step_number,
+                        "run_id": run_id,
+                        "silent": silent,
+                    }),
+                );
+            }
+            AgentEvent::TaskCreated(task) => {
+                tracing::info!("TauriEmitter::on_task_created: task_id={} status={}", task.id, task.status.as_str());
+                let _ = self.handle.emit(
+                    "task:created",
+                    serde_json::json!({
+                        "task_id": task.id,
+                        "status": task.status.as_str(),
+                        "title": task.input,
+                    }),
+                );
+                let notify = self.handle.state::<Arc<AppState>>()
+                    .config_loader.lock().map(|c| c.config().notification.task_created.windows).unwrap_or(false);
+                if notify {
+                    let display = if task.input.is_empty() { task.id } else { task.input };
+                    let _ = self.handle.notification()
+                        .builder()
+                        .title("Haven")
+                        .body(format!("New task: {}", display))
+                        .show();
+                }
+            }
+            AgentEvent::TaskCompleted { task_id, title } => {
+                tracing::info!("TauriEmitter::on_task_completed: task={} title={}", task_id, title);
+                let _ = self.handle.emit(
+                    "task:completed",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "status": "completed",
+                        "title": title,
+                    }),
+                );
+                let _ = self.handle.emit(
+                    "task:updated",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "status": "completed",
+                        "title": title,
+                    }),
+                );
+                let notify = self.handle.state::<Arc<AppState>>()
+                    .config_loader.lock().map(|c| c.config().notification.task_completed.windows).unwrap_or(true);
+                if notify {
+                    let _ = self.handle.notification()
+                        .builder()
+                        .title("Haven")
+                        .body(format!("Task completed: {}", title))
+                        .show();
+                }
+            }
+            AgentEvent::TaskUpdated { task_id, status } => {
+                tracing::info!("TauriEmitter::on_task_updated: task={} status={}", task_id, status);
+                let _ = self.handle.emit(
+                    "task:updated",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "status": status,
+                        "title": "",
+                    }),
+                );
+            }
+            AgentEvent::TaskError { task_id, error } => {
+                let _ = self.handle.emit(
+                    "task:error",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "error": error,
+                    }),
+                );
+                let _ = self.handle.emit(
+                    "task:updated",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "status": "error",
+                        "error": error,
+                        "title": "",
+                    }),
+                );
+                let notify = self.handle.state::<Arc<AppState>>()
+                    .config_loader.lock().map(|c| c.config().notification.task_error.windows).unwrap_or(true);
+                if notify {
+                    let _ = self.handle.notification()
+                        .builder()
+                        .title("Haven - Error")
+                        .body(format!("Task error: {}", error))
+                        .show();
+                }
+            }
+            AgentEvent::FallbackActivated { task_id, reason } => {
+                let _ = self.handle.emit(
+                    "agent:fallback",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "reason": reason,
+                    }),
+                );
+            }
+            AgentEvent::ThoughtChunk { task_id, delta, step_number, run_id } => {
+                let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
+                let _ = self.handle.emit(
+                    "agent:thought_chunk",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "delta": delta,
+                        "step_number": step_number,
+                        "run_id": run_id,
+                        "seq": seq,
+                    }),
+                );
+            }
+            AgentEvent::ReasoningChunk { task_id, delta, step_number, run_id } => {
+                let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
+                let _ = self.handle.emit(
+                    "agent:reasoning_chunk",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "delta": delta,
+                        "step_number": step_number,
+                        "run_id": run_id,
+                        "seq": seq,
+                    }),
+                );
+            }
+            AgentEvent::Supplement { task_id, additional_context, step_number, run_id } => {
+                let _ = self.handle.emit(
+                    "agent:supplement",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "additional_context": additional_context,
+                        "step_number": step_number,
+                        "run_id": run_id,
+                    }),
+                );
+            }
+            AgentEvent::Compaction { task_id, summary, tokens_before, tokens_after } => {
+                tracing::info!("TauriEmitter::on_compaction: task={} tokens {}→{}", task_id, tokens_before, tokens_after);
+                let _ = self.handle.emit(
+                    "agent:compaction",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "summary": summary,
+                        "tokens_before": tokens_before,
+                        "tokens_after": tokens_after,
+                    }),
+                );
+            }
         }
-    }
-
-    async fn on_task_completed(&self, task_id: &str, title: &str) {
-        let _ = self.handle.emit(
-            "task:completed",
-            serde_json::json!({
-                "task_id": task_id,
-                "status": "completed",
-                "title": title,
-            }),
-        );
-        let _ = self.handle.emit(
-            "task:updated",
-            serde_json::json!({
-                "task_id": task_id,
-                "status": "completed",
-                "title": title,
-            }),
-        );
-        let notify = self.handle.state::<Arc<AppState>>()
-            .config_loader.lock().map(|c| c.config().notification.task_completed.windows).unwrap_or(true);
-        if notify {
-            let display = if title.is_empty() { task_id.to_string() } else { title.to_string() };
-            let _ = self.handle.notification()
-                .builder()
-                .title("Haven")
-                .body(format!("Task completed: {}", display))
-                .show();
-        }
-    }
-
-    async fn on_task_updated(&self, task_id: &str, status: &str) {
-        let _ = self.handle.emit(
-            "task:updated",
-            serde_json::json!({
-                "task_id": task_id,
-                "status": status,
-                "title": "",
-            }),
-        );
-    }
-
-    async fn on_task_error(&self, task_id: &str, error: &str) {
-        let _ = self.handle.emit(
-            "task:error",
-            serde_json::json!({
-                "task_id": task_id,
-                "error": error,
-            }),
-        );
-        let _ = self.handle.emit(
-            "task:updated",
-            serde_json::json!({
-                "task_id": task_id,
-                "status": "error",
-                "error": error,
-                "title": "",
-            }),
-        );
-        let notify = self.handle.state::<Arc<AppState>>()
-            .config_loader.lock().map(|c| c.config().notification.task_error.windows).unwrap_or(true);
-        if notify {
-            let _ = self.handle.notification()
-                .builder()
-                .title("Haven - Error")
-                .body(format!("Task error: {}", error))
-                .show();
-        }
-    }
-
-    async fn on_fallback_activated(&self, task_id: &str, reason: &str) {
-        let _ = self.handle.emit(
-            "agent:fallback",
-            serde_json::json!({
-                "task_id": task_id,
-                "reason": reason,
-            }),
-        );
-    }
-
-    async fn on_thought_chunk(&self, task_id: &str, delta: &str, step_number: u32, run_id: u64) {
-        let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.handle.emit(
-            "agent:thought_chunk",
-            serde_json::json!({
-                "task_id": task_id,
-                "delta": delta,
-                "step_number": step_number,
-                "run_id": run_id,
-                "seq": seq,
-            }),
-        );
-    }
-
-    async fn on_reasoning_chunk(&self, task_id: &str, delta: &str, step_number: u32, run_id: u64) {
-        let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.handle.emit(
-            "agent:reasoning_chunk",
-            serde_json::json!({
-                "task_id": task_id,
-                "delta": delta,
-                "step_number": step_number,
-                "run_id": run_id,
-                "seq": seq,
-            }),
-        );
-    }
-
-    async fn on_supplement(&self, task_id: &str, additional_context: &str, step_number: u32, run_id: u64) {
-        let _ = self.handle.emit(
-            "agent:supplement",
-            serde_json::json!({
-                "task_id": task_id,
-                "additional_context": additional_context,
-                "step_number": step_number,
-                "run_id": run_id,
-            }),
-        );
     }
 }
 
@@ -697,6 +694,9 @@ pub fn run() {
             commands::disable_autostart,
             commands::is_autostart_enabled,
             commands::get_task_for_review,
+            commands::get_branch_points,
+            commands::rollback_task,
+            commands::fork_task,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Haven app")
@@ -820,7 +820,7 @@ fn init_app_state(
             8000,
         ));
         let pipeline = Arc::new(haven_input::InputPipeline::new());
-        let shell = Arc::new(haven_desktop::DesktopShell::new());
+        let shell = Arc::new(crate::desktop::DesktopShell::new());
         agent.clone().start();
         let config_loader_arc = Arc::new(std::sync::Mutex::new(
             haven_common::config::ConfigLoader::load()
@@ -949,9 +949,11 @@ mod tests {
 
     #[test]
     fn test_init_tracing_with_file_enabled() {
-        let mut cfg = LogConfig::default();
-        cfg.file_enabled = true;
-        cfg.file_path = Some(std::path::PathBuf::from(std::env::temp_dir()).join("haven_test_log"));
+        let cfg = LogConfig {
+            file_enabled: true,
+            file_path: Some(std::env::temp_dir().join("haven_test_log")),
+            ..Default::default()
+        };
         let (_handle, _log_cfg) = init_tracing(&cfg);
         // Should not panic with file_enabled
     }

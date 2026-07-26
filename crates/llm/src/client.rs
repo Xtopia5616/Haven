@@ -71,6 +71,27 @@ struct OpenAiMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    /// Tool calls in assistant messages, serialized as the OpenAI tool_calls
+    /// array so the API can link subsequent tool responses by tool_call_id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiMessageToolCall>>,
+}
+
+/// A tool call within an assistant message, matching the OpenAI API format.
+#[derive(Debug, Serialize)]
+struct OpenAiMessageToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    call_type: String,
+    function: OpenAiMessageToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiMessageToolFunction {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +140,7 @@ struct OpenAiToolFunction {
 struct OpenAiChoice {
     message: Option<OpenAiMessageOut>,
     delta: Option<OpenAiMessageOut>,
+    #[serde(alias = "stop_reason")]
     finish_reason: Option<String>,
 }
 
@@ -126,7 +148,9 @@ struct OpenAiChoice {
 struct OpenAiMessageOut {
     #[allow(dead_code)]
     role: Option<String>,
+    #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCallOut>>,
     #[serde(default)]
     reasoning_content: Option<String>,
@@ -146,15 +170,19 @@ struct OpenAiFunctionOut {
     arguments: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct OpenAiUsage {
+    #[serde(default)]
     prompt_tokens: u32,
+    #[serde(default)]
     completion_tokens: u32,
+    #[serde(default)]
     total_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiResponse {
+    #[serde(alias = "candidates")]
     choices: Vec<OpenAiChoice>,
     usage: Option<OpenAiUsage>,
     model: Option<String>,
@@ -162,6 +190,7 @@ struct OpenAiResponse {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamResponse {
+    #[serde(alias = "candidates")]
     choices: Vec<OpenAiChoice>,
     model: Option<String>,
 }
@@ -222,7 +251,10 @@ impl HttpLlmClient {
     fn convert_messages(msgs: Vec<LlmMessage>) -> Vec<OpenAiMessage> {
         msgs.into_iter()
             .map(|m| {
-                let content = if m.content.is_empty() {
+                // When the assistant message carries tool_calls, the content
+                // should be null (OpenAI API requirement).
+                let has_tool_calls = m.tool_calls.is_some();
+                let content = if m.content.is_empty() || has_tool_calls {
                     None
                 } else if m.content.len() == 1 {
                     match &m.content[0] {
@@ -249,13 +281,29 @@ impl HttpLlmClient {
                         .collect();
                     Some(serde_json::Value::Array(parts))
                 };
+                let tool_calls = m.tool_calls.map(|calls| {
+                    calls
+                        .into_iter()
+                        .map(|tc| OpenAiMessageToolCall {
+                            id: tc.id,
+                            call_type: "function".into(),
+                            function: OpenAiMessageToolFunction {
+                                name: tc.name,
+                                arguments: tc.arguments,
+                            },
+                        })
+                        .collect()
+                });
                 OpenAiMessage {
                     role: match m.role {
                         LlmRole::System => "system".to_string(),
                         LlmRole::User => "user".to_string(),
                         LlmRole::Assistant => "assistant".to_string(),
+                        LlmRole::Tool => "tool".to_string(),
                     },
                     content,
+                    tool_call_id: m.tool_call_id,
+                    tool_calls,
                 }
             })
             .collect()
@@ -384,7 +432,7 @@ impl HttpLlmClient {
             .headers(self.build_headers())
             .json(&body);
         // §2.9: per-request timeout for non-streaming
-        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs.min(7)));
         let resp = req.send().await.map_err(LlmError::from)?;
 
         if !resp.status().is_success() {
@@ -427,17 +475,30 @@ impl HttpLlmClient {
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
         );
+        tracing::info!("chat_stream_inner: url={} model={} api_key={} timeout_secs={} timeout_streaming={:?}",
+            url, self.endpoint.model_name,
+            if self.endpoint.api_key.is_empty() { "EMPTY" } else { "SET" },
+            self.endpoint.timeout_secs,
+            self.endpoint.timeout_streaming_secs);
 
         let mut req = self
             .client
             .post(&url)
             .headers(self.build_headers())
             .json(&body);
-        // §2.9: streaming timeout or no timeout
-        if let Some(streaming_timeout) = self.endpoint.timeout_streaming_secs {
-            req = req.timeout(Duration::from_secs(streaming_timeout));
-        }
-        let resp = req.send().await.map_err(LlmError::from)?;
+        // Unify timeout: use timeout_streaming_secs or fall back to timeout_secs
+        let timeout = self
+            .endpoint
+            .timeout_streaming_secs
+            .unwrap_or(self.endpoint.timeout_secs)
+            .min(7);
+        tracing::info!("chat_stream_inner: sending request with {}s timeout", timeout);
+        req = req.timeout(Duration::from_secs(timeout));
+        let resp = req.send().await.map_err(|e| {
+            tracing::info!("chat_stream_inner: send() error: {:?}", e);
+            LlmError::from(e)
+        })?;
+        tracing::info!("chat_stream_inner response status: {}", resp.status());
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -453,11 +514,59 @@ impl HttpLlmClient {
             return Err(http_status_to_error(status, &txt, retry_after));
         }
 
-        let stream = resp.bytes_stream();
-        let mut accumulated_text = String::new();
-        let mut tool_calls_acc: Vec<ToolCall> = Vec::new();
-        let mut last_model: Option<String> = None;
-        let mut has_finish_reason = false;
+        use tokio::sync::mpsc;
+
+        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
+        let byte_stream = resp.bytes_stream();
+
+        // Spawn a reader that buffers lines and handles both SSE (data: …)
+        // and raw-JSON-lines streaming formats in one pass.
+        tokio::spawn({
+            let tx = chunk_tx.clone();
+            async move {
+                let mut buf = String::new();
+                use futures_util::StreamExt;
+                tokio::pin!(byte_stream);
+                loop {
+                    let chunk = tokio::select! {
+                        biased;
+                        result = byte_stream.next() => result,
+                    };
+                    match chunk {
+                        Some(Ok(bytes)) => {
+                            buf.push_str(&String::from_utf8_lossy(&bytes));
+                            // Process all complete lines in the buffer.
+                            while let Some(newline) = buf.find('\n') {
+                                let line = buf[..newline].trim().to_string();
+                                buf.drain(..=newline);
+                                if line.is_empty() || line.starts_with(':') {
+                                    continue; // SSE comment or blank line
+                                }
+                                // Strip SSE "data: " prefix if present; otherwise
+                                // treat the raw line as JSON (non-standard providers).
+                                let payload = if let Some(p) = line.strip_prefix("data: ") {
+                                    p.trim().to_string()
+                                } else {
+                                    line
+                                };
+                                if payload == "[DONE]" || payload.is_empty() {
+                                    continue;
+                                }
+                                let _ = tx.send(payload);
+                            }
+                        }
+                        Some(Err(_)) | None => {
+                            // Flush any remaining buffered data before EOF.
+                            let remaining = buf.trim().to_string();
+                            if !remaining.is_empty() && remaining != "[DONE]" {
+                                let _ = tx.send(remaining);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
 
         // Merge streaming tool-call deltas by index.
         fn merge_tool_call(acc: &mut Vec<ToolCall>, index: usize, id: Option<&str>, name: Option<&str>, arguments: Option<&str>) {
@@ -477,83 +586,102 @@ impl HttpLlmClient {
             }
         }
 
-        let mapped = eventsource_stream::EventStream::new(stream)
-            .map(move |event| {
-                match event {
-                    Ok(e) => {
-                        let data = e.data.trim();
-                        if data == "[DONE]" || data.is_empty() {
-                            // §2.1: verify finish_reason was set before stream end
-                            if !has_finish_reason && !accumulated_text.is_empty() {
-                                return Err(LlmError::StreamTruncated);
-                            }
-                            return Ok(StreamChunk {
-                                text: None,
-                                tool_calls: std::mem::take(&mut tool_calls_acc),
-                                finish_reason: None,
-                                usage: None,
-                                model: last_model.clone(),
-                                reasoning: None,
-                            });
+        // Return the first delta/message available: providers differ on whether
+        // they send `delta` (standard SSE) or `message` (non-standard) per chunk.
+        fn choice_delta(choice: &OpenAiChoice) -> Option<&OpenAiMessageOut> {
+            choice.delta.as_ref().or(choice.message.as_ref())
+        }
+
+        let mapped = futures_util::stream::unfold(
+            (chunk_rx, false, String::new(), Vec::<ToolCall>::new(), None::<String>, false),
+            move |(mut rx, mut done, mut accumulated_text, mut tool_calls_acc, mut last_model, mut has_finish_reason)| async move {
+                if done {
+                    return None;
+                }
+                let data = rx.recv().await?;
+                if data == "[DONE]" || data.is_empty() {
+                    if !has_finish_reason && !accumulated_text.is_empty() {
+                        return Some((
+                            Err(LlmError::StreamTruncated),
+                            (rx, true, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                        ));
+                    }
+                    done = true;
+                    return Some((
+                        Ok(StreamChunk {
+                            text: None,
+                            tool_calls: std::mem::take(&mut tool_calls_acc),
+                            finish_reason: None,
+                            usage: None,
+                            model: last_model.clone(),
+                            reasoning: None,
+                        }),
+                        (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                    ));
+                }
+                let parsed: Result<OpenAiStreamResponse, _> = serde_json::from_str(&data);
+                match parsed {
+                    Ok(resp) => {
+                        if let Some(model) = &resp.model {
+                            last_model = Some(model.clone());
                         }
-                        let parsed: Result<OpenAiStreamResponse, _> = serde_json::from_str(data);
-                        match parsed {
-                            Ok(resp) => {
-                                if let Some(model) = &resp.model {
-                                    last_model = Some(model.clone());
-                                }
-                                if let Some(choice) = resp.choices.into_iter().next() {
-                                    if let Some(delta) = &choice.delta
-                                        && let Some(content) = &delta.content
-                                    {
-                                        accumulated_text.push_str(content);
-                                    }
-                                    // Accumulate streaming tool-call deltas by index.
-                                    if let Some(delta) = &choice.delta
-                                        && let Some(calls) = &delta.tool_calls
-                                    {
-                                        for c in calls {
-                                            let idx = c.index.unwrap_or(0) as usize;
-                                            merge_tool_call(
-                                                &mut tool_calls_acc,
-                                                idx,
-                                                c.id.as_deref(),
-                                                c.function.name.as_deref(),
-                                                c.function.arguments.as_deref(),
-                                            );
-                                        }
-                                    }
-                                    if choice.finish_reason.is_some() {
-                                        has_finish_reason = true;
-                                    }
-                                    // §2.4: preserve finish_reason and tool_calls in each chunk
-                                    let finish_reason = choice.finish_reason.as_ref().and_then(|s| FinishReason::from_openai(s));
-                                    Ok(StreamChunk {
-                                        text: choice.delta.as_ref().and_then(|d| d.content.clone()),
-                                        reasoning: choice.delta.as_ref().and_then(|d| d.reasoning_content.clone()),
-                                        tool_calls: Vec::new(),
-                                        finish_reason,
-                                        usage: None,
-                                        model: last_model.clone(),
-                                    })
-                                } else {
-                                    Ok(StreamChunk {
-                                        text: None,
-                                        reasoning: None,
-                                        tool_calls: Vec::new(),
-                                        finish_reason: None,
-                                        usage: None,
-                                        model: last_model.clone(),
-                                    })
+                        if let Some(choice) = resp.choices.into_iter().next() {
+                            if let Some(delta) = choice_delta(&choice)
+                                && let Some(content) = &delta.content
+                            {
+                                accumulated_text.push_str(content);
+                            }
+                            if let Some(delta) = choice_delta(&choice)
+                                && let Some(calls) = &delta.tool_calls
+                            {
+                                for c in calls {
+                                    let idx = c.index.unwrap_or(0) as usize;
+                                    merge_tool_call(
+                                        &mut tool_calls_acc,
+                                        idx,
+                                        c.id.as_deref(),
+                                        c.function.name.as_deref(),
+                                        c.function.arguments.as_deref(),
+                                    );
                                 }
                             }
-                            Err(e) => Err(LlmError::InvalidResponse(format!("parse error: {}", e))),
+                            if choice.finish_reason.is_some() {
+                                has_finish_reason = true;
+                            }
+                            let finish_reason = choice.finish_reason.as_ref().and_then(|s| FinishReason::from_openai(s));
+                            Some((
+                                Ok(StreamChunk {
+                                    text: choice_delta(&choice).and_then(|d| d.content.clone()),
+                                    reasoning: choice_delta(&choice).and_then(|d| d.reasoning_content.clone()),
+                                    tool_calls: Vec::new(),
+                                    finish_reason,
+                                    usage: None,
+                                    model: last_model.clone(),
+                                }),
+                                (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                            ))
+                        } else {
+                            Some((
+                                Ok(StreamChunk {
+                                    text: None,
+                                    reasoning: None,
+                                    tool_calls: Vec::new(),
+                                    finish_reason: None,
+                                    usage: None,
+                                    model: last_model.clone(),
+                                }),
+                                (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                            ))
                         }
                     }
-                    Err(e) => Err(LlmError::Unknown(e.to_string())),
+                    Err(e) => Some((
+                        Err(LlmError::InvalidResponse(format!("parse error: {}", e))),
+                        (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                    )),
                 }
-            })
-            .fuse();
+            }
+        )
+        .fuse();
 
         Ok(Box::pin(mapped))
     }
@@ -594,7 +722,7 @@ impl LlmClient for HttpLlmClient {
             .client
             .get(&url)
             .headers(self.build_headers())
-            .timeout(Duration::from_secs(self.endpoint.timeout_secs))
+            .timeout(Duration::from_secs(self.endpoint.timeout_secs.min(7)))
             .send()
             .await
             .map_err(LlmError::from)?;
@@ -612,25 +740,61 @@ impl LlmClient for HttpLlmClient {
 // HTTP status code → LlmError mapping (§2.2)
 // ---------------------------------------------------------------------------
 
+/// Try to extract a human-readable error message from various provider error
+/// JSON schemas: `{"error":{"message":"..."}}`, `{"message":"..."}`,
+/// `{"detail":"..."}`, or fall back to the raw body.
+fn extract_error_body(body: &str) -> String {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        // OpenAI: {"error": {"message": "...", "code": "..."}}
+        if let Some(msg) = val
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return msg.to_string();
+        }
+        // Generic: {"message": "..."}
+        if let Some(msg) = val.get("message").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        // Generic: {"detail": "..."}
+        if let Some(msg) = val.get("detail").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        // Generic: {"error": "..."} (flat)
+        if let Some(msg) = val.get("error").and_then(|m| m.as_str()) {
+            return msg.to_string();
+        }
+        // Fallback: pretty-print the first 500 chars of JSON
+        let s = serde_json::to_string(&val).unwrap_or_default();
+        if s.len() <= 500 {
+            return s;
+        }
+        return s[..500].to_string();
+    }
+    body.to_string()
+}
+
 fn http_status_to_error(status: reqwest::StatusCode, body: &str, retry_after: Option<Duration>) -> LlmError {
+    let err_body = extract_error_body(body);
     match status.as_u16() {
-        401 | 403 => LlmError::Auth(format!("{}: {}", status, body)),
+        401 | 403 => LlmError::Auth(format!("{}: {}", status, err_body)),
         429 => {
             LlmError::RateLimit { retry_after }
         }
         400 => {
-            if body.contains("context_length") || body.contains("maximum context") {
+            if err_body.contains("context_length") || err_body.contains("maximum context") || err_body.contains("context length") {
                 LlmError::ContextLengthExceeded
-            } else if body.contains("content_filter") {
+            } else if err_body.contains("content_filter") {
                 LlmError::ContentFilter
-            } else if body.contains("billing") || body.contains("insufficient_quota") {
-                LlmError::Billing(body.to_string())
+            } else if err_body.contains("billing") || err_body.contains("insufficient_quota") || err_body.contains("quota") {
+                LlmError::Billing(err_body)
             } else {
-                LlmError::RequestFailed(format!("{}: {}", status, body))
+                LlmError::RequestFailed(format!("{}: {}", status, err_body))
             }
         }
-        s if s >= 500 => LlmError::ServerError(format!("{}: {}", status, body)),
-        _ => LlmError::RequestFailed(format!("{}: {}", status, body)),
+        s if s >= 500 => LlmError::ServerError(format!("{}: {}", status, err_body)),
+        _ => LlmError::RequestFailed(format!("{}: {}", status, err_body)),
     }
 }
 
@@ -644,14 +808,18 @@ pub async fn with_retry<F, Fut>(
     factor: u32,
     max_secs: u64,
     jitter: f32,
-    f: F,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    mut f: F,
 ) -> Result<LlmResponse, LlmError>
 where
-    F: Fn() -> Fut,
+    F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<LlmResponse, LlmError>>,
 {
     let mut last_err = None;
     for attempt in 0..=max_retries {
+        if cancel.is_some_and(|c| c.is_cancelled()) {
+            return Err(LlmError::Cancelled);
+        }
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
@@ -698,6 +866,8 @@ mod tests {
             .chat(vec![LlmMessage {
                 role: LlmRole::User,
                 content: vec![ContentPart::text("hi")],
+                tool_call_id: None,
+                tool_calls: None,
             }])
             .await
             .unwrap_err();
@@ -976,6 +1146,8 @@ mod tests {
                     data: "aGVsbG8=".into(),
                 },
             ],
+            tool_call_id: None,
+            tool_calls: None,
         };
         let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
         assert_eq!(openai_msgs.len(), 1);
@@ -995,6 +1167,8 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::User,
             content: vec![],
+            tool_call_id: None,
+            tool_calls: None,
         };
         let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
         assert_eq!(openai_msgs.len(), 1);
@@ -1006,6 +1180,8 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::System,
             content: vec![ContentPart::text("you are helpful")],
+            tool_call_id: None,
+            tool_calls: None,
         };
         let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
         assert_eq!(openai_msgs[0].role, "system");
@@ -1016,9 +1192,27 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::Assistant,
             content: vec![ContentPart::text("hello")],
+            tool_call_id: None,
+            tool_calls: None,
         };
         let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
         assert_eq!(openai_msgs[0].role, "assistant");
+    }
+
+    #[test]
+    fn convert_messages_tool_role_maps_to_tool_string() {
+        let msg = LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![ContentPart::text("result")],
+            tool_call_id: Some("call_1".into()),
+            tool_calls: None,
+        };
+        let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
+        assert_eq!(openai_msgs[0].role, "tool");
+        assert_eq!(
+            openai_msgs[0].tool_call_id.as_deref(),
+            Some("call_1")
+        );
     }
 
     #[test]
@@ -1026,6 +1220,8 @@ mod tests {
         let msg = LlmMessage {
             role: LlmRole::User,
             content: vec![ContentPart::text("hello")],
+            tool_call_id: None,
+            tool_calls: None,
         };
         let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
         let content = openai_msgs[0].content.as_ref().unwrap();
@@ -1218,7 +1414,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_retry_success_first_attempt() {
-        let result = with_retry(3, 1, 2, 30, 0.0, || async {
+        let result = with_retry(3, 1, 2, 30, 0.0, None, || async {
             Ok(LlmResponse {
                 text: "ok".into(),
                 tool_calls: vec![],
@@ -1234,7 +1430,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_retry_non_retryable_skips_without_delay() {
-        let result = with_retry(3, 1, 2, 30, 0.0, || async {
+        let result = with_retry(3, 1, 2, 30, 0.0, None, || async {
             Err::<LlmResponse, LlmError>(LlmError::Auth("bad key".into()))
         })
         .await;
@@ -1246,7 +1442,7 @@ mod tests {
     async fn with_retry_retryable_recovers() {
         use std::sync::atomic::{AtomicU32, Ordering};
         let attempts = AtomicU32::new(0);
-        let result = with_retry(3, 1, 2, 30, 0.0, || {
+        let result = with_retry(3, 1, 2, 30, 0.0, None, || {
             let a = attempts.fetch_add(1, Ordering::SeqCst);
             async move {
                 if a < 2 {
@@ -1270,7 +1466,7 @@ mod tests {
 
     #[tokio::test]
     async fn with_retry_max_retries_exhausted() {
-        let result = with_retry(2, 1, 2, 5, 0.0, || async {
+        let result = with_retry(2, 1, 2, 5, 0.0, None, || async {
             Err::<LlmResponse, LlmError>(LlmError::Timeout("persistent timeout".into()))
         })
         .await;

@@ -5,11 +5,12 @@ pub mod skills;
 pub mod stt;
 pub mod tool;
 
-use haven_common::config::{SkillsExecConfig, ToolConfig};
+use haven_common::config::{McpServerConfig, SkillsExecConfig, ToolConfig};
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -25,10 +26,12 @@ pub use tool::{ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry, T
 pub struct ToolsManager {
     pub registry: ToolRegistry,
     pub mcp_manager: McpManager,
-    pub skills_engine: skills::SkillsEngine,
+    pub mcp_server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+    pub skills_engine: SkillsEngine,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub safety_gateway: SafetyGateway,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
+    task_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
 }
 
 impl ToolsManager {
@@ -38,6 +41,7 @@ impl ToolsManager {
         Self {
             registry,
             mcp_manager: McpManager::new(),
+            mcp_server_configs: Arc::new(RwLock::new(HashMap::new())),
             skills_engine: skills::SkillsEngine::new(),
             skill_runner: Arc::new(RwLock::new(SkillRunner::new(
                 VenvManager::new(exec_config.venv_root.clone()),
@@ -45,6 +49,7 @@ impl ToolsManager {
             ))),
             safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
+            task_registrations: RwLock::new(HashMap::new()),
         }
     }
 
@@ -53,6 +58,7 @@ impl ToolsManager {
         Self {
             registry,
             mcp_manager: McpManager::new(),
+            mcp_server_configs: Arc::new(RwLock::new(HashMap::new())),
             skills_engine: skills::SkillsEngine::new(),
             skill_runner: Arc::new(RwLock::new(SkillRunner::new(
                 VenvManager::new(exec_config.venv_root.clone()),
@@ -60,6 +66,7 @@ impl ToolsManager {
             ))),
             safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
+            task_registrations: RwLock::new(HashMap::new()),
         }
     }
 
@@ -68,6 +75,14 @@ impl ToolsManager {
     }
 
     pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
+        // Store configs for dynamic loading via load_mcp tool
+        let mut configs = self.mcp_server_configs.write().await;
+        configs.clear();
+        for server in servers {
+            configs.insert(server.name.clone(), server.clone());
+        }
+        drop(configs);
+
         self.mcp_manager.load_from_config(servers).await;
     }
 
@@ -87,12 +102,13 @@ impl ToolsManager {
     pub async fn rebuild_catalog(&self) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
-        // Register builtin tools (including progressive load_skill)
+        // Register builtin tools (including progressive load_skill and load_mcp)
         builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
-            &self.registry,
             &self.skill_runner,
+            &Arc::new(self.mcp_manager.clone()),
+            &self.mcp_server_configs,
         )
         .await;
 
@@ -113,6 +129,35 @@ impl ToolsManager {
         self.registry.rebuild(all_tools).await;
     }
 
+    /// Register a tool for a specific task (per-task skill overlay).
+    /// Does NOT modify the global registry.
+    pub async fn register_for_task(&self, task_id: &str, tool: ToolBox) {
+        let name = tool.name();
+        self.task_registrations
+            .write()
+            .await
+            .entry(task_id.to_string())
+            .or_default()
+            .insert(name, tool);
+    }
+
+    /// Remove all per-task tool registrations for a given task.
+    pub async fn unregister_task(&self, task_id: &str) {
+        self.task_registrations.write().await.remove(task_id);
+    }
+
+    /// Look up a tool: first check per-task registrations, then global registry.
+    pub async fn get_tool_for_task(&self, task_id: Option<&str>, name: &str) -> Option<ToolBox> {
+        if let Some(tid) = task_id
+            && let reg = self.task_registrations.read().await
+            && let Some(tools) = reg.get(tid)
+            && let Some(tool) = tools.get(name)
+        {
+            return Some(tool.clone());
+        }
+        self.registry.get(name).await
+    }
+
     /// Build a skill index (name + description only) for injection into the
     /// system prompt (refine §4.7). The LLM uses `load_skill` to get full schemas.
     pub async fn build_skill_index(&self) -> Vec<Value> {
@@ -128,6 +173,21 @@ impl ToolsManager {
             })
             .collect()
     }
+
+    /// Build an MCP server index (name + description only) for injection into the
+    /// system prompt. The LLM uses `load_mcp` to get full schemas.
+    pub async fn build_mcp_index(&self) -> Vec<Value> {
+        let configs = self.mcp_server_configs.read().await;
+        configs
+            .values()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name.clone(),
+                    "description": format!("MCP server '{}' via {} ({})", s.name, s.command, s.args.join(" ")),
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for ToolsManager {
@@ -139,34 +199,80 @@ impl Default for ToolsManager {
 impl ToolsManager {
     pub async fn execute_tool(
         &self,
+        task_id: Option<&str>,
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        if let Some(tool) = self.registry.get(tool_name).await {
-            tool.validate_input(&input)?;
-            let settings = self.tool_settings.read().await;
-            let timeout_secs = settings
-                .get(tool_name)
-                .map(|c| c.timeout_secs)
-                .unwrap_or_else(|| tool.default_timeout_secs());
-            drop(settings);
-            return tool.execute_with_timeout(input, cancel, timeout_secs).await;
+        let tool = self.get_tool_for_task(task_id, tool_name).await
+            .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
+        tool.validate_input(&input)?;
+        let settings = self.tool_settings.read().await;
+        let cfg = settings.get(tool_name);
+        let timeout_secs = cfg
+            .map(|c| c.timeout_secs)
+            .unwrap_or_else(|| tool.default_timeout_secs());
+        let max_retries = cfg.map(|c| c.max_retries).unwrap_or(0);
+        let backoff_secs = cfg
+            .map(|c| c.retry_backoff_secs)
+            .unwrap_or(2);
+        drop(settings);
+
+        let max_attempts = 1 + max_retries;
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                let delay = Duration::from_secs(backoff_secs * 2u64.pow(attempt - 1));
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {},
+                    _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+                }
+            }
+            if cancel.is_cancelled() {
+                anyhow::bail!("cancelled");
+            }
+
+            match tool
+                .execute_with_timeout(input.clone(), cancel.clone(), timeout_secs)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e)
+                    if attempt + 1 < max_attempts && is_retryable_tool_error(&e) =>
+                {
+                    tracing::debug!(
+                        "tool '{}' attempt {} failed, retrying: {}",
+                        tool_name,
+                        attempt + 1,
+                        e
+                    );
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-        anyhow::bail!("tool '{}' not found in registry", tool_name)
+        anyhow::bail!("tool '{}' retries exhausted", tool_name);
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
         self.registry.get(name).await
     }
 
-    pub async fn get_risk_level(&self, tool_name: &str, input: &Value) -> RiskLevel {
-        self.registry
-            .get(tool_name)
+    pub async fn get_risk_level(&self, task_id: Option<&str>, tool_name: &str, input: &Value) -> RiskLevel {
+        self.get_tool_for_task(task_id, tool_name)
             .await
             .map(|t| t.risk_level(input))
             .unwrap_or(RiskLevel::Safe)
     }
+}
+
+/// Returns `true` if a tool execution error is transient and worth retrying.
+fn is_retryable_tool_error(err: &anyhow::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("connection refused")
+        || msg.contains("connection reset")
+        || msg.contains("eof")
 }
 
 #[cfg(test)]
@@ -203,7 +309,7 @@ mod tests {
     async fn test_tools_manager_execute_tool_not_found() {
         let mgr = ToolsManager::new();
         let result = mgr
-            .execute_tool("nonexistent", json!({}), CancellationToken::new())
+            .execute_tool(None, "nonexistent", json!({}), CancellationToken::new())
             .await;
         assert!(result.is_err());
     }
@@ -237,6 +343,7 @@ mod tests {
 
         let result = mgr
             .execute_tool(
+                None,
                 "file",
                 json!({"operation": "read", "path": file.to_string_lossy()}),
                 CancellationToken::new(),
@@ -253,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn test_tools_manager_get_risk_level_unknown() {
         let mgr = ToolsManager::new();
-        let risk = mgr.get_risk_level("nonexistent", &json!({})).await;
+        let risk = mgr.get_risk_level(None, "nonexistent", &json!({})).await;
         assert_eq!(risk, RiskLevel::Safe);
     }
 }

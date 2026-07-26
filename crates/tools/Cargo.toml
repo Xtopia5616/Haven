@@ -15,17 +15,18 @@ chrono.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 reqwest = { version = "0.12.28", features = ["json"] }
-tokio-util = "0.7"
+tokio-util.workspace = true
 haven-memory = { path = "../memory" }
 haven-common = { path = "../common" }
 jsonschema = "0.18"
-governor = "0.6"
 sysinfo = "0.33"
 arboard = "3.4"
 winreg = "0.52"
 ignore = "0.4"
 regex = "1"
-walkdir = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -33,12 +34,3 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Power",
 ] }
-windows = { version = "0.58", features = [
-    "Win32_Media_Audio",
-    "Win32_Media_Audio_Endpoints",
-    "Win32_System_Com",
-    "Win32_Foundation",
-] }
-
-[dev-dependencies]
-tempfile.workspace = true

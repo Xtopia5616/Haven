@@ -166,11 +166,16 @@ pub async fn process_transcript(
     transcript: String,
     active_task_id: Option<String>,
 ) -> Result<Value, String> {
+    tracing::info!("process_transcript called: text={:?} active_task_id={:?}", transcript, active_task_id);
     let result = state
         .agent
         .process_input(&transcript, active_task_id.clone())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!("[DIAG] process_transcript error: {:?}", e);
+            e.to_string()
+        })?;
+    tracing::info!("process_transcript result: {:?}", result);
     Ok(serde_json::to_value(result).unwrap_or_default())
 }
 
@@ -180,11 +185,17 @@ pub async fn supplement_task(
     task_id: String,
     text: String,
 ) -> Result<(), String> {
+    tracing::info!("supplement_task called: task_id={:?} text={:?}", task_id, text);
     state
         .agent
         .supplement_task(&task_id, &text)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            tracing::error!("[DIAG] supplement_task error: {:?}", e);
+            e.to_string()
+        })?;
+    tracing::info!("supplement_task done");
+    Ok(())
 }
 
 #[tauri::command]
@@ -204,12 +215,20 @@ pub async fn cancel_task(
         .cancel_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
+    let title = state.executor.list_tasks().await
+        .into_iter()
+        .find(|t| t.id == task_id)
+        .map(|t| t.input)
+        .or_else(|| {
+            state.db.get_task(&task_id).ok().flatten().map(|t| t.input_text)
+        })
+        .unwrap_or_default();
     let _ = app.emit(
         "task:updated",
         TaskEvent {
             task_id: task_id.clone(),
             status: "cancelled".into(),
-            title: String::new(),
+            title,
         },
     );
     Ok(())
@@ -253,12 +272,17 @@ pub async fn pause_task(
         .pause_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
+    let title = state.executor.list_tasks().await
+        .into_iter()
+        .find(|t| t.id == task_id)
+        .map(|t| t.input)
+        .unwrap_or_default();
     let _ = app.emit(
         "task:updated",
         TaskEvent {
             task_id,
             status: "paused".into(),
-            title: String::new(),
+            title,
         },
     );
     Ok(())
@@ -275,12 +299,17 @@ pub async fn resume_task(
         .resume_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
+    let title = state.executor.list_tasks().await
+        .into_iter()
+        .find(|t| t.id == task_id)
+        .map(|t| t.input)
+        .unwrap_or_default();
     let _ = app.emit(
         "task:updated",
         TaskEvent {
             task_id,
             status: "pending".into(),
-            title: String::new(),
+            title,
         },
     );
     Ok(())
@@ -958,7 +987,7 @@ pub async fn switch_model(
     {
         let cfg = loader.config_mut();
         let ep = match role.as_str() {
-            "small_model" | "classifier" => &mut cfg.llm.small_model,
+            "small_model" | "namer" => &mut cfg.llm.small_model,
             "default_model" | "reasoner" => &mut cfg.llm.default_model,
             "balanced_model" | "fallback" => &mut cfg.llm.balanced_model,
             _ => return Err(format!("unknown role: {}", role)),
@@ -1100,7 +1129,8 @@ pub async fn delete_preference(
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
     let state = app.state::<Arc<AppState>>();
     let cfg = state.config_loader.lock().map_err(|e| e.to_string())?;
-    Ok(cfg.settings())
+    let settings = cfg.settings();
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -1300,6 +1330,44 @@ pub async fn get_task_for_review(
         messages,
         steps,
     })
+}
+
+/// Get available branch point step numbers for a task (for rollback UI).
+#[tauri::command]
+pub async fn get_branch_points(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<Vec<u32>, String> {
+    Ok(state.agent.get_branch_points(&task_id).await)
+}
+
+/// Roll back a task to a specific branch point. The task is rewound to
+/// the saved state at that step and set back to Pending for re-execution.
+#[tauri::command]
+pub async fn rollback_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+    target_step: u32,
+) -> Result<(), String> {
+    state
+        .agent
+        .rollback_task(&task_id, target_step)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fork a task into a new branched session. Creates a duplicate in a
+/// child session so both can evolve independently.
+#[tauri::command]
+pub async fn fork_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<String, String> {
+    state
+        .agent
+        .fork_task(&task_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
