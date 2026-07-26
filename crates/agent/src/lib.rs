@@ -950,10 +950,12 @@ async fn run_react_loop(
 
             let emitter = self.emitter.lock().unwrap().clone();
             let (chunk_tx, reasoning_tx, consumer_handle) = spawn_chunk_consumer(&emitter);
+            let chunk_tx_1 = chunk_tx.clone();
+            let reasoning_tx_1 = reasoning_tx.clone();
             let router = self.router();
             let cancel_res = self.executor.cancellation_token(task_id).await;
             let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
-            let task_id_owned = task_id.to_string();
+            let task_id_1 = task_id.to_string();
             tracing::info!("ReAct step {} calling LLM, messages count: {}", step_num, llm_messages.len());
             let response = match router
                 .chat_stream_with_tools_aggregated_cancellable(
@@ -961,15 +963,15 @@ async fn run_react_loop(
                     llm_messages,
                     tools.clone(),
                     move |c: &haven_llm::StreamChunk| {
-                        if let Some(t) = &c.text {
-                            if let Err(e) = chunk_tx.try_send((task_id_owned.clone(), t.clone(), step_num, run_id)) {
-                                tracing::warn!("thought chunk channel full, dropping: {}", e);
-                            }
+                        if let Some(t) = &c.text
+                            && let Err(e) = chunk_tx_1.try_send((task_id_1.clone(), t.clone(), step_num, run_id))
+                        {
+                            tracing::warn!("thought chunk channel full, dropping: {}", e);
                         }
-                        if let Some(r) = &c.reasoning {
-                            if let Err(e) = reasoning_tx.try_send((task_id_owned.clone(), r.clone(), step_num, run_id)) {
-                                tracing::warn!("reasoning chunk channel full, dropping: {}", e);
-                            }
+                        if let Some(r) = &c.reasoning
+                            && let Err(e) = reasoning_tx_1.try_send((task_id_1.clone(), r.clone(), step_num, run_id))
+                        {
+                            tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                         }
                     },
                     cancel_res.clone(),
@@ -989,6 +991,7 @@ async fn run_react_loop(
                         *canonical = result.compacted;
                         self.emit_compaction(task_id, &result.summary, result.tokens_before, result.tokens_after).await;
                         let (chunk_tx2, reasoning_tx2, consumer_handle2) = spawn_chunk_consumer(&emitter);
+                        let task_id_retry = task_id.to_string();
                         // Don't replay old chunks — they were already emitted
                         // during the first (failed) LLM call. Re-sending would
                         // duplicate content on the frontend.
@@ -998,18 +1001,16 @@ async fn run_react_loop(
                                 EndpointRole::DefaultModel,
                                 llm_messages2,
                                 tools.clone(),
-                                |c: &haven_llm::StreamChunk| {
-                                    if let Some(t) = &c.text {
-                                        thought_chunks.push(t.clone());
-                                        if let Err(e) = chunk_tx2.try_send((task_id.to_string(), t.clone(), step_num, run_id)) {
-                                            tracing::warn!("retry thought chunk channel full, dropping: {}", e);
-                                        }
+                                move |c: &haven_llm::StreamChunk| {
+                                    if let Some(t) = &c.text
+                                        && let Err(e) = chunk_tx2.try_send((task_id_retry.clone(), t.clone(), step_num, run_id))
+                                    {
+                                        tracing::warn!("retry thought chunk channel full, dropping: {}", e);
                                     }
-                                    if let Some(r) = &c.reasoning {
-                                        reasoning_chunks.push(r.clone());
-                                        if let Err(e) = reasoning_tx2.try_send((task_id.to_string(), r.clone(), step_num, run_id)) {
-                                            tracing::warn!("retry reasoning chunk channel full, dropping: {}", e);
-                                        }
+                                    if let Some(r) = &c.reasoning
+                                        && let Err(e) = reasoning_tx2.try_send((task_id_retry.clone(), r.clone(), step_num, run_id))
+                                    {
+                                        tracing::warn!("retry reasoning chunk channel full, dropping: {}", e);
                                     }
                                 },
                                 cancel_res.clone(),
@@ -1017,8 +1018,6 @@ async fn run_react_loop(
                             .await
                         {
                             Ok(retry_resp) => {
-                                drop(chunk_tx2);
-                                drop(reasoning_tx2);
                                 if let Some(handle) = consumer_handle2 {
                                     let _ = handle.await;
                                 }
@@ -1058,9 +1057,8 @@ async fn run_react_loop(
                 let _ = handle.await;
             }
 
-            if !reasoning_chunks.is_empty() {
-                let text: String = reasoning_chunks.concat();
-                self.persist_message("assistant", &text, Some("reasoning"));
+            if let Some(ref reasoning) = response.reasoning {
+                self.persist_message("assistant", reasoning, Some("reasoning"));
             }
 
             let (thought, actions) = self.parse_reasoner_response(&response, step_num);

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -9,6 +10,7 @@ use crate::client::{HttpLlmClient, LlmClient, with_retry};
 use crate::stream_rules::{check_stream_rules, StreamRule, StreamRuleMatch, StreamRuleMode};
 use crate::types::{ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolDefinition};
 use futures_util::StreamExt;
+use tokio::sync::mpsc;
 use haven_common::config::LlmConfig;
 
 #[derive(Debug, Clone, Copy)]
@@ -379,7 +381,7 @@ impl LlmRouter {
         role: EndpointRole,
         messages: Vec<LlmMessage>,
         tools: Vec<ToolDefinition>,
-        on_chunk: impl FnMut(&StreamChunk) + Send,
+        on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable(
             role, messages, tools, on_chunk, CancellationToken::new(),
@@ -396,16 +398,17 @@ impl LlmRouter {
         role: EndpointRole,
         messages: Vec<LlmMessage>,
         tools: Vec<ToolDefinition>,
-        mut on_chunk: impl FnMut(&StreamChunk) + Send,
+        on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.check_circuit(&role).await?;
         tracing::info!("router streaming LLM call, role={:?} messages={} tools={}", role, messages.len(), tools.len());
         let primary = self.select_endpoint(role);
+        let on_chunk = Arc::new(StdMutex::new(on_chunk));
 
         // Primary: single attempt with cancellation
         let primary_result = Self::aggregate_stream_cancellable(
-            primary.clone(), messages.clone(), tools.clone(), &mut on_chunk, cancel.clone(), &self.stream_rules,
+            primary.clone(), messages.clone(), tools.clone(), on_chunk.clone(), cancel.clone(), &self.stream_rules,
         )
         .await;
 
@@ -428,7 +431,7 @@ impl LlmRouter {
                     tool_calls: None,
                 });
                 Self::aggregate_stream_cancellable(
-                    primary, retry_msgs, tools, &mut on_chunk, cancel, &self.stream_rules,
+                    primary, retry_msgs, tools, on_chunk, cancel, &self.stream_rules,
                 )
                 .await
             }
@@ -459,7 +462,7 @@ impl LlmRouter {
 
                 // Fallback: single attempt with cancellation
                 let fb_result = Self::aggregate_stream_cancellable(
-                    self.fallback.clone(), messages, tools, &mut on_chunk, cancel, &self.stream_rules,
+                    self.fallback.clone(), messages, tools, on_chunk, cancel, &self.stream_rules,
                 )
                 .await;
 
@@ -477,12 +480,24 @@ impl LlmRouter {
         client: Arc<dyn LlmClient>,
         messages: Vec<LlmMessage>,
         tools: Vec<ToolDefinition>,
-        on_chunk: &mut (impl FnMut(&StreamChunk) + Send),
+        on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
         cancel: CancellationToken,
         stream_rules: &RwLock<Vec<StreamRule>>,
     ) -> Result<LlmResponse, LlmError> {
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
         tracing::info!("aggregate_stream_cancellable start");
+
+        // Channel decouples the stream loop from callback execution.
+        // The consumer task (spawned below) calls on_chunk asynchronously;
+        // the stream loop only does O(1) try_send and never blocks.
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<StreamChunk>(128);
+        let consumer = tokio::spawn(async move {
+            while let Some(chunk) = chunk_rx.recv().await {
+                let mut guard = on_chunk.lock().unwrap();
+                guard(&chunk);
+            }
+        });
+
         let mut text = String::new();
         let mut tool_calls = Vec::new();
         let mut finish_reason: Option<FinishReason> = None;
@@ -516,7 +531,10 @@ impl LlmRouter {
                             if chunk.model.is_some() {
                                 model = chunk.model.clone();
                             }
-                            on_chunk(&chunk);
+                            // Non-blocking: consumer task calls on_chunk asynchronously
+                            if let Err(e) = chunk_tx.try_send(chunk) {
+                                tracing::warn!("chunk consumer channel full, dropping chunk: {}", e);
+                            }
 
                             // Check stream rules against accumulated output
                             if !text.is_empty() {
@@ -550,6 +568,9 @@ impl LlmRouter {
                 }
             }
         }
+
+        drop(chunk_tx);
+        let _ = consumer.await;
 
         Ok(LlmResponse {
             text,
@@ -736,15 +757,18 @@ mod tests {
         }) as Arc<dyn LlmClient>;
         let router = LlmRouter::new_with_clients(client.clone(), client);
 
-        let mut seen_text = String::new();
+        use std::sync::Arc as StdArc;
+        use std::sync::Mutex as StdMutex;
+        let seen_text = StdArc::new(StdMutex::new(String::new()));
+        let seen_clone = seen_text.clone();
         let resp = router
             .chat_stream_with_tools_aggregated(
                 EndpointRole::DefaultModel,
                 Vec::new(),
                 Vec::new(),
-                |c| {
+                move |c| {
                     if let Some(t) = &c.text {
-                        seen_text.push_str(t);
+                        seen_clone.lock().unwrap().push_str(t);
                     }
                 },
             )
@@ -753,7 +777,7 @@ mod tests {
 
         assert_eq!(resp.text, "Hello world!");
         assert_eq!(
-            seen_text, "Hello world!",
+            *seen_text.lock().unwrap(), "Hello world!",
             "on_chunk must see every text delta"
         );
         assert_eq!(resp.tool_calls.len(), 1);
