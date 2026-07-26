@@ -948,29 +948,26 @@ async fn run_react_loop(
 
             self.maybe_compact(task_id, canonical).await;
 
-            let mut thought_chunks: Vec<String> = Vec::new();
-            let mut reasoning_chunks: Vec<String> = Vec::new();
             let emitter = self.emitter.lock().unwrap().clone();
             let (chunk_tx, reasoning_tx, consumer_handle) = spawn_chunk_consumer(&emitter);
             let router = self.router();
             let cancel_res = self.executor.cancellation_token(task_id).await;
             let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
+            let task_id_owned = task_id.to_string();
             tracing::info!("ReAct step {} calling LLM, messages count: {}", step_num, llm_messages.len());
             let response = match router
                 .chat_stream_with_tools_aggregated_cancellable(
                     EndpointRole::DefaultModel,
                     llm_messages,
                     tools.clone(),
-                    |c: &haven_llm::StreamChunk| {
+                    move |c: &haven_llm::StreamChunk| {
                         if let Some(t) = &c.text {
-                            thought_chunks.push(t.clone());
-                            if let Err(e) = chunk_tx.try_send((task_id.to_string(), t.clone(), step_num, run_id)) {
+                            if let Err(e) = chunk_tx.try_send((task_id_owned.clone(), t.clone(), step_num, run_id)) {
                                 tracing::warn!("thought chunk channel full, dropping: {}", e);
                             }
                         }
                         if let Some(r) = &c.reasoning {
-                            reasoning_chunks.push(r.clone());
-                            if let Err(e) = reasoning_tx.try_send((task_id.to_string(), r.clone(), step_num, run_id)) {
+                            if let Err(e) = reasoning_tx.try_send((task_id_owned.clone(), r.clone(), step_num, run_id)) {
                                 tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                             }
                         }
