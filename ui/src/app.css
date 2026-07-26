@@ -71,13 +71,13 @@
  * ========================================================================== */
 :root,
 [data-theme='light'] {
-	/* Primary */
-	--md-sys-color-primary: #3378d6;
+	/* Primary — overridable via --md-accent-hex (set by themeStore.js) */
+	--md-sys-color-primary: var(--md-accent-hex, #3378d6);
 	--md-sys-color-on-primary: #ffffff;
-	--md-sys-color-primary-container: #d7e3ff;
-	--md-sys-color-on-primary-container: #001b3e;
-	--md-sys-color-primary-fixed: #d7e3ff;
-	--md-sys-color-on-primary-fixed: #001b3e;
+	--md-sys-color-primary-container: color-mix(in srgb, var(--md-accent-hex, #3378d6) 20%, #ffffff);
+	--md-sys-color-on-primary-container: color-mix(in srgb, var(--md-accent-hex, #3378d6) 80%, #000000);
+	--md-sys-color-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #3378d6) 20%, #ffffff);
+	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #3378d6) 80%, #000000);
 
 	/* Secondary */
 	--md-sys-color-secondary: #545f70;
@@ -97,10 +97,10 @@
 	--md-sys-color-error-container: #ffdad6;
 	--md-sys-color-on-error-container: #410002;
 
-	/* Success (custom, M3-aligned) */
-	--md-sys-color-success: #2e7d32;
-	--md-sys-color-success-container: #c8efd0;
-	--md-sys-color-on-success-container: #00210b;
+	/* Success (邮政绿 aligned) */
+	--md-sys-color-success: #006548;
+	--md-sys-color-success-container: #cef5e3;
+	--md-sys-color-on-success-container: #002110;
 
 	/* Warning (custom, M3-aligned) */
 	--md-sys-color-warning: #7d5700;
@@ -143,12 +143,12 @@
  * DARK THEME
  * ========================================================================== */
 [data-theme='dark'] {
-	--md-sys-color-primary: #a5c8ff;
-	--md-sys-color-on-primary: #003062;
-	--md-sys-color-primary-container: #0f4792;
-	--md-sys-color-on-primary-container: #d7e3ff;
-	--md-sys-color-primary-fixed: #d7e3ff;
-	--md-sys-color-on-primary-fixed: #001b3e;
+	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #a5c8ff) 85%, #ffffff);
+	--md-sys-color-on-primary: color-mix(in srgb, var(--md-accent-hex, #003062) 70%, #000000);
+	--md-sys-color-primary-container: color-mix(in srgb, var(--md-accent-hex, #0f4792) 70%, #000000);
+	--md-sys-color-on-primary-container: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 30%, #ffffff);
+	--md-sys-color-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 30%, #ffffff);
+	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #001b3e) 70%, #000000);
 
 	--md-sys-color-secondary: #bec6dc;
 	--md-sys-color-on-secondary: #283041;
@@ -165,8 +165,8 @@
 	--md-sys-color-error-container: #93000a;
 	--md-sys-color-on-error-container: #ffdad6;
 
-	--md-sys-color-success: #7fd391;
-	--md-sys-color-success-container: #13571f;
+	--md-sys-color-success: #73d9af;
+	--md-sys-color-success-container: #004d34;
 	--md-sys-color-on-success-container: #a8f6b3;
 
 	--md-sys-color-warning: #f5bd4d;

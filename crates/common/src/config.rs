@@ -378,6 +378,18 @@ impl LogConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Appearance / accent color configuration (M6-??)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct AppearanceConfig {
+    /// Accent color preset key: "blue", "green", "red", or `custom:#rrggbb`.
+    /// `None` means "no preference set" — frontend keeps its localStorage value.
+    pub accent_color: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Notification configuration (M5-03)
 // ---------------------------------------------------------------------------
 
@@ -460,6 +472,7 @@ pub struct AppConfig {
     pub mcp_servers: Vec<McpServerConfig>,
     pub notification: NotificationConfig,
     pub log: LogConfig,
+    pub appearance: AppearanceConfig,
     pub tool_settings: HashMap<String, ToolConfig>,
 }
 
@@ -483,6 +496,7 @@ pub struct Settings {
     pub mcp_servers: Vec<McpServerConfig>,
     pub notification: NotificationConfig,
     pub log: LogConfig,
+    pub appearance: AppearanceConfig,
     pub tool_settings: HashMap<String, ToolConfig>,
 }
 
@@ -506,6 +520,7 @@ impl From<&AppConfig> for Settings {
             mcp_servers: c.mcp_servers.clone(),
             notification: c.notification.clone(),
             log: c.log.clone(),
+            appearance: c.appearance.clone(),
             tool_settings: c.tool_settings.clone(),
         }
     }
@@ -634,6 +649,7 @@ impl ConfigLoader {
         self.config.tool_settings = settings.tool_settings.clone();
         self.config.log = settings.log.clone();
         self.config.notification = settings.notification.clone();
+        self.config.appearance = settings.appearance.clone();
     }
 
     pub fn path(&self) -> &Path {

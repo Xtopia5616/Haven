@@ -15,7 +15,8 @@
 
 	let { children } = $props();
 	let activeTab = $state('chat');
-	let theme = $state(themeStore.current);
+	let theme = $state(themeStore.currentTheme);
+	themeStore.subscribe((v) => theme = v.theme);
 
 	let overlay = $state({
 		visible: false,
@@ -100,7 +101,7 @@
 
 	function toggleTheme() {
 		themeStore.toggle();
-		theme = themeStore.current;
+		theme = themeStore.currentTheme;
 	}
 
 	let unlisteners = [];

@@ -118,6 +118,7 @@
 
 	async function reviewTask(task) {
 		try {
+			await invoke('reopen_task', { taskId: task.id });
 			const result = await invoke('get_task_for_review', { taskId: task.id });
 			const dbMessages = buildReviewMessages(result);
 			// Atomically merge DB messages with any in-memory streaming messages

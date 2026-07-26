@@ -199,6 +199,24 @@ pub async fn supplement_task(
 }
 
 #[tauri::command]
+pub async fn reopen_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(), String> {
+    tracing::info!("reopen_task called: task_id={}", task_id);
+    state
+        .agent
+        .reopen_task(&task_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("reopen_task error: {:?}", e);
+            e.to_string()
+        })?;
+    tracing::info!("reopen_task done");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_tasks(state: State<'_, Arc<AppState>>) -> Result<TaskListResponse, String> {
     let tasks = state.executor.list_tasks().await;
     Ok(TaskListResponse { tasks })

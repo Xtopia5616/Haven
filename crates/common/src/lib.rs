@@ -5,8 +5,8 @@ pub mod stt;
 pub mod types;
 
 pub use config::{
-    AppConfig, ConfigLoader, LogConfig, LogLevel, McpDiscoveryConfig, McpServerConfig, Settings,
-    SkillsExecConfig,
+    AppConfig, AppearanceConfig, ConfigLoader, LogConfig, LogLevel, McpDiscoveryConfig,
+    McpServerConfig, Settings, SkillsExecConfig,
 };
 pub use error::{HavenError, HavenResult};
 pub use stt::SttClient;

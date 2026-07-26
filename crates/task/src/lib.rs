@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-const DISPATCH_POLL_MS: u64 = 1000;
+const DISPATCH_POLL_MS: u64 = 5000;
 const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]

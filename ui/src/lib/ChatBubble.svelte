@@ -128,16 +128,16 @@
 	}
 	.bubble.user {
 		margin-left: auto;
-		background: var(--md-sys-color-surface-container);
-		color: var(--md-sys-color-on-surface);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		background: color-mix(in srgb, var(--md-sys-color-primary) 78%, var(--md-sys-color-surface));
+		color: var(--md-sys-color-on-primary);
+		border: none;
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
 	}
 	.bubble.assistant {
 		margin-right: auto;
-		background: var(--md-sys-color-surface-container);
-		color: var(--md-sys-color-on-surface);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		background: color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface));
+		color: var(--md-sys-color-on-primary-container);
+		border: none;
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-extra-small);
 	}
 	.bubble-header {
@@ -148,7 +148,6 @@
 	.bubble-role {
 		font-size: 11px;
 		font-weight: 700;
-		color: var(--md-sys-color-primary);
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
@@ -172,7 +171,7 @@
 		width: 6px;
 		height: 12px;
 		margin-left: 2px;
-		background: var(--md-sys-color-primary);
+		background: currentColor;
 		animation: blink 1s step-end infinite;
 		vertical-align: middle;
 	}

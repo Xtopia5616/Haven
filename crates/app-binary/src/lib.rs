@@ -656,6 +656,7 @@ pub fn run() {
             commands::cancel_recording,
             commands::process_transcript,
             commands::supplement_task,
+            commands::reopen_task,
             commands::get_tasks,
             commands::cancel_task,
             commands::end_task,

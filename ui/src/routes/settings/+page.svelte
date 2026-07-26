@@ -1,7 +1,8 @@
 <script>
 	import logger from '$lib/logger.js';
-	import { onMount } from 'svelte';
+			import { onMount } from 'svelte';
 	import { invoke } from '$lib/tauri.js';
+	import { themeStore } from '$lib/themeStore.js';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -46,13 +47,15 @@
 		task_error: { in_app: true, windows: true },
 		task_cancelled: { in_app: true, windows: false },
 	});
-	let log = $state({ level: 'info', file_enabled: true, max_file_size_mb: 10, max_files: 5 });
+	let log = $state({ level: 'info', file_enabled: true });
 
 	let preferences = $state([]);
 	let prefLoaded = $state(false);
 
 	let keyChangeDialog = $state({ open: false, model: '', label: '' });
 	let newKeyValue = $state('');
+	let accent = $state(themeStore.currentAccent);
+	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
 
 	onMount(async () => {
 		try {
@@ -73,8 +76,13 @@
 					mcp_server: settings.stt?.mcp_server || '',
 					timeout_secs: settings.stt?.timeout_secs || 30,
 				};
-				notification = settings.notification || notification;
-				log = settings.log || log;
+			notification = settings.notification || notification;
+			log = settings.log || log;
+			if (settings.appearance?.accent_color) {
+				accent = settings.appearance.accent_color;
+				themeStore.setAccent(accent);
+				if (!themeStore.presets[accent]) customAccentHex = themeStore.accentColor;
+			}
 			}
 		} catch (e) {
 			logger.warn('settings', 'load settings error', e);
@@ -157,13 +165,14 @@
 						task_error: { in_app: notification.task_error.in_app, windows: notification.task_error.windows },
 						task_cancelled: { in_app: notification.task_cancelled.in_app, windows: notification.task_cancelled.windows },
 					},
-					log: {
-						level: log.level,
-						file_enabled: log.file_enabled,
-						max_file_size_mb: log.max_file_size_mb,
-						max_files: log.max_files,
-						file_path: null,
-					},
+			log: {
+				level: log.level,
+				file_enabled: log.file_enabled,
+				file_path: null,
+			},
+			appearance: {
+				accent_color: accent,
+			},
 				},
 			});
 		addNotification('Settings saved', 'success');
@@ -200,6 +209,14 @@
 		}
 		keyChangeDialog = { open: false, model: '', label: '' };
 		newKeyValue = '';
+	}
+
+	function contrastText(hex) {
+		const r = parseInt(hex.slice(1, 3), 16);
+		const g = parseInt(hex.slice(3, 5), 16);
+		const b = parseInt(hex.slice(5, 7), 16);
+		const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+		return lum > 0.5 ? '#000000' : '#ffffff';
 	}
 </script>
 
@@ -401,6 +418,71 @@
 		</div>
 	</div>
 
+	<div class="section appearance-section">
+		<h2>Appearance</h2>
+		<div class="form-row">
+			<span class="form-label">Theme</span>
+			<div class="theme-toggle-row" role="radiogroup" aria-label="Theme">
+				<button
+					class="md-btn"
+					class:md-btn--filled={themeStore.currentTheme === 'light'}
+					class:md-btn--tonal={themeStore.currentTheme !== 'light'}
+					role="radio"
+					aria-checked={themeStore.currentTheme === 'light'}
+					onclick={() => themeStore.setTheme('light')}
+				>Light</button>
+				<button
+					class="md-btn"
+					class:md-btn--tonal={themeStore.currentTheme !== 'dark'}
+					class:md-btn--outlined={themeStore.currentTheme === 'dark'}
+					role="radio"
+					aria-checked={themeStore.currentTheme === 'dark'}
+					onclick={() => themeStore.setTheme('dark')}
+				>Dark</button>
+			</div>
+		</div>
+		<div class="form-row">
+			<span class="form-label">Accent Color</span>
+			<div class="accent-picker" role="radiogroup" aria-label="Accent color">
+				{#each Object.entries(themeStore.presets) as [key, preset]}
+					<button
+						class="md-btn"
+						class:accent-swatch-selected={accent === key}
+						style="background: {preset.hex}; color: {contrastText(preset.hex)}; --_btn-state: {contrastText(preset.hex)}; border: 2px solid transparent; border-color: {accent === key ? contrastText(preset.hex) : 'transparent'}"
+						role="radio"
+						aria-checked={accent === key}
+						aria-label="{preset.label} {preset.hex}"
+						onclick={() => { accent = key; themeStore.setAccent(key); }}
+					>{preset.label}</button>
+				{/each}
+				<button
+					class="md-btn md-btn--tonal"
+					class:md-btn--filled={accent.startsWith('#') || accent.startsWith('custom:')}
+					role="radio"
+					aria-checked={accent.startsWith('#') || accent.startsWith('custom:')}
+					aria-label="Custom hex color"
+				>
+					<input
+						id="custom-accent"
+						type="text"
+						class="custom-hex-input"
+						placeholder="#RRGGBB"
+						maxlength="7"
+						value={customAccentHex}
+						oninput={(e) => {
+							const val = /** @type {HTMLInputElement} */(e.target).value;
+							customAccentHex = val;
+							if (/^#[0-9a-f]{6}$/i.test(val)) {
+								accent = val;
+								themeStore.setAccent(val);
+							}
+						}}
+					/>
+				</button>
+			</div>
+		</div>
+	</div>
+
 	<div class="section pref-section">
 		<h2>Preferences</h2>
 		<p class="model-hint" style="margin-bottom: var(--md-sys-space-md)">Learned preferences from your interactions. User-set values take priority over inferred values.</p>
@@ -481,14 +563,6 @@
 				{ value: 'error', label: 'Error' },
 			]} onChange={(v) => { log.level = v; }} />
 		</div>
-		<div class="form-row">
-			<label for="log-max-size">Max File Size (MB)</label>
-			<MaterialNumberField id="log-max-size" value={log.max_file_size_mb} min={1} max={100} onChange={(v) => { log.max_file_size_mb = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="log-max-files">Max Files</label>
-			<MaterialNumberField id="log-max-files" value={log.max_files} min={1} max={50} onChange={(v) => { log.max_files = v; }} />
-		</div>
 	</div>
 
 	<div class="section autostart-section">
@@ -552,7 +626,8 @@
 	.form-row {
 		display: flex; align-items: center; margin-bottom: var(--md-sys-space-sm); gap: var(--md-sys-space-md);
 	}
-	.form-row label { width: 120px; color: var(--md-sys-color-on-surface-variant); font-size: 13px; flex-shrink: 0; }
+	.form-row label,
+	.form-row .form-label { width: 120px; color: var(--md-sys-color-on-surface-variant); font-size: 13px; flex-shrink: 0; }
 
 	.switch-row {
 		display: flex;
@@ -732,5 +807,35 @@
 	}
 	.pref-section .model-hint {
 		font-size: 12px;
+	}
+	.theme-toggle-row {
+		display: flex;
+		gap: var(--md-sys-space-sm);
+		flex: 1;
+	}
+	.accent-picker {
+		display: flex;
+		gap: var(--md-sys-space-sm);
+		flex: 1;
+		flex-wrap: wrap;
+	}
+	.accent-swatch-selected {
+		outline: 2px solid var(--md-sys-color-on-surface);
+		outline-offset: -2px;
+	}
+	.custom-hex-input {
+		width: 84px;
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 14px;
+		background: transparent;
+		border: none;
+		outline: none;
+		color: inherit;
+		padding: 0;
+		text-align: center;
+	}
+	.custom-hex-input::placeholder {
+		color: var(--md-sys-color-on-surface-variant);
+		opacity: 0.6;
 	}
 </style>

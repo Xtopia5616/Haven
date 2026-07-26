@@ -1,63 +1,95 @@
 import { writable } from 'svelte/store';
-import { invoke } from './tauri.js';
-
-/* ===========================================================================
- * Theme store — Material 3 expressive, light/dark only (manual quick toggle).
- * Persistence: localStorage('haven.theme'); applies [data-theme] on <html>.
- * ========================================================================= */
 
 const THEME_KEY = 'haven.theme';
-const VALID = ['light', 'dark'];
+const ACCENT_KEY = 'haven.accent';
+const VALID_THEMES = ['light', 'dark'];
 
-function detectInitial() {
+const CUSTOM_PREFIX = 'custom:';
+
+const ACCENT_PRESETS = {
+	blue: { label: '信息蓝', hex: '#2C5090' },
+	green: { label: '邮政绿', hex: '#006548' },
+	red: { label: '中国红', hex: '#C82910' },
+};
+
+function detectInitialTheme() {
 	if (typeof window === 'undefined') return 'dark';
 	const el = document.documentElement;
 	const existing = el.getAttribute('data-theme');
-	if (existing && VALID.includes(existing)) return existing;
+	if (existing && VALID_THEMES.includes(existing)) return existing;
 	try {
 		const saved = window.localStorage.getItem(THEME_KEY);
-		if (saved && VALID.includes(saved)) return saved;
-	} catch (e) {
-		console.warn('[theme] localStorage getItem failed:', e);
-	}
+		if (saved && VALID_THEMES.includes(saved)) return saved;
+	} catch {}
 	const prefersDark =
 		typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 	return prefersDark ? 'dark' : 'light';
 }
 
-function apply(theme) {
+function detectInitialAccent() {
+	if (typeof window === 'undefined') return 'blue';
+	const el = document.documentElement;
+	const existing = el.getAttribute('data-accent');
+	if (existing && (ACCENT_PRESETS[existing] || existing.startsWith(CUSTOM_PREFIX))) return existing;
+	try {
+		const saved = window.localStorage.getItem(ACCENT_KEY);
+		if (saved && (ACCENT_PRESETS[saved] || saved.startsWith(CUSTOM_PREFIX))) return saved;
+	} catch {}
+	return 'blue';
+}
+
+function resolveAccentHex(accent) {
+	if (ACCENT_PRESETS[accent]) return ACCENT_PRESETS[accent].hex;
+	if (accent && accent.startsWith(CUSTOM_PREFIX)) return accent.slice(CUSTOM_PREFIX.length);
+	return '#2C5090';
+}
+
+function applyTheme(theme) {
 	if (typeof document === 'undefined') return;
 	document.documentElement.setAttribute('data-theme', theme);
 }
 
-let current = detectInitial();
-apply(current);
+function applyAccent(accent) {
+	if (typeof document === 'undefined') return;
+	document.documentElement.setAttribute('data-accent', accent);
+	document.documentElement.style.setProperty('--md-accent-hex', resolveAccentHex(accent));
+}
+
+let currentTheme = detectInitialTheme();
+let currentAccent = detectInitialAccent();
+applyTheme(currentTheme);
+applyAccent(currentAccent);
 
 function createStore() {
-	const { subscribe, set } = writable(current);
+	const { subscribe, set } = writable({ theme: currentTheme, accent: currentAccent });
 	return {
 		subscribe,
-		get current() {
-			return current;
+		get currentTheme() { return currentTheme; },
+		get currentAccent() { return currentAccent; },
+		get accentColor() { return resolveAccentHex(currentAccent); },
+		get presets() { return ACCENT_PRESETS; },
+		get isPreset() { return !!ACCENT_PRESETS[currentAccent]; },
+		setTheme(theme) {
+			if (!VALID_THEMES.includes(theme)) return;
+			currentTheme = theme;
+			applyTheme(theme);
+			try { window.localStorage.setItem(THEME_KEY, theme); } catch {}
+			set({ theme: currentTheme, accent: currentAccent });
 		},
-		set(theme) {
-			if (!VALID.includes(theme)) return;
-			current = theme;
-			apply(theme);
-			try {
-				window.localStorage.setItem(THEME_KEY, theme);
-			} catch (e) {
-				console.warn('[theme] localStorage setItem failed:', e);
+		setAccent(accent) {
+			if (!accent) return;
+			if (ACCENT_PRESETS[accent] || /^#[0-9a-f]{6}$/i.test(accent)) {
+				if (/^#[0-9a-f]{6}$/i.test(accent) && !ACCENT_PRESETS[accent]) {
+					accent = CUSTOM_PREFIX + accent;
+				}
+				currentAccent = accent;
+				applyAccent(accent);
+				try { window.localStorage.setItem(ACCENT_KEY, accent); } catch {}
+				set({ theme: currentTheme, accent: currentAccent });
 			}
-			// Best-effort: persist to backend settings so other windows follow.
-			try {
-				invoke('update_appearance', { theme });
-			} catch (e) {
-				console.warn('[theme] update_appearance failed:', e);
-			}set(theme);
 		},
 		toggle() {
-			this.set(current === 'dark' ? 'light' : 'dark');
+			this.setTheme(currentTheme === 'dark' ? 'light' : 'dark');
 		},
 	};
 }
