@@ -1,8 +1,9 @@
 <script>
 	import '../app.css';
-	import { addNotification, recordingOverlay, newMessage, taskMessagesStore, addTaskMessage, activeTaskIdStore } from '$lib/stores.js';
+	import { addNotification, recordingOverlay, newMessage, taskMessagesStore, addTaskMessage, activeTaskIdStore, modelStateStore, updateModelState, clearModelStateTimer } from '$lib/stores.js';
 	import { themeStore } from '$lib/themeStore.js';
 	import { listen, invoke } from '$lib/tauri.js';
+	import logger from '$lib/logger.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
@@ -28,8 +29,8 @@
 	let duration = $state(0);
 	let durationTimer;
 	let processingTimer;
-	let modelState = $state('ready'); // ready | waiting | streaming | tool | fallback
-	let modelStateTimer;
+	let modelState = $state('ready'); // synced from modelStateStore on mount
+	modelStateStore.subscribe((v) => modelState = v);
 
 	let notifyCfg = $state({
 		task_created: { in_app: true },
@@ -85,7 +86,8 @@
 		try {
 			await invoke('cancel_recording');
 		} catch (e) {
-			console.warn('cancel_recording error:', e);
+			logger.warn('+layout', 'cancel_recording error', e);
+			addNotification(`停止录音失败: ${e}`, 'error', 3000);
 		}
 		setOverlay({
 			visible: false,
@@ -108,7 +110,7 @@
 			const unsub = await listen(event, handler);
 			unlisteners.push(unsub);
 		} catch (e) {
-			console.error(`Failed to register listener for '${event}':`, e);
+			logger.error('+layout', `Failed to register listener for '${event}'`, e);
 		}
 	}
 
@@ -118,7 +120,9 @@
 			if (settings?.notification) {
 				notifyCfg = { ...notifyCfg, ...settings.notification };
 			}
-		}).catch(() => {});
+		}).catch((e) => {
+			logger.warn('+layout', 'get_settings error', e);
+		});
 
 		await safeListen('recording:started', (event) => {
 			const data = event.payload || {};
@@ -237,11 +241,7 @@
 			if (notifyCfg?.task_created?.in_app !== false) {
 				addNotification(`新任务: ${title}`, 'info', 4000);
 			}
-			modelState = 'waiting';
-			if (modelStateTimer) clearTimeout(modelStateTimer);
-			modelStateTimer = setTimeout(() => {
-				if (modelState === 'waiting') modelState = 'ready';
-			}, 5000);
+			updateModelState('waiting', { fallbackDelay: 5000 });
 		});
 		await safeListen('task:completed', (event) => {
 			const data = event.payload;
@@ -249,7 +249,7 @@
 			if (notifyCfg?.task_completed?.in_app !== false) {
 				addNotification(`任务已完成: ${title}`, 'success');
 			}
-			modelState = 'ready';
+			updateModelState('ready');
 		});
 		await safeListen('task:error', (event) => {
 			const data = event.payload;
@@ -257,34 +257,8 @@
 			if (notifyCfg?.task_error?.in_app !== false) {
 				addNotification(`任务出错: ${errMsg}`, 'error', 5000);
 			}
-			modelState = 'ready';
-			if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
-		});
-		await safeListen('agent:thought_chunk', () => {
-			if (modelState !== 'streaming') modelState = 'streaming';
-			if (modelStateTimer) { clearTimeout(modelStateTimer); }
-			// If no more chunks or actions within 2s, assume model finished.
-			modelStateTimer = setTimeout(() => {
-				if (modelState === 'streaming' || modelState === 'waiting') modelState = 'ready';
-			}, 2000);
-		});
-		await safeListen('agent:reasoning_chunk', () => {
-			if (modelState !== 'streaming') modelState = 'streaming';
-			if (modelStateTimer) { clearTimeout(modelStateTimer); }
-			modelStateTimer = setTimeout(() => {
-				if (modelState === 'streaming' || modelState === 'waiting') modelState = 'ready';
-			}, 2000);
-		});
-		await safeListen('agent:action', () => {
-			modelState = 'tool';
-			if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
-		});
-		await safeListen('agent:observation', () => {
-			modelState = 'streaming';
-			if (modelStateTimer) { clearTimeout(modelStateTimer); }
-			modelStateTimer = setTimeout(() => {
-				if (modelState === 'streaming' || modelState === 'waiting') modelState = 'ready';
-			}, 2000);
+			clearModelStateTimer();
+			updateModelState('ready');
 		});
 		await safeListen('task:updated', (event) => {
 			const data = event.payload;
@@ -293,33 +267,29 @@
 				if (notifyCfg?.task_paused?.in_app !== false) {
 					addNotification(`任务已暂停: ${title || '未知'}`, 'warning', 3000);
 				}
-				modelState = 'ready';
-				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
+				clearModelStateTimer();
+				updateModelState('ready');
 			}
 			if (data.status === 'pending') {
 				if (notifyCfg?.task_paused?.in_app !== false) {
 					addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
 				}
-				modelState = 'waiting';
-				if (modelStateTimer) clearTimeout(modelStateTimer);
-				modelStateTimer = setTimeout(() => {
-					if (modelState === 'waiting') modelState = 'ready';
-				}, 5000);
+				updateModelState('waiting', { fallbackDelay: 5000 });
 			}
 			if (data.status === 'completed') {
-				modelState = 'ready';
-				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
+				clearModelStateTimer();
+				updateModelState('ready');
 			}
 			if (data.status === 'cancelled') {
 				if (notifyCfg?.task_cancelled?.in_app !== false) {
 					addNotification(`任务已取消: ${title}`, 'warning');
 				}
-				modelState = 'ready';
-				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
+				clearModelStateTimer();
+				updateModelState('ready');
 			}
 			if (data.status === 'error') {
-				modelState = 'ready';
-				if (modelStateTimer) { clearTimeout(modelStateTimer); modelStateTimer = null; }
+				clearModelStateTimer();
+				updateModelState('ready');
 			}
 		});
 		await safeListen('mcp:status_change', (event) => {
@@ -344,7 +314,7 @@
 			const data = event.payload;
 			const activeId = get(activeTaskIdStore);
 			if (data.task_id && activeId && data.task_id !== activeId) return;
-			modelState = 'fallback';
+			updateModelState('fallback');
 			addNotification(`Fallback: ${data.reason}`, 'warning');
 		});
 	});
@@ -352,7 +322,7 @@
 	onDestroy(() => {
 		stopTimer();
 		if (processingTimer) clearTimeout(processingTimer);
-		if (modelStateTimer) clearTimeout(modelStateTimer);
+		clearModelStateTimer();
 		unlisteners.forEach((u) => u && u());
 	});
 

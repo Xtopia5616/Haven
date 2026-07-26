@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::warn;
+
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -333,7 +333,7 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                warn!("skipping unreadable skill entry: {e}");
+                tracing::warn!("skipping unreadable skill entry: {e}");
                 continue;
             }
         };
@@ -343,7 +343,7 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
         let p_canon = match p.canonicalize() {
             Ok(c) => c,
             Err(e) => {
-                warn!(
+                tracing::warn!(
                     "skipping skill entry {} (cannot canonicalise: {e})",
                     p.display()
                 );
@@ -351,7 +351,7 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
             }
         };
         if !p_canon.starts_with(&root_canon) {
-            warn!(
+            tracing::warn!(
                 "skipping skill entry outside skills root: {}",
                 p_canon.display()
             );
@@ -371,12 +371,12 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
         let md_len = match std::fs::metadata(&skill_md) {
             Ok(m) => m.len(),
             Err(e) => {
-                warn!("cannot stat SKILL.md at {}: {e}", skill_md.display());
+                tracing::warn!("cannot stat SKILL.md at {}: {e}", skill_md.display());
                 continue;
             }
         };
         if md_len > MAX_SKILL_MD_BYTES {
-            warn!(
+            tracing::warn!(
                 "skipping oversized SKILL.md ({} bytes > {MAX_SKILL_MD_BYTES} cap): {}",
                 md_len,
                 skill_md.display()
@@ -387,7 +387,7 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
         let content = match std::fs::read_to_string(&skill_md) {
             Ok(c) => c,
             Err(e) => {
-                warn!("Skipping unreadable SKILL.md at {}: {e}", p.display());
+                tracing::warn!("Skipping unreadable SKILL.md at {}: {e}", p.display());
                 continue;
             }
         };
@@ -402,7 +402,7 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
                     enabled,
                 });
             }
-            Err(e) => warn!("Skipping invalid SKILL.md at {}: {e}", skill_md.display()),
+            Err(e) => tracing::warn!("Skipping invalid SKILL.md at {}: {e}", skill_md.display()),
         }
     }
     Ok(out)

@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::info;
+
 use haven_common::encoding;
 
 /// Manages per-skill virtual environments (M4-02).
@@ -57,7 +57,7 @@ impl VenvManager {
         let python = self.python_path(skill_name);
 
         if !python.exists() {
-            info!(
+            tracing::info!(
                 "Creating venv for skill '{}' at {}",
                 skill_name,
                 venv.display()
@@ -91,7 +91,7 @@ impl VenvManager {
             };
 
             if changed {
-                info!("Installing requirements for skill '{}'", skill_name);
+                tracing::info!("Installing requirements for skill '{}'", skill_name);
                 let output = tokio::process::Command::new(&python)
                     .arg("-m")
                     .arg("pip")

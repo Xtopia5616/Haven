@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures_util::FutureExt;
 use futures_util::Stream;
 use futures_util::StreamExt;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -6,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::pin::Pin;
 use std::time::Duration;
-use tracing::{debug, trace, warn};
+
 
 use crate::types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
@@ -433,7 +434,7 @@ impl HttpLlmClient {
             self.endpoint.base_url.trim_end_matches('/')
         );
 
-        debug!("POST {}", url);
+        tracing::debug!("POST {}", url);
         let mut req = self
             .client
             .post(&url)
@@ -456,7 +457,7 @@ impl HttpLlmClient {
                         .ok()
                         .or_else(|| {
                             // HTTP-date: not commonly used; log and fall back to None
-                            warn!("Retry-After as HTTP-date not yet supported: {}", s);
+                            tracing::warn!("Retry-After as HTTP-date not yet supported: {}", s);
                             None
                         })
                         .map(Duration::from_secs)
@@ -532,46 +533,56 @@ impl HttpLlmClient {
         tokio::spawn({
             let tx = chunk_tx.clone();
             async move {
-                let mut buf = String::new();
-                use futures_util::StreamExt;
-                tokio::pin!(byte_stream);
-                loop {
-                    let chunk = tokio::select! {
-                        biased;
-                        result = byte_stream.next() => result,
-                    };
-                    match chunk {
-                        Some(Ok(bytes)) => {
-                            buf.push_str(&String::from_utf8_lossy(&bytes));
-                            // Process all complete lines in the buffer.
-                            while let Some(newline) = buf.find('\n') {
-                                let line = buf[..newline].trim().to_string();
-                                buf.drain(..=newline);
-                                if line.is_empty() || line.starts_with(':') {
-                                    continue; // SSE comment or blank line
+                let result = std::panic::AssertUnwindSafe(async {
+                    let mut buf = String::new();
+                    use futures_util::StreamExt;
+                    tokio::pin!(byte_stream);
+                    loop {
+                        let chunk = tokio::select! {
+                            biased;
+                            result = byte_stream.next() => result,
+                        };
+                        match chunk {
+                            Some(Ok(bytes)) => {
+                                buf.push_str(&String::from_utf8_lossy(&bytes));
+                                // Process all complete lines in the buffer.
+                                while let Some(newline) = buf.find('\n') {
+                                    let line = buf[..newline].trim().to_string();
+                                    buf.drain(..=newline);
+                                    if line.is_empty() || line.starts_with(':') {
+                                        continue; // SSE comment or blank line
+                                    }
+                                    // Strip SSE "data: " prefix if present; otherwise
+                                    // treat the raw line as JSON (non-standard providers).
+                                    let payload = if let Some(p) = line.strip_prefix("data: ") {
+                                        p.trim().to_string()
+                                    } else {
+                                        line
+                                    };
+                                    if payload == "[DONE]" || payload.is_empty() {
+                                        continue;
+                                    }
+                                    let _ = tx.send(payload);
                                 }
-                                // Strip SSE "data: " prefix if present; otherwise
-                                // treat the raw line as JSON (non-standard providers).
-                                let payload = if let Some(p) = line.strip_prefix("data: ") {
-                                    p.trim().to_string()
-                                } else {
-                                    line
-                                };
-                                if payload == "[DONE]" || payload.is_empty() {
-                                    continue;
+                            }
+                            Some(Err(_)) | None => {
+                                // Flush any remaining buffered data before EOF.
+                                let remaining = buf.trim().to_string();
+                                if !remaining.is_empty() && remaining != "[DONE]" {
+                                    let _ = tx.send(remaining);
                                 }
-                                let _ = tx.send(payload);
+                                break;
                             }
-                        }
-                        Some(Err(_)) | None => {
-                            // Flush any remaining buffered data before EOF.
-                            let remaining = buf.trim().to_string();
-                            if !remaining.is_empty() && remaining != "[DONE]" {
-                                let _ = tx.send(remaining);
-                            }
-                            break;
                         }
                     }
+                })
+                .catch_unwind()
+                .await;
+                if let Err(panic) = result {
+                    tracing::error!(
+                        "byte stream reader panicked: {:?}",
+                        panic.downcast_ref::<String>().unwrap_or(&"unknown".into())
+                    );
                 }
             }
         });
@@ -864,7 +875,7 @@ where
                 let jitter_ms = (delay as f32 * jitter * 1000.0) as u64;
                 let actual_delay = Duration::from_secs(delay)
                     + Duration::from_millis(jitter_ms);
-                trace!("llm retry {} after {:?}", attempt, actual_delay);
+                tracing::trace!("llm retry {} after {:?}", attempt, actual_delay);
                 tokio::time::sleep(actual_delay).await;
                 last_err = Some(e);
             }

@@ -1,10 +1,11 @@
 <script>
+	import logger from '$lib/logger.js';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen } from '$lib/stores.js';
+	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
@@ -115,7 +116,9 @@
 
 	function endTask() {
 		if (activeTaskId) {
-			invoke('end_task', { taskId: activeTaskId });
+			invoke('end_task', { taskId: activeTaskId }).catch((e) => {
+				addNotification(`结束任务失败: ${e}`, 'error', 3000);
+			});
 			clearTaskMessages(activeTaskId);
 		}
 		activeTaskId = null;
@@ -153,7 +156,7 @@
 			const unsub = await listen(event, handler);
 			unlisteners.push(unsub);
 		} catch (e) {
-			console.error(`Failed to register listener for '${event}':`, e);
+			logger.error('+page', `Failed to register listener for '${event}'`, e);
 		}
 	}
 
@@ -230,6 +233,9 @@
 				const tid = data.task_id;
 				const stepId = `thought-${tid}-${data.step_number}-${data.run_id ?? 0}`;
 				const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				pruneSeq(stepId);
+				pruneSeq(reasoningId);
+				updateModelState('ready');
 				updateTaskMessages(tid, (m) => {
 					const reasoningFixed = m.map((x) =>
 						x.id === reasoningId ? { ...x, streaming: false } : x
@@ -247,83 +253,44 @@
 					}];
 				});
 			});
-			await safeListen('agent:thought_chunk', (event) => {
-				const data = event.payload;
-				const tid = data.task_id;
-				const stepId = `thought-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-				const delta = data.delta || '';
-				const seq = data.seq;
-
-				if (seqLastSeen(stepId, seq)) return;
-
-				updateTaskMessages(tid, (m) => {
-					const idx = m.findIndex((x) => x.id === stepId);
-					if (idx >= 0 && m[idx].streaming === false) return m;
-					if (idx >= 0) {
-						const curr = m[idx].content || '';
-						const content = delta.startsWith(curr) ? delta : curr + delta;
-						const next = [...m];
-						next[idx] = {
-							...next[idx],
-							content,
-							streaming: true,
-						};
-						return next;
-					}
-					return [...m, {
-						id: stepId,
-						role: 'assistant',
-						content: delta,
-						type: undefined,
-						voice: false,
-						stepNumber: data.step_number,
-						time: new Date().toLocaleTimeString(),
-						streaming: true,
-					}];
+			function listenChunk(eventName, stepIdPrefix, msgType) {
+				return safeListen(eventName, (event) => {
+					const data = event.payload;
+					const tid = data.task_id;
+					const stepId = `${stepIdPrefix}-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+					const delta = data.delta || '';
+					const seq = data.seq;
+					updateModelState('streaming');
+					if (seqLastSeen(stepId, seq)) return;
+					updateTaskMessages(tid, (m) => {
+						const idx = m.findIndex((x) => x.id === stepId);
+						if (idx >= 0 && m[idx].streaming === false) return m;
+						if (idx >= 0) {
+							const curr = m[idx].content || '';
+							// Some non-OpenAI providers send cumulative text per chunk
+							const content = delta.startsWith(curr) ? delta : curr + delta;
+							const next = [...m];
+							next[idx] = { ...next[idx], content, streaming: true };
+							return next;
+						}
+						return [...m, {
+							id: stepId, role: 'assistant', content: delta,
+							type: msgType, voice: false, stepNumber: data.step_number,
+							time: new Date().toLocaleTimeString(), streaming: true,
+						}];
+					});
 				});
-			});
-			await safeListen('agent:reasoning_chunk', (event) => {
-				const data = event.payload;
-				const tid = data.task_id;
-				const stepId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-				const delta = data.delta || '';
-				const seq = data.seq;
-
-				if (seqLastSeen(stepId, seq)) return;
-
-				updateTaskMessages(tid, (m) => {
-					const idx = m.findIndex((x) => x.id === stepId);
-					if (idx >= 0) {
-						if (m[idx].streaming === false) return m;
-						const curr = m[idx].content || '';
-						const content = delta.startsWith(curr) ? delta : curr + delta;
-						const next = [...m];
-						next[idx] = {
-							...next[idx],
-							content,
-							streaming: true,
-						};
-						return next;
-					}
-					return [...m, {
-						id: stepId,
-						role: 'assistant',
-						content: delta,
-						type: 'reasoning',
-						voice: false,
-						stepNumber: data.step_number,
-						time: new Date().toLocaleTimeString(),
-						streaming: true,
-					}];
-				});
-			});
+			}
+			await listenChunk('agent:thought_chunk', 'thought', undefined);
+			await listenChunk('agent:reasoning_chunk', 'reasoning', 'reasoning');
 			await safeListen('agent:supplement', () => {
 			});
 			await safeListen('agent:action', (event) => {
 				const data = event.payload;
 				if (data.silent) return;
 				const tid = data.task_id;
-				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				updateModelState('tool');
+				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
 				updateTaskMessages(tid, (m) => {
 					const existing = m.find((x) => x.id === toolId);
 					if (existing) return m;
@@ -344,7 +311,8 @@
 				const data = event.payload;
 				if (data.silent) return;
 				const tid = data.task_id;
-				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				updateModelState('streaming');
+				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
 				updateTaskMessages(tid, (m) => {
 					const idx = m.findIndex((x) => x.id === toolId);
 					if (idx >= 0) {
@@ -375,7 +343,7 @@
 				};
 			});
 		} catch (e) {
-			console.warn('safeListen error:', e);
+			logger.warn('+page', 'safeListen error', e);
 		}
 
 		if (browser) {
@@ -409,7 +377,8 @@
 				}
 			}
 		} catch (e) {
-			console.warn('loadTasks error:', e);
+			logger.warn('+page', 'loadTasks error', e);
+			addNotification('加载任务列表失败', 'error', 3000);
 		}
 	}
 

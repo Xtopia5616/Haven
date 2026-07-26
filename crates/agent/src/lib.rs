@@ -69,6 +69,7 @@ pub enum AgentEvent {
         input: Value,
         step_number: u32,
         run_id: u64,
+        tool_call_id: Option<String>,
     },
     Observation {
         task_id: String,
@@ -77,6 +78,7 @@ pub enum AgentEvent {
         step_number: u32,
         run_id: u64,
         silent: bool,
+        tool_call_id: Option<String>,
     },
     TaskCreated(TaskInfo),
     TaskCompleted {
@@ -141,15 +143,14 @@ pub struct AgentLayer {
     current_run_id: AtomicU64,
 }
 
+type ChunkSender = tokio::sync::mpsc::Sender<(String, String, u32, u64)>;
+type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
+
 fn spawn_chunk_consumer(
     emitter: &Option<Arc<dyn AgentEventEmitter>>,
-) -> (
-    tokio::sync::mpsc::UnboundedSender<(String, String, u32, u64)>,
-    tokio::sync::mpsc::UnboundedSender<(String, String, u32, u64)>,
-    Option<tokio::task::JoinHandle<()>>,
-) {
-    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (reasoning_tx, mut reasoning_rx) = tokio::sync::mpsc::unbounded_channel();
+) -> (ChunkSender, ChunkSender, ConsumerHandle) {
+    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel(1024);
+    let (reasoning_tx, mut reasoning_rx) = tokio::sync::mpsc::channel(1024);
 
     let consumer_handle = emitter.as_ref().map(|em| {
         let em_clone = em.clone();
@@ -647,7 +648,7 @@ impl AgentLayer {
         }
     }
 
-    async fn emit_action(&self, task_id: &str, tool_name: &str, input: &Value, step_number: u32, run_id: u64) {
+    async fn emit_action(&self, task_id: &str, tool_name: &str, input: &Value, step_number: u32, run_id: u64, tool_call_id: Option<String>) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter.emit(AgentEvent::Action {
@@ -656,10 +657,12 @@ impl AgentLayer {
                 input: input.clone(),
                 step_number,
                 run_id,
+                tool_call_id,
             }).await;
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn emit_observation(
         &self,
         task_id: &str,
@@ -668,6 +671,7 @@ impl AgentLayer {
         step_number: u32,
         run_id: u64,
         silent: bool,
+        tool_call_id: Option<String>,
     ) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
@@ -678,6 +682,7 @@ impl AgentLayer {
                 step_number,
                 run_id,
                 silent,
+                tool_call_id,
             }).await;
         }
     }
@@ -796,7 +801,13 @@ impl AgentLayer {
                         tool_name: tc.name.clone(),
                         tool_input: args,
                         is_final,
-                        tool_call_id: Some(tc.id.clone()),
+                        tool_call_id: Some(
+                            if tc.id.is_empty() {
+                                uuid::Uuid::new_v4().to_string()
+                            } else {
+                                tc.id.clone()
+                            },
+                        ),
                     }
                 })
                 .collect()
@@ -953,11 +964,15 @@ async fn run_react_loop(
                     |c: &haven_llm::StreamChunk| {
                         if let Some(t) = &c.text {
                             thought_chunks.push(t.clone());
-                            let _ = chunk_tx.send((task_id.to_string(), t.clone(), step_num, run_id));
+                            if let Err(e) = chunk_tx.try_send((task_id.to_string(), t.clone(), step_num, run_id)) {
+                                tracing::warn!("thought chunk channel full, dropping: {}", e);
+                            }
                         }
                         if let Some(r) = &c.reasoning {
                             reasoning_chunks.push(r.clone());
-                            let _ = reasoning_tx.send((task_id.to_string(), r.clone(), step_num, run_id));
+                            if let Err(e) = reasoning_tx.try_send((task_id.to_string(), r.clone(), step_num, run_id)) {
+                                tracing::warn!("reasoning chunk channel full, dropping: {}", e);
+                            }
                         }
                     },
                     cancel_res.clone(),
@@ -989,11 +1004,15 @@ async fn run_react_loop(
                                 |c: &haven_llm::StreamChunk| {
                                     if let Some(t) = &c.text {
                                         thought_chunks.push(t.clone());
-                                        let _ = chunk_tx2.send((task_id.to_string(), t.clone(), step_num, run_id));
+                                        if let Err(e) = chunk_tx2.try_send((task_id.to_string(), t.clone(), step_num, run_id)) {
+                                            tracing::warn!("retry thought chunk channel full, dropping: {}", e);
+                                        }
                                     }
                                     if let Some(r) = &c.reasoning {
                                         reasoning_chunks.push(r.clone());
-                                        let _ = reasoning_tx2.send((task_id.to_string(), r.clone(), step_num, run_id));
+                                        if let Err(e) = reasoning_tx2.try_send((task_id.to_string(), r.clone(), step_num, run_id)) {
+                                            tracing::warn!("retry reasoning chunk channel full, dropping: {}", e);
+                                        }
                                     }
                                 },
                                 cancel_res.clone(),
@@ -1121,7 +1140,7 @@ async fn run_react_loop(
 
             let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
             for action in &non_final {
-                self.emit_action(task_id, &action.tool_name, &action.tool_input, step_num, run_id).await;
+                self.emit_action(task_id, &action.tool_name, &action.tool_input, step_num, run_id, action.tool_call_id.clone()).await;
             }
 
             if !non_final.is_empty() {
@@ -1188,7 +1207,7 @@ async fn run_react_loop(
                     any_tool_failure = true;
                 }
                 let silent = action.tool_input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.emit_observation(task_id, &step_result, &tool_name, step_num, run_id, silent).await;
+                self.emit_observation(task_id, &step_result, &tool_name, step_num, run_id, silent, action.tool_call_id.clone()).await;
 
                 if let Some(last) = history.last_mut() {
                     last.action = Some(action.clone());

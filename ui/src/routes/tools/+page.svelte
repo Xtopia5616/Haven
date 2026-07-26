@@ -11,6 +11,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke, listen } from '$lib/tauri.js';
 	import { addNotification } from '$lib/stores.js';
+	import logger from '$lib/logger.js';
 	import SkillCard from '$lib/SkillCard.svelte';
 	import SkillDetailDrawer from '$lib/SkillDetailDrawer.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
@@ -32,15 +33,21 @@
 			}
 		} catch {
 			builtinTools = [];
+			logger.warn('tools', 'get_tools error');
+			addNotification('Failed to load tools', 'error', 3000);
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
-		unlistenSkills = await listen('skills:status_change', async () => {
-			await refreshSkillList();
-		});
-		unlistenMcp = await listen('mcp:status_change', async () => {
-			await refreshMcpServers();
-		});
+		try {
+			unlistenSkills = await listen('skills:status_change', async () => {
+				await refreshSkillList();
+			});
+			unlistenMcp = await listen('mcp:status_change', async () => {
+				await refreshMcpServers();
+			});
+		} catch (e) {
+			logger.warn('tools', 'listen registration error', e);
+		}
 	});
 
 	onDestroy(() => {
@@ -54,6 +61,7 @@
 			mcpServers = result || [];
 		} catch {
 			mcpServers = [];
+			logger.warn('tools', 'list_mcp_tools error');
 		}
 	}
 
@@ -63,6 +71,7 @@
 			skills = result || [];
 		} catch {
 			skills = [];
+			logger.warn('tools', 'list_skills error');
 		}
 	}
 

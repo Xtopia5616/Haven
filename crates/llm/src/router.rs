@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+
 
 use crate::client::{HttpLlmClient, LlmClient, with_retry};
 use crate::stream_rules::{check_stream_rules, StreamRule, StreamRuleMatch, StreamRuleMode};
@@ -282,7 +282,7 @@ impl LlmRouter {
                 // §2.13: preserve primary error
                 self.record_failure(role).await;
                 let primary_msg = primary_err.to_string();
-                warn!(
+                tracing::warn!(
                     "primary endpoint failed: {}, attempting fallback",
                     primary_msg
                 );
@@ -365,7 +365,7 @@ impl LlmRouter {
             }
             Err(e) => {
                 self.record_failure(&role).await;
-                warn!("primary chat_stream failed: {}, attempting fallback", e);
+                tracing::warn!("primary chat_stream failed: {}, attempting fallback", e);
                 self.fallback_active.store(true, Ordering::SeqCst);
                 self.fallback.chat_stream(messages).await
             }

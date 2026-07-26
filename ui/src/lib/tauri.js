@@ -10,13 +10,15 @@ async function init() {
 	try {
 		const mod = await import('@tauri-apps/api/core');
 		_tauriInvoke = mod.invoke;
-	} catch {
+	} catch (e) {
+		console.warn('[tauri] @tauri-apps/api/core import failed:', e);
 		return;
 	}
 	try {
 		const mod = await import('@tauri-apps/api/event');
 		_tauriListen = mod.listen;
-	} catch {
+	} catch (e) {
+		console.warn('[tauri] @tauri-apps/api/event import failed:', e);
 		return;
 	}
 	_initialized = true;

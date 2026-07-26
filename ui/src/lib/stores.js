@@ -73,6 +73,11 @@ export function seqLastSeen(stepId, seq) {
 	return false;
 }
 
+/** Remove seq tracking for a completed step to keep the map bounded. */
+export function pruneSeq(stepId) {
+	seqMap.delete(stepId);
+}
+
 export function clearSeqMap(taskId) {
 	for (const key of seqMap.keys()) {
 		if (key.includes(taskId)) seqMap.delete(key);
@@ -147,6 +152,31 @@ export const recordingOverlay = writable({
 	vadState: 'silent',
 });
 
+// Model state for the status chip in the titlebar.
+// Driven by +page.svelte's agent:* event handlers; consumed by +layout.svelte.
+export const modelStateStore = writable('ready');
+
+let modelStateTimer = null;
+export function updateModelState(state, { fallbackDelay } = /** @type {{ fallbackDelay?: number }} */ ({})) {
+	if (modelStateTimer) clearTimeout(modelStateTimer);
+	modelStateTimer = null;
+	modelStateStore.set(state);
+	if (state === 'waiting') {
+		modelStateTimer = setTimeout(() => {
+			modelStateStore.update((s) => (s === 'waiting' ? 'ready' : s));
+		}, fallbackDelay ?? 5000);
+	} else if (state === 'streaming') {
+		modelStateTimer = setTimeout(() => {
+			modelStateStore.update((s) => (s === 'streaming' ? 'ready' : s));
+		}, fallbackDelay ?? 2000);
+	}
+}
+
+export function clearModelStateTimer() {
+	if (modelStateTimer) clearTimeout(modelStateTimer);
+	modelStateTimer = null;
+}
+
 // Skills store for the tools page skills tab.
 export const skillsStore = writable([]);
 
@@ -154,7 +184,8 @@ export async function refreshSkills() {
 	try {
 		const result = await invoke('list_skills');
 		skillsStore.set(result || []);
-	} catch {
+	} catch (e) {
+		console.warn('[stores] refreshSkills error:', e);
 		skillsStore.set([]);
 	}
 }

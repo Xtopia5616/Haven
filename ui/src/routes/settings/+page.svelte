@@ -1,4 +1,5 @@
 <script>
+	import logger from '$lib/logger.js';
 	import { onMount } from 'svelte';
 	import { invoke } from '$lib/tauri.js';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
@@ -76,17 +77,20 @@
 				log = settings.log || log;
 			}
 		} catch (e) {
-			console.warn('load settings error:', e);
+			logger.warn('settings', 'load settings error', e);
+			addNotification('加载设置失败', 'error', 4000);
 		}
 		try {
 			keyConfigured = await invoke('get_api_key_status');
 		} catch (e) {
-			console.warn('get_api_key_status error:', e);
+			logger.warn('settings', 'get_api_key_status error', e);
+			addNotification('获取 API Key 状态失败', 'error', 3000);
 		}
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
 		} catch (e) {
-			console.warn('is_autostart_enabled error:', e);
+			logger.warn('settings', 'is_autostart_enabled error', e);
+			addNotification('获取开机自启状态失败', 'error', 3000);
 		}
 		await loadPreferences();
 	});
@@ -99,6 +103,7 @@
 			prefLoaded = true;
 		} catch {
 			preferences = [];
+			logger.warn('settings', 'load preferences error');
 		}
 	}
 
@@ -107,7 +112,8 @@
 			await invoke('delete_preference', { key });
 			preferences = preferences.filter(([k]) => k !== key);
 		} catch (e) {
-			console.warn('delete preference error:', e);
+			logger.warn('settings', 'delete preference error', e);
+			addNotification(`删除偏好失败: ${e}`, 'error', 3000);
 		}
 	}
 
@@ -173,7 +179,8 @@
 				}
 			}
 		} catch (e) {
-			console.error('save failed', e);
+			logger.error('settings', 'save failed', e);
+			addNotification(`保存设置失败: ${e}`, 'error', 5000);
 		}
 	}
 

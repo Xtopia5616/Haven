@@ -8,7 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -312,7 +312,7 @@ impl McpClient {
 
         let server_name = result["serverInfo"]["name"].as_str().unwrap_or("?");
         let server_version = result["serverInfo"]["version"].as_str().unwrap_or("?");
-        info!(
+        tracing::info!(
             "MCP server '{}' connected: {} v{}",
             self.name, server_name, server_version
         );
@@ -574,7 +574,7 @@ impl McpClient {
 
                         let shutdown_ok = self.shutdown().await;
                         if let Err(e) = &shutdown_ok {
-                            warn!("reconnect shutdown cleanup: {e}");
+                            tracing::warn!("reconnect shutdown cleanup: {e}");
                         }
 
                         match self.connect().await {
@@ -704,7 +704,7 @@ impl McpManager {
 
             let listener_client = client.clone();
             listener_client.start_notification_listener(move |server_name: &str| {
-                info!("MCP server '{}' pushed tools/list_changed", server_name);
+                tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
             });
 
             let status_tx = self.status_tx.clone();
@@ -717,7 +717,7 @@ impl McpManager {
         while let Some(result) = pending.join_next().await {
             match result {
                 Ok((name, client, status_tx, Ok(()))) => {
-                    info!("MCP server '{}' connected successfully", name);
+                    tracing::info!("MCP server '{}' connected successfully", name);
                     let _ = status_tx.send(McpStatusChangeEvent {
                         name: name.clone(),
                         status: McpClientStatus::Connected,
@@ -725,7 +725,7 @@ impl McpManager {
                     drop(client);
                 }
                 Ok((name, client, status_tx, Err(e))) => {
-                    warn!(
+                    tracing::warn!(
                         "MCP server '{}' failed to connect: {} (will retry later)",
                         name, e
                     );
@@ -738,7 +738,7 @@ impl McpManager {
                     });
                 }
                 Err(e) => {
-                    warn!("MCP connection task failed: {}", e);
+                    tracing::warn!("MCP connection task failed: {}", e);
                 }
             }
         }
@@ -764,7 +764,7 @@ impl McpManager {
 
         let listener_client = client.clone();
         listener_client.start_notification_listener(move |server_name: &str| {
-            info!("MCP server '{}' pushed tools/list_changed", server_name);
+            tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
         });
 
         client.connect().await.map_err(|e| {
@@ -817,7 +817,7 @@ impl McpManager {
         for (name, client) in clients.iter() {
             client.cancel_token.lock().await.cancel();
             if let Err(e) = client.shutdown().await {
-                warn!("Error shutting down MCP client '{}': {}", name, e);
+                tracing::warn!("Error shutting down MCP client '{}': {}", name, e);
             }
         }
     }
@@ -856,7 +856,7 @@ impl McpManager {
                         *client.tools_cache.lock().await = Some(tools);
                     }
                     Err(e) => {
-                        warn!("Failed to refresh tools from '{}': {}", name, e);
+                        tracing::warn!("Failed to refresh tools from '{}': {}", name, e);
                     }
                 }
             }));

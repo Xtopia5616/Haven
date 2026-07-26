@@ -90,7 +90,7 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::Action { task_id, tool_name, input, step_number, run_id } => {
+            AgentEvent::Action { task_id, tool_name, input, step_number, run_id, tool_call_id } => {
                 let silent = input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
                 tracing::info!("TauriEmitter::on_action: task={} tool={} step={} run={}", task_id, tool_name, step_number, run_id);
                 let _ = self.handle.emit(
@@ -102,10 +102,11 @@ impl AgentEventEmitter for TauriEmitter {
                         "step_number": step_number,
                         "run_id": run_id,
                         "silent": silent,
+                        "tool_call_id": tool_call_id,
                     }),
                 );
             }
-            AgentEvent::Observation { task_id, observation, tool_name, step_number, run_id, silent } => {
+            AgentEvent::Observation { task_id, observation, tool_name, step_number, run_id, silent, tool_call_id } => {
                 tracing::info!("TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}", task_id, tool_name, step_number, run_id, silent);
                 let _ = self.handle.emit(
                     "agent:observation",
@@ -116,6 +117,7 @@ impl AgentEventEmitter for TauriEmitter {
                         "step_number": step_number,
                         "run_id": run_id,
                         "silent": silent,
+                        "tool_call_id": tool_call_id,
                     }),
                 );
             }

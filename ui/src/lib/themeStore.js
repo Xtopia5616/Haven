@@ -17,7 +17,9 @@ function detectInitial() {
 	try {
 		const saved = window.localStorage.getItem(THEME_KEY);
 		if (saved && VALID.includes(saved)) return saved;
-	} catch {}
+	} catch (e) {
+		console.warn('[theme] localStorage getItem failed:', e);
+	}
 	const prefersDark =
 		typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 	return prefersDark ? 'dark' : 'light';
@@ -44,12 +46,15 @@ function createStore() {
 			apply(theme);
 			try {
 				window.localStorage.setItem(THEME_KEY, theme);
-			} catch {}
+			} catch (e) {
+				console.warn('[theme] localStorage setItem failed:', e);
+			}
 			// Best-effort: persist to backend settings so other windows follow.
 			try {
 				invoke('update_appearance', { theme });
-			} catch {}
-			set(theme);
+			} catch (e) {
+				console.warn('[theme] update_appearance failed:', e);
+			}set(theme);
 		},
 		toggle() {
 			this.set(current === 'dark' ? 'light' : 'dark');

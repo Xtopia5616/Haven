@@ -1,19 +1,19 @@
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de;
 
 /// A rule that is evaluated against every chunk of the LLM response stream.
 ///
 /// When the pattern matches the accumulated output text, the rule can either
 /// abort the current stream and inject guidance before retrying, or send a
 /// warning event to the UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct StreamRule {
     /// Name for identification in logs and UI.
     pub name: String,
-    /// Regex pattern to match against the accumulated output text.
-    #[serde(skip, default = "default_regex")]
+    /// Compiled regex pattern.
     pub pattern: Regex,
-    /// Raw pattern string for serialization.
+    /// Raw pattern string for (de)serialization.
     pub pattern_str: String,
     /// Text to inject as a system reminder when the rule triggers in abort mode.
     pub inject: String,
@@ -21,8 +21,39 @@ pub struct StreamRule {
     pub mode: StreamRuleMode,
 }
 
-fn default_regex() -> Regex {
-    Regex::new(r"^$").unwrap()
+impl Serialize for StreamRule {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("StreamRule", 4)?;
+        st.serialize_field("name", &self.name)?;
+        st.serialize_field("pattern_str", &self.pattern_str)?;
+        st.serialize_field("inject", &self.inject)?;
+        st.serialize_field("mode", &self.mode)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamRule {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Helper {
+            name: String,
+            pattern_str: String,
+            inject: String,
+            mode: StreamRuleMode,
+        }
+        let h = Helper::deserialize(d)?;
+        let pattern = Regex::new(&h.pattern_str).map_err(|e| {
+            de::Error::custom(format!("invalid stream rule regex '{}': {}", h.pattern_str, e))
+        })?;
+        Ok(StreamRule {
+            name: h.name,
+            pattern,
+            pattern_str: h.pattern_str,
+            inject: h.inject,
+            mode: h.mode,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

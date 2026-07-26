@@ -19,6 +19,7 @@
 
 	const todayISO = $derived(new Date().toISOString().slice(0, 10));
 
+	import logger from '$lib/logger.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
@@ -68,6 +69,8 @@
 			tasks = [];
 			totalCount = 0;
 			hasMore = false;
+			logger.warn('history', 'loadHistory error');
+			addNotification('加载历史记录失败', 'error', 3000);
 		}
 		loading = false;
 	}
@@ -86,6 +89,8 @@
 			}
 		} catch {
 			hasMore = false;
+			logger.warn('history', 'loadMore error');
+			addNotification('加载更多历史记录失败', 'error', 3000);
 		}
 		loading = false;
 	}
@@ -125,7 +130,8 @@
 			reviewTargetStore.set({ taskId: task.id, summary: task.input_text });
 			await goto('/');
 		} catch (e) {
-			console.error('Failed to load task for review:', e);
+			logger.error('history', 'Failed to load task for review', e);
+			addNotification(`加载任务详情失败: ${e}`, 'error', 4000);
 		}
 	}
 
@@ -315,7 +321,10 @@
 			a.download = `haven-history-${new Date().toISOString().slice(0, 10)}.json`;
 			a.click();
 			URL.revokeObjectURL(url);
-		} catch {}
+		} catch {
+			logger.warn('history', 'export failed');
+			addNotification('导出失败', 'error', 4000);
+		}
 	}
 </script>
 

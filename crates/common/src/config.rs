@@ -358,8 +358,6 @@ pub struct LogConfig {
     pub level: LogLevel,
     pub file_enabled: bool,
     pub file_path: Option<PathBuf>,
-    pub max_file_size_mb: u64,
-    pub max_files: u32,
 }
 
 impl Default for LogConfig {
@@ -368,8 +366,6 @@ impl Default for LogConfig {
             level: LogLevel::Info,
             file_enabled: true,
             file_path: None,
-            max_file_size_mb: 10,
-            max_files: 5,
         }
     }
 }
@@ -551,6 +547,7 @@ impl ConfigLoader {
             std::fs::create_dir_all(parent)?;
         }
         if !path.exists() {
+            tracing::info!("config not found, creating default at {}", path.display());
             let default_cfg = AppConfig::default();
             let toml_str = toml::to_string_pretty(&default_cfg)?;
             std::fs::write(path, toml_str)?;
@@ -559,6 +556,7 @@ impl ConfigLoader {
                 config: default_cfg,
             });
         }
+        tracing::info!("loading config from {}", path.display());
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = toml::from_str(&content).unwrap_or_default();
         Ok(Self {

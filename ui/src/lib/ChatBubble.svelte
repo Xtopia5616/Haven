@@ -5,7 +5,6 @@
 
 	let md = $state(null);
 	let mdHtml = $state('');
-	let streamRef = { active: false };
 
 	function handleContextMenu(e) {
 		if (onContextMenu) {
@@ -43,17 +42,10 @@
 			breaks: true,
 			highlight(str, lang) {
 				if (!lang || !highlighter.getLanguage(lang)) return '';
-				if (streamRef.active) {
-					return `<pre><code>${str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`;
-				}
 				try { return highlighter.highlight(str, { language: lang }).value; }
-				catch { return ''; }
+				catch (e) { console.warn('[ChatBubble] highlight failed:', e); return ''; }
 			},
 		});
-	});
-
-	$effect(() => {
-		streamRef.active = streaming;
 	});
 
 	$effect(() => {
@@ -87,14 +79,17 @@
 				>{content}{#if streaming}<span class="caret"></span>{/if}</em
 			>
 		{:else if msgType === 'reasoning'}
-			<details class="reasoning-block" open>
+			<details class="reasoning-block" open={streaming}>
 				<summary class="reasoning-summary">Thinking...</summary>
 				<div class="reasoning-content"><em>{content}{#if streaming}<span class="caret"></span>{/if}</em></div>
 			</details>
 		{:else if msgType === 'tool'}
 			<div class="tool-call">&#9654; Calling {toolName}</div>
 			{#if content}
-				<pre class="observation">{content}</pre>
+				<details class="observation-block" open={streaming}>
+					<summary class="observation-summary">Result</summary>
+					<pre class="observation">{content}</pre>
+				</details>
 			{/if}
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
@@ -204,6 +199,20 @@
 		font-size: 12px;
 		font-weight: 600;
 		display: inline-block;
+	}
+	.observation-block {
+		margin-top: var(--md-sys-space-xs);
+	}
+	.observation-summary {
+		color: var(--md-sys-color-on-surface-variant);
+		font-weight: 600;
+		cursor: pointer;
+		font-size: 11px;
+		user-select: none;
+		padding: 2px 0;
+	}
+	.observation-block[open] .observation-summary {
+		margin-bottom: var(--md-sys-space-xs);
 	}
 	.observation {
 		background: var(--md-sys-color-surface-container-high);

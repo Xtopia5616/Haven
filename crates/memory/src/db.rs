@@ -24,6 +24,7 @@ pub struct Database {
 
 impl Database {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
+        tracing::info!("opening database at {}", path.display());
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         crate::migrations::run_migrations(&conn)?;
@@ -35,6 +36,7 @@ impl Database {
 
     #[cfg(test)]
     pub fn open_in_memory() -> anyhow::Result<Self> {
+        tracing::debug!("opening in-memory database");
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         crate::migrations::run_migrations(&conn)?;
