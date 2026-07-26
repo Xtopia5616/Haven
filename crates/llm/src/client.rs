@@ -105,6 +105,8 @@ struct OpenAiRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
     // §2.8: additional model parameters
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f32>,
@@ -350,16 +352,22 @@ impl HttpLlmClient {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> OpenAiRequest {
+        let has_tools = !tools.is_empty();
         OpenAiRequest {
             model: self.endpoint.model_name.clone(),
             messages: Self::convert_messages(messages),
             max_tokens: Some(self.endpoint.max_tokens),
             temperature: Some(self.endpoint.temperature),
             stream,
-            tools: if tools.is_empty() {
-                None
-            } else {
+            tools: if has_tools {
                 Some(Self::convert_tools(tools))
+            } else {
+                None
+            },
+            tool_choice: if has_tools {
+                Some(serde_json::json!("auto"))
+            } else {
+                None
             },
             top_p: self.endpoint.top_p,
             top_k: self.endpoint.top_k,
@@ -432,7 +440,7 @@ impl HttpLlmClient {
             .headers(self.build_headers())
             .json(&body);
         // §2.9: per-request timeout for non-streaming
-        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs.min(7)));
+        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = req.send().await.map_err(LlmError::from)?;
 
         if !resp.status().is_success() {
@@ -486,12 +494,12 @@ impl HttpLlmClient {
             .post(&url)
             .headers(self.build_headers())
             .json(&body);
-        // Unify timeout: use timeout_streaming_secs or fall back to timeout_secs
+        // Use timeout_streaming_secs for streaming duration, or fall back to timeout_secs.
+        // For streaming the timeout should cover the full generation, not just connect.
         let timeout = self
             .endpoint
             .timeout_streaming_secs
-            .unwrap_or(self.endpoint.timeout_secs)
-            .min(7);
+            .unwrap_or(self.endpoint.timeout_secs);
         tracing::info!("chat_stream_inner: sending request with {}s timeout", timeout);
         req = req.timeout(Duration::from_secs(timeout));
         let resp = req.send().await.map_err(|e| {
@@ -592,44 +600,60 @@ impl HttpLlmClient {
             choice.delta.as_ref().or(choice.message.as_ref())
         }
 
+        struct UnfoldState {
+            rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+            done: bool,
+            accumulated_text: String,
+            tool_calls_acc: Vec<ToolCall>,
+            last_model: Option<String>,
+            has_finish_reason: bool,
+        }
+
         let mapped = futures_util::stream::unfold(
-            (chunk_rx, false, String::new(), Vec::<ToolCall>::new(), None::<String>, false),
-            move |(mut rx, mut done, mut accumulated_text, mut tool_calls_acc, mut last_model, mut has_finish_reason)| async move {
-                if done {
+            UnfoldState {
+                rx: chunk_rx,
+                done: false,
+                accumulated_text: String::new(),
+                tool_calls_acc: Vec::new(),
+                last_model: None,
+                has_finish_reason: false,
+            },
+            move |mut state| async move {
+                if state.done {
                     return None;
                 }
-                let data = rx.recv().await?;
-                if data == "[DONE]" || data.is_empty() {
-                    if !has_finish_reason && !accumulated_text.is_empty() {
-                        return Some((
-                            Err(LlmError::StreamTruncated),
-                            (rx, true, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
-                        ));
+                let data = match state.rx.recv().await {
+                    Some(d) => d,
+                    None => {
+                        let chunk = if !state.has_finish_reason
+                            && !state.accumulated_text.is_empty()
+                        {
+                            Err(LlmError::StreamTruncated)
+                        } else {
+                            Ok(StreamChunk {
+                                text: None,
+                                tool_calls: std::mem::take(&mut state.tool_calls_acc),
+                                finish_reason: None,
+                                usage: None,
+                                model: state.last_model.clone(),
+                                reasoning: None,
+                            })
+                        };
+                        state.done = true;
+                        return Some((chunk, state));
                     }
-                    done = true;
-                    return Some((
-                        Ok(StreamChunk {
-                            text: None,
-                            tool_calls: std::mem::take(&mut tool_calls_acc),
-                            finish_reason: None,
-                            usage: None,
-                            model: last_model.clone(),
-                            reasoning: None,
-                        }),
-                        (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
-                    ));
-                }
+                };
                 let parsed: Result<OpenAiStreamResponse, _> = serde_json::from_str(&data);
                 match parsed {
                     Ok(resp) => {
                         if let Some(model) = &resp.model {
-                            last_model = Some(model.clone());
+                            state.last_model = Some(model.clone());
                         }
                         if let Some(choice) = resp.choices.into_iter().next() {
                             if let Some(delta) = choice_delta(&choice)
                                 && let Some(content) = &delta.content
                             {
-                                accumulated_text.push_str(content);
+                                state.accumulated_text.push_str(content);
                             }
                             if let Some(delta) = choice_delta(&choice)
                                 && let Some(calls) = &delta.tool_calls
@@ -637,7 +661,7 @@ impl HttpLlmClient {
                                 for c in calls {
                                     let idx = c.index.unwrap_or(0) as usize;
                                     merge_tool_call(
-                                        &mut tool_calls_acc,
+                                        &mut state.tool_calls_acc,
                                         idx,
                                         c.id.as_deref(),
                                         c.function.name.as_deref(),
@@ -646,19 +670,23 @@ impl HttpLlmClient {
                                 }
                             }
                             if choice.finish_reason.is_some() {
-                                has_finish_reason = true;
+                                state.has_finish_reason = true;
                             }
-                            let finish_reason = choice.finish_reason.as_ref().and_then(|s| FinishReason::from_openai(s));
+                            let finish_reason = choice.finish_reason
+                                .as_ref()
+                                .and_then(|s| FinishReason::from_openai(s));
                             Some((
                                 Ok(StreamChunk {
-                                    text: choice_delta(&choice).and_then(|d| d.content.clone()),
-                                    reasoning: choice_delta(&choice).and_then(|d| d.reasoning_content.clone()),
+                                    text: choice_delta(&choice)
+                                        .and_then(|d| d.content.clone()),
+                                    reasoning: choice_delta(&choice)
+                                        .and_then(|d| d.reasoning_content.clone()),
                                     tool_calls: Vec::new(),
                                     finish_reason,
                                     usage: None,
-                                    model: last_model.clone(),
+                                    model: state.last_model.clone(),
                                 }),
-                                (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                                state,
                             ))
                         } else {
                             Some((
@@ -668,18 +696,18 @@ impl HttpLlmClient {
                                     tool_calls: Vec::new(),
                                     finish_reason: None,
                                     usage: None,
-                                    model: last_model.clone(),
+                                    model: state.last_model.clone(),
                                 }),
-                                (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                                state,
                             ))
                         }
                     }
                     Err(e) => Some((
                         Err(LlmError::InvalidResponse(format!("parse error: {}", e))),
-                        (rx, done, accumulated_text, tool_calls_acc, last_model, has_finish_reason),
+                        state,
                     )),
                 }
-            }
+            },
         )
         .fuse();
 

@@ -15,7 +15,6 @@ pub type SessionId = String;
 pub enum McpTransportType {
     #[default]
     Stdio,
-    Sse,
 }
 
 /// Hotkey activation mode.
@@ -56,8 +55,6 @@ pub enum RiskLevel {
 pub enum ConfirmationMode {
     #[default]
     Always,
-    SessionTrust,
-    Whitelist,
 }
 
 // ---------------------------------------------------------------------------

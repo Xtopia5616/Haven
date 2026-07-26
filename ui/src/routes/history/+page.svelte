@@ -163,6 +163,7 @@
 						voice: false,
 						time: formatDate(step.created_at),
 						streaming: false,
+						stepNumber: step.step_index,
 					});
 				}
 			}
@@ -183,6 +184,26 @@
 				time: formatDate(task.created_at || new Date().toISOString()),
 				streaming: false,
 			});
+		}
+		// Infer stepNumber for assistant session messages by backward-forward pass.
+		// Backward: tool messages precede their action/observation in time, so
+		// walking backwards assigns stepNumber to preceding assistant messages.
+		let lastStep = null;
+		for (let i = items.length - 1; i >= 0; i--) {
+			if (items[i].stepNumber != null) lastStep = items[i].stepNumber;
+			else if (items[i].role === 'assistant' && lastStep != null) items[i].stepNumber = lastStep;
+		}
+		// Forward: catch any assistant messages after the last tool message.
+		lastStep = null;
+		for (let i = 0; i < items.length; i++) {
+			if (items[i].stepNumber != null) lastStep = items[i].stepNumber;
+			else if (items[i].role === 'assistant' && lastStep != null) items[i].stepNumber = lastStep;
+		}
+		// Forward: assign stepNumber of the following assistant response to user messages.
+		let nextStep = null;
+		for (let i = items.length - 1; i >= 0; i--) {
+			if (items[i].stepNumber != null) nextStep = items[i].stepNumber;
+			else if (items[i].role === 'user' && nextStep != null) items[i].stepNumber = nextStep;
 		}
 		return items;
 	}

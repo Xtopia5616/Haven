@@ -8,24 +8,6 @@ pub struct TaskEvent {
 }
 
 #[derive(Clone, Serialize)]
-#[allow(dead_code)]
-pub struct StepEvent {
-    pub step_id: String,
-    pub task_id: String,
-    pub status: String,
-    pub tool_name: String,
-}
-
-#[derive(Clone, Serialize)]
-#[allow(dead_code)]
-pub struct ConfirmRequestEvent {
-    pub step_id: String,
-    pub tool_name: String,
-    pub task_id: String,
-    pub risk_level: String,
-}
-
-#[derive(Clone, Serialize)]
 pub struct RecordingEvent {
     pub is_recording: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,13 +22,6 @@ pub struct RecordingEvent {
 pub struct VadStatusEvent {
     pub signal: String,
     pub state: String,
-}
-
-#[derive(Clone, Serialize)]
-#[allow(dead_code)]
-pub struct TranscriptEvent {
-    pub text: String,
-    pub is_final: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -107,31 +82,6 @@ mod tests {
     }
 
     #[test]
-    fn test_step_event_serde() {
-        let ev = StepEvent {
-            step_id: "s1".into(),
-            task_id: "t1".into(),
-            status: "running".into(),
-            tool_name: "file".into(),
-        };
-        let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"step_id\":\"s1\""));
-        assert!(json.contains("\"tool_name\":\"file\""));
-    }
-
-    #[test]
-    fn test_confirm_request_event_serde() {
-        let ev = ConfirmRequestEvent {
-            step_id: "s1".into(),
-            tool_name: "delete".into(),
-            task_id: "t1".into(),
-            risk_level: "High".into(),
-        };
-        let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"risk_level\":\"High\""));
-    }
-
-    #[test]
     fn test_vad_status_event_serde() {
         let ev = VadStatusEvent {
             signal: "speech".into(),
@@ -139,17 +89,6 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"signal\":\"speech\""));
-    }
-
-    #[test]
-    fn test_transcript_event_serde() {
-        let ev = TranscriptEvent {
-            text: "hello world".into(),
-            is_final: true,
-        };
-        let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"text\":\"hello world\""));
-        assert!(json.contains("\"is_final\":true"));
     }
 
     #[test]

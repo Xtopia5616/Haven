@@ -189,13 +189,14 @@ pub enum LlmError {
     #[error("unknown error: {0}")]
     Unknown(String),
 
-    /// Primary endpoint failed; includes original error and whether fallback was attempted
-    #[error("primary failed: {0}, fallback: {1}")]
-    PrimaryFailed(String, String),
-
     /// Composite error: primary + fallback both failed
     #[error("all endpoints failed: primary={0}, fallback={1}")]
     AllEndpointsFailed(String, String),
+
+    /// Stream aborted by a configured stream rule (Abort mode).
+    /// Contains (rule_name, inject_text).
+    #[error("stream aborted by rule '{0}': {1}")]
+    StreamAborted(String, String),
 }
 
 impl LlmError {

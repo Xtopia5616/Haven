@@ -29,10 +29,14 @@
 	// Rollback: find step number from click context or parse from message id
 	function getStepForCtxMenu() {
 		if (ctxMenu.stepNumber != null) return ctxMenu.stepNumber;
-		if (!ctxMenu.msgId) return null;
-		const parts = ctxMenu.msgId.split('-');
-		if (parts.length >= 4 && !isNaN(Number(parts[parts.length - 2]))) {
-			return Number(parts[parts.length - 2]);
+		// For user messages, look forward in the message list to the next
+		// assistant message that carries a stepNumber.
+		if (ctxMenu.role === 'user' && ctxMenu.msgId) {
+			const idx = messages.findIndex(m => m.id === ctxMenu.msgId);
+			if (idx >= 0) {
+				const next = messages.slice(idx + 1).find(m => m.stepNumber != null);
+				if (next) return next.stepNumber;
+			}
 		}
 		return null;
 	}
@@ -254,20 +258,11 @@
 
 				updateTaskMessages(tid, (m) => {
 					const idx = m.findIndex((x) => x.id === stepId);
-					const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
 					if (idx >= 0 && m[idx].streaming === false) return m;
-					const reasoningIdx = m.findIndex((x) => x.id === reasoningId);
-					let next = m;
-					if (reasoningIdx >= 0) {
-						next = [...m];
-						next[reasoningIdx] = { ...next[reasoningIdx], streaming: false };
-					}
 					if (idx >= 0) {
-						const curr = next[idx].content || '';
-						const content = delta.startsWith(curr) || (curr.length > delta.length && curr.startsWith(delta))
-							? delta
-							: curr + delta;
-						if (next === m) next = [...m];
+						const curr = m[idx].content || '';
+						const content = delta.startsWith(curr) ? delta : curr + delta;
+						const next = [...m];
 						next[idx] = {
 							...next[idx],
 							content,
@@ -275,20 +270,16 @@
 						};
 						return next;
 					}
-					if (next === m) next = [...m];
-					return [
-						...next,
-						{
-							id: stepId,
-							role: 'assistant',
-							content: delta,
-							type: undefined,
-							voice: false,
-							stepNumber: data.step_number,
-							time: new Date().toLocaleTimeString(),
-							streaming: true,
-						},
-					];
+					return [...m, {
+						id: stepId,
+						role: 'assistant',
+						content: delta,
+						type: undefined,
+						voice: false,
+						stepNumber: data.step_number,
+						time: new Date().toLocaleTimeString(),
+						streaming: true,
+					}];
 				});
 			});
 			await safeListen('agent:reasoning_chunk', (event) => {
@@ -305,9 +296,7 @@
 					if (idx >= 0) {
 						if (m[idx].streaming === false) return m;
 						const curr = m[idx].content || '';
-						const content = delta.startsWith(curr) || (curr.length > delta.length && curr.startsWith(delta))
-							? delta
-							: curr + delta;
+						const content = delta.startsWith(curr) ? delta : curr + delta;
 						const next = [...m];
 						next[idx] = {
 							...next[idx],
@@ -502,10 +491,12 @@
 	{#if ctxMenu.open}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="ctx-menu" style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;">
+			{#if ctxMenu.role === 'user'}
 			<button class="ctx-item" onclick={handleCtxRollback}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
 				回退到此消息
 			</button>
+			{/if}
 			<button class="ctx-item" onclick={handleCtxFork}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="21" r="3" /><line x1="18" y1="9" x2="18" y2="21" /></svg>
 				创建分支

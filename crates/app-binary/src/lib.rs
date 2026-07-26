@@ -20,23 +20,25 @@ use tracing_subscriber::reload;
 use tracing_subscriber::Registry;
 
 /// Initialize the tracing subscriber with console output and optional rolling file output.
+/// The reloadable filter is properly composed with all output layers via `.with_filter()`.
 /// Returns a reload handle for dynamic log-level changes and the current log config.
 fn init_tracing(
     log_cfg: &LogConfig,
 ) -> (reload::Handle<EnvFilter, Registry>, Arc<std::sync::Mutex<LogConfig>>) {
     let filter = EnvFilter::new(format!("haven={}", log_cfg.level.as_str()));
 
-    let (reload_layer, filter_handle) = reload::Layer::new(filter);
-
+    // Without .with_filter() the env-filter is a no-op (design §M6-05).
+    let (reloadable_filter, filter_handle) = reload::Layer::new(filter);
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_thread_ids(false)
-        .with_line_number(true);
+        .with_line_number(true)
+        .with_filter(reloadable_filter);
 
     let subscriber = tracing_subscriber::registry()
-        .with(reload_layer)
         .with(fmt_layer);
 
+    // ── File layer (static filter, not dynamically reloaded) ──
     if log_cfg.file_enabled {
         let log_path = log_cfg
             .file_path
@@ -49,11 +51,14 @@ fn init_tracing(
             log_path.parent().unwrap_or(std::path::Path::new(".")),
             log_path.file_stem().unwrap_or(std::ffi::OsStr::new("haven")),
         );
+        let file_filter = EnvFilter::new(format!("haven={}", log_cfg.level.as_str()));
         let file_layer = tracing_subscriber::fmt::layer()
             .with_writer(file_appender)
             .with_target(true)
             .with_line_number(true)
-            .with_ansi(false);
+            .with_ansi(false)
+            .with_filter(file_filter);
+
         let subscriber = subscriber.with(file_layer);
         let _ = tracing::subscriber::set_global_default(subscriber);
     } else {
@@ -165,6 +170,9 @@ impl AgentEventEmitter for TauriEmitter {
             }
             AgentEvent::TaskUpdated { task_id, status } => {
                 tracing::info!("TauriEmitter::on_task_updated: task={} status={}", task_id, status);
+                if status == "paused" {
+                    tracing::warn!("TauriEmitter emitting task:updated with paused status for task {}", task_id);
+                }
                 let _ = self.handle.emit(
                     "task:updated",
                     serde_json::json!({
@@ -273,7 +281,7 @@ pub fn run() {
     let log_cfg = config_loader.config().log.clone();
 
     // Initialize tracing subscriber (console + optional file output)
-    let (filter_handle, log_config) = init_tracing(&log_cfg);
+    let (filter_handles, log_config) = init_tracing(&log_cfg);
 
     // Set global panic hook to capture and log panics (M6-06)
     let prev_hook = std::panic::take_hook();
@@ -293,7 +301,7 @@ pub fn run() {
         prev_hook(panic_info);
     }));
 
-    let app_state = init_app_state(filter_handle, log_config, config_loader);
+    let app_state = init_app_state(filter_handles, log_config, config_loader);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -835,8 +843,7 @@ fn init_app_state(
             agent,
             pipeline,
             shell,
-            log_filter_handle: filter_handle,
-            router,
+            log_filter_handle: filter_handle.clone(),
             config_loader: config_loader_arc,
         }
     })

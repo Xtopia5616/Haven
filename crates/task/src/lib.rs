@@ -3,7 +3,7 @@ pub use haven_common::types::TaskPriority;
 use haven_memory::Database;
 use haven_tools::{ConfirmationResult, McpToolAdapter, SkillToolAdapter, ToolResult, ToolsManager};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -99,8 +99,6 @@ pub struct TaskExecutor {
     db: Arc<Database>,
     tools: Arc<ToolsManager>,
     tasks: Arc<Mutex<Vec<TaskInfo>>>,
-    #[allow(dead_code)]
-    task_queue: Arc<Mutex<VecDeque<String>>>,
     running_tasks: Arc<Mutex<HashSet<String>>>,
     semaphore: Arc<Semaphore>,
     /// Tracks the semaphore permit held by each running task's handler.
@@ -121,7 +119,6 @@ impl TaskExecutor {
             db,
             tools,
             tasks: Arc::new(Mutex::new(Vec::new())),
-            task_queue: Arc::new(Mutex::new(VecDeque::new())),
             running_tasks: Arc::new(Mutex::new(HashSet::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             task_permits: Arc::new(Mutex::new(HashMap::new())),
@@ -396,12 +393,13 @@ impl TaskExecutor {
             token.cancel();
         }
         let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.status = TaskStatus::Cancelled;
-            task.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
+            tasks[pos].status = TaskStatus::Cancelled;
+            tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
             self.running_tasks.lock().await.remove(task_id);
             self.db.update_task_status(task_id, "cancelled")?;
             self.task_permits.lock().await.remove(task_id);
+            tasks.remove(pos);
         } else {
             // Task not in memory (e.g. after restart) — update DB directly.
             self.db.update_task_status(task_id, "cancelled")?;
@@ -413,7 +411,6 @@ impl TaskExecutor {
     /// Called from the frontend when the user explicitly taps "结束任务".
     /// Works for tasks both in memory and DB-only (e.g. after app restart).
     pub async fn end_task(&self, task_id: &str) -> anyhow::Result<()> {
-        let status_str = "completed";
         // Cancel the running token first to interrupt any active ReAct loop.
         let cancel = self.cancellation_token(task_id).await;
         cancel.cancel();
@@ -421,10 +418,11 @@ impl TaskExecutor {
         // update_task_status (which locks tasks → task_notify). Notifying and
         // status update happen under the tasks lock scope.
         let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.status = TaskStatus::Completed;
-            task.updated_at = chrono::Utc::now().to_rfc3339();
-            self.db.update_task_status(task_id, status_str)?;
+        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
+            tasks[pos].status = TaskStatus::Completed;
+            tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
+            self.db.update_task_status(task_id, "completed")?;
+            tasks.remove(pos);
             drop(tasks);
             self.running_tasks.lock().await.remove(task_id);
             self.task_permits.lock().await.remove(task_id);
@@ -434,7 +432,7 @@ impl TaskExecutor {
             self.task_cancellations.lock().await.remove(task_id);
         } else {
             // Task not in memory (e.g. after restart) — update DB directly.
-            self.db.update_task_status(task_id, status_str)?;
+            self.db.update_task_status(task_id, "completed")?;
         }
         Ok(())
     }
@@ -512,21 +510,25 @@ impl TaskExecutor {
         status: TaskStatus,
     ) -> anyhow::Result<()> {
         let status_str = status.as_str().to_string();
+        let is_terminal = status_str == "cancelled" || status_str == "completed" || status_str == "error";
         let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.status = status;
-            task.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
+            let old_status = tasks[pos].status.as_str();
+            tasks[pos].status = status;
+            tracing::info!("update_task_status: task={} {} -> {}", task_id, old_status, status_str);
+            tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
             self.db.update_task_status(task_id, &status_str)?;
             // Notify any waiter that status has changed.
             if let Some(notify) = self.task_notify.lock().await.get(task_id) {
                 notify.notify_waiters();
             }
-            if status_str == "cancelled" || status_str == "completed" || status_str == "error" {
+            if is_terminal {
                 self.running_tasks.lock().await.remove(task_id);
                 self.task_permits.lock().await.remove(task_id);
                 self.task_cancellations.lock().await.remove(task_id);
                 self.task_notify.lock().await.remove(task_id);
                 self.tools.unregister_task(task_id).await;
+                tasks.remove(pos);
             }
         }
         Ok(())
@@ -603,7 +605,11 @@ impl TaskExecutor {
         {
             let mut tasks = self.tasks.lock().await;
             if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                let prev = task.status.as_str();
                 task.status = TaskStatus::Running;
+                if prev != "running" {
+                    tracing::warn!("execute_step: task {} was {} before tool call, forcing Running", task_id, prev);
+                }
             }
         }
 
@@ -1187,7 +1193,9 @@ mod tests {
             .await
             .unwrap();
         exec.end_task(&task.id).await.unwrap();
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Completed);
+        // After end_task the task is removed from the in-memory list
+        // (no longer polluting dispatcher scans).
+        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Cancelled);
     }
 
     #[tokio::test]
@@ -1420,7 +1428,8 @@ mod tests {
         exec.update_task_status(&task.id, TaskStatus::Completed)
             .await
             .unwrap();
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Completed);
+        // Terminal status removes the task from the in-memory list
+        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Cancelled);
     }
 
     #[tokio::test]

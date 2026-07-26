@@ -6,8 +6,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::client::{HttpLlmClient, LlmClient, with_retry};
-use crate::stream_rules::{check_stream_rules, StreamRule, StreamRuleMatch};
-use crate::types::{FinishReason, LlmError, LlmMessage, LlmResponse, StreamChunk, ToolDefinition};
+use crate::stream_rules::{check_stream_rules, StreamRule, StreamRuleMatch, StreamRuleMode};
+use crate::types::{ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolDefinition};
 use futures_util::StreamExt;
 use haven_common::config::LlmConfig;
 
@@ -405,7 +405,7 @@ impl LlmRouter {
 
         // Primary: single attempt with cancellation
         let primary_result = Self::aggregate_stream_cancellable(
-            primary, messages.clone(), tools.clone(), &mut on_chunk, cancel.clone(),
+            primary.clone(), messages.clone(), tools.clone(), &mut on_chunk, cancel.clone(), &self.stream_rules,
         )
         .await;
 
@@ -414,6 +414,23 @@ impl LlmRouter {
                 self.record_success(&role).await;
                 self.fallback_active.store(false, Ordering::SeqCst);
                 Ok(resp)
+            }
+            Err(LlmError::StreamAborted(rule_name, inject)) => {
+                tracing::warn!(
+                    "stream aborted by rule '{}', injecting guidance and retrying with primary",
+                    rule_name
+                );
+                let mut retry_msgs = messages.clone();
+                retry_msgs.push(LlmMessage {
+                    role: LlmRole::System,
+                    content: vec![ContentPart::text(inject)],
+                    tool_call_id: None,
+                    tool_calls: None,
+                });
+                Self::aggregate_stream_cancellable(
+                    primary, retry_msgs, tools, &mut on_chunk, cancel, &self.stream_rules,
+                )
+                .await
             }
             Err(e) => {
                 if cancel.is_cancelled() {
@@ -442,7 +459,7 @@ impl LlmRouter {
 
                 // Fallback: single attempt with cancellation
                 let fb_result = Self::aggregate_stream_cancellable(
-                    self.fallback.clone(), messages, tools, &mut on_chunk, cancel,
+                    self.fallback.clone(), messages, tools, &mut on_chunk, cancel, &self.stream_rules,
                 )
                 .await;
 
@@ -462,6 +479,7 @@ impl LlmRouter {
         tools: Vec<ToolDefinition>,
         on_chunk: &mut (impl FnMut(&StreamChunk) + Send),
         cancel: CancellationToken,
+        stream_rules: &RwLock<Vec<StreamRule>>,
     ) -> Result<LlmResponse, LlmError> {
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
         tracing::info!("aggregate_stream_cancellable start");
@@ -499,6 +517,32 @@ impl LlmRouter {
                                 model = chunk.model.clone();
                             }
                             on_chunk(&chunk);
+
+                            // Check stream rules against accumulated output
+                            if !text.is_empty() {
+                                let rules = stream_rules.read().await;
+                                if let Some(match_result) = check_stream_rules(&rules, &text) {
+                                    drop(rules);
+                                    match match_result.mode {
+                                        StreamRuleMode::Warn => {
+                                            tracing::warn!(
+                                                "stream rule '{}' triggered (warn): matched '{}'",
+                                                match_result.rule_name, match_result.matched_text
+                                            );
+                                        }
+                                        StreamRuleMode::Abort => {
+                                            tracing::warn!(
+                                                "stream rule '{}' triggered (abort): matched '{}'",
+                                                match_result.rule_name, match_result.matched_text
+                                            );
+                                            return Err(LlmError::StreamAborted(
+                                                match_result.rule_name,
+                                                match_result.inject,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Some(Err(e)) => return Err(e),
                         None => break,

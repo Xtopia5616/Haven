@@ -20,8 +20,6 @@ pub struct AppState {
     pub pipeline: Arc<InputPipeline>,
     pub shell: Arc<DesktopShell>,
     pub log_filter_handle: reload::Handle<EnvFilter, Registry>,
-    #[allow(dead_code)]
-    pub router: Arc<LlmRouter>,
     pub config_loader: Arc<std::sync::Mutex<ConfigLoader>>,
 }
 
@@ -153,7 +151,6 @@ impl AppState {
             pipeline,
             shell,
             log_filter_handle: filter_handle,
-            router,
             config_loader: config_loader_arc,
         })
     }

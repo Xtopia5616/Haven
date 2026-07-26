@@ -267,11 +267,15 @@ pub async fn pause_task(
     task_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    tracing::info!("pause_task command called: task_id={}", task_id);
     state
         .executor
         .pause_task(&task_id)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!("pause_task error: {:?}", e);
+            e.to_string()
+        })?;
     let title = state.executor.list_tasks().await
         .into_iter()
         .find(|t| t.id == task_id)
