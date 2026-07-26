@@ -154,6 +154,10 @@ impl AgentLayer {
             .get_or_create_active_session()
             .map(|s| s.id)
             .unwrap_or_else(|_| "default".to_string());
+        // Ensure the user's name is set as a defined preference so the
+        // model sees it in the Preferences section rather than inferring it.
+        let _ = db.set_preference("name", "Haven");
+
         Self {
             db,
             executor,
