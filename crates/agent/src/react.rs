@@ -196,7 +196,7 @@ impl ReActEngine {
             {
                 Ok(resp) => {
                     if router.fallback_active() {
-                        EventDispatcher::emit_fallback_activated_from(&emitter, task_id, "switching to fallback model").await;
+                        self.emit_fallback(&emitter, task_id, "switching to fallback model").await;
                     }
                     resp
                 }
@@ -606,17 +606,21 @@ impl ReActEngine {
 
     /// Emit fallback activated with per-task deduplication.
     async fn emit_fallback(&self, emitter: &Arc<dyn AgentEventEmitter>, task_id: &str, reason: &str) {
-        let mut notified = self.fallback_notified.lock().unwrap();
-        if !notified.insert(task_id.to_string()) {
-            return;
+        let should_emit = {
+            let mut notified = self.fallback_notified.lock().unwrap();
+            notified.insert(task_id.to_string())
+        };
+        if should_emit {
+            EventDispatcher::emit_fallback_activated_from(emitter, task_id, reason).await;
         }
-        drop(notified);
-        EventDispatcher::emit_fallback_activated_from(emitter, task_id, reason).await;
     }
 
     /// Emit task error and clean up fallback dedup state.
     async fn emit_error(&self, emitter: &Arc<dyn AgentEventEmitter>, task_id: &str, error: &str) {
-        self.fallback_notified.lock().unwrap().remove(task_id);
+        {
+            let mut notified = self.fallback_notified.lock().unwrap();
+            notified.remove(task_id);
+        }
         EventDispatcher::emit_task_error_from(emitter, task_id, error).await;
     }
 }

@@ -76,12 +76,12 @@
 	<div class="bubble-content">
 		{#if msgType === 'thought'}
 			<em class="thought"
-				>{content}{#if streaming}<span class="caret"></span>{/if}</em
+				>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
 			>
 		{:else if msgType === 'reasoning'}
 			<details class="reasoning-block" open={streaming}>
 				<summary class="reasoning-summary">Thinking...</summary>
-				<div class="reasoning-content"><em>{content}{#if streaming}<span class="caret"></span>{/if}</em></div>
+				<div class="reasoning-content"><em>{content}{#if streaming && content}<span class="caret"></span>{/if}</em></div>
 			</details>
 		{:else if msgType === 'tool'}
 			<div class="tool-call">&#9654; Calling {toolName}</div>
@@ -95,9 +95,9 @@
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if role === 'assistant'}
 			{#if mdHtml}
-				<div class="md-content" class:streaming>{@html mdHtml}{#if streaming}<span class="caret"></span>{/if}</div>
+				<div class="md-content" class:streaming>{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}</div>
 			{:else}
-				<p>{content}{#if streaming}<span class="caret"></span>{/if}</p>
+				<p>{content}{#if streaming && content}<span class="caret"></span>{/if}</p>
 			{/if}
 		{:else}
 			<p>{content}</p>
@@ -158,6 +158,11 @@
 	}
 	.bubble-time {
 		font-size: 10px;
+	}
+	.bubble.user .bubble-time {
+		color: color-mix(in srgb, var(--md-sys-color-on-primary) 95%, var(--md-sys-color-primary));
+	}
+	.bubble.assistant .bubble-time {
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
 	}

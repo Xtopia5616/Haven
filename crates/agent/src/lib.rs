@@ -7,6 +7,7 @@ mod inference;
 mod prompt;
 mod react;
 mod session;
+mod title;
 mod types;
 
 pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
@@ -22,6 +23,8 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::LlmRouter;
 use haven_memory::Database;
 
+use crate::title::TitleGenerator;
+
 pub struct AgentLayer {
     db: Arc<Database>,
     executor: Arc<TaskExecutor>,
@@ -30,6 +33,7 @@ pub struct AgentLayer {
     prompt_builder: Arc<SystemPromptBuilder>,
     react_engine: Arc<ReActEngine>,
     inference: Arc<InferenceEngine>,
+    title: Option<TitleGenerator>,
 }
 
 impl AgentLayer {
@@ -40,6 +44,7 @@ impl AgentLayer {
         max_steps: u32,
         session_window_size: usize,
         max_observation_chars: usize,
+        small_model_endpoint: Option<haven_common::config::ModelEndpoint>,
     ) -> Self {
         let sessions = Arc::new(SessionManager::new(db.clone(), session_window_size));
         let events = Arc::new(EventDispatcher::new());
@@ -57,6 +62,7 @@ impl AgentLayer {
         let inference = Arc::new(InferenceEngine::new(db.clone(), sessions.clone()));
         let _ = db.set_preference("name", "Xtopia");
         let _ = db.insert_fact("user", "name", "Xtopia", "user", 1.0);
+        let title = small_model_endpoint.map(TitleGenerator::new);
 
         Self {
             db,
@@ -66,6 +72,7 @@ impl AgentLayer {
             prompt_builder,
             react_engine,
             inference,
+            title,
         }
     }
 
@@ -264,21 +271,80 @@ impl AgentLayer {
         let conv_history = self.load_conversation_history();
         let tools = self.prompt_builder.build_tool_definitions().await;
 
-        if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
+        let result = if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
             && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
         {
             tracing::info!("restoring ReAct state for task {} ({} steps)", task_id, snapshot.history.len());
-            return self
+            self
                 .run_task_resumed(task_id, snapshot, &conv_history, &tools)
-                .await;
+                .await
+        } else {
+            self.run_task(&task.id, &description, &context, &conv_history, &tools)
+                .await
+        };
+
+        // Generate title after first ReAct loop if not already set
+        if task.title.is_none() {
+            let db = self.db.clone();
+            let executor = self.executor.clone();
+            let title = self.title.clone();
+            let events = self.events.clone();
+            let tid = task_id.to_string();
+            tokio::spawn(async move {
+                Self::try_generate_title(db, executor, title, events, tid).await;
+            });
         }
 
-        self.run_task(&task.id, &description, &context, &conv_history, &tools)
-            .await
+        result
     }
 
     pub async fn emit_task_completed(&self, task_id: &str, title: &str) {
         self.events.emit_task_completed(task_id, title).await;
+    }
+
+    /// Generate a short title using small_model after the first ReAct loop
+    /// completes. Spawned as a background task so it does not block the
+    /// dispatcher. Only runs once per task (when title is None).
+    async fn try_generate_title(
+        db: Arc<Database>,
+        executor: Arc<TaskExecutor>,
+        title: Option<TitleGenerator>,
+        events: Arc<EventDispatcher>,
+        task_id: String,
+    ) {
+        let Some(generator) = title else { return };
+        // Check if the task already has a title in the DB
+        if let Ok(Some(task)) = db.get_task(&task_id)
+            && task.title.is_some()
+        {
+            return;
+        }
+        // Build conversation context from session messages
+        let messages = if let Ok(Some(task)) = db.get_task(&task_id)
+            && let Some(ref sid) = task.session_id
+        {
+            db.get_session_messages_limit(sid, 10).unwrap_or_default()
+        } else {
+            return;
+        };
+        let conv_lines: Vec<String> = messages
+            .iter()
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect();
+        let title = match generator.generate(&conv_lines).await {
+            Some(t) => t,
+            None => return,
+        };
+        // Save to DB
+        if let Err(e) = db.update_task_title(&task_id, &title) {
+            tracing::warn!("failed to save generated title: {}", e);
+            return;
+        }
+        // Update in-memory TaskInfo in executor
+        executor.update_task_title(&task_id, &title).await;
+        // Notify frontend
+        events.emit_title_updated(&task_id, &title).await;
+        tracing::info!("generated title for task {}: {}", task_id, title);
     }
 
     async fn run_task_resumed(
@@ -370,9 +436,17 @@ impl AgentLayer {
         active_task_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
         tracing::info!("process_input: text={:?} active_task_id={:?}", transcript, active_task_id);
-        self.persist_message("user", transcript, Some("text"));
 
         if let Some(task_id) = active_task_id {
+            // Switch to the task's session so persisted messages are
+            // associated with the correct session for review.
+            if let Ok(Some(task)) = self.db.get_task(&task_id)
+                && let Some(ref sid) = task.session_id
+            {
+                self.sessions.switch_to_session(sid);
+            }
+            self.persist_message("user", transcript, Some("text"));
+
             let state = self.executor.get_task_state(&task_id).await;
 
             if state == TaskStatus::Running {
@@ -408,6 +482,7 @@ impl AgentLayer {
             Ok(ProcessResult::Supplemented)
         } else {
             let session_id = self.start_new_session().unwrap_or_else(|_| self.ensure_session());
+            self.persist_message("user", transcript, Some("text"));
             let task = self
                 .executor
                 .create_task_with_summary(transcript, "NewTask", TaskPriority::Normal, transcript, Some(&session_id))
@@ -528,7 +603,7 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
+        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000, None));
 
         let recorder = Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
@@ -579,7 +654,7 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
+        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000, None));
         (agent, executor)
     }
 
@@ -595,7 +670,7 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = AgentLayer::new(db, executor, router, 10, 20, 4000);
+        let agent = AgentLayer::new(db, executor, router, 10, 20, 4000, None);
         // Verify construction succeeded; session_id is set
         let sid = agent.ensure_session();
         assert!(!sid.is_empty());
@@ -635,7 +710,7 @@ mod tests {
             client_a.clone(),
             client_a,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor, router_a, 10, 20, 4000));
+        let agent = Arc::new(AgentLayer::new(db, executor, router_a, 10, 20, 4000, None));
         // Create a new router via the same mock client factory
         let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router_b = Arc::new(LlmRouter::new_with_clients(

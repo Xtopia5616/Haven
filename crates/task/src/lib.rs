@@ -63,6 +63,9 @@ pub struct TaskInfo {
     /// when the dispatcher runs the task. Defaults to `input` when no
     /// classifier summary is available.
     pub summary: String,
+    /// LLM-generated short title for display. Set automatically after the
+    /// first ReAct loop completes, or manually by the user.
+    pub title: Option<String>,
     pub status: TaskStatus,
     pub classification: String,
     pub priority: TaskPriority,
@@ -170,6 +173,7 @@ impl TaskExecutor {
             id: record.id,
             input: input.into(),
             summary: summary.into(),
+            title: None,
             status: TaskStatus::Pending,
             classification: classification.into(),
             priority,
@@ -449,6 +453,13 @@ impl TaskExecutor {
         self.task_cancellations.lock().await.remove(task_id);
     }
 
+    pub async fn update_task_title(&self, task_id: &str, title: &str) {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            task.title = Some(title.into());
+        }
+    }
+
     pub async fn pause_task(&self, task_id: &str) -> anyhow::Result<()> {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
@@ -562,6 +573,7 @@ impl TaskExecutor {
             id: record.id,
             input: record.input_text,
             summary: record.transcript,
+            title: record.title,
             status: TaskStatus::from_status_str(&record.status),
             classification: record.classification,
             priority: TaskPriority::Normal,

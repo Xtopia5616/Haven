@@ -73,6 +73,10 @@ pub enum AgentEvent {
         tokens_before: u32,
         tokens_after: u32,
     },
+    TitleUpdated {
+        task_id: String,
+        title: String,
+    },
 }
 
 #[async_trait]
@@ -181,6 +185,16 @@ impl EventDispatcher {
             emitter.emit(AgentEvent::TaskUpdated {
                 task_id: task_id.into(),
                 status: status.into(),
+            }).await;
+        }
+    }
+
+    pub async fn emit_title_updated(&self, task_id: &str, title: &str) {
+        let emitter = self.emitter.lock().unwrap().clone();
+        if let Some(emitter) = emitter {
+            emitter.emit(AgentEvent::TitleUpdated {
+                task_id: task_id.into(),
+                title: title.into(),
             }).await;
         }
     }

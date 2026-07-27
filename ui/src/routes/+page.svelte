@@ -228,6 +228,11 @@
 			await safeListen('task:error', () => {
 				loadTasks();
 			});
+			await safeListen('task:title-updated', (event) => {
+				const { task_id, title } = event.payload;
+				const idx = tasks.findIndex(t => t.id === task_id);
+				if (idx >= 0) tasks[idx] = { ...tasks[idx], title };
+			});
 			await safeListen('agent:thought', (event) => {
 				const data = event.payload;
 				const tid = data.task_id;
@@ -262,6 +267,7 @@
 					const seq = data.seq;
 					updateModelState('streaming');
 					if (seqLastSeen(stepId, seq)) return;
+					if (!delta) return;
 					updateTaskMessages(tid, (m) => {
 						const idx = m.findIndex((x) => x.id === stepId);
 						if (idx >= 0 && m[idx].streaming === false) return m;
@@ -291,10 +297,15 @@
 				const tid = data.task_id;
 				updateModelState('tool');
 				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
+				const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				pruneSeq(reasoningId);
 				updateTaskMessages(tid, (m) => {
-					const existing = m.find((x) => x.id === toolId);
-					if (existing) return m;
-					return [...m, {
+					const reasoningFixed = m.map((x) =>
+						x.id === reasoningId ? { ...x, streaming: false } : x
+					);
+					const existing = reasoningFixed.find((x) => x.id === toolId);
+					if (existing) return reasoningFixed;
+					return [...reasoningFixed, {
 						id: toolId,
 						role: 'assistant',
 						content: '',
@@ -531,7 +542,7 @@
 					{#each activeTasks as task (task.id)}
 						<div class="task-pill">
 							<span class="task-pill-dot" class:running={task.status === 'running'}></span>
-							<span class="task-pill-label">{task.summary || task.input || 'Task'}</span>
+							<span class="task-pill-label">{task.title || task.summary || task.input || 'Task'}</span>
 							<button
 								class="task-pill-action"
 								onclick={() => { newTask(); }}

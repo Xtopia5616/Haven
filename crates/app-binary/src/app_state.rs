@@ -45,6 +45,7 @@ impl AppState {
 
         let cfg = config_loader.config().clone();
         let llm_config = cfg.llm.clone();
+        let small_model_endpoint = llm_config.small_model.clone();
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.task.max_steps;
         let session_window_size = cfg.memory.session_window_size;
@@ -57,6 +58,7 @@ impl AppState {
             max_steps,
             session_window_size,
             max_observation_chars,
+            Some(small_model_endpoint),
         ));
 
         let pipeline = Arc::new(InputPipeline::new());

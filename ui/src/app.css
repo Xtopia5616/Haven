@@ -143,12 +143,12 @@
  * DARK THEME
  * ========================================================================== */
 [data-theme='dark'] {
-	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #a5c8ff) 85%, #ffffff);
-	--md-sys-color-on-primary: color-mix(in srgb, var(--md-accent-hex, #003062) 70%, #000000);
-	--md-sys-color-primary-container: color-mix(in srgb, var(--md-accent-hex, #0f4792) 70%, #000000);
-	--md-sys-color-on-primary-container: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 30%, #ffffff);
-	--md-sys-color-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 30%, #ffffff);
-	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #001b3e) 70%, #000000);
+	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #a5c8ff) 55%, #ffffff);
+	--md-sys-color-on-primary: color-mix(in srgb, var(--md-accent-hex, #003062) 80%, #000000);
+	--md-sys-color-primary-container: color-mix(in srgb, var(--md-accent-hex, #0f4792) 22%, var(--md-sys-color-surface-container));
+	--md-sys-color-on-primary-container: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 55%, #ffffff);
+	--md-sys-color-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 55%, #ffffff);
+	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #001b3e) 80%, #000000);
 
 	--md-sys-color-secondary: #bec6dc;
 	--md-sys-color-on-secondary: #283041;

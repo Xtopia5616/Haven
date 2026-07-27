@@ -17,6 +17,9 @@
 	let endDate = $state('');
 	let showDateFilter = $state(false);
 
+	let editingTitle = $state(null); // { taskId, value }
+	let renameValue = $state('');
+
 	const todayISO = $derived(new Date().toISOString().slice(0, 10));
 
 	import logger from '$lib/logger.js';
@@ -25,6 +28,7 @@
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.js';
 	import { taskMessagesStore, updateTaskMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, addNotification } from '$lib/stores.js';
+	import { listen } from '$lib/tauri.js';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -38,12 +42,24 @@
 		{ value: 'error', label: 'Error' },
 	];
 
+	let unlistenTitleUpdate = null;
+
 	onMount(async () => {
 		await loadHistory();
+		try {
+			unlistenTitleUpdate = await listen('task:title-updated', (event) => {
+				const { task_id, title } = event.payload;
+				const t = tasks.find(t => t.id === task_id);
+				if (t) t.title = title;
+			});
+		} catch (e) {
+			logger.warn('history', 'Failed to listen for title-updated', e);
+		}
 	});
 
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
+		if (unlistenTitleUpdate) unlistenTitleUpdate();
 	});
 
 	function filterParams(extra) {
@@ -128,7 +144,7 @@
 				const streaming = existing.filter((m) => m.streaming);
 				return [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
 			});
-			reviewTargetStore.set({ taskId: task.id, summary: task.input_text });
+			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title });
 			await goto('/');
 		} catch (e) {
 			logger.error('history', 'Failed to load task for review', e);
@@ -155,24 +171,35 @@
 			});
 		}
 
-		// Supplement with action/observation from steps (thoughts are now
-		// persisted as session messages by the agent).
+		// Supplement with thought steps (parsed Reasoner thoughts) and
+		// action steps (tool calls + observations).
 		for (const step of data.steps || []) {
-			if (step.action_tool) {
-				const toolId = `tool-${step.id}`;
-				if (!msgIds.has(toolId)) {
-					const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
-					items.push({
-						id: toolId,
-						role: 'assistant',
-						content: obs || `Calling ${step.action_tool}`,
-						type: 'tool',
-						voice: false,
-						time: formatDate(step.created_at),
-						streaming: false,
-						stepNumber: step.step_index,
-					});
-				}
+			const stepId = `step-${step.id}`;
+			if (msgIds.has(stepId)) continue;
+			if (step.thought && !step.action_tool) {
+				items.push({
+					id: stepId,
+					role: 'assistant',
+					content: step.thought,
+					type: undefined,
+					voice: false,
+					time: formatDate(step.created_at),
+					streaming: false,
+					stepNumber: step.step_index,
+				});
+			} else if (step.action_tool) {
+				const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
+				items.push({
+					id: stepId,
+					role: 'assistant',
+					content: obs || '',
+					type: 'tool',
+					toolName: step.action_tool,
+					voice: false,
+					time: formatDate(step.created_at),
+					streaming: false,
+					stepNumber: step.step_index,
+				});
 			}
 		}
 		items.sort((a, b) => {
@@ -287,6 +314,38 @@
 		return `${y}/${m}/${day} ${h}:${min}:${s}`;
 	}
 
+	function displayTitle(task) {
+		return task.title || task.input_text || 'Untitled';
+	}
+
+	function startEdit(task) {
+		editingTitle = task.id;
+		renameValue = task.title || task.input_text || '';
+	}
+
+	function cancelEdit() {
+		editingTitle = null;
+		renameValue = '';
+	}
+
+	async function saveTitle(taskId) {
+		const value = renameValue.trim();
+		if (!value) { cancelEdit(); return; }
+		try {
+			await invoke('update_task_title', { taskId, title: value });
+			const t = tasks.find(t => t.id === taskId);
+			if (t) t.title = value;
+		} catch (e) {
+			addNotification(`重命名失败: ${e}`, 'error', 3000);
+		}
+		cancelEdit();
+	}
+
+	function handleRenameKeydown(e, taskId) {
+		if (e.key === 'Enter') { e.preventDefault(); saveTitle(taskId); }
+		else if (e.key === 'Escape') { cancelEdit(); }
+	}
+
 	function exportSelected() {
 		const selected = tasks.filter((t) => selectedIds.has(t.id));
 		const json = JSON.stringify(
@@ -392,75 +451,95 @@
 	{:else}
 		<div class="history-list">
 			{#each tasks as task (task.id)}
-				{#if selectMode}
-					<button
-						class="history-item history-item-btn"
-						class:selected={selectedIds.has(task.id)}
-						onclick={() => toggleSelect(task.id)}
-					>
-						<div class="history-item-inner">
-							<div class="select-checkbox">
-								<div class="md-checkbox-static" class:checked={selectedIds.has(task.id)}></div>
-							</div>
-							<div class="history-content">
-								<div class="history-header">
-									<span class="history-title">{task.input_text || 'Untitled'}</span>
-									<MaterialBadge variant={statusVariant(task.status)} text={task.status} />
-								</div>
-								<div class="history-meta">
-									{#if task.classification}
-										<span>{task.classification}</span>
-									{/if}
-									<span>{formatDate(task.created_at)}</span>
-									{#if task.session_id}
-										<span class="session-id" title={task.session_id}>
-											Session: {task.session_id.slice(0, 8)}...
-										</span>
-									{/if}
-								</div>
-								{#if task.transcript}
-									<div class="history-transcript">"{task.transcript}"</div>
-								{/if}
-							</div>
-						</div>
-					</button>
-				{:else}
-					<div class="history-item">
-						<div class="history-item-inner">
-							<div class="history-content">
-								<div class="history-header">
-									<span class="history-title">{task.input_text || 'Untitled'}</span>
-									<MaterialBadge variant={statusVariant(task.status)} text={task.status} />
-								</div>
-								<div class="history-meta">
-									{#if task.classification}
-										<span>{task.classification}</span>
-									{/if}
-									<span>{formatDate(task.created_at)}</span>
-									{#if task.session_id}
-										<span class="session-id" title={task.session_id}>
-											Session: {task.session_id.slice(0, 8)}...
-										</span>
-									{/if}
-								</div>
-								{#if task.transcript}
-									<div class="history-transcript">"{task.transcript}"</div>
-								{/if}
-							</div>
-						</div>
-							<div class="history-actions">
-								<button class="md-btn md-btn--xs md-btn--tonal" onclick={() => reviewTask(task)}>
-									Review
-								</button>
-								<button
-									class="md-btn md-btn--xs md-btn--danger"
-									onclick={() => (deleteTarget = task)}
-								>
-									Delete
-								</button>
-							</div>
+			{#if selectMode}
+				<button
+					class="history-item history-item-btn"
+					class:selected={selectedIds.has(task.id)}
+					onclick={() => toggleSelect(task.id)}
+				>
+	<div class="history-item-main">
+		<div class="history-top-row">
+			<div class="select-checkbox">
+				<div class="md-checkbox-static" class:checked={selectedIds.has(task.id)}></div>
+			</div>
+			<div class="history-title-row">
+				<span class="history-title">{displayTitle(task)}</span>
+				<MaterialBadge variant={statusVariant(task.status)} text={task.status} />
+			</div>
+		</div>
+		{#if task.transcript}
+			<div class="history-message">"{task.transcript}"</div>
+		{/if}
+		<div class="history-meta">
+			<span class="meta-date">{formatDate(task.created_at)}</span>
+			{#if task.classification}
+				<span class="meta-classification">{task.classification}</span>
+			{/if}
+			{#if task.session_id}
+				<span class="meta-session" title={task.session_id}>ID: {task.session_id.slice(0, 8)}</span>
+			{/if}
+		</div>
+	</div>
+				</button>
+	{:else}
+			<div
+				class="history-item"
+				class:selected={selectedIds.has(task.id)}
+				role="button"
+				tabindex="0"
+				onclick={() => reviewTask(task)}
+				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), reviewTask(task))}
+			>
+				<div class="history-item-main">
+					<div class="history-title-row">
+						{#if editingTitle === task.id}
+							<!-- svelte-ignore a11y_autofocus -->
+							<input
+								type="text"
+								class="md-input title-input"
+								bind:value={renameValue}
+								onkeydown={(e) => handleRenameKeydown(e, task.id)}
+								onblur={() => saveTitle(task.id)}
+								onclick={(e) => e.stopPropagation()}
+								autofocus
+							/>
+						{:else}
+							<span
+								class="history-title"
+								onclick={(e) => (e.stopPropagation(), startEdit(task))}
+								onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), startEdit(task))}
+								role="button"
+								tabindex="0"
+							>
+								{displayTitle(task)}
+								<svg class="title-edit-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+								</svg>
+							</span>
+						{/if}
+						<MaterialBadge variant={statusVariant(task.status)} text={task.status} />
 					</div>
-				{/if}
+					{#if task.transcript}
+						<div class="history-message">"{task.transcript}"</div>
+					{/if}
+					<div class="history-meta">
+						<span class="meta-date">{formatDate(task.created_at)}</span>
+						{#if task.classification}
+							<span class="meta-classification">{task.classification}</span>
+						{/if}
+						{#if task.session_id}
+							<span class="meta-session" title={task.session_id}>ID: {task.session_id.slice(0, 8)}</span>
+						{/if}
+						<button
+							class="md-btn md-btn--xs md-btn--text delete-btn-meta"
+							onclick={(e) => (e.stopPropagation(), deleteTarget = task)}
+						>
+							Delete
+						</button>
+					</div>
+				</div>
+			</div>
+		{/if}
 			{/each}
 		</div>
 
@@ -672,30 +751,118 @@
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
 	}
+	.history-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-sm);
+	}
 	.history-item {
 		background: var(--md-sys-color-surface-container-lowest);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-lg);
-		margin-bottom: var(--md-sys-space-sm);
 		transition: box-shadow var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		outline: none;
 	}
 	.history-item:hover {
-		box-shadow: var(--md-sys-elevation-1);
+		background: var(--md-sys-color-surface-container);
+		border-color: var(--md-sys-color-outline);
+	}
+	.history-item:focus-visible {
+		border-color: var(--md-sys-color-primary);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
 	}
 	.history-item.selected {
 		background: var(--md-sys-color-primary-container);
 		border-color: var(--md-sys-color-primary);
 	}
-	.history-item-inner {
+	.history-item-main {
 		display: flex;
-		gap: var(--md-sys-space-md);
-		align-items: flex-start;
+		flex-direction: column;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		cursor: pointer;
 	}
-	.history-item-btn {
+	.history-top-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+	}
+	.history-title-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		flex: 1;
+		min-width: 0;
+	}
+	.history-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--md-sys-color-on-surface);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		flex: 1;
+	}
+	.history-title:hover .title-edit-icon {
+		opacity: 1;
+	}
+	.title-edit-icon {
+		opacity: 0;
+		flex-shrink: 0;
+		color: var(--md-sys-color-on-surface-variant);
+		transition: opacity 0.15s;
+	}
+	.title-input {
+		font-size: 14px;
+		font-weight: 600;
+		padding: 2px 6px;
+		width: 280px;
+	}
+	.history-message {
+		font-size: 13px;
+		color: var(--md-sys-color-on-surface-variant);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		background: var(--md-sys-color-surface-container);
+		border-radius: var(--md-sys-shape-small);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.history-meta {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		opacity: 0.75;
+	}
+	.meta-date {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 10px;
+	}
+	.meta-classification {
+		font-size: 10px;
+		font-weight: 500;
+		padding: 1px var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		background: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 12%, transparent);
+	}
+	.meta-session {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 10px;
+	}
+	.delete-btn-meta {
+		margin-left: auto;
+	}
+.history-item-btn {
 		width: 100%;
 		text-align: left;
 		font-family: inherit;
@@ -709,7 +876,6 @@
 		flex-shrink: 0;
 		display: flex;
 		align-items: center;
-		height: 100%;
 	}
 	.md-checkbox-static {
 		width: 18px;
@@ -737,46 +903,6 @@
 		border: solid var(--md-sys-color-on-primary);
 		border-width: 0 2px 2px 0;
 		transform: translate(-50%, -60%) rotate(45deg);
-	}
-	.history-content {
-		flex: 1;
-		min-width: 0;
-	}
-	.history-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	.history-title {
-		font-weight: 600;
-		color: var(--md-sys-color-on-surface);
-		font-size: 14px;
-	}
-	.history-meta {
-		display: flex;
-		gap: var(--md-sys-space-lg);
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	.session-id {
-		opacity: 0.6;
-	}
-	.history-transcript {
-		font-size: 13px;
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		background: var(--md-sys-color-surface-container);
-		border-radius: var(--md-sys-shape-extra-small);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.history-actions {
-		display: flex;
-		justify-content: space-between;
 	}
 	.dialog-text {
 		color: var(--md-sys-color-on-surface-variant);

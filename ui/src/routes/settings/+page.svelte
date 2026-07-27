@@ -1,6 +1,6 @@
 <script>
 	import logger from '$lib/logger.js';
-			import { onMount } from 'svelte';
+			import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.js';
 	import { themeStore } from '$lib/themeStore.js';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
@@ -56,6 +56,13 @@
 	let newKeyValue = $state('');
 	let accent = $state(themeStore.currentAccent);
 	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
+	let savedAccent = themeStore.currentAccent; // snapshot for reverting unsaved changes
+
+	onDestroy(() => {
+		if (accent !== savedAccent) {
+			themeStore.setAccent(savedAccent);
+		}
+	});
 
 	onMount(async () => {
 		try {
@@ -80,8 +87,11 @@
 			log = settings.log || log;
 			if (settings.appearance?.accent_color) {
 				accent = settings.appearance.accent_color;
+				savedAccent = accent;
 				themeStore.setAccent(accent);
 				if (!themeStore.presets[accent]) customAccentHex = themeStore.accentColor;
+			} else {
+				savedAccent = themeStore.currentAccent;
 			}
 			}
 		} catch (e) {
@@ -176,6 +186,7 @@
 				},
 			});
 		addNotification('Settings saved', 'success');
+			savedAccent = accent;
 			if (autostartEnabled) {
 				try { await invoke('enable_autostart'); } catch (e) {
 					autostartEnabled = false;

@@ -7,6 +7,7 @@ pub struct Task {
     pub id: String,
     pub session_id: Option<String>,
     pub input_text: String,
+    pub title: Option<String>,
     pub status: String,
     pub classification: String,
     pub created_at: String,
@@ -36,6 +37,7 @@ impl Database {
             id,
             session_id: session_id.map(String::from),
             input_text: input_text.into(),
+            title: None,
             status: "pending".into(),
             classification: classification.into(),
             created_at: now.clone(),
@@ -48,7 +50,7 @@ impl Database {
     pub fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, status, classification, created_at, updated_at, transcript, react_state
+            "SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state
              FROM tasks WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -57,12 +59,13 @@ impl Database {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 input_text: row.get(2)?,
-                status: row.get(3)?,
-                classification: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                classification: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                transcript: row.get(8)?,
+                react_state: row.get(9)?,
             })),
             None => Ok(None),
         }
@@ -79,6 +82,17 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_task_title(&self, id: &str, title: &str) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE tasks SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![title, now, id],
+        )?;
+        self.cache_invalidate_tasks();
+        Ok(())
+    }
+
     pub fn list_tasks(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<Task>> {
         if offset == 0 && limit == 50
             && let Some(cached) = self.cache_get_tasks()
@@ -87,7 +101,7 @@ impl Database {
         }
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, status, classification, created_at, updated_at, transcript, react_state
+            "SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state
              FROM tasks ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
@@ -95,12 +109,13 @@ impl Database {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 input_text: row.get(2)?,
-                status: row.get(3)?,
-                classification: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                classification: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                transcript: row.get(8)?,
+                react_state: row.get(9)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -117,8 +132,8 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, status, classification, created_at, updated_at, transcript, react_state
-             FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1
+            "SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state
+             FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
              ORDER BY created_at DESC LIMIT 50",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern], |row| {
@@ -126,12 +141,13 @@ impl Database {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 input_text: row.get(2)?,
-                status: row.get(3)?,
-                classification: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                classification: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                transcript: row.get(8)?,
+                react_state: row.get(9)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -150,7 +166,7 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1",
+            "SELECT COUNT(*) FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1",
             rusqlite::params![pattern],
             |r| r.get(0),
         )
@@ -161,8 +177,8 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, status, classification, created_at, updated_at, transcript, react_state
-             FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1
+            "SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state
+             FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
@@ -170,12 +186,13 @@ impl Database {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 input_text: row.get(2)?,
-                status: row.get(3)?,
-                classification: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                classification: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                transcript: row.get(8)?,
+                react_state: row.get(9)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -255,7 +272,8 @@ impl Database {
 
         if let Some(q) = query.and_then(|s| if s.is_empty() { None } else { Some(s) }) {
             let p = format!("%{q}%");
-            wheres.push("(input_text LIKE ? OR transcript LIKE ?)".into());
+            wheres.push("(input_text LIKE ? OR transcript LIKE ? OR title LIKE ?)".into());
+            params.push(Box::new(p.clone()));
             params.push(Box::new(p.clone()));
             params.push(Box::new(p));
         }
@@ -283,7 +301,7 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT id, session_id, input_text, status, classification, created_at, updated_at, transcript, react_state \
+            "SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state \
              FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -304,12 +322,13 @@ impl Database {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 input_text: row.get(2)?,
-                status: row.get(3)?,
-                classification: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                title: row.get(3)?,
+                status: row.get(4)?,
+                classification: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+                transcript: row.get(8)?,
+                react_state: row.get(9)?,
             })
         })?;
 
@@ -360,6 +379,7 @@ mod tests {
         assert!(!task.id.is_empty());
         assert_eq!(task.session_id.as_deref(), None);
         assert_eq!(task.input_text, "input text");
+        assert_eq!(task.title, None);
         assert_eq!(task.status, "pending");
         assert_eq!(task.classification, "NEW_TASK");
         assert!(!task.created_at.is_empty());

@@ -495,14 +495,15 @@ impl HttpLlmClient {
             .post(&url)
             .headers(self.build_headers())
             .json(&body);
-        // Use timeout_streaming_secs for streaming duration, or fall back to timeout_secs.
-        // For streaming the timeout should cover the full generation, not just connect.
-        let timeout = self
-            .endpoint
-            .timeout_streaming_secs
-            .unwrap_or(self.endpoint.timeout_secs);
-        tracing::info!("chat_stream_inner: sending request with {}s timeout", timeout);
-        req = req.timeout(Duration::from_secs(timeout));
+        // For streaming, only apply an HTTP-level timeout when explicitly configured.
+        // When timeout_streaming_secs is None, no HTTP timeout is set — the router-level
+        // max_total_duration_secs provides overall protection.
+        if let Some(timeout) = self.endpoint.timeout_streaming_secs {
+            tracing::info!("chat_stream_inner: sending request with {}s streaming timeout", timeout);
+            req = req.timeout(Duration::from_secs(timeout));
+        } else {
+            tracing::info!("chat_stream_inner: sending request without HTTP timeout (relying on router deadline)");
+        }
         let resp = req.send().await.map_err(|e| {
             tracing::info!("chat_stream_inner: send() error: {:?}", e);
             LlmError::from(e)

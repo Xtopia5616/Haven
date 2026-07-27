@@ -199,18 +199,19 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         }
         conn.execute_batch(
             "CREATE TABLE tasks_rebuild (
-                 id TEXT PRIMARY KEY,
-                 session_id TEXT REFERENCES sessions(id),
-                 input_text TEXT NOT NULL DEFAULT '',
-                 status TEXT NOT NULL DEFAULT 'pending'
-                     CHECK(status IN ('pending','running','paused','completed','failed','cancelled')),
-                 classification TEXT NOT NULL DEFAULT 'NEW_TASK',
-                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                 transcript TEXT NOT NULL DEFAULT '',
-                 react_state TEXT
-             );
-             INSERT INTO tasks_rebuild SELECT id, session_id, input_text, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT REFERENCES sessions(id),
+                  input_text TEXT NOT NULL DEFAULT '',
+                  title TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending'
+                      CHECK(status IN ('pending','running','paused','completed','failed','cancelled')),
+                  classification TEXT NOT NULL DEFAULT 'NEW_TASK',
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  transcript TEXT NOT NULL DEFAULT '',
+                  react_state TEXT
+              );
+              INSERT INTO tasks_rebuild SELECT id, session_id, input_text, NULL, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
              DROP TABLE tasks;
              ALTER TABLE tasks_rebuild RENAME TO tasks;
              CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
@@ -222,6 +223,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         }
         // Bump user_version past MIGRATIONS so this never runs again.
         conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() + 1))?;
+    }
+
+    // Add title column to tasks table
+    let has_title: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='title'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_title {
+        conn.execute("ALTER TABLE tasks ADD COLUMN title TEXT", [])?;
     }
 
     Ok(())

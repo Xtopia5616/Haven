@@ -406,13 +406,18 @@ impl LlmRouter {
         let primary = self.select_endpoint(role);
         let on_chunk = Arc::new(StdMutex::new(on_chunk));
 
-        // Primary: single attempt with cancellation
-        let primary_result = Self::aggregate_stream_cancellable(
-            primary.clone(), messages.clone(), tools.clone(), on_chunk.clone(), cancel.clone(), &self.stream_rules,
-        )
-        .await;
+        let cfg = self.config.read().await;
+        let max_dur = cfg.max_total_duration_secs;
+        drop(cfg);
 
-        match primary_result {
+        match tokio::time::timeout(Duration::from_secs(max_dur), async {
+            // Primary: single attempt with cancellation
+            let primary_result = Self::aggregate_stream_cancellable(
+                primary.clone(), messages.clone(), tools.clone(), on_chunk.clone(), cancel.clone(), &self.stream_rules,
+            )
+            .await;
+
+            match primary_result {
             Ok(resp) => {
                 self.record_success(&role).await;
                 self.fallback_active.store(false, Ordering::SeqCst);
@@ -474,6 +479,12 @@ impl LlmRouter {
                 }
             }
         }
+    }).await {
+        Ok(result) => result,
+        Err(_) => Err(LlmError::Timeout(format!(
+            "router streaming total timeout after {}s", max_dur
+        ))),
+    }
     }
 
     async fn aggregate_stream_cancellable(

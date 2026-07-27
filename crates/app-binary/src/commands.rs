@@ -947,6 +947,33 @@ pub async fn search_history_filtered(
         .map_err(|e| e.to_string())
 }
 
+/// Manually update a task's display title.
+#[tauri::command]
+pub async fn update_task_title(
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+    task_id: String,
+    title: String,
+) -> Result<(), String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("Title cannot be empty".into());
+    }
+    state
+        .db
+        .update_task_title(&task_id, &title)
+        .map_err(|e| e.to_string())?;
+    state.executor.update_task_title(&task_id, &title).await;
+    let _ = app.emit(
+        "task:title-updated",
+        serde_json::json!({
+            "task_id": task_id,
+            "title": title,
+        }),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn delete_task(
     state: State<'_, Arc<AppState>>,

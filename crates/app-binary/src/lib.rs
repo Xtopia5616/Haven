@@ -128,7 +128,7 @@ impl AgentEventEmitter for TauriEmitter {
                     serde_json::json!({
                         "task_id": task.id,
                         "status": task.status.as_str(),
-                        "title": task.input,
+                        "title": task.title,
                     }),
                 );
                 let notify = self.handle.state::<Arc<AppState>>()
@@ -210,6 +210,15 @@ impl AgentEventEmitter for TauriEmitter {
                         .body(format!("Task error: {}", error))
                         .show();
                 }
+            }
+            AgentEvent::TitleUpdated { task_id, title } => {
+                let _ = self.handle.emit(
+                    "task:title-updated",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "title": title,
+                    }),
+                );
             }
             AgentEvent::FallbackActivated { task_id, reason } => {
                 let _ = self.handle.emit(
@@ -708,6 +717,7 @@ pub fn run() {
             commands::get_branch_points,
             commands::rollback_task,
             commands::fork_task,
+            commands::update_task_title,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Haven app")
@@ -829,6 +839,7 @@ fn init_app_state(
             30,
             50,
             8000,
+            None,
         ));
         let pipeline = Arc::new(haven_input::InputPipeline::new());
         let shell = Arc::new(crate::desktop::DesktopShell::new());

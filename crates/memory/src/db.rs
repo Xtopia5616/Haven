@@ -176,6 +176,7 @@ mod tests {
             id: id.into(),
             session_id: None,
             input_text: format!("input-{}", id),
+            title: None,
             status: "pending".into(),
             classification: "NEW_TASK".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
