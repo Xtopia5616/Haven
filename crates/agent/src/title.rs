@@ -1,7 +1,7 @@
-use std::sync::Arc;
 use haven_common::config::ModelEndpoint;
 use haven_llm::client::{HttpLlmClient, LlmClient};
 use haven_llm::types::{ContentPart, LlmMessage, LlmRole};
+use std::sync::Arc;
 
 /// Generates concise conversation titles using the small_model endpoint.
 #[derive(Clone)]

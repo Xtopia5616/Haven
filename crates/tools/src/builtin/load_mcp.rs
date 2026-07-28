@@ -52,16 +52,19 @@ impl Tool for LoadMcpTool {
             configs.get(server_name).cloned()
         };
 
+        let available = {
+            let configs = self.server_configs.read().await;
+            configs
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let config = config.ok_or_else(|| {
             anyhow::anyhow!(
                 "MCP server '{}' not found in config. Available servers: {}",
                 server_name,
-                self.server_configs
-                    .blocking_read()
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                available
             )
         })?;
 

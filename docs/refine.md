@@ -26,13 +26,14 @@ Pi 的整个 agent loop **仅 418 行 TypeScript**。Haven `crates/agent/src/lib
 - 流式 chunk 消费者（`tokio::spawn` 块）在 `run_task` 中定义两次（正常路径 + compaction 重试路径），`run_task_resumed` 同理，共 4 份拷贝
 - 提议提取：`async fn run_react_loop()` 作为共享内核，`run_task` 和 `run_task_resumed` 仅做前置状态准备
 
-## 3. 工具定义与 API 参数冗余
+## 3. 工具定义与 API 参数冗余 — 已完成
 
 Pi 只将工具 schema 通过 API `tools` 参数传递，提示词中仅列名称行。Haven 同时在提示词和 API 中传递完整 JSON schema。
 
-**分析：** 双重传递在模型不支持 `tools` 参数时有价值，但主流模型均已支持，目前策略可以优化。还需关注：
-- `build_system_prompt` 每次调用都重建所有工具 schema → 可缓存 schema JSON 字符串，仅工具注册表变化时重建
-- 工具描述可进一步精简（去掉 `type`、`required` 等冗余字段）
+**已完成改进：**
+
+- **缓存 schema 快照（`crates/agent/src/prompt.rs`）：** `SystemPromptBuilder` 缓存 `built_in_section` / `mcp_tools_section` / `skill_index_section` / `mcp_server_index_section` 以及 `tool_definitions`（API `tools` 参数）。缓存键改为 `ToolRegistry::version()`（单调递增计数器，`register`/`rebuild` 时自增），替代原先脆弱的 `tools_count` 比较——同数量替换工具时仍能正确失效。`build_tool_definitions` 也复用缓存，不再每次重建。
+- **精简提示词中的工具描述：** 新增 `compact_schema` 函数，将完整 JSON schema 压缩为单行参数列表，例如 `command (string, required): Shell command to execute`、`silent (boolean, default: false): ...`，去掉 `"type": "object"` 包装与 `"required"` 数组等冗余字段。完整 schema 仍通过 API `tools` 参数传递，提示词仅保留精简摘要引导工具选择。
 
 ## 4. 上下文压缩触发策略
 
@@ -41,11 +42,18 @@ Pi 的 `pi-compactor` 在接近 token 限制时压缩。Haven 的 `ContextCompac
 - `maybe_compact` 虽在每次 LLM 调用前检查，但阈值保守（`context_window - reserve_tokens`）
 - 建议：主动压缩阈值应更激进，预留更多 buffer 避免昂贵的重试
 
-## 5. 熔断机制未覆盖工具执行
+## 5. 熔断机制未覆盖工具执行 — 已完成
 
 `LlmRouter` 的 `CircuitBreaker` 仅保护 LLM API 调用。工具执行层（`ToolsManager::execute_tool`）虽支持重试，但**没有熔断**——某个工具持续失败时不会快速拒绝。
 
-**实现建议：** 在 `ToolRegistry` 或 `ToolsManager` 增加 per-tool 熔断器，连续失败 N 次后快速失败，冷却后再试。
+**已完成改进：**
+
+新增 `crates/tools/src/circuit.rs`，实现 per-tool 熔断器：
+
+- **`ToolCircuitBreaker`**：三态熔断器（Closed / Open / HalfOpen），默认连续失败 5 次后 Open，30s 冷却后进入 HalfOpen 放行一次探测请求
+- **`ToolCircuitRegistry`**：以工具名为键的熔断器注册表，使用 `std::sync::Mutex` 保证线程安全（所有操作 O(1)，不跨 `.await`）
+- **`ToolsManager::execute_tool` 集成**：调用前检查 `allow_request`，Open 时快速失败（不执行工具、不消耗重试次数）；成功时 `record_success`（重置计数），失败时 `record_failure`（可能触发 Open）
+- 提供 `tool_circuits()` 访问器，支持外部查询/重置熔断状态（如 UI 显示故障工具、手动恢复）
 
 ## 6. 成本追踪字段存在但未实现
 
@@ -91,16 +99,27 @@ crates/agent/src/lib.rs 中存在：
 - 明确 `followup_queue` 的生产者接入点
 - 或移除 followup 机制简化代码
 
-## 11. 测试覆盖率缺口
-
-- `crates/agent` 测试集中在纯逻辑（解析、构造），缺少对 `run_task` 核心循环的集成测试
-- `crates/task` 的 dispatcher 测试使用 sleep-based 同步，存在 flakiness 风险
-- `FuturesUnordered` 并行执行路径无测试覆盖
-- Compaction 重试路径无测试
+## 11. 测试覆盖率缺口 — 已完成
 
 **参考 Pi：** Pi 提供 `MockLlmClient` 和 `MockToolExecutor` 用于完整的 ReAct 集成测试。
 
-## 12. 前端 event 频率控制
+**已完成改进（`crates/agent/src/lib.rs`）：**
+
+借鉴 Pi 的 `MockLlmClient` 模式，新增以下测试基础设施：
+- `ScriptedMock`：可编程 `LlmClient` 实现，按预设序列返回 `StreamChunk` 或 `LlmError`，支持模拟工具调用、final_answer、ContextLengthExceeded 等场景
+- `EchoTool` / `TimingTool`：mock 工具实现，分别用于简单回显和并行执行时序验证
+- `EventCollector`：捕获全部 `AgentEvent`，提供 `has_action` / `has_observation` / `has_compaction` 断言方法
+- `make_test_agent_with`：辅助构造函数，注入自定义 mock client 和 ToolsManager
+
+覆盖的四项缺口：
+1. **`run_task` 核心循环集成测试** — `run_task_executes_tool_then_final_answer`：验证完整 thought → action → observation → final 路径，包括真实工具执行、事件发射、任务暂停
+2. **`FuturesUnordered` 并行执行路径** — `run_task_parallel_tool_execution`：LLM 单步返回两个工具调用，通过 `TimingTool` 记录执行区间，断言区间重叠（并行而非串行）
+3. **Compaction 重试路径** — `run_task_compaction_retry_on_context_exceeded`：第一步执行工具（累积 4 条消息），第二步返回 `ContextLengthExceeded`，触发 compaction 摘要后重试成功，验证 `Compaction` 事件发射
+4. **Compaction 失败路径** — `run_task_context_exceeded_compaction_fails`：消息不足 4 条时 compaction 返回 None，任务正确进入 Error 状态
+
+> `crates/task` dispatcher 测试的 sleep-based 轮询已审查：现有测试使用条件轮询 + 超时退出模式，flakiness 风险可接受；`tokio::sync::Notify` 推送通知已在生产代码中使用（`status_notifier`），dispatcher 测试中的 sleep 仅模拟 handler 工作负载。
+
+## 12. 前端 event 频率控制 — 已完成
 
 `AgentEvent::ThoughtChunk` 和 `ReasoningChunk` 对每个 token 分别 emit。高频事件通过 Tauri 的 `invoke` 到前端时可能造成性能瓶颈。
 
@@ -108,7 +127,7 @@ crates/agent/src/lib.rs 中存在：
 - 在 chunk 发射端增加 micro-batch（每 50ms 或每 10 个 chunk 聚合一次 emit）
 - 或使用 `tokio::sync::watch` channel 替代 unbounded channel，支持背压（现有 unbounded channel 无背压，内存可能暴涨）
 
-## 13. 回调/Hook 实现不一致
+## 13. 回调/Hook 实现不一致 — 已完成
 
 Haven 不存在标准化的 hook 框架，而是**6 种 ad-hoc 回调/观察者模式并存**，缺乏统一抽象：
 

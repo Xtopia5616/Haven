@@ -11,17 +11,18 @@ pub struct SystemPromptBuilder {
     tools: Arc<ToolsManager>,
     db: Arc<Database>,
     /// Cached serialized schema for the built-in tool list. Invalidated
-    /// when the tool registry's tool count changes.
+    /// when the tool registry version changes (register/rebuild).
     schema_cache: RwLock<Option<SchemaCache>>,
 }
 
 #[derive(Clone)]
 struct SchemaCache {
-    tools_count: usize,
+    registry_version: u64,
     built_in_section: String,
     mcp_tools_section: String,
     skill_index_section: String,
     mcp_server_index_section: String,
+    tool_definitions: Vec<ToolDefinition>,
 }
 
 impl SystemPromptBuilder {
@@ -77,7 +78,11 @@ impl SystemPromptBuilder {
             for fact in facts.iter().take(10) {
                 prompt.push_str(&format!(
                     " [{}] {} {}",
-                    if fact.source == "user" { "defined" } else { "inferred" },
+                    if fact.source == "user" {
+                        "defined"
+                    } else {
+                        "inferred"
+                    },
                     fact.predicate,
                     fact.object,
                 ));
@@ -144,48 +149,49 @@ impl SystemPromptBuilder {
     }
 
     pub async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let schemas = self.tools.registry.list_schemas().await;
-        schemas
-            .into_iter()
-            .map(|s| ToolDefinition {
-                tool_type: "function".into(),
-                function: ToolFunction {
-                    name: s["name"].as_str().unwrap_or("").into(),
-                    description: s["description"].as_str().unwrap_or("").into(),
-                    parameters: s["input_schema"].clone(),
-                },
-            })
-            .collect()
+        self.get_or_build_sections().await.tool_definitions
     }
 
     async fn get_or_build_sections(&self) -> SchemaCache {
-        let schemas = self.tools.registry.list_schemas().await;
-        let count = schemas.len();
+        let version = self.tools.registry.version();
         {
             let cache = self.schema_cache.read().unwrap();
             if let Some(c) = cache.as_ref()
-                && c.tools_count == count
+                && c.registry_version == version
             {
                 return c.clone();
             }
         }
 
-        let new_cache = self.build_sections(count, schemas).await;
+        let schemas = self.tools.registry.list_schemas().await;
+        let new_cache = self.build_sections(version, schemas).await;
         *self.schema_cache.write().unwrap() = Some(new_cache.clone());
         new_cache
     }
 
-    async fn build_sections(&self, count: usize, schemas: Vec<serde_json::Value>) -> SchemaCache {
+    async fn build_sections(&self, version: u64, schemas: Vec<serde_json::Value>) -> SchemaCache {
         let mut built_in = String::new();
         let mut mcp_tools = String::new();
+        let mut tool_definitions = Vec::with_capacity(schemas.len());
         for s in &schemas {
             let name = s["name"].as_str().unwrap_or("");
             let desc = s["description"].as_str().unwrap_or("");
+            let params = s["input_schema"].clone();
+
+            tool_definitions.push(ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: name.into(),
+                    description: desc.into(),
+                    parameters: params.clone(),
+                },
+            });
+
             if name.starts_with("mcp::") {
                 mcp_tools.push_str(&format!("  - {}: {}\n", name, desc));
             } else if !name.starts_with("skill::") {
-                let params = serde_json::to_string_pretty(&s["input_schema"]).unwrap_or_default();
-                built_in.push_str(&format!("- {}: {}\n  {}\n", name, desc, params));
+                built_in.push_str(&format!("- {}: {}\n", name, desc));
+                built_in.push_str(&compact_schema(&params));
             }
         }
 
@@ -208,11 +214,113 @@ impl SystemPromptBuilder {
         }
 
         SchemaCache {
-            tools_count: count,
+            registry_version: version,
             built_in_section: built_in,
             mcp_tools_section: mcp_tools,
             skill_index_section: skill_index,
             mcp_server_index_section: mcp_server_index,
+            tool_definitions,
         }
+    }
+}
+
+/// Render a JSON schema into a compact, human-readable parameter listing
+/// for the system prompt. Unlike the previous `to_string_pretty` approach,
+/// this drops the redundant `"type": "object"` wrapper and the `"required"`
+/// array boilerplate, emitting one line per property:
+///
+/// ```text
+///   command (string, required): Shell command to execute
+///   silent (boolean, default: false): If true, hide output from the user
+/// ```
+///
+/// The full schema is still delivered to the model via the API `tools`
+/// parameter (`build_tool_definitions`), so the prompt only needs a slim
+/// summary to guide tool selection.
+fn compact_schema(schema: &serde_json::Value) -> String {
+    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return String::new();
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    let mut out = String::new();
+    for (name, spec) in props {
+        let ty = spec.get("type").and_then(|t| t.as_str()).unwrap_or("any");
+        let req = required.iter().any(|r| *r == name);
+        let req_tag = if req { ", required" } else { "" };
+
+        let mut tail = String::new();
+        if let Some(def) = spec.get("default") {
+            tail.push_str(&format!(", default: {}", def));
+        }
+        if let Some(enum_vals) = spec.get("enum").and_then(|e| e.as_array())
+            && !enum_vals.is_empty()
+        {
+            let opts: Vec<String> = enum_vals
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect();
+            tail.push_str(&format!(", one of: {}", opts.join(" | ")));
+        }
+
+        let desc = spec
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        out.push_str(&format!(
+            "  {} ({}{}{}): {}\n",
+            name, ty, req_tag, tail, desc
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn compact_schema_basic() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "Shell command to execute" },
+                "silent": { "type": "boolean", "description": "Hide output", "default": false }
+            },
+            "required": ["command"]
+        });
+        let out = compact_schema(&schema);
+        assert!(out.contains("command (string, required): Shell command to execute"));
+        assert!(out.contains("silent (boolean, default: false): Hide output"));
+        assert!(!out.contains("\"type\": \"object\""));
+        assert!(!out.contains("\"required\""));
+    }
+
+    #[test]
+    fn compact_schema_enum() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "level": { "type": "string", "enum": ["low", "high"], "description": "level" }
+            },
+            "required": ["level"]
+        });
+        let out = compact_schema(&schema);
+        assert!(out.contains("one of: low | high"));
+    }
+
+    #[test]
+    fn compact_schema_no_properties() {
+        let schema = json!({"type": "object"});
+        let out = compact_schema(&schema);
+        assert!(out.is_empty());
     }
 }

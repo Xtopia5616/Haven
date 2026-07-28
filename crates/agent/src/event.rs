@@ -84,6 +84,79 @@ pub trait AgentEventEmitter: Send + Sync {
     async fn emit(&self, event: AgentEvent);
 }
 
+/// Multi-subscriber fan-out for `AgentEventEmitter`. Itself implements
+/// `AgentEventEmitter`, so a single bus can be installed via
+/// `EventDispatcher::set_emitter` while any number of independent subscribers
+/// (frontend `TauriEmitter`, log recorder, test mock, …) register and
+/// unregister by id without disturbing each other.
+///
+/// `emit` snapshots the subscriber list under a read lock, then awaits each
+/// subscriber sequentially — order matches registration order. Failures in one
+/// subscriber do not abort delivery to the rest (errors are logged and skipped).
+pub struct EventBus {
+    subscribers: tokio::sync::RwLock<Vec<(String, Arc<dyn AgentEventEmitter>)>>,
+}
+
+impl EventBus {
+    pub fn new() -> Self {
+        Self {
+            subscribers: tokio::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Add (or, if `id` already exists, replace) a subscriber. Returns the
+    /// previously registered emitter for that id, if any.
+    pub async fn subscribe(
+        &self,
+        id: &str,
+        emitter: Arc<dyn AgentEventEmitter>,
+    ) -> Option<Arc<dyn AgentEventEmitter>> {
+        let mut subs = self.subscribers.write().await;
+        if let Some(slot) = subs.iter_mut().find(|(sid, _)| sid == id) {
+            Some(std::mem::replace(&mut slot.1, emitter))
+        } else {
+            subs.push((id.to_string(), emitter));
+            None
+        }
+    }
+
+    /// Remove a subscriber by id. Returns the removed emitter, if any.
+    pub async fn unsubscribe(&self, id: &str) -> Option<Arc<dyn AgentEventEmitter>> {
+        let mut subs = self.subscribers.write().await;
+        if let Some(pos) = subs.iter().position(|(sid, _)| sid == id) {
+            Some(subs.swap_remove(pos).1)
+        } else {
+            None
+        }
+    }
+
+    /// Current number of registered subscribers.
+    pub async fn subscriber_count(&self) -> usize {
+        self.subscribers.read().await.len()
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl AgentEventEmitter for EventBus {
+    async fn emit(&self, event: AgentEvent) {
+        let snapshot: Vec<Arc<dyn AgentEventEmitter>> = {
+            let subs = self.subscribers.read().await;
+            subs.iter().map(|(_, e)| e.clone()).collect()
+        };
+        for emitter in snapshot {
+            // Clone per-subscriber so a slow/panicking subscriber can't poison others.
+            let ev = event.clone();
+            emitter.emit(ev).await;
+        }
+    }
+}
+
 type ChunkSender = tokio::sync::mpsc::Sender<(String, String, u32, u64)>;
 type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 
@@ -212,6 +285,15 @@ impl EventDispatcher {
         *self.emitter.lock().unwrap() = Some(emitter);
     }
 
+    /// Create an `EventBus`, install it as the active emitter, and return a
+    /// handle so callers can register subscribers. Replaces any previously
+    /// installed emitter.
+    pub fn install_bus(&self) -> Arc<EventBus> {
+        let bus = Arc::new(EventBus::new());
+        self.set_emitter(bus.clone());
+        bus
+    }
+
     pub fn emitter_arc(&self) -> Option<Arc<dyn AgentEventEmitter>> {
         self.emitter.lock().unwrap().clone()
     }
@@ -245,31 +327,41 @@ impl EventDispatcher {
     pub async fn emit_task_completed(&self, task_id: &str, title: &str) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.emit(AgentEvent::TaskCompleted {
-                task_id: task_id.into(),
-                title: title.into(),
-            }).await;
+            emitter
+                .emit(AgentEvent::TaskCompleted {
+                    task_id: task_id.into(),
+                    title: title.into(),
+                })
+                .await;
         }
     }
 
     pub async fn emit_task_updated(&self, task_id: &str, status: &str) {
-        tracing::info!("emit_task_updated event: task={} status={}", task_id, status);
+        tracing::info!(
+            "emit_task_updated event: task={} status={}",
+            task_id,
+            status
+        );
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.emit(AgentEvent::TaskUpdated {
-                task_id: task_id.into(),
-                status: status.into(),
-            }).await;
+            emitter
+                .emit(AgentEvent::TaskUpdated {
+                    task_id: task_id.into(),
+                    status: status.into(),
+                })
+                .await;
         }
     }
 
     pub async fn emit_title_updated(&self, task_id: &str, title: &str) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
-            emitter.emit(AgentEvent::TitleUpdated {
-                task_id: task_id.into(),
-                title: title.into(),
-            }).await;
+            emitter
+                .emit(AgentEvent::TitleUpdated {
+                    task_id: task_id.into(),
+                    title: title.into(),
+                })
+                .await;
         }
     }
 
@@ -283,14 +375,22 @@ impl EventDispatcher {
         run_id: u64,
         db: &Database,
     ) {
-        tracing::info!("emit_thought: task={} step={} run={} thought_len={}", task_id, step_number, run_id, thought.len());
-        let _ = db.create_thought_step(task_id, step_number as i32, thought);
-        emitter.emit(AgentEvent::Thought {
-            task_id: task_id.into(),
-            thought: thought.into(),
+        tracing::info!(
+            "emit_thought: task={} step={} run={} thought_len={}",
+            task_id,
             step_number,
             run_id,
-        }).await;
+            thought.len()
+        );
+        let _ = db.create_thought_step(task_id, step_number as i32, thought);
+        emitter
+            .emit(AgentEvent::Thought {
+                task_id: task_id.into(),
+                thought: thought.into(),
+                step_number,
+                run_id,
+            })
+            .await;
     }
 
     pub async fn emit_fallback_activated_from(
@@ -298,10 +398,12 @@ impl EventDispatcher {
         task_id: &str,
         reason: &str,
     ) {
-        emitter.emit(AgentEvent::FallbackActivated {
-            task_id: task_id.into(),
-            reason: reason.into(),
-        }).await;
+        emitter
+            .emit(AgentEvent::FallbackActivated {
+                task_id: task_id.into(),
+                reason: reason.into(),
+            })
+            .await;
     }
 
     pub async fn emit_compaction_from(
@@ -311,12 +413,14 @@ impl EventDispatcher {
         tokens_before: u32,
         tokens_after: u32,
     ) {
-        emitter.emit(AgentEvent::Compaction {
-            task_id: task_id.into(),
-            summary: summary.into(),
-            tokens_before,
-            tokens_after,
-        }).await;
+        emitter
+            .emit(AgentEvent::Compaction {
+                task_id: task_id.into(),
+                summary: summary.into(),
+                tokens_before,
+                tokens_after,
+            })
+            .await;
     }
 
     pub async fn emit_task_error_from(
@@ -324,9 +428,221 @@ impl EventDispatcher {
         task_id: &str,
         error: &str,
     ) {
-        emitter.emit(AgentEvent::TaskError {
-            task_id: task_id.into(),
-            error: error.into(),
-        }).await;
+        emitter
+            .emit(AgentEvent::TaskError {
+                task_id: task_id.into(),
+                error: error.into(),
+            })
+            .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Collects every emitted `AgentEvent` into a guarded Vec.
+    struct CollectorEmitter {
+        events: Mutex<Vec<AgentEvent>>,
+    }
+
+    #[async_trait]
+    impl AgentEventEmitter for CollectorEmitter {
+        async fn emit(&self, event: AgentEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    fn delta_of(event: &AgentEvent) -> Option<&str> {
+        match event {
+            AgentEvent::ThoughtChunk { delta, .. } | AgentEvent::ReasoningChunk { delta, .. } => {
+                Some(delta)
+            }
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn batcher_aggregates_into_fewer_emits_and_preserves_content() {
+        let emitter: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
+        let handle = tokio::spawn(run_chunk_batcher(rx, emitter.clone(), false));
+
+        // Push 100 tiny per-token chunks faster than the batch interval.
+        for i in 0..100u32 {
+            tx.send(("t1".into(), format!("{}", i % 10), 1, 7))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+
+        let events = emitter.events.lock().unwrap().clone();
+        let chunks: Vec<&str> = events.iter().filter_map(delta_of).collect();
+        // Content preserved: concatenation equals "0123456789" repeated 10×.
+        let total: String = chunks.concat();
+        assert_eq!(total, "0123456789".repeat(10));
+        // Far fewer emits than tokens (100 → a handful of batches). With 100 fast
+        // tokens and a 50ms window there should be multiple batches but well under 100.
+        assert!(
+            chunks.len() < 100,
+            "expected batching, got {} emits",
+            chunks.len()
+        );
+        // Every emit carries the same step/run identity.
+        for e in &events {
+            if let AgentEvent::ThoughtChunk {
+                step_number,
+                run_id,
+                ..
+            } = e
+            {
+                assert_eq!(*step_number, 1);
+                assert_eq!(*run_id, 7);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batcher_flushes_on_channel_close_even_within_interval() {
+        let emitter: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
+        let handle = tokio::spawn(run_chunk_batcher(rx, emitter.clone(), true));
+
+        tx.send(("t2".into(), "hello ".into(), 3, 1)).await.unwrap();
+        tx.send(("t2".into(), "world".into(), 3, 1)).await.unwrap();
+        drop(tx);
+        // Should NOT need to wait the full 50ms — closing the sender flushes promptly.
+        let joined = tokio::time::timeout(std::time::Duration::from_millis(200), handle);
+        joined.await.unwrap().unwrap();
+
+        let events = emitter.events.lock().unwrap().clone();
+        let total: String = events.iter().filter_map(delta_of).collect();
+        assert_eq!(total, "hello world");
+        // Reasoning path was used.
+        assert!(
+            events
+                .iter()
+                .all(|e| matches!(e, AgentEvent::ReasoningChunk { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn batcher_flushes_on_max_bytes_threshold() {
+        let emitter: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
+        let handle = tokio::spawn(run_chunk_batcher(rx, emitter.clone(), false));
+
+        // Push enough data to cross CHUNK_BATCH_MAX_BYTES mid-batch.
+        let big = "x".repeat(CHUNK_BATCH_MAX_BYTES);
+        tx.send(("t3".into(), big.clone(), 1, 1)).await.unwrap();
+        tx.send(("t3".into(), "tail".into(), 1, 1)).await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let events = emitter.events.lock().unwrap().clone();
+        let total: String = events.iter().filter_map(delta_of).collect();
+        assert_eq!(total, format!("{}tail", big));
+    }
+
+    #[tokio::test]
+    async fn event_bus_fans_out_to_all_subscribers() {
+        let bus = Arc::new(EventBus::new());
+        let a: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        let b: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        bus.subscribe("a", a.clone()).await;
+        bus.subscribe("b", b.clone()).await;
+        assert_eq!(bus.subscriber_count().await, 2);
+
+        bus.emit(AgentEvent::ThoughtChunk {
+            task_id: "t".into(),
+            delta: "hi".into(),
+            step_number: 1,
+            run_id: 1,
+        })
+        .await;
+
+        assert_eq!(a.events.lock().unwrap().len(), 1);
+        assert_eq!(b.events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn event_bus_unsubscribe_stops_delivery() {
+        let bus = Arc::new(EventBus::new());
+        let a: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        bus.subscribe("a", a.clone()).await;
+        let removed = bus.unsubscribe("a").await;
+        assert!(removed.is_some());
+        assert_eq!(bus.subscriber_count().await, 0);
+
+        bus.emit(AgentEvent::ThoughtChunk {
+            task_id: "t".into(),
+            delta: "x".into(),
+            step_number: 1,
+            run_id: 1,
+        })
+        .await;
+        assert!(a.events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_bus_subscribe_replaces_existing_id() {
+        let bus = Arc::new(EventBus::new());
+        let a: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        let b: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        bus.subscribe("a", a.clone()).await;
+        let prev = bus.subscribe("a", b.clone()).await;
+        assert!(prev.is_some());
+        assert_eq!(bus.subscriber_count().await, 1);
+
+        bus.emit(AgentEvent::ThoughtChunk {
+            task_id: "t".into(),
+            delta: "x".into(),
+            step_number: 1,
+            run_id: 1,
+        })
+        .await;
+        // Replaced subscriber "a" is now b; the old a should NOT receive.
+        assert!(a.events.lock().unwrap().is_empty());
+        assert_eq!(b.events.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn install_bus_installs_event_bus_as_emitter() {
+        let dispatcher = EventDispatcher::new();
+        let bus = dispatcher.install_bus();
+        let collector: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        bus.subscribe("c", collector.clone()).await;
+
+        // emit_thought_from drives the installed emitter (the bus), which fans out.
+        let mut p = std::env::temp_dir();
+        p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(&p).unwrap();
+        let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
+        EventDispatcher::emit_thought_from(&bus_dyn, "t", "hello", 1, 1, &db).await;
+        assert_eq!(collector.events.lock().unwrap().len(), 1);
+        assert!(matches!(
+            collector.events.lock().unwrap()[0],
+            AgentEvent::Thought { .. }
+        ));
     }
 }

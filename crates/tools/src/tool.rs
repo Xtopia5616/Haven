@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -101,6 +102,12 @@ pub type ToolBox = Arc<dyn Tool>;
 pub struct ToolRegistry {
     tools: Arc<RwLock<Vec<ToolBox>>>,
     name_index: Arc<RwLock<HashMap<String, ToolBox>>>,
+    /// Monotonically incremented on every mutation (register/rebuild).
+    /// Consumers (e.g. SystemPromptBuilder) compare this against a cached
+    /// value to decide whether the schema snapshot is stale, which is more
+    /// robust than comparing tool counts: a rebuild that swaps tools while
+    /// keeping the same count still bumps the version.
+    version: Arc<AtomicU64>,
 }
 
 impl Clone for ToolRegistry {
@@ -108,6 +115,7 @@ impl Clone for ToolRegistry {
         Self {
             tools: self.tools.clone(),
             name_index: self.name_index.clone(),
+            version: self.version.clone(),
         }
     }
 }
@@ -117,13 +125,20 @@ impl ToolRegistry {
         Self {
             tools: Arc::new(RwLock::new(Vec::new())),
             name_index: Arc::new(RwLock::new(HashMap::new())),
+            version: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Current registry version. Bumps on every `register`/`rebuild`.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::SeqCst)
     }
 
     pub async fn register(&self, tool: ToolBox) {
         let name = tool.name();
         self.tools.write().await.push(tool.clone());
         self.name_index.write().await.insert(name, tool);
+        self.version.fetch_add(1, Ordering::SeqCst);
     }
 
     pub async fn get(&self, name: &str) -> Option<ToolBox> {
@@ -159,6 +174,7 @@ impl ToolRegistry {
         }
         *self.tools.write().await = new_tools;
         *self.name_index.write().await = index;
+        self.version.fetch_add(1, Ordering::SeqCst);
     }
 }
 

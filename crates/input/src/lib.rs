@@ -1,11 +1,10 @@
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, mpsc};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use async_trait::async_trait;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample as CpalSample, SampleFormat, Stream, StreamConfig};
 use serde::{Deserialize, Serialize};
@@ -14,12 +13,23 @@ use tokio_util::sync::CancellationToken;
 
 use haven_common::SttClient;
 
-// Type aliases to satisfy clippy::type-complexity
-type VadCallback = Arc<StdMutex<Option<Box<dyn Fn(vad::VadSignal, vad::VadState) + Send + Sync>>>>;
-type AutoStopCallback = Arc<Mutex<Option<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>>>;
 pub use haven_common::config::AudioConfig;
 
 pub mod vad;
+
+/// Unified input-pipeline hook surface, replacing the former separate
+/// `VadCallback` and `AutoStopCallback` function-pointer fields on
+/// `InputPipeline`. Naming mirrors `ShellHandler`. Both methods have no-op
+/// defaults, so an implementation only overrides the hooks it needs.
+#[async_trait]
+pub trait InputHandler: Send + Sync {
+    /// Fired (sync) on each VAD signal/state transition. May be throttled by
+    /// the pipeline before delivery.
+    fn on_vad_status(&self, _signal: vad::VadSignal, _state: vad::VadState) {}
+    /// Fired (async) when VAD detects end-of-speech or the max recording
+    /// duration is reached, before the recording result is finalized.
+    async fn on_auto_stop(&self) {}
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RecordingState {
@@ -376,10 +386,9 @@ pub struct InputPipeline {
     capture: Arc<StdMutex<Option<AudioCaptureHandle>>>,
     vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    vad_callback: VadCallback,
+    handler: Arc<StdMutex<Option<Arc<dyn InputHandler>>>>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
-    on_auto_stop: AutoStopCallback,
     stt_client: Arc<Mutex<Option<Box<dyn SttClient>>>>,
 }
 
@@ -392,10 +401,9 @@ impl InputPipeline {
             capture: Arc::new(StdMutex::new(None)),
             vad_engine: Arc::new(StdMutex::new(None)),
             vad_detector: Arc::new(Mutex::new(vad_detector)),
-            vad_callback: Arc::new(StdMutex::new(None)),
+            handler: Arc::new(StdMutex::new(None)),
             cancel_token: StdMutex::new(None),
             result_rx: StdMutex::new(None),
-            on_auto_stop: Arc::new(Mutex::new(None)),
             stt_client: Arc::new(Mutex::new(None)),
         }
     }
@@ -408,19 +416,14 @@ impl Default for InputPipeline {
 }
 
 impl InputPipeline {
-    pub async fn set_on_auto_stop(&self, cb: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>) {
-        *self.on_auto_stop.lock().await = Some(cb);
+    /// Install the unified input handler (replaces former
+    /// `set_vad_status_callback` + `set_on_auto_stop`).
+    pub fn set_handler(&self, handler: Arc<dyn InputHandler>) {
+        *self.handler.lock().unwrap() = Some(handler);
     }
 
     pub async fn set_stt_client(&self, client: Box<dyn SttClient>) {
         *self.stt_client.lock().await = Some(client);
-    }
-
-    pub fn set_vad_status_callback(
-        &self,
-        cb: Box<dyn Fn(vad::VadSignal, vad::VadState) + Send + Sync>,
-    ) {
-        *self.vad_callback.lock().unwrap() = Some(cb);
     }
 
     pub async fn process_vad_frame(&self, frame: &[f32]) -> vad::VadSignal {
@@ -438,8 +441,8 @@ impl InputPipeline {
             let state = det.state();
             (signal, state)
         };
-        if let Some(ref cb) = *self.vad_callback.lock().unwrap() {
-            cb(signal, state);
+        if let Some(ref h) = *self.handler.lock().unwrap() {
+            h.on_vad_status(signal, state);
         }
         signal
     }
@@ -470,9 +473,7 @@ impl InputPipeline {
 
         let cmd_tx = spawn_capture_thread(ring, resampler, failed)?;
 
-        let capture_handle = AudioCaptureHandle {
-            cmd_tx,
-        };
+        let capture_handle = AudioCaptureHandle { cmd_tx };
         *self.capture.lock().unwrap() = Some(capture_handle);
 
         {
@@ -498,8 +499,7 @@ impl InputPipeline {
             capture: self.capture.clone(),
             vad_engine: self.vad_engine.clone(),
             vad_detector: self.vad_detector.clone(),
-            vad_callback: self.vad_callback.clone(),
-            on_auto_stop: self.on_auto_stop.clone(),
+            handler: self.handler.clone(),
         };
         tokio::spawn(async move {
             let result = Self::recording_loop(loop_data, cancel).await;
@@ -535,11 +535,9 @@ impl InputPipeline {
 
             if start.elapsed() >= max_duration {
                 Self::final_drain(&data, &mut accumulated_pcm).await;
-                {
-                    let guard = data.on_auto_stop.lock().await;
-                    if let Some(cb) = guard.as_ref() {
-                        cb().await;
-                    }
+                let h = data.handler.lock().unwrap().clone();
+                if let Some(h) = h {
+                    h.on_auto_stop().await;
                 }
                 let elapsed = start.elapsed();
                 return RecordingResult {
@@ -583,8 +581,8 @@ impl InputPipeline {
                         let signal = det.process(prob);
                         let state = det.state();
                         if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
-                            if let Some(ref cb) = *data.vad_callback.lock().unwrap() {
-                                cb(signal, state);
+                            if let Some(h) = data.handler.lock().unwrap().clone() {
+                                h.on_vad_status(signal, state);
                             }
                             last_vad_status = std::time::Instant::now();
                         }
@@ -593,11 +591,9 @@ impl InputPipeline {
 
                     if signal == vad::VadSignal::AutoStop {
                         Self::final_drain(&data, &mut accumulated_pcm).await;
-                        {
-                            let guard = data.on_auto_stop.lock().await;
-                            if let Some(cb) = guard.as_ref() {
-                                cb().await;
-                            }
+                        let h = data.handler.lock().unwrap().clone();
+                        if let Some(h) = h {
+                            h.on_auto_stop().await;
                         }
                         let elapsed = start.elapsed();
                         return RecordingResult {
@@ -811,8 +807,7 @@ struct LoopData {
     capture: Arc<StdMutex<Option<AudioCaptureHandle>>>,
     vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    vad_callback: VadCallback,
-    on_auto_stop: AutoStopCallback,
+    handler: Arc<StdMutex<Option<Arc<dyn InputHandler>>>>,
 }
 
 #[cfg(test)]
@@ -966,16 +961,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_on_auto_stop() {
+        struct StopHandler;
+        #[async_trait]
+        impl InputHandler for StopHandler {
+            async fn on_auto_stop(&self) {}
+        }
         let pipeline = InputPipeline::new();
-        pipeline
-            .set_on_auto_stop(Box::new(|| Box::pin(async {})))
-            .await;
+        pipeline.set_handler(Arc::new(StopHandler));
     }
 
     #[test]
     fn test_set_vad_status_callback() {
+        struct VadHandler;
+        #[async_trait]
+        impl InputHandler for VadHandler {
+            fn on_vad_status(&self, _signal: vad::VadSignal, _state: vad::VadState) {}
+        }
         let pipeline = InputPipeline::new();
-        pipeline.set_vad_status_callback(Box::new(|_signal, _state| {}));
+        pipeline.set_handler(Arc::new(VadHandler));
     }
 
     #[tokio::test]

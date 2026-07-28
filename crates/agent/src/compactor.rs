@@ -1,12 +1,11 @@
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::{EndpointRole, LlmMessage, LlmRole, LlmRouter};
-use std::sync::LazyLock;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use tiktoken_rs::o200k_base;
 
-static TOKENIZER: LazyLock<tiktoken_rs::CoreBPE> = LazyLock::new(|| {
-    o200k_base().expect("failed to initialize o200k_base tokenizer")
-});
+static TOKENIZER: LazyLock<tiktoken_rs::CoreBPE> =
+    LazyLock::new(|| o200k_base().expect("failed to initialize o200k_base tokenizer"));
 
 /// Token estimation using o200k_base tokenizer for accurate counts.
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -74,7 +73,7 @@ impl ContextCompactor {
     /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
     fn build_summary_prompt(prefix: &[CanonicalMessage]) -> String {
         let mut text = String::from(
-            "Summarize this conversation. Keep key facts, decisions, and context:\n\n"
+            "Summarize this conversation. Keep key facts, decisions, and context:\n\n",
         );
         for msg in prefix {
             let role = match msg.role {
@@ -127,14 +126,12 @@ impl ContextCompactor {
         let tokens_before = estimate_message_tokens(messages);
 
         let prompt = Self::build_summary_prompt(prefix);
-        let llm_messages = vec![
-            LlmMessage {
-                role: LlmRole::User,
-                content: vec![ContentPart::text(prompt)],
-                tool_call_id: None,
-                tool_calls: None,
-            },
-        ];
+        let llm_messages = vec![LlmMessage {
+            role: LlmRole::User,
+            content: vec![ContentPart::text(prompt)],
+            tool_call_id: None,
+            tool_calls: None,
+        }];
 
         match router.chat(EndpointRole::DefaultModel, llm_messages).await {
             Ok(response) => {
@@ -208,7 +205,9 @@ mod tests {
     #[test]
     fn needs_compaction_returns_true_when_exceeded() {
         let compactor = ContextCompactor::new(100, 20);
-        let text = "This is a long conversation history that should exceed the compaction threshold. ".repeat(10);
+        let text =
+            "This is a long conversation history that should exceed the compaction threshold. "
+                .repeat(10);
         let msgs = vec![
             make_msg(CanonicalRole::System, &text),
             make_msg(CanonicalRole::User, &text),
@@ -225,7 +224,9 @@ mod tests {
 
     #[test]
     fn compact_returns_none_for_few_messages() {
-        let router = Arc::new(haven_llm::LlmRouter::new(haven_common::config::LlmConfig::default()));
+        let router = Arc::new(haven_llm::LlmRouter::new(
+            haven_common::config::LlmConfig::default(),
+        ));
         let compactor = ContextCompactor::new(4096, 512);
         let msgs = vec![
             make_msg(CanonicalRole::System, "You are Haven."),

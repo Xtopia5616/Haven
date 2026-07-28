@@ -142,6 +142,56 @@ impl Database {
         self.cache_invalidate_messages(session_id);
         Ok(())
     }
+
+    /// Return the `created_at` of the most recent message in a session, or
+    /// `None` if the session has no messages. Used by rollback to record the
+    /// high-water mark at branch-point creation time.
+    pub fn get_last_message_created_at(&self, session_id: &str) -> Option<String> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT created_at FROM messages WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Delete every message in a session whose `created_at` is strictly after
+    /// the given timestamp. Used by rollback to discard messages persisted
+    /// after the branch point.
+    pub fn delete_messages_after(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM messages WHERE session_id = ?1 AND created_at > ?2",
+            rusqlite::params![session_id, created_at],
+        )?;
+        self.cache_invalidate_messages(session_id);
+        Ok(())
+    }
+
+    /// Copy all messages from one session to another, preserving role,
+    /// content, type, timestamps, and tool-call metadata. Used by task fork
+    /// so the child session has an independent copy of the parent's message
+    /// history for review. IDs are regenerated (prefixed with the target
+    /// session) to avoid primary-key collisions.
+    pub fn copy_session_messages(
+        &self,
+        from_session: &str,
+        to_session: &str,
+    ) -> anyhow::Result<usize> {
+        let conn = self.conn();
+        let changed = conn.execute(
+            "INSERT INTO messages
+                (id, session_id, role, content, message_type, created_at,
+                 tool_call_id, is_compacted, compaction_id, parent_message_id)
+             SELECT ?2 || '-' || id, ?2, role, content, message_type, created_at,
+                    tool_call_id, is_compacted, compaction_id, parent_message_id
+             FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
+            rusqlite::params![from_session, to_session],
+        )?;
+        self.cache_invalidate_messages(to_session);
+        Ok(changed)
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +260,55 @@ mod tests {
         let msg = db.add_message(&sid, "tool", "result", Some("action"), Some("call-1")).unwrap();
         assert_eq!(msg.tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(msg.message_type.as_deref(), Some("action"));
+    }
+
+    #[test]
+    fn get_last_message_created_at_returns_latest() {
+        let db = test_db();
+        let sid = test_session(&db);
+        assert!(db.get_last_message_created_at(&sid).is_none());
+        db.add_message(&sid, "user", "first", None, None).unwrap();
+        let m2 = db.add_message(&sid, "user", "second", None, None).unwrap();
+        let last = db.get_last_message_created_at(&sid).expect("some timestamp");
+        assert_eq!(last, m2.created_at);
+    }
+
+    #[test]
+    fn delete_messages_after_keeps_older() {
+        let db = test_db();
+        let sid = test_session(&db);
+        let m1 = db.add_message(&sid, "user", "first", None, None).unwrap();
+        let m2 = db.add_message(&sid, "assistant", "second", None, None).unwrap();
+        db.delete_messages_after(&sid, &m1.created_at).unwrap();
+        let msgs = db.get_session_messages(&sid).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "first");
+        // m2 should be gone
+        assert!(!msgs.iter().any(|m| m.id == m2.id));
+    }
+
+    #[test]
+    fn copy_session_messages_duplicates_all() {
+        let db = test_db();
+        let from = test_session(&db);
+        let to = test_session(&db);
+        db.add_message(&from, "user", "hello", Some("text"), None).unwrap();
+        db.add_message(&from, "assistant", "world", None, None).unwrap();
+
+        let count = db.copy_session_messages(&from, &to).unwrap();
+        assert_eq!(count, 2);
+
+        let src = db.get_session_messages(&from).unwrap();
+        let dst = db.get_session_messages(&to).unwrap();
+        assert_eq!(src.len(), 2);
+        assert_eq!(dst.len(), 2);
+        // Content and order preserved
+        assert_eq!(dst[0].content, "hello");
+        assert_eq!(dst[1].content, "world");
+        // IDs are different (regenerated)
+        assert_ne!(src[0].id, dst[0].id);
+        // Target session is set correctly
+        assert_eq!(dst[0].session_id, to);
     }
 }
 

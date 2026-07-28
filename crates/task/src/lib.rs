@@ -554,6 +554,17 @@ impl TaskExecutor {
             .unwrap_or_default()
     }
 
+    /// Reset `dispatched_once` to `false` so the dispatcher's
+    /// `take_next_pending` will pick the task up again. Used by rollback: the
+    /// task's supplement/steering queues are empty, so without resetting this
+    /// flag the dispatcher would skip it indefinitely.
+    pub async fn reset_dispatched_once(&self, task_id: &str) {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            task.dispatched_once = false;
+        }
+    }
+
     /// Load a task from the database into the in-memory list if it is not
     /// already there (e.g. after an app restart). Used by `supplement_task`
     /// so that follow-up messages can reach tasks that were paused before

@@ -91,6 +91,7 @@ impl ReActEngine {
     ) -> anyhow::Result<()> {
         let max_steps = *self.max_steps.lock().unwrap();
         let mut last_step = start_step.saturating_sub(1);
+        let session_id = sessions.current_session_id();
 
         for step_num in start_step..=max_steps {
             last_step = step_num;
@@ -107,7 +108,13 @@ impl ReActEngine {
                         return Ok(());
                     }
                     TaskStatus::Paused => {
-                        self.save_snapshot_with_branches(task_id, canonical, history, step_num, branch_points);
+                        self.save_snapshot_with_branches(
+                            task_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                        );
                     }
                     _ => break,
                 }
@@ -116,24 +123,28 @@ impl ReActEngine {
                     return Ok(());
                 }
                 if self.executor.get_task_state(task_id).await == TaskStatus::Paused {
-                    self.executor.status_notifier(task_id).await.notified().await;
+                    self.executor
+                        .status_notifier(task_id)
+                        .await
+                        .notified()
+                        .await;
                 }
             }
 
             let run_id = self.current_run_id.load(Ordering::SeqCst);
             let supplements = self.executor.get_supplements(task_id).await;
             for supplement in &supplements {
-                emitter.emit(crate::event::AgentEvent::Supplement {
-                    task_id: task_id.into(),
-                    additional_context: supplement.clone(),
-                    step_number: step_num,
-                    run_id,
-                }).await;
-                let _ = self.db.create_thought_step(
-                    task_id,
-                    history.len() as i32,
-                    supplement,
-                );
+                emitter
+                    .emit(crate::event::AgentEvent::Supplement {
+                        task_id: task_id.into(),
+                        additional_context: supplement.clone(),
+                        step_number: step_num,
+                        run_id,
+                    })
+                    .await;
+                let _ = self
+                    .db
+                    .create_thought_step(task_id, history.len() as i32, supplement);
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
                     content: vec![ContentPart::text(format!(
@@ -148,12 +159,14 @@ impl ReActEngine {
 
             let steering = self.executor.get_steering(task_id).await;
             for s in &steering {
-                emitter.emit(crate::event::AgentEvent::Supplement {
-                    task_id: task_id.into(),
-                    additional_context: s.clone(),
-                    step_number: step_num,
-                    run_id,
-                }).await;
+                emitter
+                    .emit(crate::event::AgentEvent::Supplement {
+                        task_id: task_id.into(),
+                        additional_context: s.clone(),
+                        step_number: step_num,
+                        run_id,
+                    })
+                    .await;
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
                     content: vec![ContentPart::text(format!("Steering: {}", s))],
@@ -165,14 +178,19 @@ impl ReActEngine {
 
             self.maybe_compact(task_id, canonical, &emitter).await;
 
-            let (chunk_tx, reasoning_tx, consumer_handle) = EventDispatcher::spawn_chunk_consumer_raw(&emitter);
+            let (chunk_tx, reasoning_tx, consumer_handle) =
+                EventDispatcher::spawn_chunk_consumer_raw(&emitter);
             let chunk_tx_1 = chunk_tx.clone();
             let reasoning_tx_1 = reasoning_tx.clone();
             let router = self.router();
             let cancel_res = self.executor.cancellation_token(task_id).await;
             let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
             let task_id_1 = task_id.to_string();
-            tracing::info!("ReAct step {} calling LLM, messages count: {}", step_num, llm_messages.len());
+            tracing::info!(
+                "ReAct step {} calling LLM, messages count: {}",
+                step_num,
+                llm_messages.len()
+            );
             let response = match router
                 .chat_stream_with_tools_aggregated_cancellable(
                     EndpointRole::DefaultModel,
@@ -180,12 +198,22 @@ impl ReActEngine {
                     tools.to_vec(),
                     move |c: &haven_llm::StreamChunk| {
                         if let Some(t) = &c.text
-                            && let Err(e) = chunk_tx_1.try_send((task_id_1.clone(), t.clone(), step_num, run_id))
+                            && let Err(e) = chunk_tx_1.try_send((
+                                task_id_1.clone(),
+                                t.clone(),
+                                step_num,
+                                run_id,
+                            ))
                         {
                             tracing::warn!("thought chunk channel full, dropping: {}", e);
                         }
                         if let Some(r) = &c.reasoning
-                            && let Err(e) = reasoning_tx_1.try_send((task_id_1.clone(), r.clone(), step_num, run_id))
+                            && let Err(e) = reasoning_tx_1.try_send((
+                                task_id_1.clone(),
+                                r.clone(),
+                                step_num,
+                                run_id,
+                            ))
                         {
                             tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                         }
@@ -196,17 +224,33 @@ impl ReActEngine {
             {
                 Ok(resp) => {
                     if router.fallback_active() {
-                        self.emit_fallback(&emitter, task_id, "switching to fallback model").await;
+                        self.emit_fallback(&emitter, task_id, "switching to fallback model")
+                            .await;
                     }
                     resp
                 }
                 Err(haven_llm::LlmError::ContextLengthExceeded) => {
-                    tracing::warn!("context length exceeded for task {}, forcing compaction", task_id);
+                    tracing::warn!(
+                        "context length exceeded for task {}, forcing compaction",
+                        task_id
+                    );
                     if let Some(result) = self.compactor.compact(canonical, &self.router()).await {
-                        tracing::info!("compacted {} → {} tokens", result.tokens_before, result.tokens_after);
+                        tracing::info!(
+                            "compacted {} → {} tokens",
+                            result.tokens_before,
+                            result.tokens_after
+                        );
                         *canonical = result.compacted;
-                        EventDispatcher::emit_compaction_from(&emitter, task_id, &result.summary, result.tokens_before, result.tokens_after).await;
-                        let (chunk_tx2, reasoning_tx2, consumer_handle2) = EventDispatcher::spawn_chunk_consumer_raw(&emitter);
+                        EventDispatcher::emit_compaction_from(
+                            &emitter,
+                            task_id,
+                            &result.summary,
+                            result.tokens_before,
+                            result.tokens_after,
+                        )
+                        .await;
+                        let (chunk_tx2, reasoning_tx2, consumer_handle2) =
+                            EventDispatcher::spawn_chunk_consumer_raw(&emitter);
                         let task_id_retry = task_id.to_string();
                         let llm_messages2 = haven_llm::types::convert_to_llm(canonical.clone());
                         match router
@@ -216,14 +260,30 @@ impl ReActEngine {
                                 tools.to_vec(),
                                 move |c: &haven_llm::StreamChunk| {
                                     if let Some(t) = &c.text
-                                        && let Err(e) = chunk_tx2.try_send((task_id_retry.clone(), t.clone(), step_num, run_id))
+                                        && let Err(e) = chunk_tx2.try_send((
+                                            task_id_retry.clone(),
+                                            t.clone(),
+                                            step_num,
+                                            run_id,
+                                        ))
                                     {
-                                        tracing::warn!("retry thought chunk channel full, dropping: {}", e);
+                                        tracing::warn!(
+                                            "retry thought chunk channel full, dropping: {}",
+                                            e
+                                        );
                                     }
                                     if let Some(r) = &c.reasoning
-                                        && let Err(e) = reasoning_tx2.try_send((task_id_retry.clone(), r.clone(), step_num, run_id))
+                                        && let Err(e) = reasoning_tx2.try_send((
+                                            task_id_retry.clone(),
+                                            r.clone(),
+                                            step_num,
+                                            run_id,
+                                        ))
                                     {
-                                        tracing::warn!("retry reasoning chunk channel full, dropping: {}", e);
+                                        tracing::warn!(
+                                            "retry reasoning chunk channel full, dropping: {}",
+                                            e
+                                        );
                                     }
                                 },
                                 cancel_res.clone(),
@@ -242,14 +302,18 @@ impl ReActEngine {
                             Err(e2) => {
                                 let err_msg = format!("Compaction retry also failed: {}", e2);
                                 self.emit_error(&emitter, task_id, &err_msg).await;
-                                self.executor.update_task_status(task_id, TaskStatus::Error).await?;
+                                self.executor
+                                    .update_task_status(task_id, TaskStatus::Error)
+                                    .await?;
                                 return Err(anyhow::anyhow!("{}", err_msg));
                             }
                         }
                     } else {
                         let err_msg = "context length exceeded but compaction failed".to_string();
                         EventDispatcher::emit_task_error_from(&emitter, task_id, &err_msg).await;
-                        self.executor.update_task_status(task_id, TaskStatus::Error).await?;
+                        self.executor
+                            .update_task_status(task_id, TaskStatus::Error)
+                            .await?;
                         return Err(anyhow::anyhow!("{}", err_msg));
                     }
                 }
@@ -259,7 +323,9 @@ impl ReActEngine {
                 Err(e) => {
                     let err_msg = format!("Both reasoner and fallback failed: {}", e);
                     EventDispatcher::emit_task_error_from(&emitter, task_id, &err_msg).await;
-                    self.executor.update_task_status(task_id, TaskStatus::Error).await?;
+                    self.executor
+                        .update_task_status(task_id, TaskStatus::Error)
+                        .await?;
                     return Err(anyhow::anyhow!("{}", err_msg));
                 }
             };
@@ -277,7 +343,10 @@ impl ReActEngine {
             let (thought, actions) = Self::parse_reasoner_response(&response, step_num);
 
             if let Some(ref t) = thought {
-                EventDispatcher::emit_thought_from(&emitter, task_id, t, step_num, run_id, &self.db).await;
+                EventDispatcher::emit_thought_from(
+                    &emitter, task_id, t, step_num, run_id, &self.db,
+                )
+                .await;
                 history.push(ReActStep {
                     step_number: step_num,
                     thought: Some(t.clone()),
@@ -311,15 +380,25 @@ impl ReActEngine {
                         observation: Some(msg.clone()),
                     });
                 }
-                self.executor.update_task_status(task_id, TaskStatus::Paused).await?;
-                emitter.emit(crate::event::AgentEvent::TaskUpdated {
-                    task_id: task_id.into(),
-                    status: "paused".into(),
-                }).await;
+                self.executor
+                    .update_task_status(task_id, TaskStatus::Paused)
+                    .await?;
+                emitter
+                    .emit(crate::event::AgentEvent::TaskUpdated {
+                        task_id: task_id.into(),
+                        status: "paused".into(),
+                    })
+                    .await;
                 sessions.persist_message("assistant", &msg, Some("text"));
                 infer();
-                self.save_branch_point(task_id, canonical, history, step_num, branch_points);
-                self.save_snapshot_with_branches(task_id, canonical, history, last_step + 1, branch_points);
+                self.save_branch_point(task_id, canonical, history, step_num, branch_points, &session_id);
+                self.save_snapshot_with_branches(
+                    task_id,
+                    canonical,
+                    history,
+                    last_step + 1,
+                    branch_points,
+                );
                 return Ok(());
             }
 
@@ -331,15 +410,25 @@ impl ReActEngine {
                         s.observation = Some(final_text.clone());
                     }
                 }
-                self.executor.update_task_status(task_id, TaskStatus::Paused).await?;
-                emitter.emit(crate::event::AgentEvent::TaskUpdated {
-                    task_id: task_id.into(),
-                    status: "paused".into(),
-                }).await;
+                self.executor
+                    .update_task_status(task_id, TaskStatus::Paused)
+                    .await?;
+                emitter
+                    .emit(crate::event::AgentEvent::TaskUpdated {
+                        task_id: task_id.into(),
+                        status: "paused".into(),
+                    })
+                    .await;
                 sessions.persist_message("assistant", &final_text, Some("text"));
                 infer();
-                self.save_branch_point(task_id, canonical, history, step_num, branch_points);
-                self.save_snapshot_with_branches(task_id, canonical, history, step_num + 1, branch_points);
+                self.save_branch_point(task_id, canonical, history, step_num, branch_points, &session_id);
+                self.save_snapshot_with_branches(
+                    task_id,
+                    canonical,
+                    history,
+                    step_num + 1,
+                    branch_points,
+                );
                 return Ok(());
             }
 
@@ -352,25 +441,34 @@ impl ReActEngine {
 
             let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
             for action in &non_final {
-                emitter.emit(crate::event::AgentEvent::Action {
-                    task_id: task_id.into(),
-                    tool_name: action.tool_name.clone(),
-                    input: action.tool_input.clone(),
-                    step_number: step_num,
-                    run_id,
-                    tool_call_id: action.tool_call_id.clone(),
-                }).await;
+                emitter
+                    .emit(crate::event::AgentEvent::Action {
+                        task_id: task_id.into(),
+                        tool_name: action.tool_name.clone(),
+                        input: action.tool_input.clone(),
+                        step_number: step_num,
+                        run_id,
+                        tool_call_id: action.tool_call_id.clone(),
+                    })
+                    .await;
             }
 
             if !non_final.is_empty() {
                 let tool_calls: Option<Vec<CanonicalToolCall>> = if response.tool_calls.is_empty() {
                     None
                 } else {
-                    Some(response.tool_calls.iter().map(|tc| CanonicalToolCall {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        arguments: serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null),
-                    }).collect())
+                    Some(
+                        response
+                            .tool_calls
+                            .iter()
+                            .map(|tc| CanonicalToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                arguments: serde_json::from_str(&tc.arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                            })
+                            .collect(),
+                    )
                 };
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::Assistant,
@@ -381,7 +479,7 @@ impl ReActEngine {
                 });
             }
 
-            self.save_branch_point(task_id, canonical, history, step_num, branch_points);
+            self.save_branch_point(task_id, canonical, history, step_num, branch_points, &session_id);
 
             use futures_util::StreamExt;
 
@@ -408,7 +506,11 @@ impl ReActEngine {
                                 r.error.unwrap_or_else(|| "unknown failure".into())
                             };
                             let text = if text.len() > max_obs {
-                                format!("{}[... truncated {} chars omitted]", &text[..max_obs], text.len() - max_obs)
+                                format!(
+                                    "{}[... truncated {} chars omitted]",
+                                    &text[..max_obs],
+                                    text.len() - max_obs
+                                )
                             } else {
                                 text
                             };
@@ -425,16 +527,22 @@ impl ReActEngine {
                 if is_error {
                     any_tool_failure = true;
                 }
-                let silent = action.tool_input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                emitter.emit(crate::event::AgentEvent::Observation {
-                    task_id: task_id.into(),
-                    observation: step_result.clone(),
-                    tool_name: tool_name.clone(),
-                    step_number: step_num,
-                    run_id,
-                    silent,
-                    tool_call_id: action.tool_call_id.clone(),
-                }).await;
+                let silent = action
+                    .tool_input
+                    .get("silent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                emitter
+                    .emit(crate::event::AgentEvent::Observation {
+                        task_id: task_id.into(),
+                        observation: step_result.clone(),
+                        tool_name: tool_name.clone(),
+                        step_number: step_num,
+                        run_id,
+                        silent,
+                        tool_call_id: action.tool_call_id.clone(),
+                    })
+                    .await;
 
                 if let Some(last) = history.last_mut() {
                     last.action = Some(action.clone());
@@ -471,19 +579,32 @@ impl ReActEngine {
 
             let state = self.executor.get_task_state(task_id).await;
             if state == TaskStatus::Paused {
-                self.save_snapshot_with_branches(task_id, canonical, history, step_num, branch_points);
+                self.save_snapshot_with_branches(
+                    task_id,
+                    canonical,
+                    history,
+                    step_num,
+                    branch_points,
+                );
                 return Ok(());
             }
-            if state == TaskStatus::Cancelled || state == TaskStatus::Error || state == TaskStatus::Completed {
+            if state == TaskStatus::Cancelled
+                || state == TaskStatus::Error
+                || state == TaskStatus::Completed
+            {
                 return Ok(());
             }
         }
 
-        self.executor.update_task_status(task_id, TaskStatus::Paused).await?;
-        emitter.emit(crate::event::AgentEvent::TaskUpdated {
-            task_id: task_id.into(),
-            status: "paused".into(),
-        }).await;
+        self.executor
+            .update_task_status(task_id, TaskStatus::Paused)
+            .await?;
+        emitter
+            .emit(crate::event::AgentEvent::TaskUpdated {
+                task_id: task_id.into(),
+                status: "paused".into(),
+            })
+            .await;
         sessions.persist_message("assistant", "Task completed.", Some("text"));
         infer();
         self.save_snapshot_with_branches(task_id, canonical, history, last_step + 1, branch_points);
@@ -516,13 +637,11 @@ impl ReActEngine {
                         tool_name: tc.name.clone(),
                         tool_input: args,
                         is_final,
-                        tool_call_id: Some(
-                            if tc.id.is_empty() {
-                                uuid::Uuid::new_v4().to_string()
-                            } else {
-                                tc.id.clone()
-                            },
-                        ),
+                        tool_call_id: Some(if tc.id.is_empty() {
+                            uuid::Uuid::new_v4().to_string()
+                        } else {
+                            tc.id.clone()
+                        }),
                     }
                 })
                 .collect()
@@ -571,12 +690,18 @@ impl ReActEngine {
         history: &[ReActStep],
         step_number: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
+        session_id: &str,
     ) {
-        branch_points.insert(step_number, BranchPoint {
-            canonical: canonical.to_vec(),
-            history: history.to_vec(),
+        let last_msg_at = self.db.get_last_message_created_at(session_id);
+        branch_points.insert(
             step_number,
-        });
+            BranchPoint {
+                canonical: canonical.to_vec(),
+                history: history.to_vec(),
+                step_number,
+                last_msg_at,
+            },
+        );
         self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points);
     }
 
@@ -597,15 +722,30 @@ impl ReActEngine {
         if let Some(result) = self.compactor.compact(canonical, &router).await {
             tracing::info!(
                 "compaction for task {}: {} tokens → {} tokens ({} msgs summarized)",
-                task_id, result.tokens_before, result.tokens_after, result.summarized_count
+                task_id,
+                result.tokens_before,
+                result.tokens_after,
+                result.summarized_count
             );
             *canonical = result.compacted;
-            EventDispatcher::emit_compaction_from(emitter, task_id, &result.summary, result.tokens_before, result.tokens_after).await;
+            EventDispatcher::emit_compaction_from(
+                emitter,
+                task_id,
+                &result.summary,
+                result.tokens_before,
+                result.tokens_after,
+            )
+            .await;
         }
     }
 
     /// Emit fallback activated with per-task deduplication.
-    async fn emit_fallback(&self, emitter: &Arc<dyn AgentEventEmitter>, task_id: &str, reason: &str) {
+    async fn emit_fallback(
+        &self,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        task_id: &str,
+        reason: &str,
+    ) {
         let should_emit = {
             let mut notified = self.fallback_notified.lock().unwrap();
             notified.insert(task_id.to_string())

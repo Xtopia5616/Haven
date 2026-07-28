@@ -22,7 +22,9 @@ impl InferenceEngine {
             let user_messages: Vec<_> = messages.into_iter().filter(|m| m.role == "user").collect();
             let inferred = self.db.infer_facts_from_messages(&user_messages);
             for (subject, predicate, object, confidence) in inferred {
-                let _ = self.db.insert_fact(&subject, &predicate, &object, "inferred", confidence);
+                let _ = self
+                    .db
+                    .insert_fact(&subject, &predicate, &object, "inferred", confidence);
             }
             let _ = self.db.dedup_facts();
             let _ = self.db.flush_low_confidence(0.3);

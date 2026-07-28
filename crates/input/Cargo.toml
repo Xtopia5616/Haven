@@ -14,7 +14,7 @@ tract-onnx.workspace = true
 ndarray.workspace = true
 base64.workspace = true
 tokio-util.workspace = true
+async-trait.workspace = true
 haven-common = { path = "../common" }
 
 [dev-dependencies]
-async-trait.workspace = true

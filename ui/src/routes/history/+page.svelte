@@ -171,36 +171,25 @@
 			});
 		}
 
-		// Supplement with thought steps (parsed Reasoner thoughts) and
-		// action steps (tool calls + observations).
+		// Steps only supplement action/observation (tool) badges.
+		// Thought-only steps are skipped because their text is already
+		// represented in session messages, avoiding duplication.
 		for (const step of data.steps || []) {
 			const stepId = `step-${step.id}`;
 			if (msgIds.has(stepId)) continue;
-			if (step.thought && !step.action_tool) {
-				items.push({
-					id: stepId,
-					role: 'assistant',
-					content: step.thought,
-					type: undefined,
-					voice: false,
-					time: formatDate(step.created_at),
-					streaming: false,
-					stepNumber: step.step_index,
-				});
-			} else if (step.action_tool) {
-				const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
-				items.push({
-					id: stepId,
-					role: 'assistant',
-					content: obs || '',
-					type: 'tool',
-					toolName: step.action_tool,
-					voice: false,
-					time: formatDate(step.created_at),
-					streaming: false,
-					stepNumber: step.step_index,
-				});
-			}
+			if (!step.action_tool) continue;
+			const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
+			items.push({
+				id: stepId,
+				role: 'assistant',
+				content: obs || '',
+				type: 'tool',
+				toolName: step.action_tool,
+				voice: false,
+				time: formatDate(step.created_at),
+				streaming: false,
+				stepNumber: step.step_index,
+			});
 		}
 		items.sort((a, b) => {
 			if (a.time < b.time) return -1;

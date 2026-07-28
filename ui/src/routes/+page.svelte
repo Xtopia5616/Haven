@@ -5,7 +5,7 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
+	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, truncateTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
@@ -18,7 +18,8 @@
 	let confirmDialog = $state({ stepId: null, toolName: '', taskId: '', riskLevel: 'medium' });
 	let cancelConfirm = $state({ open: false, taskId: '', taskTitle: '' });
 	let activeTaskId = $state(get(activeTaskIdStore));
-	let branchDialog = $state({ open: false, type: 'rollback', stepNumber: null });
+	let branchDialog = $state({ open: false, stepNumber: null });
+	let branchLoading = $state(false);
 
 	// Right-click context menu state
 	let ctxMenu = $state({ open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '' });
@@ -45,12 +46,7 @@
 	function handleCtxRollback() {
 		const step = getStepForCtxMenu();
 		if (step == null) { addNotification('无法确定此消息对应的步骤', 'error', 3000); closeCtxMenu(); return; }
-		branchDialog = { open: true, type: 'rollback', stepNumber: step };
-		closeCtxMenu();
-	}
-
-	function handleCtxFork() {
-		branchDialog = { open: true, type: 'fork', stepNumber: null };
+		branchDialog = { open: true, stepNumber: step };
 		closeCtxMenu();
 	}
 
@@ -79,22 +75,20 @@
 	// Merged into existing onMount/onDestroy below
 
 	async function confirmBranchAction() {
-		const { type, stepNumber } = branchDialog;
-		branchDialog = { open: false, type: 'rollback', stepNumber: null };
+		const { stepNumber } = branchDialog;
+		branchLoading = true;
 		try {
-			if (type === 'rollback') {
-				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber });
-				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
-			} else {
-				const newId = await invoke('fork_task', { taskId: activeTaskId });
-				addNotification('已创建分支任务', 'success', 3000);
-				clearTaskMessages(activeTaskId);
-				activeTaskId = newId;
-				activeTaskIdStore.set(newId);
-			}
+			await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber });
+			// Drop messages from the discarded timeline so the UI matches
+			// the restored snapshot. The ReAct loop will re-stream steps
+			// from `stepNumber` onward as it re-executes.
+			truncateTaskMessages(activeTaskId, stepNumber);
+			addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 		} catch (e) {
-			addNotification(`${type === 'rollback' ? '回退' : '分支'}失败: ${e}`, 'error', 5000);
+			addNotification(`回退失败: ${e}`, 'error', 5000);
 		}
+		branchLoading = false;
+		branchDialog = { open: false, stepNumber: null };
 		await loadTasks();
 	}
 
@@ -460,26 +454,20 @@
 
 	<BranchDialog
 		open={branchDialog.open}
-		type={branchDialog.type}
 		stepNumber={branchDialog.stepNumber}
 		taskSummary={tasks.find(t => t.id === activeTaskId)?.summary || ''}
+		loading={branchLoading}
 		onConfirm={confirmBranchAction}
-		onClose={() => (branchDialog = { open: false, type: 'rollback', stepNumber: null })}
+		onClose={() => { if (!branchLoading) branchDialog = { open: false, stepNumber: null }; }}
 	/>
 
 	<!-- Right-click context menu -->
 	{#if ctxMenu.open}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="ctx-menu" style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;">
-			{#if ctxMenu.role === 'user'}
 			<button class="ctx-item" onclick={handleCtxRollback}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
 				回退到此消息
-			</button>
-			{/if}
-			<button class="ctx-item" onclick={handleCtxFork}>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="21" r="3" /><line x1="18" y1="9" x2="18" y2="21" /></svg>
-				创建分支
 			</button>
 			<button class="ctx-item" onclick={handleCtxCopy}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>

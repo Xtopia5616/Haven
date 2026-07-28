@@ -3,28 +3,31 @@ mod commands;
 mod desktop;
 mod events;
 
+use crate::desktop::TrayStatus;
 use app_state::AppState;
 use haven_agent::{AgentEvent, AgentEventEmitter};
 use haven_common::config::LogConfig;
-use crate::desktop::TrayStatus;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri_plugin_notification::NotificationExt;
+use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::reload;
-use tracing_subscriber::Registry;
 
 /// Initialize the tracing subscriber with console output and optional rolling file output.
 /// The reloadable filter is properly composed with all output layers via `.with_filter()`.
 /// Returns a reload handle for dynamic log-level changes and the current log config.
 fn init_tracing(
     log_cfg: &LogConfig,
-) -> (reload::Handle<EnvFilter, Registry>, Arc<std::sync::Mutex<LogConfig>>) {
+) -> (
+    reload::Handle<EnvFilter, Registry>,
+    Arc<std::sync::Mutex<LogConfig>>,
+) {
     let filter = EnvFilter::new(format!("haven={}", log_cfg.level.as_str()));
 
     // Without .with_filter() the env-filter is a no-op (design §M6-05).
@@ -35,8 +38,7 @@ fn init_tracing(
         .with_line_number(true)
         .with_filter(reloadable_filter);
 
-    let subscriber = tracing_subscriber::registry()
-        .with(fmt_layer);
+    let subscriber = tracing_subscriber::registry().with(fmt_layer);
 
     // ── File layer (static filter, not dynamically reloaded) ──
     if log_cfg.file_enabled {
@@ -49,7 +51,9 @@ fn init_tracing(
         }
         let file_appender = tracing_appender::rolling::daily(
             log_path.parent().unwrap_or(std::path::Path::new(".")),
-            log_path.file_stem().unwrap_or(std::ffi::OsStr::new("haven")),
+            log_path
+                .file_stem()
+                .unwrap_or(std::ffi::OsStr::new("haven")),
         );
         let file_filter = EnvFilter::new(format!("haven={}", log_cfg.level.as_str()));
         let file_layer = tracing_subscriber::fmt::layer()
@@ -78,8 +82,19 @@ struct TauriEmitter {
 impl AgentEventEmitter for TauriEmitter {
     async fn emit(&self, event: AgentEvent) {
         match event {
-            AgentEvent::Thought { task_id, thought, step_number, run_id } => {
-                tracing::info!("TauriEmitter::on_thought: task={} step={} run={} len={}", task_id, step_number, run_id, thought.len());
+            AgentEvent::Thought {
+                task_id,
+                thought,
+                step_number,
+                run_id,
+            } => {
+                tracing::info!(
+                    "TauriEmitter::on_thought: task={} step={} run={} len={}",
+                    task_id,
+                    step_number,
+                    run_id,
+                    thought.len()
+                );
                 let _ = self.handle.emit(
                     "agent:thought",
                     serde_json::json!({
@@ -90,9 +105,25 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::Action { task_id, tool_name, input, step_number, run_id, tool_call_id } => {
-                let silent = input.get("silent").and_then(|v| v.as_bool()).unwrap_or(false);
-                tracing::info!("TauriEmitter::on_action: task={} tool={} step={} run={}", task_id, tool_name, step_number, run_id);
+            AgentEvent::Action {
+                task_id,
+                tool_name,
+                input,
+                step_number,
+                run_id,
+                tool_call_id,
+            } => {
+                let silent = input
+                    .get("silent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                tracing::info!(
+                    "TauriEmitter::on_action: task={} tool={} step={} run={}",
+                    task_id,
+                    tool_name,
+                    step_number,
+                    run_id
+                );
                 let _ = self.handle.emit(
                     "agent:action",
                     serde_json::json!({
@@ -106,8 +137,23 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::Observation { task_id, observation, tool_name, step_number, run_id, silent, tool_call_id } => {
-                tracing::info!("TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}", task_id, tool_name, step_number, run_id, silent);
+            AgentEvent::Observation {
+                task_id,
+                observation,
+                tool_name,
+                step_number,
+                run_id,
+                silent,
+                tool_call_id,
+            } => {
+                tracing::info!(
+                    "TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}",
+                    task_id,
+                    tool_name,
+                    step_number,
+                    run_id,
+                    silent
+                );
                 let _ = self.handle.emit(
                     "agent:observation",
                     serde_json::json!({
@@ -122,7 +168,11 @@ impl AgentEventEmitter for TauriEmitter {
                 );
             }
             AgentEvent::TaskCreated(task) => {
-                tracing::info!("TauriEmitter::on_task_created: task_id={} status={}", task.id, task.status.as_str());
+                tracing::info!(
+                    "TauriEmitter::on_task_created: task_id={} status={}",
+                    task.id,
+                    task.status.as_str()
+                );
                 let _ = self.handle.emit(
                     "task:created",
                     serde_json::json!({
@@ -131,11 +181,22 @@ impl AgentEventEmitter for TauriEmitter {
                         "title": task.title,
                     }),
                 );
-                let notify = self.handle.state::<Arc<AppState>>()
-                    .config_loader.lock().map(|c| c.config().notification.task_created.windows).unwrap_or(false);
+                let notify = self
+                    .handle
+                    .state::<Arc<AppState>>()
+                    .config_loader
+                    .lock()
+                    .map(|c| c.config().notification.task_created.windows)
+                    .unwrap_or(false);
                 if notify {
-                    let display = if task.input.is_empty() { task.id } else { task.input };
-                    let _ = self.handle.notification()
+                    let display = if task.input.is_empty() {
+                        task.id
+                    } else {
+                        task.input
+                    };
+                    let _ = self
+                        .handle
+                        .notification()
                         .builder()
                         .title("Haven")
                         .body(format!("New task: {}", display))
@@ -143,7 +204,11 @@ impl AgentEventEmitter for TauriEmitter {
                 }
             }
             AgentEvent::TaskCompleted { task_id, title } => {
-                tracing::info!("TauriEmitter::on_task_completed: task={} title={}", task_id, title);
+                tracing::info!(
+                    "TauriEmitter::on_task_completed: task={} title={}",
+                    task_id,
+                    title
+                );
                 let _ = self.handle.emit(
                     "task:completed",
                     serde_json::json!({
@@ -160,10 +225,17 @@ impl AgentEventEmitter for TauriEmitter {
                         "title": title,
                     }),
                 );
-                let notify = self.handle.state::<Arc<AppState>>()
-                    .config_loader.lock().map(|c| c.config().notification.task_completed.windows).unwrap_or(true);
+                let notify = self
+                    .handle
+                    .state::<Arc<AppState>>()
+                    .config_loader
+                    .lock()
+                    .map(|c| c.config().notification.task_completed.windows)
+                    .unwrap_or(true);
                 if notify {
-                    let _ = self.handle.notification()
+                    let _ = self
+                        .handle
+                        .notification()
                         .builder()
                         .title("Haven")
                         .body(format!("Task completed: {}", title))
@@ -171,9 +243,16 @@ impl AgentEventEmitter for TauriEmitter {
                 }
             }
             AgentEvent::TaskUpdated { task_id, status } => {
-                tracing::info!("TauriEmitter::on_task_updated: task={} status={}", task_id, status);
+                tracing::info!(
+                    "TauriEmitter::on_task_updated: task={} status={}",
+                    task_id,
+                    status
+                );
                 if status == "paused" {
-                    tracing::warn!("TauriEmitter emitting task:updated with paused status for task {}", task_id);
+                    tracing::warn!(
+                        "TauriEmitter emitting task:updated with paused status for task {}",
+                        task_id
+                    );
                 }
                 let _ = self.handle.emit(
                     "task:updated",
@@ -201,10 +280,17 @@ impl AgentEventEmitter for TauriEmitter {
                         "title": "",
                     }),
                 );
-                let notify = self.handle.state::<Arc<AppState>>()
-                    .config_loader.lock().map(|c| c.config().notification.task_error.windows).unwrap_or(true);
+                let notify = self
+                    .handle
+                    .state::<Arc<AppState>>()
+                    .config_loader
+                    .lock()
+                    .map(|c| c.config().notification.task_error.windows)
+                    .unwrap_or(true);
                 if notify {
-                    let _ = self.handle.notification()
+                    let _ = self
+                        .handle
+                        .notification()
                         .builder()
                         .title("Haven - Error")
                         .body(format!("Task error: {}", error))
@@ -229,7 +315,12 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::ThoughtChunk { task_id, delta, step_number, run_id } => {
+            AgentEvent::ThoughtChunk {
+                task_id,
+                delta,
+                step_number,
+                run_id,
+            } => {
                 let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
                 let _ = self.handle.emit(
                     "agent:thought_chunk",
@@ -242,7 +333,12 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::ReasoningChunk { task_id, delta, step_number, run_id } => {
+            AgentEvent::ReasoningChunk {
+                task_id,
+                delta,
+                step_number,
+                run_id,
+            } => {
                 let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
                 let _ = self.handle.emit(
                     "agent:reasoning_chunk",
@@ -255,7 +351,12 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::Supplement { task_id, additional_context, step_number, run_id } => {
+            AgentEvent::Supplement {
+                task_id,
+                additional_context,
+                step_number,
+                run_id,
+            } => {
                 let _ = self.handle.emit(
                     "agent:supplement",
                     serde_json::json!({
@@ -266,8 +367,18 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::Compaction { task_id, summary, tokens_before, tokens_after } => {
-                tracing::info!("TauriEmitter::on_compaction: task={} tokens {}→{}", task_id, tokens_before, tokens_after);
+            AgentEvent::Compaction {
+                task_id,
+                summary,
+                tokens_before,
+                tokens_after,
+            } => {
+                tracing::info!(
+                    "TauriEmitter::on_compaction: task={} tokens {}→{}",
+                    task_id,
+                    tokens_before,
+                    tokens_after
+                );
                 let _ = self.handle.emit(
                     "agent:compaction",
                     serde_json::json!({
@@ -282,13 +393,150 @@ impl AgentEventEmitter for TauriEmitter {
     }
 }
 
+/// Concrete `ShellHandler` wiring desktop hooks to the Tauri app handle,
+/// input pipeline and tray icon. Replaces the former per-callback field
+/// assignments on `DesktopShell`.
+struct HavenShellHandler {
+    app_h: tauri::AppHandle,
+    pipeline: Arc<haven_input::InputPipeline>,
+    shell_arc: Arc<desktop::DesktopShell>,
+    tray: tauri::tray::TrayIcon,
+}
+
+#[async_trait::async_trait]
+impl desktop::ShellHandler for HavenShellHandler {
+    async fn on_recording_start(&self) {
+        let _ = self.app_h.emit(
+            "recording:started",
+            events::RecordingEvent {
+                is_recording: true,
+                session_id: Some(uuid::Uuid::new_v4().to_string()),
+                reason: None,
+                duration_ms: None,
+            },
+        );
+        let _ = self.pipeline.start_recording().await;
+    }
+
+    async fn on_recording_stop(&self) {
+        let result = self.pipeline.stop_recording().await;
+        if let Ok(result) = result {
+            let _ = self.pipeline.encode_wav(&result.pcm).await;
+            let reason_str = match result.reason {
+                haven_input::RecordingReason::Manual => "manual",
+                haven_input::RecordingReason::Silence => "silence",
+                haven_input::RecordingReason::MaxDuration => "max_duration",
+                haven_input::RecordingReason::Cancel => "cancel",
+            };
+            let _ = self.app_h.emit(
+                "recording:stopped",
+                events::RecordingEvent {
+                    is_recording: false,
+                    session_id: None,
+                    reason: Some(reason_str.to_string()),
+                    duration_ms: Some(result.duration_ms),
+                },
+            );
+            if matches!(
+                result.reason,
+                haven_input::RecordingReason::Silence | haven_input::RecordingReason::MaxDuration
+            ) {
+                self.shell_arc.reset_toggle_on_auto_stop().await;
+            }
+        }
+    }
+
+    async fn on_recording_cancel(&self) {
+        let _ = self.app_h.emit(
+            "recording:stopped",
+            events::RecordingEvent {
+                is_recording: false,
+                session_id: None,
+                reason: Some("cancel".to_string()),
+                duration_ms: None,
+            },
+        );
+        let _ = self.pipeline.cancel_recording().await;
+    }
+
+    fn on_tray_status(&self, status: TrayStatus) {
+        let tooltip = match status {
+            TrayStatus::Normal => "Haven",
+            TrayStatus::Recording => "Haven - Recording",
+            TrayStatus::Muted => "Haven - Muted",
+            TrayStatus::Busy => "Haven - Busy",
+        };
+        let _ = self.tray.set_icon(Some(make_tray_icon(status)));
+        let _ = self.app_h.emit(
+            "tray:status_changed",
+            serde_json::json!({
+                "status": match status {
+                    TrayStatus::Normal => "normal",
+                    TrayStatus::Recording => "recording",
+                    TrayStatus::Muted => "muted",
+                    TrayStatus::Busy => "busy",
+                },
+                "tooltip": tooltip,
+            }),
+        );
+    }
+
+    fn on_mute_change(&self, muted: bool) {
+        let _ = self
+            .app_h
+            .emit("mute:changed", serde_json::json!({ "muted": muted }));
+    }
+}
+
+/// Concrete `InputHandler` wiring VAD status + auto-stop to the Tauri app
+/// handle and the desktop shell. Replaces the former separate
+/// `set_vad_status_callback` + `set_on_auto_stop` bindings on `InputPipeline`.
+struct HavenInputHandler {
+    app_h: tauri::AppHandle,
+    shell_arc: Arc<desktop::DesktopShell>,
+}
+
+#[async_trait::async_trait]
+impl haven_input::InputHandler for HavenInputHandler {
+    fn on_vad_status(
+        &self,
+        signal: haven_input::vad::VadSignal,
+        state: haven_input::vad::VadState,
+    ) {
+        let signal_str = match signal {
+            haven_input::vad::VadSignal::None => "none",
+            haven_input::vad::VadSignal::SpeechStart => "speech_start",
+            haven_input::vad::VadSignal::SpeechEnd => "speech_end",
+            haven_input::vad::VadSignal::AutoStop => "auto_stop",
+        };
+        let state_str = match state {
+            haven_input::vad::VadState::Silent => "silent",
+            haven_input::vad::VadState::Speech => "speech",
+            haven_input::vad::VadState::SilenceAfterSpeech { .. } => "silence_after_speech",
+        };
+        let _ = self.app_h.emit(
+            "recording:vad_status",
+            events::VadStatusEvent {
+                signal: signal_str.to_string(),
+                state: state_str.to_string(),
+            },
+        );
+    }
+
+    async fn on_auto_stop(&self) {
+        self.shell_arc.stop_recording().await;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Load config early so we can initialize tracing with the right level
-    let config_loader = haven_common::config::ConfigLoader::load()
-        .unwrap_or_else(|_| haven_common::config::ConfigLoader::load_from(
-            &haven_common::config::ConfigLoader::default_path()
-        ).unwrap());
+    let config_loader = haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
+        haven_common::config::ConfigLoader::load_from(
+            &haven_common::config::ConfigLoader::default_path(),
+        )
+        .unwrap()
+    });
     let log_cfg = config_loader.config().log.clone();
 
     // Initialize tracing subscriber (console + optional file output)
@@ -340,12 +588,17 @@ pub fn run() {
             let state = app.state::<Arc<AppState>>();
             let shell = &state.shell;
 
-            // Wire up the AgentEventEmitter to the app handle
+            // Wire up the AgentEventEmitter to the app handle via an EventBus,
+            // allowing multiple subscribers (frontend, log recorder, …).
+            let bus = state.agent.install_event_bus();
             let emitter = Arc::new(TauriEmitter {
                 handle: handle.clone(),
                 chunk_seq: AtomicU64::new(0),
             });
-            state.agent.set_emitter(emitter);
+            tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(bus.subscribe("tauri", emitter));
+            });
 
             let cfg = state.config_loader.lock().unwrap();
             let is_hold = cfg.config().hotkey.mode == haven_common::types::HotkeyMode::Hold;
@@ -414,171 +667,29 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Wire up shell callbacks (blocking because setup is not async)
+            // Wire up shell handler (replaces former per-callback field assignments)
             tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
+                let shell_arc = state.shell.clone();
+                let pipeline = state.pipeline.clone();
+                let tray_ref = tray.clone();
+                let handler = Arc::new(HavenShellHandler {
+                    app_h: handle.clone(),
+                    pipeline,
+                    shell_arc: shell_arc.clone(),
+                    tray: tray_ref,
+                });
+                rt.block_on(shell_arc.set_handler(handler));
 
+                // Wire up unified input handler (VAD status + auto-stop)
                 {
                     let app_h = handle.clone();
-                    let pipeline = state.pipeline.clone();
-                    rt.block_on(async {
-                        *shell.on_recording_start.lock().await = Some(Box::new(move || {
-                            let app_h = app_h.clone();
-                            let pipeline = pipeline.clone();
-                            Box::pin(async move {
-                                let _ = app_h.emit(
-                                    "recording:started",
-                                    events::RecordingEvent {
-                                        is_recording: true,
-                                        session_id: Some(uuid::Uuid::new_v4().to_string()),
-                                        reason: None,
-                                        duration_ms: None,
-                                    },
-                                );
-                                let _ = pipeline.start_recording().await;
-                            })
-                        }));
-                    });
-                }
-                {
-                    let app_h = handle.clone();
-                    let pipeline = state.pipeline.clone();
                     let shell_arc = state.shell.clone();
                     rt.block_on(async {
-                        *shell.on_recording_stop.lock().await = Some(Box::new(move || {
-                            let app_h = app_h.clone();
-                            let pipeline = pipeline.clone();
-                            let shell_arc = shell_arc.clone();
-                            Box::pin(async move {
-                                let result = pipeline.stop_recording().await;
-                                if let Ok(result) = result {
-                                    let _ = pipeline.encode_wav(&result.pcm).await;
-                                    let reason_str = match result.reason {
-                                        haven_input::RecordingReason::Manual => "manual",
-                                        haven_input::RecordingReason::Silence => "silence",
-                                        haven_input::RecordingReason::MaxDuration => {
-                                            "max_duration"
-                                        }
-                                        haven_input::RecordingReason::Cancel => "cancel",
-                                    };
-                                    let _ = app_h.emit(
-                                        "recording:stopped",
-                                        events::RecordingEvent {
-                                            is_recording: false,
-                                            session_id: None,
-                                            reason: Some(reason_str.to_string()),
-                                            duration_ms: Some(result.duration_ms),
-                                        },
-                                    );
-                                    if matches!(
-                                        result.reason,
-                                        haven_input::RecordingReason::Silence
-                                            | haven_input::RecordingReason::MaxDuration
-                                    ) {
-                                        shell_arc.reset_toggle_on_auto_stop().await;
-                                    }
-                                }
-                            })
+                        state.pipeline.set_handler(Arc::new(HavenInputHandler {
+                            app_h,
+                            shell_arc,
                         }));
-                    });
-                }
-                {
-                    let app_h = handle.clone();
-                    let pipeline = state.pipeline.clone();
-                    rt.block_on(async {
-                        *shell.on_recording_cancel.lock().await = Some(Box::new(move || {
-                            let app_h = app_h.clone();
-                            let pipeline = pipeline.clone();
-                            Box::pin(async move {
-                                let _ = app_h.emit(
-                                    "recording:stopped",
-                                    events::RecordingEvent {
-                                        is_recording: false,
-                                        session_id: None,
-                                        reason: Some("cancel".to_string()),
-                                        duration_ms: None,
-                                    },
-                                );
-                                let _ = pipeline.cancel_recording().await;
-                            })
-                        }));
-                    });
-                }
-                {
-                    let app_h = handle.clone();
-                    let tray_ref = tray.clone();
-                    rt.block_on(async {
-                        *shell.on_tray_status.lock().await = Some(Box::new(move |status: TrayStatus| {
-                            let tooltip = match status {
-                                TrayStatus::Normal => "Haven",
-                                TrayStatus::Recording => "Haven - Recording",
-                                TrayStatus::Muted => "Haven - Muted",
-                                TrayStatus::Busy => "Haven - Busy",
-                            };
-                            let _ = tray_ref.set_icon(Some(make_tray_icon(status)));
-                            let _ = app_h.emit("tray:status_changed", serde_json::json!({
-                                "status": match status {
-                                    TrayStatus::Normal => "normal",
-                                    TrayStatus::Recording => "recording",
-                                    TrayStatus::Muted => "muted",
-                                    TrayStatus::Busy => "busy",
-                                },
-                                "tooltip": tooltip,
-                            }));
-                        }));
-                    });
-                }
-                {
-                    let app_h = handle.clone();
-                    rt.block_on(async {
-                        *shell.on_mute_change.lock().await = Some(Box::new(move |muted: bool| {
-                            let _ = app_h.emit("mute:changed", serde_json::json!({ "muted": muted }));
-                        }));
-                    });
-                }
-
-                // Wire up VAD status callback
-                {
-                    let app_h = handle.clone();
-                    rt.block_on(async {
-                        state.pipeline.set_vad_status_callback(Box::new(
-                            move |signal: haven_input::vad::VadSignal,
-                                  state: haven_input::vad::VadState| {
-                                let signal_str = match signal {
-                                    haven_input::vad::VadSignal::None => "none",
-                                    haven_input::vad::VadSignal::SpeechStart => "speech_start",
-                                    haven_input::vad::VadSignal::SpeechEnd => "speech_end",
-                                    haven_input::vad::VadSignal::AutoStop => "auto_stop",
-                                };
-                                let state_str = match state {
-                                    haven_input::vad::VadState::Silent => "silent",
-                                    haven_input::vad::VadState::Speech => "speech",
-                                    haven_input::vad::VadState::SilenceAfterSpeech { .. } => {
-                                        "silence_after_speech"
-                                    }
-                                };
-                                let _ = app_h.emit(
-                                    "recording:vad_status",
-                                    events::VadStatusEvent {
-                                        signal: signal_str.to_string(),
-                                        state: state_str.to_string(),
-                                    },
-                                );
-                            },
-                        ));
-                    });
-                }
-
-                // Wire up auto-stop callback (VAD auto-stop or max-duration from background loop)
-                {
-                    let shell_arc = state.shell.clone();
-                    rt.block_on(async {
-                        state.pipeline.set_on_auto_stop(Box::new(move || {
-                            let shell_arc = shell_arc.clone();
-                            Box::pin(async move {
-                                shell_arc.stop_recording().await;
-                            })
-                        })).await;
                     });
                 }
 
@@ -845,10 +956,12 @@ fn init_app_state(
         let shell = Arc::new(crate::desktop::DesktopShell::new());
         agent.clone().start();
         let config_loader_arc = Arc::new(std::sync::Mutex::new(
-            haven_common::config::ConfigLoader::load()
-                .unwrap_or_else(|_| haven_common::config::ConfigLoader::load_from(
-                    &haven_common::config::ConfigLoader::default_path()
-                ).unwrap())
+            haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
+                haven_common::config::ConfigLoader::load_from(
+                    &haven_common::config::ConfigLoader::default_path(),
+                )
+                .unwrap()
+            }),
         ));
         AppState {
             db,
@@ -952,7 +1065,12 @@ mod tests {
 
     #[test]
     fn test_make_tray_icon_all_statuses_have_correct_size() {
-        for status in &[TrayStatus::Normal, TrayStatus::Recording, TrayStatus::Muted, TrayStatus::Busy] {
+        for status in &[
+            TrayStatus::Normal,
+            TrayStatus::Recording,
+            TrayStatus::Muted,
+            TrayStatus::Busy,
+        ] {
             let img = make_tray_icon(*status);
             assert_eq!(img.width(), 32, "failed for {:?}", status);
             assert_eq!(img.height(), 32, "failed for {:?}", status);
@@ -983,7 +1101,11 @@ mod tests {
     fn test_app_data_dir_contains_haven() {
         let dir = app_data_dir();
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
-        assert!(name.eq_ignore_ascii_case("haven"), "expected 'Haven' got '{}'", name);
+        assert!(
+            name.eq_ignore_ascii_case("haven"),
+            "expected 'Haven' got '{}'",
+            name
+        );
     }
 
     #[test]
@@ -992,8 +1114,11 @@ mod tests {
         {
             let dir = app_data_dir();
             let s = dir.to_string_lossy();
-            assert!(s.contains("AppData\\Roaming") || s.contains("APPDATA"),
-                "expected AppData path, got: {}", s);
+            assert!(
+                s.contains("AppData\\Roaming") || s.contains("APPDATA"),
+                "expected AppData path, got: {}",
+                s
+            );
         }
     }
 }

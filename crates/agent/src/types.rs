@@ -10,6 +10,11 @@ pub struct BranchPoint {
     pub canonical: Vec<CanonicalMessage>,
     pub history: Vec<ReActStep>,
     pub step_number: u32,
+    /// `created_at` of the most recent session message at the time this branch
+    /// point was saved. On rollback, all session messages after this timestamp
+    /// are deleted so the conversation context matches the restored snapshot.
+    #[serde(default)]
+    pub last_msg_at: Option<String>,
 }
 
 /// Serializable snapshot of the ReAct loop state for pause/resume (§1.3).

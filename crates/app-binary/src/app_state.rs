@@ -1,6 +1,6 @@
+use crate::desktop::DesktopShell;
 use haven_agent::AgentLayer;
 use haven_common::config::ConfigLoader;
-use crate::desktop::DesktopShell;
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_memory::Database;
@@ -8,9 +8,9 @@ use haven_task::TaskExecutor;
 use haven_tools::ToolsManager;
 use haven_tools::stt::{LlmSttAdapter, McpSttClient};
 use std::sync::Arc;
+use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
-use tracing_subscriber::Registry;
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -72,7 +72,9 @@ impl AppState {
         let skills_cfg_enabled = cfg.skills.enabled.clone();
         let tools_skills = tools.clone();
         tokio::spawn(async move {
-            tools_skills.discover_all(&mcp_servers, &mcp_discovery).await;
+            tools_skills
+                .discover_all(&mcp_servers, &mcp_discovery)
+                .await;
             if let Err(e) = tools_skills
                 .skills_engine
                 .set_config(skills_cfg_root, skills_cfg_enabled)
@@ -157,4 +159,3 @@ impl AppState {
         })
     }
 }
-

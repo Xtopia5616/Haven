@@ -99,6 +99,40 @@ export function clearTaskMessages(taskId) {
 	});
 }
 
+/**
+ * Remove all messages at or after the given step number for a task.
+ * Used by rollback: the ReAct loop will re-execute from `targetStep`, so
+ * any messages belonging to that step or later are stale and must be
+ * dropped from the UI. User messages (no stepNumber) that appear after the
+ * first removed message are also dropped since they belong to the discarded
+ * timeline.
+ */
+export function truncateTaskMessages(taskId, targetStep) {
+	if (!taskId) return;
+	taskMessagesStore.update((m) => {
+		const list = m[taskId];
+		if (!list || list.length === 0) return m;
+		const cutIdx = list.findIndex(
+			(x) => x.stepNumber != null && x.stepNumber >= targetStep,
+		);
+		if (cutIdx === -1) return m;
+		const next = { ...m };
+		next[taskId] = list.slice(0, cutIdx);
+		return next;
+	});
+	// Clear seq tracking for the removed steps so re-streamed chunks are
+	// not rejected as duplicates.
+	for (const key of seqMap.keys()) {
+		if (key.includes(taskId)) {
+			const parts = key.split('-');
+			const step = Number(parts[parts.length - 2]);
+			if (!Number.isNaN(step) && step >= targetStep) {
+				seqMap.delete(key);
+			}
+		}
+	}
+}
+
 // Move draft messages to a real task (called when task:created fires).
 export function adoptDraftMessages(taskId) {
 	taskMessagesStore.update((m) => {

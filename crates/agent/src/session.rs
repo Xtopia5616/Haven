@@ -55,14 +55,9 @@ impl SessionManager {
     pub fn persist_message(&self, role: &str, content: &str, message_type: Option<&str>) {
         let window_size = self.session_window_size;
         let guard = self.session_id.lock().unwrap();
-        let _ = self.db.add_message_with_window(
-            &guard,
-            role,
-            content,
-            message_type,
-            None,
-            window_size,
-        );
+        let _ =
+            self.db
+                .add_message_with_window(&guard, role, content, message_type, None, window_size);
     }
 
     /// Load the most recent conversation messages from DB as text lines that

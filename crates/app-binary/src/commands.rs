@@ -166,7 +166,11 @@ pub async fn process_transcript(
     transcript: String,
     active_task_id: Option<String>,
 ) -> Result<Value, String> {
-    tracing::info!("process_transcript called: text={:?} active_task_id={:?}", transcript, active_task_id);
+    tracing::info!(
+        "process_transcript called: text={:?} active_task_id={:?}",
+        transcript,
+        active_task_id
+    );
     let result = state
         .agent
         .process_input(&transcript, active_task_id.clone())
@@ -185,7 +189,11 @@ pub async fn supplement_task(
     task_id: String,
     text: String,
 ) -> Result<(), String> {
-    tracing::info!("supplement_task called: task_id={:?} text={:?}", task_id, text);
+    tracing::info!(
+        "supplement_task called: task_id={:?} text={:?}",
+        task_id,
+        text
+    );
     state
         .agent
         .supplement_task(&task_id, &text)
@@ -199,19 +207,12 @@ pub async fn supplement_task(
 }
 
 #[tauri::command]
-pub async fn reopen_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<(), String> {
+pub async fn reopen_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     tracing::info!("reopen_task called: task_id={}", task_id);
-    state
-        .agent
-        .reopen_task(&task_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("reopen_task error: {:?}", e);
-            e.to_string()
-        })?;
+    state.agent.reopen_task(&task_id).await.map_err(|e| {
+        tracing::error!("reopen_task error: {:?}", e);
+        e.to_string()
+    })?;
     tracing::info!("reopen_task done");
     Ok(())
 }
@@ -233,12 +234,20 @@ pub async fn cancel_task(
         .cancel_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
-    let title = state.executor.list_tasks().await
+    let title = state
+        .executor
+        .list_tasks()
+        .await
         .into_iter()
         .find(|t| t.id == task_id)
         .map(|t| t.input)
         .or_else(|| {
-            state.db.get_task(&task_id).ok().flatten().map(|t| t.input_text)
+            state
+                .db
+                .get_task(&task_id)
+                .ok()
+                .flatten()
+                .map(|t| t.input_text)
         })
         .unwrap_or_default();
     let _ = app.emit(
@@ -253,29 +262,31 @@ pub async fn cancel_task(
 }
 
 #[tauri::command]
-pub async fn end_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<(), String> {
+pub async fn end_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     state
         .executor
         .end_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
-    let title = state.executor.list_tasks().await
+    let title = state
+        .executor
+        .list_tasks()
+        .await
         .into_iter()
         .find(|t| t.id == task_id)
         .map(|t| t.input)
         .or_else(|| {
             // Fallback: try loading title from DB (task may not be in executor
             // memory, e.g. after app restart with a stuck "running" task).
-            state.db.get_task(&task_id).ok().flatten().map(|t| t.input_text)
+            state
+                .db
+                .get_task(&task_id)
+                .ok()
+                .flatten()
+                .map(|t| t.input_text)
         })
         .unwrap_or_default();
-    state
-        .agent
-        .emit_task_completed(&task_id, &title)
-        .await;
+    state.agent.emit_task_completed(&task_id, &title).await;
     Ok(())
 }
 
@@ -286,15 +297,14 @@ pub async fn pause_task(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("pause_task command called: task_id={}", task_id);
-    state
+    state.executor.pause_task(&task_id).await.map_err(|e| {
+        tracing::error!("pause_task error: {:?}", e);
+        e.to_string()
+    })?;
+    let title = state
         .executor
-        .pause_task(&task_id)
+        .list_tasks()
         .await
-        .map_err(|e| {
-            tracing::error!("pause_task error: {:?}", e);
-            e.to_string()
-        })?;
-    let title = state.executor.list_tasks().await
         .into_iter()
         .find(|t| t.id == task_id)
         .map(|t| t.input)
@@ -321,7 +331,10 @@ pub async fn resume_task(
         .resume_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
-    let title = state.executor.list_tasks().await
+    let title = state
+        .executor
+        .list_tasks()
+        .await
         .into_iter()
         .find(|t| t.id == task_id)
         .map(|t| t.input)
@@ -397,9 +410,7 @@ pub async fn get_history(
 }
 
 #[tauri::command]
-pub async fn count_history(
-    state: State<'_, Arc<AppState>>,
-) -> Result<i64, String> {
+pub async fn count_history(state: State<'_, Arc<AppState>>) -> Result<i64, String> {
     state.db.count_tasks().map_err(|e| e.to_string())
 }
 
@@ -410,7 +421,10 @@ pub async fn search_history_paginated(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
-    state.db.search_tasks_paginated(&query, limit, offset).map_err(|e| e.to_string())
+    state
+        .db
+        .search_tasks_paginated(&query, limit, offset)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -418,7 +432,10 @@ pub async fn count_history_search(
     state: State<'_, Arc<AppState>>,
     query: String,
 ) -> Result<i64, String> {
-    state.db.count_tasks_search(&query).map_err(|e| e.to_string())
+    state
+        .db
+        .count_tasks_search(&query)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -975,10 +992,7 @@ pub async fn update_task_title(
 }
 
 #[tauri::command]
-pub async fn delete_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<(), String> {
+pub async fn delete_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     state.db.delete_task(&task_id).map_err(|e| e.to_string())?;
     state.executor.remove_task(&task_id).await;
     Ok(())
@@ -986,15 +1000,18 @@ pub async fn delete_task(
 
 #[tauri::command]
 pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
-    let count = state.db.clear_tasks().map(|n| n as u64).map_err(|e| e.to_string())?;
+    let count = state
+        .db
+        .clear_tasks()
+        .map(|n| n as u64)
+        .map_err(|e| e.to_string())?;
     state.executor.clear_all_tasks().await;
     Ok(count)
 }
 
 #[tauri::command]
 pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
-    let loader = haven_common::config::ConfigLoader::load()
-        .map_err(|e| e.to_string())?;
+    let loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
     let cfg = loader.config();
     Ok(serde_json::json!({
         "small_model": !cfg.llm.small_model.api_key.is_empty(),
@@ -1101,12 +1118,13 @@ pub async fn get_conversation_memory(
 }
 
 #[tauri::command]
-pub async fn clear_conversation(
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+pub async fn clear_conversation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // Close the current session and create a new one
     let _ = state.db.close_active_session();
-    let _ = state.db.get_or_create_active_session().map_err(|e| e.to_string())?;
+    let _ = state
+        .db
+        .get_or_create_active_session()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1132,10 +1150,7 @@ pub async fn add_fact(
 }
 
 #[tauri::command]
-pub async fn delete_fact(
-    state: State<'_, Arc<AppState>>,
-    fact_id: String,
-) -> Result<(), String> {
+pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Result<(), String> {
     state.db.delete_fact(&fact_id).map_err(|e| e.to_string())
 }
 
@@ -1167,10 +1182,7 @@ pub async fn update_preference(
 }
 
 #[tauri::command]
-pub async fn delete_preference(
-    state: State<'_, Arc<AppState>>,
-    key: String,
-) -> Result<(), String> {
+pub async fn delete_preference(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
     state.db.delete_preference(&key).map_err(|e| e.to_string())
 }
 
@@ -1239,7 +1251,11 @@ pub async fn update_settings(
     state.agent.set_max_steps(task_max_steps);
     let new_router = Arc::new(LlmRouter::new(llm_config));
     state.agent.replace_router(new_router);
-    state.tools.safety_gateway.set_min_risk_level(min_risk_level).await;
+    state
+        .tools
+        .safety_gateway
+        .set_min_risk_level(min_risk_level)
+        .await;
 
     // Propagate log level to tracing subscriber
     let level = settings.log.level.as_str();
@@ -1249,7 +1265,10 @@ pub async fn update_settings(
 
     // Propagate hotkey mode change (always)
     use haven_common::types::HotkeyMode;
-    state.shell.set_hold_mode(settings.hotkey.mode == HotkeyMode::Hold).await;
+    state
+        .shell
+        .set_hold_mode(settings.hotkey.mode == HotkeyMode::Hold)
+        .await;
 
     if settings.hotkey.key_binding != old_hotkey {
         use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -1259,28 +1278,30 @@ pub async fn update_settings(
         }
 
         if let Some(new_shortcut) = crate::parse_shortcut(&settings.hotkey.key_binding) {
-            let result = app.global_shortcut().on_shortcut(new_shortcut, move |_app, _sc, event| {
-                let state = _app.state::<Arc<AppState>>();
-                let shell = &state.shell;
-                tokio::task::block_in_place(|| {
-                    let rt = tokio::runtime::Handle::current();
-                    let shell_state = rt.block_on(shell.get_state());
-                    if shell_state.is_muted {
-                        return;
-                    }
-                    if shell_state.hold_mode {
-                        if event.state == ShortcutState::Pressed {
-                            rt.block_on(shell.hold_press());
-                        } else {
-                            rt.block_on(shell.hold_release());
-                        }
-                    } else {
-                        if event.state == ShortcutState::Pressed {
-                            rt.block_on(shell.toggle_recording());
-                        }
-                    }
-                });
-            });
+            let result =
+                app.global_shortcut()
+                    .on_shortcut(new_shortcut, move |_app, _sc, event| {
+                        let state = _app.state::<Arc<AppState>>();
+                        let shell = &state.shell;
+                        tokio::task::block_in_place(|| {
+                            let rt = tokio::runtime::Handle::current();
+                            let shell_state = rt.block_on(shell.get_state());
+                            if shell_state.is_muted {
+                                return;
+                            }
+                            if shell_state.hold_mode {
+                                if event.state == ShortcutState::Pressed {
+                                    rt.block_on(shell.hold_press());
+                                } else {
+                                    rt.block_on(shell.hold_release());
+                                }
+                            } else {
+                                if event.state == ShortcutState::Pressed {
+                                    rt.block_on(shell.toggle_recording());
+                                }
+                            }
+                        });
+                    });
 
             match result {
                 Ok(()) => {
@@ -1408,10 +1429,7 @@ pub async fn rollback_task(
 /// Fork a task into a new branched session. Creates a duplicate in a
 /// child session so both can evolve independently.
 #[tauri::command]
-pub async fn fork_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<String, String> {
+pub async fn fork_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<String, String> {
     state
         .agent
         .fork_task(&task_id)
@@ -1432,9 +1450,7 @@ mod tests {
 
     #[test]
     fn test_tool_list_response_serde() {
-        let tools = vec![
-            serde_json::json!({"name": "file", "description": "File operations"}),
-        ];
+        let tools = vec![serde_json::json!({"name": "file", "description": "File operations"})];
         let resp = ToolListResponse { tools };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("file"));

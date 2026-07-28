@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod builtin;
+pub mod circuit;
 pub mod mcp;
 pub mod skills;
 pub mod stt;
@@ -21,7 +22,11 @@ pub use mcp::{
 pub use skills::runner::SkillRunner;
 pub use skills::venv::VenvManager;
 pub use skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine};
-pub use tool::{ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry, ToolResult};
+pub use tool::{
+    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry,
+    ToolResult,
+};
+pub use circuit::ToolCircuitRegistry;
 
 pub struct ToolsManager {
     pub registry: ToolRegistry,
@@ -32,6 +37,7 @@ pub struct ToolsManager {
     pub safety_gateway: SafetyGateway,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
     task_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
+    tool_circuits: ToolCircuitRegistry,
 }
 
 impl ToolsManager {
@@ -50,6 +56,7 @@ impl ToolsManager {
             safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
             task_registrations: RwLock::new(HashMap::new()),
+            tool_circuits: ToolCircuitRegistry::new(),
         }
     }
 
@@ -67,6 +74,7 @@ impl ToolsManager {
             safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
             task_registrations: RwLock::new(HashMap::new()),
+            tool_circuits: ToolCircuitRegistry::new(),
         }
     }
 
@@ -204,6 +212,17 @@ impl ToolsManager {
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        if !self.tool_circuits.allow_request(tool_name) {
+            tracing::warn!(
+                "tool '{}' circuit breaker open — fast-failing",
+                tool_name
+            );
+            anyhow::bail!(
+                "tool '{}' is temporarily unavailable (circuit breaker open)",
+                tool_name
+            );
+        }
+
         let tool = self.get_tool_for_task(task_id, tool_name).await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
         tool.validate_input(&input)?;
@@ -235,7 +254,10 @@ impl ToolsManager {
                 .execute_with_timeout(input.clone(), cancel.clone(), timeout_secs)
                 .await
             {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    self.tool_circuits.record_success(tool_name);
+                    return Ok(result);
+                }
                 Err(e)
                     if attempt + 1 < max_attempts && is_retryable_tool_error(&e) =>
                 {
@@ -247,10 +269,18 @@ impl ToolsManager {
                     );
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.tool_circuits.record_failure(tool_name);
+                    return Err(e);
+                }
             }
         }
+        self.tool_circuits.record_failure(tool_name);
         anyhow::bail!("tool '{}' retries exhausted", tool_name);
+    }
+
+    pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
+        &self.tool_circuits
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
@@ -362,5 +392,73 @@ mod tests {
         let mgr = ToolsManager::new();
         let risk = mgr.get_risk_level(None, "nonexistent", &json!({})).await;
         assert_eq!(risk, RiskLevel::Safe);
+    }
+
+    /// End-to-end: execute_tool fast-fails once the per-tool circuit opens
+    /// (refine §5).
+    #[tokio::test]
+    async fn test_execute_tool_circuit_breaker_opens() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct FailingTool {
+            name: String,
+            call_count: Arc<AtomicU32>,
+        }
+
+        #[async_trait::async_trait]
+        impl Tool for FailingTool {
+            fn name(&self) -> String {
+                self.name.clone()
+            }
+            fn description(&self) -> String {
+                "always fails".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _: Value,
+                _: tokio_util::sync::CancellationToken,
+            ) -> anyhow::Result<ToolResult> {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+                anyhow::bail!("deliberate failure")
+            }
+        }
+
+        let mgr = ToolsManager::new();
+        let call_count = Arc::new(AtomicU32::new(0));
+        mgr.registry
+            .register(Arc::new(FailingTool {
+                name: "failing".into(),
+                call_count: call_count.clone(),
+            }))
+            .await;
+
+        for i in 0..5 {
+            let r = mgr
+                .execute_tool(None, "failing", json!({}), CancellationToken::new())
+                .await;
+            assert!(r.is_err(), "call {} should fail", i + 1);
+        }
+        assert!(mgr.tool_circuits().is_open("failing"));
+
+        let before = call_count.load(Ordering::SeqCst);
+        let r = mgr
+            .execute_tool(None, "failing", json!({}), CancellationToken::new())
+            .await;
+        assert!(r.is_err());
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            before,
+            "tool should not be called when breaker is open"
+        );
+        assert!(
+            r.unwrap_err().to_string().contains("circuit breaker"),
+            "error should mention circuit breaker"
+        );
     }
 }
