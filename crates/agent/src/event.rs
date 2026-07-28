@@ -87,6 +87,110 @@ pub trait AgentEventEmitter: Send + Sync {
 type ChunkSender = tokio::sync::mpsc::Sender<(String, String, u32, u64)>;
 type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 
+/// Per-chunk micro-batching parameters. Incoming per-token chunks are aggregated
+/// for at most this duration before a single `ThoughtChunk`/`ReasoningChunk` with
+/// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
+const CHUNK_BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+/// Flush early once the accumulated batch exceeds this size to bound memory and latency.
+const CHUNK_BATCH_MAX_BYTES: usize = 8 * 1024;
+
+/// Runs a chunk batcher: aggregates incoming `(task_id, delta, step, run)` tuples
+/// for up to `CHUNK_BATCH_INTERVAL` (or until `CHUNK_BATCH_MAX_BYTES`), then emits
+/// a single `AgentEvent::ThoughtChunk`/`ReasoningChunk` with the concatenated delta.
+/// A batch boundary is also forced whenever the `(task_id, step, run)` key changes
+/// or the sender half is dropped (flush remainder then exit).
+async fn run_chunk_batcher(
+    mut rx: tokio::sync::mpsc::Receiver<(String, String, u32, u64)>,
+    emitter: Arc<dyn AgentEventEmitter>,
+    is_reasoning: bool,
+) {
+    let emit_batch = |tid: String, sn: u32, rid: u64, delta: String| {
+        let emitter = emitter.clone();
+        async move {
+            if delta.is_empty() {
+                return;
+            }
+            let event = if is_reasoning {
+                AgentEvent::ReasoningChunk {
+                    task_id: tid,
+                    delta,
+                    step_number: sn,
+                    run_id: rid,
+                }
+            } else {
+                AgentEvent::ThoughtChunk {
+                    task_id: tid,
+                    delta,
+                    step_number: sn,
+                    run_id: rid,
+                }
+            };
+            emitter.emit(event).await;
+        }
+    };
+
+    loop {
+        // Block until the first item of a new batch arrives.
+        let (mut tid, mut delta, mut sn, mut rid) = match rx.recv().await {
+            Some(v) => v,
+            None => return,
+        };
+        let mut buf = String::new();
+        buf.push_str(&delta);
+        let mut buf_bytes = delta.len();
+        delta.clear();
+        // Fresh deadline for this batch (fixed, not sliding — recreated each loop
+        // iteration with the same value so it fires at the original deadline).
+        let mut deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
+
+        if buf_bytes >= CHUNK_BATCH_MAX_BYTES {
+            emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+            continue;
+        }
+
+        loop {
+            tokio::select! {
+                biased;
+                val = rx.recv() => {
+                    match val {
+                        Some((tid2, delta2, sn2, rid2)) => {
+                            if (tid2.as_str(), sn2, rid2) != (tid.as_str(), sn, rid) {
+                                // key changed: flush current batch, start a new one
+                                emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                                tid = tid2;
+                                sn = sn2;
+                                rid = rid2;
+                                buf = delta2;
+                                buf_bytes = buf.len();
+                                deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
+                                if buf_bytes >= CHUNK_BATCH_MAX_BYTES {
+                                    emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                                    break;
+                                }
+                            } else {
+                                buf_bytes += delta2.len();
+                                buf.push_str(&delta2);
+                                if buf_bytes >= CHUNK_BATCH_MAX_BYTES {
+                                    emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                            return;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 pub struct EventDispatcher {
     emitter: Arc<Mutex<Option<Arc<dyn AgentEventEmitter>>>>,
 }
@@ -115,50 +219,20 @@ impl EventDispatcher {
     pub fn spawn_chunk_consumer_raw(
         emitter: &Arc<dyn AgentEventEmitter>,
     ) -> (ChunkSender, ChunkSender, ConsumerHandle) {
-        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel(1024);
-        let (reasoning_tx, mut reasoning_rx) = tokio::sync::mpsc::channel(1024);
+        let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(1024);
+        let (reasoning_tx, reasoning_rx) = tokio::sync::mpsc::channel(1024);
 
-        let consumer_handle = {
-            let em_clone = emitter.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        val = chunk_rx.recv() => {
-                            match val {
-                                Some((tid, delta, sn, rid)) => {
-                                    em_clone.emit(AgentEvent::ThoughtChunk {
-                                        task_id: tid, delta, step_number: sn, run_id: rid,
-                                    }).await;
-                                }
-                                None => break,
-                            }
-                        }
-                        val = reasoning_rx.recv() => {
-                            match val {
-                                Some((tid, delta, sn, rid)) => {
-                                    em_clone.emit(AgentEvent::ReasoningChunk {
-                                        task_id: tid, delta, step_number: sn, run_id: rid,
-                                    }).await;
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-                while let Some((tid, delta, sn, rid)) = chunk_rx.recv().await {
-                    em_clone.emit(AgentEvent::ThoughtChunk {
-                        task_id: tid, delta, step_number: sn, run_id: rid,
-                    }).await;
-                }
-                while let Some((tid, delta, sn, rid)) = reasoning_rx.recv().await {
-                    em_clone.emit(AgentEvent::ReasoningChunk {
-                        task_id: tid, delta, step_number: sn, run_id: rid,
-                    }).await;
-                }
-            })
-        };
+        let em_clone = emitter.clone();
+        let thought_task = tokio::spawn(run_chunk_batcher(chunk_rx, em_clone.clone(), false));
+        let reasoning_task = tokio::spawn(run_chunk_batcher(reasoning_rx, em_clone, true));
+        // Join both batchers so awaiting this handle guarantees all buffered chunks
+        // have been flushed (and emitted) before the caller proceeds.
+        let consumer_handle = Some(tokio::spawn(async move {
+            let _ = thought_task.await;
+            let _ = reasoning_task.await;
+        }));
 
-        (chunk_tx, reasoning_tx, Some(consumer_handle))
+        (chunk_tx, reasoning_tx, consumer_handle)
     }
 
     pub async fn emit_task_created(&self, task: &TaskInfo) {
