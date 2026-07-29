@@ -579,11 +579,19 @@ mod tests {
     #[test]
     fn test_finalize_stale_tasks() {
         let db = create_db();
-        db.create_task(None, "a", "NEW_TASK", "").unwrap();
-        db.create_task(None, "b", "NEW_TASK", "").unwrap();
+        let task_a = db.create_task(None, "a", "NEW_TASK", "").unwrap();
+        let task_b = db.create_task(None, "b", "NEW_TASK", "").unwrap();
 
-        let result = db.finalize_stale_tasks(0);
-        assert!(result.is_err());
+        // stale_minutes=0: threshold = now. SQLite's datetime('now') is
+        // slightly behind Rust's Utc::now(), so newly created tasks are
+        // considered stale and finalized to 'error'.
+        let count = db.finalize_stale_tasks(0).unwrap();
+        assert_eq!(count, 2);
+
+        let found = db.get_task(&task_a.id).unwrap().unwrap();
+        assert_eq!(found.status, "error");
+        let found = db.get_task(&task_b.id).unwrap().unwrap();
+        assert_eq!(found.status, "error");
     }
 
     #[test]

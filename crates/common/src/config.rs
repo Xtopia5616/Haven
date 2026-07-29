@@ -400,7 +400,6 @@ pub struct NotificationConfig {
     pub task_completed: NotifyChannels,
     pub task_paused: NotifyChannels,
     pub task_error: NotifyChannels,
-    pub task_cancelled: NotifyChannels,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -423,7 +422,6 @@ impl Default for NotificationConfig {
             task_completed: NotifyChannels { in_app: true, windows: true },
             task_paused: NotifyChannels { in_app: true, windows: false },
             task_error: NotifyChannels { in_app: true, windows: true },
-            task_cancelled: NotifyChannels { in_app: true, windows: false },
         }
     }
 }

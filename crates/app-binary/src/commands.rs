@@ -224,46 +224,12 @@ pub async fn get_tasks(state: State<'_, Arc<AppState>>) -> Result<TaskListRespon
 }
 
 #[tauri::command]
-pub async fn cancel_task(
+pub async fn end_task(
     state: State<'_, Arc<AppState>>,
     task_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state
-        .executor
-        .cancel_task(&task_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    let title = state
-        .executor
-        .list_tasks()
-        .await
-        .into_iter()
-        .find(|t| t.id == task_id)
-        .map(|t| t.input)
-        .or_else(|| {
-            state
-                .db
-                .get_task(&task_id)
-                .ok()
-                .flatten()
-                .map(|t| t.input_text)
-        })
-        .unwrap_or_default();
-    let _ = app.emit(
-        "task:updated",
-        TaskEvent {
-            task_id: task_id.clone(),
-            status: "cancelled".into(),
-            title,
-        },
-    );
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn end_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
-    state
+    let final_status = state
         .executor
         .end_task(&task_id)
         .await
@@ -276,8 +242,6 @@ pub async fn end_task(state: State<'_, Arc<AppState>>, task_id: String) -> Resul
         .find(|t| t.id == task_id)
         .map(|t| t.input)
         .or_else(|| {
-            // Fallback: try loading title from DB (task may not be in executor
-            // memory, e.g. after app restart with a stuck "running" task).
             state
                 .db
                 .get_task(&task_id)
@@ -286,7 +250,18 @@ pub async fn end_task(state: State<'_, Arc<AppState>>, task_id: String) -> Resul
                 .map(|t| t.input_text)
         })
         .unwrap_or_default();
-    state.agent.emit_task_completed(&task_id, &title).await;
+    if final_status == haven_task::TaskStatus::Error {
+        let _ = app.emit(
+            "task:updated",
+            serde_json::json!({
+                "task_id": task_id,
+                "status": "error",
+                "title": title,
+            }),
+        );
+    } else {
+        state.agent.emit_task_completed(&task_id, &title).await;
+    }
     Ok(())
 }
 
@@ -1405,16 +1380,19 @@ pub async fn get_task_for_review(
 }
 
 /// Roll back a task to a specific branch point. The task is rewound to
-/// the saved state at that step and set back to Pending for re-execution.
+/// the saved state at that step. When `pause` is true the task is set to
+/// Paused (user wants to edit the message before re-sending); otherwise it
+/// is set to Pending for immediate re-execution.
 #[tauri::command]
 pub async fn rollback_task(
     state: State<'_, Arc<AppState>>,
     task_id: String,
     target_step: u32,
+    pause: Option<bool>,
 ) -> Result<(), String> {
     state
         .agent
-        .rollback_task(&task_id, target_step)
+        .rollback_task(&task_id, target_step, pause.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())
 }

@@ -10,7 +10,15 @@
 		if (onContextMenu) {
 			e.preventDefault();
 			e.stopPropagation();
-			onContextMenu({ x: e.clientX, y: e.clientY, messageId, stepNumber, role, content, type: msgType });
+			let selectedContent = '';
+			const selection = window.getSelection();
+			if (selection && !selection.isCollapsed && selection.toString().trim()) {
+				const el = e.currentTarget;
+				if (el && el.contains(selection.anchorNode) && el.contains(selection.focusNode)) {
+					selectedContent = selection.toString().trim();
+				}
+			}
+			onContextMenu({ x: e.clientX, y: e.clientY, messageId, stepNumber, role, content, type: msgType, selectedContent });
 		}
 	}
 

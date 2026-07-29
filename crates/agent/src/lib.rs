@@ -116,7 +116,6 @@ impl AgentLayer {
             self.events.emit_task_updated(task_id, "pending").await;
         } else if state == TaskStatus::Completed
             || state == TaskStatus::Error
-            || state == TaskStatus::Cancelled
         {
             self.executor
                 .update_task_status(task_id, TaskStatus::Pending)
@@ -133,13 +132,8 @@ impl AgentLayer {
     pub async fn reopen_task(&self, task_id: &str) -> anyhow::Result<()> {
         // Ensure the task is in executor memory (load from DB if removed).
         let state = self.executor.get_task_state(task_id).await;
-        if state == TaskStatus::Cancelled {
-            self.executor.ensure_task_loaded(task_id).await?;
-        }
-        let state = self.executor.get_task_state(task_id).await;
         if state == TaskStatus::Completed
             || state == TaskStatus::Error
-            || state == TaskStatus::Cancelled
         {
             self.executor
                 .update_task_status(task_id, TaskStatus::Paused)
@@ -160,6 +154,15 @@ impl AgentLayer {
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
+        // Pre-warm the new router's HTTP connection pool so the next request
+        // doesn't pay TCP+TLS handshake latency after a provider switch.
+        let warm = new_router.clone();
+        tokio::spawn(async move {
+            match warm.health_check(haven_llm::EndpointRole::DefaultModel).await {
+                Ok(()) => tracing::info!("LLM connection pre-warmed after router swap"),
+                Err(e) => tracing::warn!("LLM pre-warm after swap failed: {}", e),
+            }
+        });
         self.react_engine.replace_router(new_router);
     }
 
@@ -186,9 +189,35 @@ impl AgentLayer {
     /// Roll back a task to a specific branch point. The task state is
     /// replaced with the branch point snapshot, session messages persisted
     /// after that point are deleted, branch points created after the target
-    /// step are pruned, and the task is set back to Pending so the dispatcher
-    /// re-executes it.
-    pub async fn rollback_task(&self, task_id: &str, target_step: u32) -> anyhow::Result<()> {
+    /// step are pruned. When `pause` is false the task is set to Pending for
+    /// immediate re-execution; when true it is set to Paused so the user can
+    /// edit and re-send the message before the dispatcher picks it up.
+    pub async fn rollback_task(
+        &self,
+        task_id: &str,
+        target_step: u32,
+        pause: bool,
+    ) -> anyhow::Result<()> {
+        // If the task is currently Running, cancel it first so the ReAct loop
+        // exits cleanly. Otherwise the loop's in-memory canonical/history would
+        // diverge from the restored snapshot and overwrite it on the next save.
+        let state = self.executor.get_task_state(task_id).await;
+        if state == TaskStatus::Running {
+            let cancel = self.executor.cancellation_token(task_id).await;
+            cancel.cancel();
+            // Mark as Error to force the loop to return, then wait for it.
+            self.executor
+                .update_task_status(task_id, TaskStatus::Error)
+                .await?;
+            // Wait until the loop handler releases the running slot.
+            for _ in 0..50 {
+                if !self.executor.running_tasks_list().await.contains(&task_id.to_string()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
         let state_json = self
             .db
             .get_react_state(task_id)?
@@ -225,7 +254,7 @@ impl AgentLayer {
         }
 
         // Prune branch points that were created after the target step so the
-        // session tree does not accumulate stale forks from the discarded
+        // session tree does not accumulate stale entries from the discarded
         // timeline.
         snapshot.branch_points.retain(|&k, _| k <= target_step);
 
@@ -236,26 +265,64 @@ impl AgentLayer {
             && let Some(ref sid) = task.session_id
             && let Some(ref ts) = bp.last_msg_at
         {
-            self.db.delete_messages_after(sid, ts)?;
+            if pause {
+                // User-message rollback: delete the user message itself too
+                // (inclusive), so the context is clean when the user re-sends
+                // an edited version.
+                self.db.delete_messages_from(sid, ts)?;
+            } else {
+                self.db.delete_messages_after(sid, ts)?;
+            }
+        }
+
+        // For user-message rollback, also remove the user message from the
+        // restored canonical so the LLM doesn't see it when the task resumes.
+        // The user message is the last CanonicalRole::User entry; everything
+        // after the preceding message should be trimmed.
+        if pause
+            && let Some(pos) = snapshot
+                .canonical
+                .iter()
+                .rposition(|m| m.role == CanonicalRole::User)
+        {
+            // Keep everything before the last user message. Drop the user
+            // message and any assistant messages that followed it.
+            snapshot.canonical.truncate(pos);
         }
 
         let json = serde_json::to_string(&snapshot)?;
         self.db.save_react_state(task_id, &json)?;
 
-        // Reset dispatched_once so the dispatcher picks the task up again.
-        // The supplement/steering queues are empty after a pure rollback, so
-        // without this take_next_pending would skip it indefinitely.
-        self.executor.reset_dispatched_once(task_id).await;
+        // Reload the task into executor memory (it may have been removed if we
+        // marked a Running task as Error above, or was never loaded after restart).
+        self.executor.ensure_task_loaded(task_id).await?;
 
-        self.executor
-            .update_task_status(task_id, TaskStatus::Pending)
-            .await?;
-        self.events.emit_task_updated(task_id, "pending").await;
-        tracing::info!(
-            "rollback_task {} to step {}: task set to Pending",
-            task_id,
-            target_step
-        );
+        if pause {
+            // User-message rollback: set to Paused so the task does NOT
+            // auto-dispatch. The user edits the text and re-sends it as a
+            // supplement, which flips the status back to Pending.
+            self.executor
+                .update_task_status(task_id, TaskStatus::Paused)
+                .await?;
+            self.events.emit_task_updated(task_id, "paused").await;
+            tracing::info!(
+                "rollback_task {} to step {}: task set to Paused (user-edit mode)",
+                task_id,
+                target_step
+            );
+        } else {
+            // Reset dispatched_once so the dispatcher picks the task up again.
+            self.executor.reset_dispatched_once(task_id).await;
+            self.executor
+                .update_task_status(task_id, TaskStatus::Pending)
+                .await?;
+            self.events.emit_task_updated(task_id, "pending").await;
+            tracing::info!(
+                "rollback_task {} to step {}: task set to Pending",
+                task_id,
+                target_step
+            );
+        }
         Ok(())
     }
 
@@ -284,7 +351,7 @@ impl AgentLayer {
 
         // Switch to the task's session so conversation history and
         // subsequent message persistence target the correct session.
-        // This matters for rollback/fork where the SessionManager may be
+        // This matters for rollback where the SessionManager may be
         // pointing at a different session than the dispatched task.
         if let Ok(Some(db_task)) = self.db.get_task(task_id)
             && let Some(ref sid) = db_task.session_id
@@ -542,7 +609,6 @@ impl AgentLayer {
                 }
                 if state == TaskStatus::Completed
                     || state == TaskStatus::Error
-                    || state == TaskStatus::Cancelled
                     || state == TaskStatus::Paused
                 {
                     self.executor
@@ -795,8 +861,8 @@ mod tests {
         // Verify emitter is stored without panic (set_emitter succeeds)
     }
 
-    #[test]
-    fn replace_router_and_router_work() {
+    #[tokio::test]
+    async fn replace_router_and_router_work() {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_agent_router_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
@@ -949,7 +1015,7 @@ mod tests {
         executor.end_task(&task.id).await.unwrap();
         assert_eq!(
             executor.get_task_state(&task.id).await,
-            TaskStatus::Cancelled
+            TaskStatus::Error
         );
 
         agent

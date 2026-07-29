@@ -71,6 +71,10 @@ impl AppState {
         let skills_cfg_root = cfg.skills.root.clone();
         let skills_cfg_enabled = cfg.skills.enabled.clone();
         let tools_skills = tools.clone();
+        // Register builtin tools synchronously so the first user message
+        // doesn't race with the background catalog rebuild and end up with
+        // an empty tool list.
+        tools_skills.rebuild_catalog().await;
         tokio::spawn(async move {
             tools_skills
                 .discover_all(&mcp_servers, &mcp_discovery)
@@ -132,6 +136,16 @@ impl AppState {
 
         // Start the task dispatcher
         agent.clone().start();
+
+        // Pre-warm the LLM HTTP connection pool so the first user message
+        // doesn't pay TCP+TLS handshake latency (~50-200ms).
+        let router_warm = router.clone();
+        tokio::spawn(async move {
+            match router_warm.health_check(haven_llm::EndpointRole::DefaultModel).await {
+                Ok(()) => tracing::info!("LLM connection pre-warmed"),
+                Err(e) => tracing::warn!("LLM pre-warm failed (will retry on first request): {}", e),
+            }
+        });
 
         // Session recovery: deferred to background (non-critical).
         let db_session = db.clone();

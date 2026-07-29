@@ -17,7 +17,7 @@ impl Tool for NetworkTool {
         "network".into()
     }
     fn description(&self) -> String {
-        "Make HTTP requests to fetch web pages or API data. Supports GET and POST.".into()
+        "Make basic HTTP requests to fetch web pages or API data. Supports GET and POST.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

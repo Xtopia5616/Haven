@@ -1,7 +1,7 @@
 pub mod audio;
 pub mod clipboard;
 pub mod env_var;
-pub mod file_op;
+pub mod file;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod network;
@@ -30,7 +30,7 @@ pub async fn register_builtin_tools(
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
 ) {
     tools.push(Arc::new(audio::AudioTool));
-    tools.push(Arc::new(file_op::FileOpTool));
+    tools.push(Arc::new(file::FileOpTool));
     tools.push(Arc::new(process::ProcessTool));
     tools.push(Arc::new(clipboard::ClipboardTool));
     tools.push(Arc::new(shell::ShellTool));

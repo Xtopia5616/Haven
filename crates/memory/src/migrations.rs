@@ -19,7 +19,7 @@ pub const MIGRATIONS: &[&str] = &[
         session_id TEXT REFERENCES sessions(id),
         input_text TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'pending'
-            CHECK(status IN ('pending','running','paused','completed','failed','cancelled')),
+            CHECK(status IN ('pending','running','paused','completed','failed','error')),
         classification TEXT NOT NULL DEFAULT 'NEW_TASK',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -34,7 +34,7 @@ pub const MIGRATIONS: &[&str] = &[
         input TEXT NOT NULL DEFAULT '{}',
         output TEXT NOT NULL DEFAULT '{}',
         status TEXT NOT NULL DEFAULT 'pending'
-            CHECK(status IN ('pending','running','completed','failed','cancelled')),
+            CHECK(status IN ('pending','running','completed','failed','error')),
         is_high_risk INTEGER NOT NULL DEFAULT 0,
         confirmed INTEGER,
         started_at TEXT,
@@ -204,14 +204,14 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                   input_text TEXT NOT NULL DEFAULT '',
                   title TEXT,
                   status TEXT NOT NULL DEFAULT 'pending'
-                      CHECK(status IN ('pending','running','paused','completed','failed','cancelled')),
+                      CHECK(status IN ('pending','running','paused','completed','failed','error')),
                   classification TEXT NOT NULL DEFAULT 'NEW_TASK',
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
                   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                   transcript TEXT NOT NULL DEFAULT '',
                   react_state TEXT
               );
-              INSERT INTO tasks_rebuild SELECT id, session_id, input_text, NULL, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
+               INSERT INTO tasks_rebuild SELECT id, session_id, input_text, NULL, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
              DROP TABLE tasks;
              ALTER TABLE tasks_rebuild RENAME TO tasks;
              CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
@@ -233,6 +233,51 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .unwrap_or(false);
     if !has_title {
         conn.execute("ALTER TABLE tasks ADD COLUMN title TEXT", [])?;
+    }
+
+    // Remove 'cancelled' status: migrate existing rows to 'error' and
+    // rebuild the CHECK constraint to exclude 'cancelled'.
+    // SQLite cannot ALTER a CHECK constraint in-place, so we rebuild the
+    // table if the old constraint still allows 'cancelled'.
+    let check_allows_cancelled: bool = conn
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'")?
+        .query_row([], |r| r.get::<_, String>(0))
+        .map(|sql| sql.contains("'cancelled'"))
+        .unwrap_or(false);
+    if check_allows_cancelled {
+        // First, migrate existing cancelled rows.
+        conn.execute("UPDATE tasks SET status = 'error' WHERE status = 'cancelled'", [])?;
+        // Rebuild tasks table without 'cancelled' in CHECK.
+        let fk_on: bool = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap_or(false);
+        if fk_on {
+            conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+        }
+        conn.execute_batch(
+            "CREATE TABLE tasks_rebuild (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT REFERENCES sessions(id),
+                  input_text TEXT NOT NULL DEFAULT '',
+                  title TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending'
+                      CHECK(status IN ('pending','running','paused','completed','failed','error')),
+                  classification TEXT NOT NULL DEFAULT 'NEW_TASK',
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  transcript TEXT NOT NULL DEFAULT '',
+                  react_state TEXT
+              );
+              INSERT INTO tasks_rebuild SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
+             DROP TABLE tasks;
+             ALTER TABLE tasks_rebuild RENAME TO tasks;
+             CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+             CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+        ")?;
+        if fk_on {
+            conn.execute_batch("PRAGMA foreign_keys=ON")?;
+        }
     }
 
     Ok(())

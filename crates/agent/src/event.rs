@@ -208,9 +208,11 @@ async fn run_chunk_batcher(
             Some(v) => v,
             None => return,
         };
+        // Emit the first chunk immediately so the user sees text without the
+        // 50ms batch delay. Subsequent chunks are aggregated normally.
+        emit_batch(tid.clone(), sn, rid, delta.clone()).await;
         let mut buf = String::new();
-        buf.push_str(&delta);
-        let mut buf_bytes = delta.len();
+        let mut buf_bytes = 0usize;
         delta.clear();
         // Fresh deadline for this batch (fixed, not sliding — recreated each loop
         // iteration with the same value so it fires at the original deadline).

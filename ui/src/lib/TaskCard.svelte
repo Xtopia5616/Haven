@@ -10,7 +10,6 @@
 			completed: '#4488ff',
 			failed: '#ff4444',
 			error: '#ff4444',
-			cancelled: '#888',
 		};
 		return map[status] || '#666';
 	}

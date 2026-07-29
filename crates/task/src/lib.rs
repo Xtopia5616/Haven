@@ -27,7 +27,6 @@ pub enum TaskStatus {
     Paused,
     Completed,
     Error,
-    Cancelled,
 }
 
 impl TaskStatus {
@@ -38,7 +37,6 @@ impl TaskStatus {
             TaskStatus::Paused => "paused",
             TaskStatus::Completed => "completed",
             TaskStatus::Error => "error",
-            TaskStatus::Cancelled => "cancelled",
         }
     }
 
@@ -49,7 +47,8 @@ impl TaskStatus {
             "paused" => TaskStatus::Paused,
             "completed" => TaskStatus::Completed,
             "error" => TaskStatus::Error,
-            "cancelled" => TaskStatus::Cancelled,
+            // Legacy: "cancelled" is treated as "error" since the variant was removed.
+            "cancelled" => TaskStatus::Error,
             _ => TaskStatus::Pending,
         }
     }
@@ -110,6 +109,9 @@ pub struct TaskExecutor {
     /// Per-task Notify signals so the ReAct loop can block on status changes
     /// instead of polling every 200ms.
     task_notify: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
+    /// Notified when a task transitions to Pending, waking the dispatcher
+    /// immediately instead of waiting for the next poll cycle.
+    dispatch_notify: Arc<Notify>,
     pub on_confirm_request: ConfirmRequestCallback,
 }
 
@@ -124,6 +126,7 @@ impl TaskExecutor {
             task_permits: Arc::new(Mutex::new(HashMap::new())),
             task_cancellations: Arc::new(Mutex::new(HashMap::new())),
             task_notify: Arc::new(Mutex::new(HashMap::new())),
+            dispatch_notify: Arc::new(Notify::new()),
             on_confirm_request: Arc::new(Mutex::new(None)),
         }
     }
@@ -199,6 +202,8 @@ impl TaskExecutor {
             }
         }
 
+        // Wake the dispatcher so it picks up this Pending task immediately.
+        self.dispatch_notify.notify_one();
         Ok(task)
     }
 
@@ -225,7 +230,13 @@ impl TaskExecutor {
                 let task_id = exec.take_next_pending().await;
                 let Some(task_id) = task_id else {
                     drop(permit);
-                    tokio::time::sleep(std::time::Duration::from_millis(DISPATCH_POLL_MS)).await;
+                    // Wait for a new Pending task to be signaled, but fall
+                    // back to a periodic poll in case a notify is missed.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(DISPATCH_POLL_MS),
+                        exec.dispatch_notify.notified(),
+                    )
+                    .await;
                     continue;
                 };
 
@@ -311,7 +322,6 @@ impl TaskExecutor {
             let status = tasks[pos].status.clone();
             if status == TaskStatus::Error
                 || status == TaskStatus::Completed
-                || status == TaskStatus::Cancelled
             {
                 tracing::debug!("task {} unmark_running: {:?}, removing from list", task_id, status);
                 tasks.remove(pos);
@@ -323,6 +333,12 @@ impl TaskExecutor {
 
     pub async fn running_count(&self) -> usize {
         self.running_tasks.lock().await.len()
+    }
+
+    /// Return a list of currently running task IDs. Used by rollback to wait
+    /// until a stopped task's handler has fully released its slot.
+    pub async fn running_tasks_list(&self) -> Vec<String> {
+        self.running_tasks.lock().await.iter().cloned().collect()
     }
 
     pub async fn add_supplement(&self, task_id: &str, text: &str) -> anyhow::Result<()> {
@@ -368,44 +384,25 @@ impl TaskExecutor {
         }
     }
 
-    pub async fn cancel_task(&self, task_id: &str) -> anyhow::Result<()> {
-        // Cancel the token first, before mutating any task list. This prevents
-        // a TOCTOU race where ensure_task_loaded re-inserts the task between
-        // the list removal and token cancellation (the re-inserted task would
-        // have no active token, so cancelling the old one is harmless).
-        if let Some(token) = self.task_cancellations.lock().await.remove(task_id) {
-            token.cancel();
-        }
-        let mut tasks = self.tasks.lock().await;
-        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-            tasks[pos].status = TaskStatus::Cancelled;
-            tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-            self.running_tasks.lock().await.remove(task_id);
-            self.db.update_task_status(task_id, "cancelled")?;
-            self.task_permits.lock().await.remove(task_id);
-            tasks.remove(pos);
-        } else {
-            // Task not in memory (e.g. after restart) — update DB directly.
-            self.db.update_task_status(task_id, "cancelled")?;
-        }
-        Ok(())
-    }
-
-    /// End a task — marks as Completed and cleans up resources.
-    /// Called from the frontend when the user explicitly taps "结束任务".
-    /// Works for tasks both in memory and DB-only (e.g. after app restart).
-    pub async fn end_task(&self, task_id: &str) -> anyhow::Result<()> {
+    /// End a task — if the task is still Running, it was forcibly
+    /// interrupted, so mark it as Error. If it is Paused (the ReAct
+    /// loop naturally finished), mark it as Completed. Cleans up
+    /// resources either way. Called from the frontend "结束任务" button.
+    pub async fn end_task(&self, task_id: &str) -> anyhow::Result<TaskStatus> {
         // Cancel the running token first to interrupt any active ReAct loop.
         let cancel = self.cancellation_token(task_id).await;
         cancel.cancel();
-        // Acquire tasks lock BEFORE task_notify to prevent ABBA deadlock with
-        // update_task_status (which locks tasks → task_notify). Notifying and
-        // status update happen under the tasks lock scope.
         let mut tasks = self.tasks.lock().await;
         if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-            tasks[pos].status = TaskStatus::Completed;
+            // Running → Error (forced stop); Paused/other → Completed.
+            let new_status = if tasks[pos].status == TaskStatus::Running {
+                TaskStatus::Error
+            } else {
+                TaskStatus::Completed
+            };
+            tasks[pos].status = new_status.clone();
             tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-            self.db.update_task_status(task_id, "completed")?;
+            self.db.update_task_status(task_id, new_status.as_str())?;
             tasks.remove(pos);
             drop(tasks);
             self.running_tasks.lock().await.remove(task_id);
@@ -414,11 +411,25 @@ impl TaskExecutor {
                 notify.notify_waiters();
             }
             self.task_cancellations.lock().await.remove(task_id);
+            Ok(new_status)
         } else {
-            // Task not in memory (e.g. after restart) — update DB directly.
-            self.db.update_task_status(task_id, "completed")?;
+            // Task not in memory (e.g. after restart) — check DB status.
+            let db_status = self.db.get_task(task_id)
+                .ok()
+                .flatten()
+                .map(|t| TaskStatus::from_status_str(&t.status))
+                .unwrap_or(TaskStatus::Error);
+            let new_status = if db_status == TaskStatus::Running
+                || db_status == TaskStatus::Pending
+                || db_status == TaskStatus::Paused
+            {
+                TaskStatus::Error
+            } else {
+                TaskStatus::Completed
+            };
+            self.db.update_task_status(task_id, new_status.as_str())?;
+            Ok(new_status)
         }
-        Ok(())
     }
 
     /// Remove a task entirely from the in-memory state.
@@ -501,7 +512,8 @@ impl TaskExecutor {
         status: TaskStatus,
     ) -> anyhow::Result<()> {
         let status_str = status.as_str().to_string();
-        let is_terminal = status_str == "cancelled" || status_str == "completed" || status_str == "error";
+        let is_terminal = status_str == "completed" || status_str == "error";
+        let is_pending = status_str == "pending";
         let mut tasks = self.tasks.lock().await;
         if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
             let old_status = tasks[pos].status.as_str();
@@ -512,6 +524,10 @@ impl TaskExecutor {
             // Notify any waiter that status has changed.
             if let Some(notify) = self.task_notify.lock().await.get(task_id) {
                 notify.notify_waiters();
+            }
+            // Wake the dispatcher when a task transitions to Pending.
+            if is_pending {
+                self.dispatch_notify.notify_one();
             }
             if is_terminal {
                 self.running_tasks.lock().await.remove(task_id);
@@ -542,6 +558,8 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.dispatched_once = false;
+            // Wake the dispatcher since this task is now eligible for pickup.
+            self.dispatch_notify.notify_one();
         }
     }
 
@@ -590,7 +608,7 @@ impl TaskExecutor {
             .iter()
             .find(|t| t.id == task_id)
             .map(|t| t.status.clone())
-            .unwrap_or(TaskStatus::Cancelled)
+            .unwrap_or(TaskStatus::Error)
     }
 
     pub fn get_tools(&self) -> Arc<ToolsManager> {
@@ -954,7 +972,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_task_changes_status_and_triggers_token() {
+    async fn end_task_running_marks_error_and_triggers_token() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(TaskExecutor::new(db, tools, 3));
@@ -962,7 +980,11 @@ mod tests {
             .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
             .await
             .unwrap();
-        // Insert a token as the dispatcher would, so cancel_task can trigger it
+        // Set to Running so end_task marks it as Error.
+        exec.update_task_status(&task.id, TaskStatus::Running)
+            .await
+            .unwrap();
+        // Insert a token as the dispatcher would, so end_task can trigger it
         let real_token = CancellationToken::new();
         let clone = real_token.clone();
         exec.task_cancellations
@@ -970,25 +992,25 @@ mod tests {
             .await
             .insert(task.id.clone(), clone);
         assert!(!real_token.is_cancelled());
-        exec.cancel_task(&task.id).await.unwrap();
+        let status = exec.end_task(&task.id).await.unwrap();
+        assert_eq!(status, TaskStatus::Error);
         assert!(real_token.is_cancelled());
         let state = exec.get_task_state(&task.id).await;
-        assert_eq!(state, TaskStatus::Cancelled);
+        assert_eq!(state, TaskStatus::Error);
     }
 
     #[tokio::test]
-    async fn cancel_nonexistent_task_succeeds() {
+    async fn end_task_nonexistent_succeeds() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
-        // cancel_task no longer errors for tasks not in memory
-        // (it falls back to DB-only update).
-        let result = exec.cancel_task("nonexistent").await;
+        // end_task on a nonexistent task updates DB directly.
+        let result = exec.end_task("nonexistent").await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn end_task_marks_completed() {
+    async fn end_task_paused_marks_completed() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
@@ -996,10 +1018,11 @@ mod tests {
             .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
             .await
             .unwrap();
-        exec.end_task(&task.id).await.unwrap();
-        // After end_task the task is removed from the in-memory list
-        // (no longer polluting dispatcher scans).
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Cancelled);
+        exec.update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+        let status = exec.end_task(&task.id).await.unwrap();
+        assert_eq!(status, TaskStatus::Completed);
     }
 
     #[tokio::test]
@@ -1142,13 +1165,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_task_state_nonexistent_returns_cancelled() {
+    async fn get_task_state_nonexistent_returns_error() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         assert_eq!(
             exec.get_task_state("nonexistent").await,
-            TaskStatus::Cancelled
+            TaskStatus::Error
         );
     }
 
@@ -1219,7 +1242,7 @@ mod tests {
             .await
             .unwrap();
         // Terminal status removes the task from the in-memory list
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Cancelled);
+        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Error);
     }
 
     #[tokio::test]

@@ -5,27 +5,25 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, truncateTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
+	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
-	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import Logo from '$lib/Logo.svelte';
 
 	let transcriptInput = $state('');
 	let messages = $state([]);
 	let tasks = $state([]);
 	let confirmDialog = $state({ stepId: null, toolName: '', taskId: '', riskLevel: 'medium' });
-	let cancelConfirm = $state({ open: false, taskId: '', taskTitle: '' });
 	let activeTaskId = $state(get(activeTaskIdStore));
-	let branchDialog = $state({ open: false, stepNumber: null });
+	let branchDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
 	let branchLoading = $state(false);
 
 	// Right-click context menu state
-	let ctxMenu = $state({ open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '' });
+	let ctxMenu = $state({ open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '', selectedContent: '' });
 
 	function handleContextMenu(ev) {
-		ctxMenu = { open: true, x: ev.x, y: ev.y, stepNumber: ev.stepNumber, content: ev.content, role: ev.role, msgId: ev.messageId };
+		ctxMenu = { open: true, x: ev.x, y: ev.y, stepNumber: ev.stepNumber, content: ev.content, role: ev.role, msgId: ev.messageId, selectedContent: ev.selectedContent || '' };
 	}
 
 	// Rollback: find step number from click context or parse from message id
@@ -46,20 +44,21 @@
 	function handleCtxRollback() {
 		const step = getStepForCtxMenu();
 		if (step == null) { addNotification('无法确定此消息对应的步骤', 'error', 3000); closeCtxMenu(); return; }
-		branchDialog = { open: true, stepNumber: step };
+		branchDialog = { open: true, stepNumber: step, role: ctxMenu.role, content: ctxMenu.content, msgId: ctxMenu.msgId };
 		closeCtxMenu();
 	}
 
 	async function handleCtxCopy() {
-		if (ctxMenu.content) {
-			try { await navigator.clipboard.writeText(ctxMenu.content); addNotification('已复制', 'info', 1500); }
+		const text = ctxMenu.selectedContent || ctxMenu.content;
+		if (text) {
+			try { await navigator.clipboard.writeText(text); addNotification('已复制', 'info', 1500); }
 			catch { addNotification('复制失败', 'error', 2000); }
 		}
 		closeCtxMenu();
 	}
 
 	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '' };
+		ctxMenu = { open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '', selectedContent: '' };
 	}
 
 	function handleWindowClick(e) {
@@ -75,31 +74,36 @@
 	// Merged into existing onMount/onDestroy below
 
 	async function confirmBranchAction() {
-		const { stepNumber } = branchDialog;
+		const { stepNumber, role, content, msgId } = branchDialog;
 		branchLoading = true;
 		try {
-			await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber });
-			// Drop messages from the discarded timeline so the UI matches
-			// the restored snapshot. The ReAct loop will re-stream steps
-			// from `stepNumber` onward as it re-executes.
-			truncateTaskMessages(activeTaskId, stepNumber);
-			addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
+			if (role === 'user') {
+				// User-message rollback: pause the task and put the message
+				// text back in the input box so the user can edit and re-send.
+				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: true });
+				// Remove the user message and everything after it, keeping
+				// messages before it. This avoids truncateTaskMessages, which
+				// would match the user message itself if it has an inferred
+				// stepNumber (review view).
+				updateTaskMessages(activeTaskId, (m) => {
+					const idx = m.findIndex((x) => x.id === msgId);
+					if (idx === -1) return m;
+					return m.slice(0, idx);
+				});
+				clearSeqMap(activeTaskId);
+				transcriptInput = content;
+				addNotification('已回退，请编辑后重新发送', 'info', 3000);
+			} else {
+				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: false });
+				truncateTaskMessages(activeTaskId, stepNumber);
+				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
+			}
 		} catch (e) {
 			addNotification(`回退失败: ${e}`, 'error', 5000);
 		}
 		branchLoading = false;
-		branchDialog = { open: false, stepNumber: null };
+		branchDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
 		await loadTasks();
-	}
-
-	async function doCancelTask() {
-		if (!cancelConfirm.taskId) return;
-		try {
-			await invoke('cancel_task', { taskId: cancelConfirm.taskId });
-		} catch (e) {
-			addNotification(`取消失败: ${e}`, 'error', 3000);
-		}
-		cancelConfirm = { open: false, taskId: '', taskTitle: '' };
 	}
 
 	function newTask() {
@@ -153,10 +157,6 @@
 			logger.error('+page', `Failed to register listener for '${event}'`, e);
 		}
 	}
-
-	let activeTasks = $derived(
-		tasks.filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused'),
-	);
 
 	// Auto-scroll to the newest message whenever messages change
 	// or when any message is still streaming.
@@ -261,35 +261,54 @@
 					}];
 				});
 			});
-			function listenChunk(eventName, stepIdPrefix, msgType) {
-				return safeListen(eventName, (event) => {
-					const data = event.payload;
-					const tid = data.task_id;
-					const stepId = `${stepIdPrefix}-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-					const delta = data.delta || '';
-					const seq = data.seq;
-					updateModelState('streaming');
-					if (seqLastSeen(stepId, seq)) return;
-					if (!delta) return;
+		function listenChunk(eventName, stepIdPrefix, msgType) {
+			return safeListen(eventName, (event) => {
+				const data = event.payload;
+				const tid = data.task_id;
+				const stepId = `${stepIdPrefix}-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				const delta = data.delta || '';
+				const seq = data.seq;
+				updateModelState('streaming');
+				if (seqLastSeen(stepId, seq)) return;
+
+				// When the first text chunk arrives, the reasoning phase is
+				// over — finalize any streaming reasoning block for this step.
+				// This runs BEFORE the empty-delta check so that even an empty
+				// transition chunk finalizes reasoning.
+				if (stepIdPrefix === 'thought') {
+					const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+					let reasoningFinalized = false;
 					updateTaskMessages(tid, (m) => {
-						const idx = m.findIndex((x) => x.id === stepId);
-						if (idx >= 0 && m[idx].streaming === false) return m;
-						if (idx >= 0) {
-							const curr = m[idx].content || '';
-							// Some non-OpenAI providers send cumulative text per chunk
-							const content = delta.startsWith(curr) ? delta : curr + delta;
-							const next = [...m];
-							next[idx] = { ...next[idx], content, streaming: true };
-							return next;
-						}
-						return [...m, {
-							id: stepId, role: 'assistant', content: delta,
-							type: msgType, voice: false, stepNumber: data.step_number,
-							time: new Date().toLocaleTimeString(), streaming: true,
-						}];
+						const rIdx = m.findIndex((x) => x.id === reasoningId && x.streaming);
+						if (rIdx < 0) return m;
+						reasoningFinalized = true;
+						return m.map((x) =>
+							x.id === reasoningId ? { ...x, streaming: false } : x
+						);
 					});
+					if (reasoningFinalized) pruneSeq(reasoningId);
+				}
+
+				if (!delta) return;
+				updateTaskMessages(tid, (m) => {
+					const idx = m.findIndex((x) => x.id === stepId);
+					if (idx >= 0 && m[idx].streaming === false) return m;
+					if (idx >= 0) {
+						const curr = m[idx].content || '';
+						// Some non-OpenAI providers send cumulative text per chunk
+						const content = delta.startsWith(curr) ? delta : curr + delta;
+						const next = [...m];
+						next[idx] = { ...next[idx], content, streaming: true };
+						return next;
+					}
+					return [...m, {
+						id: stepId, role: 'assistant', content: delta,
+						type: msgType, voice: false, stepNumber: data.step_number,
+						time: new Date().toLocaleTimeString(), streaming: true,
+					}];
 				});
-			}
+			});
+		}
 			await listenChunk('agent:thought_chunk', 'thought', undefined);
 			await listenChunk('agent:reasoning_chunk', 'reasoning', 'reasoning');
 			await safeListen('agent:supplement', () => {
@@ -301,14 +320,20 @@
 				updateModelState('tool');
 				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
 				const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				const thoughtId = `thought-${tid}-${data.step_number}-${data.run_id ?? 0}`;
 				pruneSeq(reasoningId);
+				pruneSeq(thoughtId);
 				updateTaskMessages(tid, (m) => {
-					const reasoningFixed = m.map((x) =>
-						x.id === reasoningId ? { ...x, streaming: false } : x
+					// Finalize any streaming reasoning and thought blocks —
+					// a tool action means the text/reasoning phase is over.
+					const fixed = m.map((x) =>
+						(x.id === reasoningId || x.id === thoughtId)
+							? { ...x, streaming: false }
+							: x
 					);
-					const existing = reasoningFixed.find((x) => x.id === toolId);
-					if (existing) return reasoningFixed;
-					return [...reasoningFixed, {
+					const existing = fixed.find((x) => x.id === toolId);
+					if (existing) return fixed;
+					return [...fixed, {
 						id: toolId,
 						role: 'assistant',
 						content: '',
@@ -465,9 +490,10 @@
 	<BranchDialog
 		open={branchDialog.open}
 		stepNumber={branchDialog.stepNumber}
+		isUserMessage={branchDialog.role === 'user'}
 		loading={branchLoading}
 		onConfirm={confirmBranchAction}
-		onClose={() => { if (!branchLoading) branchDialog = { open: false, stepNumber: null }; }}
+		onClose={() => { if (!branchLoading) branchDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' }; }}
 	/>
 
 	<!-- Right-click context menu -->
@@ -485,26 +511,6 @@
 		</div>
 	{/if}
 
-	<MaterialDialog
-		open={cancelConfirm.open}
-		onClose={() => { cancelConfirm = { open: false, taskId: '', taskTitle: '' }; }}
-		title="Cancel Task"
-	>
-		{#snippet children()}
-			<p>{`确定要取消任务 "${cancelConfirm.taskTitle}" 吗？已执行的工具操作不可回滚。`}</p>
-		{/snippet}
-		{#snippet footer()}
-			<button
-				class="md-btn md-btn--text"
-				onclick={() => { cancelConfirm = { open: false, taskId: '', taskTitle: '' }; }}>
-				Cancel
-			</button>
-			<button class="md-btn md-btn--filled" style="background: var(--md-sys-color-error)" onclick={doCancelTask}>
-				确定取消
-			</button>
-		{/snippet}
-	</MaterialDialog>
-
 	<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
 		{#if messages.length === 0}
 			<div class="welcome" in:fly={{ y: 12, duration: 220 }}>
@@ -514,14 +520,15 @@
 			</div>
 		{:else}
 			<div class="message-list">
-				{#each messages as msg (msg.id)}
+				{#each messages as msg, i (msg.id)}
+					{@const isLast = i === messages.length - 1}
 					<ChatBubble
 						role={msg.role}
 						content={msg.content}
 						type={msg.type}
 						voice={msg.voice}
 						time={msg.time}
-						streaming={msg.streaming}
+						streaming={msg.streaming && isLast}
 						toolName={msg.toolName ?? ''}
 						messageId={msg.id}
 						stepNumber={msg.stepNumber}
@@ -533,42 +540,6 @@
 	</div>
 
 	<div class="input-area">
-		{#if activeTasks.length > 0}
-			<div class="task-bar">
-				<div class="task-bar-list">
-					{#each activeTasks as task (task.id)}
-						<div class="task-pill">
-							<span class="task-pill-dot" class:running={task.status === 'running'}></span>
-							<span class="task-pill-label">{task.title || task.summary || task.input || 'Task'}</span>
-							<button
-								class="task-pill-action"
-								onclick={() => { newTask(); }}
-								title="新任务"
-								aria-label="新任务"
-								type="button"
-							>
-								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-									<line x1="12" y1="5" x2="12" y2="19" />
-									<line x1="5" y1="12" x2="19" y2="12" />
-								</svg>
-							</button>
-							<button
-								class="task-pill-action stop"
-								onclick={() => { endTask(); }}
-								title="结束任务"
-								aria-label="结束任务"
-								type="button"
-							>
-								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-									<rect x="6" y="6" width="12" height="12" rx="1" />
-								</svg>
-							</button>
-						</div>
-					{/each}
-				</div>
-			</div>
-		{/if}
-
 		<div class="input-row">
 			<button
 				class="md-btn md-btn--outlined"
@@ -661,92 +632,6 @@
 		max-width: 760px;
 		margin: 0 auto;
 		width: 100%;
-	}
-
-	.task-bar {
-		display: flex;
-	}
-	.task-bar-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-xs);
-	}
-	.task-pill {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		height: var(--md-comp-button-touch-height);
-		padding: 0 var(--md-sys-space-xs) 0 var(--md-sys-space-md);
-		background: var(--md-sys-color-surface-container-high);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
-		color: var(--md-sys-color-on-surface);
-		transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	.task-pill:hover {
-		border-color: var(--md-sys-color-outline);
-	}
-	.task-pill-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--md-sys-color-outline);
-		flex-shrink: 0;
-	}
-	.task-pill-dot.running {
-		background: var(--md-sys-color-success);
-		box-shadow: 0 0 6px color-mix(in srgb, var(--md-sys-color-success) 60%, transparent);
-		animation: task-pill-pulse 1.5s var(--md-sys-motion-easing-emphasized) infinite;
-	}
-	@keyframes task-pill-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.4; }
-	}
-	.task-pill-label {
-		font-size: 13px;
-		font-weight: 500;
-		max-width: 240px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.task-pill-action {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: var(--md-comp-icon-button-size);
-		height: var(--md-comp-icon-button-size);
-		border: none;
-		border-radius: var(--md-sys-shape-full);
-		background: transparent;
-		color: var(--md-sys-color-on-surface-variant);
-		cursor: pointer;
-		overflow: hidden;
-		transition: background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-	}
-	.task-pill-action::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		background: currentColor;
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	.task-pill-action:hover::after {
-		opacity: var(--md-sys-state-hover-opacity);
-	}
-	.task-pill-action:focus-visible::after {
-		opacity: var(--md-sys-state-focus-opacity);
-	}
-	.task-pill-action:active::after {
-		opacity: var(--md-sys-state-pressed-opacity);
-	}
-	.task-pill-action.stop:hover {
-		color: var(--md-sys-color-error);
 	}
 
 	.input-row {

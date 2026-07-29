@@ -98,9 +98,6 @@ impl ReActEngine {
             loop {
                 let state = self.executor.get_task_state(task_id).await;
                 match state {
-                    TaskStatus::Cancelled => {
-                        return Ok(());
-                    }
                     TaskStatus::Error | TaskStatus::Completed => {
                         if state != TaskStatus::Completed {
                             self.emit_error(&emitter, task_id, "task interrupted").await;
@@ -622,8 +619,7 @@ impl ReActEngine {
                 );
                 return Ok(());
             }
-            if state == TaskStatus::Cancelled
-                || state == TaskStatus::Error
+            if state == TaskStatus::Error
                 || state == TaskStatus::Completed
             {
                 return Ok(());

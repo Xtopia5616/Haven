@@ -167,7 +167,7 @@ impl Database {
                     rusqlite::params![status, now, id],
                 )?;
             }
-            "completed" | "failed" | "cancelled" => {
+            "completed" | "failed" | "error" => {
                 conn.execute(
                     "UPDATE task_steps SET status = ?1, observation = COALESCE(?2, observation), completed_at = ?3 WHERE id = ?4",
                     rusqlite::params![status, output, now, id],

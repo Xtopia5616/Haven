@@ -224,18 +224,18 @@ mod tests {
     }
 
     #[test]
-    fn test_file_op_name() {
+    fn test_file_name() {
         assert_eq!(FileOpTool.name(), "file");
     }
 
     #[test]
-    fn test_file_op_description() {
+    fn test_file_description() {
         assert!(FileOpTool.description().contains("File operations"));
         assert!(FileOpTool.description().contains("edit"));
     }
 
     #[test]
-    fn test_file_op_risk_level() {
+    fn test_file_risk_level() {
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "delete"})), RiskLevel::High);
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "write"})), RiskLevel::Medium);
         assert_eq!(FileOpTool.risk_level(&json!({"operation": "edit"})), RiskLevel::Medium);
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn test_file_op_input_schema() {
+    fn test_file_input_schema() {
         let schema = FileOpTool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let required = schema["required"].as_array().unwrap();
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_read() {
+    async fn test_file_execute_read() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("readme.txt");
         tokio::fs::write(&file, "hello world").await.unwrap();
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_write() {
+    async fn test_file_execute_write() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("output.txt");
         let path_str = file.to_string_lossy().to_string();
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_edit() {
+    async fn test_file_execute_edit() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("edit.txt");
         tokio::fs::write(&file, "hello\nworld\nfoo\n").await.unwrap();
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_edit_not_found() {
+    async fn test_file_execute_edit_not_found() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("edit.txt");
         tokio::fs::write(&file, "hello\nworld\n").await.unwrap();
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_edit_multiple_matches() {
+    async fn test_file_execute_edit_multiple_matches() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("edit.txt");
         tokio::fs::write(&file, "foo\nfoo\n").await.unwrap();
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_copy() {
+    async fn test_file_execute_copy() {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("source.txt");
         let dst = tmp.path().join("dest.txt");
@@ -379,7 +379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_move() {
+    async fn test_file_execute_move() {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("source.txt");
         let dst = tmp.path().join("target.txt");
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_delete() {
+    async fn test_file_execute_delete() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("to_delete.txt");
         tokio::fs::write(&file, "delete me").await.unwrap();
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_list() {
+    async fn test_file_execute_list() {
         let tmp = TempDir::new().unwrap();
         tokio::fs::write(tmp.path().join("a.txt"), "a").await.unwrap();
         tokio::fs::write(tmp.path().join("b.txt"), "b").await.unwrap();
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_unknown() {
+    async fn test_file_execute_unknown() {
         let result = FileOpTool
             .execute(
                 json!({"operation": "unknown", "path": "file.txt"}),
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_op_execute_cancelled() {
+    async fn test_file_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let result = FileOpTool

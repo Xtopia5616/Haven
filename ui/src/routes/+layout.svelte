@@ -38,7 +38,6 @@
 		task_completed: { in_app: true },
 		task_paused: { in_app: true },
 		task_error: { in_app: true },
-		task_cancelled: { in_app: true },
 	});
 
 	recordingOverlay.subscribe((v) => (overlay = v));
@@ -278,13 +277,6 @@
 				updateModelState('waiting', { fallbackDelay: 5000 });
 			}
 			if (data.status === 'completed') {
-				clearModelStateTimer();
-				updateModelState('ready');
-			}
-			if (data.status === 'cancelled') {
-				if (notifyCfg?.task_cancelled?.in_app !== false) {
-					addNotification(`任务已取消: ${title}`, 'warning');
-				}
 				clearModelStateTimer();
 				updateModelState('ready');
 			}

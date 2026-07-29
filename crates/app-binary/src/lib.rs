@@ -782,7 +782,6 @@ pub fn run() {
             commands::supplement_task,
             commands::reopen_task,
             commands::get_tasks,
-            commands::cancel_task,
             commands::end_task,
             commands::pause_task,
             commands::resume_task,

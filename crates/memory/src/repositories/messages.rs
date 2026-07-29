@@ -168,6 +168,19 @@ impl Database {
         self.cache_invalidate_messages(session_id);
         Ok(())
     }
+
+    /// Delete every message in a session whose `created_at` is at or after
+    /// the given timestamp (inclusive). Used by user-message rollback to also
+    /// remove the rolled-back user message itself.
+    pub fn delete_messages_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM messages WHERE session_id = ?1 AND created_at >= ?2",
+            rusqlite::params![session_id, created_at],
+        )?;
+        self.cache_invalidate_messages(session_id);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +274,18 @@ mod tests {
         assert_eq!(msgs[0].content, "first");
         // m2 should be gone
         assert!(!msgs.iter().any(|m| m.id == m2.id));
+    }
+
+    #[test]
+    fn delete_messages_from_inclusive() {
+        let db = test_db();
+        let sid = test_session(&db);
+        let m1 = db.add_message(&sid, "user", "first", None, None).unwrap();
+        let m2 = db.add_message(&sid, "assistant", "second", None, None).unwrap();
+        // delete_messages_from deletes inclusively — m1 and m2 both gone
+        db.delete_messages_from(&sid, &m1.created_at).unwrap();
+        let msgs = db.get_session_messages(&sid).unwrap();
+        assert!(msgs.is_empty());
     }
 }
 

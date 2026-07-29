@@ -38,7 +38,6 @@
 		{ value: '', label: 'All' },
 		{ value: 'completed', label: 'Completed' },
 		{ value: 'paused', label: 'Paused' },
-		{ value: 'cancelled', label: 'Cancelled' },
 		{ value: 'error', label: 'Error' },
 	];
 
@@ -125,7 +124,6 @@
 			completed: 'success',
 			failed: 'error',
 			error: 'error',
-			cancelled: 'default',
 			running: 'primary',
 			paused: 'warning',
 		};
@@ -304,12 +302,21 @@
 	}
 
 	function displayTitle(task) {
-		return task.title || task.input_text || 'Untitled';
+		if (task.title) return task.title;
+		const text = task.input_text || '';
+		const m = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
+		return (m ? m[0].trim() : text.trim()) || 'Untitled';
 	}
 
 	function startEdit(task) {
 		editingTitle = task.id;
-		renameValue = task.title || task.input_text || '';
+		if (task.title) {
+			renameValue = task.title;
+		} else {
+			const text = task.input_text || '';
+			const m = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
+			renameValue = m ? m[0].trim() : text.trim();
+		}
 	}
 
 	function cancelEdit() {

@@ -45,7 +45,6 @@
 		task_completed: { in_app: true, windows: true },
 		task_paused: { in_app: true, windows: false },
 		task_error: { in_app: true, windows: true },
-		task_cancelled: { in_app: true, windows: false },
 	});
 	let log = $state({ level: 'info', file_enabled: true });
 
@@ -173,7 +172,6 @@
 						task_completed: { in_app: notification.task_completed.in_app, windows: notification.task_completed.windows },
 						task_paused: { in_app: notification.task_paused.in_app, windows: notification.task_paused.windows },
 						task_error: { in_app: notification.task_error.in_app, windows: notification.task_error.windows },
-						task_cancelled: { in_app: notification.task_cancelled.in_app, windows: notification.task_cancelled.windows },
 					},
 			log: {
 				level: log.level,
@@ -548,7 +546,6 @@
 			{ key: 'task_completed', label: 'Task Complete' },
 			{ key: 'task_paused', label: 'Task Paused' },
 			{ key: 'task_error', label: 'Task Error' },
-			{ key: 'task_cancelled', label: 'Task Cancelled' },
 		] as ev (ev.key)}
 			<div class="notify-grid-row">
 				<span class="switch-label">{ev.label}</span>

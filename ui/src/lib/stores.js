@@ -120,17 +120,10 @@ export function truncateTaskMessages(taskId, targetStep) {
 		next[taskId] = list.slice(0, cutIdx);
 		return next;
 	});
-	// Clear seq tracking for the removed steps so re-streamed chunks are
-	// not rejected as duplicates.
-	for (const key of seqMap.keys()) {
-		if (key.includes(taskId)) {
-			const parts = key.split('-');
-			const step = Number(parts[parts.length - 2]);
-			if (!Number.isNaN(step) && step >= targetStep) {
-				seqMap.delete(key);
-			}
-		}
-	}
+	// Clear all seq tracking for this task. Remaining messages (before the
+	// rollback point) are already finalized, so their seq entries are stale
+	// anyway. This avoids fragile key-string parsing for step numbers.
+	clearSeqMap(taskId);
 }
 
 // Move draft messages to a real task (called when task:created fires).
