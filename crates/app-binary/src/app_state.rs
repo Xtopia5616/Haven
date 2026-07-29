@@ -19,14 +19,14 @@ pub struct AppState {
     pub agent: Arc<AgentLayer>,
     pub pipeline: Arc<InputPipeline>,
     pub shell: Arc<DesktopShell>,
-    pub log_filter_handle: reload::Handle<EnvFilter, Registry>,
+    pub log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub config_loader: Arc<std::sync::Mutex<ConfigLoader>>,
 }
 
 impl AppState {
     pub async fn new(
         db_path: &std::path::Path,
-        filter_handle: reload::Handle<EnvFilter, Registry>,
+        filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
     ) -> anyhow::Result<Self> {
         let db = Arc::new(Database::open(db_path)?);
@@ -154,7 +154,7 @@ impl AppState {
             agent,
             pipeline,
             shell,
-            log_filter_handle: filter_handle,
+            log_filter_handles: filter_handles,
             config_loader: config_loader_arc,
         })
     }

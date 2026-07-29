@@ -412,14 +412,24 @@ impl HttpLlmClient {
             })
             .unwrap_or_default();
 
-        Ok(LlmResponse {
+        let response = LlmResponse {
             text,
             tool_calls,
             finish_reason: choice.finish_reason.and_then(|s| FinishReason::from_openai(&s)),
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning,
-        })
+        };
+        tracing::trace!(
+            "parse_openai_response: text={} chars, tool_calls={}, reasoning={}, usage p/c/t={}/{}/{}",
+            response.text.len(),
+            response.tool_calls.len(),
+            response.reasoning.is_some(),
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+            response.usage.total_tokens,
+        );
+        Ok(response)
     }
 
     async fn chat_inner(
@@ -434,7 +444,7 @@ impl HttpLlmClient {
             self.endpoint.base_url.trim_end_matches('/')
         );
 
-        tracing::debug!("POST {}", url);
+        tracing::debug!("POST {} (model: {})", url, body.model);
         let mut req = self
             .client
             .post(&url)
@@ -484,7 +494,7 @@ impl HttpLlmClient {
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
         );
-        tracing::info!("chat_stream_inner: url={} model={} api_key={} timeout_secs={} timeout_streaming={:?}",
+        tracing::debug!("chat_stream_inner: url={} model={} api_key={} timeout_secs={} timeout_streaming={:?}",
             url, self.endpoint.model_name,
             if self.endpoint.api_key.is_empty() { "EMPTY" } else { "SET" },
             self.endpoint.timeout_secs,
@@ -499,16 +509,14 @@ impl HttpLlmClient {
         // When timeout_streaming_secs is None, no HTTP timeout is set — the router-level
         // max_total_duration_secs provides overall protection.
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
-            tracing::info!("chat_stream_inner: sending request with {}s streaming timeout", timeout);
+            tracing::trace!("chat_stream_inner: {}s streaming timeout", timeout);
             req = req.timeout(Duration::from_secs(timeout));
-        } else {
-            tracing::info!("chat_stream_inner: sending request without HTTP timeout (relying on router deadline)");
         }
         let resp = req.send().await.map_err(|e| {
-            tracing::info!("chat_stream_inner: send() error: {:?}", e);
+            tracing::debug!("chat_stream_inner: send() error: {:?}", e);
             LlmError::from(e)
         })?;
-        tracing::info!("chat_stream_inner response status: {}", resp.status());
+        tracing::debug!("chat_stream_inner response status: {}", resp.status());
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -860,6 +868,7 @@ where
         if cancel.is_some_and(|c| c.is_cancelled()) {
             return Err(LlmError::Cancelled);
         }
+        tracing::debug!("llm attempt {}/{}", attempt + 1, max_retries + 1);
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
@@ -876,7 +885,7 @@ where
                 let jitter_ms = (delay as f32 * jitter * 1000.0) as u64;
                 let actual_delay = Duration::from_secs(delay)
                     + Duration::from_millis(jitter_ms);
-                tracing::trace!("llm retry {} after {:?}", attempt, actual_delay);
+                tracing::debug!("llm retry {} after {:?} (error: {})", attempt, actual_delay, e);
                 tokio::time::sleep(actual_delay).await;
                 last_err = Some(e);
             }

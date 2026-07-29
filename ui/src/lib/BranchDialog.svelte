@@ -1,7 +1,7 @@
 <script>
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 
-	let { open = false, stepNumber = null, taskSummary = '', loading = false, onConfirm, onClose } = $props();
+	let { open = false, stepNumber = null, loading = false, onConfirm, onClose } = $props();
 
 	let message = $derived(`确定要回退到第 ${stepNumber} 步吗？任务状态将回到该步骤，后续步骤将被丢弃。`);
 	let confirmLabel = $derived(loading ? '处理中...' : '确认回退');

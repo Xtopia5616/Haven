@@ -144,7 +144,7 @@ impl ReActEngine {
                     .await;
                 let _ = self
                     .db
-                    .create_thought_step(task_id, history.len() as i32, supplement);
+                    .create_thought_step(task_id, step_num as i32, supplement);
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
                     content: vec![ContentPart::text(format!(
@@ -186,10 +186,16 @@ impl ReActEngine {
             let cancel_res = self.executor.cancellation_token(task_id).await;
             let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
             let task_id_1 = task_id.to_string();
-            tracing::info!(
-                "ReAct step {} calling LLM, messages count: {}",
+            tracing::debug!(
+                "ReAct step {} calling LLM, {} messages, {} tools",
                 step_num,
-                llm_messages.len()
+                llm_messages.len(),
+                tools.len()
+            );
+            tracing::trace!(
+                "ReAct step {} canonical messages: {:?}",
+                step_num,
+                llm_messages.iter().map(|m| (m.role.clone(), m.content.len())).collect::<Vec<_>>()
             );
             let response = match router
                 .chat_stream_with_tools_aggregated_cancellable(
@@ -235,7 +241,7 @@ impl ReActEngine {
                         task_id
                     );
                     if let Some(result) = self.compactor.compact(canonical, &self.router()).await {
-                        tracing::info!(
+                        tracing::debug!(
                             "compacted {} → {} tokens",
                             result.tokens_before,
                             result.tokens_after
@@ -336,11 +342,25 @@ impl ReActEngine {
                 let _ = handle.await;
             }
 
+            tracing::debug!(
+                "ReAct step {} LLM response: {} text chars, {} tool_calls, reasoning={}",
+                step_num,
+                response.text.len(),
+                response.tool_calls.len(),
+                response.reasoning.is_some()
+            );
+
             if let Some(ref reasoning) = response.reasoning {
                 sessions.persist_message("assistant", reasoning, Some("reasoning"));
             }
 
             let (thought, actions) = Self::parse_reasoner_response(&response, step_num);
+            tracing::trace!(
+                "ReAct step {} parsed: thought={}, actions={}",
+                step_num,
+                thought.as_ref().map(|t| format!("{} chars", t.len())).unwrap_or_else(|| "none".into()),
+                actions.iter().map(|a| a.tool_name.as_str()).collect::<Vec<_>>().join(", ")
+            );
 
             if let Some(ref t) = thought {
                 EventDispatcher::emit_thought_from(
@@ -493,11 +513,22 @@ impl ReActEngine {
                 let db = self.db.clone();
                 let executor = self.executor.clone();
                 tool_futures.push(async move {
+                    tracing::debug!(
+                        "executing tool '{}' at step {} (input keys: {:?})",
+                        tool_name,
+                        step_num,
+                        tool_input.as_object().map(|o| o.keys().collect::<Vec<_>>()).unwrap_or_default()
+                    );
                     let result = executor
-                        .execute_step(&task_id, &tool_name, tool_input.clone())
+                        .execute_step(&task_id, &tool_name, tool_input.clone(), step_num)
                         .await;
                     let (text, is_error) = match result {
                         Ok(r) => {
+                            tracing::debug!(
+                                "tool '{}' at step {} completed: success={}, {} chars",
+                                tool_name, step_num, r.success,
+                                serde_json::to_string(&r.output).map(|s| s.len()).unwrap_or(0)
+                            );
                             let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
                             let text = if r.success {
                                 serde_json::to_string(&r.output)
@@ -516,7 +547,10 @@ impl ReActEngine {
                             };
                             (text, !r.success)
                         }
-                        Err(e) => (e.to_string(), true),
+                        Err(e) => {
+                            tracing::debug!("tool '{}' at step {} failed: {}", tool_name, step_num, e);
+                            (e.to_string(), true)
+                        }
                     };
                     (action, tool_name, text, is_error)
                 });

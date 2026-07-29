@@ -20,27 +20,33 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::reload;
 
 /// Initialize the tracing subscriber with console output and optional rolling file output.
-/// The reloadable filter is properly composed with all output layers via `.with_filter()`.
-/// Returns a reload handle for dynamic log-level changes and the current log config.
+/// A single reloadable filter is applied at the subscriber level so runtime
+/// log-level changes affect both console and file output simultaneously.
 fn init_tracing(
     log_cfg: &LogConfig,
 ) -> (
-    reload::Handle<EnvFilter, Registry>,
+    Vec<reload::Handle<EnvFilter, Registry>>,
     Arc<std::sync::Mutex<LogConfig>>,
 ) {
-    let filter = EnvFilter::new(format!("haven={}", log_cfg.level.as_str()));
+    let level_str = log_cfg.level.as_str();
 
-    // Without .with_filter() the env-filter is a no-op (design §M6-05).
-    let (reloadable_filter, filter_handle) = reload::Layer::new(filter);
+    // Single reloadable filter applied at the subscriber level — both
+    // console and file layers inherit it, so updating the filter at
+    // runtime changes both outputs.
+    let (reloadable, handle) =
+        reload::Layer::new(EnvFilter::new(format!("haven={}", level_str)));
+
+    let subscriber = tracing_subscriber::registry().with(reloadable);
+
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_thread_ids(false)
-        .with_line_number(true)
-        .with_filter(reloadable_filter);
+        .with_line_number(true);
 
-    let subscriber = tracing_subscriber::registry().with(fmt_layer);
+    let subscriber = subscriber.with(fmt_layer);
 
-    // ── File layer (static filter, not dynamically reloaded) ──
+    let handles = vec![handle];
+
     if log_cfg.file_enabled {
         let log_path = log_cfg
             .file_path
@@ -55,13 +61,11 @@ fn init_tracing(
                 .file_stem()
                 .unwrap_or(std::ffi::OsStr::new("haven")),
         );
-        let file_filter = EnvFilter::new(format!("haven={}", log_cfg.level.as_str()));
         let file_layer = tracing_subscriber::fmt::layer()
             .with_writer(file_appender)
             .with_target(true)
             .with_line_number(true)
-            .with_ansi(false)
-            .with_filter(file_filter);
+            .with_ansi(false);
 
         let subscriber = subscriber.with(file_layer);
         let _ = tracing::subscriber::set_global_default(subscriber);
@@ -70,7 +74,7 @@ fn init_tracing(
     }
 
     let log_config = Arc::new(std::sync::Mutex::new(log_cfg.clone()));
-    (filter_handle, log_config)
+    (handles, log_config)
 }
 
 struct TauriEmitter {
@@ -825,9 +829,7 @@ pub fn run() {
             commands::disable_autostart,
             commands::is_autostart_enabled,
             commands::get_task_for_review,
-            commands::get_branch_points,
             commands::rollback_task,
-            commands::fork_task,
             commands::update_task_title,
         ])
         .build(tauri::generate_context!())
@@ -921,7 +923,7 @@ fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static> {
 }
 
 fn init_app_state(
-    filter_handle: reload::Handle<EnvFilter, Registry>,
+    filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     _log_config: Arc<std::sync::Mutex<LogConfig>>,
     config_loader: haven_common::config::ConfigLoader,
 ) -> AppState {
@@ -929,7 +931,7 @@ fn init_app_state(
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let fh = filter_handle.clone();
+    let fh = filter_handles.clone();
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(AppState::new(&db_path, fh, config_loader))
     })
@@ -970,7 +972,7 @@ fn init_app_state(
             agent,
             pipeline,
             shell,
-            log_filter_handle: filter_handle.clone(),
+            log_filter_handles: filter_handles,
             config_loader: config_loader_arc,
         }
     })
@@ -1080,8 +1082,7 @@ mod tests {
     #[test]
     fn test_init_tracing_creates_handle() {
         let cfg = LogConfig::default();
-        let (_handle, _log_cfg) = init_tracing(&cfg);
-        // Should not panic; verify handle works
+        let (_handles, _log_cfg) = init_tracing(&cfg);
         let cfg_ref = _log_cfg.lock().unwrap();
         assert_eq!(cfg_ref.level.as_str(), "info");
     }
@@ -1093,8 +1094,7 @@ mod tests {
             file_path: Some(std::env::temp_dir().join("haven_test_log")),
             ..Default::default()
         };
-        let (_handle, _log_cfg) = init_tracing(&cfg);
-        // Should not panic with file_enabled
+        let (_handles, _log_cfg) = init_tracing(&cfg);
     }
 
     #[test]

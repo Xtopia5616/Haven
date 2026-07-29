@@ -1,7 +1,7 @@
 use haven_common::types::RiskLevel;
 pub use haven_common::types::TaskPriority;
 use haven_memory::Database;
-use haven_tools::{ConfirmationResult, McpToolAdapter, SkillToolAdapter, ToolResult, ToolsManager};
+use haven_tools::{McpToolAdapter, SkillToolAdapter, ToolResult, ToolsManager};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-const DISPATCH_POLL_MS: u64 = 5000;
+const DISPATCH_POLL_MS: u64 = 1000;
 const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -74,9 +74,6 @@ pub struct TaskInfo {
     /// Steering queue: items that should interrupt the current tool sequence
     /// and be injected as context immediately (refine §1.2).
     pub steering_queue: Vec<String>,
-    /// Follow-up queue: items to process after the current task completes
-    /// (refine §1.2).
-    pub followup_queue: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
     /// True after the dispatcher picks this task at least once.
@@ -180,7 +177,6 @@ impl TaskExecutor {
             steps: Vec::new(),
             supplement_queue: Vec::new(),
             steering_queue: Vec::new(),
-            followup_queue: Vec::new(),
             created_at: now.clone(),
             updated_at: now,
             dispatched_once: false,
@@ -216,7 +212,7 @@ impl TaskExecutor {
             loop {
                 log_counter += 1;
                 if log_counter.is_multiple_of(DISPATCH_LOG_INTERVAL) {
-                    tracing::info!("dispatcher heartbeat (iter {})", log_counter);
+                    tracing::debug!("dispatcher heartbeat (iter {})", log_counter);
                 }
                 let permit = match exec.semaphore.clone().acquire_owned().await {
                     Ok(p) => p,
@@ -269,7 +265,7 @@ impl TaskExecutor {
     /// the pending set conceptually: returns the id; caller will mark_running.
     async fn take_next_pending(&self) -> Option<String> {
         let mut tasks = self.tasks.lock().await;
-        tracing::info!("take_next_pending scanning {} tasks", tasks.len());
+        tracing::trace!("take_next_pending scanning {} tasks", tasks.len());
         for task in tasks.iter_mut() {
             if task.status == TaskStatus::Pending {
                 // A task that has already been dispatched but
@@ -281,7 +277,7 @@ impl TaskExecutor {
                 {
                     continue;
                 }
-                tracing::info!("take_next_pending found: {:?}", task.id);
+                tracing::debug!("take_next_pending found: {:?}", task.id);
                 return Some(task.id.clone());
             }
         }
@@ -296,6 +292,7 @@ impl TaskExecutor {
             task.dispatched_once = true;
             task.updated_at = chrono::Utc::now().to_rfc3339();
             let _ = self.db.update_task_status(task_id, "running");
+            tracing::debug!("task {} → Running", task_id);
         }
         drop(tasks);
         self.running_tasks.lock().await.insert(task_id.to_string());
@@ -309,15 +306,18 @@ impl TaskExecutor {
         self.running_tasks.lock().await.remove(task_id);
         self.task_permits.lock().await.remove(task_id);
         self.task_cancellations.lock().await.remove(task_id);
-        // Remove terminal tasks from the in-memory list so they don't clutter
-        // the pending scan or the frontend task list.
         let mut tasks = self.tasks.lock().await;
-        if let Some(pos) = tasks.iter().position(|t| t.id == task_id)
-            && (tasks[pos].status == TaskStatus::Error
-                || tasks[pos].status == TaskStatus::Completed
-                || tasks[pos].status == TaskStatus::Cancelled)
-        {
-            tasks.remove(pos);
+        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
+            let status = tasks[pos].status.clone();
+            if status == TaskStatus::Error
+                || status == TaskStatus::Completed
+                || status == TaskStatus::Cancelled
+            {
+                tracing::debug!("task {} unmark_running: {:?}, removing from list", task_id, status);
+                tasks.remove(pos);
+            } else {
+                tracing::debug!("task {} unmark_running: {:?}, keeping in list", task_id, status);
+            }
         }
     }
 
@@ -329,6 +329,7 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.supplement_queue.push(text.into());
+            tracing::debug!("task {} supplement added ({} chars)", task_id, text.len());
             Ok(())
         } else {
             anyhow::bail!("task '{}' not found", task_id)
@@ -350,6 +351,7 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.steering_queue.push(text.into());
+            tracing::debug!("task {} steering added ({} chars)", task_id, text.len());
             Ok(())
         } else {
             anyhow::bail!("task '{}' not found", task_id)
@@ -361,28 +363,6 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.steering_queue.drain(..).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Add a follow-up item: processed after the current task completes
-    /// (refine §1.2).
-    pub async fn add_followup(&self, task_id: &str, text: &str) -> anyhow::Result<()> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.followup_queue.push(text.into());
-            Ok(())
-        } else {
-            anyhow::bail!("task '{}' not found", task_id)
-        }
-    }
-
-    /// Drain the follow-up queue for a task.
-    pub async fn get_followup(&self, task_id: &str) -> Vec<String> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.followup_queue.drain(..).collect()
         } else {
             Vec::new()
         }
@@ -591,7 +571,6 @@ impl TaskExecutor {
             steps: Vec::new(),
             supplement_queue: Vec::new(),
             steering_queue: Vec::new(),
-            followup_queue: Vec::new(),
             created_at: record.created_at,
             updated_at: record.updated_at,
             dispatched_once: true,
@@ -623,6 +602,7 @@ impl TaskExecutor {
         task_id: &str,
         tool_name: &str,
         input: Value,
+        step_num: u32,
     ) -> anyhow::Result<ToolResult> {
         tracing::info!("execute_step: task={} tool={} input={:?}", task_id, tool_name, input);
         {
@@ -670,11 +650,10 @@ impl TaskExecutor {
             }
         }
 
-        let step_index: i32;
+        let step_index = step_num as i32;
         {
             let mut tasks = self.tasks.lock().await;
             if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-                step_index = task.steps.len() as i32;
                 task.steps.push(StepInfo {
                     id: uuid::Uuid::new_v4().to_string(),
                     step_index,
@@ -690,8 +669,6 @@ impl TaskExecutor {
                     confirmed: None,
                 });
                 task.updated_at = chrono::Utc::now().to_rfc3339();
-            } else {
-                step_index = 0;
             }
         }
 
@@ -709,202 +686,6 @@ impl TaskExecutor {
         };
         self.db.complete_action_step(&step_record.id, &obs, result.success)?;
         Ok(result)
-    }
-
-    async fn add_step(
-        &self,
-        task_id: &str,
-        tool_name: &str,
-        input: Value,
-        risk_level: RiskLevel,
-    ) -> anyhow::Result<StepInfo> {
-        let step_index = {
-            let tasks = self.tasks.lock().await;
-            tasks
-                .iter()
-                .find(|t| t.id == task_id)
-                .map(|t| t.steps.len() as i32)
-                .unwrap_or(0)
-        };
-        let is_high_risk = risk_level != RiskLevel::Safe;
-        let record = self.db.create_action_step(
-            task_id,
-            step_index,
-            tool_name,
-            &input.to_string(),
-            is_high_risk,
-        )?;
-        let step = StepInfo {
-            id: record.id,
-            step_index,
-            tool_name: tool_name.into(),
-            input,
-            output: None,
-            status: "pending".into(),
-            risk_level,
-            confirmed: None,
-        };
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.steps.push(step.clone());
-        }
-        Ok(step)
-    }
-
-    pub async fn execute_task(
-        &self,
-        task_id: &str,
-        steps: Vec<(String, Value, RiskLevel)>,
-    ) -> anyhow::Result<()> {
-        let _permit = self.semaphore.acquire().await?;
-        {
-            let mut tasks = self.tasks.lock().await;
-            if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-                task.status = TaskStatus::Running;
-            }
-            self.db.update_task_status(task_id, "running")?;
-            self.running_tasks.lock().await.insert(task_id.to_string());
-        }
-
-        for (tool_name, input, risk_level) in &steps {
-            // Check if cancelled or paused
-            {
-                let tasks = self.tasks.lock().await;
-                let task = tasks.iter().find(|t| t.id == task_id).unwrap();
-                if task.status == TaskStatus::Cancelled {
-                    return Ok(());
-                }
-                if task.status == TaskStatus::Paused {
-                    drop(tasks);
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        let tasks = self.tasks.lock().await;
-                        let task = tasks.iter().find(|t| t.id == task_id).unwrap();
-                        if task.status == TaskStatus::Running
-                            || task.status == TaskStatus::Cancelled
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            let step = self
-                .add_step(task_id, tool_name, input.clone(), *risk_level)
-                .await?;
-            self.db.update_step_status(&step.id, "running", None)?;
-
-            // Handle confirmation via SafetyGateway
-            let confirmation = self
-                .tools
-                .safety_gateway
-                .check(tool_name, input, *risk_level)
-                .await;
-            match confirmation {
-                ConfirmationResult::RequiresConfirmation {
-                    tool_name: _,
-                    params: _,
-                    risk_level: rl,
-                } => {
-                    let mut tasks = self.tasks.lock().await;
-                    if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id)
-                        && let Some(step_mut) = task.steps.iter_mut().find(|s| s.id == step.id)
-                    {
-                        step_mut.status = "waiting_confirmation".into();
-                    }
-                    drop(tasks);
-
-                    let cb = self.on_confirm_request.lock().await;
-                    if let Some(ref callback) = *cb {
-                        callback(step.id.clone(), tool_name.clone(), rl);
-                    }
-                    drop(cb);
-
-                    let mut confirmed = false;
-                    for _ in 0..30 {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        let tasks = self.tasks.lock().await;
-                        if let Some(task) = tasks.iter().find(|t| t.id == task_id)
-                            && let Some(s) = task.steps.iter().find(|s| s.id == step.id)
-                            && s.confirmed.is_some()
-                        {
-                            confirmed = s.confirmed.unwrap();
-                            break;
-                        }
-                        let tasks = self.tasks.lock().await;
-                        if let Some(task) = tasks.iter().find(|t| t.id == task_id)
-                            && task.status == TaskStatus::Cancelled
-                        {
-                            break;
-                        }
-                    }
-
-                    if !confirmed {
-                        self.db.update_step_status(&step.id, "cancelled", None)?;
-                        let mut tasks = self.tasks.lock().await;
-                        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id)
-                            && let Some(s) = task.steps.iter_mut().find(|s| s.id == step.id)
-                        {
-                            s.status = "cancelled".into();
-                        }
-                        continue;
-                    }
-                }
-                ConfirmationResult::Blocked => {
-                    self.db.update_step_status(&step.id, "cancelled", None)?;
-                    continue;
-                }
-                ConfirmationResult::AutoApproved => {}
-            }
-
-            // Execute
-            let cancel = CancellationToken::new();
-            let result = self
-                .tools
-                .execute_tool(Some(task_id), tool_name, input.clone(), cancel)
-                .await;
-
-            let mut tasks = self.tasks.lock().await;
-            if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id)
-                && let Some(s) = task.steps.iter_mut().find(|s| s.id == step.id)
-            {
-                match result {
-                    Ok(r) => {
-                        s.status = if r.success {
-                            "completed".into()
-                        } else {
-                            "failed".into()
-                        };
-                        s.output = Some(r.output);
-                        self.db.update_step_status(
-                            &step.id,
-                            &s.status,
-                            s.output.as_ref().map(|v| v.to_string()).as_deref(),
-                        )?;
-                    }
-                    Err(e) => {
-                        s.status = "failed".into();
-                        s.output = Some(serde_json::json!({"error": e.to_string()}));
-                        self.db.update_step_status(
-                            &step.id,
-                            "failed",
-                            s.output.as_ref().map(|v| v.to_string()).as_deref(),
-                        )?;
-                    }
-                }
-            }
-        }
-
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id)
-            && task.status != TaskStatus::Cancelled
-        {
-            task.status = TaskStatus::Completed;
-            self.db.update_task_status(task_id, "completed")?;
-        }
-        self.running_tasks.lock().await.remove(task_id);
-
-        Ok(())
     }
 
     pub fn confirm_step(&self, step_id: &str, confirmed: bool) -> anyhow::Result<()> {
@@ -1317,20 +1098,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_and_get_followup() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = TaskExecutor::new(db, tools, 3);
-        let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-        exec.add_followup(&task.id, "followup 1").await.unwrap();
-        let drained: Vec<String> = exec.get_followup(&task.id).await;
-        assert_eq!(drained, vec!["followup 1"]);
-    }
-
-    #[tokio::test]
     async fn list_tasks_respects_priority_order() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
@@ -1509,7 +1276,7 @@ mod tests {
             .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
             .await
             .unwrap();
-        let result = exec.execute_step(&task.id, "nonexistent_tool", serde_json::json!({})).await;
+        let result = exec.execute_step(&task.id, "nonexistent_tool", serde_json::json!({}), 1).await;
         assert!(result.is_err());
     }
 

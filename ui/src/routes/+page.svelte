@@ -168,6 +168,15 @@
 		}
 	});
 
+	// When the active task changes (e.g. switching to a reviewed task or
+	// creating a new task), reset the scroll-lock so the view jumps to the
+	// bottom of the new conversation.
+	$effect(() => {
+		const _ = activeTaskId;
+		userScrolledUp = false;
+		scrollToBottom();
+	});
+
 	// Persist activeTaskId across page navigations via store.
 	$effect(() => {
 		activeTaskIdStore.set(activeTaskId);
@@ -391,6 +400,7 @@
 		const text = transcriptInput.trim();
 		if (!text) return;
 		transcriptInput = '';
+		userScrolledUp = false;
 
 		const taskId = activeTaskId || '_draft';
 		addTaskMessage(taskId, {
@@ -455,7 +465,6 @@
 	<BranchDialog
 		open={branchDialog.open}
 		stepNumber={branchDialog.stepNumber}
-		taskSummary={tasks.find(t => t.id === activeTaskId)?.summary || ''}
 		loading={branchLoading}
 		onConfirm={confirmBranchAction}
 		onClose={() => { if (!branchLoading) branchDialog = { open: false, stepNumber: null }; }}

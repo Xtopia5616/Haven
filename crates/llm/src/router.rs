@@ -402,7 +402,7 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.check_circuit(&role).await?;
-        tracing::info!("router streaming LLM call, role={:?} messages={} tools={}", role, messages.len(), tools.len());
+        tracing::debug!("router streaming LLM call, role={:?} messages={} tools={}", role, messages.len(), tools.len());
         let primary = self.select_endpoint(role);
         let on_chunk = Arc::new(StdMutex::new(on_chunk));
 
@@ -448,7 +448,7 @@ impl LlmRouter {
                     return Err(e);
                 }
                 self.record_failure(&role).await;
-                tracing::info!(
+                tracing::debug!(
                     "primary stream failed: {}, waiting before fallback", e
                 );
 
@@ -496,7 +496,7 @@ impl LlmRouter {
         stream_rules: &RwLock<Vec<StreamRule>>,
     ) -> Result<LlmResponse, LlmError> {
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
-        tracing::info!("aggregate_stream_cancellable start");
+        tracing::debug!("aggregate_stream_cancellable start");
 
         // Channel decouples the stream loop from callback execution.
         // The consumer task (spawned below) calls on_chunk asynchronously;

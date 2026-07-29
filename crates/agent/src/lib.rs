@@ -183,19 +183,6 @@ impl AgentLayer {
         self.sessions.load_conversation_history()
     }
 
-    /// Get the branch points for a task (for frontend UI).
-    pub async fn get_branch_points(&self, task_id: &str) -> Vec<u32> {
-        if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
-            && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
-        {
-            let mut steps: Vec<u32> = snapshot.branch_points.keys().copied().collect();
-            steps.sort();
-            steps
-        } else {
-            Vec::new()
-        }
-    }
-
     /// Roll back a task to a specific branch point. The task state is
     /// replaced with the branch point snapshot, session messages persisted
     /// after that point are deleted, branch points created after the target
@@ -217,6 +204,25 @@ impl AgentLayer {
         snapshot.canonical = bp.canonical;
         snapshot.history = bp.history;
         snapshot.step_number = bp.step_number;
+
+        // If the branch point was saved right after an assistant tool_call
+        // message but before the tool results were appended, the canonical
+        // array ends with an assistant message carrying `tool_calls` but no
+        // matching tool-result messages. Sending this to the LLM triggers a
+        // 400 error (dangling tool_call). Trim such a trailing assistant
+        // message so the loop re-requests the tool call cleanly.
+        // Also drop the corresponding half-built history step (action: None).
+        if snapshot
+            .canonical
+            .last()
+            .is_some_and(|m| m.role == CanonicalRole::Assistant && m.tool_calls.is_some())
+        {
+            snapshot.canonical.pop();
+            // The history step for this step has thought set but action=None.
+            if snapshot.history.last().is_some_and(|s| s.action.is_none()) {
+                snapshot.history.pop();
+            }
+        }
 
         // Prune branch points that were created after the target step so the
         // session tree does not accumulate stale forks from the discarded
@@ -253,72 +259,11 @@ impl AgentLayer {
         Ok(())
     }
 
-    /// Fork a task into a new session. Creates a new task in a branched
-    /// session and copies the current ReAct snapshot so the fork continues
-    /// from the same point.
-    pub async fn fork_task(&self, task_id: &str) -> anyhow::Result<String> {
-        let task = self
-            .executor
-            .list_tasks()
-            .await
-            .into_iter()
-            .find(|t| t.id == task_id)
-            .ok_or_else(|| anyhow::anyhow!("task '{}' not found", task_id))?;
-
-        // Look up the parent task's session from the DB (TaskInfo does not
-        // carry session_id). Fall back to the SessionManager's current
-        // session if the DB lookup fails.
-        let parent_session_id = self
-            .db
-            .get_task(task_id)
-            .ok()
-            .flatten()
-            .and_then(|t| t.session_id)
-            .unwrap_or_else(|| self.sessions.current_session_id());
-        let new_session_id = self.db.create_session(Some(&parent_session_id))?.id;
-
-        // Copy session messages from parent to child so the forked task has
-        // an independent message history for review.
-        if let Err(e) = self.db.copy_session_messages(&parent_session_id, &new_session_id) {
-            tracing::warn!("fork_task: failed to copy session messages: {}", e);
-        }
-
-        let forked = self
-            .executor
-            .create_task_with_summary(
-                &task.input,
-                &task.classification,
-                task.priority,
-                &task.summary,
-                Some(&new_session_id),
-            )
-            .await?;
-
-        if let Ok(Some(state_json)) = self.db.get_react_state(task_id) {
-            self.db.save_react_state(&forked.id, &state_json)?;
-        }
-
-        // Do NOT switch the global SessionManager here — that would mutate
-        // shared state and cause race conditions if the user interacts with
-        // the parent task or another task is dispatched concurrently.
-        // run_task_from_id switches to the task's session when the forked
-        // task is dispatched.
-
-        self.events.emit_task_created(&forked).await;
-        tracing::info!(
-            "fork_task {} -> {} in session {}",
-            task_id,
-            forked.id,
-            new_session_id
-        );
-        Ok(forked.id)
-    }
-
     /// Dispatcher entrypoint. Looks up the task by id, fills in the
     /// classifier summary (description) and original transcript (context),
     /// loads conversation history, then runs the ReAct loop.
     pub async fn run_task_from_id(&self, task_id: &str) -> anyhow::Result<Vec<ReActStep>> {
-        tracing::info!("run_task_from_id: task_id={}", task_id);
+        tracing::debug!("run_task_from_id: task_id={}", task_id);
         let task = self
             .executor
             .list_tasks()
@@ -490,7 +435,7 @@ impl AgentLayer {
         conversation_history: &[String],
         tools: &[haven_llm::ToolDefinition],
     ) -> anyhow::Result<Vec<ReActStep>> {
-        tracing::info!(
+        tracing::debug!(
             "run_task start: task_id={:?} context={:?}",
             task_id,
             context
@@ -500,7 +445,7 @@ impl AgentLayer {
             .prompt_builder
             .build(description, &[], conversation_history)
             .await;
-        tracing::info!("run_task: system_prompt {} chars", system_prompt.len());
+        tracing::debug!("run_task: system_prompt {} chars", system_prompt.len());
 
         let mut canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage {
@@ -548,7 +493,7 @@ impl AgentLayer {
         transcript: &str,
         active_task_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
-        tracing::info!(
+        tracing::debug!(
             "process_input: text={:?} active_task_id={:?}",
             transcript,
             active_task_id

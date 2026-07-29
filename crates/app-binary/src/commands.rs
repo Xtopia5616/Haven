@@ -166,7 +166,7 @@ pub async fn process_transcript(
     transcript: String,
     active_task_id: Option<String>,
 ) -> Result<Value, String> {
-    tracing::info!(
+    tracing::debug!(
         "process_transcript called: text={:?} active_task_id={:?}",
         transcript,
         active_task_id
@@ -176,10 +176,10 @@ pub async fn process_transcript(
         .process_input(&transcript, active_task_id.clone())
         .await
         .map_err(|e| {
-            tracing::error!("[DIAG] process_transcript error: {:?}", e);
+            tracing::error!("process_transcript error: {:?}", e);
             e.to_string()
         })?;
-    tracing::info!("process_transcript result: {:?}", result);
+    tracing::debug!("process_transcript result: {:?}", result);
     Ok(serde_json::to_value(result).unwrap_or_default())
 }
 
@@ -189,7 +189,7 @@ pub async fn supplement_task(
     task_id: String,
     text: String,
 ) -> Result<(), String> {
-    tracing::info!(
+    tracing::debug!(
         "supplement_task called: task_id={:?} text={:?}",
         task_id,
         text
@@ -199,21 +199,21 @@ pub async fn supplement_task(
         .supplement_task(&task_id, &text)
         .await
         .map_err(|e| {
-            tracing::error!("[DIAG] supplement_task error: {:?}", e);
+            tracing::error!("supplement_task error: {:?}", e);
             e.to_string()
         })?;
-    tracing::info!("supplement_task done");
+    tracing::debug!("supplement_task done");
     Ok(())
 }
 
 #[tauri::command]
 pub async fn reopen_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
-    tracing::info!("reopen_task called: task_id={}", task_id);
+    tracing::debug!("reopen_task called: task_id={}", task_id);
     state.agent.reopen_task(&task_id).await.map_err(|e| {
         tracing::error!("reopen_task error: {:?}", e);
         e.to_string()
     })?;
-    tracing::info!("reopen_task done");
+    tracing::debug!("reopen_task done");
     Ok(())
 }
 
@@ -296,7 +296,7 @@ pub async fn pause_task(
     task_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    tracing::info!("pause_task command called: task_id={}", task_id);
+    tracing::debug!("pause_task command called: task_id={}", task_id);
     state.executor.pause_task(&task_id).await.map_err(|e| {
         tracing::error!("pause_task error: {:?}", e);
         e.to_string()
@@ -1257,11 +1257,13 @@ pub async fn update_settings(
         .set_min_risk_level(min_risk_level)
         .await;
 
-    // Propagate log level to tracing subscriber
+    // Propagate log level to tracing subscriber (console + file)
     let level = settings.log.level.as_str();
-    let _ = state.log_filter_handle.modify(|filter| {
-        *filter = EnvFilter::new(format!("haven={}", level));
-    });
+    for handle in &state.log_filter_handles {
+        let _ = handle.modify(|filter| {
+            *filter = EnvFilter::new(format!("haven={}", level));
+        });
+    }
 
     // Propagate hotkey mode change (always)
     use haven_common::types::HotkeyMode;
@@ -1402,15 +1404,6 @@ pub async fn get_task_for_review(
     })
 }
 
-/// Get available branch point step numbers for a task (for rollback UI).
-#[tauri::command]
-pub async fn get_branch_points(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<Vec<u32>, String> {
-    Ok(state.agent.get_branch_points(&task_id).await)
-}
-
 /// Roll back a task to a specific branch point. The task is rewound to
 /// the saved state at that step and set back to Pending for re-execution.
 #[tauri::command]
@@ -1422,17 +1415,6 @@ pub async fn rollback_task(
     state
         .agent
         .rollback_task(&task_id, target_step)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Fork a task into a new branched session. Creates a duplicate in a
-/// child session so both can evolve independently.
-#[tauri::command]
-pub async fn fork_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<String, String> {
-    state
-        .agent
-        .fork_task(&task_id)
         .await
         .map_err(|e| e.to_string())
 }

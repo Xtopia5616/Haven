@@ -337,11 +337,7 @@ impl EventDispatcher {
     }
 
     pub async fn emit_task_updated(&self, task_id: &str, status: &str) {
-        tracing::info!(
-            "emit_task_updated event: task={} status={}",
-            task_id,
-            status
-        );
+        tracing::debug!("emit_task_updated event: task={} status={}", task_id, status);
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter
@@ -375,7 +371,7 @@ impl EventDispatcher {
         run_id: u64,
         db: &Database,
     ) {
-        tracing::info!(
+        tracing::debug!(
             "emit_thought: task={} step={} run={} thought_len={}",
             task_id,
             step_number,

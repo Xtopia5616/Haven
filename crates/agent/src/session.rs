@@ -55,6 +55,13 @@ impl SessionManager {
     pub fn persist_message(&self, role: &str, content: &str, message_type: Option<&str>) {
         let window_size = self.session_window_size;
         let guard = self.session_id.lock().unwrap();
+        tracing::trace!(
+            "persist_message: session={} role={} type={:?} {} chars",
+            &guard,
+            role,
+            message_type,
+            content.len()
+        );
         let _ =
             self.db
                 .add_message_with_window(&guard, role, content, message_type, None, window_size);
@@ -81,6 +88,7 @@ impl SessionManager {
     /// Switch to a specific session ID. Used when supplementing a task
     /// that belongs to a different session.
     pub fn switch_to_session(&self, session_id: &str) {
+        tracing::debug!("switch_to_session: {}", session_id);
         *self.session_id.lock().unwrap() = session_id.to_string();
     }
 }

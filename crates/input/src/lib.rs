@@ -506,7 +506,7 @@ impl InputPipeline {
             let _ = tx.send(result);
         });
 
-        tracing::info!("Recording started with CPAL + VAD background loop");
+        tracing::debug!("Recording started with CPAL + VAD background loop");
         Ok(())
     }
 
@@ -648,7 +648,7 @@ impl InputPipeline {
         *self.vad_engine.lock().unwrap() = None;
         self.vad_detector.lock().await.reset();
 
-        tracing::info!("Recording cancelled");
+        tracing::debug!("Recording cancelled");
         Ok(())
     }
 
@@ -747,7 +747,7 @@ impl InputPipeline {
         }
 
         *self.state.lock().await = RecordingState::Pending;
-        tracing::info!(
+        tracing::debug!(
             "Recording stopped, {} samples, reason={:?}, transcript={}",
             result.pcm.len(),
             result.reason,

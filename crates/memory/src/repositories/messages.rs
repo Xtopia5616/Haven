@@ -168,30 +168,6 @@ impl Database {
         self.cache_invalidate_messages(session_id);
         Ok(())
     }
-
-    /// Copy all messages from one session to another, preserving role,
-    /// content, type, timestamps, and tool-call metadata. Used by task fork
-    /// so the child session has an independent copy of the parent's message
-    /// history for review. IDs are regenerated (prefixed with the target
-    /// session) to avoid primary-key collisions.
-    pub fn copy_session_messages(
-        &self,
-        from_session: &str,
-        to_session: &str,
-    ) -> anyhow::Result<usize> {
-        let conn = self.conn();
-        let changed = conn.execute(
-            "INSERT INTO messages
-                (id, session_id, role, content, message_type, created_at,
-                 tool_call_id, is_compacted, compaction_id, parent_message_id)
-             SELECT ?2 || '-' || id, ?2, role, content, message_type, created_at,
-                    tool_call_id, is_compacted, compaction_id, parent_message_id
-             FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
-            rusqlite::params![from_session, to_session],
-        )?;
-        self.cache_invalidate_messages(to_session);
-        Ok(changed)
-    }
 }
 
 #[cfg(test)]
@@ -285,30 +261,6 @@ mod tests {
         assert_eq!(msgs[0].content, "first");
         // m2 should be gone
         assert!(!msgs.iter().any(|m| m.id == m2.id));
-    }
-
-    #[test]
-    fn copy_session_messages_duplicates_all() {
-        let db = test_db();
-        let from = test_session(&db);
-        let to = test_session(&db);
-        db.add_message(&from, "user", "hello", Some("text"), None).unwrap();
-        db.add_message(&from, "assistant", "world", None, None).unwrap();
-
-        let count = db.copy_session_messages(&from, &to).unwrap();
-        assert_eq!(count, 2);
-
-        let src = db.get_session_messages(&from).unwrap();
-        let dst = db.get_session_messages(&to).unwrap();
-        assert_eq!(src.len(), 2);
-        assert_eq!(dst.len(), 2);
-        // Content and order preserved
-        assert_eq!(dst[0].content, "hello");
-        assert_eq!(dst[1].content, "world");
-        // IDs are different (regenerated)
-        assert_ne!(src[0].id, dst[0].id);
-        // Target session is set correctly
-        assert_eq!(dst[0].session_id, to);
     }
 }
 
