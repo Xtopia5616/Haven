@@ -571,7 +571,12 @@ impl HttpLlmClient {
                                     if payload == "[DONE]" || payload.is_empty() {
                                         continue;
                                     }
-                                    let _ = tx.send(payload);
+                                    // If the receiver was dropped (consumer cancelled
+                                    // or stream abandoned), stop reading the HTTP
+                                    // response body to avoid wasting bandwidth/CPU.
+                                    if tx.send(payload).is_err() {
+                                        return;
+                                    }
                                 }
                             }
                             Some(Err(_)) | None => {

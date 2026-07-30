@@ -75,8 +75,8 @@ impl Tool for ShellTool {
             anyhow::bail!("cancelled");
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = haven_common::encoding::decode_lossy(&output.stdout);
+        let stderr = haven_common::encoding::decode_lossy(&output.stderr);
 
         let mut combined = String::new();
         if !stdout.is_empty() {

@@ -5,7 +5,7 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
+	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
@@ -48,6 +48,25 @@
 		closeCtxMenu();
 	}
 
+	async function handleCtxBranch() {
+		const step = getStepForCtxMenu();
+		if (step == null) { addNotification('无法确定此消息对应的步骤', 'error', 3000); closeCtxMenu(); return; }
+		if (!activeTaskId) { addNotification('没有活跃任务，无法创建分支', 'error', 3000); closeCtxMenu(); return; }
+		const sourceTaskId = activeTaskId;
+		const targetStep = step;
+		closeCtxMenu();
+		try {
+			const newTaskId = await invoke('branch_task', { taskId: sourceTaskId, targetStep });
+			branchTaskMessages(sourceTaskId, newTaskId, targetStep);
+			activeTaskId = newTaskId;
+			activeTaskIdStore.set(newTaskId);
+			addNotification('已创建分支', 'info', 3000);
+			await loadTasks();
+		} catch (e) {
+			addNotification(`创建分支失败: ${e}`, 'error', 5000);
+		}
+	}
+
 	async function handleCtxCopy() {
 		const text = ctxMenu.selectedContent || ctxMenu.content;
 		if (text) {
@@ -60,6 +79,23 @@
 	function closeCtxMenu() {
 		ctxMenu = { open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '', selectedContent: '' };
 	}
+
+	$effect(() => {
+		if (!ctxMenu.open) return;
+		tick().then(() => {
+			const el = document.querySelector('.ctx-menu');
+			if (!el) return;
+			const rect = el.getBoundingClientRect();
+			const vw = window.innerWidth;
+			const vh = window.innerHeight;
+			let { x, y } = ctxMenu;
+			if (x + rect.width > vw - 8) x = Math.max(8, x - rect.width);
+			if (y + rect.height > vh - 8) y = Math.max(8, y - rect.height);
+			if (x !== ctxMenu.x || y !== ctxMenu.y) {
+				ctxMenu = { ...ctxMenu, x, y };
+			}
+		});
+	});
 
 	function handleWindowClick(e) {
 		if (!ctxMenu.open) return;
@@ -108,25 +144,62 @@
 
 	function newTask() {
 		if (activeTaskId) clearTaskMessages(activeTaskId);
+		suppressAutoTask = true;
 		activeTaskId = null;
 		activeTaskIdStore.set(null);
+		// Allow loadTasks auto-assign after the current call stack unwinds.
+		setTimeout(() => { suppressAutoTask = false; }, 0);
 	}
 
-	function endTask() {
-		if (activeTaskId) {
-			invoke('end_task', { taskId: activeTaskId }).catch((e) => {
-				addNotification(`结束任务失败: ${e}`, 'error', 3000);
-			});
-			clearTaskMessages(activeTaskId);
+	async function endTask() {
+		if (!activeTaskId) return;
+		suppressAutoTask = true;
+		const endedId = activeTaskId;
+		try {
+			await invoke('end_task', { taskId: endedId });
+			clearTaskMessages(endedId);
+		} catch (e) {
+			addNotification(`结束任务失败: ${e}`, 'error', 3000);
 		}
 		activeTaskId = null;
 		activeTaskIdStore.set(null);
+		suppressAutoTask = false;
+	}
+
+	async function handleContinue() {
+		if (!activeTaskId) return;
+		const tid = activeTaskId;
+		taskErrorId = null;
+		activeTaskError = false;
+		try {
+			await invoke('continue_task', { taskId: tid });
+			// Remove only the last partial assistant message(s) — the
+			// interrupted step's incomplete output. Previous completed
+			// steps are kept. The backend already deleted these from DB.
+			updateTaskMessages(tid, (m) => {
+				let i = m.length;
+				while (i > 0 && m[i - 1].role === 'assistant') i--;
+				return i < m.length ? m.slice(0, i) : m;
+			});
+			clearSeqMap(tid);
+			addNotification('正在继续生成…', 'info', 2000);
+			await loadTasks();
+		} catch (e) {
+			addNotification(`继续失败: ${e}`, 'error', 5000);
+		}
 	}
 
 	let unlisteners = [];
 	let messagesEl;
-	let userScrolledUp = false;
+	let autoFollow = true;
+	let scrollRafPending = false;
 	let dead = false;
+	// Suppresses loadTasks() auto-assigning activeTaskId during explicit
+	// end/new operations so a late task event doesn't resurrect an ended task.
+	let suppressAutoTask = false;
+	// Guards concurrent loadTasks() calls so a stale response can't overwrite
+	// a newer one.
+	let loadTasksSeq = 0;
 
 	// Sync the Svelte store to a $state variable — $effect does NOT track
 	// get(store), so we must use .subscribe() to get reactive updates.
@@ -149,6 +222,18 @@
 		}
 	});
 
+	let activeTaskError = $state(false);
+	let taskErrorId = $state(null);
+
+	// Clear error state when the active task changes.
+	$effect(() => {
+		const _ = activeTaskId;
+		if (taskErrorId && activeTaskId !== taskErrorId) {
+			taskErrorId = null;
+			activeTaskError = false;
+		}
+	});
+
 	async function safeListen(event, handler) {
 		try {
 			const unsub = await listen(event, handler);
@@ -158,22 +243,19 @@
 		}
 	}
 
-	// Auto-scroll to the newest message whenever messages change
-	// or when any message is still streaming.
+	// Auto-scroll to the newest message whenever messages change.
 	$effect(() => {
 		const _ = messages;
-		const hasStreaming = messages.some((m) => m.streaming);
-		if (hasStreaming || messages.length > 0) {
+		if (messages.length > 0) {
 			scrollToBottom();
 		}
 	});
 
 	// When the active task changes (e.g. switching to a reviewed task or
-	// creating a new task), reset the scroll-lock so the view jumps to the
-	// bottom of the new conversation.
+	// creating a new task), re-enable follow and scroll to the bottom.
 	$effect(() => {
 		const _ = activeTaskId;
-		userScrolledUp = false;
+		autoFollow = true;
 		scrollToBottom();
 	});
 
@@ -183,12 +265,14 @@
 	});
 
 	function scrollToBottom() {
-		if (!messagesEl || userScrolledUp || dead) return;
-		tick().then(() => {
-			requestAnimationFrame(() => {
-				if (dead) return;
-				messagesEl.scrollTop = messagesEl.scrollHeight;
-			});
+		if (!messagesEl || dead || scrollRafPending) return;
+		scrollRafPending = true;
+		requestAnimationFrame(() => {
+			scrollRafPending = false;
+			// Re-check autoFollow here so a user scroll-up between the call
+			// and the rAF callback is respected (not overridden).
+			if (dead || !messagesEl || !autoFollow) return;
+			messagesEl.scrollTop = messagesEl.scrollHeight;
 		});
 	}
 
@@ -197,7 +281,7 @@
 		const threshold = 100;
 		const atBottom =
 			messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
-		userScrolledUp = !atBottom;
+		autoFollow = atBottom;
 	}
 
 	onMount(async () => {
@@ -207,6 +291,13 @@
 		if (reviewTarget && reviewTarget.taskId) {
 			activeTaskId = reviewTarget.taskId;
 			activeTaskIdStore.set(activeTaskId);
+			// If this task was errored when reviewed, show the continue button.
+			// reopen_task already set it to Paused, but we still want the user
+			// to see the option to retry the failed step.
+			if (reviewTarget.wasError) {
+				taskErrorId = reviewTarget.taskId;
+				activeTaskError = true;
+			}
 			// Defer clearing so it survives rapid remounts during init.
 			setTimeout(() => reviewTargetStore.set(null), 0);
 		}
@@ -228,7 +319,12 @@
 			await safeListen('task:completed', () => {
 				loadTasks();
 			});
-			await safeListen('task:error', () => {
+		await safeListen('task:error', (event) => {
+			const { task_id } = event.payload;
+				if (task_id && task_id === activeTaskId) {
+					taskErrorId = task_id;
+					activeTaskError = true;
+				}
 				loadTasks();
 			});
 			await safeListen('task:title-updated', (event) => {
@@ -261,17 +357,17 @@
 					}];
 				});
 			});
-		function listenChunk(eventName, stepIdPrefix, msgType) {
-			return safeListen(eventName, (event) => {
-				const data = event.payload;
-				const tid = data.task_id;
-				const stepId = `${stepIdPrefix}-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-				const delta = data.delta || '';
-				const seq = data.seq;
-				updateModelState('streaming');
-				if (seqLastSeen(stepId, seq)) return;
+	function listenChunk(eventName, stepIdPrefix, msgType) {
+		return safeListen(eventName, (event) => {
+			const data = event.payload;
+			const tid = data.task_id;
+			const stepId = `${stepIdPrefix}-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+			const delta = data.delta || '';
+			const seq = data.seq;
+			updateModelState('streaming');
+			if (seqLastSeen(stepId, seq)) return;
 
-				// When the first text chunk arrives, the reasoning phase is
+			// When the first text chunk arrives, the reasoning phase is
 				// over — finalize any streaming reasoning block for this step.
 				// This runs BEFORE the empty-delta check so that even an empty
 				// transition chunk finalizes reasoning.
@@ -371,16 +467,22 @@
 					}];
 				});
 			});
-			await safeListen('confirm:requested', (event) => {
-				const data = event.payload;
-				if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
-				confirmDialog = {
-					stepId: data.step_id,
-					toolName: data.tool_name,
-					taskId: data.task_id,
-					riskLevel: data.risk_level || 'medium',
-				};
-			});
+		await safeListen('confirm:requested', (event) => {
+			const data = event.payload;
+			if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
+			// If a confirmation is already pending, auto-reject the previous
+			// one so the backend doesn't wait forever for a resolve_confirmation
+			// that the user will never see.
+			if (confirmDialog.stepId) {
+				invoke('resolve_confirmation', { stepId: confirmDialog.stepId, confirmed: false, trustSession: false }).catch(() => {});
+			}
+			confirmDialog = {
+				stepId: data.step_id,
+				toolName: data.tool_name,
+				taskId: data.task_id,
+				riskLevel: data.risk_level || 'medium',
+			};
+		});
 		} catch (e) {
 			logger.warn('+page', 'safeListen error', e);
 		}
@@ -401,12 +503,15 @@
 	});
 
 	async function loadTasks() {
+		const seq = ++loadTasksSeq;
 		try {
 			const result = await invoke('get_tasks');
+			// Stale response guard: a newer loadTasks call superseded this one.
+			if (seq !== loadTasksSeq) return;
 			if (result && result.tasks) {
 				tasks = result.tasks;
 				taskStore.set(tasks);
-				if (!activeTaskId) {
+				if (!activeTaskId && !suppressAutoTask) {
 					const firstActive = tasks.find(
 						(t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused'
 					);
@@ -425,7 +530,7 @@
 		const text = transcriptInput.trim();
 		if (!text) return;
 		transcriptInput = '';
-		userScrolledUp = false;
+		autoFollow = true;
 
 		const taskId = activeTaskId || '_draft';
 		addTaskMessage(taskId, {
@@ -437,21 +542,16 @@
 		});
 
 		try {
-			if (activeTaskId) {
-				await invoke('supplement_task', { taskId: activeTaskId, text });
-				loadTasks();
-			} else {
-				const result = await invoke('process_transcript', {
-					transcript: text,
-					activeTaskId: null,
-				});
-				if (result && result.TaskCreated) {
-					adoptDraftMessages(result.TaskCreated);
-					activeTaskId = result.TaskCreated;
-					activeTaskIdStore.set(activeTaskId);
-				}
-				loadTasks();
+			const result = await invoke('process_transcript', {
+				transcript: text,
+				activeTaskId: activeTaskId || null,
+			});
+			if (result && result.TaskCreated) {
+				adoptDraftMessages(result.TaskCreated);
+				activeTaskId = result.TaskCreated;
+				activeTaskIdStore.set(activeTaskId);
 			}
+			loadTasks();
 		} catch (e) {
 			addNotification(`Error: ${e}`, 'error');
 		}
@@ -504,6 +604,10 @@
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
 				回退到此消息
 			</button>
+			<button class="ctx-item" onclick={handleCtxBranch}>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 9v6" /><path d="M18 9h-6a4 4 0 0 0-4 4v4" /><circle cx="18" cy="6" r="3" /></svg>
+				创建分支
+			</button>
 			<button class="ctx-item" onclick={handleCtxCopy}>
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
 				复制
@@ -535,6 +639,15 @@
 						onContextMenu={handleContextMenu}
 					/>
 				{/each}
+			</div>
+		{/if}
+		{#if activeTaskError}
+			<div class="continue-banner" in:fly={{ y: 8, duration: 200 }}>
+				<span class="continue-text">生成中断</span>
+				<button class="md-btn md-btn--filled continue-btn" onclick={handleContinue} type="button">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+					继续生成
+				</button>
 			</div>
 		{/if}
 	</div>
@@ -684,5 +797,24 @@
 	}
 	.ctx-item svg {
 		flex-shrink: 0;
+	}
+
+	.continue-banner {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--md-sys-space-md);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		max-width: 760px;
+		margin: 0 auto;
+		width: 100%;
+	}
+	.continue-text {
+		color: var(--md-sys-color-error);
+		font-size: 13px;
+	}
+	.continue-btn {
+		gap: var(--md-sys-space-xs);
+		font-size: 13px;
 	}
 </style>

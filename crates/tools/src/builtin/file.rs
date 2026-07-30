@@ -79,7 +79,8 @@ impl Tool for FileOpTool {
 
         match op {
             "read" => {
-                let content = tokio::fs::read_to_string(&path).await?;
+                let bytes = tokio::fs::read(&path).await?;
+                let content = haven_common::encoding::decode_lossy(&bytes);
                 let (output, truncated) = truncate_output(&content, max_chars);
                 if truncated {
                     Ok(ToolResult::truncated(serde_json::json!({"content": output})))
@@ -102,7 +103,8 @@ impl Tool for FileOpTool {
                     anyhow::anyhow!("'old_string' is required for edit operation")
                 })?;
                 let new = input["new_string"].as_str().unwrap_or("");
-                let content = tokio::fs::read_to_string(&path).await?;
+                let bytes = tokio::fs::read(&path).await?;
+                let content = haven_common::encoding::decode_lossy(&bytes);
                 let positions: Vec<usize> = content.match_indices(old).map(|(i, _)| i).collect();
                 if positions.is_empty() {
                     anyhow::bail!("old_string not found in '{}'", path);

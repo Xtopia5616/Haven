@@ -7,23 +7,15 @@ use tokio::sync::Mutex;
 ///
 /// All methods have no-op default implementations, so an implementation only
 /// needs to override the hooks it cares about. Async hooks model the former
-/// `Callback`/`CallbackB`(sync) split: recording lifecycle and window/quit are
-/// async (they drive futures), while toggle/mute/tray/notify/hotkey are sync.
-#[allow(dead_code)]
+/// `Callback`/`CallbackB`(sync) split: recording lifecycle is async (drives
+/// futures), while toggle/mute/tray are sync.
 #[async_trait]
 pub trait ShellHandler: Send + Sync {
     async fn on_recording_start(&self) {}
     async fn on_recording_stop(&self) {}
-    async fn on_recording_cancel(&self) {}
     fn on_toggle_change(&self, _active: bool) {}
     fn on_mute_change(&self, _muted: bool) {}
-    async fn on_show_window(&self) {}
-    async fn on_quit(&self) {}
     fn on_tray_status(&self, _status: TrayStatus) {}
-    fn on_notify(&self, _title: &str, _body: &str) {}
-    fn on_hotkey_rebind(&self, _key: String) -> Result<(), String> {
-        Err("hotkey rebind not supported".into())
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -72,13 +64,11 @@ impl Default for ShellState {
     }
 }
 
-#[allow(dead_code)]
 pub struct DesktopShell {
     state: Arc<Mutex<ShellState>>,
     handler: Arc<Mutex<Option<Arc<dyn ShellHandler>>>>,
 }
 
-#[allow(dead_code)]
 impl DesktopShell {
     pub fn new() -> Self {
         Self {
@@ -103,20 +93,6 @@ impl DesktopShell {
         }
     }
 
-    pub async fn start_recording(&self) {
-        let mut state = self.state.lock().await;
-        if state.is_muted {
-            return;
-        }
-        state.is_recording = true;
-        state.tray_status = TrayStatus::Recording;
-        drop(state);
-        if let Some(h) = self.handler_snap().await {
-            h.on_recording_start().await;
-        }
-        self.set_tray(TrayStatus::Recording).await;
-    }
-
     pub async fn stop_recording(&self) {
         let mut state = self.state.lock().await;
         state.is_recording = false;
@@ -124,17 +100,6 @@ impl DesktopShell {
         drop(state);
         if let Some(h) = self.handler_snap().await {
             h.on_recording_stop().await;
-        }
-        self.set_tray(TrayStatus::Normal).await;
-    }
-
-    pub async fn cancel_recording(&self) {
-        let mut state = self.state.lock().await;
-        state.is_recording = false;
-        state.tray_status = TrayStatus::Normal;
-        drop(state);
-        if let Some(h) = self.handler_snap().await {
-            h.on_recording_cancel().await;
         }
         self.set_tray(TrayStatus::Normal).await;
     }
@@ -228,18 +193,6 @@ impl DesktopShell {
         self.state.lock().await.hold_mode = hold;
     }
 
-    pub async fn show_window(&self) {
-        if let Some(h) = self.handler_snap().await {
-            h.on_show_window().await;
-        }
-    }
-
-    pub async fn quit(&self) {
-        if let Some(h) = self.handler_snap().await {
-            h.on_quit().await;
-        }
-    }
-
     pub async fn get_state(&self) -> ShellState {
         self.state.lock().await.clone()
     }
@@ -247,12 +200,6 @@ impl DesktopShell {
     pub async fn reset_toggle_on_auto_stop(&self) {
         let mut state = self.state.lock().await;
         state.is_recording_toggle = false;
-    }
-
-    pub async fn notify(&self, title: &str, message: &str) {
-        if let Some(h) = self.handler_snap().await {
-            h.on_notify(title, message);
-        }
     }
 }
 
@@ -300,29 +247,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_recording_sets_state() {
-        let shell = DesktopShell::new();
-        shell.start_recording().await;
-        let state = shell.get_state().await;
-        assert!(state.is_recording);
-        assert_eq!(state.tray_status, TrayStatus::Recording);
-    }
-
-    #[tokio::test]
     async fn test_stop_recording_clears_state() {
         let shell = DesktopShell::new();
-        shell.start_recording().await;
+        shell.toggle_recording().await;
         shell.stop_recording().await;
-        let state = shell.get_state().await;
-        assert!(!state.is_recording);
-        assert_eq!(state.tray_status, TrayStatus::Normal);
-    }
-
-    #[tokio::test]
-    async fn test_cancel_recording_clears_state() {
-        let shell = DesktopShell::new();
-        shell.start_recording().await;
-        shell.cancel_recording().await;
         let state = shell.get_state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
@@ -332,7 +260,7 @@ mod tests {
     async fn test_muted_prevents_recording() {
         let shell = DesktopShell::new();
         shell.set_muted(true).await;
-        shell.start_recording().await;
+        shell.toggle_recording().await;
         let state = shell.get_state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Muted);
@@ -341,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn test_mute_stops_active_recording() {
         let shell = DesktopShell::new();
-        shell.start_recording().await;
+        shell.toggle_recording().await;
         shell.set_muted(true).await;
         let state = shell.get_state().await;
         assert!(!state.is_recording);
@@ -394,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn test_hold_press_noop_when_already_recording() {
         let shell = DesktopShell::new();
-        shell.start_recording().await;
+        shell.toggle_recording().await;
         shell.hold_press().await;
         let state = shell.get_state().await;
         assert!(state.is_recording);
@@ -431,87 +359,5 @@ mod tests {
         let shell = DesktopShell::default();
         let state = shell.state.blocking_lock();
         assert!(!state.is_recording);
-    }
-
-    #[tokio::test]
-    async fn test_show_window_invokes_callback() {
-        let shell = DesktopShell::new();
-        let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let inv = invoked.clone();
-        shell
-            .set_handler(Arc::new(RecordHandler::new(
-                inv,
-                Arc::new(std::sync::Mutex::new((String::new(), String::new()))),
-            )))
-            .await;
-        shell.show_window().await;
-        assert!(invoked.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn test_notify_invokes_callback() {
-        let shell = DesktopShell::new();
-        let last = Arc::new(std::sync::Mutex::new((String::new(), String::new())));
-        shell
-            .set_handler(Arc::new(RecordHandler::new(
-                Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                last.clone(),
-            )))
-            .await;
-        shell.notify("title", "message").await;
-        let (t, m) = last.lock().unwrap().clone();
-        assert_eq!(t, "title");
-        assert_eq!(m, "message");
-    }
-
-    #[tokio::test]
-    async fn test_quit_invokes_callback() {
-        let shell = DesktopShell::new();
-        let invoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let inv = invoked.clone();
-        shell.set_handler(Arc::new(QuitHandler(inv))).await;
-        shell.quit().await;
-        assert!(invoked.load(std::sync::atomic::Ordering::SeqCst));
-    }
-}
-
-/// Test handler recording show_window + notify calls.
-#[allow(dead_code)]
-struct RecordHandler {
-    show_invoked: Arc<std::sync::atomic::AtomicBool>,
-    last_notify: Arc<std::sync::Mutex<(String, String)>>,
-}
-
-impl RecordHandler {
-    #[allow(dead_code)]
-    fn new(
-        show_invoked: Arc<std::sync::atomic::AtomicBool>,
-        last_notify: Arc<std::sync::Mutex<(String, String)>>,
-    ) -> Self {
-        Self {
-            show_invoked,
-            last_notify,
-        }
-    }
-}
-
-#[async_trait]
-impl ShellHandler for RecordHandler {
-    async fn on_show_window(&self) {
-        self.show_invoked
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-    fn on_notify(&self, title: &str, body: &str) {
-        *self.last_notify.lock().unwrap() = (title.to_string(), body.to_string());
-    }
-}
-
-#[allow(dead_code)]
-struct QuitHandler(Arc<std::sync::atomic::AtomicBool>);
-
-#[async_trait]
-impl ShellHandler for QuitHandler {
-    async fn on_quit(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }

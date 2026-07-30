@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, RiskLevel, TaskPriority};
+use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, RiskLevel};
 
 // ---------------------------------------------------------------------------
 // Sub-config structures
@@ -153,7 +153,6 @@ impl Default for HotkeyConfig {
 pub struct TaskConfig {
     pub max_concurrent: usize,
     pub max_steps: u32,
-    pub default_priority: TaskPriority,
     pub max_observation_chars: usize,
 }
 
@@ -162,7 +161,6 @@ impl Default for TaskConfig {
         Self {
             max_concurrent: 3,
             max_steps: 30,
-            default_priority: TaskPriority::Normal,
             max_observation_chars: 8_000,
         }
     }

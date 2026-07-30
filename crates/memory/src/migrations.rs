@@ -20,7 +20,6 @@ pub const MIGRATIONS: &[&str] = &[
         input_text TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'pending'
             CHECK(status IN ('pending','running','paused','completed','failed','error')),
-        classification TEXT NOT NULL DEFAULT 'NEW_TASK',
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         transcript TEXT NOT NULL DEFAULT '',
@@ -169,23 +168,20 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         )"
     )?;
 
-    // §3.6: create hindsight_store table
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS hindsight_store (
-            id TEXT PRIMARY KEY,
-            key TEXT NOT NULL,
-            content TEXT NOT NULL,
-            tags TEXT NOT NULL DEFAULT '[]',
-            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )"
-    )?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_hindsight_key ON hindsight_store(key)"
-    )?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_hindsight_session ON hindsight_store(session_id)"
-    )?;
+    // §3.6: hindsight_store removed — facts now support tags + search.
+    conn.execute_batch("DROP TABLE IF EXISTS hindsight_store")?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_hindsight_key")?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_hindsight_session")?;
+
+    // Add tags column to facts table (JSON array of strings, default '[]').
+    let has_facts_tags: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='tags'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_facts_tags {
+        conn.execute("ALTER TABLE facts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", [])?;
+    }
 
     // Fix CHECK constraint typo: 'pendingleted' → 'completed'.
     // Use a user_version-based gating so this runs exactly once.
@@ -205,13 +201,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                   title TEXT,
                   status TEXT NOT NULL DEFAULT 'pending'
                       CHECK(status IN ('pending','running','paused','completed','failed','error')),
-                  classification TEXT NOT NULL DEFAULT 'NEW_TASK',
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
                   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                   transcript TEXT NOT NULL DEFAULT '',
                   react_state TEXT
               );
-               INSERT INTO tasks_rebuild SELECT id, session_id, input_text, NULL, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
+               INSERT INTO tasks_rebuild SELECT id, session_id, input_text, NULL, status, created_at, updated_at, transcript, react_state FROM tasks;
              DROP TABLE tasks;
              ALTER TABLE tasks_rebuild RENAME TO tasks;
              CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
@@ -262,13 +257,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                   title TEXT,
                   status TEXT NOT NULL DEFAULT 'pending'
                       CHECK(status IN ('pending','running','paused','completed','failed','error')),
-                  classification TEXT NOT NULL DEFAULT 'NEW_TASK',
                   created_at TEXT NOT NULL DEFAULT (datetime('now')),
                   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                   transcript TEXT NOT NULL DEFAULT '',
                   react_state TEXT
               );
-              INSERT INTO tasks_rebuild SELECT id, session_id, input_text, title, status, classification, created_at, updated_at, transcript, react_state FROM tasks;
+              INSERT INTO tasks_rebuild SELECT id, session_id, input_text, title, status, created_at, updated_at, transcript, react_state FROM tasks;
              DROP TABLE tasks;
              ALTER TABLE tasks_rebuild RENAME TO tasks;
              CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
@@ -323,7 +317,6 @@ mod tests {
         let expected = &[
             "compaction_entries",
             "facts",
-            "hindsight_store",
             "mcp_servers",
             "messages",
             "preferences",
@@ -352,8 +345,6 @@ mod tests {
         let expected = &[
             "idx_facts_confidence",
             "idx_facts_subject",
-            "idx_hindsight_key",
-            "idx_hindsight_session",
             "idx_messages_created_at",
             "idx_messages_session",
             "idx_task_steps_task",
@@ -473,5 +464,33 @@ mod tests {
             .query_row("SELECT status FROM tasks WHERE id = 't1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(status, "completed");
+    }
+
+    #[test]
+    fn test_facts_tags_column_exists() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        let has: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='tags'")
+            .unwrap()
+            .query_row([], |r| r.get::<_, i32>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(has, "facts.tags column should exist");
+    }
+
+    #[test]
+    fn test_hindsight_store_dropped() {
+        let conn = create_test_conn();
+        // First run creates it (from old migration), then the drop removes it.
+        // But since we removed the creation, it should never exist.
+        run_migrations(&conn).unwrap();
+        let exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hindsight_store'")
+            .unwrap()
+            .query_row([], |r| r.get::<_, i32>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(!exists, "hindsight_store table should not exist");
     }
 }

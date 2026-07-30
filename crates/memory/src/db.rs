@@ -15,6 +15,10 @@ struct QueryCache {
     messages: Option<CacheEntry<Vec<crate::repositories::messages::Message>>>,
     tasks: Option<CacheEntry<Vec<crate::repositories::tasks::Task>>>,
     facts: Option<CacheEntry<Vec<crate::repositories::facts::Fact>>>,
+    // Bumped on every cache_invalidate_* so a stale cache_put_* (whose DB
+    // query ran before an invalidation) can detect it was superseded and
+    // skip the write instead of overwriting fresh state with stale data.
+    generation: u64,
 }
 
 pub struct Database {
@@ -60,13 +64,28 @@ impl Database {
         }
     }
 
-    pub fn cache_put_messages(&self, session_id: &str, data: Vec<crate::repositories::messages::Message>, ttl_secs: u64) {
+    /// Returns the current cache generation for a key. Callers capture this
+    /// before querying the DB and pass it to the corresponding `cache_put_*`
+    /// to guard against stale-overwrite after a concurrent invalidation.
+    pub fn cache_generation(&self, key: &str) -> u64 {
+        self.cache
+            .lock()
+            .ok()
+            .and_then(|c| c.get(key).map(|qc| qc.generation))
+            .unwrap_or(0)
+    }
+
+    pub fn cache_put_messages(&self, session_id: &str, data: Vec<crate::repositories::messages::Message>, ttl_secs: u64, expected_gen: u64) {
         if let Ok(mut cache) = self.cache.lock() {
             let qc = cache.entry(session_id.to_string()).or_insert(QueryCache {
                 messages: None,
                 tasks: None,
                 facts: None,
+                generation: expected_gen,
             });
+            if qc.generation != expected_gen {
+                return;
+            }
             qc.messages = Some(CacheEntry {
                 expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
                 data,
@@ -84,13 +103,17 @@ impl Database {
         }
     }
 
-    pub fn cache_put_tasks(&self, data: Vec<crate::repositories::tasks::Task>, ttl_secs: u64) {
+    pub fn cache_put_tasks(&self, data: Vec<crate::repositories::tasks::Task>, ttl_secs: u64, expected_gen: u64) {
         if let Ok(mut cache) = self.cache.lock() {
             let qc = cache.entry("_tasks".to_string()).or_insert(QueryCache {
                 messages: None,
                 tasks: None,
                 facts: None,
+                generation: expected_gen,
             });
+            if qc.generation != expected_gen {
+                return;
+            }
             qc.tasks = Some(CacheEntry {
                 expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
                 data,
@@ -109,14 +132,18 @@ impl Database {
         }
     }
 
-    pub fn cache_put_facts(&self, subject: &str, data: Vec<crate::repositories::facts::Fact>, ttl_secs: u64) {
+    pub fn cache_put_facts(&self, subject: &str, data: Vec<crate::repositories::facts::Fact>, ttl_secs: u64, expected_gen: u64) {
         if let Ok(mut cache) = self.cache.lock() {
             let key = format!("_facts_{}", subject);
             let qc = cache.entry(key).or_insert(QueryCache {
                 messages: None,
                 tasks: None,
                 facts: None,
+                generation: expected_gen,
             });
+            if qc.generation != expected_gen {
+                return;
+            }
             qc.facts = Some(CacheEntry {
                 expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
                 data,
@@ -129,6 +156,7 @@ impl Database {
             && let Some(qc) = cache.get_mut(session_id)
         {
             qc.messages = None;
+            qc.generation = qc.generation.wrapping_add(1);
         }
     }
 
@@ -137,6 +165,7 @@ impl Database {
             && let Some(qc) = cache.get_mut("_tasks")
         {
             qc.tasks = None;
+            qc.generation = qc.generation.wrapping_add(1);
         }
     }
 
@@ -145,6 +174,7 @@ impl Database {
             let key = format!("_facts_{}", subject);
             if let Some(qc) = cache.get_mut(&key) {
                 qc.facts = None;
+                qc.generation = qc.generation.wrapping_add(1);
             }
         }
     }
@@ -178,7 +208,6 @@ mod tests {
             input_text: format!("input-{}", id),
             title: None,
             status: "pending".into(),
-            classification: "NEW_TASK".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             transcript: "".into(),
@@ -194,6 +223,7 @@ mod tests {
             object: "rust".into(),
             source: "user".into(),
             confidence: 0.9,
+            tags: vec![],
             created_at: "2026-01-01T00:00:00Z".into(),
         }
     }
@@ -222,7 +252,7 @@ mod tests {
         let sid = "session-1";
         assert!(db.cache_get_messages(sid).is_none());
         let msgs = vec![make_msg("1", sid), make_msg("2", sid)];
-        db.cache_put_messages(sid, msgs.clone(), 60);
+        db.cache_put_messages(sid, msgs.clone(), 60, 0);
         let cached = db.cache_get_messages(sid).unwrap();
         assert_eq!(cached.len(), 2);
         assert_eq!(cached[0].id, "1");
@@ -233,7 +263,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = "session-1";
         let msgs = vec![make_msg("1", sid)];
-        db.cache_put_messages(sid, msgs, 1);
+        db.cache_put_messages(sid, msgs, 1, 0);
         assert!(db.cache_get_messages(sid).is_some());
         thread::sleep(Duration::from_secs(2));
         assert!(db.cache_get_messages(sid).is_none());
@@ -244,7 +274,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let sid = "session-1";
         let msgs = vec![make_msg("1", sid)];
-        db.cache_put_messages(sid, msgs, 60);
+        db.cache_put_messages(sid, msgs, 60, 0);
         assert!(db.cache_get_messages(sid).is_some());
         db.cache_invalidate_messages(sid);
         assert!(db.cache_get_messages(sid).is_none());
@@ -255,7 +285,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         assert!(db.cache_get_tasks().is_none());
         let tasks = vec![make_task("1"), make_task("2")];
-        db.cache_put_tasks(tasks.clone(), 60);
+        db.cache_put_tasks(tasks.clone(), 60, 0);
         let cached = db.cache_get_tasks().unwrap();
         assert_eq!(cached.len(), 2);
     }
@@ -264,7 +294,7 @@ mod tests {
     fn test_cache_tasks_ttl_expiry() {
         let db = Database::open_in_memory().unwrap();
         let tasks = vec![make_task("1")];
-        db.cache_put_tasks(tasks, 1);
+        db.cache_put_tasks(tasks, 1, 0);
         assert!(db.cache_get_tasks().is_some());
         thread::sleep(Duration::from_secs(2));
         assert!(db.cache_get_tasks().is_none());
@@ -274,7 +304,7 @@ mod tests {
     fn test_cache_invalidate_tasks() {
         let db = Database::open_in_memory().unwrap();
         let tasks = vec![make_task("1")];
-        db.cache_put_tasks(tasks, 60);
+        db.cache_put_tasks(tasks, 60, 0);
         assert!(db.cache_get_tasks().is_some());
         db.cache_invalidate_tasks();
         assert!(db.cache_get_tasks().is_none());
@@ -286,7 +316,7 @@ mod tests {
         let subj = "user";
         assert!(db.cache_get_facts(subj).is_none());
         let facts = vec![make_fact("1", subj), make_fact("2", subj)];
-        db.cache_put_facts(subj, facts.clone(), 60);
+        db.cache_put_facts(subj, facts.clone(), 60, 0);
         let cached = db.cache_get_facts(subj).unwrap();
         assert_eq!(cached.len(), 2);
     }
@@ -296,7 +326,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let subj = "user";
         let facts = vec![make_fact("1", subj)];
-        db.cache_put_facts(subj, facts, 1);
+        db.cache_put_facts(subj, facts, 1, 0);
         assert!(db.cache_get_facts(subj).is_some());
         thread::sleep(Duration::from_secs(2));
         assert!(db.cache_get_facts(subj).is_none());
@@ -307,7 +337,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let subj = "user";
         let facts = vec![make_fact("1", subj)];
-        db.cache_put_facts(subj, facts, 60);
+        db.cache_put_facts(subj, facts, 60, 0);
         assert!(db.cache_get_facts(subj).is_some());
         db.cache_invalidate_facts(subj);
         assert!(db.cache_get_facts(subj).is_none());
@@ -318,8 +348,8 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let f1 = vec![make_fact("1", "subject-a")];
         let f2 = vec![make_fact("2", "subject-b")];
-        db.cache_put_facts("subject-a", f1, 60);
-        db.cache_put_facts("subject-b", f2, 60);
+        db.cache_put_facts("subject-a", f1, 60, 0);
+        db.cache_put_facts("subject-b", f2, 60, 0);
         assert!(db.cache_get_facts("subject-a").is_some());
         assert!(db.cache_get_facts("subject-b").is_some());
         db.cache_invalidate_facts("subject-a");

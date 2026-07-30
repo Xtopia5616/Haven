@@ -13,7 +13,7 @@ impl Tool for WindowTool {
         "window".into()
     }
     fn description(&self) -> String {
-        "List, query, and manage desktop windows".into()
+        "Provide basic abilities to list, query, and manage desktop windows".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

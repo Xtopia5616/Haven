@@ -80,12 +80,6 @@ pub enum VadState {
     SilenceAfterSpeech { silent_frames: u32 },
 }
 
-impl VadState {
-    pub fn is_speech(&self) -> bool {
-        matches!(self, VadState::Speech)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VadSignal {
     None,

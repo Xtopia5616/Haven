@@ -155,7 +155,7 @@
 		});
 		await safeListen('recording:vad_status', (event) => {
 			const data = event.payload || {};
-			if (overlay.isRecording) {
+			if (get(recordingOverlay).isRecording) {
 				setOverlay({ vadState: data.state || 'silent' });
 			}
 		});
@@ -201,7 +201,7 @@
 			const data = event.payload || {};
 			if (data.muted) {
 				addNotification('Microphone muted', 'info');
-				if (overlay.isRecording) {
+				if (get(recordingOverlay).isRecording) {
 					addNotification('录音被静音强制停止', 'warning', 4000);
 					setOverlay({
 						visible: false,
@@ -217,7 +217,7 @@
 		});
 		await safeListen('tray:status_changed', (event) => {
 			const data = event.payload || {};
-			if (data.status === 'muted' && overlay.isRecording) {
+			if (data.status === 'muted' && get(recordingOverlay).isRecording) {
 				setOverlay({
 					visible: false,
 					isRecording: false,
@@ -300,8 +300,8 @@
 				addNotification(`MCP 连接中: ${name}`, 'info', 2000);
 			}
 		});
-		await safeListen('skills:status_change', (event) => {
-			addNotification('技能列表已刷新', 'info', 2000);
+		await safeListen('skills:status_change', () => {
+			// Skill list refresh is notified by the tools page refresh button.
 		});
 		await safeListen('agent:fallback', (event) => {
 			const data = event.payload;

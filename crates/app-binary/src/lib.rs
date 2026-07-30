@@ -450,19 +450,6 @@ impl desktop::ShellHandler for HavenShellHandler {
         }
     }
 
-    async fn on_recording_cancel(&self) {
-        let _ = self.app_h.emit(
-            "recording:stopped",
-            events::RecordingEvent {
-                is_recording: false,
-                session_id: None,
-                reason: Some("cancel".to_string()),
-                duration_ms: None,
-            },
-        );
-        let _ = self.pipeline.cancel_recording().await;
-    }
-
     fn on_tray_status(&self, status: TrayStatus) {
         let tooltip = match status {
             TrayStatus::Normal => "Haven",
@@ -779,12 +766,9 @@ pub fn run() {
             commands::stop_recording,
             commands::cancel_recording,
             commands::process_transcript,
-            commands::supplement_task,
             commands::reopen_task,
             commands::get_tasks,
             commands::end_task,
-            commands::pause_task,
-            commands::resume_task,
             commands::resolve_confirmation,
             commands::get_tools,
             commands::get_recording_state,
@@ -829,6 +813,8 @@ pub fn run() {
             commands::is_autostart_enabled,
             commands::get_task_for_review,
             commands::rollback_task,
+            commands::branch_task,
+            commands::continue_task,
             commands::update_task_title,
         ])
         .build(tauri::generate_context!())

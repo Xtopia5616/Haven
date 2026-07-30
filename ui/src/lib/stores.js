@@ -1,4 +1,4 @@
-import { writable, get } from 'svelte/store';
+import { writable } from 'svelte/store';
 import { invoke } from './tauri.js';
 
 export const recordingStore = writable({
@@ -84,11 +84,6 @@ export function clearSeqMap(taskId) {
 	}
 }
 
-export function getTaskMessages(taskId) {
-	const all = get(taskMessagesStore);
-	return all[taskId] || [];
-}
-
 export function clearTaskMessages(taskId) {
 	if (!taskId) return;
 	clearSeqMap(taskId);
@@ -126,6 +121,27 @@ export function truncateTaskMessages(taskId, targetStep) {
 	clearSeqMap(taskId);
 }
 
+/**
+ * Copy messages up to (but not including) the given step number from a source
+ * task into a new task. Used by the branch feature: the branched conversation
+ * contains everything before the branch point. Mirrors truncateTaskMessages
+ * selection logic but writes to a new task id instead of mutating the source.
+ */
+export function branchTaskMessages(sourceTaskId, newTaskId, targetStep) {
+	if (!sourceTaskId || !newTaskId) return;
+	taskMessagesStore.update((m) => {
+		const list = m[sourceTaskId];
+		if (!list || list.length === 0) return m;
+		const cutIdx = list.findIndex(
+			(x) => x.stepNumber != null && x.stepNumber >= targetStep,
+		);
+		const kept = cutIdx === -1 ? [...list] : list.slice(0, cutIdx);
+		const next = { ...m };
+		next[newTaskId] = kept;
+		return next;
+	});
+}
+
 // Move draft messages to a real task (called when task:created fires).
 export function adoptDraftMessages(taskId) {
 	taskMessagesStore.update((m) => {
@@ -136,17 +152,6 @@ export function adoptDraftMessages(taskId) {
 		next[taskId] = [...(next[taskId] || []), ...draft];
 		return next;
 	});
-}
-
-// Resolve visible messages for a given activeTaskId.
-// Returns draft messages when no active task; otherwise returns messages
-// for that task (falls back to an empty array if none stored yet).
-export function resolveMessages(activeTaskId) {
-	const all = get(taskMessagesStore);
-	if (!activeTaskId) {
-		return all[DRAFT_KEY] || [];
-	}
-	return all[activeTaskId] || [];
 }
 
 // Review target for navigating from history to chat with a task context.

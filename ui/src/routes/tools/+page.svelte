@@ -3,8 +3,6 @@
 	let skills = $state([]);
 	let builtinTools = $state([]);
 	let activeTab = $state('builtin');
-	let selectedSkill = $state(null);
-	let drawerOpen = $state(false);
 	let mcpDialogOpen = $state(false);
 	let mcpEditServer = $state(null);
 
@@ -13,7 +11,6 @@
 	import { addNotification } from '$lib/stores.js';
 	import logger from '$lib/logger.js';
 	import SkillCard from '$lib/SkillCard.svelte';
-	import SkillDetailDrawer from '$lib/SkillDetailDrawer.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
 
@@ -65,6 +62,11 @@
 		}
 	}
 
+	async function refreshMcpList() {
+		await refreshMcpServers();
+		addNotification('MCP servers refreshed', 'success', 2000);
+	}
+
 	async function refreshSkillList() {
 		try {
 			const result = await invoke('list_skills');
@@ -89,16 +91,6 @@
 			skills = prev;
 			addNotification(`Failed to toggle ${name}`, 'error', 3000);
 		}
-	}
-
-	function selectSkill(skill) {
-		selectedSkill = skill;
-		drawerOpen = true;
-	}
-
-	function closeDrawer() {
-		drawerOpen = false;
-		selectedSkill = null;
 	}
 
 	async function refreshSkills() {
@@ -213,15 +205,19 @@
 			<div class="toolbar">
 				<h2>MCP Servers</h2>
 				<div class="toolbar-actions">
-					<button class="md-btn md-btn--tonal" onclick={openAddDialog}>
+					<button class="md-btn md-btn--tonal" onclick={refreshMcpList}>Refresh</button>
+					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>
 						<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
-						Add MCP Server
+						Add
 					</button>
 				</div>
 			</div>
 			{#if mcpServers.length === 0}
 				<div class="empty-state">
 					<p>No MCP servers configured</p>
+					<p class="hint">
+						Add an MCP server to extend the agent with external tools and resources.
+					</p>
 					<button class="md-btn md-btn--filled" onclick={openAddDialog}>Add MCP Server</button>
 				</div>
 			{:else}
@@ -256,23 +252,15 @@
 					<button class="md-btn md-btn--filled" onclick={openFolder}>Open Skills Folder</button>
 				</div>
 			{:else}
-				<div class="skill-grid">
+				<div class="server-list">
 					{#each skills as skill (skill.name)}
-						<SkillCard {skill} onToggle={handleToggle} onSelect={selectSkill} />
+						<SkillCard {skill} onToggle={handleToggle} />
 					{/each}
 				</div>
 			{/if}
 		</div>
 	{/if}
 </div>
-
-{#if drawerOpen && selectedSkill}
-	<SkillDetailDrawer
-		skill={selectedSkill}
-		onClose={closeDrawer}
-		onToggle={handleToggle}
-	/>
-{/if}
 
 {#if mcpDialogOpen}
 	<McpEditDialog
@@ -411,10 +399,5 @@
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;
 		max-width: 320px;
-	}
-	.skill-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: var(--md-sys-space-md);
 	}
 </style>

@@ -44,7 +44,7 @@ pub struct Action {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProcessResult {
     TaskCreated(String),
     Supplemented,

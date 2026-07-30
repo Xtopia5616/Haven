@@ -113,8 +113,8 @@ fn search_files(
                 }
                 let path = entry.path();
                 // Quick read and check
-                if let Ok(content) = std::fs::read_to_string(path)
-                    && content.contains(&pattern_owned)
+                if let Ok(bytes) = std::fs::read(path)
+                    && haven_common::encoding::decode_lossy(&bytes).contains(&pattern_owned)
                 {
                     let mut results_guard = results.lock().unwrap();
                     if results_guard.len() >= max {

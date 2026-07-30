@@ -148,11 +148,10 @@
 						silence_timeout_ms: audio.silence_timeout_ms,
 						vad_threshold: audio.vad_threshold,
 					},
-					task: {
-						max_concurrent: task.max_concurrent,
-						max_steps: task.max_steps,
-						default_priority: 'normal',
-					},
+				task: {
+					max_concurrent: task.max_concurrent,
+					max_steps: task.max_steps,
+				},
 					memory: {
 						session_window_size: memory.session_window_size,
 						history_retention_days: memory.history_retention_days,
@@ -237,7 +236,7 @@
 
 		<div class="model-card">
 			<h3>Small Model</h3>
-			<p class="model-hint">Fast classification &amp; lightweight reasoning</p>
+			<p class="model-hint">Title generation &amp; lightweight reasoning</p>
 			<div class="form-row">
 				<label for="sm-provider">Provider</label>
 				<input id="sm-provider" type="text" class="md-input" bind:value={llmConfig.small_model.provider} />

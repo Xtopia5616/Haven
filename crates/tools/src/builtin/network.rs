@@ -134,7 +134,8 @@ async fn execute_once(
         })
         .collect();
 
-    let response_body = response.text().await.map_err(map_reqwest_error)?;
+    let response_bytes = response.bytes().await.map_err(map_reqwest_error)?;
+    let response_body = haven_common::encoding::decode_lossy(&response_bytes);
 
     let max_chars = 100_000;
     let (body_truncated, truncated) = truncate_output(&response_body, max_chars);

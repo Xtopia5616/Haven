@@ -14,16 +14,6 @@
 		return map[status] || '#666';
 	}
 
-	function priorityColor(priority) {
-		const map = {
-			critical: '#ff4444',
-			high: '#ff8833',
-			normal: '#7c8aff',
-			low: '#888',
-		};
-		return map[(priority || 'normal').toLowerCase()] || '#7c8aff';
-	}
-
 	function durationStr(createdAt, updatedAt, status) {
 		const start = new Date(createdAt).getTime();
 		const end =
@@ -68,14 +58,8 @@
 >
 	<div class="task-summary">
 		<span class="task-dot" style="color: {statusColor(task.status)}">&#9679;</span>
-		<span class="priority-chip" style="background: {priorityColor(task.priority)}"
-			>{task.priority || 'normal'}</span
-		>
 		<span class="task-title">{task.summary || task.input || task.title || 'Untitled'}</span>
 		<span class="task-badge">{task.status}</span>
-		{#if task.classification}
-			<span class="task-intent">{task.classification}</span>
-		{/if}
 		<span class="task-duration"
 			>{durationStr(task.created_at, task.updated_at, task.status)}</span
 		>
@@ -136,16 +120,6 @@
 		gap: var(--md-sys-space-sm);
 		flex-wrap: wrap;
 	}
-	.priority-chip {
-		font-size: 9px;
-		text-transform: uppercase;
-		font-weight: 800;
-		letter-spacing: 0.4px;
-		padding: 1px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		color: #fff;
-		opacity: 0.9;
-	}
 	.task-dot {
 		font-size: 10px;
 	}
@@ -167,11 +141,6 @@
 		background: var(--md-sys-color-surface-container-highest);
 		color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase;
-	}
-	.task-intent {
-		font-size: 10px;
-		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
 	}
 	.task-duration {
 		font-size: 10px;

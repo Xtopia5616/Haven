@@ -54,12 +54,6 @@ pub struct RecordingResult {
     pub transcript: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct AudioChunk {
-    pub pcm_data: Vec<f32>,
-    pub sample_rate: u32,
-}
-
 const TARGET_SAMPLE_RATE: u32 = 16000;
 const RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 5;
 const VAD_FRAME_SAMPLES: usize = 480;
@@ -624,19 +618,27 @@ impl InputPipeline {
     }
 
     pub async fn cancel_recording(&self) -> Result<()> {
-        let mut state = self.state.lock().await;
-        let prev_state = std::mem::replace(&mut *state, RecordingState::Pending);
-        if prev_state != RecordingState::Recording && prev_state != RecordingState::Processing {
-            return Ok(());
+        // Capture the cancel_token and result_rx belonging to the current
+        // recording BEFORE setting state to Pending. If we set Pending first
+        // and released the lock, a concurrent start_recording would see
+        // Pending, create fresh token/rx, and cancel_recording would then
+        // steal the new session's resources.
+        let token;
+        let rx;
+        {
+            let mut state = self.state.lock().await;
+            if *state != RecordingState::Recording && *state != RecordingState::Processing {
+                return Ok(());
+            }
+            token = self.cancel_token.lock().unwrap().take();
+            rx = self.result_rx.lock().unwrap().take();
+            *state = RecordingState::Pending;
         }
-        drop(state);
 
-        let token = self.cancel_token.lock().unwrap().take();
         if let Some(token) = token {
             token.cancel();
         }
 
-        let rx = self.result_rx.lock().unwrap().take();
         if let Some(rx) = rx {
             let _ = rx.await;
         }
@@ -1048,16 +1050,6 @@ mod tests {
         assert_eq!(result.pcm.len(), 2);
         assert_eq!(result.reason, RecordingReason::Manual);
         assert!(result.transcript.is_none());
-    }
-
-    #[test]
-    fn test_audio_chunk_construction() {
-        let chunk = AudioChunk {
-            pcm_data: vec![0.5f32],
-            sample_rate: 16000,
-        };
-        assert_eq!(chunk.pcm_data.len(), 1);
-        assert_eq!(chunk.sample_rate, 16000);
     }
 
     // --- Final drain path: no capture handle produces no pcm ---

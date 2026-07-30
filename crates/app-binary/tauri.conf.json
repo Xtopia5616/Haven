@@ -5,7 +5,7 @@
   "identifier": "com.haven.app",
   "build": {
     "frontendDist": "../../ui/build",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:4721",
     "beforeDevCommand": "npm --prefix ui run dev",
     "beforeBuildCommand": "npm --prefix ui run build"
   },

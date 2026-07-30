@@ -184,29 +184,6 @@ pub async fn process_transcript(
 }
 
 #[tauri::command]
-pub async fn supplement_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-    text: String,
-) -> Result<(), String> {
-    tracing::debug!(
-        "supplement_task called: task_id={:?} text={:?}",
-        task_id,
-        text
-    );
-    state
-        .agent
-        .supplement_task(&task_id, &text)
-        .await
-        .map_err(|e| {
-            tracing::error!("supplement_task error: {:?}", e);
-            e.to_string()
-        })?;
-    tracing::debug!("supplement_task done");
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn reopen_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     tracing::debug!("reopen_task called: task_id={}", task_id);
     state.agent.reopen_task(&task_id).await.map_err(|e| {
@@ -262,66 +239,6 @@ pub async fn end_task(
     } else {
         state.agent.emit_task_completed(&task_id, &title).await;
     }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn pause_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::debug!("pause_task command called: task_id={}", task_id);
-    state.executor.pause_task(&task_id).await.map_err(|e| {
-        tracing::error!("pause_task error: {:?}", e);
-        e.to_string()
-    })?;
-    let title = state
-        .executor
-        .list_tasks()
-        .await
-        .into_iter()
-        .find(|t| t.id == task_id)
-        .map(|t| t.input)
-        .unwrap_or_default();
-    let _ = app.emit(
-        "task:updated",
-        TaskEvent {
-            task_id,
-            status: "paused".into(),
-            title,
-        },
-    );
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn resume_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    state
-        .executor
-        .resume_task(&task_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    let title = state
-        .executor
-        .list_tasks()
-        .await
-        .into_iter()
-        .find(|t| t.id == task_id)
-        .map(|t| t.input)
-        .unwrap_or_default();
-    let _ = app.emit(
-        "task:updated",
-        TaskEvent {
-            task_id,
-            status: "pending".into(),
-            title,
-        },
-    );
     Ok(())
 }
 
@@ -537,7 +454,9 @@ pub async fn add_mcp_server(
         );
     }
     state.tools.mcp_manager.add_client(client).await;
-
+    // Keep the in-memory server_configs map in sync so `load_mcp` and the
+    // MCP server index reflect the newly added server.
+    state.tools.upsert_mcp_server_config(config.clone()).await;
     // Rebuild tool catalog so MCP tools appear in the Reasoner's tool list.
     state.tools.rebuild_catalog().await;
 
@@ -624,6 +543,12 @@ pub async fn update_mcp_server(
         return Err(format!("MCP server '{}' not found", name));
     }
 
+    // Keep server_configs in sync with the updated config.
+    state.tools.upsert_mcp_server_config(config.clone()).await;
+
+    // Rebuild tool catalog for consistency with add/remove/toggle commands.
+    state.tools.rebuild_catalog().await;
+
     let _ = app.emit(
         "mcp:status_change",
         McpStatusChangeEvent {
@@ -651,6 +576,7 @@ pub async fn remove_mcp_server(
 
     // Shutdown and remove from manager
     state.tools.mcp_manager.remove_client(&name).await;
+    state.tools.remove_mcp_server_config(&name).await;
 
     // Rebuild tool catalog so removed MCP tools disappear from the Reasoner.
     state.tools.rebuild_catalog().await;
@@ -681,15 +607,16 @@ pub async fn toggle_mcp_server(
         return Err(format!("MCP server '{}' not found", name));
     }
 
+    let config = loader
+        .config()
+        .mcp_servers
+        .iter()
+        .find(|s| s.name == name)
+        .cloned()
+        .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+
     if enabled {
         // Reconnect
-        let config = loader
-            .config()
-            .mcp_servers
-            .iter()
-            .find(|s| s.name == name)
-            .cloned()
-            .ok_or_else(|| format!("MCP server '{}' not found", name))?;
         let client = std::sync::Arc::new(haven_tools::McpClient::new(
             &config.name,
             &config.command,
@@ -713,6 +640,9 @@ pub async fn toggle_mcp_server(
     } else {
         state.tools.mcp_manager.remove_client(&name).await;
     }
+
+    // Keep server_configs in sync (enabled flag changed).
+    state.tools.upsert_mcp_server_config(config.clone()).await;
 
     // Rebuild tool catalog so the tool list reflects the toggle.
     state.tools.rebuild_catalog().await;
@@ -918,7 +848,6 @@ pub async fn search_history_filtered(
     state: State<'_, Arc<AppState>>,
     query: Option<String>,
     status: Option<String>,
-    classification: Option<String>,
     start_date: Option<String>,
     end_date: Option<String>,
     limit: Option<i64>,
@@ -930,7 +859,6 @@ pub async fn search_history_filtered(
         .search_tasks_filtered(
             query.as_deref(),
             status.as_deref(),
-            classification.as_deref(),
             start_date.as_deref(),
             end_date.as_deref(),
             limit.unwrap_or(50),
@@ -1066,7 +994,6 @@ pub async fn export_history(
         .search_tasks_filtered(
             None,
             status.as_deref(),
-            None,
             start_date.as_deref(),
             end_date.as_deref(),
             10000,
@@ -1117,10 +1044,13 @@ pub async fn add_fact(
     subject: String,
     predicate: String,
     object: String,
+    tags: Option<Vec<String>>,
 ) -> Result<haven_memory::repositories::facts::Fact, String> {
+    let tags_owned = tags.unwrap_or_default();
+    let tags: Vec<&str> = tags_owned.iter().map(|s| s.as_str()).collect();
     state
         .db
-        .insert_fact(&subject, &predicate, &object, "user", 1.0)
+        .insert_fact(&subject, &predicate, &object, "user", 1.0, &tags)
         .map_err(|e| e.to_string())
 }
 
@@ -1311,7 +1241,7 @@ pub async fn update_settings(
 
 #[tauri::command]
 pub async fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
-    // Debug builds load from devUrl (localhost:5173) — autostart would
+    // Debug builds load from devUrl (localhost:4721) — autostart would
     // launch the binary without the Vite dev server, showing a blank/
     // connection-error page.  Only release builds embed the frontend
     // and can be safely autostarted.
@@ -1393,6 +1323,37 @@ pub async fn rollback_task(
     state
         .agent
         .rollback_task(&task_id, target_step, pause.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Branch a task from a specific step into a new conversation. Copies all
+/// messages up to that step into a new child session and creates a new Paused
+/// task seeded with the branch point state. Returns the new task id.
+#[tauri::command]
+pub async fn branch_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+    target_step: u32,
+) -> Result<String, String> {
+    state
+        .agent
+        .branch_task(&task_id, target_step)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Resume a task that errored mid-step. Removes partial output persisted on
+/// error and sets the task to Pending so the dispatcher retries the failed
+/// step from the saved snapshot.
+#[tauri::command]
+pub async fn continue_task(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(), String> {
+    state
+        .agent
+        .continue_task(&task_id)
         .await
         .map_err(|e| e.to_string())
 }

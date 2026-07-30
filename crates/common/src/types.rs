@@ -26,17 +26,6 @@ pub enum HotkeyMode {
     Hold,
 }
 
-/// Task priority assigned by the classifier.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskPriority {
-    Low,
-    #[default]
-    Normal,
-    High,
-    Critical,
-}
-
 /// Risk level for a tool invocation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, PartialOrd, Hash)]
 #[serde(rename_all = "lowercase")]
@@ -300,26 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn task_priority_ordering() {
-        let low = TaskPriority::Low;
-        let normal = TaskPriority::Normal;
-        let high = TaskPriority::High;
-        let critical = TaskPriority::Critical;
-        let values = [&low, &normal, &high, &critical];
-        for i in 0..(values.len() - 1) {
-            assert!(
-                std::mem::discriminant(values[i]) != std::mem::discriminant(values[i + 1]),
-                "adjacent variants must differ"
-            );
-        }
-    }
-
-    #[test]
-    fn task_priority_default_is_normal() {
-        assert_eq!(TaskPriority::default(), TaskPriority::Normal);
-    }
-
-    #[test]
     fn hotkey_mode_variants() {
         let toggle = HotkeyMode::Toggle;
         let hold = HotkeyMode::Hold;
@@ -417,12 +386,4 @@ mod tests {
         assert_eq!(decoded, RiskLevel::High);
     }
 
-    #[test]
-    fn serde_roundtrip_task_priority() {
-        let prio = TaskPriority::Critical;
-        let json = serde_json::to_string(&prio).unwrap();
-        assert!(json.contains("critical"));
-        let decoded: TaskPriority = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded, TaskPriority::Critical);
-    }
 }

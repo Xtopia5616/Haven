@@ -129,11 +129,6 @@ impl EventBus {
             None
         }
     }
-
-    /// Current number of registered subscribers.
-    pub async fn subscriber_count(&self) -> usize {
-        self.subscribers.read().await.len()
-    }
 }
 
 impl Default for EventBus {
@@ -561,7 +556,6 @@ mod tests {
         });
         bus.subscribe("a", a.clone()).await;
         bus.subscribe("b", b.clone()).await;
-        assert_eq!(bus.subscriber_count().await, 2);
 
         bus.emit(AgentEvent::ThoughtChunk {
             task_id: "t".into(),
@@ -584,7 +578,6 @@ mod tests {
         bus.subscribe("a", a.clone()).await;
         let removed = bus.unsubscribe("a").await;
         assert!(removed.is_some());
-        assert_eq!(bus.subscriber_count().await, 0);
 
         bus.emit(AgentEvent::ThoughtChunk {
             task_id: "t".into(),
@@ -608,7 +601,6 @@ mod tests {
         bus.subscribe("a", a.clone()).await;
         let prev = bus.subscribe("a", b.clone()).await;
         assert!(prev.is_some());
-        assert_eq!(bus.subscriber_count().await, 1);
 
         bus.emit(AgentEvent::ThoughtChunk {
             task_id: "t".into(),

@@ -102,11 +102,14 @@ impl ToolsManager {
         self.mcp_manager.discover_all(servers, config).await;
     }
 
-    /// Rebuild the tool catalog from the current MCP + Skills + builtin state.
+    /// Rebuild the tool catalog from the current builtin state.
     /// Called at startup and whenever MCP or Skills state changes.
-    /// Skills are progressively loaded (refine §4.7): only the `load_skill`
-    /// tool is registered; full skill adapters are NOT injected into the
-    /// registry until the LLM explicitly calls `load_skill`.
+    ///
+    /// Skills and MCP servers are progressively loaded (refine §4.7): only the
+    /// `load_skill` / `load_mcp` meta-tools are registered globally. Full skill
+    /// and MCP tool adapters are NOT injected into the global registry until the
+    /// LLM explicitly calls `load_skill` / `load_mcp`, which registers them
+    /// per-task (see `register_for_task`).
     pub async fn rebuild_catalog(&self) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
@@ -119,20 +122,6 @@ impl ToolsManager {
             &self.mcp_server_configs,
         )
         .await;
-
-        // Register MCP tools from connected clients
-        let mcp_tools = self.mcp_manager.list_all_tools().await;
-        for (server_name, tools) in mcp_tools {
-            if let Some(client) = self.mcp_manager.get_client(&server_name).await {
-                for info in tools {
-                    all_tools.push(Arc::new(McpToolAdapter::new(
-                        client.clone(),
-                        &server_name,
-                        info,
-                    )));
-                }
-            }
-        }
 
         self.registry.rebuild(all_tools).await;
     }
@@ -152,6 +141,37 @@ impl ToolsManager {
     /// Remove all per-task tool registrations for a given task.
     pub async fn unregister_task(&self, task_id: &str) {
         self.task_registrations.write().await.remove(task_id);
+    }
+
+    /// Register a skill as a per-task tool adapter. Looks up the skill by
+    /// name, checks `enabled`, and registers `SkillToolAdapter` for the task.
+    /// Returns `true` if the skill was found and enabled.
+    pub async fn register_skill_for_task(&self, task_id: &str, skill_name: &str) -> bool {
+        let Some(skill) = self.skills_engine.get_skill(skill_name).await else {
+            return false;
+        };
+        if !skill.enabled() {
+            return false;
+        }
+        let runner = self.skill_runner.read().await.clone();
+        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
+        self.register_for_task(task_id, Arc::new(adapter)).await;
+        true
+    }
+
+    /// Register all tools from an MCP server as per-task tool adapters.
+    /// Looks up the client by server name and registers `McpToolAdapter`
+    /// for each cached tool. Returns `true` if the client was found.
+    pub async fn register_mcp_for_task(&self, task_id: &str, server_name: &str) -> bool {
+        let Some(client) = self.mcp_manager.get_client(server_name).await else {
+            return false;
+        };
+        let tools = client.tools_cache().await;
+        for info in tools {
+            let adapter = McpToolAdapter::new(client.clone(), server_name, info);
+            self.register_for_task(task_id, Arc::new(adapter)).await;
+        }
+        true
     }
 
     /// Look up a tool: first check per-task registrations, then global registry.
@@ -184,10 +204,12 @@ impl ToolsManager {
 
     /// Build an MCP server index (name + description only) for injection into the
     /// system prompt. The LLM uses `load_mcp` to get full schemas.
+    /// Only enabled servers are listed — disabled ones cannot be loaded.
     pub async fn build_mcp_index(&self) -> Vec<Value> {
         let configs = self.mcp_server_configs.read().await;
         configs
             .values()
+            .filter(|s| s.enabled)
             .map(|s| {
                 serde_json::json!({
                     "name": s.name.clone(),
@@ -195,6 +217,41 @@ impl ToolsManager {
                 })
             })
             .collect()
+    }
+
+    /// Return tool schemas for a task: global registry schemas merged with
+    /// per-task registered skill/MCP adapters. Called before each LLM step so
+    /// that tools loaded via `load_skill`/`load_mcp` become visible to the model.
+    pub async fn list_schemas_for_task(&self, task_id: &str) -> Vec<Value> {
+        let mut schemas = self.registry.list_schemas().await;
+        let reg = self.task_registrations.read().await;
+        if let Some(tools) = reg.get(task_id) {
+            for tool in tools.values() {
+                let risk = tool.risk_level(&serde_json::json!({}));
+                schemas.push(serde_json::json!({
+                    "name": tool.name(),
+                    "description": tool.description(),
+                    "risk_level": risk,
+                    "input_schema": tool.input_schema(),
+                }));
+            }
+        }
+        schemas
+    }
+
+    /// Insert or replace a single MCP server config in the in-memory map.
+    /// Used by bridge commands (add/update/toggle) to keep `server_configs`
+    /// in sync without reconnecting all servers.
+    pub async fn upsert_mcp_server_config(&self, config: McpServerConfig) {
+        self.mcp_server_configs
+            .write()
+            .await
+            .insert(config.name.clone(), config);
+    }
+
+    /// Remove a single MCP server config from the in-memory map.
+    pub async fn remove_mcp_server_config(&self, name: &str) {
+        self.mcp_server_configs.write().await.remove(name);
     }
 }
 
@@ -459,6 +516,104 @@ mod tests {
         assert!(
             r.unwrap_err().to_string().contains("circuit breaker"),
             "error should mention circuit breaker"
+        );
+    }
+
+    // ── Progressive loading: per-task schemas & MCP index ──────────────
+
+    #[tokio::test]
+    async fn test_list_schemas_for_task_includes_per_task_tools() {
+        use crate::skills::SkillManifest;
+
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        // Before registering a per-task tool, schemas come only from the
+        // global registry.
+        let base_schemas = mgr.list_schemas_for_task("task-a").await;
+        let base_count = base_schemas.len();
+
+        // Register a fake per-task tool.
+        let manifest = SkillManifest {
+            name: "demo".into(),
+            description: "demo skill".into(),
+            version: None,
+            language: crate::skills::Language::Python,
+            allowed_tools: vec![],
+            instructions: "do stuff".into(),
+        };
+        let skill = Skill::from_manifest_unchecked(manifest, std::path::PathBuf::from("."), true);
+        let runner = mgr.skill_runner.read().await.clone();
+        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
+        mgr.register_for_task("task-a", Arc::new(adapter)).await;
+
+        let schemas = mgr.list_schemas_for_task("task-a").await;
+        assert_eq!(
+            schemas.len(),
+            base_count + 1,
+            "per-task skill tool should appear in schemas"
+        );
+        assert!(schemas.iter().any(|s| s["name"] == "skill::demo"));
+
+        // Other tasks should NOT see this tool.
+        let other = mgr.list_schemas_for_task("task-b").await;
+        assert_eq!(other.len(), base_count);
+        assert!(!other.iter().any(|s| s["name"] == "skill::demo"));
+    }
+
+    #[tokio::test]
+    async fn test_build_mcp_index_filters_disabled() {
+        use haven_common::config::McpServerConfig;
+
+        let mgr = ToolsManager::new();
+        mgr.upsert_mcp_server_config(McpServerConfig {
+            name: "on".into(),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+        mgr.upsert_mcp_server_config(McpServerConfig {
+            name: "off".into(),
+            enabled: false,
+            ..Default::default()
+        })
+        .await;
+
+        let index = mgr.build_mcp_index().await;
+        let names: Vec<&str> = index.iter().filter_map(|e| e["name"].as_str()).collect();
+        assert!(names.contains(&"on"));
+        assert!(!names.contains(&"off"), "disabled server should not appear");
+    }
+
+    #[tokio::test]
+    async fn test_upsert_and_remove_mcp_server_config() {
+        use haven_common::config::McpServerConfig;
+
+        let mgr = ToolsManager::new();
+        mgr.upsert_mcp_server_config(McpServerConfig {
+            name: "srv".into(),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(mgr.build_mcp_index().await.len(), 1);
+
+        mgr.remove_mcp_server_config("srv").await;
+        assert!(mgr.build_mcp_index().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_catalog_does_not_register_mcp_tools() {
+        // Progressive loading: MCP tools must NOT be in the global registry.
+        // They should only appear per-task after `load_mcp`.
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let schemas = mgr.registry.list_schemas().await;
+        assert!(
+            !schemas.iter().any(|s| {
+                s["name"].as_str().unwrap_or("").starts_with("mcp::")
+            }),
+            "MCP tools must not be pre-registered globally"
         );
     }
 }

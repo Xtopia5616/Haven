@@ -40,18 +40,35 @@ impl Database {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, is_compacted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-            rusqlite::params![id, session_id, role, content, message_type, now, tool_call_id],
-        )?;
-        // Sliding window: keep only the last N messages per session
-        conn.execute(
-            "DELETE FROM messages WHERE session_id = ?1 AND id NOT IN (
-                SELECT id FROM messages WHERE session_id = ?1 ORDER BY created_at DESC LIMIT ?2
-            )",
-            rusqlite::params![session_id, window_size],
-        )?;
+        // Wrap INSERT + DELETE in an immediate transaction so concurrent
+        // callers cannot interleave (the second DELETE could remove the
+        // first caller's just-inserted message).
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, is_compacted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                rusqlite::params![id, session_id, role, content, message_type, now, tool_call_id],
+            )?;
+            // Sliding window: keep only the last N messages per session.
+            // Clamp to i64::MAX so callers can pass a huge value to disable
+            // trimming (e.g. when bulk-copying messages during branching).
+            let limit: i64 = window_size.min(i64::MAX as usize) as i64;
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?1 AND id NOT IN (
+                    SELECT id FROM messages WHERE session_id = ?1 ORDER BY created_at DESC LIMIT ?2
+                )",
+                rusqlite::params![session_id, limit],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        })();
+        if result.is_err() {
+            let _ = conn.execute_batch("ROLLBACK");
+        } else {
+            conn.execute_batch("COMMIT")?;
+        }
+        result?;
+        drop(conn);
         self.cache_invalidate_messages(session_id);
         Ok(Message {
             id,
@@ -71,6 +88,9 @@ impl Database {
         if let Some(cached) = self.cache_get_messages(session_id) {
             return Ok(cached);
         }
+        // Capture generation before querying DB so cache_put can detect a
+        // concurrent invalidation and skip the stale-overwrite.
+        let cache_gen = self.cache_generation(session_id);
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
@@ -95,7 +115,7 @@ impl Database {
         for row in rows {
             msgs.push(row?);
         }
-        self.cache_put_messages(session_id, msgs.clone(), 30);
+        self.cache_put_messages(session_id, msgs.clone(), 30, cache_gen);
         Ok(msgs)
     }
 
@@ -281,7 +301,7 @@ mod tests {
         let db = test_db();
         let sid = test_session(&db);
         let m1 = db.add_message(&sid, "user", "first", None, None).unwrap();
-        let m2 = db.add_message(&sid, "assistant", "second", None, None).unwrap();
+        let _m2 = db.add_message(&sid, "assistant", "second", None, None).unwrap();
         // delete_messages_from deletes inclusively — m1 and m2 both gone
         db.delete_messages_from(&sid, &m1.created_at).unwrap();
         let msgs = db.get_session_messages(&sid).unwrap();

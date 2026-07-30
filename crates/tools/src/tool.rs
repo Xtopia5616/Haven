@@ -10,13 +10,6 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolCall {
-    pub tool_name: String,
-    pub input: Value,
-    pub output: Option<Value>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolResult {
     pub success: bool,
     pub output: Value,
@@ -98,10 +91,17 @@ pub trait Tool: Send + Sync {
 
 pub type ToolBox = Arc<dyn Tool>;
 
+/// Combined tools + name index under a single RwLock so rebuilds update
+/// both atomically — readers never see new `tools` with stale `name_index`.
+#[derive(Default, Clone)]
+struct RegistrySnapshot {
+    tools: Vec<ToolBox>,
+    name_index: HashMap<String, ToolBox>,
+}
+
 #[derive(Default)]
 pub struct ToolRegistry {
-    tools: Arc<RwLock<Vec<ToolBox>>>,
-    name_index: Arc<RwLock<HashMap<String, ToolBox>>>,
+    snapshot: Arc<RwLock<RegistrySnapshot>>,
     /// Monotonically incremented on every mutation (register/rebuild).
     /// Consumers (e.g. SystemPromptBuilder) compare this against a cached
     /// value to decide whether the schema snapshot is stale, which is more
@@ -113,8 +113,7 @@ pub struct ToolRegistry {
 impl Clone for ToolRegistry {
     fn clone(&self) -> Self {
         Self {
-            tools: self.tools.clone(),
-            name_index: self.name_index.clone(),
+            snapshot: self.snapshot.clone(),
             version: self.version.clone(),
         }
     }
@@ -123,8 +122,7 @@ impl Clone for ToolRegistry {
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: Arc::new(RwLock::new(Vec::new())),
-            name_index: Arc::new(RwLock::new(HashMap::new())),
+            snapshot: Arc::new(RwLock::new(RegistrySnapshot::default())),
             version: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -136,21 +134,22 @@ impl ToolRegistry {
 
     pub async fn register(&self, tool: ToolBox) {
         let name = tool.name();
-        self.tools.write().await.push(tool.clone());
-        self.name_index.write().await.insert(name, tool);
+        let mut snap = self.snapshot.write().await;
+        snap.tools.push(tool.clone());
+        snap.name_index.insert(name, tool);
         self.version.fetch_add(1, Ordering::SeqCst);
     }
 
     pub async fn get(&self, name: &str) -> Option<ToolBox> {
-        self.name_index.read().await.get(name).cloned()
+        self.snapshot.read().await.name_index.get(name).cloned()
     }
 
     pub async fn list(&self) -> Vec<ToolBox> {
-        self.tools.read().await.clone()
+        self.snapshot.read().await.tools.clone()
     }
 
     pub async fn list_schemas(&self) -> Vec<Value> {
-        let tools = self.tools.read().await;
+        let tools = self.snapshot.read().await.tools.clone();
         tools
             .iter()
             .map(|t| {
@@ -166,14 +165,16 @@ impl ToolRegistry {
     }
 
     /// Atomically rebuild the entire registry from a list of tools.
-    /// Uses a write lock so readers see a consistent snapshot.
+    /// Uses a single write lock so readers see a consistent snapshot.
     pub async fn rebuild(&self, new_tools: Vec<ToolBox>) {
         let mut index = HashMap::new();
         for t in &new_tools {
             index.insert(t.name(), t.clone());
         }
-        *self.tools.write().await = new_tools;
-        *self.name_index.write().await = index;
+        let mut snap = self.snapshot.write().await;
+        snap.tools = new_tools;
+        snap.name_index = index;
+        drop(snap);
         self.version.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -189,16 +190,25 @@ pub enum ConfirmationResult {
     Blocked,
 }
 
+/// Combined safety config under a single RwLock so `check` reads both
+/// fields atomically and `set_min_risk_level` updates both atomically.
+#[derive(Clone)]
+struct SafetyConfig {
+    min_risk_level: RiskLevel,
+    session_trusted_levels: HashSet<RiskLevel>,
+}
+
 pub struct SafetyGateway {
-    min_risk_level: RwLock<RiskLevel>,
-    session_trusted_levels: RwLock<HashSet<RiskLevel>>,
+    config: RwLock<SafetyConfig>,
 }
 
 impl SafetyGateway {
     pub fn new(min_risk_level: RiskLevel) -> Self {
         Self {
-            min_risk_level: RwLock::new(min_risk_level),
-            session_trusted_levels: RwLock::new(HashSet::new()),
+            config: RwLock::new(SafetyConfig {
+                min_risk_level,
+                session_trusted_levels: HashSet::new(),
+            }),
         }
     }
 
@@ -206,8 +216,9 @@ impl SafetyGateway {
     /// Operations below this level auto-approve; at or above require confirmation.
     /// Resets any session trusts on change.
     pub async fn set_min_risk_level(&self, level: RiskLevel) {
-        *self.min_risk_level.write().await = level;
-        self.session_trusted_levels.write().await.clear();
+        let mut cfg = self.config.write().await;
+        cfg.min_risk_level = level;
+        cfg.session_trusted_levels.clear();
     }
 
     pub async fn check(
@@ -216,15 +227,15 @@ impl SafetyGateway {
         params: &Value,
         risk_level: RiskLevel,
     ) -> ConfirmationResult {
-        let min_level = *self.min_risk_level.read().await;
+        let cfg = self.config.read().await;
 
         // Below threshold → auto approved
-        if risk_level < min_level {
+        if risk_level < cfg.min_risk_level {
             return ConfirmationResult::AutoApproved;
         }
 
         // Session-trusted risk levels → auto approved
-        if self.session_trusted_levels.read().await.contains(&risk_level) {
+        if cfg.session_trusted_levels.contains(&risk_level) {
             return ConfirmationResult::AutoApproved;
         }
 
@@ -237,7 +248,7 @@ impl SafetyGateway {
 
     /// Trust a risk level for the remainder of the session.
     pub async fn trust_risk_level(&self, level: RiskLevel) {
-        self.session_trusted_levels.write().await.insert(level);
+        self.config.write().await.session_trusted_levels.insert(level);
     }
 }
 

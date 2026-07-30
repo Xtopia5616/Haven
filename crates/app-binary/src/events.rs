@@ -1,13 +1,6 @@
 use serde::Serialize;
 
 #[derive(Clone, Serialize)]
-pub struct TaskEvent {
-    pub task_id: String,
-    pub status: String,
-    pub title: String,
-}
-
-#[derive(Clone, Serialize)]
 pub struct RecordingEvent {
     pub is_recording: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,18 +60,6 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("session_id"));
         assert!(!json.contains("reason"));
-    }
-
-    #[test]
-    fn test_task_event_serde() {
-        let ev = TaskEvent {
-            task_id: "t1".into(),
-            status: "completed".into(),
-            title: "Test".into(),
-        };
-        let json = serde_json::to_string(&ev).unwrap();
-        assert!(json.contains("\"task_id\":\"t1\""));
-        assert!(json.contains("\"status\":\"completed\""));
     }
 
     #[test]

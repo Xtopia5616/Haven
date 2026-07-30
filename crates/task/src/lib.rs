@@ -1,7 +1,6 @@
 use haven_common::types::RiskLevel;
-pub use haven_common::types::TaskPriority;
 use haven_memory::Database;
-use haven_tools::{McpToolAdapter, SkillToolAdapter, ToolResult, ToolsManager};
+use haven_tools::{ToolResult, ToolsManager};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -66,8 +65,6 @@ pub struct TaskInfo {
     /// first ReAct loop completes, or manually by the user.
     pub title: Option<String>,
     pub status: TaskStatus,
-    pub classification: String,
-    pub priority: TaskPriority,
     pub steps: Vec<StepInfo>,
     pub supplement_queue: Vec<String>,
     /// Steering queue: items that should interrupt the current tool sequence
@@ -75,9 +72,6 @@ pub struct TaskInfo {
     pub steering_queue: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
-    /// True after the dispatcher picks this task at least once.
-    /// Used to distinguish fresh tasks from pending ones in `take_next_pending`.
-    pub dispatched_once: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -131,76 +125,37 @@ impl TaskExecutor {
         }
     }
 
-    fn insert_by_priority(tasks: &mut Vec<TaskInfo>, task: TaskInfo) {
-        fn order(p: TaskPriority) -> u8 {
-            match p {
-                TaskPriority::Critical => 0,
-                TaskPriority::High => 1,
-                TaskPriority::Normal => 2,
-                TaskPriority::Low => 3,
-            }
-        }
-        let o = order(task.priority);
-        let pos = tasks.iter().position(|t| order(t.priority) > o);
-        match pos {
-            Some(i) => tasks.insert(i, task),
-            None => tasks.push(task),
-        }
-    }
-
     pub async fn create_task(
         &self,
         input: &str,
-        classification: &str,
-        priority: TaskPriority,
         session_id: Option<&str>,
     ) -> anyhow::Result<TaskInfo> {
-        self.create_task_with_summary(input, classification, priority, input, session_id)
+        self.create_task_with_summary(input, input, session_id)
             .await
     }
 
     pub async fn create_task_with_summary(
         &self,
         input: &str,
-        classification: &str,
-        priority: TaskPriority,
         summary: &str,
         session_id: Option<&str>,
     ) -> anyhow::Result<TaskInfo> {
         let now = chrono::Utc::now().to_rfc3339();
-        let record = self.db.create_task(session_id, input, classification, input)?;
+        let record = self.db.create_task(session_id, input, input)?;
         let task = TaskInfo {
             id: record.id,
             input: input.into(),
             summary: summary.into(),
             title: None,
             status: TaskStatus::Pending,
-            classification: classification.into(),
-            priority,
             steps: Vec::new(),
             supplement_queue: Vec::new(),
             steering_queue: Vec::new(),
             created_at: now.clone(),
             updated_at: now,
-            dispatched_once: false,
         };
         let mut tasks = self.tasks.lock().await;
-        Self::insert_by_priority(&mut tasks, task.clone());
-
-        // Critical priority: preempt every currently running task to Paused so
-        // its ReAct loop pauses at the next step boundary and the Critical job
-        // wins the next dispatcher slot.
-        if priority == TaskPriority::Critical {
-            let running: Vec<String> = self.running_tasks.lock().await.iter().cloned().collect();
-            for running_id in running {
-                if let Some(running_task) = tasks.iter_mut().find(|t| t.id == running_id)
-                    && running_task.status == TaskStatus::Running
-                {
-                    running_task.status = TaskStatus::Paused;
-                    let _ = self.db.update_task_status(&running_id, "paused");
-                }
-            }
-        }
+        tasks.push(task.clone());
 
         // Wake the dispatcher so it picks up this Pending task immediately.
         self.dispatch_notify.notify_one();
@@ -269,25 +224,12 @@ impl TaskExecutor {
         });
     }
 
-    /// Pick the highest-priority `Pending` task ID. Atomically (under the
-    /// `tasks` lock) marks the task as dispatched by moving it to `Running`'
-    /// s "queued-to-run" stage via status — actually we keep it `Pending`
-    /// until mark_running flips it. Here we just reserve it by removing from
-    /// the pending set conceptually: returns the id; caller will mark_running.
+    /// Pick the first `Pending` task ID. Caller will `mark_running`.
     async fn take_next_pending(&self) -> Option<String> {
         let mut tasks = self.tasks.lock().await;
         tracing::trace!("take_next_pending scanning {} tasks", tasks.len());
         for task in tasks.iter_mut() {
             if task.status == TaskStatus::Pending {
-                // A task that has already been dispatched but
-                // has no new supplements or steering is pending — skip it
-                // until the user provides more context.
-                if task.dispatched_once
-                    && task.supplement_queue.is_empty()
-                    && task.steering_queue.is_empty()
-                {
-                    continue;
-                }
                 tracing::debug!("take_next_pending found: {:?}", task.id);
                 return Some(task.id.clone());
             }
@@ -300,7 +242,6 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
             task.status = TaskStatus::Running;
-            task.dispatched_once = true;
             task.updated_at = chrono::Utc::now().to_rfc3339();
             let _ = self.db.update_task_status(task_id, "running");
             tracing::debug!("task {} → Running", task_id);
@@ -390,7 +331,16 @@ impl TaskExecutor {
     /// resources either way. Called from the frontend "结束任务" button.
     pub async fn end_task(&self, task_id: &str) -> anyhow::Result<TaskStatus> {
         // Cancel the running token first to interrupt any active ReAct loop.
-        let cancel = self.cancellation_token(task_id).await;
+        // Ensure a real token exists even when the dispatcher hasn't created
+        // one yet (race window between take_next_pending and token insertion);
+        // otherwise cancel() would fire on a default token nobody observes.
+        let cancel = {
+            let mut cancels = self.task_cancellations.lock().await;
+            cancels
+                .entry(task_id.to_string())
+                .or_insert_with(CancellationToken::new)
+                .clone()
+        };
         cancel.cancel();
         let mut tasks = self.tasks.lock().await;
         if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
@@ -451,37 +401,6 @@ impl TaskExecutor {
         }
     }
 
-    pub async fn pause_task(&self, task_id: &str) -> anyhow::Result<()> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            if task.status == TaskStatus::Running {
-                task.status = TaskStatus::Paused;
-                self.db.update_task_status(task_id, "paused")?;
-                drop(tasks);
-                // Release the semaphore permit so the slot can be used by
-                // another pending task. The dispatcher will re-acquire a
-                // permit when the task is resumed and picked up again.
-                self.task_permits.lock().await.remove(task_id);
-            }
-            Ok(())
-        } else {
-            anyhow::bail!("task '{}' not found", task_id)
-        }
-    }
-
-    pub async fn resume_task(&self, task_id: &str) -> anyhow::Result<()> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            if task.status == TaskStatus::Paused {
-                task.status = TaskStatus::Pending;
-                self.db.update_task_status(task_id, "pending")?;
-            }
-            Ok(())
-        } else {
-            anyhow::bail!("task '{}' not found", task_id)
-        }
-    }
-
     pub async fn list_tasks(&self) -> Vec<TaskInfo> {
         self.tasks.lock().await.clone()
     }
@@ -514,27 +433,54 @@ impl TaskExecutor {
         let status_str = status.as_str().to_string();
         let is_terminal = status_str == "completed" || status_str == "error";
         let is_pending = status_str == "pending";
-        let mut tasks = self.tasks.lock().await;
-        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-            let old_status = tasks[pos].status.as_str();
-            tasks[pos].status = status;
-            tracing::info!("update_task_status: task={} {} -> {}", task_id, old_status, status_str);
-            tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-            self.db.update_task_status(task_id, &status_str)?;
-            // Notify any waiter that status has changed.
-            if let Some(notify) = self.task_notify.lock().await.get(task_id) {
+        // Determine whether this is a terminal transition and capture the
+        // task's index under the `tasks` lock. The lock is released before any
+        // subordinate locks (`running_tasks`, `task_permits`, ...) are touched
+        // so the acquisition order stays `tasks` -> (others), matching
+        // `unmark_running`'s `running_tasks` -> `tasks` without nesting.
+        let needs_terminal_cleanup: Option<usize>;
+        {
+            let mut tasks = self.tasks.lock().await;
+            if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
+                let old_status = tasks[pos].status.as_str();
+                tasks[pos].status = status;
+                tracing::info!("update_task_status: task={} {} -> {}", task_id, old_status, status_str);
+                tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
+                self.db.update_task_status(task_id, &status_str)?;
+                // Notify any waiter that status has changed. Lazily create the
+                // Notify so a transition that happens before the ReAct loop
+                // calls `status_notifier` is not lost (otherwise the later
+                // `notified().await` on a fresh Notify would block forever).
+                let notify = self
+                    .task_notify
+                    .lock()
+                    .await
+                    .entry(task_id.to_string())
+                    .or_insert_with(|| Arc::new(Notify::new()))
+                    .clone();
+                notify.notify_waiters();
+                // Wake the dispatcher when a task transitions to Pending.
+                if is_pending {
+                    self.dispatch_notify.notify_one();
+                }
+                needs_terminal_cleanup = if is_terminal { Some(pos) } else { None };
+            } else {
+                needs_terminal_cleanup = None;
+            }
+        }
+        // Terminal cleanup performed without holding `tasks` to avoid lock
+        // ordering inversion with `unmark_running` (which takes
+        // `running_tasks` before `tasks`).
+        if needs_terminal_cleanup.is_some() {
+            self.running_tasks.lock().await.remove(task_id);
+            self.task_permits.lock().await.remove(task_id);
+            self.task_cancellations.lock().await.remove(task_id);
+            if let Some(notify) = self.task_notify.lock().await.remove(task_id) {
                 notify.notify_waiters();
             }
-            // Wake the dispatcher when a task transitions to Pending.
-            if is_pending {
-                self.dispatch_notify.notify_one();
-            }
-            if is_terminal {
-                self.running_tasks.lock().await.remove(task_id);
-                self.task_permits.lock().await.remove(task_id);
-                self.task_cancellations.lock().await.remove(task_id);
-                self.task_notify.lock().await.remove(task_id);
-                self.tools.unregister_task(task_id).await;
+            self.tools.unregister_task(task_id).await;
+            let mut tasks = self.tasks.lock().await;
+            if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
                 tasks.remove(pos);
             }
         }
@@ -550,21 +496,8 @@ impl TaskExecutor {
             .unwrap_or_default()
     }
 
-    /// Reset `dispatched_once` to `false` so the dispatcher's
-    /// `take_next_pending` will pick the task up again. Used by rollback: the
-    /// task's supplement/steering queues are empty, so without resetting this
-    /// flag the dispatcher would skip it indefinitely.
-    pub async fn reset_dispatched_once(&self, task_id: &str) {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.dispatched_once = false;
-            // Wake the dispatcher since this task is now eligible for pickup.
-            self.dispatch_notify.notify_one();
-        }
-    }
-
     /// Load a task from the database into the in-memory list if it is not
-    /// already there (e.g. after an app restart). Used by `supplement_task`
+    /// already there (e.g. after an app restart). Used by `process_input`
     /// so that follow-up messages can reach tasks that were paused before
     /// the restart and never re-entered the executor's working set.
     pub async fn ensure_task_loaded(&self, task_id: &str) -> anyhow::Result<()> {
@@ -584,20 +517,17 @@ impl TaskExecutor {
             summary: record.transcript,
             title: record.title,
             status: TaskStatus::from_status_str(&record.status),
-            classification: record.classification,
-            priority: TaskPriority::Normal,
             steps: Vec::new(),
             supplement_queue: Vec::new(),
             steering_queue: Vec::new(),
             created_at: record.created_at,
             updated_at: record.updated_at,
-            dispatched_once: true,
         };
         let mut tasks = self.tasks.lock().await;
         // Re-check: another thread may have inserted this task between the
         // check above and the DB query.
         if !tasks.iter().any(|t| t.id == task_id) {
-            Self::insert_by_priority(&mut tasks, task);
+            tasks.push(task);
         }
         Ok(())
     }
@@ -649,26 +579,28 @@ impl TaskExecutor {
             && let Some(skill_name) = result.output["skill"]["name"].as_str()
         {
             let clean_name = skill_name.strip_prefix("skill::").unwrap_or(skill_name);
-            if let Some(skill) = self.tools.skills_engine.get_skill(clean_name).await {
-                let runner = self.tools.skill_runner.read().await.clone();
-                let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-                self.tools.register_for_task(task_id, Arc::new(adapter)).await;
-            }
+            self.tools.register_skill_for_task(task_id, clean_name).await;
         }
 
         // Register MCP tool adapters per-task on successful load_mcp
         if result.success && tool_name == "load_mcp"
             && let Some(server_name) = result.output["server_name"].as_str()
-            && let Some(client) = self.tools.mcp_manager.get_client(server_name).await
         {
-            let tools = client.tools_cache().await;
-            for info in tools {
-                let adapter = McpToolAdapter::new(client.clone(), server_name, info);
-                self.tools.register_for_task(task_id, Arc::new(adapter)).await;
-            }
+            self.tools.register_mcp_for_task(task_id, server_name).await;
         }
 
         let step_index = step_num as i32;
+        // Guard against rollback/cancel: if the task has been removed from the
+        // running set while the tool was executing (e.g. rollback_task marked
+        // it Error and restored a snapshot), skip persisting step records that
+        // would otherwise corrupt the restored state.
+        if !self.running_tasks.lock().await.contains(task_id) {
+            tracing::warn!(
+                "execute_step: task {} left running set during tool execution; skipping step record",
+                task_id
+            );
+            return Ok(result);
+        }
         {
             let mut tasks = self.tasks.lock().await;
             if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
@@ -768,7 +700,7 @@ mod tests {
         });
 
         for i in 0..5 {
-            exec.create_task(&format!("task {}", i), "NewTask", TaskPriority::Normal, None)
+            exec.create_task(&format!("task {}", i), None)
                 .await
                 .unwrap();
         }
@@ -788,140 +720,6 @@ mod tests {
             "peak concurrent out of expected range: {}",
             peak.load(Ordering::SeqCst)
         );
-    }
-
-    /// A High-priority task must be picked before a later Normal task.
-    #[tokio::test]
-    async fn dispatcher_prefers_high_priority() {
-        let exec = make_executor(1);
-
-        // Use a release gate so the handler doesn't start before both tasks
-        // are queued; max_concurrent=1 means only the first-picked task runs
-        // first. The runner records the order it sees.
-        let order = Arc::new(Mutex::new(Vec::<String>::new()));
-        let gate = Arc::new(tokio::sync::Notify::new());
-
-        let order_ref = order.clone();
-        let exec_ref = exec.clone();
-        let gate_ref = gate.clone();
-        let handler: RunHandler = Arc::new(move |id: String| {
-            let order = order_ref.clone();
-            let exec = exec_ref.clone();
-            let gate = gate_ref.clone();
-            Box::pin(async move {
-                order.lock().await.push(id.clone());
-                gate.notify_waiters();
-                // Let the dispatcher pick up the next pending task.
-                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-                let _ = exec.update_task_status(&id, TaskStatus::Completed).await;
-                Ok(())
-            })
-        });
-
-        let normal = exec
-            .create_task("low-input", "NewTask", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-        let high = exec
-            .create_task("high-input", "NewTask", TaskPriority::High, None)
-            .await
-            .unwrap();
-
-        exec.clone().start_dispatcher(handler);
-
-        // Wait for both entries to appear in the order vec.
-        for _ in 0..200 {
-            if order.lock().await.len() == 2 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-
-        let seq = order.lock().await.clone();
-        assert_eq!(seq.len(), 2);
-        assert_eq!(seq[0], high.id, "high-priority task must run first");
-        assert_eq!(seq[1], normal.id, "normal-priority task must run second");
-        let _ = gate;
-    }
-
-    /// Critical-priority submission preempts a running Normal task.
-    #[tokio::test]
-    async fn dispatcher_critical_preempts_running() {
-        let exec = make_executor(1);
-
-        let started = Arc::new(AtomicU32::new(0));
-        let completed = Arc::new(AtomicU32::new(0));
-
-        let started_ref = started.clone();
-        let completed_ref = completed.clone();
-        let exec_ref = exec.clone();
-        let handler: RunHandler = Arc::new(move |id: String| {
-            let s = started_ref.clone();
-            let d = completed_ref.clone();
-            let exec = exec_ref.clone();
-            Box::pin(async move {
-                s.fetch_add(1, Ordering::SeqCst);
-                // Give the test time to submit the Critical task while this
-                // handler is in its first (dummy) step.
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                let _ = exec.update_task_status(&id, TaskStatus::Completed).await;
-                d.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
-        });
-
-        let normal = exec
-            .create_task("normal", "NewTask", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-
-        exec.clone().start_dispatcher(handler);
-
-        // Wait for the normal task to actually start.
-        for _ in 0..100 {
-            if started.load(Ordering::SeqCst) >= 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-
-        assert_eq!(started.load(Ordering::SeqCst), 1);
-        // Before Critical submission, the normal task is Running.
-        let statuses = exec.list_tasks().await;
-        let normal_status = statuses
-            .iter()
-            .find(|t| t.id == normal.id)
-            .map(|t| t.status.clone())
-            .unwrap();
-        assert_eq!(normal_status, TaskStatus::Running);
-
-        // Submit Critical; create_task flips the Running normal task to Paused.
-        let critical = exec
-            .create_task("critical", "NewTask", TaskPriority::Critical, None)
-            .await
-            .unwrap();
-
-        // The normal task must now be Paused.
-        let statuses = exec.list_tasks().await;
-        let normal_status = statuses
-            .iter()
-            .find(|t| t.id == normal.id)
-            .map(|t| t.status.clone())
-            .unwrap();
-        assert_eq!(normal_status, TaskStatus::Paused);
-
-        // Wait for both tasks to eventually complete.
-        for _ in 0..200 {
-            if completed.load(Ordering::SeqCst) == 2 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert_eq!(completed.load(Ordering::SeqCst), 2);
-        // Critical must finish (we're waiting for completions, run_handler is the
-        // dummy which doesn't touch run_task; completion via update_task_status
-        // is enough for this dispatcher test).
-        let _ = critical.id;
     }
 
     // ─── Data-layer tests (no dispatcher required) ───
@@ -947,12 +745,11 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task("hello world", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("hello world", None)
             .await
             .unwrap();
         assert_eq!(task.status, TaskStatus::Pending);
         assert_eq!(task.input, "hello world");
-        assert_eq!(task.classification, "NEW_TASK");
         assert!(!task.id.is_empty());
         assert!(!task.created_at.is_empty());
     }
@@ -963,12 +760,11 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task_with_summary("raw input", "NEW_TASK", TaskPriority::High, "summary text", None)
+            .create_task_with_summary("raw input", "summary text", None)
             .await
             .unwrap();
         assert_eq!(task.input, "raw input");
         assert_eq!(task.summary, "summary text");
-        assert_eq!(task.priority, TaskPriority::High);
     }
 
     #[tokio::test]
@@ -977,7 +773,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(TaskExecutor::new(db, tools, 3));
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         // Set to Running so end_task marks it as Error.
@@ -1015,7 +811,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         exec.update_task_status(&task.id, TaskStatus::Paused)
@@ -1026,68 +822,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pause_and_resume_task() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(TaskExecutor::new(db, tools, 3));
-        let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-
-        // Manually move to Running since no dispatcher is running
-        {
-            let mut tasks = exec.tasks.lock().await;
-            if let Some(t) = tasks.iter_mut().find(|t| t.id == task.id) {
-                t.status = TaskStatus::Running;
-            }
-            exec.running_tasks.lock().await.insert(task.id.clone());
-        }
-
-        exec.pause_task(&task.id).await.unwrap();
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Paused);
-
-        exec.resume_task(&task.id).await.unwrap();
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Pending);
-    }
-
-    #[tokio::test]
-    async fn pause_task_on_non_running_is_noop() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = TaskExecutor::new(db, tools, 3);
-        let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-        // Task is Pending, not Running — pause should be a no-op
-        let result = exec.pause_task(&task.id).await;
-        assert!(result.is_ok());
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Pending);
-    }
-
-    #[tokio::test]
-    async fn resume_task_on_non_paused_is_noop() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = TaskExecutor::new(db, tools, 3);
-        let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-        // Task is Pending, not Paused — resume should be a no-op
-        let result = exec.resume_task(&task.id).await;
-        assert!(result.is_ok());
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Pending);
-    }
-
-    #[tokio::test]
     async fn add_and_get_supplements() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         exec.add_supplement(&task.id, "extra context 1").await.unwrap();
@@ -1112,7 +852,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         exec.add_steering(&task.id, "steer 1").await.unwrap();
@@ -1121,35 +861,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tasks_respects_priority_order() {
+    async fn list_tasks_all_present() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
 
         let _low = exec
-            .create_task("low", "NEW_TASK", TaskPriority::Low, None)
+            .create_task("low", None)
             .await
             .unwrap();
         let _normal = exec
-            .create_task("normal", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("normal", None)
             .await
             .unwrap();
         let _high = exec
-            .create_task("high", "NEW_TASK", TaskPriority::High, None)
-            .await
-            .unwrap();
-        let _critical = exec
-            .create_task("critical", "NEW_TASK", TaskPriority::Critical, None)
+            .create_task("high", None)
             .await
             .unwrap();
 
         let tasks = exec.list_tasks().await;
-        assert_eq!(tasks.len(), 4);
-        // Sorted by priority: Critical > High > Normal > Low
-        assert_eq!(tasks[0].input, "critical");
-        assert_eq!(tasks[1].input, "high");
-        assert_eq!(tasks[2].input, "normal");
-        assert_eq!(tasks[3].input, "low");
+        assert_eq!(tasks.len(), 3);
     }
 
     #[tokio::test]
@@ -1158,7 +889,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Pending);
@@ -1185,57 +916,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn critical_priority_preempts_running_tasks_in_memory() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(TaskExecutor::new(db, tools, 3));
-        let normal = exec
-            .create_task("normal", "NEW_TASK", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-        let high = exec
-            .create_task("high", "NEW_TASK", TaskPriority::High, None)
-            .await
-            .unwrap();
-
-        // Manually move normal to Running
-        {
-            let mut tasks = exec.tasks.lock().await;
-            if let Some(t) = tasks.iter_mut().find(|t| t.id == normal.id) {
-                t.status = TaskStatus::Running;
-            }
-            exec.running_tasks.lock().await.insert(normal.id.clone());
-        }
-
-        // Create a Critical task; only the Running Normal task is preempted
-        let _critical = exec
-            .create_task("critical", "NEW_TASK", TaskPriority::Critical, None)
-            .await
-            .unwrap();
-
-        let tasks = exec.list_tasks().await;
-        let normal_status = tasks
-            .iter()
-            .find(|t| t.id == normal.id)
-            .map(|t| t.status.clone())
-            .unwrap();
-        assert_eq!(normal_status, TaskStatus::Paused);
-        // High was Pending (not Running), so it stays Pending
-        let high_status = tasks
-            .iter()
-            .find(|t| t.id == high.id)
-            .map(|t| t.status.clone())
-            .unwrap();
-        assert_eq!(high_status, TaskStatus::Pending);
-    }
-
-    #[tokio::test]
     async fn update_task_status_changes_state() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         exec.update_task_status(&task.id, TaskStatus::Completed)
@@ -1246,37 +932,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_task_with_summary_critical_preempts() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(TaskExecutor::new(db, tools, 3));
-        let normal = exec
-            .create_task("normal", "NEW_TASK", TaskPriority::Normal, None)
-            .await
-            .unwrap();
-        {
-            let mut tasks = exec.tasks.lock().await;
-            if let Some(t) = tasks.iter_mut().find(|t| t.id == normal.id) {
-                t.status = TaskStatus::Running;
-            }
-            exec.running_tasks.lock().await.insert(normal.id.clone());
-        }
-        let _critical = exec
-            .create_task_with_summary("critical", "NEW_TASK", TaskPriority::Critical, "urgent", None)
-            .await
-            .unwrap();
-        let tasks = exec.list_tasks().await;
-        let normal_status = tasks.iter().find(|t| t.id == normal.id).map(|t| t.status.clone()).unwrap();
-        assert_eq!(normal_status, TaskStatus::Paused);
-    }
-
-    #[tokio::test]
     async fn update_task_status_completed_cleans_up() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(TaskExecutor::new(db, tools, 3));
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         exec.running_tasks.lock().await.insert(task.id.clone());
@@ -1296,7 +957,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(TaskExecutor::new(db, tools, 3));
         let task = exec
-            .create_task("test", "NEW_TASK", TaskPriority::Normal, None)
+            .create_task("test", None)
             .await
             .unwrap();
         let result = exec.execute_step(&task.id, "nonexistent_tool", serde_json::json!({}), 1).await;

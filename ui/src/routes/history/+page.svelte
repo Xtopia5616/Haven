@@ -10,6 +10,7 @@
 	let totalCount = $state(0);
 	let loading = $state(false);
 	let hasMore = $state(true);
+	let loadHistorySeq = 0;
 	const PAGE_SIZE = 50;
 
 	let statusFilter = $state('');
@@ -48,8 +49,7 @@
 		try {
 			unlistenTitleUpdate = await listen('task:title-updated', (event) => {
 				const { task_id, title } = event.payload;
-				const t = tasks.find(t => t.id === task_id);
-				if (t) t.title = title;
+				tasks = tasks.map(t => t.id === task_id ? { ...t, title } : t);
 			});
 		} catch (e) {
 			logger.warn('history', 'Failed to listen for title-updated', e);
@@ -65,7 +65,6 @@
 		return {
 			query: searchQuery || null,
 			status: statusFilter || null,
-			classification: null,
 			startDate: startDate || null,
 			endDate: endDate || null,
 			...extra,
@@ -73,21 +72,25 @@
 	}
 
 	async function loadHistory() {
+		const seq = ++loadHistorySeq;
 		loading = true;
 		try {
 			const results = await invoke('search_history_filtered', filterParams({ limit: PAGE_SIZE, offset: 0 }));
+			// Stale response guard: a newer loadHistory call superseded this one.
+			if (seq !== loadHistorySeq) return;
 			tasks = results || [];
 			totalCount = tasks.length;
 			offset = PAGE_SIZE;
 			hasMore = tasks.length >= PAGE_SIZE;
 		} catch {
+			if (seq !== loadHistorySeq) return;
 			tasks = [];
 			totalCount = 0;
 			hasMore = false;
 			logger.warn('history', 'loadHistory error');
 			addNotification('加载历史记录失败', 'error', 3000);
 		}
-		loading = false;
+		if (seq === loadHistorySeq) loading = false;
 	}
 
 	async function loadMore() {
@@ -142,7 +145,7 @@
 				const streaming = existing.filter((m) => m.streaming);
 				return [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
 			});
-			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title });
+			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title, wasError: task.status === 'error' });
 			await goto('/');
 		} catch (e) {
 			logger.error('history', 'Failed to load task for review', e);
@@ -169,26 +172,45 @@
 			});
 		}
 
-		// Steps only supplement action/observation (tool) badges.
-		// Thought-only steps are skipped because their text is already
-		// represented in session messages, avoiding duplication.
-		for (const step of data.steps || []) {
-			const stepId = `step-${step.id}`;
-			if (msgIds.has(stepId)) continue;
-			if (!step.action_tool) continue;
-			const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
-			items.push({
-				id: stepId,
-				role: 'assistant',
-				content: obs || '',
-				type: 'tool',
-				toolName: step.action_tool,
-				voice: false,
-				time: formatDate(step.created_at),
-				streaming: false,
-				stepNumber: step.step_index,
-			});
+	// Steps only supplement action/observation (tool) badges.
+	// Thought-only steps are skipped because their text is already
+	// represented in session messages, avoiding duplication.
+	for (const step of data.steps || []) {
+		const stepId = `step-${step.id}`;
+		if (msgIds.has(stepId)) continue;
+		if (!step.action_tool) continue;
+		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
+		items.push({
+			id: stepId,
+			role: 'assistant',
+			content: obs || '',
+			type: 'tool',
+			toolName: step.action_tool,
+			voice: false,
+			time: formatDate(step.created_at),
+			streaming: false,
+			stepNumber: step.step_index,
+		});
+	}
+	// Thought-only steps are not added as separate items (their text is in
+	// session messages), but we still need their step_index for stepNumber
+	// inference — otherwise tasks with no tool steps (e.g. errored on the
+	// first LLM call) leave all messages without a stepNumber, breaking
+	// rollback. Match by content (trimmed) to the corresponding session
+	// message.
+	for (const step of data.steps || []) {
+		if (step.action_tool) continue;
+		if (step.thought == null) continue;
+		const thoughtTrimmed = step.thought.trim();
+		if (!thoughtTrimmed) continue;
+		for (const item of items) {
+			if (item.role === 'assistant' && item.stepNumber == null
+				&& item.content.trim() === thoughtTrimmed) {
+				item.stepNumber = step.step_index;
+				break;
+			}
 		}
+	}
 		items.sort((a, b) => {
 			if (a.time < b.time) return -1;
 			if (a.time > b.time) return 1;
@@ -468,9 +490,6 @@
 		{/if}
 		<div class="history-meta">
 			<span class="meta-date">{formatDate(task.created_at)}</span>
-			{#if task.classification}
-				<span class="meta-classification">{task.classification}</span>
-			{/if}
 			{#if task.session_id}
 				<span class="meta-session" title={task.session_id}>ID: {task.session_id.slice(0, 8)}</span>
 			{/if}
@@ -520,9 +539,6 @@
 					{/if}
 					<div class="history-meta">
 						<span class="meta-date">{formatDate(task.created_at)}</span>
-						{#if task.classification}
-							<span class="meta-classification">{task.classification}</span>
-						{/if}
 						{#if task.session_id}
 							<span class="meta-session" title={task.session_id}>ID: {task.session_id.slice(0, 8)}</span>
 						{/if}
@@ -843,13 +859,6 @@
 	.meta-date {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 10px;
-	}
-	.meta-classification {
-		font-size: 10px;
-		font-weight: 500;
-		padding: 1px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		background: color-mix(in srgb, var(--md-sys-color-on-surface-variant) 12%, transparent);
 	}
 	.meta-session {
 		font-family: var(--md-sys-typescale-mono);

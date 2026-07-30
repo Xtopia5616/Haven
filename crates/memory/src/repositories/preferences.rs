@@ -86,25 +86,29 @@ impl Database {
     pub fn increment_counter(&self, key: &str, by: i64) -> anyhow::Result<i64> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
-        let current: i64 = conn
-            .query_row(
-                "SELECT value FROM preferences WHERE key = ?1",
-                rusqlite::params![key],
-                |r| {
-                    Ok(r.get::<_, String>(0)
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0))
-                },
-            )
-            .unwrap_or(0);
-        let new_val = current + by;
-        conn.execute(
-            "INSERT INTO preferences (key, value, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-            rusqlite::params![key, new_val.to_string(), now],
+        // Atomic increment: UPDATE first, then INSERT only if the key didn't exist.
+        let rows = conn.execute(
+            "UPDATE preferences SET value = CAST(value AS INTEGER) + ?2, updated_at = ?3 WHERE key = ?1",
+            rusqlite::params![key, by, now],
         )?;
+        let new_val = if rows == 0 {
+            // Key doesn't exist yet — insert initial value.
+            conn.execute(
+                "INSERT INTO preferences (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ?2, updated_at = ?3",
+                rusqlite::params![key, by, now],
+            )?;
+            by
+        } else {
+            // Read back the updated value to return to the caller.
+            conn.query_row(
+                "SELECT CAST(value AS INTEGER) FROM preferences WHERE key = ?1",
+                rusqlite::params![key],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(by)
+        };
         Ok(new_val)
     }
 

@@ -92,3 +92,94 @@ impl SessionManager {
         *self.session_id.lock().unwrap() = session_id.to_string();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use haven_memory::Database;
+
+    fn test_db() -> Arc<Database> {
+        let mut p = std::env::temp_dir();
+        p.push(format!("haven_session_test_{}.db", uuid::Uuid::new_v4()));
+        Arc::new(Database::open(&p).unwrap())
+    }
+
+    #[test]
+    fn new_creates_active_session() {
+        let db = test_db();
+        let sm = SessionManager::new(db.clone(), 10);
+        let id = sm.current_session_id();
+        assert!(!id.is_empty());
+        assert_ne!(id, "default");
+        // DB now has one active session matching the id.
+        assert_eq!(db.get_or_create_active_session().unwrap().id, id);
+    }
+
+    #[test]
+    fn ensure_session_returns_existing_id() {
+        let db = test_db();
+        let sm = SessionManager::new(db.clone(), 5);
+        let id1 = sm.ensure_session();
+        let id2 = sm.ensure_session();
+        assert_eq!(id1, id2);
+        assert_eq!(id2, sm.current_session_id());
+    }
+
+    #[test]
+    fn start_new_session_closes_previous_and_switches() {
+        let db = test_db();
+        let sm = SessionManager::new(db.clone(), 10);
+        let first = sm.current_session_id();
+        let second = sm.start_new_session().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(sm.current_session_id(), second);
+        // The previous session should now be closed.
+        let sessions = db.list_sessions().unwrap();
+        let prev = sessions.iter().find(|s| s.id == first).unwrap();
+        assert_eq!(prev.status, "closed");
+    }
+
+    #[test]
+    fn persist_and_load_conversation_history() {
+        let db = test_db();
+        let sm = SessionManager::new(db, 10);
+        sm.persist_message("user", "hello there", None);
+        sm.persist_message("assistant", "hi back", None);
+        let history = sm.load_conversation_history();
+        assert_eq!(history.len(), 2);
+        assert!(history[0].contains("[user] hello there"));
+        assert!(history[1].contains("[assistant] hi back"));
+    }
+
+    #[test]
+    fn load_conversation_history_respects_window_size() {
+        let db = test_db();
+        let sm = SessionManager::new(db, 2);
+        sm.persist_message("user", "msg1", None);
+        sm.persist_message("user", "msg2", None);
+        sm.persist_message("user", "msg3", None);
+        let history = sm.load_conversation_history();
+        assert_eq!(history.len(), 2);
+        assert!(history[0].contains("msg2"));
+        assert!(history[1].contains("msg3"));
+    }
+
+    #[test]
+    fn switch_to_session_updates_current_id() {
+        let db = test_db();
+        let sm = SessionManager::new(db, 10);
+        let before = sm.current_session_id();
+        sm.switch_to_session("custom-session-id");
+        assert_eq!(sm.current_session_id(), "custom-session-id");
+        assert_ne!(before, "custom-session-id");
+    }
+
+    #[test]
+    fn switch_then_ensure_session_keeps_switched_id() {
+        let db = test_db();
+        let sm = SessionManager::new(db, 10);
+        sm.switch_to_session("switched-id");
+        // ensure_session should return the switched id, not create a new one.
+        assert_eq!(sm.ensure_session(), "switched-id");
+    }
+}

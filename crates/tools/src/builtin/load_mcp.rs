@@ -67,6 +67,9 @@ impl Tool for LoadMcpTool {
                 available
             )
         })?;
+        if !config.enabled {
+            anyhow::bail!("MCP server '{}' is disabled", server_name);
+        }
 
         // Connect if not already connected
         if self.mcp_manager.get_client(server_name).await.is_none() {
@@ -107,6 +110,7 @@ impl Tool for LoadMcpTool {
 mod tests {
     use super::*;
     use crate::Tool;
+    use haven_common::config::McpServerConfig;
 
     #[test]
     fn test_load_mcp_name() {
@@ -126,5 +130,45 @@ mod tests {
         let schema = tool.input_schema();
         assert!(schema["properties"]["server_name"].is_object());
         assert_eq!(schema["required"][0], "server_name");
+    }
+
+    #[tokio::test]
+    async fn test_load_mcp_rejects_disabled() {
+        let configs = Arc::new(RwLock::new(HashMap::from([(
+            "srv".to_string(),
+            McpServerConfig {
+                name: "srv".into(),
+                enabled: false,
+                ..Default::default()
+            },
+        )])));
+        let tool = LoadMcpTool {
+            mcp_manager: Arc::new(McpManager::new()),
+            server_configs: configs,
+        };
+        let result = tool
+            .execute(
+                serde_json::json!({"server_name": "srv"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err(), "disabled server should be rejected");
+        assert!(result.unwrap_err().to_string().contains("disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_load_mcp_rejects_unknown() {
+        let tool = LoadMcpTool {
+            mcp_manager: Arc::new(McpManager::new()),
+            server_configs: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let result = tool
+            .execute(
+                serde_json::json!({"server_name": "nope"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err(), "unknown server should be rejected");
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 }
