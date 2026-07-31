@@ -51,7 +51,18 @@ impl Tool for ClipboardTool {
                 }).await??;
 
                 if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
-                Ok(ToolResult::ok(serde_json::json!({"content": text})))
+                let max_chars = self.max_output_chars();
+                let (text, truncated) = if text.len() <= max_chars {
+                    (text, false)
+                } else {
+                    let cutoff = text.floor_char_boundary(max_chars);
+                    (format!("{}[truncated ... {} chars omitted]", &text[..cutoff], text.len() - cutoff), true)
+                };
+                let mut result = serde_json::json!({"content": text});
+                if truncated {
+                    result["truncated"] = serde_json::Value::Bool(true);
+                }
+                Ok(ToolResult::ok(result))
             }
             "write" => {
                 let content = input["content"].as_str().ok_or_else(|| {

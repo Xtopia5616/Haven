@@ -50,7 +50,22 @@ impl Tool for WindowTool {
         match op.as_str() {
             "list" => {
                 let windows = imp::enumerate_windows(filter_pid)?;
-                Ok(ToolResult::ok(serde_json::json!({"windows": windows, "count": windows.len()})))
+                let count = windows.len();
+                let max = 200usize;
+                let truncated = count > max;
+                let windows = if truncated {
+                    windows.into_iter().take(max).collect::<Vec<_>>()
+                } else {
+                    windows
+                };
+                let mut result = serde_json::json!({"windows": windows, "count": count});
+                if truncated {
+                    result["truncated"] = serde_json::Value::Bool(true);
+                    result["hint"] = serde_json::json!(
+                        format!("More than {} windows are open; only the first {} are listed. Filter by pid to narrow the result.", max, max)
+                    );
+                }
+                Ok(ToolResult::ok(result))
             }
             "foreground" => {
                 let fg = imp::get_foreground_window_info()?;

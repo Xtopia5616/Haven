@@ -15,6 +15,12 @@ use crate::event::{AgentEventEmitter, EventDispatcher};
 use crate::session::SessionManager;
 use crate::types::{Action, BranchPoint, ReActSnapshot, ReActStep};
 
+/// Upper bound for the pause-wait before re-checking task state. The status
+/// notifier is edge-triggered, so a transition that fires between the state
+/// check and the wait registration would otherwise be lost and hang the
+/// handler forever. Bounded polling converts that into an extra latency.
+const PAUSE_POLL_MS: u64 = 500;
+
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<TaskExecutor>,
@@ -147,11 +153,16 @@ impl ReActEngine {
                     return Ok(());
                 }
                 if self.executor.get_task_state(task_id).await == TaskStatus::Paused {
-                    self.executor
-                        .status_notifier(task_id)
-                        .await
-                        .notified()
-                        .await;
+                    // notify_waiters only wakes waiters registered at the
+                    // moment of the notify: a transition between the state
+                    // check above and the wait below would be lost and block
+                    // forever. Bound the wait and re-evaluate state on timeout.
+                    let notifier = self.executor.status_notifier(task_id).await;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(PAUSE_POLL_MS),
+                        notifier.notified(),
+                    )
+                    .await;
                 }
             }
 
@@ -413,6 +424,20 @@ impl ReActEngine {
                 let _ = handle.await;
             }
 
+            // L2/C2: a rollback or end_task may have cancelled the task while
+            // the LLM call was in flight (the HTTP call itself may not observe
+            // the token promptly and can return well after the 5s rollback
+            // wait). Re-check before persisting anything so a stale response
+            // cannot overwrite the restored snapshot or push ghost steps.
+            if cancel_res.is_cancelled() {
+                tracing::info!(
+                    "ReAct step {} task {} cancelled during LLM call; discarding response",
+                    step_num,
+                    task_id
+                );
+                return Ok(());
+            }
+
             tracing::debug!(
                 "ReAct step {} LLM response: {} text chars, {} tool_calls, reasoning={}",
                 step_num,
@@ -608,10 +633,11 @@ impl ReActEngine {
                                 r.error.unwrap_or_else(|| "unknown failure".into())
                             };
                             let text = if text.len() > max_obs {
+                                let cutoff = text.floor_char_boundary(max_obs);
                                 format!(
                                     "{}[... truncated {} chars omitted]",
-                                    &text[..max_obs],
-                                    text.len() - max_obs
+                                    &text[..cutoff],
+                                    text.len() - cutoff
                                 )
                             } else {
                                 text

@@ -206,27 +206,31 @@ pub async fn end_task(
     task_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let final_status = state
-        .executor
-        .end_task(&task_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    // L3: capture the title BEFORE end_task removes the task from the
+    // in-memory list; reading afterwards would fall back to the DB and lose
+    // the generated title (end_task clears the working set).
     let title = state
         .executor
         .list_tasks()
         .await
         .into_iter()
         .find(|t| t.id == task_id)
-        .map(|t| t.input)
+        .map(|t| t.title.clone().unwrap_or(t.input))
         .or_else(|| {
             state
                 .db
                 .get_task(&task_id)
                 .ok()
                 .flatten()
-                .map(|t| t.input_text)
+                .map(|t| t.title.unwrap_or(t.input_text))
         })
         .unwrap_or_default();
+
+    let final_status = state
+        .executor
+        .end_task(&task_id)
+        .await
+        .map_err(|e| e.to_string())?;
     if final_status == haven_task::TaskStatus::Error {
         let _ = app.emit(
             "task:updated",
@@ -979,7 +983,24 @@ pub async fn switch_model(
     let new_router = Arc::new(LlmRouter::new(config.llm.clone()));
     state.agent.replace_router(new_router);
 
+    // Refresh the file summary summarizer from the (possibly updated) small_model.
+    refresh_summarizer(&state, &config.llm.small_model).await;
+
     Ok(())
+}
+
+/// Point the `file summary` operation at the configured small_model endpoint.
+/// A missing api_key disables the operation.
+async fn refresh_summarizer(
+    state: &Arc<AppState>,
+    endpoint: &haven_common::config::ModelEndpoint,
+) {
+    if endpoint.api_key.is_empty() {
+        state.tools.set_summarizer(None).await;
+        return;
+    }
+    let client = Arc::new(haven_llm::client::HttpLlmClient::new(endpoint.clone()));
+    state.tools.set_summarizer(Some(client)).await;
 }
 
 #[tauri::command]
@@ -1153,6 +1174,7 @@ pub async fn update_settings(
     state.tools.load_mcp_from_config(&mcp_servers).await;
     state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
     state.tools.rebuild_catalog().await;
+    refresh_summarizer(&state, &llm_config.small_model).await;
     state.agent.set_max_steps(task_max_steps);
     let new_router = Arc::new(LlmRouter::new(llm_config));
     state.agent.replace_router(new_router);

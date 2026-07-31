@@ -182,7 +182,7 @@ impl TaskExecutor {
                     }
                 };
 
-                let task_id = exec.take_next_pending().await;
+                let task_id = exec.try_claim_pending().await;
                 let Some(task_id) = task_id else {
                     drop(permit);
                     // Wait for a new Pending task to be signaled, but fall
@@ -195,17 +195,19 @@ impl TaskExecutor {
                     continue;
                 };
 
-                exec.mark_running(&task_id).await;
-
                 // Register the permit so pause/cancel can release it.
                 {
                     let mut permits = exec.task_permits.lock().await;
                     permits.insert(task_id.clone(), permit);
                 }
-                // Create a cancellation token for this task.
+                // Create a cancellation token for this task. Use entry() so a
+                // token already created (and possibly cancelled) by end_task
+                // during the claim window is never clobbered with a fresh one.
                 {
                     let mut cancels = exec.task_cancellations.lock().await;
-                    cancels.insert(task_id.clone(), CancellationToken::new());
+                    cancels
+                        .entry(task_id.clone())
+                        .or_insert_with(CancellationToken::new);
                 }
 
                 let exec_inner = exec.clone();
@@ -224,35 +226,40 @@ impl TaskExecutor {
         });
     }
 
-    /// Pick the first `Pending` task ID. Caller will `mark_running`.
-    async fn take_next_pending(&self) -> Option<String> {
+    /// Atomically claim the first `Pending` task that is not already being
+    /// handled, flip it to `Running` (memory + DB) and insert it into the
+    /// running set. Returns the claimed task id, or `None` if nothing is
+    /// dispatchable.
+    ///
+    /// Claiming under the `tasks` lock closes the TOCTOU window of the former
+    /// "find Pending" + "mark Running" pair, where `end_task`/rollback could
+    /// terminate a task in between and the dispatcher would resurrect it
+    /// (ghost execution) or leave DB and memory diverged.
+    ///
+    /// The `running_tasks` check prevents double-dispatch: a task whose
+    /// handler is still alive (e.g. blocked in a pause-wait after a
+    /// supplement flipped it Paused → Pending) must not be claimed again —
+    /// its own loop picks up the supplement via the status notifier.
+    async fn try_claim_pending(&self) -> Option<String> {
         let mut tasks = self.tasks.lock().await;
-        tracing::trace!("take_next_pending scanning {} tasks", tasks.len());
+        let mut running = self.running_tasks.lock().await;
         for task in tasks.iter_mut() {
-            if task.status == TaskStatus::Pending {
-                tracing::debug!("take_next_pending found: {:?}", task.id);
-                return Some(task.id.clone());
+            if task.status == TaskStatus::Pending && !running.contains(&task.id) {
+                let task_id = task.id.clone();
+                task.status = TaskStatus::Running;
+                task.updated_at = chrono::Utc::now().to_rfc3339();
+                let _ = self.db.update_task_status(&task_id, "running");
+                running.insert(task_id.clone());
+                tracing::debug!("try_claim_pending: claimed task {}", task_id);
+                return Some(task_id);
             }
         }
         None
     }
 
-    /// Mark a task as running: flip status + insert into running set + persist.
-    async fn mark_running(&self, task_id: &str) {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.status = TaskStatus::Running;
-            task.updated_at = chrono::Utc::now().to_rfc3339();
-            let _ = self.db.update_task_status(task_id, "running");
-            tracing::debug!("task {} → Running", task_id);
-        }
-        drop(tasks);
-        self.running_tasks.lock().await.insert(task_id.to_string());
-    }
-
     /// Remove a task from the running set. Terminal status updates are
     /// performed by the handler / agent loop. Also removes terminal-status
-    /// tasks from the in-memory list so `take_next_pending` only counts
+    /// tasks from the in-memory list so `try_claim_pending` only counts
     /// active (Pending / Running) tasks.
     async fn unmark_running(&self, task_id: &str) {
         self.running_tasks.lock().await.remove(task_id);
@@ -332,7 +339,7 @@ impl TaskExecutor {
     pub async fn end_task(&self, task_id: &str) -> anyhow::Result<TaskStatus> {
         // Cancel the running token first to interrupt any active ReAct loop.
         // Ensure a real token exists even when the dispatcher hasn't created
-        // one yet (race window between take_next_pending and token insertion);
+        // one yet (race window between try_claim_pending and token insertion);
         // otherwise cancel() would fire on a default token nobody observes.
         let cancel = {
             let mut cancels = self.task_cancellations.lock().await;
@@ -720,6 +727,63 @@ mod tests {
             "peak concurrent out of expected range: {}",
             peak.load(Ordering::SeqCst)
         );
+    }
+
+    /// Claim is atomic: it flips the task to Running in memory + DB and
+    /// inserts it into the running set, so a second claim returns nothing.
+    #[tokio::test]
+    async fn try_claim_pending_claims_once_and_persists() {
+        let exec = make_executor(2);
+        let task = exec.create_task("t1", None).await.unwrap();
+
+        let claimed = exec.try_claim_pending().await;
+        assert_eq!(claimed.as_deref(), Some(task.id.as_str()));
+
+        let state = exec.get_task_state(&task.id).await;
+        assert_eq!(state, TaskStatus::Running);
+        assert!(exec.running_tasks.lock().await.contains(&task.id));
+        let db_status = exec
+            .db
+            .get_task(&task.id)
+            .unwrap()
+            .map(|t| t.status)
+            .unwrap_or_default();
+        assert_eq!(db_status, "running");
+
+        // No second claim while the first handler holds the slot.
+        assert!(exec.try_claim_pending().await.is_none());
+    }
+
+    /// A Pending task whose handler is still alive (present in the running
+    /// set, e.g. blocked in a pause-wait after Paused → Pending) must not be
+    /// claimed again — otherwise the dispatcher spawns a duplicate ReAct loop.
+    #[tokio::test]
+    async fn try_claim_pending_skips_task_already_in_running_set() {
+        let exec = make_executor(2);
+        let task = exec.create_task("t1", None).await.unwrap();
+        exec.running_tasks.lock().await.insert(task.id.clone());
+
+        assert!(exec.try_claim_pending().await.is_none());
+
+        // Once the handler releases the slot, the task becomes claimable.
+        exec.running_tasks.lock().await.remove(&task.id);
+        let claimed = exec.try_claim_pending().await;
+        assert_eq!(claimed.as_deref(), Some(task.id.as_str()));
+        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Running);
+    }
+
+    /// A task terminated by end_task between the old find/mark window must
+    /// not be resurrected by a late claim (no ghost execution).
+    #[tokio::test]
+    async fn try_claim_pending_respects_end_task() {
+        let exec = make_executor(2);
+        let task = exec.create_task("t1", None).await.unwrap();
+
+        let status = exec.end_task(&task.id).await.unwrap();
+        assert_eq!(status, TaskStatus::Completed);
+
+        assert!(exec.try_claim_pending().await.is_none());
+        assert!(!exec.running_tasks.lock().await.contains(&task.id));
     }
 
     // ─── Data-layer tests (no dispatcher required) ───

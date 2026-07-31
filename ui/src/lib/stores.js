@@ -21,13 +21,17 @@ export const settingsStore = writable({
 
 export const notificationStore = writable([]);
 
+let notificationSeq = 0;
+
 export function addNotification(msg, type = 'info', duration = 3000) {
 	let id = null;
 	notificationStore.update((n) => {
 		if (n.some((x) => x.msg === msg && x.type === type)) {
 			return n;
 		}
-		id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+		// L10: monotonic sequence (plus randomness) so two notifications
+		// created in the same millisecond cannot collide.
+		id = `${Date.now()}-${notificationSeq++}-${Math.random().toString(36).slice(2, 6)}`;
 		return [...n, { id, msg, type }];
 	});
 	if (id !== null) {

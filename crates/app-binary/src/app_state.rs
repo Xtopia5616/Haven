@@ -51,6 +51,16 @@ impl AppState {
         let session_window_size = cfg.memory.session_window_size;
         let max_observation_chars = cfg.task.max_observation_chars;
 
+        // The file `summary` operation uses the small_model endpoint directly.
+        if small_model_endpoint.api_key.is_empty() {
+            tracing::debug!("small_model not configured; file summary operation disabled");
+        } else {
+            tools.set_summarizer(Some(Arc::new(haven_llm::client::HttpLlmClient::new(
+                small_model_endpoint.clone(),
+            ))))
+            .await;
+        }
+
         let agent = Arc::new(AgentLayer::new(
             db.clone(),
             executor.clone(),

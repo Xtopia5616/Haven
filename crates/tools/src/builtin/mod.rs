@@ -28,9 +28,10 @@ pub async fn register_builtin_tools(
     skill_runner: &Arc<RwLock<SkillRunner>>,
     mcp_manager: &Arc<McpManager>,
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
+    summarizer: Option<Arc<dyn haven_llm::LlmClient>>,
 ) {
     tools.push(Arc::new(audio::AudioTool));
-    tools.push(Arc::new(file::FileOpTool));
+    tools.push(Arc::new(file::FileOpTool::new(summarizer)));
     tools.push(Arc::new(process::ProcessTool));
     tools.push(Arc::new(clipboard::ClipboardTool));
     tools.push(Arc::new(shell::ShellTool));

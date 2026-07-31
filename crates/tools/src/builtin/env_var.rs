@@ -71,7 +71,32 @@ impl Tool for EnvTool {
                 let vars: Vec<Value> = env::vars()
                     .map(|(k, v)| serde_json::json!({"name": k, "value": v}))
                     .collect();
-                Ok(ToolResult::ok(serde_json::json!({"variables": vars, "count": vars.len()})))
+                let count = vars.len();
+                let max_chars = self.max_output_chars();
+                // Drop trailing entries until the JSON fits the output budget.
+                // Never parse a mid-string-truncated JSON back (that could
+                // return the full, uncapped listing while still flagged).
+                let mut kept = vars;
+                let (truncated, serialized) = loop {
+                    let serialized = serde_json::to_string(&serde_json::json!({
+                        "variables": kept,
+                        "count": count,
+                    }))
+                    .unwrap_or_default();
+                    if serialized.len() <= max_chars || kept.len() <= 1 {
+                        break (kept.len() < count, serialized);
+                    }
+                    kept.pop();
+                };
+                let mut result: Value = serde_json::from_str(&serialized)
+                    .unwrap_or_else(|_| serde_json::json!({"variables": kept, "count": count}));
+                if truncated {
+                    result["truncated"] = serde_json::Value::Bool(true);
+                    result["hint"] = serde_json::json!(
+                        "Environment listing truncated to the max chars budget. Use get with a specific variable name to read its full value."
+                    );
+                }
+                Ok(ToolResult::ok(result))
             }
             _ => anyhow::bail!("unknown env operation: {}", op),
         }

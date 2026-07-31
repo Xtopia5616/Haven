@@ -465,7 +465,7 @@ impl InputPipeline {
             TARGET_SAMPLE_RATE as f64,
         )));
 
-        let cmd_tx = spawn_capture_thread(ring, resampler, failed)?;
+        let cmd_tx = spawn_capture_thread(ring, resampler, failed.clone())?;
 
         let capture_handle = AudioCaptureHandle { cmd_tx };
         *self.capture.lock().unwrap() = Some(capture_handle);
@@ -494,6 +494,7 @@ impl InputPipeline {
             vad_engine: self.vad_engine.clone(),
             vad_detector: self.vad_detector.clone(),
             handler: self.handler.clone(),
+            failed: failed.clone(),
         };
         tokio::spawn(async move {
             let result = Self::recording_loop(loop_data, cancel).await;
@@ -519,6 +520,25 @@ impl InputPipeline {
             if cancel.is_cancelled() {
                 Self::final_drain(&data, &mut accumulated_pcm).await;
                 let elapsed = start.elapsed();
+                return RecordingResult {
+                    pcm: accumulated_pcm,
+                    reason: RecordingReason::Manual,
+                    duration_ms: elapsed.as_millis() as u64,
+                    transcript: None,
+                };
+            }
+
+            // L7: the CPAL capture stream errored (e.g. device unplugged).
+            // Stop now and keep whatever was captured so far instead of
+            // silently recording silence until max_duration.
+            if data.failed.load(Ordering::SeqCst) {
+                tracing::warn!("audio capture stream failed; stopping recording early");
+                Self::final_drain(&data, &mut accumulated_pcm).await;
+                let elapsed = start.elapsed();
+                let h = data.handler.lock().unwrap().clone();
+                if let Some(h) = h {
+                    h.on_auto_stop().await;
+                }
                 return RecordingResult {
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
@@ -810,6 +830,9 @@ struct LoopData {
     vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
     handler: Arc<StdMutex<Option<Arc<dyn InputHandler>>>>,
+    /// Set by the CPAL stream error callback. The recording loop must observe
+    /// it (L7) instead of draining a dead ring buffer until max_duration.
+    failed: Arc<AtomicBool>,
 }
 
 #[cfg(test)]

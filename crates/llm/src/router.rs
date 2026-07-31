@@ -53,6 +53,14 @@ impl CircuitBreaker {
     }
 
     fn record_success(&mut self) {
+        // A success from a request dispatched BEFORE the breaker tripped must
+        // not close an Open breaker prematurely (M8): concurrent in-flight
+        // requests could otherwise keep the breaker perpetually closed despite
+        // recent failures. Only a HalfOpen probe (or a Closed-state success)
+        // may transition the breaker to Closed.
+        if self.state == CircuitState::Open {
+            return;
+        }
         self.consecutive_failures = 0;
         self.total_calls += 1;
         self.state = CircuitState::Closed;
@@ -119,6 +127,11 @@ impl EndpointHealth {
     }
 
     fn record_success(&mut self) {
+        // Mirror the circuit breaker: a stale success from a pre-open request
+        // must not mark the endpoint healthy again (M8).
+        if self.circuit_breaker.state == CircuitState::Open {
+            return;
+        }
         self.consecutive_failures = 0;
         self.is_healthy = true;
         self.circuit_breaker.record_success();
@@ -871,13 +884,31 @@ mod tests {
         cb.consecutive_failures = 5;
         cb.failure_count = 5;
         cb.total_calls = 5;
-        cb.state = CircuitState::Open;
-        cb.opened_at = Some(Instant::now());
         cb.record_success();
         assert_eq!(cb.consecutive_failures, 0);
         assert_eq!(cb.total_calls, 6);
         assert_eq!(cb.state, CircuitState::Closed);
         assert!(cb.opened_at.is_none());
+    }
+
+    #[test]
+    fn circuit_breaker_success_does_not_close_open_breaker() {
+        // A stale success from a request dispatched before the breaker tripped
+        // must NOT close it — only a HalfOpen probe may (M8).
+        let mut cb = CircuitBreaker::new();
+        cb.state = CircuitState::Open;
+        cb.opened_at = Some(Instant::now());
+        cb.consecutive_failures = 3;
+        cb.record_success();
+        assert_eq!(cb.state, CircuitState::Open, "open breaker stays open");
+        assert_eq!(cb.consecutive_failures, 3, "counters not reset");
+        assert!(cb.opened_at.is_some());
+        // Simulate the cooldown elapsing: probe goes HalfOpen, its success closes.
+        cb.opened_at = Some(Instant::now() - Duration::from_secs(31));
+        assert!(cb.allow_request());
+        assert_eq!(cb.state, CircuitState::HalfOpen);
+        cb.record_success();
+        assert_eq!(cb.state, CircuitState::Closed);
     }
 
     #[test]
@@ -952,8 +983,29 @@ mod tests {
         let mut health = EndpointHealth::new();
         health.record_failure();
         health.record_failure();
+        assert!(health.is_healthy);
+        // A success while the breaker is still Closed (or HalfOpen) resets.
+        health.record_success();
+        assert!(health.is_healthy);
+        assert_eq!(health.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn endpoint_health_success_does_not_recover_open_breaker() {
+        let mut health = EndpointHealth::new();
+        health.record_failure();
+        health.record_failure();
         health.record_failure();
         assert!(!health.is_healthy);
+        assert!(!health.allow_request(), "breaker is Open");
+        // A stale success from a pre-open request must NOT mark it healthy.
+        health.record_success();
+        assert!(!health.is_healthy);
+        assert_eq!(health.consecutive_failures, 3);
+        // Only a HalfOpen probe success (after cooldown) recovers it.
+        health.circuit_breaker.opened_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+        assert!(health.allow_request(), "Open → HalfOpen after cooldown");
         health.record_success();
         assert!(health.is_healthy);
         assert_eq!(health.consecutive_failures, 0);

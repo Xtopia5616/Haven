@@ -11,6 +11,22 @@ pub fn decode_lossy(bytes: &[u8]) -> String {
     cow.to_string()
 }
 
+/// Truncate `text` to at most `max_chars` bytes (char-boundary safe), appending
+/// an "omitted" marker when truncation happened. Returns `(output, truncated)`.
+pub fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
+    if text.len() <= max_chars {
+        (text.to_string(), false)
+    } else {
+        let cutoff = text.floor_char_boundary(max_chars);
+        let truncated = format!(
+            "{}[truncated ... {} chars omitted]",
+            &text[..cutoff],
+            text.len() - cutoff
+        );
+        (truncated, true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,5 +59,29 @@ mod tests {
     fn decode_mixed_utf8_ascii() {
         let s = "rust says: \u{4f60}\u{597d}";
         assert_eq!(decode_lossy(s.as_bytes()), s);
+    }
+
+    #[test]
+    fn truncate_output_short() {
+        let (out, truncated) = truncate_output("hello", 100);
+        assert_eq!(out, "hello");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn truncate_output_long() {
+        let text = "a".repeat(200);
+        let (out, truncated) = truncate_output(&text, 100);
+        assert!(truncated);
+        assert!(out.len() < text.len());
+        assert!(out.contains("[truncated ... 100 chars omitted]"));
+    }
+
+    #[test]
+    fn truncate_output_multibyte_boundary() {
+        let text = "中文内容".repeat(50);
+        let (out, truncated) = truncate_output(&text, 30);
+        assert!(truncated);
+        assert!(out.is_char_boundary(out.len()));
     }
 }

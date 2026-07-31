@@ -56,8 +56,15 @@
 	let accent = $state(themeStore.currentAccent);
 	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
 	let savedAccent = themeStore.currentAccent; // snapshot for reverting unsaved changes
+	let currentTheme = $state(themeStore.currentTheme);
+	const unsubTheme = themeStore.subscribe((v) => { currentTheme = v.theme; });
+	// L12: guards against onDestroy running while onMount's async settings
+	// load is still in flight.
+	let mounted = true;
 
 	onDestroy(() => {
+		mounted = false;
+		unsubTheme();
 		if (accent !== savedAccent) {
 			themeStore.setAccent(savedAccent);
 		}
@@ -66,6 +73,7 @@
 	onMount(async () => {
 		try {
 			const settings = await invoke('get_settings');
+			if (!mounted) return;
 			if (settings) {
 				llmConfig = settings.llm || llmConfig;
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
@@ -99,12 +107,14 @@
 		}
 		try {
 			keyConfigured = await invoke('get_api_key_status');
+			if (!mounted) return;
 		} catch (e) {
 			logger.warn('settings', 'get_api_key_status error', e);
 			addNotification('获取 API Key 状态失败', 'error', 3000);
 		}
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
+			if (!mounted) return;
 		} catch (e) {
 			logger.warn('settings', 'is_autostart_enabled error', e);
 			addNotification('获取开机自启状态失败', 'error', 3000);
@@ -433,18 +443,18 @@
 			<div class="theme-toggle-row" role="radiogroup" aria-label="Theme">
 				<button
 					class="md-btn"
-					class:md-btn--filled={themeStore.currentTheme === 'light'}
-					class:md-btn--tonal={themeStore.currentTheme !== 'light'}
+					class:md-btn--outlined={currentTheme === 'light'}
+					class:md-btn--filled={currentTheme !== 'light'}
 					role="radio"
-					aria-checked={themeStore.currentTheme === 'light'}
+					aria-checked={currentTheme === 'light'}
 					onclick={() => themeStore.setTheme('light')}
 				>Light</button>
 				<button
 					class="md-btn"
-					class:md-btn--tonal={themeStore.currentTheme !== 'dark'}
-					class:md-btn--outlined={themeStore.currentTheme === 'dark'}
+					class:md-btn--outlined={currentTheme === 'dark'}
+					class:md-btn--filled={currentTheme !== 'dark'}
 					role="radio"
-					aria-checked={themeStore.currentTheme === 'dark'}
+					aria-checked={currentTheme === 'dark'}
 					onclick={() => themeStore.setTheme('dark')}
 				>Dark</button>
 			</div>
@@ -464,8 +474,8 @@
 					>{preset.label}</button>
 				{/each}
 				<button
-					class="md-btn md-btn--tonal"
-					class:md-btn--filled={accent.startsWith('#') || accent.startsWith('custom:')}
+					class="md-btn md-btn--filled"
+					class:md-btn--outlined={accent.startsWith('#') || accent.startsWith('custom:')}
 					role="radio"
 					aria-checked={accent.startsWith('#') || accent.startsWith('custom:')}
 					aria-label="Custom hex color"

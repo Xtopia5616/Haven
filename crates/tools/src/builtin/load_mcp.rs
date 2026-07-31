@@ -47,18 +47,11 @@ impl Tool for LoadMcpTool {
             anyhow::bail!("server_name is required");
         }
 
-        let config = {
+        // Read config and the available-server list under one lock.
+        let (config, available) = {
             let configs = self.server_configs.read().await;
-            configs.get(server_name).cloned()
-        };
-
-        let available = {
-            let configs = self.server_configs.read().await;
-            configs
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
+            let available = configs.keys().cloned().collect::<Vec<_>>().join(", ");
+            (configs.get(server_name).cloned(), available)
         };
         let config = config.ok_or_else(|| {
             anyhow::anyhow!(

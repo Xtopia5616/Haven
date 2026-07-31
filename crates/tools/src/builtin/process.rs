@@ -73,19 +73,49 @@ impl Tool for ProcessTool {
                 })
                 .await?;
 
-                let output = serde_json::json!({"processes": processes, "count": processes.len()});
-                let text = serde_json::to_string(&output).unwrap_or_default();
-                let (truncated_output, _) = truncate_output(&text, max_chars);
-                Ok(ToolResult::ok(serde_json::from_str(&truncated_output).unwrap_or(output)))
+                // The entries are sorted by memory desc, so when the JSON
+                // exceeds the output budget, drop trailing entries until it
+                // fits. Never parse a mid-string-truncated JSON back (that
+                // could fall back to returning the full, uncapped output).
+                let count = processes.len();
+                let mut kept = processes;
+                let (truncated, serialized) = loop {
+                    let serialized = serde_json::to_string(&serde_json::json!({
+                        "processes": kept,
+                        "count": count,
+                    }))
+                    .unwrap_or_default();
+                    if serialized.len() <= max_chars || kept.len() <= 1 {
+                        break (kept.len() < count, serialized);
+                    }
+                    kept.pop();
+                };
+                let mut output: Value = serde_json::from_str(&serialized)
+                    .unwrap_or_else(|_| serde_json::json!({"processes": kept, "count": count}));
+                if truncated {
+                    output["truncated"] = serde_json::Value::Bool(true);
+                    output["hint"] = serde_json::json!(
+                        "Output truncated to the max chars budget. Narrow by filtering processes, or reduce the returned fields."
+                    );
+                }
+                Ok(ToolResult::ok(output))
             }
             "launch" => {
                 let cmd = input["command"].as_str().unwrap_or("");
                 if cmd.is_empty() {
                     anyhow::bail!("command is required for launch");
                 }
-                tokio::process::Command::new("cmd")
-                    .args(["/c", cmd])
-                    .spawn()?;
+                // Fire-and-forget: no kill_on_drop (dropping the Child would
+                // terminate the launched process).
+                let mut child = tokio::process::Command::new("cmd");
+                child.args(["/c", cmd]);
+                // Hide the console window when spawning GUI-less commands.
+                #[cfg(windows)]
+                {
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+                    child.creation_flags(CREATE_NO_WINDOW);
+                }
+                child.spawn()?;
                 Ok(ToolResult::ok(serde_json::json!({"launched": cmd})))
             }
             "kill" => {
@@ -94,7 +124,10 @@ impl Tool for ProcessTool {
                     anyhow::bail!("valid pid is required");
                 }
                 tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                    let system = sysinfo::System::new_all();
+                    // new_all() refreshes the whole system; refresh_processes
+                    // is enough to find a single process by pid.
+                    let mut system = sysinfo::System::new();
+                    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
                     let proc = system.process(sysinfo::Pid::from_u32(pid))
                         .ok_or_else(|| anyhow::anyhow!("process {} not found", pid))?;
                     #[cfg(target_os = "windows")]
@@ -113,19 +146,6 @@ impl Tool for ProcessTool {
             }
             _ => anyhow::bail!("unknown process operation: {}", op),
         }
-    }
-}
-
-fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
-    if text.len() <= max_chars {
-        (text.to_string(), false)
-    } else {
-        let truncated = format!(
-            "{}[truncated ... {} chars omitted]",
-            &text[..max_chars],
-            text.len() - max_chars
-        );
-        (truncated, true)
     }
 }
 

@@ -50,7 +50,7 @@ pub trait Tool: Send + Sync {
     }
 
     fn max_output_chars(&self) -> usize {
-        100_000
+        20_000
     }
 
     fn tool_config(&self) -> Option<ToolConfig> {

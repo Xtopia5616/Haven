@@ -1,10 +1,17 @@
 <script>
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
 	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, onContextMenu = null } = $props();
 
 	let md = $state(null);
 	let mdHtml = $state('');
+	// L11: the component may be destroyed while onMount's dynamic imports are
+	// still resolving; guard state writes against an unmounted component.
+	let mounted = true;
+
+	onDestroy(() => {
+		mounted = false;
+	});
 
 	function handleContextMenu(e) {
 		if (onContextMenu) {
@@ -35,6 +42,7 @@
 			import('highlight.js/lib/languages/rust'),
 			import('highlight.js/lib/languages/yaml'),
 		]);
+		if (!mounted) return;
 		const highlighter = hljs.default;
 		highlighter.registerLanguage('javascript', javascript.default);
 		highlighter.registerLanguage('typescript', typescript.default);
@@ -56,8 +64,10 @@
 		});
 	});
 
+	// L11: guard the render effect against unmount mid-import. mdHtml stays ''
+	// until both `md` is loaded and this bubble is still mounted.
 	$effect(() => {
-		if (!md || role !== 'assistant' || msgType) return;
+		if (!mounted || !md || role !== 'assistant' || msgType) return;
 		const text = content || '';
 		mdHtml = text ? md.render(text) : '';
 	});

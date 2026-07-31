@@ -288,7 +288,7 @@ impl Default for ToolConfig {
     fn default() -> Self {
         Self {
             timeout_secs: 30,
-            max_output_chars: 100_000,
+            max_output_chars: 20_000,
             max_retries: 0,
             retry_backoff_secs: 2,
             allowed_paths: Vec::new(),

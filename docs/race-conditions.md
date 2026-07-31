@@ -42,12 +42,12 @@
 
 ### 🟡 Medium
 
-- [ ] **M1** — TOCTOU: dispatcher spawn handler 时任务可能已被 `end_task` 移除 (H1 修复后风险降低)
-  > `task/lib.rs:230-310`
+- [x] **M1** — TOCTOU: dispatcher spawn handler 时任务可能已被 `end_task` 移除 (H1 修复后风险降低)
+  > 已修复: `try_claim_pending` 在 `tasks` 锁内原子完成 "查找 Pending + 跳过 running 中的任务 + 置 Running + 写 DB"，关闭了 `take_next_pending` → `mark_running` 间的窗口；`end_task`/rollback 不会在两者之间插入。同时 dispatcher 用 `entry().or_insert_with` 避免覆盖 `end_task` 已取消的 token。原 `task/lib.rs:230-310`
 - [x] **M2** — Critical 优先级预占未释放 semaphore permit 或取消 token (Critical 优先级未被使用)
-  > `task/lib.rs:193-203`
-- [ ] **M3** — `process_input` TOCTOU: 状态读取与操作之间释放了锁 (H10 修复后风险降低)
-  > `agent/lib.rs:579-618`
+  > 已核实: 代码中不存在任务优先级/预占机制（`RiskLevel::Critical` 仅用于风险评级），此场景不成立。
+- [x] **M3** — `process_input` TOCTOU: 状态读取与操作之间释放了锁 (H10 修复后风险降低)
+  > 已修复: `ensure_task_loaded` 后重新读取状态时，只有 Paused 任务会被补充消息重新激活；Completed/Error 任务直接 `remove_task` 丢弃，不再自动转 Pending（复活幽灵任务）。Paused → Pending 转换保留。`agent/lib.rs:848-898`
 - [x] **M4** — 取消检测在 `FuturesUnordered` drain 期间不生效
   > `react.rs:557`
 - [x] **M5** — `current_run_id` AtomicU64 在并发任务间共享产生 `run_id` 冲突
@@ -56,8 +56,8 @@
   > `react.rs:52-53`, `commands.rs:1225`
 - [x] **M7** — Tool registry rebuild 与 Agent 并发工具查找竞态 (替换间隙工具消失)
   > `tool.rs:175-177`, `tools/lib.rs:137`
-- [ ] **M8** — LlmRouter 断路器 TOCTOU: 并发 success 过早关闭 breaker
-  > `router.rs:202-212, 396-487`
+- [x] **M8** — LlmRouter 断路器 TOCTOU: 并发 success 过早关闭 breaker
+  > 已修复: `record_success` 在断路器处于 Open 状态时忽略该次成功（在 Open 之前发出的请求的迟到成功不得关闭断路器），仅 HalfOpen 探测请求可将其闭合；`EndpointHealth` 同步相同语义。`router.rs:55-67, 121-130`
 - [x] **M9** — MCP reconnect 中 cancel token 竞态 (取消旧 token → 新 token 创建间隙)
   > `mcp/mod.rs:486-488`
 - [x] **M10** — Safety gateway `min_risk_level` 与 `session_trusted_levels` 分步读取不一致
@@ -66,8 +66,8 @@
   > `ui/+page.svelte:374`
 - [x] **M12** — History `loadHistory`/`loadMore` 并发无锁保护
   > `ui/history/+page.svelte:75`
-- [ ] **M13** — DB migration 逻辑在 connection mutex 初始化前运行 (仅启动时运行，实际风险低)
-  > `db.rs:30`, `migrations.rs:82`
+- [x] **M13** — DB migration 逻辑在 connection mutex 初始化前运行 (仅启动时运行，实际风险低)
+  > 已核实: `Database::open` 在单线程上下文中先完成 `Connection::open` → PRAGMA → migrations，之后才包装进 `Mutex` 对外共享；应用只有一个 Database 实例，不存在并发打开同一文件迁移的路径。
 - [ ] **M14** — Messages 排序仅依赖 `created_at` (实际为纳秒精度 RFC3339，碰撞极不可能)
   > `messages.rs:42, 49-54`
 - [ ] **M15** — `modelStateTimer` 模块级共享可变状态 (已部分缓解)
@@ -78,29 +78,29 @@
 ### 🟢 Low
 
 - [ ] **L1** — `unmark_running` 与 `update_task_status` 双重清理 (无害)
-  > `task/lib.rs:316-332, 532-538`
-- [ ] **L2** — Rollback 轮询超时 5s 不足以等待长 LLM 调用 (C2 修复后已有日志告警)
-  > `agent/lib.rs:212-218`
-- [ ] **L3** — `end_task` 从 DB 读 title 而非在移除前从内存读
-  > `commands.rs:237-252`
+  > 已核实: 双重移除是幂等操作，`HashMap::remove`/`HashSet::remove` 对已移除 key 无害；保持现状。
+- [x] **L2** — Rollback 轮询超时 5s 不足以等待长 LLM 调用 (C2 修复后已有日志告警)
+  > 已修复: ReAct loop 在 LLM 调用返回后、持久化任何响应之前检查 `cancel_res.is_cancelled()`，取消/回滚期间的迟到响应直接丢弃，无法覆盖已恢复的 snapshot 或写入幽灵步骤。`react.rs:421-434`
+- [x] **L3** — `end_task` 从 DB 读 title 而非在移除前从内存读
+  > 已修复: `end_task` command 在调用 `executor.end_task` 之前捕获 title（优先内存中的生成标题，回退 DB `title`/`input_text`），不再丢失生成标题。`commands.rs:203-229`
 - [ ] **L4** — `resolve_confirmation` 的 `trust_risk_level` 与 `confirm_step` 非原子
   > `commands.rs:337-350`
-- [ ] **L5** — `update_settings` 中 `task_notify` 双重锁获取 (C1 修复后已重构)
-  > `task/lib.rs:525, 536`
-- [ ] **L6** — Registry TOCTOU: `rebuild` 两次 write lock 之间短暂不一致 (M7 修复后已消除)
-  > `tool.rs:175-177`
-- [ ] **L7** — Audio capture `failed` AtomicBool 从未在 `recording_loop` 中检查
-  > `input/lib.rs:233, 553`
+- [x] **L5** — `update_settings` 中 `task_notify` 双重锁获取 (C1 修复后已重构)
+  > 已核实: C1 修复后 `update_task_status` 不再嵌套持有多个锁，L5 已消除。
+- [x] **L6** — Registry TOCTOU: `rebuild` 两次 write lock 之间短暂不一致 (M7 修复后已消除)
+  > 已核实: M7 修复已覆盖。
+- [x] **L7** — Audio capture `failed` AtomicBool 从未在 `recording_loop` 中检查
+  > 已修复: `failed` 标志传入 `LoopData`，`recording_loop` 每轮检查；CPAL 流出错时提前停止录音（保留已捕获 PCM）而不是静默录到 max_duration。`input/lib.rs:513, 525-545`
 - [ ] **L8** — CPAL audio callback 与 drain 之间 ring buffer 锁竞争
   > `input/lib.rs:95-103, 244-251`
 - [x] **L9** — History `task:title-updated` 直接突变对象 (可能不触发 Svelte 响应)
   > `ui/history/+page.svelte:52`
-- [ ] **L10** — `addNotification` ID 碰撞理论可能
-  > `ui/stores.js:30`
-- [ ] **L11** — ChatBubble `onMount` async import 无 abort/mounted 检查
-  > `ui/ChatBubble.svelte:25`
-- [ ] **L12** — Settings 页面 `onDestroy` 可能在 `onMount` 完成前恢复 accent
-  > `ui/settings/+page.svelte:60`
+- [x] **L10** — `addNotification` ID 碰撞理论可能
+  > 已修复: ID 加入单调递增序列 `Date.now()-seq-random`，同毫秒内不再可能碰撞。`ui/stores.js:24-33`
+- [x] **L11** — ChatBubble `onMount` async import 无 abort/mounted 检查
+  > 已修复: onMount 返回 destroy 回调置 `mounted=false`，动态 import 解析后先检查再写状态。`ui/ChatBubble.svelte:25-60`
+- [x] **L12** — Settings 页面 `onDestroy` 可能在 `onMount` 完成前恢复 accent
+  > 已修复: 增加 `mounted` 标志，`onMount` 中每次 `await` 后检查；页面销毁时不再执行加载后的状态写入，避免在 onMount 完成前回滚 accent。`ui/settings/+page.svelte:58-73`
 
 ---
 

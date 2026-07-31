@@ -8,6 +8,8 @@ use crate::{Tool, ToolResult};
 
 const MAX_RETRIES: u32 = 2;
 const BASE_BACKOFF_SECS: u64 = 1;
+/// Cap on how much of the response body is read (and thus buffered).
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 pub struct NetworkTool;
 
@@ -134,11 +136,11 @@ async fn execute_once(
         })
         .collect();
 
-    let response_bytes = response.bytes().await.map_err(map_reqwest_error)?;
+    let response_bytes = read_body_capped(response).await?;
     let response_body = haven_common::encoding::decode_lossy(&response_bytes);
 
-    let max_chars = 100_000;
-    let (body_truncated, truncated) = truncate_output(&response_body, max_chars);
+    let max_chars = 20_000;
+    let (body_truncated, truncated) = haven_common::encoding::truncate_output(&response_body, max_chars);
 
     Ok(ToolResult::ok(serde_json::json!({
         "status": status,
@@ -146,6 +148,27 @@ async fn execute_once(
         "body": body_truncated,
         "truncated": truncated,
     })))
+}
+
+/// Read at most `MAX_BODY_BYTES` of the response body, streaming, so huge
+/// responses never get fully buffered in memory.
+async fn read_body_capped(response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut out = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(map_reqwest_error)?;
+        let room = MAX_BODY_BYTES.saturating_sub(out.len());
+        if room == 0 {
+            break;
+        }
+        let take = chunk.len().min(room);
+        out.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 fn is_retryable_error(err: &anyhow::Error) -> bool {
@@ -175,19 +198,6 @@ fn map_reqwest_error(e: reqwest::Error) -> anyhow::Error {
         anyhow::anyhow!("HTTP error: {}", e)
     } else {
         anyhow::anyhow!("request failed: {}", e)
-    }
-}
-
-fn truncate_output(text: &str, max_chars: usize) -> (String, bool) {
-    if text.len() <= max_chars {
-        (text.to_string(), false)
-    } else {
-        let truncated = format!(
-            "{}[truncated ... {} chars omitted]",
-            &text[..max_chars],
-            text.len() - max_chars
-        );
-        (truncated, true)
     }
 }
 

@@ -48,6 +48,35 @@ fn normalize_registry_path(path: &str) -> anyhow::Result<(String, String)> {
     Ok((hive_str.to_uppercase(), subpath.to_string()))
 }
 
+/// Encode a string as UTF-16LE bytes (no trailing NUL).
+fn utf16le_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+}
+
+/// Parse a hex byte string like "DE AD BE EF", "deadbeef" or "0A-0B-0C"
+/// (any non-hex separators are ignored). Returns `None`-style error for odd
+/// nibble counts or non-hex input.
+fn parse_hex_bytes(value: &str) -> anyhow::Result<Vec<u8>> {
+    let hex: String = value
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect();
+    if hex.is_empty() {
+        anyhow::bail!("invalid Binary value (no hex digits): '{}'", value);
+    }
+    if !hex.len().is_multiple_of(2) {
+        anyhow::bail!("invalid Binary value (odd hex digit count): '{}'", value);
+    }
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let s = std::str::from_utf8(pair).unwrap_or("");
+            u8::from_str_radix(s, 16)
+                .map_err(|_| anyhow::anyhow!("invalid Binary value: '{}'", value))
+        })
+        .collect()
+}
+
 #[async_trait]
 impl Tool for RegistryTool {
     fn name(&self) -> String {
@@ -131,6 +160,37 @@ impl Tool for RegistryTool {
                         "QWord" => {
                             let v: u64 = value.parse().map_err(|_| anyhow::anyhow!("invalid QWord value: {}", value))?;
                             key.set_value(name, &v)?;
+                        }
+                        "Binary" => {
+                            let bytes = parse_hex_bytes(value)?;
+                            key.set_raw_value(name, &winreg::RegValue {
+                                bytes,
+                                vtype: winreg::enums::REG_BINARY,
+                            })?;
+                        }
+                        "ExpandString" => {
+                            // REG_EXPAND_SZ: same text storage as String, but
+                            // marked expandable so %VAR% resolves on read.
+                            let mut bytes = utf16le_bytes(value);
+                            bytes.extend_from_slice(&[0, 0]); // trailing NUL
+                            key.set_raw_value(name, &winreg::RegValue {
+                                bytes,
+                                vtype: winreg::enums::REG_EXPAND_SZ,
+                            })?;
+                        }
+                        "MultiString" => {
+                            // Semicolon-separated list, like reg.exe /d.
+                            let parts: Vec<&str> = value.split(';').collect();
+                            let mut bytes = Vec::new();
+                            for part in parts {
+                                bytes.extend_from_slice(&utf16le_bytes(part));
+                                bytes.extend_from_slice(&[0, 0]);
+                            }
+                            bytes.extend_from_slice(&[0, 0]); // final empty string
+                            key.set_raw_value(name, &winreg::RegValue {
+                                bytes,
+                                vtype: winreg::enums::REG_MULTI_SZ,
+                            })?;
                         }
                         _ => anyhow::bail!("unsupported type: {}", val_type),
                     }
@@ -273,5 +333,31 @@ mod tests {
     #[test]
     fn test_normalize_empty() {
         assert!(normalize_registry_path("").is_err());
+    }
+
+    #[test]
+    fn test_parse_hex_bytes_spaces() {
+        assert_eq!(parse_hex_bytes("DE AD BE EF").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_parse_hex_bytes_compact() {
+        assert_eq!(parse_hex_bytes("deadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_parse_hex_bytes_dash_separated() {
+        assert_eq!(parse_hex_bytes("0A-0B-0C").unwrap(), vec![0x0A, 0x0B, 0x0C]);
+    }
+
+    #[test]
+    fn test_parse_hex_bytes_odd_nibbles() {
+        assert!(parse_hex_bytes("ABC").is_err());
+    }
+
+    #[test]
+    fn test_parse_hex_bytes_empty() {
+        assert!(parse_hex_bytes("").is_err());
+        assert!(parse_hex_bytes("--").is_err());
     }
 }

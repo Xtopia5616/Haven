@@ -205,7 +205,7 @@
 			<div class="toolbar">
 				<h2>MCP Servers</h2>
 				<div class="toolbar-actions">
-					<button class="md-btn md-btn--tonal" onclick={refreshMcpList}>Refresh</button>
+					<button class="md-btn md-btn--outlined" onclick={refreshMcpList}>Refresh</button>
 					<button class="md-btn md-btn--outlined" onclick={openAddDialog}>
 						<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
 						Add
@@ -239,7 +239,7 @@
 			<div class="toolbar">
 				<h2>Skills</h2>
 				<div class="toolbar-actions">
-					<button class="md-btn md-btn--tonal" onclick={refreshSkills}>Refresh</button>
+					<button class="md-btn md-btn--outlined" onclick={refreshSkills}>Refresh</button>
 					<button class="md-btn md-btn--outlined" onclick={openFolder}>Open Folder</button>
 				</div>
 			</div>

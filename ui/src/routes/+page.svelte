@@ -511,6 +511,15 @@
 			if (result && result.tasks) {
 				tasks = result.tasks;
 				taskStore.set(tasks);
+				// The active task can be ended (removed from the executor) while
+				// this page is open — e.g. a follow-up message targeting a
+				// terminal task is dropped server-side. Drop the stale pointer
+				// so the next message starts a new task instead of hitting the
+				// same terminal branch again.
+				if (activeTaskId && !tasks.some((t) => t.id === activeTaskId)) {
+					activeTaskId = null;
+					activeTaskIdStore.set(null);
+				}
 				if (!activeTaskId && !suppressAutoTask) {
 					const firstActive = tasks.find(
 						(t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused'

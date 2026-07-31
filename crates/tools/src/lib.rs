@@ -38,6 +38,8 @@ pub struct ToolsManager {
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
     task_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
     tool_circuits: ToolCircuitRegistry,
+    /// Summarizer LLM client for the `file summary` operation (small_model).
+    summarizer: RwLock<Option<Arc<dyn haven_llm::LlmClient>>>,
 }
 
 impl ToolsManager {
@@ -57,6 +59,7 @@ impl ToolsManager {
             tool_settings: RwLock::new(HashMap::new()),
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
+            summarizer: RwLock::new(None),
         }
     }
 
@@ -75,7 +78,16 @@ impl ToolsManager {
             tool_settings: RwLock::new(HashMap::new()),
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
+            summarizer: RwLock::new(None),
         }
+    }
+
+    /// Set (or clear, with `None`) the summarizer LLM client used by the
+    /// `file summary` operation, then rebuild the catalog so the file tool
+    /// picks it up.
+    pub async fn set_summarizer(&self, summarizer: Option<Arc<dyn haven_llm::LlmClient>>) {
+        *self.summarizer.write().await = summarizer;
+        self.rebuild_catalog().await;
     }
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
@@ -114,12 +126,14 @@ impl ToolsManager {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
         // Register builtin tools (including progressive load_skill and load_mcp)
+        let summarizer = self.summarizer.read().await.clone();
         builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
             &self.skill_runner,
             &Arc::new(self.mcp_manager.clone()),
             &self.mcp_server_configs,
+            summarizer,
         )
         .await;
 

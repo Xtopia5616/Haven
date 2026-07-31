@@ -862,25 +862,44 @@ impl AgentLayer {
                         self.events.emit_task_created(&task).await;
                         return Ok(ProcessResult::TaskCreated(task.id));
                     }
-                    self.executor.add_supplement(&task_id, transcript).await?;
                     // Re-read state after ensure_task_loaded may have reloaded
-                    // the task from DB.
+                    // the task from DB (M3/H10 TOCTOU: end_task may have ended
+                    // it between the get_task_state read above and the failed
+                    // add_supplement). Only non-terminal tasks may be
+                    // reactivated by a follow-up message; Completed/Error tasks
+                    // were ended on purpose and must be reopened explicitly via
+                    // the review flow — auto-converting them would resurrect a
+                    // ghost task.
                     let fresh_state = self.executor.get_task_state(&task_id).await;
-                    if fresh_state == TaskStatus::Paused
-                        || fresh_state == TaskStatus::Completed
+                    if fresh_state == TaskStatus::Completed
                         || fresh_state == TaskStatus::Error
                     {
-                        self.executor
-                            .update_task_status(&task_id, TaskStatus::Pending)
-                            .await?;
-                        self.events.emit_task_updated(&task_id, "pending").await;
+                        tracing::warn!(
+                            "process_input: task {} is terminal ({:?}) despite active_task_id; dropping supplement to avoid resurrection",
+                            task_id,
+                            fresh_state
+                        );
+                        // Notify the frontend so it can drop the stale
+                        // activeTaskId and reset the model indicator instead of
+                        // showing an orphaned bubble with no response.
+                        self.events
+                            .emit_task_updated(&task_id, fresh_state.as_str())
+                            .await;
+                        // Do not keep the reloaded terminal task in the working
+                        // set — it was ended and should not be dispatchable.
+                        self.executor.remove_task(&task_id).await;
+                    } else {
+                        self.executor.add_supplement(&task_id, transcript).await?;
+                        if fresh_state == TaskStatus::Paused {
+                            self.executor
+                                .update_task_status(&task_id, TaskStatus::Pending)
+                                .await?;
+                            self.events.emit_task_updated(&task_id, "pending").await;
+                        }
                     }
                     return Ok(ProcessResult::Supplemented);
                 }
-                if state == TaskStatus::Completed
-                    || state == TaskStatus::Error
-                    || state == TaskStatus::Paused
-                {
+                if state == TaskStatus::Paused {
                     self.executor
                         .update_task_status(&task_id, TaskStatus::Pending)
                         .await?;
@@ -1327,8 +1346,11 @@ mod tests {
         assert!(actions[0].is_final);
     }
 
+    /// M3/H10: a follow-up message must NOT resurrect a task that was ended.
+    /// Terminal tasks are only reactivated explicitly via `reopen_task`
+    /// (Completed/Error → Paused) in the review flow.
     #[tokio::test]
-    async fn process_input_reactivates_completed_task() {
+    async fn process_input_does_not_resurrect_ended_task() {
         let (agent, executor) = make_test_agent();
         let task = executor
             .create_task("original", None)
@@ -1339,6 +1361,27 @@ mod tests {
             executor.get_task_state(&task.id).await,
             TaskStatus::Error
         );
+
+        let result = agent
+            .process_input("more context", Some(task.id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, ProcessResult::Supplemented);
+        // Task is not reloaded into the working set and never becomes Pending.
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
+        assert!(executor.get_supplements(&task.id).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_input_reactivates_paused_task() {
+        let (agent, executor) = make_test_agent();
+        let task = executor
+            .create_task("original", None)
+            .await
+            .unwrap();
+        executor.update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
 
         let result = agent
             .process_input("more context", Some(task.id.clone()))
