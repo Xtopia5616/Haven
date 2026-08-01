@@ -13,7 +13,7 @@ impl Tool for ClipboardTool {
         "clipboard".into()
     }
     fn description(&self) -> String {
-        "Clipboard read and write operations via system native API".into()
+        "Read or write the system clipboard".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -34,30 +34,27 @@ impl Tool for ClipboardTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let op = input["operation"].as_str().unwrap_or("read");
 
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         match op {
             "read" => {
                 let text = tokio::task::spawn_blocking(|| -> anyhow::Result<String> {
                     let mut cb = arboard::Clipboard::new()?;
-                    cb.get_text().map_err(|e| anyhow::anyhow!("clipboard read failed: {}", e))
-                }).await??;
+                    cb.get_text()
+                        .map_err(|e| anyhow::anyhow!("clipboard read failed: {}", e))
+                })
+                .await??;
 
-                if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
                 let max_chars = self.max_output_chars();
-                let (text, truncated) = if text.len() <= max_chars {
-                    (text, false)
-                } else {
-                    let cutoff = text.floor_char_boundary(max_chars);
-                    (format!("{}[truncated ... {} chars omitted]", &text[..cutoff], text.len() - cutoff), true)
-                };
+                let (text, truncated) = haven_common::encoding::truncate_output(&text, max_chars);
                 let mut result = serde_json::json!({"content": text});
                 if truncated {
                     result["truncated"] = serde_json::Value::Bool(true);
@@ -65,16 +62,21 @@ impl Tool for ClipboardTool {
                 Ok(ToolResult::ok(result))
             }
             "write" => {
-                let content = input["content"].as_str().ok_or_else(|| {
-                    anyhow::anyhow!("'content' is required for write operation")
-                })?.to_string();
+                let content = input["content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("'content' is required for write operation"))?
+                    .to_string();
 
                 tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                     let mut cb = arboard::Clipboard::new()?;
-                    cb.set_text(content).map_err(|e| anyhow::anyhow!("clipboard write failed: {}", e))
-                }).await??;
+                    cb.set_text(content)
+                        .map_err(|e| anyhow::anyhow!("clipboard write failed: {}", e))
+                })
+                .await??;
 
-                if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
                 Ok(ToolResult::ok(serde_json::json!({"written": true})))
             }
             _ => anyhow::bail!("unknown clipboard operation: {}", op),
@@ -95,22 +97,77 @@ mod tests {
 
     #[test]
     fn test_clipboard_tool_description() {
-        assert!(ClipboardTool.description().contains("Clipboard"));
+        assert!(ClipboardTool.description().contains("clipboard"));
     }
 
     #[test]
     fn test_clipboard_tool_risk_level() {
-        assert_eq!(ClipboardTool.risk_level(&json!({"operation": "write"})), RiskLevel::Medium);
-        assert_eq!(ClipboardTool.risk_level(&json!({"operation": "read"})), RiskLevel::Low);
+        assert_eq!(
+            ClipboardTool.risk_level(&json!({"operation": "write"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            ClipboardTool.risk_level(&json!({"operation": "read"})),
+            RiskLevel::Low
+        );
     }
 
     #[test]
     fn test_clipboard_tool_input_schema() {
         let schema = ClipboardTool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
-        let enum_vals = schema["properties"]["operation"]["enum"].as_array().unwrap();
+        let enum_vals = schema["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(ops.contains(&"read"));
         assert!(ops.contains(&"write"));
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_write_read_roundtrip() {
+        let content = format!("haven-clipboard-test-{}", std::process::id());
+        let write = ClipboardTool
+            .execute(
+                json!({"operation": "write", "content": content.clone()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(write.success);
+        assert_eq!(write.output["written"], true);
+
+        let read = ClipboardTool
+            .execute(json!({"operation": "read"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(read.success);
+        assert_eq!(read.output["content"], content);
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_write_requires_content() {
+        let result = ClipboardTool
+            .execute(json!({"operation": "write"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_unknown_operation() {
+        let result = ClipboardTool
+            .execute(json!({"operation": "bogus"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = ClipboardTool
+            .execute(json!({"operation": "read"}), cancel)
+            .await;
+        assert!(result.is_err());
     }
 }

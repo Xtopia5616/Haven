@@ -158,8 +158,8 @@ type Callback = Arc<Mutex<Option<Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>
 - Rust 端没有类似的取消注册机制——`DesktopShell` 回调一旦设置无法移除
 - `EventDispatcher` 的 `set_emitter` 只能整体替换，不支持多订阅者
 
-**问题 3：`fallback_notified` 去重漂移**
-该字段原本在 `AgentLayer`，重构后移至 `ReActEngine`，但其去重逻辑依赖手动调用位置——如果未来添加新的 fallback 触发路径，容易遗漏去重检查。
+**问题 3：`balanced_model_notified` 去重漂移**
+该字段原本在 `AgentLayer`，重构后移至 `ReActEngine`，但其去重逻辑依赖手动调用位置——如果未来添加新的 balanced model 触发路径，容易遗漏去重检查。
 
 **问题 4：同步 vs 异步回调签名不一致**
 - `on_recording_start` / `on_recording_stop` / `on_show_window` / `on_quit` / `AutoStopCallback` 是异步（返回 `Pin<Box<dyn Future>>`）
@@ -200,3 +200,52 @@ impl EventBus {
 
 **长期：输入管线回调统一**
 将 `VadCallback`、`AutoStopCallback` 合并为 `InputHandler` trait，与 `ShellHandler` 命名风格一致，减少 `Arc<Mutex<Option<>>>` 散落各处的现象。
+
+## 14. 多模态 LLM 支持
+
+后端 LLM 客户端 (`crates/llm/src/client.rs:266-284`) 已能序列化 `ContentPart::Image` 为 OpenAI `image_url` data URI，但端到端链路缺失：消息持久化无附件字段、Agent 输入无图片入口、前端无发送 UI、模型能力无 vision 标注。
+
+### 14.1 数据模型与持久化 — 已完成
+
+- `crates/memory/src/migrations.rs`：`messages` 表新增 `attachments` 列（TEXT，存 JSON 数组 `[{media_type, data}]`），通过 `pragma_table_info` 检查幂等
+- `crates/memory/src/repositories/messages.rs`：新增 `MessageAttachment` 结构体；`Message` 加 `attachments` 字段（`#[serde(default)]` 兼容旧 JSON）；新增 `add_message_with_attachments` / `add_message_with_window_full`；SELECT 查询同步读取 attachments
+- 测试：attachments 往返、`Message` serde 兼容旧格式
+
+### 14.2 Agent 输入链路 — 已完成
+
+- `crates/task/src/lib.rs`：`Supplement { text, attachments }` 结构体替换 `Vec<String>`，supplement_queue / steering_queue 类型同步更新；保留 `add_supplement` / `add_steering` 纯文本便利包装
+- `crates/agent/src/lib.rs`：`process_input_with_images(transcript, task_id, images)`；`run_task` 接收 `initial_attachments`；`run_task_from_id` 从会话首条 user 消息提取附件注入初始 canonical 消息
+- `crates/agent/src/react.rs`：supplement / steering 注入 canonical 时附加 `ContentPart::Image`（LLM 客户端复用）
+- `crates/app-binary/src/commands.rs`：`process_transcript` 加 `images` 参数；`validate_images` 服务端兜底（≤4 张、`image/*` MIME、解码字节 ≤10MB、base64 有效性），不再仅依赖前端限制
+- 测试：agent 队列携带附件 + DB 持久化、`run_task_from_id` 初始消息含图 / 后续补充注入图、branch 复制携带附件、5 个 `validate_images` 单元测试
+
+### 14.3 前端 UI — 已完成
+
+- `ui/src/routes/+page.svelte`：输入区支持粘贴截图（`onpaste` 读 `clipboardData.items`）/ 文件选择 / 缩略图预览 / 单张删除 / 发送前 disabled 检查
+- 前端图片压缩（`tryCompressImage` + `fileToAttachment`）：`createImageBitmap` 解码 + canvas 缩放到 ≤1568px（OpenAI vision 推荐）+ 转 JPEG quality 0.85，压缩后与原图比较取较小者（避免对小图/线条图放大）；不可用时 fallback 原图
+- `ui/src/lib/ChatBubble.svelte`：用户消息渲染附件图片（`imageDataUrl` + lazy loading）
+- `ui/src/routes/history/+page.svelte`：review 对话附件透传
+- 测试：3 个 ChatBubble 图片渲染用例
+
+### 14.4 共享与去重 — 已完成
+
+- `crates/agent/src/react.rs`：`attachment_to_content_part` 提升为 `pub(crate)`，`crates/agent/src/lib.rs:872` 复用消除内联转换
+- `ui/src/lib/stores.js`：导出共享 `imageDataUrl`；`+page.svelte` 与 `ChatBubble.svelte` 删除本地副本统一 import
+
+### 14.5 已知性能权衡（已部分缓解）
+
+含图任务存在 O(steps²×图字节) 放大，源自：
+- `save_snapshot_with_branches` 每步深拷贝 canonical（含大 base64）；`branch_points` 每步存 `canonical.to_vec()` 副本
+- `get_session_messages` 30s 缓存持有大 base64
+- `get_task_for_review` 一次 IPC 传输完整附件
+- 截图工具产物喂入模型会进一步放大
+
+**当前缓解：** 前端图片压缩从源头减小 base64；其余项属架构性改造。
+
+### 14.6 未来工作
+
+- 模型能力标注：registry 标记 vision 支持；`process_transcript` 检测当前模型不支持时前端提示
+- 图片引用化存储：`ContentPart::Image` 存 `attachment_id`，发送 LLM 时再查 DB 取 base64——根本解决 §14.5 放大，但需重构 `ContentPart` 与 react loop snapshot
+- review 按需加载：新增 `get_message_attachment` 命令，前端按需请求而非一次性随消息返回
+- 缓存剥离 attachments：`cache_put_messages` 在缓存时剥离 attachments（保留元数据）；需重新设计缓存命中返回结构
+- 非 vision 模型提示：与首项合并实现

@@ -1,11 +1,24 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::bg::{self, BackgroundJobs};
 use crate::{Tool, ToolResult};
 
-pub struct ShellTool;
+pub struct ShellTool {
+    /// Registry of background jobs for `background: true` invocations.
+    pub jobs: Arc<BackgroundJobs>,
+}
+
+impl Default for ShellTool {
+    fn default() -> Self {
+        Self {
+            jobs: Arc::new(BackgroundJobs::new()),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ShellTool {
@@ -13,7 +26,7 @@ impl Tool for ShellTool {
         "shell".into()
     }
     fn description(&self) -> String {
-        "Execute a shell command on the user's PC. When silent is true, the command output is hidden from the user but still returned to the agent. The shell parameter selects the interpreter: cmd (default) or powershell.".into()
+        "Execute a shell command on the user's PC (cmd or powershell)".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -26,17 +39,14 @@ impl Tool for ShellTool {
             "properties": {
                 "command": { "type": "string", "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": ["cmd", "powershell"], "description": "Which shell to run the command in", "default": "cmd" },
-                "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false }
+                "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
+                "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately", "default": false }
             },
             "required": ["command"]
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let cmd = input["command"].as_str().unwrap_or("");
         if cmd.is_empty() {
             anyhow::bail!("command is required");
@@ -49,20 +59,19 @@ impl Tool for ShellTool {
             anyhow::bail!("cancelled");
         }
 
-        let mut std_cmd = match shell {
-            "powershell" => {
-                let mut c = std::process::Command::new("powershell");
-                c.args(["-NoProfile", "-Command", cmd]);
-                c
-            }
-            _ => {
-                let mut c = std::process::Command::new("cmd");
-                c.args(["/C", cmd]);
-                c
-            }
-        };
-        std_cmd.stdout(std::process::Stdio::piped());
-        std_cmd.stderr(std::process::Stdio::piped());
+        // Background mode: hand the command to the job registry and return
+        // immediately. The agent polls job_status with the returned job_id.
+        if input["background"].as_bool().unwrap_or(false) {
+            let job_id = self.jobs.spawn_shell(cmd, shell, max_chars).await?;
+            return Ok(ToolResult::ok(serde_json::json!({
+                "background": true,
+                "job_id": job_id,
+                "status": "running",
+                "hint": "The command is running in the background. Its output will be delivered back to you automatically when it finishes — no need to poll.",
+            })));
+        }
+
+        let mut std_cmd = bg::build_shell_command_silent(shell, cmd);
 
         // Suppress console window in silent mode
         if silent {
@@ -87,12 +96,13 @@ impl Tool for ShellTool {
 
         // Stream stdout/stderr into capped buffers so huge command output never
         // gets fully buffered (OOM protection). Mirrors network tool behavior.
-        let max_collect = max_chars.saturating_mul(4).max(8192);
-        let stdout_fut = read_stream_capped(child.stdout.take(), max_collect);
-        let stderr_fut = read_stream_capped(child.stderr.take(), max_collect);
+        let max_collect = bg::collect_byte_cap(max_chars);
+        let stdout_fut = bg::read_stream_capped(child.stdout.take(), max_collect);
+        let stderr_fut = bg::read_stream_capped(child.stderr.take(), max_collect);
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
-        let (stdout, stderr) = tokio::join!(stdout_fut, stderr_fut);
+        let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
+            tokio::join!(stdout_fut, stderr_fut);
         let status = match child.wait().await {
             Ok(s) => s,
             Err(e) => {
@@ -117,50 +127,23 @@ impl Tool for ShellTool {
             combined.push_str(&stderr);
         }
 
-        let (text, _truncated) = haven_common::encoding::truncate_output(&combined, max_chars);
+        let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
+        let truncated = stdout_overflow || stderr_overflow;
+        let mut output = serde_json::json!({"output": text});
+        if truncated {
+            output["truncated"] = serde_json::Value::Bool(true);
+        }
         if status.success() {
-            Ok(ToolResult::ok(serde_json::json!({"output": text})))
+            Ok(ToolResult::ok(output))
         } else {
             Ok(ToolResult {
                 success: false,
-                output: serde_json::json!({"output": text}),
+                output,
                 error: Some(stderr.to_string()),
                 truncated: false,
             })
         }
     }
-}
-
-/// Read a child stdout/stderr stream into a String, capping at `max_bytes`
-/// so runaway output cannot exhaust memory.
-async fn read_stream_capped<R>(stdout: Option<R>, max_bytes: usize) -> String
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    use tokio::io::AsyncReadExt;
-    let Some(mut stream) = stdout else {
-        return String::new();
-    };
-    let mut buf = Vec::with_capacity(max_bytes.min(8192));
-    let mut tmp = [0u8; 8192];
-    loop {
-        match stream.read(&mut tmp).await {
-            Ok(0) => break,
-            Ok(n) => {
-                let room = max_bytes.saturating_sub(buf.len());
-                if room == 0 {
-                    break;
-                }
-                let take = n.min(room);
-                buf.extend_from_slice(&tmp[..take]);
-                if take < n {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    haven_common::encoding::decode_lossy(&buf)
 }
 
 #[cfg(test)]
@@ -171,22 +154,22 @@ mod tests {
 
     #[test]
     fn test_shell_tool_name() {
-        assert_eq!(ShellTool.name(), "shell");
+        assert_eq!(ShellTool::default().name(), "shell");
     }
 
     #[test]
     fn test_shell_tool_description() {
-        assert!(ShellTool.description().contains("shell command"));
+        assert!(ShellTool::default().description().contains("shell command"));
     }
 
     #[test]
     fn test_shell_tool_risk_level() {
-        assert_eq!(ShellTool.risk_level(&json!({})), RiskLevel::High);
+        assert_eq!(ShellTool::default().risk_level(&json!({})), RiskLevel::High);
     }
 
     #[test]
     fn test_shell_tool_input_schema() {
-        let schema = ShellTool.input_schema();
+        let schema = ShellTool::default().input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
@@ -195,5 +178,167 @@ mod tests {
         let shells: Vec<&str> = shell_enum.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(shells.contains(&"cmd"));
         assert!(shells.contains(&"powershell"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_large_output_reports_success_and_truncates() {
+        // ~160KB of output exceeds the collection cap (80KB default). The child
+        // must complete normally (no broken pipe from closing the read end
+        // early) and the result must carry the truncation flag.
+        let result = ShellTool::default()
+            .execute(
+                json!({
+                    "command": "for /l %i in (1,1,5000) do @echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "shell": "cmd",
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.success,
+            "child must complete successfully: {:?}",
+            result.error
+        );
+        let out = result.output["output"].as_str().unwrap();
+        assert!(
+            out.len() < 50_000,
+            "output should be capped, got {} bytes",
+            out.len()
+        );
+        assert!(
+            result.output["truncated"].as_bool().unwrap_or(false),
+            "capped output must carry the truncated flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shell_missing_command() {
+        let result = ShellTool::default()
+            .execute(json!({"command": ""}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_shell_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = ShellTool::default()
+            .execute(json!({"command": "echo hi"}), cancel)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_cmd_echo() {
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "echo hello", "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        assert!(result.output["output"].as_str().unwrap().contains("hello"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_echo() {
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "Write-Output hello", "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        assert!(result.output["output"].as_str().unwrap().contains("hello"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_nonzero_exit_reports_failure() {
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "exit 42", "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success, "non-zero exit must report failure");
+        assert!(result.error.is_some());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_captures_stderr() {
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "echo boom 1>&2", "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.success,
+            "echo to stderr still exits 0: {:?}",
+            result.error
+        );
+        assert!(result.output["output"].as_str().unwrap().contains("boom"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_background_returns_job_id_and_completes() {
+        let tool = ShellTool::default();
+        let result = tool
+            .execute(
+                json!({"command": "echo bg-result", "shell": "cmd", "background": true}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["background"], true);
+        assert_eq!(result.output["status"], "running");
+        let job_id = result.output["job_id"].as_str().unwrap().to_string();
+        assert!(!job_id.is_empty());
+
+        // Poll the job registry until the job completes.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            let v = tool.jobs.status(&job_id).await;
+            if v["status"] != "running" || std::time::Instant::now() > deadline {
+                break v;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        assert_eq!(status["status"], "completed", "got: {}", status);
+        assert!(status["output"].as_str().unwrap().contains("bg-result"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_background_empty_command_rejected() {
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "", "background": true}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_shell_background_schema_field() {
+        let schema = ShellTool::default().input_schema();
+        assert_eq!(
+            schema["properties"]["background"]["type"], "boolean",
+            "background field must be in the schema"
+        );
     }
 }

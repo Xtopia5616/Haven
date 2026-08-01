@@ -150,9 +150,7 @@ mod tests {
         };
         match &part {
             ContentPart::Image {
-                media_type,
-                data,
-                ..
+                media_type, data, ..
             } => {
                 assert_eq!(media_type, "image/jpeg");
                 assert_eq!(data, "base64data");
@@ -206,7 +204,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
         };
-        
+
         assert_eq!(msg.role, CanonicalRole::System);
         assert_eq!(msg.content.len(), 1);
         assert!(msg.tool_calls.is_none());
@@ -238,7 +236,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
         };
-        
+
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
     }
 
@@ -251,7 +249,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
         };
-        
+
         assert_eq!(msg.role, CanonicalRole::Tool);
     }
 
@@ -342,7 +340,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
         };
-        
+
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: CanonicalMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.role, CanonicalRole::User);
@@ -362,7 +360,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
         };
-        
+
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: CanonicalMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.tool_calls.unwrap()[0].name, "exec");
@@ -385,5 +383,4 @@ mod tests {
         let decoded: RiskLevel = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, RiskLevel::High);
     }
-
 }

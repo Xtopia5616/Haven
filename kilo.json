@@ -2,6 +2,8 @@
   "$schema": "https://app.kilo.ai/config.json",
   "model": "anthropic/claude-sonnet-4-20250514",
   "default_agent": "code",
-  "instructions": ["AGENTS.md"],
-  "snapshot": true
+  "instructions": [
+    "AGENTS.md"
+  ],
+  "snapshot": false
 }

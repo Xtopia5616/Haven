@@ -52,8 +52,8 @@
   > `react.rs:557`
 - [x] **M5** — `current_run_id` AtomicU64 在并发任务间共享产生 `run_id` 冲突
   > `react.rs:60-70`, `lib.rs:342-343`
-- [ ] **M6** — `update_settings` 用 `std::sync::RwLock` 热替换 router 阻塞 tokio worker (临界区极短，实际风险低)
-  > `react.rs:52-53`, `commands.rs:1225`
+- [x] **M6** — `update_settings` 用 `std::sync::RwLock` 热替换 router 阻塞 tokio worker (临界区极短，实际风险低)
+  > 已核实: `router` 的 `RwLock<Arc<LlmRouter>>` 仅在 `react.rs:59`(swap)和 `:79`(clone)处获取，两处临界区都不跨 `await`、只做指针级 `Arc` clone/swap，持锁时间为纳秒级，不可能阻塞 tokio worker。无需引入 `arc_swap` 依赖。`react.rs:52-53`, `commands.rs:1225`
 - [x] **M7** — Tool registry rebuild 与 Agent 并发工具查找竞态 (替换间隙工具消失)
   > `tool.rs:175-177`, `tools/lib.rs:137`
 - [x] **M8** — LlmRouter 断路器 TOCTOU: 并发 success 过早关闭 breaker
@@ -68,10 +68,10 @@
   > `ui/history/+page.svelte:75`
 - [x] **M13** — DB migration 逻辑在 connection mutex 初始化前运行 (仅启动时运行，实际风险低)
   > 已核实: `Database::open` 在单线程上下文中先完成 `Connection::open` → PRAGMA → migrations，之后才包装进 `Mutex` 对外共享；应用只有一个 Database 实例，不存在并发打开同一文件迁移的路径。
-- [ ] **M14** — Messages 排序仅依赖 `created_at` (实际为纳秒精度 RFC3339，碰撞极不可能)
-  > `messages.rs:42, 49-54`
-- [ ] **M15** — `modelStateTimer` 模块级共享可变状态 (已部分缓解)
-  > `ui/stores.js:186`
+- [x] **M14** — Messages 排序仅依赖 `created_at` (实际为纳秒精度 RFC3339，碰撞极不可能)
+  > 已修复: 所有 messages 查询的 `ORDER BY created_at` 均追加 `id` 作为确定性 tiebreaker（DESC→`id DESC`，ASC→`id ASC`），滑动窗口 DELETE 的子查询同样加 tiebreaker，消除同时间戳下的非确定排序。`messages.rs:59, 98, 132, 172`
+- [x] **M15** — `modelStateTimer` 模块级共享可变状态 (已部分缓解)
+  > 已修复: `setTimeout` 回调首行置 `modelStateTimer = null`，使回调触发后模块状态与实际定时器一致；后续 `updateModelState` 的 `clearTimeout` 不再作用于已过期的 stale id。回调内的状态转换仍带 `s === state` 守卫，避免覆盖更新后的状态。`ui/stores.js:195-214`
 - [x] **M16** — `delete_task`/`clear_tasks` 多步 DB 操作无事务包裹
   > `tasks.rs:205-230`
 
@@ -83,16 +83,16 @@
   > 已修复: ReAct loop 在 LLM 调用返回后、持久化任何响应之前检查 `cancel_res.is_cancelled()`，取消/回滚期间的迟到响应直接丢弃，无法覆盖已恢复的 snapshot 或写入幽灵步骤。`react.rs:421-434`
 - [x] **L3** — `end_task` 从 DB 读 title 而非在移除前从内存读
   > 已修复: `end_task` command 在调用 `executor.end_task` 之前捕获 title（优先内存中的生成标题，回退 DB `title`/`input_text`），不再丢失生成标题。`commands.rs:203-229`
-- [ ] **L4** — `resolve_confirmation` 的 `trust_risk_level` 与 `confirm_step` 非原子
-  > `commands.rs:337-350`
+- [x] **L4** — `resolve_confirmation` 的 `trust_risk_level` 与 `confirm_step` 非原子
+  > 已修复: 新增 `TaskExecutor::resolve_confirmation(step_id, confirmed)`，在 `tasks` 锁内查找 step 的 `risk_level` 并执行 DB `confirm_step`，原子返回风险等级；`resolve_confirmation` command 直接调用它，`trust_risk_level` 基于同一锁快照，消除了 `confirm_step` 与 `list_tasks()` 快照之间的移除竞态。`commands.rs:249-274`, `task/lib.rs:648-672`
 - [x] **L5** — `update_settings` 中 `task_notify` 双重锁获取 (C1 修复后已重构)
   > 已核实: C1 修复后 `update_task_status` 不再嵌套持有多个锁，L5 已消除。
 - [x] **L6** — Registry TOCTOU: `rebuild` 两次 write lock 之间短暂不一致 (M7 修复后已消除)
   > 已核实: M7 修复已覆盖。
 - [x] **L7** — Audio capture `failed` AtomicBool 从未在 `recording_loop` 中检查
   > 已修复: `failed` 标志传入 `LoopData`，`recording_loop` 每轮检查；CPAL 流出错时提前停止录音（保留已捕获 PCM）而不是静默录到 max_duration。`input/lib.rs:513, 525-545`
-- [ ] **L8** — CPAL audio callback 与 drain 之间 ring buffer 锁竞争
-  > `input/lib.rs:95-103, 244-251`
+- [x] **L8** — CPAL audio callback 与 drain 之间 ring buffer 锁竞争
+  > 已核实: ring buffer 与 resampler 各自独立 `std::sync::Mutex`，CPAL 回调临界区仅含 `process`(O(frame)) 与 `push`(O(sample)) 两次纳秒级操作且不跨 await；capture 线程的 `Drain`/`StopAndDrain` 仅每 ~30ms 触发一次，`drain` 在锁内只做拷贝+重置 `len`。争用窗口极短，`Mutex` 未竞争时为 fast-path，不会导致 audio underrun。保持现状。`input/lib.rs:95-103, 244-251`
 - [x] **L9** — History `task:title-updated` 直接突变对象 (可能不触发 Svelte 响应)
   > `ui/history/+page.svelte:52`
 - [x] **L10** — `addNotification` ID 碰撞理论可能

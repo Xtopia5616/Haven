@@ -93,6 +93,17 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len()))?;
     }
 
+    // Ensure attachments column exists on the messages table (multimodal §M7).
+    // Stores a JSON array of image attachments: [{"media_type": "...", "data": "<base64>"}].
+    let has_attachments: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='attachments'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_attachments {
+        conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", [])?;
+    }
+
     // Ensure react_state column exists on the tasks table.
     let has_react_state: bool = conn
         .prepare("SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='react_state'")?
@@ -132,7 +143,10 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .map(|c| c > 0)
         .unwrap_or(false);
     if !has_is_compacted {
-        conn.execute("ALTER TABLE messages ADD COLUMN is_compacted INTEGER NOT NULL DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN is_compacted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
         conn.execute("ALTER TABLE messages ADD COLUMN compaction_id TEXT", [])?;
     }
 
@@ -143,17 +157,25 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .map(|c| c > 0)
         .unwrap_or(false);
     if !has_parent_id {
-        conn.execute("ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id)", [])?;
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id)",
+            [],
+        )?;
     }
 
     // §2: add parent_message_id column to messages table for tree structure
     let has_parent_message_id: bool = conn
-        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='parent_message_id'")?
+        .prepare(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='parent_message_id'",
+        )?
         .query_row([], |r| r.get::<_, i32>(0))
         .map(|c| c > 0)
         .unwrap_or(false);
     if !has_parent_message_id {
-        conn.execute("ALTER TABLE messages ADD COLUMN parent_message_id TEXT REFERENCES messages(id)", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN parent_message_id TEXT REFERENCES messages(id)",
+            [],
+        )?;
     }
 
     // §3.2: create compaction_entries table
@@ -165,7 +187,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             first_kept_entry_id TEXT,
             tokens_before INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )"
+        )",
     )?;
 
     // §3.6: hindsight_store removed — facts now support tags + search.
@@ -180,7 +202,10 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .map(|c| c > 0)
         .unwrap_or(false);
     if !has_facts_tags {
-        conn.execute("ALTER TABLE facts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", [])?;
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
     }
 
     // Fix CHECK constraint typo: 'pendingleted' → 'completed'.
@@ -241,7 +266,10 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .unwrap_or(false);
     if check_allows_cancelled {
         // First, migrate existing cancelled rows.
-        conn.execute("UPDATE tasks SET status = 'error' WHERE status = 'cancelled'", [])?;
+        conn.execute(
+            "UPDATE tasks SET status = 'error' WHERE status = 'cancelled'",
+            [],
+        )?;
         // Rebuild tasks table without 'cancelled' in CHECK.
         let fk_on: bool = conn
             .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
@@ -284,7 +312,8 @@ mod tests {
 
     fn create_test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
         conn
     }
 
@@ -377,7 +406,9 @@ mod tests {
     fn test_user_version_prevents_rerun() {
         let conn = create_test_conn();
         run_migrations(&conn).unwrap();
-        let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert!(version > 0);
 
         let tables_before = get_tables(&conn);
@@ -412,7 +443,9 @@ mod tests {
             .unwrap_or(false);
         assert!(has_is_compacted);
         let has_compaction_id: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='compaction_id'")
+            .prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='compaction_id'",
+            )
             .unwrap()
             .query_row([], |r| r.get::<_, i32>(0))
             .map(|c| c > 0)
@@ -486,7 +519,9 @@ mod tests {
         // But since we removed the creation, it should never exist.
         run_migrations(&conn).unwrap();
         let exists: bool = conn
-            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hindsight_store'")
+            .prepare(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hindsight_store'",
+            )
             .unwrap()
             .query_row([], |r| r.get::<_, i32>(0))
             .map(|c| c > 0)

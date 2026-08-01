@@ -41,7 +41,7 @@ pub enum AgentEvent {
         task_id: String,
         error: String,
     },
-    FallbackActivated {
+    BalancedModelActivated {
         task_id: String,
         reason: String,
     },
@@ -334,7 +334,11 @@ impl EventDispatcher {
     }
 
     pub async fn emit_task_updated(&self, task_id: &str, status: &str) {
-        tracing::debug!("emit_task_updated event: task={} status={}", task_id, status);
+        tracing::debug!(
+            "emit_task_updated event: task={} status={}",
+            task_id,
+            status
+        );
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter
@@ -386,13 +390,13 @@ impl EventDispatcher {
             .await;
     }
 
-    pub async fn emit_fallback_activated_from(
+    pub async fn emit_balanced_model_activated_from(
         emitter: &Arc<dyn AgentEventEmitter>,
         task_id: &str,
         reason: &str,
     ) {
         emitter
-            .emit(AgentEvent::FallbackActivated {
+            .emit(AgentEvent::BalancedModelActivated {
                 task_id: task_id.into(),
                 reason: reason.into(),
             })

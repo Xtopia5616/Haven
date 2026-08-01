@@ -100,11 +100,8 @@ impl Default for ModelEndpoint {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LlmConfig {
-    #[serde(alias = "namer")]
     pub small_model: ModelEndpoint,
-    #[serde(alias = "reasoner")]
     pub default_model: ModelEndpoint,
-    #[serde(alias = "fallback")]
     pub balanced_model: ModelEndpoint,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
@@ -409,17 +406,32 @@ pub struct NotifyChannels {
 
 impl Default for NotifyChannels {
     fn default() -> Self {
-        Self { in_app: true, windows: false }
+        Self {
+            in_app: true,
+            windows: false,
+        }
     }
 }
 
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
-            task_created: NotifyChannels { in_app: true, windows: false },
-            task_completed: NotifyChannels { in_app: true, windows: true },
-            task_paused: NotifyChannels { in_app: true, windows: false },
-            task_error: NotifyChannels { in_app: true, windows: true },
+            task_created: NotifyChannels {
+                in_app: true,
+                windows: false,
+            },
+            task_completed: NotifyChannels {
+                in_app: true,
+                windows: true,
+            },
+            task_paused: NotifyChannels {
+                in_app: true,
+                windows: false,
+            },
+            task_error: NotifyChannels {
+                in_app: true,
+                windows: true,
+            },
         }
     }
 }
@@ -553,7 +565,7 @@ impl ConfigLoader {
     }
 
     /// Load config from a specific path. Creates a default config file if missing.
-    pub fn load_from(path: &Path) -> crate::error::HavenResult<Self> {
+    pub fn load_from(path: &Path) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -577,14 +589,14 @@ impl ConfigLoader {
     }
 
     /// Load from the default path.
-    pub fn load() -> crate::error::HavenResult<Self> {
+    pub fn load() -> anyhow::Result<Self> {
         Self::load_from(&Self::default_path())
     }
 
     /// Persist current config to disk atomically.
     /// Writes to a temporary file first, then renames to prevent partial writes
     /// from concurrent save() calls or process crashes from corrupting the file.
-    pub fn save(&self) -> crate::error::HavenResult<()> {
+    pub fn save(&self) -> anyhow::Result<()> {
         let toml_str = toml::to_string_pretty(&self.config)?;
         let tmp_path = self.path.with_extension("tmp");
         std::fs::write(&tmp_path, &toml_str)?;

@@ -1,7 +1,9 @@
+pub mod ask;
 pub mod audio;
 pub mod clipboard;
 pub mod env_var;
 pub mod file;
+pub mod job_status;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod network;
@@ -17,10 +19,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::ToolBox;
+use crate::bg::BackgroundJobs;
 use crate::mcp::McpManager;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
-use crate::ToolBox;
 
 pub async fn register_builtin_tools(
     tools: &mut Vec<ToolBox>,
@@ -29,12 +32,19 @@ pub async fn register_builtin_tools(
     mcp_manager: &Arc<McpManager>,
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     summarizer: Option<Arc<dyn haven_llm::LlmClient>>,
+    background_jobs: Arc<BackgroundJobs>,
 ) {
     tools.push(Arc::new(audio::AudioTool));
+    tools.push(Arc::new(ask::AskTool));
     tools.push(Arc::new(file::FileOpTool::new(summarizer)));
     tools.push(Arc::new(process::ProcessTool));
     tools.push(Arc::new(clipboard::ClipboardTool));
-    tools.push(Arc::new(shell::ShellTool));
+    tools.push(Arc::new(shell::ShellTool {
+        jobs: background_jobs.clone(),
+    }));
+    tools.push(Arc::new(job_status::JobStatusTool {
+        jobs: background_jobs,
+    }));
     tools.push(Arc::new(system::SystemInfoTool));
     tools.push(Arc::new(env_var::EnvTool));
     tools.push(Arc::new(window::WindowTool));

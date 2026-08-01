@@ -8,7 +8,6 @@ use serde_json::Value;
 use std::pin::Pin;
 use std::time::Duration;
 
-
 use crate::types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
     ToolDefinition, Usage,
@@ -415,7 +414,9 @@ impl HttpLlmClient {
         let response = LlmResponse {
             text,
             tool_calls,
-            finish_reason: choice.finish_reason.and_then(|s| FinishReason::from_openai(&s)),
+            finish_reason: choice
+                .finish_reason
+                .and_then(|s| FinishReason::from_openai(&s)),
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning,
@@ -494,11 +495,18 @@ impl HttpLlmClient {
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
         );
-        tracing::debug!("chat_stream_inner: url={} model={} api_key={} timeout_secs={} timeout_streaming={:?}",
-            url, self.endpoint.model_name,
-            if self.endpoint.api_key.is_empty() { "EMPTY" } else { "SET" },
+        tracing::debug!(
+            "chat_stream_inner: url={} model={} api_key={} timeout_secs={} timeout_streaming={:?}",
+            url,
+            self.endpoint.model_name,
+            if self.endpoint.api_key.is_empty() {
+                "EMPTY"
+            } else {
+                "SET"
+            },
             self.endpoint.timeout_secs,
-            self.endpoint.timeout_streaming_secs);
+            self.endpoint.timeout_streaming_secs
+        );
 
         let mut req = self
             .client
@@ -525,9 +533,7 @@ impl HttpLlmClient {
                 .headers()
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|s| {
-                    s.parse::<u64>().ok().map(Duration::from_secs)
-                });
+                .and_then(|s| s.parse::<u64>().ok().map(Duration::from_secs));
             let txt = resp.text().await.unwrap_or_default();
             return Err(http_status_to_error(status, &txt, retry_after));
         }
@@ -602,7 +608,13 @@ impl HttpLlmClient {
         });
 
         // Merge streaming tool-call deltas by index.
-        fn merge_tool_call(acc: &mut Vec<ToolCall>, index: usize, id: Option<&str>, name: Option<&str>, arguments: Option<&str>) {
+        fn merge_tool_call(
+            acc: &mut Vec<ToolCall>,
+            index: usize,
+            id: Option<&str>,
+            name: Option<&str>,
+            arguments: Option<&str>,
+        ) {
             while acc.len() <= index {
                 acc.push(ToolCall {
                     id: String::new(),
@@ -611,9 +623,15 @@ impl HttpLlmClient {
                 });
             }
             if let Some(id) = id
-                && !id.is_empty() { acc[index].id = id.to_string(); }
+                && !id.is_empty()
+            {
+                acc[index].id = id.to_string();
+            }
             if let Some(name) = name
-                && !name.is_empty() { acc[index].name = name.to_string(); }
+                && !name.is_empty()
+            {
+                acc[index].name = name.to_string();
+            }
             if let Some(args) = arguments {
                 acc[index].arguments.push_str(args);
             }
@@ -650,20 +668,19 @@ impl HttpLlmClient {
                 let data = match state.rx.recv().await {
                     Some(d) => d,
                     None => {
-                        let chunk = if !state.has_finish_reason
-                            && !state.accumulated_text.is_empty()
-                        {
-                            Err(LlmError::StreamTruncated)
-                        } else {
-                            Ok(StreamChunk {
-                                text: None,
-                                tool_calls: std::mem::take(&mut state.tool_calls_acc),
-                                finish_reason: None,
-                                usage: None,
-                                model: state.last_model.clone(),
-                                reasoning: None,
-                            })
-                        };
+                        let chunk =
+                            if !state.has_finish_reason && !state.accumulated_text.is_empty() {
+                                Err(LlmError::StreamTruncated)
+                            } else {
+                                Ok(StreamChunk {
+                                    text: None,
+                                    tool_calls: std::mem::take(&mut state.tool_calls_acc),
+                                    finish_reason: None,
+                                    usage: None,
+                                    model: state.last_model.clone(),
+                                    reasoning: None,
+                                })
+                            };
                         state.done = true;
                         return Some((chunk, state));
                     }
@@ -697,13 +714,13 @@ impl HttpLlmClient {
                             if choice.finish_reason.is_some() {
                                 state.has_finish_reason = true;
                             }
-                            let finish_reason = choice.finish_reason
+                            let finish_reason = choice
+                                .finish_reason
                                 .as_ref()
                                 .and_then(|s| FinishReason::from_openai(s));
                             Some((
                                 Ok(StreamChunk {
-                                    text: choice_delta(&choice)
-                                        .and_then(|d| d.content.clone()),
+                                    text: choice_delta(&choice).and_then(|d| d.content.clone()),
                                     reasoning: choice_delta(&choice)
                                         .and_then(|d| d.reasoning_content.clone()),
                                     tool_calls: Vec::new(),
@@ -828,19 +845,27 @@ fn extract_error_body(body: &str) -> String {
     body.to_string()
 }
 
-fn http_status_to_error(status: reqwest::StatusCode, body: &str, retry_after: Option<Duration>) -> LlmError {
+fn http_status_to_error(
+    status: reqwest::StatusCode,
+    body: &str,
+    retry_after: Option<Duration>,
+) -> LlmError {
     let err_body = extract_error_body(body);
     match status.as_u16() {
         401 | 403 => LlmError::Auth(format!("{}: {}", status, err_body)),
-        429 => {
-            LlmError::RateLimit { retry_after }
-        }
+        429 => LlmError::RateLimit { retry_after },
         400 => {
-            if err_body.contains("context_length") || err_body.contains("maximum context") || err_body.contains("context length") {
+            if err_body.contains("context_length")
+                || err_body.contains("maximum context")
+                || err_body.contains("context length")
+            {
                 LlmError::ContextLengthExceeded
             } else if err_body.contains("content_filter") {
                 LlmError::ContentFilter
-            } else if err_body.contains("billing") || err_body.contains("insufficient_quota") || err_body.contains("quota") {
+            } else if err_body.contains("billing")
+                || err_body.contains("insufficient_quota")
+                || err_body.contains("quota")
+            {
                 LlmError::Billing(err_body)
             } else {
                 LlmError::RequestFailed(format!("{}: {}", status, err_body))
@@ -882,15 +907,18 @@ where
                     return Err(e);
                 }
                 // §2.3: take max(fixed_backoff, Retry-After)
-                let backoff = (base_secs * (factor.pow(attempt) as u64))
-                    .min(max_secs);
+                let backoff = (base_secs * (factor.pow(attempt) as u64)).min(max_secs);
                 let retry_after = e.retry_after().map(|d| d.as_secs()).unwrap_or(0);
                 let delay = backoff.max(retry_after);
                 // §5.1: jitter
                 let jitter_ms = (delay as f32 * jitter * 1000.0) as u64;
-                let actual_delay = Duration::from_secs(delay)
-                    + Duration::from_millis(jitter_ms);
-                tracing::debug!("llm retry {} after {:?} (error: {})", attempt, actual_delay, e);
+                let actual_delay = Duration::from_secs(delay) + Duration::from_millis(jitter_ms);
+                tracing::debug!(
+                    "llm retry {} after {:?} (error: {})",
+                    attempt,
+                    actual_delay,
+                    e
+                );
                 tokio::time::sleep(actual_delay).await;
                 last_err = Some(e);
             }
@@ -973,18 +1001,10 @@ mod tests {
 
     #[test]
     fn http_status_maps_correctly() {
-        let r = http_status_to_error(
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
-            "rate limited",
-            None,
-        );
+        let r = http_status_to_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "rate limited", None);
         assert!(matches!(r, LlmError::RateLimit { .. }));
 
-        let r = http_status_to_error(
-            reqwest::StatusCode::UNAUTHORIZED,
-            "bad key",
-            None,
-        );
+        let r = http_status_to_error(reqwest::StatusCode::UNAUTHORIZED, "bad key", None);
         assert!(matches!(r, LlmError::Auth(_)));
 
         let r = http_status_to_error(
@@ -994,11 +1014,7 @@ mod tests {
         );
         assert!(matches!(r, LlmError::ContextLengthExceeded));
 
-        let r = http_status_to_error(
-            reqwest::StatusCode::BAD_REQUEST,
-            "content_filter",
-            None,
-        );
+        let r = http_status_to_error(reqwest::StatusCode::BAD_REQUEST, "content_filter", None);
         assert!(matches!(r, LlmError::ContentFilter));
 
         let r = http_status_to_error(
@@ -1056,11 +1072,7 @@ mod tests {
         };
         let client = HttpLlmClient::new(ep);
         let headers = client.build_headers();
-        let val = headers
-            .get("authorization")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let val = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(val, "Bearer my-key");
     }
 
@@ -1073,11 +1085,7 @@ mod tests {
         };
         let client = HttpLlmClient::new(ep);
         let headers = client.build_headers();
-        let val = headers
-            .get("authorization")
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let val = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(val, "Token token123");
     }
 
@@ -1263,10 +1271,7 @@ mod tests {
         };
         let openai_msgs = HttpLlmClient::convert_messages(vec![msg]);
         assert_eq!(openai_msgs[0].role, "tool");
-        assert_eq!(
-            openai_msgs[0].tool_call_id.as_deref(),
-            Some("call_1")
-        );
+        assert_eq!(openai_msgs[0].tool_call_id.as_deref(), Some("call_1"));
     }
 
     #[test]
@@ -1301,7 +1306,8 @@ mod tests {
                 role: Some("assistant".into()),
                 content: Some("plain text response".into()),
                 tool_calls: None,
-             reasoning_content: None }),
+                reasoning_content: None,
+            }),
             delta: None,
             finish_reason: Some("stop".into()),
         };
@@ -1408,8 +1414,7 @@ mod tests {
 
     #[test]
     fn http_status_402_returns_request_failed() {
-        let e =
-            http_status_to_error(reqwest::StatusCode::PAYMENT_REQUIRED, "billing issue", None);
+        let e = http_status_to_error(reqwest::StatusCode::PAYMENT_REQUIRED, "billing issue", None);
         assert!(matches!(e, LlmError::RequestFailed(_)));
         assert!(e.to_string().contains("402"));
     }
@@ -1434,15 +1439,13 @@ mod tests {
 
     #[test]
     fn http_status_500_returns_server_error() {
-        let e =
-            http_status_to_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "boom", None);
+        let e = http_status_to_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "boom", None);
         assert!(matches!(e, LlmError::ServerError(_)));
     }
 
     #[test]
     fn http_status_503_returns_server_error() {
-        let e =
-            http_status_to_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, "down", None);
+        let e = http_status_to_error(reqwest::StatusCode::SERVICE_UNAVAILABLE, "down", None);
         assert!(matches!(e, LlmError::ServerError(_)));
     }
 
@@ -1476,7 +1479,7 @@ mod tests {
                 usage: Usage::default(),
                 model: None,
                 reasoning: None,
-})
+            })
         })
         .await;
         assert!(result.is_ok());
@@ -1509,7 +1512,7 @@ mod tests {
                         usage: Usage::default(),
                         model: None,
                         reasoning: None,
-})
+                    })
                 }
             }
         })

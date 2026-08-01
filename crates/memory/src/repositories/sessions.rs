@@ -90,8 +90,9 @@ impl Database {
 
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT id, started_at, ended_at, status, parent_id FROM sessions WHERE id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, started_at, ended_at, status, parent_id FROM sessions WHERE id = ?1",
+        )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(Session {

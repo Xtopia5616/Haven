@@ -54,7 +54,10 @@ impl Database {
         self.conn.lock().expect("database lock poisoned")
     }
 
-    pub fn cache_get_messages(&self, session_id: &str) -> Option<Vec<crate::repositories::messages::Message>> {
+    pub fn cache_get_messages(
+        &self,
+        session_id: &str,
+    ) -> Option<Vec<crate::repositories::messages::Message>> {
         let cache = self.cache.lock().ok()?;
         let entry = cache.get(session_id)?.messages.as_ref()?;
         if entry.expiry > Instant::now() {
@@ -75,7 +78,13 @@ impl Database {
             .unwrap_or(0)
     }
 
-    pub fn cache_put_messages(&self, session_id: &str, data: Vec<crate::repositories::messages::Message>, ttl_secs: u64, expected_gen: u64) {
+    pub fn cache_put_messages(
+        &self,
+        session_id: &str,
+        data: Vec<crate::repositories::messages::Message>,
+        ttl_secs: u64,
+        expected_gen: u64,
+    ) {
         if let Ok(mut cache) = self.cache.lock() {
             let qc = cache.entry(session_id.to_string()).or_insert(QueryCache {
                 messages: None,
@@ -103,7 +112,12 @@ impl Database {
         }
     }
 
-    pub fn cache_put_tasks(&self, data: Vec<crate::repositories::tasks::Task>, ttl_secs: u64, expected_gen: u64) {
+    pub fn cache_put_tasks(
+        &self,
+        data: Vec<crate::repositories::tasks::Task>,
+        ttl_secs: u64,
+        expected_gen: u64,
+    ) {
         if let Ok(mut cache) = self.cache.lock() {
             let qc = cache.entry("_tasks".to_string()).or_insert(QueryCache {
                 messages: None,
@@ -132,7 +146,13 @@ impl Database {
         }
     }
 
-    pub fn cache_put_facts(&self, subject: &str, data: Vec<crate::repositories::facts::Fact>, ttl_secs: u64, expected_gen: u64) {
+    pub fn cache_put_facts(
+        &self,
+        subject: &str,
+        data: Vec<crate::repositories::facts::Fact>,
+        ttl_secs: u64,
+        expected_gen: u64,
+    ) {
         if let Ok(mut cache) = self.cache.lock() {
             let key = format!("_facts_{}", subject);
             let qc = cache.entry(key).or_insert(QueryCache {
@@ -183,8 +203,8 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use std::thread;
+    use std::time::Duration;
 
     fn make_msg(id: &str, session_id: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
@@ -198,6 +218,7 @@ mod tests {
             is_compacted: false,
             compaction_id: None,
             parent_message_id: None,
+            attachments: vec![],
         }
     }
 

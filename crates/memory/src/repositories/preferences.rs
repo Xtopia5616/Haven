@@ -225,12 +225,7 @@ impl Database {
             }
 
             // Preferred tool / tool family hint
-            for tool_hint in &[
-                "use ",
-                "using ",
-                "prefer ",
-                "always use ",
-            ] {
+            for tool_hint in &["use ", "using ", "prefer ", "always use "] {
                 let needle = format!("{} {}", tool_hint, "search");
                 if content_lower.contains(&needle) {
                     prefs.push(InferredPreference {
@@ -321,14 +316,14 @@ impl Database {
 
         // tool_usage counters → most-used tool
         if let Ok(Some(tool)) = self.most_used_tool() {
-            summary.push((
-                "most_used_tool".into(),
-                format!("[inferred] {}", tool),
-            ));
+            summary.push(("most_used_tool".into(), format!("[inferred] {}", tool)));
         }
 
         for (key, value) in &all {
-            if key.starts_with("tool_usage.") || key.starts_with("tool_param.") || key.starts_with("cfg.") {
+            if key.starts_with("tool_usage.")
+                || key.starts_with("tool_param.")
+                || key.starts_with("cfg.")
+            {
                 continue;
             }
             let label = if key.starts_with("inferred.") {
@@ -368,6 +363,7 @@ mod tests {
             compaction_id: None,
             is_compacted: false,
             parent_message_id: None,
+            attachments: vec![],
         }
     }
 
@@ -442,8 +438,7 @@ mod tests {
     #[test]
     fn record_tool_usage_params() {
         let db = test_db();
-        let params: serde_json::Value =
-            serde_json::json!({"path": "/src/main.rs", "mode": "read"});
+        let params: serde_json::Value = serde_json::json!({"path": "/src/main.rs", "mode": "read"});
         db.record_tool_usage("read_file", &params, true).unwrap();
 
         let tool_count = db.get_preference("tool_usage.read_file").unwrap().unwrap();
@@ -468,7 +463,11 @@ mod tests {
         let db = test_db();
         let params: serde_json::Value = serde_json::json!({"x": "y"});
         db.record_tool_usage("fail_tool", &params, false).unwrap();
-        assert!(db.get_preference("tool_param.fail_tool.x.y").unwrap().is_none());
+        assert!(
+            db.get_preference("tool_param.fail_tool.x.y")
+                .unwrap()
+                .is_none()
+        );
         let count: i64 = db
             .get_preference("tool_usage.fail_tool")
             .unwrap()
@@ -505,10 +504,11 @@ mod tests {
         let db = test_db();
         let msgs = vec![make_message("my project is at D:\\Workspace\\Haven")];
         let prefs = db.infer_preferences_from_messages(&msgs);
-        assert!(prefs
-            .iter()
-            .any(|p| p.key == "inferred.working_dir"
-                && p.value.contains("D:\\Workspace\\Haven")));
+        assert!(
+            prefs.iter().any(
+                |p| p.key == "inferred.working_dir" && p.value.contains("D:\\Workspace\\Haven")
+            )
+        );
     }
 
     #[test]
@@ -516,7 +516,11 @@ mod tests {
         let db = test_db();
         let msgs = vec![make_message("please be concise and keep it short")];
         let prefs = db.infer_preferences_from_messages(&msgs);
-        assert!(prefs.iter().any(|p| p.key == "inferred.verbosity" && p.value == "concise"));
+        assert!(
+            prefs
+                .iter()
+                .any(|p| p.key == "inferred.verbosity" && p.value == "concise")
+        );
     }
 
     #[test]
@@ -524,7 +528,11 @@ mod tests {
         let db = test_db();
         let msgs = vec![make_message("be thorough and explain in detail")];
         let prefs = db.infer_preferences_from_messages(&msgs);
-        assert!(prefs.iter().any(|p| p.key == "inferred.verbosity" && p.value == "detailed"));
+        assert!(
+            prefs
+                .iter()
+                .any(|p| p.key == "inferred.verbosity" && p.value == "detailed")
+        );
     }
 
     #[test]
@@ -532,7 +540,11 @@ mod tests {
         let db = test_db();
         let msgs = vec![make_message("I use vscode for everything")];
         let prefs = db.infer_preferences_from_messages(&msgs);
-        assert!(prefs.iter().any(|p| p.key == "inferred.editor" && p.value == "vscode"));
+        assert!(
+            prefs
+                .iter()
+                .any(|p| p.key == "inferred.editor" && p.value == "vscode")
+        );
     }
 
     #[test]
@@ -602,7 +614,10 @@ mod tests {
             make_message("I like using vscode"),
         ];
         let prefs = db.infer_preferences_from_messages(&msgs);
-        let editor_prefs: Vec<_> = prefs.iter().filter(|p| p.key == "inferred.editor").collect();
+        let editor_prefs: Vec<_> = prefs
+            .iter()
+            .filter(|p| p.key == "inferred.editor")
+            .collect();
         assert_eq!(editor_prefs.len(), 1);
     }
 }

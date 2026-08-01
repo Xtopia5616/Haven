@@ -13,7 +13,7 @@ impl Tool for WindowTool {
         "window".into()
     }
     fn description(&self) -> String {
-        "Provide basic abilities to list, query, and manage desktop windows".into()
+        "List, query, and manage desktop windows".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -36,12 +36,10 @@ impl Tool for WindowTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         let op = input["operation"].as_str().unwrap_or("list").to_string();
         let filter_pid = input["pid"].as_i64().map(|p| p as u32);
@@ -61,9 +59,10 @@ impl Tool for WindowTool {
                 let mut result = serde_json::json!({"windows": windows, "count": count});
                 if truncated {
                     result["truncated"] = serde_json::Value::Bool(true);
-                    result["hint"] = serde_json::json!(
-                        format!("More than {} windows are open; only the first {} are listed. Filter by pid to narrow the result.", max, max)
-                    );
+                    result["hint"] = serde_json::json!(format!(
+                        "More than {} windows are open; only the first {} are listed. Filter by pid to narrow the result.",
+                        max, max
+                    ));
                 }
                 Ok(ToolResult::ok(result))
             }
@@ -91,8 +90,8 @@ mod imp {
     use serde_json::Value;
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
-    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, FALSE, TRUE};
 
     pub fn enumerate_windows(filter_pid: Option<u32>) -> anyhow::Result<Vec<Value>> {
         let mut windows: Vec<Value> = Vec::new();
@@ -210,7 +209,9 @@ mod imp {
 
                 let substr = String::from_utf16_lossy(std::slice::from_raw_parts(substr_ptr, {
                     let mut i = 0;
-                    while *substr_ptr.add(i) != 0 { i += 1; }
+                    while *substr_ptr.add(i) != 0 {
+                        i += 1;
+                    }
                     i
                 }));
 
@@ -265,14 +266,125 @@ mod tests {
 
     #[test]
     fn test_window_tool_risk_level() {
-        assert_eq!(WindowTool.risk_level(&json!({"operation": "list"})), RiskLevel::Low);
-        assert_eq!(WindowTool.risk_level(&json!({"operation": "focus"})), RiskLevel::Medium);
-        assert_eq!(WindowTool.risk_level(&json!({"operation": "close"})), RiskLevel::High);
+        assert_eq!(
+            WindowTool.risk_level(&json!({"operation": "list"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            WindowTool.risk_level(&json!({"operation": "focus"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            WindowTool.risk_level(&json!({"operation": "close"})),
+            RiskLevel::High
+        );
     }
 
     #[test]
     fn test_window_tool_input_schema() {
         let schema = WindowTool.input_schema();
-        assert!(schema["properties"]["operation"]["enum"].as_array().is_some());
+        assert!(
+            schema["properties"]["operation"]["enum"]
+                .as_array()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_list() {
+        let result = WindowTool
+            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        let windows = result.output["windows"].as_array().unwrap();
+        for w in windows {
+            assert!(w["title"].as_str().is_some());
+            assert!(w["pid"].is_number());
+        }
+        assert!(result.output["count"].as_u64().unwrap() == windows.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_list_filtered_by_pid() {
+        let result = WindowTool
+            .execute(
+                json!({"operation": "list", "pid": 99999999}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        let windows = result.output["windows"].as_array().unwrap();
+        for w in windows {
+            assert_eq!(w["pid"].as_u64().unwrap(), 99999999);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_foreground() {
+        let result = WindowTool
+            .execute(json!({"operation": "foreground"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        #[cfg(windows)]
+        {
+            assert!(result.output["hwnd"].is_number());
+            assert!(result.output["title"].is_string());
+            assert!(result.output["pid"].is_number());
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(result.output["available"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_focus_no_match() {
+        let result = WindowTool
+            .execute(
+                json!({"operation": "focus", "title": "haven-test-no-such-window-xyz"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_close_no_match() {
+        let result = WindowTool
+            .execute(
+                json!({"operation": "close", "title": "haven-test-no-such-window-xyz"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_focus_requires_title() {
+        let result = WindowTool
+            .execute(json!({"operation": "focus"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_unknown_operation() {
+        let result = WindowTool
+            .execute(json!({"operation": "bogus"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_window_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = WindowTool
+            .execute(json!({"operation": "list"}), cancel)
+            .await;
+        assert!(result.is_err());
     }
 }

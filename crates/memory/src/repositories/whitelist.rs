@@ -153,7 +153,8 @@ mod tests {
     #[test]
     fn test_whitelist_pattern_stored() {
         let db = create_db();
-        db.add_whitelist("filesystem", Some(r"C:\Users\*\Documents\*")).unwrap();
+        db.add_whitelist("filesystem", Some(r"C:\Users\*\Documents\*"))
+            .unwrap();
         let list = db.list_whitelist().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].1, Some(r"C:\Users\*\Documents\*".into()));

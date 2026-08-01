@@ -21,7 +21,7 @@ impl Tool for LoadMcpTool {
         "load_mcp".into()
     }
     fn description(&self) -> String {
-        "Load an MCP server's full tool schema by server name. Use this when you need to access an MCP server listed in the MCP Index.".into()
+        "Load an MCP server's tools by server name".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -74,7 +74,9 @@ impl Tool for LoadMcpTool {
             .mcp_manager
             .get_client(server_name)
             .await
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not available after connect", server_name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("MCP server '{}' not available after connect", server_name)
+            })?;
 
         let tools = client.tools_cache().await;
         let tool_schemas: Vec<Value> = tools

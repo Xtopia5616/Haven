@@ -142,9 +142,7 @@ mod tests {
     #[test]
     fn test_delete_mcp_server_existing() {
         let db = create_db();
-        let server = db
-            .save_mcp_server("server", "stdio", "{}")
-            .unwrap();
+        let server = db.save_mcp_server("server", "stdio", "{}").unwrap();
         db.delete_mcp_server(&server.id).unwrap();
         let servers = db.list_mcp_servers().unwrap();
         assert!(servers.is_empty());
@@ -160,9 +158,7 @@ mod tests {
     #[test]
     fn test_set_mcp_server_enabled_true() {
         let db = create_db();
-        let server = db
-            .save_mcp_server("server", "stdio", "{}")
-            .unwrap();
+        let server = db.save_mcp_server("server", "stdio", "{}").unwrap();
         assert!(server.enabled);
         db.set_mcp_server_enabled(&server.id, false).unwrap();
 
@@ -174,9 +170,7 @@ mod tests {
     #[test]
     fn test_set_mcp_server_enabled_false() {
         let db = create_db();
-        let server = db
-            .save_mcp_server("server", "stdio", "{}")
-            .unwrap();
+        let server = db.save_mcp_server("server", "stdio", "{}").unwrap();
         db.set_mcp_server_enabled(&server.id, false).unwrap();
         db.set_mcp_server_enabled(&server.id, true).unwrap();
 

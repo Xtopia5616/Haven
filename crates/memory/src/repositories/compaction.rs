@@ -39,7 +39,10 @@ impl Database {
     }
 
     /// Load the most recent compaction entries for a session, ordered newest first.
-    pub fn get_session_compactions(&self, session_id: &str) -> anyhow::Result<Vec<CompactionEntry>> {
+    pub fn get_session_compactions(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<CompactionEntry>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, summary, first_kept_entry_id, tokens_before, created_at
@@ -64,15 +67,17 @@ impl Database {
 
     /// When loading messages for a session, inject compaction summaries at the
     /// appropriate positions so the LLM sees a compacted view.
-    pub fn load_messages_with_compaction(&self, session_id: &str) -> anyhow::Result<Vec<crate::repositories::messages::Message>> {
+    pub fn load_messages_with_compaction(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<crate::repositories::messages::Message>> {
         let mut messages = self.get_session_messages(session_id)?;
         // Mark messages that are part of a compaction range
         // (The compaction itself happened at the agent level; the DB stores
         //  the full history. We only use `is_compacted` for UI awareness.)
         if let Ok(compactions) = self.get_session_compactions(session_id) {
             for _comp in &compactions {
-                if let Some(_msg) = messages.iter_mut().find(|m| m.is_compacted) {
-                }
+                if let Some(_msg) = messages.iter_mut().find(|m| m.is_compacted) {}
             }
         }
         Ok(messages)

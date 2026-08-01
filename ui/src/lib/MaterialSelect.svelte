@@ -1,4 +1,7 @@
 <script>
+	import { fly } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+
 	let { value = '', options = [], onChange, id = undefined } = $props();
 
 	let open = $state(false);
@@ -44,7 +47,7 @@
 	</button>
 
 	{#if open}
-		<div class="md-select-menu" role="listbox">
+		<div class="md-select-menu" role="listbox" in:fly={{ y: -4, duration: 200, easing: cubicOut }}>
 			{#each options as opt}
 				<button
 					class="md-select-option"
@@ -121,11 +124,6 @@
 		box-shadow: var(--md-sys-elevation-3);
 		z-index: 100;
 		overflow: hidden;
-		animation: menuIn var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized);
-	}
-	@keyframes menuIn {
-		from { opacity: 0; transform: translateY(-4px); }
-		to { opacity: 1; transform: translateY(0); }
 	}
 	.md-select-option {
 		display: flex;

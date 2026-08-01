@@ -10,34 +10,36 @@ const ENERGY_THRESHOLD: f32 = 0.001;
 
 type Model = SimplePlan<TypedFact, Box<dyn TypedOp>, TypedModel>;
 
+/// Silero VAD inference engine. The bundled model is the **v5** variant,
+/// whose interface is:
+///   inputs:  [0] audio `[batch, seq]` f32
+///            [1] sr    `[1]` i64 (16000)
+///            [2] state `[2, batch, 128]` f32 (recurrent state)
+///   outputs: [0] prob  `[batch, 1]` f32
+///            [1] state `[2, batch, 128]` f32 (new recurrent state)
+///
+/// Earlier code assumed the legacy 4-input (input/h/c/sr) variant; setting
+/// a 4th input fact on this 3-input model panicked tract ("index out of
+/// bounds: len 3, index 3") and, because the panic crossed the non-unwinding
+/// global-hotkey C callback, aborted the whole process.
 pub struct VadEngine {
     model: Model,
-    h: Tensor,
-    c: Tensor,
+    state: Tensor,
 }
 
 impl VadEngine {
     pub fn new() -> Result<Self> {
         let model = onnx()
             .model_for_read(&mut Cursor::new(MODEL_BYTES))?
-            .with_input_fact(
-                0,
-                InferenceFact::dt_shape(f32::datum_type(), tvec!(1, FRAME_SIZE as i64)),
-            )?
-            .with_input_fact(1, InferenceFact::dt_shape(i64::datum_type(), tvec!(1)))?
-            .with_input_fact(
-                2,
-                InferenceFact::dt_shape(f32::datum_type(), tvec!(2, 1, STATE_DIM as i64)),
-            )?
-            .with_input_fact(
-                3,
-                InferenceFact::dt_shape(f32::datum_type(), tvec!(2, 1, STATE_DIM as i64)),
-            )?
+            // The ONNX reader already supplies input facts with a symbolic
+            // `batch` dim. Do NOT override them with concrete values: the v5
+            // model's Pad op shape inference ("Impossible to unify Sym(batch)
+            // with Val(1)") chokes when batch is pinned at graph-build time.
+            // We keep batch symbolic and pass batch=1 tensors at run time.
             .into_optimized()?
             .into_runnable()?;
-        let h = Tensor::zero::<f32>(&[2, 1, STATE_DIM])?;
-        let c = Tensor::zero::<f32>(&[2, 1, STATE_DIM])?;
-        Ok(Self { model, h, c })
+        let state = Tensor::zero::<f32>(&[2, 1, STATE_DIM])?;
+        Ok(Self { model, state })
     }
 
     pub fn infer(&mut self, frame: &[f32]) -> f32 {
@@ -50,26 +52,29 @@ impl VadEngine {
         }
 
         let input = Tensor::from_shape(&[1, FRAME_SIZE], &frame[..FRAME_SIZE]).unwrap();
-        let sr = tensor1(&[16000i64]);
-        let h = self.h.clone();
-        let c = self.c.clone();
+        let sr = tensor0(16000i64);
+        let state = self.state.clone();
 
         let result = self
             .model
-            .run(tvec!(input.into(), sr.into(), h.into(), c.into()))
+            .run(tvec!(input.into(), sr.into(), state.into()))
             .unwrap();
 
-        let prob = result[0].to_array_view::<f32>().unwrap()[[]];
+        let prob = result[0]
+            .to_array_view::<f32>()
+            .unwrap()
+            .iter()
+            .copied()
+            .next()
+            .unwrap_or(0.0);
 
-        self.h = result[1].clone().into_tensor();
-        self.c = result[2].clone().into_tensor();
+        self.state = result[1].clone().into_tensor();
 
         prob
     }
 
     pub fn reset(&mut self) {
-        self.h = Tensor::zero::<f32>(&[2, 1, STATE_DIM]).unwrap();
-        self.c = Tensor::zero::<f32>(&[2, 1, STATE_DIM]).unwrap();
+        self.state = Tensor::zero::<f32>(&[2, 1, STATE_DIM]).unwrap();
     }
 }
 
@@ -208,5 +213,26 @@ mod tests {
         let frame = vec![0.0f32; 480];
         let energy: f32 = frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32;
         assert!(energy.sqrt() < ENERGY_THRESHOLD);
+    }
+
+    /// End-to-end: load the bundled v5 model and run a frame through it. A
+    /// zero-energy frame short-circuits (returns 0.0 without touching the
+    /// model), so feed a non-trivial signal to exercise the actual tract
+    /// inference path and confirm the 3-input / 2-output interface is correct.
+    #[test]
+    fn vad_engine_loads_and_infers() {
+        let mut engine = VadEngine::new().expect("model loads");
+        // A mid-amplitude sine-ish frame well above the energy threshold.
+        let frame: Vec<f32> = (0..FRAME_SIZE)
+            .map(|i| 0.3 * (i as f32 * 0.1).sin())
+            .collect();
+        let prob = engine.infer(&frame);
+        assert!((0.0..=1.0).contains(&prob), "prob out of range: {prob}");
+        // A second inference reuses the updated state without panic.
+        let prob2 = engine.infer(&frame);
+        assert!((0.0..=1.0).contains(&prob2));
+        engine.reset();
+        let prob3 = engine.infer(&frame);
+        assert!((0.0..=1.0).contains(&prob3));
     }
 }

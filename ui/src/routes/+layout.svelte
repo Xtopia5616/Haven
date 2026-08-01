@@ -6,6 +6,8 @@
 	import logger from '$lib/logger.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
+	import { fade } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import { page } from '$app/stores';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
@@ -39,6 +41,11 @@
 		task_paused: { in_app: true },
 		task_error: { in_app: true },
 	});
+
+	// The configured recording hotkey binding (e.g. "Ctrl+Shift+Space"),
+	// loaded from settings so the statusbar hint reflects the real value
+	// instead of a hardcoded string. Updated live on `hotkey:rebind`.
+	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
 	recordingOverlay.subscribe((v) => (overlay = v));
 
@@ -115,10 +122,14 @@
 	}
 
 	onMount(async () => {
-		// Load notify config in background — don't block listener registration.
+		// Load notify config + hotkey binding in background — don't block
+		// listener registration.
 		invoke('get_settings').then((settings) => {
 			if (settings?.notification) {
 				notifyCfg = { ...notifyCfg, ...settings.notification };
+			}
+			if (settings?.hotkey?.key_binding) {
+				hotkeyBinding = settings.hotkey.key_binding;
 			}
 		}).catch((e) => {
 			logger.warn('+layout', 'get_settings error', e);
@@ -200,7 +211,7 @@
 		await safeListen('mute:changed', (event) => {
 			const data = event.payload || {};
 			if (data.muted) {
-				addNotification('Microphone muted', 'info');
+				addNotification('麦克风已静音', 'info');
 				if (get(recordingOverlay).isRecording) {
 					addNotification('录音被静音强制停止', 'warning', 4000);
 					setOverlay({
@@ -212,7 +223,7 @@
 					stopTimer();
 				}
 			} else {
-				addNotification('Microphone unmuted', 'info');
+				addNotification('麦克风已取消静音', 'info');
 			}
 		});
 		await safeListen('tray:status_changed', (event) => {
@@ -235,13 +246,19 @@
 				5000,
 			);
 		});
+		await safeListen('hotkey:rebind', (event) => {
+			const data = event.payload || {};
+			if (data.new_binding) {
+				hotkeyBinding = data.new_binding;
+			}
+		});
 		await safeListen('task:created', (event) => {
 			const data = event.payload;
 			const title = data.title || data.task_id;
 			if (notifyCfg?.task_created?.in_app !== false) {
 				addNotification(`新任务: ${title}`, 'info', 4000);
 			}
-			updateModelState('waiting', { fallbackDelay: 5000 });
+			updateModelState('waiting', { idleTimeoutMs: 5000 });
 		});
 		await safeListen('task:completed', (event) => {
 			const data = event.payload;
@@ -274,7 +291,7 @@
 				if (notifyCfg?.task_paused?.in_app !== false) {
 					addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
 				}
-				updateModelState('waiting', { fallbackDelay: 5000 });
+				updateModelState('waiting', { idleTimeoutMs: 5000 });
 			}
 			if (data.status === 'completed') {
 				clearModelStateTimer();
@@ -303,12 +320,12 @@
 		await safeListen('skills:status_change', () => {
 			// Skill list refresh is notified by the tools page refresh button.
 		});
-		await safeListen('agent:fallback', (event) => {
+		await safeListen('agent:balanced_model', (event) => {
 			const data = event.payload;
 			const activeId = get(activeTaskIdStore);
 			if (data.task_id && activeId && data.task_id !== activeId) return;
-			updateModelState('fallback');
-			addNotification(`Fallback: ${data.reason}`, 'warning');
+			updateModelState('balanced_model');
+			addNotification(`balanced model: ${data.reason}`, 'warning');
 		});
 	});
 
@@ -349,9 +366,9 @@
 				{:else if modelState === 'tool'}
 					<StatusDot color="warning" animate={true} />
 					<span class="status-text">Tool</span>
-				{:else if modelState === 'fallback'}
+				{:else if modelState === 'balanced_model'}
 					<StatusDot color="error" animate={true} />
-					<span class="status-text">Fallback</span>
+					<span class="status-text">balanced model</span>
 				{:else}
 					<StatusDot color="success" />
 					<span class="status-text">Ready</span>
@@ -396,7 +413,7 @@
 
 	<main class="content" class:content--chat={$page.url.pathname === '/'}>
 		{#key $page.url.pathname}
-			<div class="page-shell">
+			<div class="page-shell" in:fade={{ duration: 180, easing: cubicOut }}>
 				{@render children()}
 			</div>
 		{/key}
@@ -414,7 +431,7 @@
 	<NotificationToast />
 
 	<footer class="statusbar">
-		<span class="hotkey-hint">Ctrl+Shift+Space 开始录音</span>
+		<span class="hotkey-hint">{hotkeyBinding} 开始录音</span>
 		{#if overlay.isRecording}
 			<span class="recording-label">Recording…</span>
 		{/if}
@@ -495,13 +512,6 @@
 		padding-bottom: 0;
 		display: flex;
 		flex-direction: column;
-	}
-	.page-shell {
-		animation: pageFadeIn 180ms ease-out;
-	}
-	@keyframes pageFadeIn {
-		from { opacity: 0; }
-		to { opacity: 1; }
 	}
 	.content--chat .page-shell {
 		flex: 1;

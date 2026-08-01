@@ -11,6 +11,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{Tool, ToolResult};
 
 const MAX_SNIPPET_CHARS: usize = 200;
+/// Upper clamp for `max_results` — untrusted input cannot disable the cap.
+const MAX_RESULTS_CAP: usize = 1_000;
 /// Content-mode skip cap: files larger than this are not searched (0 = unlimited).
 const DEFAULT_MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
 /// Line-range search window cap. Ranges wider than this fall back to a whole-file
@@ -25,7 +27,7 @@ impl Tool for SearchTool {
         "search".into()
     }
     fn description(&self) -> String {
-        "Fast file search by name pattern (glob or regex) or full-text content search. Uses ripgrep's search engine with parallel traversal, .gitignore/.ignore support, and binary detection.".into()
+        "Search files by name pattern (glob/regex) or full-text content".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -43,7 +45,7 @@ impl Tool for SearchTool {
                 "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search." },
                 "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers)" },
                 "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited.", "default": 10 },
-                "max_results": { "type": "integer", "description": "Maximum results to return", "default": 50 },
+                "max_results": { "type": "integer", "description": "Maximum results to return (capped at 1000)", "default": 50 },
                 "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories", "default": true },
                 "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited.", "default": 104857600 },
                 "start_line": { "type": "integer", "description": "Content mode: 1-based first line to search within each file (overrides byte scanning)", "default": 1 },
@@ -53,22 +55,32 @@ impl Tool for SearchTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
 
-        let root = input["root"].as_str().ok_or_else(|| anyhow::anyhow!("root is required"))?.to_string();
-        let pattern_str = input["pattern"].as_str().ok_or_else(|| anyhow::anyhow!("pattern is required"))?.to_string();
+        let root = input["root"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("root is required"))?
+            .to_string();
+        let pattern_str = input["pattern"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("pattern is required"))?
+            .to_string();
         let mode = input["mode"].as_str().unwrap_or("filename").to_string();
         let max_depth = input["max_depth"].as_i64().unwrap_or(10) as usize;
-        let max_results = input["max_results"].as_i64().unwrap_or(50) as usize;
+        // Clamp: negative values would wrap to usize::MAX and disable the
+        // result cap entirely.
+        let max_results = input["max_results"]
+            .as_i64()
+            .filter(|v| *v > 0)
+            .map(|v| (v as usize).min(MAX_RESULTS_CAP))
+            .unwrap_or(50);
         let ignore_hidden = input["ignore_hidden"].as_bool().unwrap_or(true);
-        let max_file_size = input["max_file_size"].as_u64().unwrap_or(DEFAULT_MAX_FILE_SIZE);
+        let max_file_size = input["max_file_size"]
+            .as_u64()
+            .unwrap_or(DEFAULT_MAX_FILE_SIZE);
         let start_line = input["start_line"].as_u64().unwrap_or(1).max(1);
         // end_line = 0 means "unbounded" (scan to EOF).
         let end_line = match input["end_line"].as_u64() {
@@ -106,9 +118,9 @@ impl Tool for SearchTool {
         });
         if truncated {
             output["truncated"] = serde_json::Value::Bool(true);
-            output["hint"] = serde_json::Value::String(
-                format!("Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results.")
-            );
+            output["hint"] = serde_json::Value::String(format!(
+                "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
+            ));
         }
         Ok(ToolResult::ok(output))
     }
@@ -166,14 +178,14 @@ fn search_files(params: SearchParams<'_>) -> (Vec<Value>, bool) {
 }
 
 /// Shared walker configuration honoring ignore rules, depth and hidden filters.
-fn walk_builder(
-    root: &Path,
-    max_depth: usize,
-    ignore_hidden: bool,
-) -> ignore::WalkBuilder {
+fn walk_builder(root: &Path, max_depth: usize, ignore_hidden: bool) -> ignore::WalkBuilder {
     let mut builder = ignore::WalkBuilder::new(root);
     builder
-        .max_depth(if max_depth == 0 { None } else { Some(max_depth) })
+        .max_depth(if max_depth == 0 {
+            None
+        } else {
+            Some(max_depth)
+        })
         .hidden(ignore_hidden)
         .ignore(true)
         .git_ignore(true)
@@ -243,7 +255,10 @@ fn search_filenames_parallel(
             ignore::WalkState::Continue
         })
     });
-    (finalize(results, max_results), found_flag.load(Ordering::Relaxed))
+    (
+        finalize(results, max_results),
+        found_flag.load(Ordering::Relaxed),
+    )
 }
 
 /// Full-text search using ripgrep's engine (`grep-searcher`): parallel
@@ -329,7 +344,10 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
             ignore::WalkState::Continue
         })
     });
-    (finalize(results, max_results), found_flag.load(Ordering::Relaxed))
+    (
+        finalize(results, max_results),
+        found_flag.load(Ordering::Relaxed),
+    )
 }
 
 /// Search one file restricted to the 1-based line range `[start_line, end_line]`.
@@ -351,8 +369,13 @@ fn search_content_line_range(
     };
     let window_len = end - start;
     if window_len > MAX_WINDOW_BYTES {
-        let sink = CollectingSink::new(path.to_path_buf(), max_results, found_flag.clone(), results.clone())
-            .with_line_filter(start_line, end_line);
+        let sink = CollectingSink::new(
+            path.to_path_buf(),
+            max_results,
+            found_flag.clone(),
+            results.clone(),
+        )
+        .with_line_filter(start_line, end_line);
         let _ = searcher.search_path(matcher.clone(), path, sink);
         return;
     }
@@ -373,15 +396,24 @@ fn search_content_line_range(
         }
     }
     bytes.truncate(filled);
-    let sink = CollectingSink::new(path.to_path_buf(), max_results, found_flag.clone(), results.clone())
-        .with_line_offset(start_line - 1);
+    let sink = CollectingSink::new(
+        path.to_path_buf(),
+        max_results,
+        found_flag.clone(),
+        results.clone(),
+    )
+    .with_line_offset(start_line - 1);
     let _ = searcher.search_slice(matcher.clone(), &bytes, sink);
 }
 
 /// Byte range `[start, end)` covering lines `start_line`..=`end_line` (1-based,
 /// `end_line` inclusive). Returns `None` when `start_line` is past the last line;
 /// when `end_line` is past EOF the range ends at the file length.
-fn line_range_bytes(path: &Path, start_line: u64, end_line: u64) -> std::io::Result<Option<(u64, u64)>> {
+fn line_range_bytes(
+    path: &Path,
+    start_line: u64,
+    end_line: u64,
+) -> std::io::Result<Option<(u64, u64)>> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let total = file.metadata()?.len();
@@ -400,7 +432,10 @@ fn line_range_bytes(path: &Path, start_line: u64, end_line: u64) -> std::io::Res
             }
             if b == b'\n' {
                 if line == end_line {
-                    return Ok(Some((range_start.unwrap_or(pos + i as u64), pos + i as u64 + 1)));
+                    return Ok(Some((
+                        range_start.unwrap_or(pos + i as u64),
+                        pos + i as u64 + 1,
+                    )));
                 }
                 line += 1;
             }
@@ -462,7 +497,10 @@ impl Sink for CollectingSink {
         if self.found_flag.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        let line_number = mat.line_number().unwrap_or(0).saturating_add(self.line_offset);
+        let line_number = mat
+            .line_number()
+            .unwrap_or(0)
+            .saturating_add(self.line_offset);
         if let Some((start, end)) = self.line_filter
             && (line_number < start || (end > 0 && line_number > end))
         {
@@ -473,11 +511,7 @@ impl Sink for CollectingSink {
         if self.last_line == Some(line_number) {
             return Ok(true);
         }
-        let snippet = mat
-            .lines()
-            .next()
-            .map(|line| snippet_of(&haven_common::encoding::decode_lossy(line)))
-            .unwrap_or_default();
+        let snippet = mat.lines().next().map(snippet_of).unwrap_or_default();
         let mut guard = self.results.lock().unwrap();
         if guard.len() >= self.max {
             self.found_flag.store(true, Ordering::Relaxed);
@@ -493,14 +527,22 @@ impl Sink for CollectingSink {
     }
 }
 
-/// Trim a matched line for a result snippet, keeping the leading newline off.
-fn snippet_of(line: &str) -> String {
-    let line = line.trim_end();
-    if line.len() <= MAX_SNIPPET_CHARS {
-        line.to_string()
+/// Trim a matched line for a result snippet. Never materializes the whole
+/// line: only a bounded byte window is decoded, then the text is truncated at
+/// a char boundary. A `…` marker is appended when the window cut the line or
+/// the decoded text exceeds the snippet cap.
+fn snippet_of(line: &[u8]) -> String {
+    let windowed = line.len() > MAX_SNIPPET_CHARS * 4;
+    let window = &line[..line.len().min(MAX_SNIPPET_CHARS * 4)];
+    // decode_preview keeps the valid UTF-8 prefix of a window cut mid-sequence
+    // and falls back to GBK for non-UTF-8 (CP936) files.
+    let s = haven_common::encoding::decode_preview(window);
+    let s = s.trim_end();
+    if s.len() <= MAX_SNIPPET_CHARS && !windowed {
+        s.to_string()
     } else {
-        let cutoff = line.floor_char_boundary(MAX_SNIPPET_CHARS);
-        format!("{}…", &line[..cutoff])
+        let cutoff = s.floor_char_boundary(MAX_SNIPPET_CHARS);
+        format!("{}…", &s[..cutoff])
     }
 }
 
@@ -545,8 +587,14 @@ mod tests {
 
     #[test]
     fn test_search_tool_risk_level() {
-        assert_eq!(SearchTool.risk_level(&json!({"mode": "filename"})), RiskLevel::Low);
-        assert_eq!(SearchTool.risk_level(&json!({"mode": "content"})), RiskLevel::Medium);
+        assert_eq!(
+            SearchTool.risk_level(&json!({"mode": "filename"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            SearchTool.risk_level(&json!({"mode": "content"})),
+            RiskLevel::Medium
+        );
     }
 
     #[test]
@@ -565,23 +613,46 @@ mod tests {
 
     #[test]
     fn test_snippet_of_short() {
-        assert_eq!(snippet_of("hello world\n"), "hello world");
+        assert_eq!(snippet_of(b"hello world\n"), "hello world");
     }
 
     #[test]
     fn test_snippet_of_long_truncates_at_boundary() {
         let line = "中".repeat(300);
-        let snippet = snippet_of(&line);
+        let snippet = snippet_of(line.as_bytes());
         assert!(snippet.len() < line.len());
         assert!(snippet.ends_with('…'));
+    }
+
+    #[test]
+    fn test_snippet_of_truncated_multibyte_prefix() {
+        // A byte window cut mid-CJK-sequence must keep only the valid UTF-8
+        // prefix and never garble or panic.
+        let line = "中".repeat(1000).into_bytes();
+        let snippet = snippet_of(&line[..500]);
+        assert!(snippet.is_char_boundary(snippet.len()));
+        assert!(snippet.len() < 500);
+        assert!(snippet.ends_with('…'));
+    }
+
+    #[test]
+    fn test_snippet_of_gbk_line_decoded() {
+        // "你好世界" in GBK: the snippet must decode to the CJK text, not an
+        // empty/ASCII-only prefix.
+        let gbk = [0xC4, 0xE3, 0xBA, 0xC3, 0xCA, 0xC0, 0xBD, 0xE7];
+        let snippet = snippet_of(&gbk);
+        assert_eq!(snippet, "你好世界");
     }
 
     #[tokio::test]
     async fn test_search_content_mode_reports_line_numbers() {
         let tmp = tempfile::TempDir::new().unwrap();
-        tokio::fs::write(tmp.path().join("a.rs"), "fn alpha() {}\nfn beta() {}\nfn alpha() {}\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("a.rs"),
+            "fn alpha() {}\nfn beta() {}\nfn alpha() {}\n",
+        )
+        .await
+        .unwrap();
 
         let result = SearchTool
             .execute(
@@ -598,11 +669,17 @@ mod tests {
         let results = result.output["results"].as_array().unwrap();
         assert_eq!(results.len(), 2);
         for r in results {
-            assert_eq!(r["path"].as_str().unwrap(), tmp.path().join("a.rs").to_string_lossy());
+            assert_eq!(
+                r["path"].as_str().unwrap(),
+                tmp.path().join("a.rs").to_string_lossy()
+            );
             assert!(r["line"].as_u64().is_some());
             assert!(r["snippet"].as_str().unwrap().contains("alpha"));
         }
-        let lines: Vec<u64> = results.iter().map(|r| r["line"].as_u64().unwrap()).collect();
+        let lines: Vec<u64> = results
+            .iter()
+            .map(|r| r["line"].as_u64().unwrap())
+            .collect();
         assert_eq!(lines, vec![1, 3]);
     }
 
@@ -610,10 +687,17 @@ mod tests {
     async fn test_search_content_mode_line_range() {
         let tmp = tempfile::TempDir::new().unwrap();
         let content = (1..=30)
-            .map(|i| format!("line {i}: needle {}", if i % 2 == 0 { "even" } else { "odd" }))
+            .map(|i| {
+                format!(
+                    "line {i}: needle {}",
+                    if i % 2 == 0 { "even" } else { "odd" }
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        tokio::fs::write(tmp.path().join("log.txt"), content).await.unwrap();
+        tokio::fs::write(tmp.path().join("log.txt"), content)
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -630,7 +714,10 @@ mod tests {
             .unwrap();
         assert!(result.success);
         let results = result.output["results"].as_array().unwrap();
-        let lines: Vec<u64> = results.iter().map(|r| r["line"].as_u64().unwrap()).collect();
+        let lines: Vec<u64> = results
+            .iter()
+            .map(|r| r["line"].as_u64().unwrap())
+            .collect();
         assert_eq!(lines, vec![5, 6, 7, 8, 9, 10]);
     }
 
@@ -641,7 +728,9 @@ mod tests {
             .map(|i| format!("row {i}: token {}", if i % 10 == 0 { "found" } else { "x" }))
             .collect::<Vec<_>>()
             .join("\n");
-        tokio::fs::write(tmp.path().join("wide.txt"), content).await.unwrap();
+        tokio::fs::write(tmp.path().join("wide.txt"), content)
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -658,14 +747,19 @@ mod tests {
             .unwrap();
         assert!(result.success);
         let results = result.output["results"].as_array().unwrap();
-        let lines: Vec<u64> = results.iter().map(|r| r["line"].as_u64().unwrap()).collect();
+        let lines: Vec<u64> = results
+            .iter()
+            .map(|r| r["line"].as_u64().unwrap())
+            .collect();
         assert_eq!(lines, vec![20, 30, 40, 50, 60, 70, 80, 90]);
     }
 
     #[tokio::test]
     async fn test_search_content_mode_start_line_past_eof_returns_empty() {
         let tmp = tempfile::TempDir::new().unwrap();
-        tokio::fs::write(tmp.path().join("short.txt"), "one\ntwo\n").await.unwrap();
+        tokio::fs::write(tmp.path().join("short.txt"), "one\ntwo\n")
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -686,8 +780,13 @@ mod tests {
     #[tokio::test]
     async fn test_search_content_mode_truncation_hint() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let content = (1..=100).map(|i| format!("hit {i}")).collect::<Vec<_>>().join("\n");
-        tokio::fs::write(tmp.path().join("many.txt"), content).await.unwrap();
+        let content = (1..=100)
+            .map(|i| format!("hit {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(tmp.path().join("many.txt"), content)
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -702,16 +801,24 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["truncated"].as_bool().unwrap(), true);
-        assert!(result.output["hint"].as_str().unwrap().contains("max_results"));
+        assert!(result.output["truncated"].as_bool().unwrap());
+        assert!(
+            result.output["hint"]
+                .as_str()
+                .unwrap()
+                .contains("max_results")
+        );
     }
 
     #[tokio::test]
     async fn test_search_content_mode_regex_pattern() {
         let tmp = tempfile::TempDir::new().unwrap();
-        tokio::fs::write(tmp.path().join("log.txt"), "error 123\nwarning 456\nerror 789\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("log.txt"),
+            "error 123\nwarning 456\nerror 789\n",
+        )
+        .await
+        .unwrap();
 
         let result = SearchTool
             .execute(
@@ -727,14 +834,19 @@ mod tests {
         assert!(result.success);
         let results = result.output["results"].as_array().unwrap();
         assert_eq!(results.len(), 2);
-        let lines: Vec<u64> = results.iter().map(|r| r["line"].as_u64().unwrap()).collect();
+        let lines: Vec<u64> = results
+            .iter()
+            .map(|r| r["line"].as_u64().unwrap())
+            .collect();
         assert_eq!(lines, vec![1, 3]);
     }
 
     #[tokio::test]
     async fn test_search_content_mode_invalid_regex_falls_back_to_literal() {
         let tmp = tempfile::TempDir::new().unwrap();
-        tokio::fs::write(tmp.path().join("f.txt"), "foo(bar\nbaz\n").await.unwrap();
+        tokio::fs::write(tmp.path().join("f.txt"), "foo(bar\nbaz\n")
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -759,7 +871,9 @@ mod tests {
         tokio::fs::write(tmp.path().join("bin.exe"), b"\x00\x01\x02\x03MZ\x90\x00")
             .await
             .unwrap();
-        tokio::fs::write(tmp.path().join("text.txt"), "needle here\n").await.unwrap();
+        tokio::fs::write(tmp.path().join("text.txt"), "needle here\n")
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -781,8 +895,12 @@ mod tests {
     #[tokio::test]
     async fn test_search_content_mode_skips_oversized_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        tokio::fs::write(tmp.path().join("big.txt"), vec![b'a'; 10_000]).await.unwrap();
-        tokio::fs::write(tmp.path().join("small.txt"), "needle\n").await.unwrap();
+        tokio::fs::write(tmp.path().join("big.txt"), vec![b'a'; 10_000])
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("small.txt"), "needle\n")
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -805,9 +923,15 @@ mod tests {
     #[tokio::test]
     async fn test_search_filename_mode_parallel() {
         let tmp = tempfile::TempDir::new().unwrap();
-        tokio::fs::write(tmp.path().join("alpha.rs"), "x").await.unwrap();
-        tokio::fs::write(tmp.path().join("alpha.py"), "x").await.unwrap();
-        tokio::fs::write(tmp.path().join("beta.rs"), "x").await.unwrap();
+        tokio::fs::write(tmp.path().join("alpha.rs"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("alpha.py"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("beta.rs"), "x")
+            .await
+            .unwrap();
 
         let result = SearchTool
             .execute(
@@ -850,8 +974,8 @@ mod tests {
         // Legacy single-threaded scan: whole-file read + decode_lossy + contains.
         let legacy = || {
             let mut found = 0usize;
-            let mut walker = ignore::WalkBuilder::new(root).build();
-            while let Some(entry) = walker.next() {
+            let walker = ignore::WalkBuilder::new(root).build();
+            for entry in walker {
                 let Ok(entry) = entry else { continue };
                 if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                     continue;
@@ -883,9 +1007,11 @@ mod tests {
         let new_elapsed = t1.elapsed();
 
         assert_eq!(legacy_count, results.len());
-        eprintln!(
+        tracing::debug!(
             "legacy single-thread: {:?}, ripgrep parallel: {:?}, matches: {}",
-            legacy_elapsed, new_elapsed, results.len()
+            legacy_elapsed,
+            new_elapsed,
+            results.len()
         );
         assert!(
             new_elapsed <= legacy_elapsed,

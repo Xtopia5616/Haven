@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use haven_llm::{EndpointRole, LlmRouter};
-use haven_llm::types::{LlmMessage, LlmRole};
 use haven_common::types::ContentPart;
+use haven_llm::types::{LlmMessage, LlmRole};
+use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use tokio::sync::Semaphore;
 
@@ -25,8 +25,12 @@ struct LlmFact {
     confidence: f64,
 }
 
-fn default_subject() -> String { "user".into() }
-fn default_confidence() -> f64 { 0.7 }
+fn default_subject() -> String {
+    "user".into()
+}
+fn default_confidence() -> f64 {
+    0.7
+}
 
 pub struct InferenceEngine {
     db: Arc<Database>,
@@ -70,7 +74,11 @@ impl InferenceEngine {
             return;
         }
 
-        let user_messages: Vec<_> = messages.iter().filter(|m| m.role == "user").cloned().collect();
+        let user_messages: Vec<_> = messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .cloned()
+            .collect();
         if user_messages.is_empty() {
             return;
         }
@@ -83,7 +91,9 @@ impl InferenceEngine {
                         &sanitize_fact_field(&f.subject),
                         &sanitize_fact_field(&f.predicate),
                         &sanitize_fact_field(&f.object),
-                        "inferred", f.confidence, &tags,
+                        "inferred",
+                        f.confidence,
+                        &tags,
                     );
                 }
                 let _ = self.db.dedup_facts();
@@ -98,8 +108,12 @@ impl InferenceEngine {
                 for f in &inferred {
                     let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
                     let _ = self.db.insert_fact(
-                        &f.subject, &f.predicate, &f.object,
-                        "inferred", f.confidence, &tags,
+                        &f.subject,
+                        &f.predicate,
+                        &f.object,
+                        "inferred",
+                        f.confidence,
+                        &tags,
                     );
                 }
                 let _ = self.db.dedup_facts();
@@ -143,7 +157,10 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
             },
         ];
 
-        let _permit = self.inference_semaphore.acquire().await
+        let _permit = self
+            .inference_semaphore
+            .acquire()
+            .await
             .map_err(|e| anyhow::anyhow!("inference semaphore closed: {}", e))?;
 
         let response = self
@@ -153,11 +170,10 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
             .map_err(|e| anyhow::anyhow!("balanced model chat failed: {}", e))?;
 
         let json_str = extract_json_array(&response.text);
-        let facts: Vec<LlmFact> = serde_json::from_str(&json_str)
-            .map_err(|e| {
-                let preview: String = response.text.chars().take(200).collect();
-                anyhow::anyhow!("failed to parse LLM fact JSON: {} — raw: {}", e, preview)
-            })?;
+        let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|e| {
+            let preview: String = response.text.chars().take(200).collect();
+            anyhow::anyhow!("failed to parse LLM fact JSON: {} — raw: {}", e, preview)
+        })?;
 
         tracing::info!("LLM fact extraction: {} facts extracted", facts.len());
         Ok(facts)
@@ -181,7 +197,10 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
 /// Build a transcript string from user messages, truncated to `max_chars`
 /// to prevent unbounded token cost on long sessions. Recent messages take
 /// priority (the last N messages that fit within the limit).
-fn build_truncated_transcript(messages: &[haven_memory::repositories::messages::Message], max_chars: usize) -> String {
+fn build_truncated_transcript(
+    messages: &[haven_memory::repositories::messages::Message],
+    max_chars: usize,
+) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut total_len = 0;
     // Walk backwards so the most recent messages are kept when truncating.
@@ -238,12 +257,14 @@ mod tests {
             is_compacted: false,
             compaction_id: None,
             parent_message_id: None,
+            attachments: vec![],
         }
     }
 
     #[test]
     fn test_extract_json_array_plain() {
-        let result = extract_json_array(r#"[{"subject":"user","predicate":"name","object":"Alice"}]"#);
+        let result =
+            extract_json_array(r#"[{"subject":"user","predicate":"name","object":"Alice"}]"#);
         assert!(result.starts_with('['));
         assert!(result.ends_with(']'));
     }
@@ -290,10 +311,7 @@ mod tests {
 
     #[test]
     fn test_build_truncated_transcript_keeps_recent() {
-        let msgs = vec![
-            make_message("old_message"),
-            make_message("recent_message"),
-        ];
+        let msgs = vec![make_message("old_message"), make_message("recent_message")];
         let transcript = build_truncated_transcript(&msgs, 50);
         // "recent_message" should be kept because it's more recent.
         assert!(transcript.contains("recent_message"));

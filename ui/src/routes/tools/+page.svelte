@@ -28,10 +28,10 @@
 					schema: t.input_schema || {},
 				}));
 			}
-		} catch {
+		} catch (e) {
 			builtinTools = [];
-			logger.warn('tools', 'get_tools error');
-			addNotification('Failed to load tools', 'error', 3000);
+			logger.warn('tools', 'get_tools error', e);
+			addNotification('加载工具列表失败', 'error', 3000);
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
@@ -56,24 +56,24 @@
 		try {
 			const result = await invoke('list_mcp_tools');
 			mcpServers = result || [];
-		} catch {
+		} catch (e) {
 			mcpServers = [];
-			logger.warn('tools', 'list_mcp_tools error');
+			logger.warn('tools', 'list_mcp_tools error', e);
 		}
 	}
 
 	async function refreshMcpList() {
 		await refreshMcpServers();
-		addNotification('MCP servers refreshed', 'success', 2000);
+		addNotification('MCP 服务器已刷新', 'success', 2000);
 	}
 
 	async function refreshSkillList() {
 		try {
 			const result = await invoke('list_skills');
 			skills = result || [];
-		} catch {
+		} catch (e) {
 			skills = [];
-			logger.warn('tools', 'list_skills error');
+			logger.warn('tools', 'list_skills error', e);
 		}
 	}
 
@@ -83,13 +83,13 @@
 		try {
 			await invoke('set_skill_enabled', { name, enabled });
 			addNotification(
-				`${name} ${enabled ? 'enabled' : 'disabled'}`,
+				`${name} 已${enabled ? '启用' : '禁用'}`,
 				'success',
 				2000,
 			);
-		} catch {
+		} catch (e) {
 			skills = prev;
-			addNotification(`Failed to toggle ${name}`, 'error', 3000);
+			addNotification(`切换 ${name} 失败: ${e}`, 'error', 3000);
 		}
 	}
 
@@ -97,18 +97,18 @@
 		try {
 			await invoke('refresh_skills');
 			await refreshSkillList();
-			addNotification('Skills refreshed', 'success', 2000);
-		} catch {
-			addNotification('Failed to refresh skills', 'error', 3000);
+			addNotification('技能已刷新', 'success', 2000);
+		} catch (e) {
+			addNotification(`刷新技能失败: ${e}`, 'error', 3000);
 		}
 	}
 
 	async function openFolder() {
 		try {
 			const path = await invoke('open_skills_dir');
-			addNotification(`Opened: ${path}`, 'info', 3000);
-		} catch {
-			addNotification('Failed to open skills folder', 'error', 3000);
+			addNotification(`已打开: ${path}`, 'info', 3000);
+		} catch (e) {
+			addNotification(`打开技能文件夹失败: ${e}`, 'error', 3000);
 		}
 	}
 
@@ -131,35 +131,35 @@
 		try {
 			if (mcpEditServer) {
 				await invoke('update_mcp_server', { name: mcpEditServer.name, config });
-				addNotification(`Updated ${config.name}`, 'success', 2000);
+				addNotification(`已更新 ${config.name}`, 'success', 2000);
 			} else {
 				await invoke('add_mcp_server', { config });
-				addNotification(`Added ${config.name}`, 'success', 2000);
+				addNotification(`已添加 ${config.name}`, 'success', 2000);
 			}
 			closeDialog();
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`Failed: ${e}`, 'error', 4000);
+			addNotification(`操作失败: ${e}`, 'error', 4000);
 		}
 	}
 
 	async function handleRemove(name) {
 		try {
 			await invoke('remove_mcp_server', { name });
-			addNotification(`Removed ${name}`, 'success', 2000);
+			addNotification(`已移除 ${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`Failed to remove: ${e}`, 'error', 3000);
+			addNotification(`移除失败: ${e}`, 'error', 3000);
 		}
 	}
 
 	async function handleReconnect(name) {
 		try {
 			await invoke('reconnect_mcp', { name });
-			addNotification(`Reconnecting ${name}...`, 'info', 2000);
+			addNotification(`正在重连 ${name}…`, 'info', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`Failed to reconnect: ${e}`, 'error', 3000);
+			addNotification(`重连失败: ${e}`, 'error', 3000);
 		}
 	}
 

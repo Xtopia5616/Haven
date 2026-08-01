@@ -24,7 +24,6 @@ arboard = "3.4"
 winreg = "0.52"
 ignore = "0.4"
 regex = "1"
-grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 haven-llm = { path = "../llm" }

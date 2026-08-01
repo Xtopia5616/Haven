@@ -33,12 +33,10 @@ impl Tool for SystemInfoTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         let category = input["category"].as_str().unwrap_or("overview").to_string();
 
@@ -72,7 +70,8 @@ impl Tool for SystemInfoTool {
                     "disks": disk_info(),
                 }),
             }
-        }).await?;
+        })
+        .await?;
 
         Ok(ToolResult::ok(info))
     }
@@ -85,7 +84,13 @@ fn os_info() -> Value {
         let o = sysinfo::System::os_version();
         let h = sysinfo::System::host_name();
         let l = sysinfo::System::long_os_version();
-        (n.unwrap_or_default(), k.unwrap_or_default(), o.unwrap_or_default(), h.unwrap_or_default(), l.unwrap_or_default())
+        (
+            n.unwrap_or_default(),
+            k.unwrap_or_default(),
+            o.unwrap_or_default(),
+            h.unwrap_or_default(),
+            l.unwrap_or_default(),
+        )
     };
     serde_json::json!({
         "name": os_name,
@@ -99,11 +104,21 @@ fn os_info() -> Value {
 }
 
 fn cpu_info() -> Value {
-    cpu_info_from(&sysinfo::System::new_all())
+    use sysinfo::{CpuRefreshKind, RefreshKind};
+    // Only CPU data (incl. usage) — not the full process enumeration that
+    // System::new_all() performs.
+    let system = sysinfo::System::new_with_specifics(
+        RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
+    );
+    cpu_info_from(&system)
 }
 
 fn cpu_info_from(system: &sysinfo::System) -> Value {
-    let brand = system.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+    let brand = system
+        .cpus()
+        .first()
+        .map(|c| c.brand().to_string())
+        .unwrap_or_default();
     serde_json::json!({
         "brand": brand,
         "cores": system.physical_core_count().unwrap_or(0),
@@ -113,7 +128,11 @@ fn cpu_info_from(system: &sysinfo::System) -> Value {
 }
 
 fn memory_info() -> Value {
-    memory_info_from(&sysinfo::System::new_all())
+    use sysinfo::{MemoryRefreshKind, RefreshKind};
+    let system = sysinfo::System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    memory_info_from(&system)
 }
 
 fn memory_info_from(system: &sysinfo::System) -> Value {
@@ -159,5 +178,96 @@ mod tests {
     fn test_system_tool_input_schema() {
         let schema = SystemInfoTool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
+        let enum_vals = schema["properties"]["category"]["enum"].as_array().unwrap();
+        let cats: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(cats.contains(&"overview"));
+        assert!(cats.contains(&"cpu"));
+        assert!(cats.contains(&"memory"));
+        assert!(cats.contains(&"disk"));
+        assert!(cats.contains(&"os"));
+        assert!(cats.contains(&"all"));
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_os() {
+        let result = SystemInfoTool
+            .execute(json!({"category": "os"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["os"]["name"].is_string());
+        assert!(result.output["os"]["hostname"].is_string());
+        assert!(result.output["os"]["uptime_secs"].is_number());
+        assert!(result.output.get("cpu").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_cpu() {
+        let result = SystemInfoTool
+            .execute(json!({"category": "cpu"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["cpu"]["cores"].is_number());
+        assert!(result.output["cpu"]["logical_cpus"].as_u64().unwrap() >= 1);
+        assert!(result.output.get("memory").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_memory() {
+        let result = SystemInfoTool
+            .execute(json!({"category": "memory"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["memory"]["total_bytes"].as_u64().unwrap() > 0);
+        assert!(result.output["memory"]["used_bytes"].is_number());
+        assert!(result.output.get("os").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_disk() {
+        let result = SystemInfoTool
+            .execute(json!({"category": "disk"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        let disks = result.output["disks"].as_array().unwrap();
+        assert!(!disks.is_empty());
+        assert!(disks[0]["mount"].as_str().is_some());
+        assert!(disks[0]["total_bytes"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_default_overview() {
+        let result = SystemInfoTool
+            .execute(json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["os"].is_object());
+        assert!(result.output["cpu"].is_object());
+        assert!(result.output["memory"].is_object());
+        assert!(result.output["disks"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_unknown_category_falls_back_to_overview() {
+        let result = SystemInfoTool
+            .execute(json!({"category": "bogus"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["os"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_system_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = SystemInfoTool
+            .execute(json!({"category": "os"}), cancel)
+            .await;
+        assert!(result.is_err());
     }
 }

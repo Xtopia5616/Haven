@@ -65,10 +65,7 @@ mod tests {
     #[test]
     fn env_var_name_constructed_correctly() {
         let resolver = AuthResolver::new("HAVEN");
-        assert_eq!(
-            resolver.env_var_name("openai"),
-            "HAVEN_OPENAI_API_KEY"
-        );
+        assert_eq!(resolver.env_var_name("openai"), "HAVEN_OPENAI_API_KEY");
         assert_eq!(
             resolver.env_var_name("deep-seek"),
             "HAVEN_DEEP_SEEK_API_KEY"

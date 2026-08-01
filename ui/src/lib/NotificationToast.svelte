@@ -1,5 +1,7 @@
 <script>
 	import { onDestroy } from 'svelte';
+	import { fly } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
 	import { notificationStore } from './stores.js';
 	let items = $state([]);
 	const unsub = notificationStore.subscribe((v) => (items = v));
@@ -20,7 +22,7 @@
 {#if items.length > 0}
 	<div class="toast-container">
 		{#each items as item (item.id)}
-			<div class="toast toast-{item.type || 'info'}">
+			<div class="toast toast-{item.type || 'info'}" in:fly={{ x: '100%', duration: 300, easing: cubicOut }}>
 				<span class="toast-icon">{@html getIcon(item.type)}</span>
 				<span class="toast-msg">{item.msg}</span>
 			</div>
@@ -45,7 +47,6 @@
 		font-size: 13px;
 		font-weight: 600;
 		box-shadow: var(--md-sys-elevation-2);
-		animation: slideIn var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized);
 		max-width: 360px;
 		display: flex;
 		align-items: center;
@@ -86,15 +87,5 @@
 	.toast-success {
 		background: var(--md-sys-color-success-container);
 		color: var(--md-sys-color-on-success-container);
-	}
-	@keyframes slideIn {
-		from {
-			transform: translateX(100%);
-			opacity: 0;
-		}
-		to {
-			transform: translateX(0);
-			opacity: 1;
-		}
 	}
 </style>

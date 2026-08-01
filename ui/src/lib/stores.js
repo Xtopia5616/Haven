@@ -15,7 +15,7 @@ export const settingsStore = writable({
 		default_model: { provider: 'anthropic', model: 'claude-sonnet-4-20250514', temperature: 0.7 },
 		balanced_model: { provider: 'local', model: 'llama3', temperature: 0.7 },
 	},
-	hotkey: { recording: 'Ctrl+Shift+Space', toggle: 'Ctrl+Shift+T' },
+	hotkey: { key_binding: 'Ctrl+Shift+Space', mode: 'toggle', mute_hotkey: null },
 	autostart: false,
 });
 
@@ -166,7 +166,20 @@ export const reviewTargetStore = writable(null);
 // send handler and voice recording can supplement the same task.
 export const activeTaskIdStore = writable(null);
 
-export function newMessage({ role, content, type = null, voice = false, time }) {
+/**
+ * Build a `data:` URL from a message attachment ({ media_type, data } where
+ * data is base64 without the prefix). Shared by the input area previews and
+ * ChatBubble rendering.
+ * @param {{ media_type: string, data: string }} att
+ */
+export function imageDataUrl(att) {
+	return `data:${att.media_type};base64,${att.data}`;
+}
+
+/**
+ * @param {{ role: string, content: string, type?: string|null, voice?: boolean, time?: string, attachments?: Array<{media_type: string, data: string}> }} opts
+ */
+export function newMessage({ role, content, type = null, voice = false, time, attachments = [] }) {
 	return {
 		id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
 		role,
@@ -174,6 +187,7 @@ export function newMessage({ role, content, type = null, voice = false, time }) 
 		type,
 		voice,
 		time: time || new Date().toLocaleTimeString(),
+		attachments,
 	};
 }
 
@@ -193,18 +207,20 @@ export const recordingOverlay = writable({
 export const modelStateStore = writable('ready');
 
 let modelStateTimer = null;
-export function updateModelState(state, { fallbackDelay } = /** @type {{ fallbackDelay?: number }} */ ({})) {
+export function updateModelState(state, { idleTimeoutMs } = /** @type {{ idleTimeoutMs?: number }} */ ({})) {
 	if (modelStateTimer) clearTimeout(modelStateTimer);
 	modelStateTimer = null;
 	modelStateStore.set(state);
 	if (state === 'waiting') {
 		modelStateTimer = setTimeout(() => {
+			modelStateTimer = null;
 			modelStateStore.update((s) => (s === 'waiting' ? 'ready' : s));
-		}, fallbackDelay ?? 5000);
+		}, idleTimeoutMs ?? 5000);
 	} else if (state === 'streaming') {
 		modelStateTimer = setTimeout(() => {
+			modelStateTimer = null;
 			modelStateStore.update((s) => (s === 'streaming' ? 'ready' : s));
-		}, fallbackDelay ?? 2000);
+		}, idleTimeoutMs ?? 2000);
 	}
 }
 

@@ -1,4 +1,7 @@
 <script>
+	import { fade, scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+
 	/**
 	 * Material Dialog — overlay + dialog container.
 	 * @prop {boolean} open
@@ -24,8 +27,8 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-	<div class="md-dialog-overlay" onclick={handleOverlayClick} onkeydown={handleOverlayKeydown} role="dialog" aria-modal="true" tabindex={-1}>
-		<div class="md-dialog" role="presentation" onclick={(e) => e.stopPropagation()}>
+	<div class="md-dialog-overlay" onclick={handleOverlayClick} onkeydown={handleOverlayKeydown} role="dialog" aria-modal="true" tabindex={-1} in:fade={{ duration: 200, easing: cubicOut }}>
+		<div class="md-dialog" role="presentation" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 300, easing: cubicOut }}>
 			{#if title}
 				<div class="md-dialog-header">
 					<h3>{title}</h3>
@@ -54,11 +57,6 @@
 		align-items: center;
 		justify-content: center;
 		z-index: var(--md-sys-z-dialog);
-		animation: fadeIn var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	@keyframes fadeIn {
-		from { opacity: 0; }
-		to { opacity: 1; }
 	}
 	.md-dialog {
 		background: var(--md-sys-color-surface-container-lowest);
@@ -67,11 +65,6 @@
 		width: 480px;
 		max-width: 90vw;
 		box-shadow: var(--md-sys-elevation-4);
-		animation: dialogIn var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized);
-	}
-	@keyframes dialogIn {
-		from { opacity: 0; transform: scale(0.92); }
-		to { opacity: 1; transform: scale(1); }
 	}
 	.md-dialog-header {
 		display: flex;

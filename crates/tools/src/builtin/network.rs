@@ -19,7 +19,7 @@ impl Tool for NetworkTool {
         "network".into()
     }
     fn description(&self) -> String {
-        "Make basic HTTP requests to fetch web pages or API data. Supports GET and POST.".into()
+        "Fetch web pages or API data via HTTP GET/POST".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -40,11 +40,7 @@ impl Tool for NetworkTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
@@ -131,16 +127,15 @@ async fn execute_once(
     let resp_headers: Vec<Value> = response
         .headers()
         .iter()
-        .map(|(k, v)| {
-            serde_json::json!({"name": k.as_str(), "value": v.to_str().unwrap_or("")})
-        })
+        .map(|(k, v)| serde_json::json!({"name": k.as_str(), "value": v.to_str().unwrap_or("")}))
         .collect();
 
-    let response_bytes = read_body_capped(response).await?;
+    let max_chars = 20_000;
+    let response_bytes = read_body_capped(response, max_chars).await?;
     let response_body = haven_common::encoding::decode_lossy(&response_bytes);
 
-    let max_chars = 20_000;
-    let (body_truncated, truncated) = haven_common::encoding::truncate_output(&response_body, max_chars);
+    let (body_truncated, truncated) =
+        haven_common::encoding::truncate_output(&response_body, max_chars);
 
     Ok(ToolResult::ok(serde_json::json!({
         "status": status,
@@ -150,15 +145,20 @@ async fn execute_once(
     })))
 }
 
-/// Read at most `MAX_BODY_BYTES` of the response body, streaming, so huge
-/// responses never get fully buffered in memory.
-async fn read_body_capped(response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+/// Read at most `display_chars * 4` bytes (bounded by `MAX_BODY_BYTES`) of the
+/// response body, streaming, so huge responses never get fully buffered and
+/// we never read far more than what will be shown.
+async fn read_body_capped(
+    response: reqwest::Response,
+    display_chars: usize,
+) -> anyhow::Result<Vec<u8>> {
     use futures_util::StreamExt;
+    let cap = (display_chars * 4).min(MAX_BODY_BYTES);
     let mut stream = response.bytes_stream();
     let mut out = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(map_reqwest_error)?;
-        let room = MAX_BODY_BYTES.saturating_sub(out.len());
+        let room = cap.saturating_sub(out.len());
         if room == 0 {
             break;
         }
@@ -236,5 +236,137 @@ mod tests {
 
         let e4 = anyhow::anyhow!("invalid URL: bad format");
         assert!(!is_retryable_error(&e4));
+    }
+
+    /// Serve a single canned HTTP/1.1 response on a local listener and return
+    /// the URL to request. The connection is closed after one exchange.
+    async fn serve_once(status_line: &str, body: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_string();
+        let status = status_line.to_string();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        format!("http://{}/", addr)
+    }
+
+    /// Bind a listener, note its port, then drop it so the port is guaranteed
+    /// to refuse connections.
+    async fn refused_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        format!("http://{}/", addr)
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_get_success() {
+        let url = serve_once("200 OK", "hello from mock server").await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "GET", "url": url, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["status"], 200);
+        assert_eq!(result.output["body"], "hello from mock server");
+        assert_eq!(result.output["truncated"], false);
+        let headers = result.output["headers"].as_array().unwrap();
+        assert!(headers.iter().any(|h| h["name"] == "content-type"));
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_get_not_found_no_retry() {
+        let url = serve_once("404 Not Found", "nope").await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "GET", "url": url, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["status"], 404);
+        assert_eq!(result.output["body"], "nope");
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_post_with_body() {
+        let url = serve_once("201 Created", "created").await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "POST", "url": url, "body": "payload", "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["status"], 201);
+        assert_eq!(result.output["body"], "created");
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_connection_refused() {
+        // POST is not retried, so the failure is immediate.
+        let url = refused_url().await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "POST", "url": url, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_unsupported_method() {
+        let result = NetworkTool
+            .execute(
+                json!({"method": "PUT", "url": "http://127.0.0.1:1/"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported method")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_requires_url() {
+        let result = NetworkTool
+            .execute(json!({"method": "GET"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("url is required"));
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = NetworkTool
+            .execute(
+                json!({"method": "GET", "url": "http://127.0.0.1:1/"}),
+                cancel,
+            )
+            .await;
+        assert!(result.is_err());
     }
 }

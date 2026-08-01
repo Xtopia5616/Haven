@@ -33,8 +33,7 @@ fn init_tracing(
     // Single reloadable filter applied at the subscriber level — both
     // console and file layers inherit it, so updating the filter at
     // runtime changes both outputs.
-    let (reloadable, handle) =
-        reload::Layer::new(EnvFilter::new(format!("haven={}", level_str)));
+    let (reloadable, handle) = reload::Layer::new(EnvFilter::new(format!("haven={}", level_str)));
 
     let subscriber = tracing_subscriber::registry().with(reloadable);
 
@@ -92,7 +91,7 @@ impl AgentEventEmitter for TauriEmitter {
                 step_number,
                 run_id,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     "TauriEmitter::on_thought: task={} step={} run={} len={}",
                     task_id,
                     step_number,
@@ -121,7 +120,7 @@ impl AgentEventEmitter for TauriEmitter {
                     .get("silent")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                tracing::info!(
+                tracing::debug!(
                     "TauriEmitter::on_action: task={} tool={} step={} run={}",
                     task_id,
                     tool_name,
@@ -150,7 +149,7 @@ impl AgentEventEmitter for TauriEmitter {
                 silent,
                 tool_call_id,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     "TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}",
                     task_id,
                     tool_name,
@@ -310,9 +309,9 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
-            AgentEvent::FallbackActivated { task_id, reason } => {
+            AgentEvent::BalancedModelActivated { task_id, reason } => {
                 let _ = self.handle.emit(
-                    "agent:fallback",
+                    "agent:balanced_model",
                     serde_json::json!({
                         "task_id": task_id,
                         "reason": reason,
@@ -377,7 +376,7 @@ impl AgentEventEmitter for TauriEmitter {
                 tokens_before,
                 tokens_after,
             } => {
-                tracing::info!(
+                tracing::debug!(
                     "TauriEmitter::on_compaction: task={} tokens {}→{}",
                     task_id,
                     tokens_before,
@@ -632,7 +631,9 @@ pub fn run() {
                             });
                         }
                         "quit" => {
+                            tracing::info!("Quit selected from system tray");
                             let _ = state.db.close_active_session();
+                            tracing::info!("session closed on tray quit");
                             std::process::exit(0);
                         }
                         _ => {}
@@ -821,7 +822,18 @@ pub fn run() {
         .expect("error while building Haven app")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                tracing::info!("Haven app exit requested");
                 let state = app_handle.state::<Arc<AppState>>();
+                // Pause in-flight tasks so they survive a restart in a
+                // resumable state. Without this, every still-`running` task
+                // would be flipped to `error` at the next startup by
+                // `finalize_orphaned_running_tasks` (which only intends to
+                // catch crash leftovers).
+                if let Ok(n) = state.db.pause_running_tasks()
+                    && n > 0
+                {
+                    tracing::info!("paused {} running task(s) on exit", n);
+                }
                 let _ = state.db.close_active_session();
                 tracing::info!("session closed on app exit");
             }

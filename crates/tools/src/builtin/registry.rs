@@ -57,10 +57,7 @@ fn utf16le_bytes(s: &str) -> Vec<u8> {
 /// (any non-hex separators are ignored). Returns `None`-style error for odd
 /// nibble counts or non-hex input.
 fn parse_hex_bytes(value: &str) -> anyhow::Result<Vec<u8>> {
-    let hex: String = value
-        .chars()
-        .filter(|c| c.is_ascii_hexdigit())
-        .collect();
+    let hex: String = value.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if hex.is_empty() {
         anyhow::bail!("invalid Binary value (no hex digits): '{}'", value);
     }
@@ -83,7 +80,7 @@ impl Tool for RegistryTool {
         "registry".into()
     }
     fn description(&self) -> String {
-        "Read and write Windows Registry. Operations: get, set, delete, list".into()
+        "Read or write the Windows Registry".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -107,20 +104,20 @@ impl Tool for RegistryTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         #[cfg(windows)]
         {
-            use winreg::enums::*;
             use winreg::RegKey;
+            use winreg::enums::*;
 
             let op = input["operation"].as_str().unwrap_or("list");
-            let path = input["path"].as_str().ok_or_else(|| anyhow::anyhow!("path is required"))?;
+            let path = input["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
             // Parse hive from path using the shared normalizer.
             fn parse_hive(path: &str) -> anyhow::Result<(RegKey, String)> {
@@ -138,15 +135,23 @@ impl Tool for RegistryTool {
 
             match op {
                 "get" => {
-                    let name = input["name"].as_str().ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
+                    let name = input["name"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
                     let (hive, subpath) = parse_hive(path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_READ)?;
                     let val: String = key.get_value(name)?;
-                    Ok(ToolResult::ok(serde_json::json!({"path": path, "name": name, "value": val})))
+                    Ok(ToolResult::ok(
+                        serde_json::json!({"path": path, "name": name, "value": val}),
+                    ))
                 }
                 "set" => {
-                    let name = input["name"].as_str().ok_or_else(|| anyhow::anyhow!("name is required for set"))?;
-                    let value = input["value"].as_str().ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
+                    let name = input["name"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("name is required for set"))?;
+                    let value = input["value"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
                     let val_type = input["type"].as_str().unwrap_or("String");
                     let (hive, subpath) = parse_hive(path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_WRITE)?;
@@ -154,29 +159,39 @@ impl Tool for RegistryTool {
                     match val_type {
                         "String" => key.set_value(name, &value)?,
                         "DWord" => {
-                            let v: u32 = value.parse().map_err(|_| anyhow::anyhow!("invalid DWord value: {}", value))?;
+                            let v: u32 = value
+                                .parse()
+                                .map_err(|_| anyhow::anyhow!("invalid DWord value: {}", value))?;
                             key.set_value(name, &v)?;
                         }
                         "QWord" => {
-                            let v: u64 = value.parse().map_err(|_| anyhow::anyhow!("invalid QWord value: {}", value))?;
+                            let v: u64 = value
+                                .parse()
+                                .map_err(|_| anyhow::anyhow!("invalid QWord value: {}", value))?;
                             key.set_value(name, &v)?;
                         }
                         "Binary" => {
                             let bytes = parse_hex_bytes(value)?;
-                            key.set_raw_value(name, &winreg::RegValue {
-                                bytes,
-                                vtype: winreg::enums::REG_BINARY,
-                            })?;
+                            key.set_raw_value(
+                                name,
+                                &winreg::RegValue {
+                                    bytes,
+                                    vtype: winreg::enums::REG_BINARY,
+                                },
+                            )?;
                         }
                         "ExpandString" => {
                             // REG_EXPAND_SZ: same text storage as String, but
                             // marked expandable so %VAR% resolves on read.
                             let mut bytes = utf16le_bytes(value);
                             bytes.extend_from_slice(&[0, 0]); // trailing NUL
-                            key.set_raw_value(name, &winreg::RegValue {
-                                bytes,
-                                vtype: winreg::enums::REG_EXPAND_SZ,
-                            })?;
+                            key.set_raw_value(
+                                name,
+                                &winreg::RegValue {
+                                    bytes,
+                                    vtype: winreg::enums::REG_EXPAND_SZ,
+                                },
+                            )?;
                         }
                         "MultiString" => {
                             // Semicolon-separated list, like reg.exe /d.
@@ -187,14 +202,19 @@ impl Tool for RegistryTool {
                                 bytes.extend_from_slice(&[0, 0]);
                             }
                             bytes.extend_from_slice(&[0, 0]); // final empty string
-                            key.set_raw_value(name, &winreg::RegValue {
-                                bytes,
-                                vtype: winreg::enums::REG_MULTI_SZ,
-                            })?;
+                            key.set_raw_value(
+                                name,
+                                &winreg::RegValue {
+                                    bytes,
+                                    vtype: winreg::enums::REG_MULTI_SZ,
+                                },
+                            )?;
                         }
                         _ => anyhow::bail!("unsupported type: {}", val_type),
                     }
-                    Ok(ToolResult::ok(serde_json::json!({"set": true, "path": path, "name": name})))
+                    Ok(ToolResult::ok(
+                        serde_json::json!({"set": true, "path": path, "name": name}),
+                    ))
                 }
                 "delete" => {
                     let (hive, subpath) = parse_hive(path)?;
@@ -205,17 +225,18 @@ impl Tool for RegistryTool {
                         drop(key);
                         hive.delete_subkey(&subpath)?;
                     }
-                    Ok(ToolResult::ok(serde_json::json!({"deleted": true, "path": path})))
+                    Ok(ToolResult::ok(
+                        serde_json::json!({"deleted": true, "path": path}),
+                    ))
                 }
                 "list" => {
                     let (hive, subpath) = parse_hive(path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_READ)?;
-                    let names: Vec<String> = key.enum_values()
+                    let names: Vec<String> = key
+                        .enum_values()
                         .filter_map(|r| r.ok().map(|(n, _)| n))
                         .collect();
-                    let subkeys: Vec<String> = key.enum_keys()
-                        .filter_map(|r| r.ok())
-                        .collect();
+                    let subkeys: Vec<String> = key.enum_keys().filter_map(|r| r.ok()).collect();
                     Ok(ToolResult::ok(serde_json::json!({
                         "path": path,
                         "values": names,
@@ -247,14 +268,24 @@ mod tests {
 
     #[test]
     fn test_registry_tool_risk_level() {
-        assert_eq!(RegistryTool.risk_level(&json!({"operation": "get"})), RiskLevel::Medium);
-        assert_eq!(RegistryTool.risk_level(&json!({"operation": "set"})), RiskLevel::High);
+        assert_eq!(
+            RegistryTool.risk_level(&json!({"operation": "get"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            RegistryTool.risk_level(&json!({"operation": "set"})),
+            RiskLevel::High
+        );
     }
 
     #[test]
     fn test_registry_tool_input_schema() {
         let schema = RegistryTool.input_schema();
-        assert!(schema["properties"]["operation"]["enum"].as_array().is_some());
+        assert!(
+            schema["properties"]["operation"]["enum"]
+                .as_array()
+                .is_some()
+        );
     }
 
     #[test]
@@ -337,12 +368,18 @@ mod tests {
 
     #[test]
     fn test_parse_hex_bytes_spaces() {
-        assert_eq!(parse_hex_bytes("DE AD BE EF").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(
+            parse_hex_bytes("DE AD BE EF").unwrap(),
+            vec![0xDE, 0xAD, 0xBE, 0xEF]
+        );
     }
 
     #[test]
     fn test_parse_hex_bytes_compact() {
-        assert_eq!(parse_hex_bytes("deadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(
+            parse_hex_bytes("deadbeef").unwrap(),
+            vec![0xDE, 0xAD, 0xBE, 0xEF]
+        );
     }
 
     #[test]

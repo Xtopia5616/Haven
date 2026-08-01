@@ -1,8 +1,20 @@
 let _tauriInvoke = null;
 let _tauriListen = null;
 let _initialized = false;
+let _logger = null;
 
 const isTauri = () => typeof window !== 'undefined' && !!(/** @type {any} */ (window).__TAURI_INTERNALS__ || /** @type {any} */ (window).__TAURI__);
+
+async function loadLogger() {
+	if (_logger) return _logger;
+	try {
+		const mod = await import('./logger.js');
+		_logger = mod.default;
+	} catch {
+		_logger = null;
+	}
+	return _logger;
+}
 
 async function init() {
 	if (_initialized) return;
@@ -27,7 +39,13 @@ async function init() {
 export async function invoke(cmd, args) {
 	await init();
 	if (isTauri() && _tauriInvoke) {
-		return _tauriInvoke(cmd, args);
+		try {
+			return await _tauriInvoke(cmd, args);
+		} catch (e) {
+			const log = await loadLogger();
+			log?.error('invoke', `'${cmd}' failed`, e);
+			throw e;
+		}
 	}
 	throw new Error(`Tauri not available, cannot invoke '${cmd}'`);
 }

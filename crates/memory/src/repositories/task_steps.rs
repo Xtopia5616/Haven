@@ -172,7 +172,9 @@ mod tests {
     fn create_and_get_thought_step() {
         let db = test_db();
         seed_task(&db, "task-1");
-        let step = db.create_thought_step("task-1", 0, "I should check the file").unwrap();
+        let step = db
+            .create_thought_step("task-1", 0, "I should check the file")
+            .unwrap();
         assert_eq!(step.thought.as_deref(), Some("I should check the file"));
         assert!(step.action_tool.is_none());
         assert!(step.action_input.is_none());
@@ -184,9 +186,14 @@ mod tests {
     fn create_and_get_action_step() {
         let db = test_db();
         seed_task(&db, "task-1");
-        let step = db.create_action_step("task-1", 0, "read_file", r#"{"path": "test.txt"}"#, false).unwrap();
+        let step = db
+            .create_action_step("task-1", 0, "read_file", r#"{"path": "test.txt"}"#, false)
+            .unwrap();
         assert_eq!(step.action_tool.as_deref(), Some("read_file"));
-        assert_eq!(step.action_input.as_deref(), Some(r#"{"path": "test.txt"}"#));
+        assert_eq!(
+            step.action_input.as_deref(),
+            Some(r#"{"path": "test.txt"}"#)
+        );
         assert!(step.thought.is_none());
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps.len(), 1);
@@ -196,8 +203,11 @@ mod tests {
     fn complete_action_step_sets_observation() {
         let db = test_db();
         seed_task(&db, "task-1");
-        let step = db.create_action_step("task-1", 0, "read_file", "{}", false).unwrap();
-        db.complete_action_step(&step.id, "file content here", true).unwrap();
+        let step = db
+            .create_action_step("task-1", 0, "read_file", "{}", false)
+            .unwrap();
+        db.complete_action_step(&step.id, "file content here", true)
+            .unwrap();
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
         assert_eq!(steps[0].status, "completed");
@@ -207,7 +217,9 @@ mod tests {
     fn confirm_step_sets_confirmed_flag() {
         let db = test_db();
         seed_task(&db, "task-1");
-        let step = db.create_action_step("task-1", 0, "rm_file", "{}", true).unwrap();
+        let step = db
+            .create_action_step("task-1", 0, "rm_file", "{}", true)
+            .unwrap();
         // initially unconfirmed
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps[0].confirmed, None);
@@ -244,9 +256,12 @@ mod tests {
     fn get_task_steps_preserves_order_by_index() {
         let db = test_db();
         seed_task(&db, "task-1");
-        db.create_action_step("task-1", 2, "c", "{}", false).unwrap();
-        db.create_action_step("task-1", 0, "a", "{}", false).unwrap();
-        db.create_action_step("task-1", 1, "b", "{}", false).unwrap();
+        db.create_action_step("task-1", 2, "c", "{}", false)
+            .unwrap();
+        db.create_action_step("task-1", 0, "a", "{}", false)
+            .unwrap();
+        db.create_action_step("task-1", 1, "b", "{}", false)
+            .unwrap();
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].step_index, 0);

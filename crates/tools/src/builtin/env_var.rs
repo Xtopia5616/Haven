@@ -36,36 +36,57 @@ impl Tool for EnvTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         let op = input["operation"].as_str().unwrap_or("list");
 
         match op {
             "get" => {
-                let name = input["name"].as_str().ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
+                let name = input["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
                 match env::var(name) {
-                    Ok(val) => Ok(ToolResult::ok(serde_json::json!({"name": name, "value": val}))),
-                    Err(env::VarError::NotPresent) => {
-                        Ok(ToolResult { success: true, output: serde_json::json!({"name": name, "value": null}), error: None, truncated: false })
-                    }
+                    Ok(val) => Ok(ToolResult::ok(
+                        serde_json::json!({"name": name, "value": val}),
+                    )),
+                    Err(env::VarError::NotPresent) => Ok(ToolResult {
+                        success: true,
+                        output: serde_json::json!({"name": name, "value": null}),
+                        error: None,
+                        truncated: false,
+                    }),
                     Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
                 }
             }
             "set" => {
-                let name = input["name"].as_str().ok_or_else(|| anyhow::anyhow!("name is required for set"))?.to_string();
-                let value = input["value"].as_str().ok_or_else(|| anyhow::anyhow!("value is required for set"))?.to_string();
-                unsafe { env::set_var(&name, &value); }
-                Ok(ToolResult::ok(serde_json::json!({"set": true, "name": name, "value": value})))
+                let name = input["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("name is required for set"))?
+                    .to_string();
+                let value = input["value"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("value is required for set"))?
+                    .to_string();
+                unsafe {
+                    env::set_var(&name, &value);
+                }
+                Ok(ToolResult::ok(
+                    serde_json::json!({"set": true, "name": name, "value": value}),
+                ))
             }
             "unset" => {
-                let name = input["name"].as_str().ok_or_else(|| anyhow::anyhow!("name is required for unset"))?;
-                unsafe { env::remove_var(name); }
-                Ok(ToolResult::ok(serde_json::json!({"removed": true, "name": name})))
+                let name = input["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("name is required for unset"))?;
+                unsafe {
+                    env::remove_var(name);
+                }
+                Ok(ToolResult::ok(
+                    serde_json::json!({"removed": true, "name": name}),
+                ))
             }
             "list" => {
                 let vars: Vec<Value> = env::vars()
@@ -73,25 +94,9 @@ impl Tool for EnvTool {
                     .collect();
                 let count = vars.len();
                 let max_chars = self.max_output_chars();
-                // Drop trailing entries until the JSON fits the output budget.
-                // Never parse a mid-string-truncated JSON back (that could
-                // return the full, uncapped listing while still flagged).
-                let mut kept = vars;
-                let (truncated, serialized) = loop {
-                    let serialized = serde_json::to_string(&serde_json::json!({
-                        "variables": kept,
-                        "count": count,
-                    }))
-                    .unwrap_or_default();
-                    if serialized.len() <= max_chars || kept.len() <= 1 {
-                        break (kept.len() < count, serialized);
-                    }
-                    kept.pop();
-                };
-                let mut result: Value = serde_json::from_str(&serialized)
-                    .unwrap_or_else(|_| serde_json::json!({"variables": kept, "count": count}));
+                let (mut result, truncated) =
+                    crate::util::json_list_within_budget("variables", vars, count, max_chars);
                 if truncated {
-                    result["truncated"] = serde_json::Value::Bool(true);
                     result["hint"] = serde_json::json!(
                         "Environment listing truncated to the max chars budget. Use get with a specific variable name to read its full value."
                     );
@@ -116,15 +121,159 @@ mod tests {
 
     #[test]
     fn test_env_tool_risk_level() {
-        assert_eq!(EnvTool.risk_level(&json!({"operation": "get"})), RiskLevel::Low);
-        assert_eq!(EnvTool.risk_level(&json!({"operation": "set"})), RiskLevel::High);
-        assert_eq!(EnvTool.risk_level(&json!({"operation": "unset"})), RiskLevel::High);
-        assert_eq!(EnvTool.risk_level(&json!({"operation": "list"})), RiskLevel::High);
+        assert_eq!(
+            EnvTool.risk_level(&json!({"operation": "get"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            EnvTool.risk_level(&json!({"operation": "set"})),
+            RiskLevel::High
+        );
+        assert_eq!(
+            EnvTool.risk_level(&json!({"operation": "unset"})),
+            RiskLevel::High
+        );
+        assert_eq!(
+            EnvTool.risk_level(&json!({"operation": "list"})),
+            RiskLevel::High
+        );
     }
 
     #[test]
     fn test_env_tool_input_schema() {
         let schema = EnvTool.input_schema();
-        assert!(schema["properties"]["operation"]["enum"].as_array().is_some());
+        assert!(
+            schema["properties"]["operation"]["enum"]
+                .as_array()
+                .is_some()
+        );
+    }
+
+    fn unique_var_name(tag: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("HAVEN_TEST_{}_{}_{}", tag, std::process::id(), n)
+    }
+
+    #[tokio::test]
+    async fn test_env_get_existing() {
+        let name = unique_var_name("GET");
+        unsafe {
+            env::set_var(&name, "hello");
+        }
+        let result = EnvTool
+            .execute(
+                json!({"operation": "get", "name": name}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["value"], "hello");
+        unsafe {
+            env::remove_var(&name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_env_get_missing_returns_null() {
+        let name = unique_var_name("MISSING");
+        unsafe {
+            env::remove_var(&name);
+        }
+        let result = EnvTool
+            .execute(
+                json!({"operation": "get", "name": name}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["value"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_env_get_requires_name() {
+        let result = EnvTool
+            .execute(json!({"operation": "get"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_env_set_and_get_roundtrip() {
+        let name = unique_var_name("SET");
+        let result = EnvTool
+            .execute(
+                json!({"operation": "set", "name": name, "value": "v1"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["set"], true);
+        assert_eq!(env::var(&name).unwrap(), "v1");
+        unsafe {
+            env::remove_var(&name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_env_set_requires_value() {
+        let result = EnvTool
+            .execute(
+                json!({"operation": "set", "name": unique_var_name("SET")}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_env_unset() {
+        let name = unique_var_name("UNSET");
+        unsafe {
+            env::set_var(&name, "temp");
+        }
+        let result = EnvTool
+            .execute(
+                json!({"operation": "unset", "name": name.clone()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["removed"], true);
+        assert!(env::var_os(&name).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_env_list_returns_variables() {
+        let result = EnvTool
+            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        let vars = result.output["variables"].as_array().unwrap();
+        assert!(!vars.is_empty());
+        assert!(vars[0]["name"].as_str().is_some());
+        assert!(vars[0]["value"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_env_unknown_operation() {
+        let result = EnvTool
+            .execute(json!({"operation": "bogus"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_env_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = EnvTool.execute(json!({"operation": "list"}), cancel).await;
+        assert!(result.is_err());
     }
 }

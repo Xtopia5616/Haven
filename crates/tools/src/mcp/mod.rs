@@ -9,7 +9,6 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -314,7 +313,9 @@ impl McpClient {
         let server_version = result["serverInfo"]["version"].as_str().unwrap_or("?");
         tracing::info!(
             "MCP server '{}' connected: {} v{}",
-            self.name, server_name, server_version
+            self.name,
+            server_name,
+            server_version
         );
 
         // Send initialized notification
@@ -753,7 +754,8 @@ impl McpManager {
                 Ok((name, client, status_tx, Err(e))) => {
                     tracing::warn!(
                         "MCP server '{}' failed to connect: {} (will retry later)",
-                        name, e
+                        name,
+                        e
                     );
                     *client.last_error.lock().await = Some(format!("initial connect failed: {e}"));
                     let _ = status_tx.send(McpStatusChangeEvent {
@@ -773,7 +775,10 @@ impl McpManager {
     /// Dynamically connect a single MCP server from config.
     /// Used by the `load_mcp` builtin tool. Returns an error if already connected.
     /// Starts a health monitor + auto-reconnect loop using the stored discovery config.
-    pub async fn connect_server(&self, config: &haven_common::McpServerConfig) -> anyhow::Result<()> {
+    pub async fn connect_server(
+        &self,
+        config: &haven_common::McpServerConfig,
+    ) -> anyhow::Result<()> {
         let name = &config.name;
         {
             let clients = self.clients.lock().await;
@@ -794,9 +799,10 @@ impl McpManager {
             tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
         });
 
-        client.connect().await.map_err(|e| {
-            anyhow::anyhow!("failed to connect MCP server '{}': {}", name, e)
-        })?;
+        client
+            .connect()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to connect MCP server '{}': {}", name, e))?;
 
         // Start health monitor + auto-reconnect using the stored discovery config.
         let dc = self.discovery_config.read().await.clone();

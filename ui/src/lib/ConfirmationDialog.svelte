@@ -1,4 +1,7 @@
 <script>
+	import { fade, scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+
 	let { stepId, toolName, taskId, riskLevel, onConfirm } = $props();
 
 	function handleCancel() {
@@ -28,8 +31,9 @@
 		tabindex="0"
 		onclick={handleCancel}
 		onkeydown={handleOverlayKeydown}
+		in:fade={{ duration: 200, easing: cubicOut }}
 	>
-		<div class="dialog" role="presentation" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+		<div class="dialog" role="presentation" tabindex="-1" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 300, easing: cubicOut }}>
 			<h3>High-Risk Operation</h3>
 			<div class="detail">
 				<div><strong>Tool:</strong> {toolName}</div>
@@ -59,11 +63,6 @@
 		align-items: center;
 		justify-content: center;
 		z-index: var(--md-sys-z-dialog);
-		animation: fadeIn var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	@keyframes fadeIn {
-		from { opacity: 0; }
-		to { opacity: 1; }
 	}
 	.dialog {
 		background: var(--md-sys-color-surface-container-high);
@@ -71,12 +70,6 @@
 		padding: var(--md-sys-space-3xl);
 		min-width: 340px;
 		box-shadow: var(--md-sys-elevation-3);
-		animation: dialogIn var(--md-sys-motion-duration-medium)
-			var(--md-sys-motion-easing-emphasized);
-	}
-	@keyframes dialogIn {
-		from { opacity: 0; transform: scale(0.92); }
-		to { opacity: 1; transform: scale(1); }
 	}
 	h3 {
 		color: var(--md-sys-color-error);

@@ -2,6 +2,14 @@ use crate::db::Database;
 use chrono::Utc;
 use uuid::Uuid;
 
+/// A binary attachment on a message (e.g. a user-provided image).
+/// `data` holds base64-encoded bytes; `media_type` is the MIME type (e.g. "image/png").
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct MessageAttachment {
+    pub media_type: String,
+    pub data: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: String,
@@ -14,6 +22,8 @@ pub struct Message {
     pub is_compacted: bool,
     pub compaction_id: Option<String>,
     pub parent_message_id: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<MessageAttachment>,
 }
 
 impl Database {
@@ -25,7 +35,35 @@ impl Database {
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
     ) -> anyhow::Result<Message> {
-        self.add_message_with_window(session_id, role, content, message_type, tool_call_id, 50)
+        self.add_message_with_window_full(
+            session_id,
+            role,
+            content,
+            message_type,
+            tool_call_id,
+            50,
+            &[],
+        )
+    }
+
+    pub fn add_message_with_attachments(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        tool_call_id: Option<&str>,
+        attachments: &[MessageAttachment],
+    ) -> anyhow::Result<Message> {
+        self.add_message_with_window_full(
+            session_id,
+            role,
+            content,
+            message_type,
+            tool_call_id,
+            50,
+            attachments,
+        )
     }
 
     pub fn add_message_with_window(
@@ -37,6 +75,28 @@ impl Database {
         tool_call_id: Option<&str>,
         window_size: usize,
     ) -> anyhow::Result<Message> {
+        self.add_message_with_window_full(
+            session_id,
+            role,
+            content,
+            message_type,
+            tool_call_id,
+            window_size,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_message_with_window_full(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        tool_call_id: Option<&str>,
+        window_size: usize,
+        attachments: &[MessageAttachment],
+    ) -> anyhow::Result<Message> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
@@ -46,9 +106,18 @@ impl Database {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, is_compacted)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-                rusqlite::params![id, session_id, role, content, message_type, now, tool_call_id],
+                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, is_compacted, attachments)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+                rusqlite::params![
+                    id,
+                    session_id,
+                    role,
+                    content,
+                    message_type,
+                    now,
+                    tool_call_id,
+                    Self::serialize_attachments(attachments),
+                ],
             )?;
             // Sliding window: keep only the last N messages per session.
             // Clamp to i64::MAX so callers can pass a huge value to disable
@@ -56,7 +125,7 @@ impl Database {
             let limit: i64 = window_size.min(i64::MAX as usize) as i64;
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?1 AND id NOT IN (
-                    SELECT id FROM messages WHERE session_id = ?1 ORDER BY created_at DESC LIMIT ?2
+                    SELECT id FROM messages WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2
                 )",
                 rusqlite::params![session_id, limit],
             )?;
@@ -81,7 +150,23 @@ impl Database {
             is_compacted: false,
             compaction_id: None,
             parent_message_id: None,
+            attachments: attachments.to_vec(),
         })
+    }
+
+    fn serialize_attachments(attachments: &[MessageAttachment]) -> Option<String> {
+        if attachments.is_empty() {
+            None
+        } else {
+            serde_json::to_string(attachments).ok()
+        }
+    }
+
+    fn parse_attachments(raw: Option<String>) -> Vec<MessageAttachment> {
+        match raw {
+            Some(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     pub fn get_session_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
@@ -94,8 +179,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id, parent_message_id
-             FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
+                    is_compacted, compaction_id, parent_message_id, attachments
+             FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
             Ok(Message {
@@ -109,6 +194,7 @@ impl Database {
                 is_compacted: row.get::<_, i32>(7)? != 0,
                 compaction_id: row.get(8)?,
                 parent_message_id: row.get(9)?,
+                attachments: Self::parse_attachments(row.get(10)?),
             })
         })?;
         let mut msgs = Vec::new();
@@ -127,9 +213,9 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id, parent_message_id
+                    is_compacted, compaction_id, parent_message_id, attachments
              FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text')
-             ORDER BY created_at DESC LIMIT ?2",
+             ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id, limit], |row| {
             Ok(Message {
@@ -143,6 +229,7 @@ impl Database {
                 is_compacted: row.get::<_, i32>(7)? != 0,
                 compaction_id: row.get(8)?,
                 parent_message_id: row.get(9)?,
+                attachments: Self::parse_attachments(row.get(10)?),
             })
         })?;
         let mut msgs = Vec::new();
@@ -169,7 +256,7 @@ impl Database {
     pub fn get_last_message_created_at(&self, session_id: &str) -> Option<String> {
         let conn = self.conn();
         conn.query_row(
-            "SELECT created_at FROM messages WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1",
+            "SELECT created_at FROM messages WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
             rusqlite::params![session_id],
             |row| row.get::<_, String>(0),
         )
@@ -205,6 +292,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::db::Database;
 
     fn test_db() -> Database {
@@ -244,7 +332,8 @@ mod tests {
     fn get_session_messages_limit_filters() {
         let db = test_db();
         let sid = test_session(&db);
-        db.add_message(&sid, "user", "hello", Some("text"), None).unwrap();
+        db.add_message(&sid, "user", "hello", Some("text"), None)
+            .unwrap();
         db.add_message(&sid, "user", "world", None, None).unwrap();
         let msgs = db.get_session_messages_limit(&sid, 1).unwrap();
         assert_eq!(msgs.len(), 1);
@@ -266,9 +355,67 @@ mod tests {
     fn add_message_with_tool_call_id() {
         let db = test_db();
         let sid = test_session(&db);
-        let msg = db.add_message(&sid, "tool", "result", Some("action"), Some("call-1")).unwrap();
+        let msg = db
+            .add_message(&sid, "tool", "result", Some("action"), Some("call-1"))
+            .unwrap();
         assert_eq!(msg.tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(msg.message_type.as_deref(), Some("action"));
+    }
+
+    #[test]
+    fn add_message_with_attachments_roundtrip() {
+        let db = test_db();
+        let sid = test_session(&db);
+        let att = MessageAttachment {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        db.add_message_with_attachments(
+            &sid,
+            "user",
+            "看图",
+            Some("text"),
+            None,
+            std::slice::from_ref(&att),
+        )
+        .unwrap();
+        let msgs = db.get_session_messages(&sid).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].attachments, vec![att]);
+        assert_eq!(msgs[0].content, "看图");
+    }
+
+    #[test]
+    fn message_without_attachments_reads_empty_vec() {
+        let db = test_db();
+        let sid = test_session(&db);
+        db.add_message(&sid, "user", "plain", None, None).unwrap();
+        let msgs = db.get_session_messages(&sid).unwrap();
+        assert!(msgs[0].attachments.is_empty());
+    }
+
+    #[test]
+    fn message_serde_roundtrip_with_attachments() {
+        let msg = Message {
+            id: "m1".into(),
+            session_id: "s1".into(),
+            role: "user".into(),
+            content: "看图".into(),
+            message_type: Some("text".into()),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            tool_call_id: None,
+            is_compacted: false,
+            compaction_id: None,
+            parent_message_id: None,
+            attachments: vec![MessageAttachment {
+                media_type: "image/jpeg".into(),
+                data: "abc".into(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.attachments.len(), 1);
+        assert_eq!(decoded.attachments[0].media_type, "image/jpeg");
     }
 
     #[test]
@@ -278,7 +425,9 @@ mod tests {
         assert!(db.get_last_message_created_at(&sid).is_none());
         db.add_message(&sid, "user", "first", None, None).unwrap();
         let m2 = db.add_message(&sid, "user", "second", None, None).unwrap();
-        let last = db.get_last_message_created_at(&sid).expect("some timestamp");
+        let last = db
+            .get_last_message_created_at(&sid)
+            .expect("some timestamp");
         assert_eq!(last, m2.created_at);
     }
 
@@ -287,7 +436,9 @@ mod tests {
         let db = test_db();
         let sid = test_session(&db);
         let m1 = db.add_message(&sid, "user", "first", None, None).unwrap();
-        let m2 = db.add_message(&sid, "assistant", "second", None, None).unwrap();
+        let m2 = db
+            .add_message(&sid, "assistant", "second", None, None)
+            .unwrap();
         db.delete_messages_after(&sid, &m1.created_at).unwrap();
         let msgs = db.get_session_messages(&sid).unwrap();
         assert_eq!(msgs.len(), 1);
@@ -301,11 +452,12 @@ mod tests {
         let db = test_db();
         let sid = test_session(&db);
         let m1 = db.add_message(&sid, "user", "first", None, None).unwrap();
-        let _m2 = db.add_message(&sid, "assistant", "second", None, None).unwrap();
+        let _m2 = db
+            .add_message(&sid, "assistant", "second", None, None)
+            .unwrap();
         // delete_messages_from deletes inclusively — m1 and m2 both gone
         db.delete_messages_from(&sid, &m1.created_at).unwrap();
         let msgs = db.get_session_messages(&sid).unwrap();
         assert!(msgs.is_empty());
     }
 }
-

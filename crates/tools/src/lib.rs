@@ -1,10 +1,12 @@
 pub mod adapters;
+pub mod bg;
 pub mod builtin;
 pub mod circuit;
 pub mod mcp;
 pub mod skills;
 pub mod stt;
 pub mod tool;
+pub mod util;
 
 use haven_common::config::{McpServerConfig, SkillsExecConfig, ToolConfig};
 use haven_common::types::RiskLevel;
@@ -16,17 +18,14 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
+pub use circuit::ToolCircuitRegistry;
 pub use mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
 pub use skills::runner::SkillRunner;
 pub use skills::venv::VenvManager;
 pub use skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine};
-pub use tool::{
-    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry,
-    ToolResult,
-};
-pub use circuit::ToolCircuitRegistry;
+pub use tool::{ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry, ToolResult};
 
 pub struct ToolsManager {
     pub registry: ToolRegistry,
@@ -40,6 +39,8 @@ pub struct ToolsManager {
     tool_circuits: ToolCircuitRegistry,
     /// Summarizer LLM client for the `file summary` operation (small_model).
     summarizer: RwLock<Option<Arc<dyn haven_llm::LlmClient>>>,
+    /// Registry of background jobs (shell with background: true).
+    pub background_jobs: Arc<bg::BackgroundJobs>,
 }
 
 impl ToolsManager {
@@ -60,6 +61,7 @@ impl ToolsManager {
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
             summarizer: RwLock::new(None),
+            background_jobs: Arc::new(bg::BackgroundJobs::new()),
         }
     }
 
@@ -79,6 +81,7 @@ impl ToolsManager {
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
             summarizer: RwLock::new(None),
+            background_jobs: Arc::new(bg::BackgroundJobs::new()),
         }
     }
 
@@ -134,6 +137,7 @@ impl ToolsManager {
             &Arc::new(self.mcp_manager.clone()),
             &self.mcp_server_configs,
             summarizer,
+            self.background_jobs.clone(),
         )
         .await;
 
@@ -284,17 +288,16 @@ impl ToolsManager {
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
         if !self.tool_circuits.allow_request(tool_name) {
-            tracing::warn!(
-                "tool '{}' circuit breaker open — fast-failing",
-                tool_name
-            );
+            tracing::warn!("tool '{}' circuit breaker open — fast-failing", tool_name);
             anyhow::bail!(
                 "tool '{}' is temporarily unavailable (circuit breaker open)",
                 tool_name
             );
         }
 
-        let tool = self.get_tool_for_task(task_id, tool_name).await
+        let tool = self
+            .get_tool_for_task(task_id, tool_name)
+            .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
         tool.validate_input(&input)?;
         let settings = self.tool_settings.read().await;
@@ -303,9 +306,7 @@ impl ToolsManager {
             .map(|c| c.timeout_secs)
             .unwrap_or_else(|| tool.default_timeout_secs());
         let max_retries = cfg.map(|c| c.max_retries).unwrap_or(0);
-        let backoff_secs = cfg
-            .map(|c| c.retry_backoff_secs)
-            .unwrap_or(2);
+        let backoff_secs = cfg.map(|c| c.retry_backoff_secs).unwrap_or(2);
         drop(settings);
 
         let max_attempts = 1 + max_retries;
@@ -329,9 +330,7 @@ impl ToolsManager {
                     self.tool_circuits.record_success(tool_name);
                     return Ok(result);
                 }
-                Err(e)
-                    if attempt + 1 < max_attempts && is_retryable_tool_error(&e) =>
-                {
+                Err(e) if attempt + 1 < max_attempts && is_retryable_tool_error(&e) => {
                     tracing::debug!(
                         "tool '{}' attempt {} failed, retrying: {}",
                         tool_name,
@@ -358,7 +357,12 @@ impl ToolsManager {
         self.registry.get(name).await
     }
 
-    pub async fn get_risk_level(&self, task_id: Option<&str>, tool_name: &str, input: &Value) -> RiskLevel {
+    pub async fn get_risk_level(
+        &self,
+        task_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> RiskLevel {
         self.get_tool_for_task(task_id, tool_name)
             .await
             .map(|t| t.risk_level(input))
@@ -624,9 +628,9 @@ mod tests {
         mgr.rebuild_catalog().await;
         let schemas = mgr.registry.list_schemas().await;
         assert!(
-            !schemas.iter().any(|s| {
-                s["name"].as_str().unwrap_or("").starts_with("mcp::")
-            }),
+            !schemas
+                .iter()
+                .any(|s| { s["name"].as_str().unwrap_or("").starts_with("mcp::") }),
             "MCP tools must not be pre-registered globally"
         );
     }

@@ -13,7 +13,7 @@ impl Tool for ProcessTool {
         "process".into()
     }
     fn description(&self) -> String {
-        "Process operations: list, launch, kill".into()
+        "List, launch, or kill processes".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -36,15 +36,13 @@ impl Tool for ProcessTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let op = input["operation"].as_str().unwrap_or("list");
         let max_chars = self.max_output_chars();
 
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         match op {
             "list" => {
@@ -65,7 +63,9 @@ impl Tool for ProcessTool {
                         .collect();
 
                     processes.sort_by(|a, b| {
-                        b["memory"].as_u64().unwrap_or(0)
+                        b["memory"]
+                            .as_u64()
+                            .unwrap_or(0)
                             .cmp(&a["memory"].as_u64().unwrap_or(0))
                     });
                     processes.truncate(200);
@@ -73,27 +73,13 @@ impl Tool for ProcessTool {
                 })
                 .await?;
 
-                // The entries are sorted by memory desc, so when the JSON
-                // exceeds the output budget, drop trailing entries until it
-                // fits. Never parse a mid-string-truncated JSON back (that
-                // could fall back to returning the full, uncapped output).
+                // The entries are sorted by memory desc, so the tail holds the
+                // least important entries and is dropped first when the JSON
+                // exceeds the output budget.
                 let count = processes.len();
-                let mut kept = processes;
-                let (truncated, serialized) = loop {
-                    let serialized = serde_json::to_string(&serde_json::json!({
-                        "processes": kept,
-                        "count": count,
-                    }))
-                    .unwrap_or_default();
-                    if serialized.len() <= max_chars || kept.len() <= 1 {
-                        break (kept.len() < count, serialized);
-                    }
-                    kept.pop();
-                };
-                let mut output: Value = serde_json::from_str(&serialized)
-                    .unwrap_or_else(|_| serde_json::json!({"processes": kept, "count": count}));
+                let (mut output, truncated) =
+                    crate::util::json_list_within_budget("processes", processes, count, max_chars);
                 if truncated {
-                    output["truncated"] = serde_json::Value::Bool(true);
                     output["hint"] = serde_json::json!(
                         "Output truncated to the max chars budget. Narrow by filtering processes, or reduce the returned fields."
                     );
@@ -128,7 +114,8 @@ impl Tool for ProcessTool {
                     // is enough to find a single process by pid.
                     let mut system = sysinfo::System::new();
                     system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-                    let proc = system.process(sysinfo::Pid::from_u32(pid))
+                    let proc = system
+                        .process(sysinfo::Pid::from_u32(pid))
                         .ok_or_else(|| anyhow::anyhow!("process {} not found", pid))?;
                     #[cfg(target_os = "windows")]
                     if !proc.kill() {
@@ -141,7 +128,9 @@ impl Tool for ProcessTool {
                     Ok(())
                 })
                 .await??;
-                if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
                 Ok(ToolResult::ok(serde_json::json!({"killed": pid})))
             }
             _ => anyhow::bail!("unknown process operation: {}", op),
@@ -162,24 +151,113 @@ mod tests {
 
     #[test]
     fn test_process_tool_description() {
-        assert!(ProcessTool.description().contains("Process operations"));
+        assert!(ProcessTool.description().contains("kill"));
     }
 
     #[test]
     fn test_process_tool_risk_level() {
-        assert_eq!(ProcessTool.risk_level(&json!({"operation": "kill"})), RiskLevel::High);
-        assert_eq!(ProcessTool.risk_level(&json!({"operation": "list"})), RiskLevel::Low);
-        assert_eq!(ProcessTool.risk_level(&json!({"operation": "launch"})), RiskLevel::Medium);
+        assert_eq!(
+            ProcessTool.risk_level(&json!({"operation": "kill"})),
+            RiskLevel::High
+        );
+        assert_eq!(
+            ProcessTool.risk_level(&json!({"operation": "list"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            ProcessTool.risk_level(&json!({"operation": "launch"})),
+            RiskLevel::Medium
+        );
     }
 
     #[test]
     fn test_process_tool_input_schema() {
         let schema = ProcessTool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
-        let enum_vals = schema["properties"]["operation"]["enum"].as_array().unwrap();
+        let enum_vals = schema["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(ops.contains(&"list"));
         assert!(ops.contains(&"launch"));
         assert!(ops.contains(&"kill"));
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_list() {
+        let result = ProcessTool
+            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        let processes = result.output["processes"].as_array().unwrap();
+        assert!(!processes.is_empty());
+        for p in processes {
+            assert!(p["pid"].as_u64().unwrap() > 0);
+            assert!(p["memory"].is_number());
+            assert!(p["cpu"].is_number());
+            assert!(p["status"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_launch() {
+        let result = ProcessTool
+            .execute(
+                json!({"operation": "launch", "command": "echo hello"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["launched"], "echo hello");
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_launch_requires_command() {
+        let result = ProcessTool
+            .execute(
+                json!({"operation": "launch", "command": ""}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_kill_requires_pid() {
+        let result = ProcessTool
+            .execute(json!({"operation": "kill"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_kill_not_found() {
+        let result = ProcessTool
+            .execute(
+                json!({"operation": "kill", "pid": 999999999}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_unknown_operation() {
+        let result = ProcessTool
+            .execute(json!({"operation": "bogus"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = ProcessTool
+            .execute(json!({"operation": "list"}), cancel)
+            .await;
+        assert!(result.is_err());
     }
 }

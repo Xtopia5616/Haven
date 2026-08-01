@@ -91,7 +91,8 @@ impl Database {
     }
 
     pub fn list_tasks(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<Task>> {
-        if offset == 0 && limit == 50
+        if offset == 0
+            && limit == 50
             && let Some(cached) = self.cache_get_tasks()
         {
             return Ok(cached);
@@ -173,7 +174,12 @@ impl Database {
         .map_err(Into::into)
     }
 
-    pub fn search_tasks_paginated(&self, query: &str, limit: i64, offset: i64) -> anyhow::Result<Vec<Task>> {
+    pub fn search_tasks_paginated(
+        &self,
+        query: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Task>> {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -228,7 +234,8 @@ impl Database {
                 );
                 deleted_session_id = Some(session_id.clone());
             }
-            let affected = conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+            let affected =
+                conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
             if affected == 0 {
                 anyhow::bail!("task '{}' not found in database", id);
             }
@@ -263,17 +270,55 @@ impl Database {
         Ok(count)
     }
 
-    pub fn finalize_stale_tasks(&self, stale_minutes: i64) -> anyhow::Result<usize> {
-        let cutoff = chrono::Duration::minutes(stale_minutes);
-        let threshold = (Utc::now() - cutoff).to_rfc3339();
+    /// Mark every still-`running` task as `error`. Called once at app
+    /// startup: since the previous process is gone, any `running` task can
+    /// never resume and must be surfaced as errored so the user can retry it
+    /// via the continue flow. `paused`/`pending` tasks are left untouched —
+    /// they represent legitimately waiting work that should survive a
+    /// restart.
+    pub fn finalize_orphaned_running_tasks(&self) -> anyhow::Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        let count = self.set_running_status("error", &now, None)?;
+        Ok(count)
+    }
+
+    /// Mark every still-`running` task as `paused`. Called on graceful app
+    /// exit so in-flight work survives a restart in a resumable state;
+    /// `finalize_orphaned_running_tasks` at startup then only affects tasks
+    /// left `running` by a crash (no graceful exit).
+    pub fn pause_running_tasks(&self) -> anyhow::Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        let count = self.set_running_status("paused", &now, None)?;
+        Ok(count)
+    }
+
+    /// Shared helper for running-task status transitions:
+    /// `UPDATE tasks SET status = ?status, updated_at = ?now WHERE status =
+    /// 'running' [AND updated_at < ?cutoff]`. `cutoff` is `None` for the
+    /// unconditional (orphan/pause) variants. Centralizing the UPDATE + cache
+    /// invalidation keeps the callers from drifting apart.
+    fn set_running_status(
+        &self,
+        status: &str,
+        now: &str,
+        cutoff: Option<&str>,
+    ) -> anyhow::Result<usize> {
         let conn = self.conn();
-        let count = conn.execute(
-            "UPDATE tasks SET status = 'error', updated_at = ?1
-             WHERE (status = 'running' OR status = 'pending' OR status = 'paused')
-               AND updated_at < ?2",
-            rusqlite::params![Utc::now().to_rfc3339(), threshold],
-        )?;
-        self.cache_invalidate_tasks();
+        let count = match cutoff {
+            Some(threshold) => conn.execute(
+                "UPDATE tasks SET status = ?1, updated_at = ?2
+                 WHERE status = 'running' AND updated_at < ?3",
+                rusqlite::params![status, now, threshold],
+            )?,
+            None => conn.execute(
+                "UPDATE tasks SET status = ?1, updated_at = ?2
+                 WHERE status = 'running'",
+                rusqlite::params![status, now],
+            )?,
+        };
+        if count > 0 {
+            self.cache_invalidate_tasks();
+        }
         Ok(count)
     }
 
@@ -401,9 +446,7 @@ mod tests {
     #[test]
     fn test_create_task() {
         let db = create_db();
-        let task = db
-            .create_task(None, "input text", "transcript")
-            .unwrap();
+        let task = db.create_task(None, "input text", "transcript").unwrap();
         assert!(!task.id.is_empty());
         assert_eq!(task.session_id.as_deref(), None);
         assert_eq!(task.input_text, "input text");
@@ -418,18 +461,14 @@ mod tests {
     #[test]
     fn test_create_task_no_session() {
         let db = create_db();
-        let task = db
-            .create_task(None, "input", "")
-            .unwrap();
+        let task = db.create_task(None, "input", "").unwrap();
         assert!(task.session_id.is_none());
     }
 
     #[test]
     fn test_get_task_found() {
         let db = create_db();
-        let created = db
-            .create_task(None, "input", "")
-            .unwrap();
+        let created = db.create_task(None, "input", "").unwrap();
         let found = db.get_task(&created.id).unwrap();
         assert!(found.is_some());
         let found = found.unwrap();
@@ -447,9 +486,7 @@ mod tests {
     #[test]
     fn test_update_task_status() {
         let db = create_db();
-        let task = db
-            .create_task(None, "input", "")
-            .unwrap();
+        let task = db.create_task(None, "input", "").unwrap();
         db.update_task_status(&task.id, "running").unwrap();
         let updated = db.get_task(&task.id).unwrap().unwrap();
         assert_eq!(updated.status, "running");
@@ -470,8 +507,7 @@ mod tests {
     fn test_list_tasks_limit_offset() {
         let db = create_db();
         for i in 0..5 {
-            db.create_task(None, &format!("task-{}", i), "")
-                .unwrap();
+            db.create_task(None, &format!("task-{}", i), "").unwrap();
         }
         let tasks = db.list_tasks(2, 0).unwrap();
         assert_eq!(tasks.len(), 2);
@@ -498,12 +534,9 @@ mod tests {
     #[test]
     fn test_search_tasks() {
         let db = create_db();
-        db.create_task(None, "rust compiler", "")
-            .unwrap();
-        db.create_task(None, "python script", "")
-            .unwrap();
-        db.create_task(None, "rust debugging", "")
-            .unwrap();
+        db.create_task(None, "rust compiler", "").unwrap();
+        db.create_task(None, "python script", "").unwrap();
+        db.create_task(None, "rust debugging", "").unwrap();
 
         let results = db.search_tasks("rust").unwrap();
         assert_eq!(results.len(), 2);
@@ -557,8 +590,7 @@ mod tests {
     #[test]
     fn test_count_tasks_search() {
         let db = create_db();
-        db.create_task(None, "hello world", "")
-            .unwrap();
+        db.create_task(None, "hello world", "").unwrap();
         db.create_task(None, "goodbye", "").unwrap();
         assert_eq!(db.count_tasks_search("hello").unwrap(), 1);
         assert_eq!(db.count_tasks_search("good").unwrap(), 1);
@@ -568,9 +600,7 @@ mod tests {
     #[test]
     fn test_delete_task() {
         let db = create_db();
-        let task = db
-            .create_task(None, "input", "")
-            .unwrap();
+        let task = db.create_task(None, "input", "").unwrap();
         db.delete_task(&task.id).unwrap();
         assert!(db.get_task(&task.id).unwrap().is_none());
         assert_eq!(db.count_tasks().unwrap(), 0);
@@ -604,36 +634,24 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_stale_tasks() {
+    fn test_finalize_orphaned_running_tasks() {
         let db = create_db();
-        let task_a = db.create_task(None, "a", "").unwrap();
-        let task_b = db.create_task(None, "b", "").unwrap();
+        let running = db.create_task(None, "running", "").unwrap();
+        db.update_task_status(&running.id, "running").unwrap();
+        let paused = db.create_task(None, "paused", "").unwrap();
+        db.update_task_status(&paused.id, "paused").unwrap();
+        let pending = db.create_task(None, "pending", "").unwrap();
+        let done = db.create_task(None, "done", "").unwrap();
+        db.update_task_status(&done.id, "completed").unwrap();
 
-        // stale_minutes=0: threshold = now. SQLite's datetime('now') is
-        // slightly behind Rust's Utc::now(), so newly created tasks are
-        // considered stale and finalized to 'error'.
-        let count = db.finalize_stale_tasks(0).unwrap();
-        assert_eq!(count, 2);
+        let count = db.finalize_orphaned_running_tasks().unwrap();
+        assert_eq!(count, 1);
 
-        let found = db.get_task(&task_a.id).unwrap().unwrap();
-        assert_eq!(found.status, "error");
-        let found = db.get_task(&task_b.id).unwrap().unwrap();
-        assert_eq!(found.status, "error");
-    }
-
-    #[test]
-    fn test_finalize_stale_tasks_leaves_completed() {
-        let db = create_db();
-        let task = db
-            .create_task(None, "a", "")
-            .unwrap();
-        db.update_task_status(&task.id, "completed").unwrap();
-
-        let count = db.finalize_stale_tasks(0).unwrap();
-        assert_eq!(count, 0);
-
-        let found = db.get_task(&task.id).unwrap().unwrap();
-        assert_eq!(found.status, "completed");
+        assert_eq!(db.get_task(&running.id).unwrap().unwrap().status, "error");
+        // paused/pending are left alone — they are legitimate waiting work.
+        assert_eq!(db.get_task(&paused.id).unwrap().unwrap().status, "paused");
+        assert_eq!(db.get_task(&pending.id).unwrap().unwrap().status, "pending");
+        assert_eq!(db.get_task(&done.id).unwrap().unwrap().status, "completed");
     }
 
     #[test]
@@ -660,10 +678,8 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_query_only() {
         let db = create_db();
-        db.create_task(None, "rust compile", "")
-            .unwrap();
-        db.create_task(None, "python run", "")
-            .unwrap();
+        db.create_task(None, "rust compile", "").unwrap();
+        db.create_task(None, "python run", "").unwrap();
 
         let results = db
             .search_tasks_filtered(Some("rust"), None, None, None, 50, 0)
@@ -705,22 +721,12 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_combined() {
         let db = create_db();
-        let t1 = db
-            .create_task(None, "rust compiler bug", "")
-            .unwrap();
-        db.create_task(None, "python script", "")
-            .unwrap();
+        let t1 = db.create_task(None, "rust compiler bug", "").unwrap();
+        db.create_task(None, "python script", "").unwrap();
         db.update_task_status(&t1.id, "completed").unwrap();
 
         let results = db
-            .search_tasks_filtered(
-                Some("rust"),
-                Some("completed"),
-                None,
-                None,
-                50,
-                0,
-            )
+            .search_tasks_filtered(Some("rust"), Some("completed"), None, None, 50, 0)
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, t1.id);
@@ -752,9 +758,7 @@ mod tests {
     #[test]
     fn test_save_and_get_react_state() {
         let db = create_db();
-        let task = db
-            .create_task(None, "input", "")
-            .unwrap();
+        let task = db.create_task(None, "input", "").unwrap();
 
         let result = db.get_react_state(&task.id).unwrap();
         assert!(result.is_none());
@@ -770,9 +774,7 @@ mod tests {
     #[test]
     fn test_save_react_state_overwrites() {
         let db = create_db();
-        let task = db
-            .create_task(None, "input", "")
-            .unwrap();
+        let task = db.create_task(None, "input", "").unwrap();
 
         db.save_react_state(&task.id, r#"{"v":1}"#).unwrap();
         db.save_react_state(&task.id, r#"{"v":2}"#).unwrap();

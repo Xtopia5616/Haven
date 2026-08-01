@@ -8,6 +8,7 @@
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import StatusDot from '$lib/StatusDot.svelte';
+	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import { addNotification } from '$lib/stores.js';
 
 	let llmConfig = $state({
@@ -192,7 +193,7 @@
 			},
 				},
 			});
-		addNotification('Settings saved', 'success');
+		addNotification('设置已保存', 'success');
 			savedAccent = accent;
 			if (autostartEnabled) {
 				try { await invoke('enable_autostart'); } catch (e) {
@@ -245,7 +246,7 @@
 		<h2>LLM Configuration</h2>
 
 		<div class="model-card">
-			<h3>Small Model</h3>
+			<h3>small model</h3>
 			<p class="model-hint">Title generation &amp; lightweight reasoning</p>
 			<div class="form-row">
 				<label for="sm-provider">Provider</label>
@@ -267,7 +268,7 @@
 						<span class="key-configured-label">Configured</span>
 						<button
 							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog('small_model', 'Small Model')}
+							onclick={() => openKeyDialog('small_model', 'small model')}
 						>
 							Change
 						</button>
@@ -321,8 +322,8 @@
 		</div>
 
 		<div class="model-card">
-			<h3>Balanced Model</h3>
-			<p class="model-hint">Fallback when primary model is unavailable</p>
+			<h3>balanced model</h3>
+			<p class="model-hint">Used when Default Model is unavailable</p>
 			<div class="form-row">
 				<label for="bm-provider">Provider</label>
 				<input id="bm-provider" type="text" class="md-input" bind:value={llmConfig.balanced_model.provider} />
@@ -343,7 +344,7 @@
 						<span class="key-configured-label">Configured</span>
 						<button
 							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog('balanced_model', 'Balanced Model')}
+							onclick={() => openKeyDialog('balanced_model', 'balanced model')}
 						>
 							Change
 						</button>
@@ -363,7 +364,7 @@
 		<h2>Hotkeys</h2>
 		<div class="form-row">
 			<label for="hotkey-binding">Key Binding</label>
-			<input id="hotkey-binding" type="text" class="md-input" bind:value={hotkeyBinding} />
+			<HotkeyInput id="hotkey-binding" value={hotkeyBinding} onChange={(v) => { hotkeyBinding = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="hotkey-mode">Mode</label>

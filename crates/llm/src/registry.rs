@@ -139,10 +139,7 @@ impl ModelRegistry {
     }
 
     pub fn all(&self) -> Vec<&ModelInfo> {
-        self.builtin
-            .iter()
-            .chain(self.discovered.iter())
-            .collect()
+        self.builtin.iter().chain(self.discovered.iter()).collect()
     }
 
     pub fn search(&self, query: &str) -> Vec<&ModelInfo> {

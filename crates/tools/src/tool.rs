@@ -66,7 +66,11 @@ pub trait Tool: Send + Sync {
             .map_err(|e| anyhow::anyhow!("invalid tool schema for '{}': {}", self.name(), e))?;
         if let Err(errors) = compiled.validate(input) {
             let msgs: Vec<String> = errors.map(|e| e.to_string()).collect();
-            anyhow::bail!("input validation failed for '{}': {}", self.name(), msgs.join("; "));
+            anyhow::bail!(
+                "input validation failed for '{}': {}",
+                self.name(),
+                msgs.join("; ")
+            );
         }
         Ok(())
     }
@@ -248,7 +252,11 @@ impl SafetyGateway {
 
     /// Trust a risk level for the remainder of the session.
     pub async fn trust_risk_level(&self, level: RiskLevel) {
-        self.config.write().await.session_trusted_levels.insert(level);
+        self.config
+            .write()
+            .await
+            .session_trusted_levels
+            .insert(level);
     }
 }
 
@@ -393,14 +401,10 @@ mod tests {
     async fn test_registry_list_multiple() {
         let registry = ToolRegistry::new();
         registry
-            .register(Arc::new(MockTool {
-                name: "a".into(),
-            }))
+            .register(Arc::new(MockTool { name: "a".into() }))
             .await;
         registry
-            .register(Arc::new(MockTool {
-                name: "b".into(),
-            }))
+            .register(Arc::new(MockTool { name: "b".into() }))
             .await;
 
         let tools = registry.list().await;
@@ -433,14 +437,10 @@ mod tests {
     #[tokio::test]
     async fn test_registry_rebuild() {
         let registry = ToolRegistry::new();
-        let old_tool = Arc::new(MockTool {
-            name: "old".into(),
-        });
+        let old_tool = Arc::new(MockTool { name: "old".into() });
         registry.register(old_tool).await;
 
-        let new_tool = Arc::new(MockTool {
-            name: "new".into(),
-        });
+        let new_tool = Arc::new(MockTool { name: "new".into() });
         registry.rebuild(vec![new_tool.clone()]).await;
 
         assert!(registry.get("old").await.is_none());
@@ -451,9 +451,7 @@ mod tests {
     async fn test_safety_gateway_new_default_threshold() {
         let gw = SafetyGateway::new(RiskLevel::Low);
         // Safe is below Low → auto approved
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::Safe)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::Safe).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
@@ -461,9 +459,7 @@ mod tests {
     async fn test_safety_gateway_below_threshold_auto_approved() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         // Low is below Medium → auto approved
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::Low)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::Low).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
@@ -471,9 +467,7 @@ mod tests {
     async fn test_safety_gateway_at_threshold_requires_confirmation() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         // Medium is at the threshold → requires confirmation
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::Medium)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
         assert!(matches!(
             result,
             ConfirmationResult::RequiresConfirmation { .. }
@@ -484,9 +478,7 @@ mod tests {
     async fn test_safety_gateway_above_threshold_requires_confirmation() {
         let gw = SafetyGateway::new(RiskLevel::Low);
         // High is above Low → requires confirmation
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::High)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::High).await;
         assert!(matches!(
             result,
             ConfirmationResult::RequiresConfirmation { .. }
@@ -497,9 +489,7 @@ mod tests {
     async fn test_safety_gateway_trusted_risk_level_auto_approved() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         gw.trust_risk_level(RiskLevel::Medium).await;
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::Medium)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
@@ -508,23 +498,17 @@ mod tests {
         let gw = SafetyGateway::new(RiskLevel::Low);
         gw.trust_risk_level(RiskLevel::Medium).await;
         // Medium is >= Low → check against threshold should pass since trusted
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::Medium)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
 
         // Raising threshold clears session trusts
         gw.set_min_risk_level(RiskLevel::High).await;
         // Medium is below High → auto approved anyway (below threshold)
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::Medium)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
 
         // High is at threshold, trust was cleared → requires confirmation
-        let result = gw
-            .check("tool1", &json!({}), RiskLevel::High)
-            .await;
+        let result = gw.check("tool1", &json!({}), RiskLevel::High).await;
         assert!(matches!(
             result,
             ConfirmationResult::RequiresConfirmation { .. }

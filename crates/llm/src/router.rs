@@ -1,17 +1,19 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-
 use crate::client::{HttpLlmClient, LlmClient, with_retry};
-use crate::stream_rules::{check_stream_rules, StreamRule, StreamRuleMatch, StreamRuleMode};
-use crate::types::{ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolDefinition};
+use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
+use crate::types::{
+    ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
+    ToolDefinition,
+};
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
 use haven_common::config::LlmConfig;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy)]
 pub enum EndpointRole {
@@ -25,9 +27,9 @@ pub enum EndpointRole {
 
 #[derive(Debug, Clone, PartialEq)]
 enum CircuitState {
-    Closed,       // normal operation
-    Open,         // failing — requests rejected
-    HalfOpen,     // probe one request
+    Closed,   // normal operation
+    Open,     // failing — requests rejected
+    HalfOpen, // probe one request
 }
 
 #[derive(Debug, Clone)]
@@ -35,8 +37,8 @@ struct CircuitBreaker {
     state: CircuitState,
     consecutive_failures: u32,
     last_failure_time: Option<Instant>,
-    failure_count: u32,     // failures in recent window
-    total_calls: u32,       // total calls in recent window
+    failure_count: u32, // failures in recent window
+    total_calls: u32,   // total calls in recent window
     opened_at: Option<Instant>,
 }
 
@@ -101,7 +103,6 @@ impl CircuitBreaker {
             }
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -152,14 +153,12 @@ impl EndpointHealth {
     }
 }
 
-
-
 pub struct LlmRouter {
     config: Arc<RwLock<LlmConfig>>,
-    pub reasoner: Arc<dyn LlmClient>,
-    pub fallback: Arc<dyn LlmClient>,
-    fallback_active: AtomicBool,
-    // §5.3: per-endpoint health (index 0 = reasoner, 1 = fallback)
+    pub default_model: Arc<dyn LlmClient>,
+    pub balanced_model: Arc<dyn LlmClient>,
+    balanced_model_active: AtomicBool,
+    // §5.3: per-endpoint health (index 0 = default_model, 1 = balanced_model)
     health: RwLock<[EndpointHealth; 2]>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
@@ -167,27 +166,27 @@ pub struct LlmRouter {
 
 impl LlmRouter {
     pub fn new(config: LlmConfig) -> Self {
-        let reasoner = Arc::new(HttpLlmClient::new(config.default_model.clone()));
-        let fallback = Arc::new(HttpLlmClient::new(config.balanced_model.clone()));
+        let default_model = Arc::new(HttpLlmClient::new(config.default_model.clone()));
+        let balanced_model = Arc::new(HttpLlmClient::new(config.balanced_model.clone()));
         Self {
             config: Arc::new(RwLock::new(config)),
-            reasoner,
-            fallback,
-            fallback_active: AtomicBool::new(false),
+            default_model,
+            balanced_model,
+            balanced_model_active: AtomicBool::new(false),
             health: RwLock::new([EndpointHealth::new(), EndpointHealth::new()]),
             stream_rules: RwLock::new(Vec::new()),
         }
     }
 
     pub fn new_with_clients(
-        reasoner: Arc<dyn LlmClient>,
-        fallback: Arc<dyn LlmClient>,
+        default_model: Arc<dyn LlmClient>,
+        balanced_model: Arc<dyn LlmClient>,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(LlmConfig::default())),
-            reasoner,
-            fallback,
-            fallback_active: AtomicBool::new(false),
+            default_model,
+            balanced_model,
+            balanced_model_active: AtomicBool::new(false),
             health: RwLock::new([EndpointHealth::new(), EndpointHealth::new()]),
             stream_rules: RwLock::new(Vec::new()),
         }
@@ -195,8 +194,8 @@ impl LlmRouter {
 
     pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
         match role {
-            EndpointRole::DefaultModel => self.reasoner.clone(),
-            EndpointRole::BalancedModel => self.fallback.clone(),
+            EndpointRole::DefaultModel => self.default_model.clone(),
+            EndpointRole::BalancedModel => self.balanced_model.clone(),
         }
     }
 
@@ -237,10 +236,7 @@ impl LlmRouter {
     }
 
     // §2.12: apply total timeout wrapper
-    async fn with_total_timeout<F, Fut>(
-        &self,
-        f: F,
-    ) -> Result<LlmResponse, LlmError>
+    async fn with_total_timeout<F, Fut>(&self, f: F) -> Result<LlmResponse, LlmError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<LlmResponse, LlmError>>,
@@ -258,8 +254,8 @@ impl LlmRouter {
         }
     }
 
-    // §2.11: execute with retry on endpoint, fallback with retry
-    async fn call_with_retry_and_fallback(
+    // §2.11: execute with retry on endpoint, balanced_model with retry
+    async fn call_with_retry_and_balanced_model(
         &self,
         primary: Arc<dyn LlmClient>,
         messages: Vec<LlmMessage>,
@@ -290,7 +286,7 @@ impl LlmRouter {
         match primary_result {
             Ok(v) => {
                 self.record_success(role).await;
-                self.fallback_active.store(false, Ordering::SeqCst);
+                self.balanced_model_active.store(false, Ordering::SeqCst);
                 Ok(v)
             }
             Err(primary_err) => {
@@ -298,31 +294,31 @@ impl LlmRouter {
                 self.record_failure(role).await;
                 let primary_msg = primary_err.to_string();
                 tracing::warn!(
-                    "primary endpoint failed: {}, attempting fallback",
+                    "primary endpoint failed: {}, attempting balanced model",
                     primary_msg
                 );
-                self.fallback_active.store(true, Ordering::SeqCst);
+                self.balanced_model_active.store(true, Ordering::SeqCst);
 
-                // §2.11: fallback also gets retry
-                let fallback_result = if tools.is_empty() {
+                // §2.11: balanced model also gets retry
+                let balanced_result = if tools.is_empty() {
                     with_retry(2, base, factor, max_secs, jitter, None, || async {
-                        self.fallback.chat(messages.clone()).await
+                        self.balanced_model.chat(messages.clone()).await
                     })
                     .await
                 } else {
                     with_retry(2, base, factor, max_secs, jitter, None, || async {
-                        self.fallback
+                        self.balanced_model
                             .chat_with_tools(messages.clone(), tools.clone())
                             .await
                     })
                     .await
                 };
 
-                match fallback_result {
+                match balanced_result {
                     Ok(v) => Ok(v),
-                    Err(fallback_err) => {
-                        let fallback_msg = fallback_err.to_string();
-                        Err(LlmError::AllEndpointsFailed(primary_msg, fallback_msg))
+                    Err(balanced_err) => {
+                        let balanced_msg = balanced_err.to_string();
+                        Err(LlmError::AllEndpointsFailed(primary_msg, balanced_msg))
                     }
                 }
             }
@@ -337,7 +333,7 @@ impl LlmRouter {
         self.check_circuit(&role).await?;
         let primary = self.select_endpoint(role);
         self.with_total_timeout(|| async {
-            self.call_with_retry_and_fallback(primary, messages, Vec::new(), &role)
+            self.call_with_retry_and_balanced_model(primary, messages, Vec::new(), &role)
                 .await
         })
         .await
@@ -352,7 +348,7 @@ impl LlmRouter {
         self.check_circuit(&role).await?;
         let primary = self.select_endpoint(role);
         self.with_total_timeout(|| async {
-            self.call_with_retry_and_fallback(primary, messages, tools, &role)
+            self.call_with_retry_and_balanced_model(primary, messages, tools, &role)
                 .await
         })
         .await
@@ -375,14 +371,17 @@ impl LlmRouter {
         match primary.chat_stream(messages.clone()).await {
             Ok(stream) => {
                 self.record_success(&role).await;
-                self.fallback_active.store(false, Ordering::SeqCst);
+                self.balanced_model_active.store(false, Ordering::SeqCst);
                 Ok(stream)
             }
             Err(e) => {
                 self.record_failure(&role).await;
-                tracing::warn!("primary chat_stream failed: {}, attempting fallback", e);
-                self.fallback_active.store(true, Ordering::SeqCst);
-                self.fallback.chat_stream(messages).await
+                tracing::warn!(
+                    "primary chat_stream failed: {}, attempting balanced model",
+                    e
+                );
+                self.balanced_model_active.store(true, Ordering::SeqCst);
+                self.balanced_model.chat_stream(messages).await
             }
         }
     }
@@ -397,12 +396,16 @@ impl LlmRouter {
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable(
-            role, messages, tools, on_chunk, CancellationToken::new(),
+            role,
+            messages,
+            tools,
+            on_chunk,
+            CancellationToken::new(),
         )
         .await
     }
 
-    /// Stream-chat with cancellation and fallback (§2.10, §2.11).
+    /// Stream-chat with cancellation, using the balanced model as a backup (§2.10, §2.11).
     /// Applies `max_total_duration_secs` as an overall deadline (§2.12).
     /// Each endpoint is tried at most once (no retry) to avoid duplicating
     /// thought/reasoning chunks in the shared `on_chunk` callback.
@@ -415,7 +418,12 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.check_circuit(&role).await?;
-        tracing::debug!("router streaming LLM call, role={:?} messages={} tools={}", role, messages.len(), tools.len());
+        tracing::debug!(
+            "router streaming LLM call, role={:?} messages={} tools={}",
+            role,
+            messages.len(),
+            tools.len()
+        );
         let primary = self.select_endpoint(role);
         let on_chunk = Arc::new(StdMutex::new(on_chunk));
 
@@ -426,78 +434,101 @@ impl LlmRouter {
         match tokio::time::timeout(Duration::from_secs(max_dur), async {
             // Primary: single attempt with cancellation
             let primary_result = Self::aggregate_stream_cancellable(
-                primary.clone(), messages.clone(), tools.clone(), on_chunk.clone(), cancel.clone(), &self.stream_rules,
+                primary.clone(),
+                messages.clone(),
+                tools.clone(),
+                on_chunk.clone(),
+                cancel.clone(),
+                &self.stream_rules,
             )
             .await;
 
             match primary_result {
-            Ok(resp) => {
-                self.record_success(&role).await;
-                self.fallback_active.store(false, Ordering::SeqCst);
-                Ok(resp)
-            }
-            Err(LlmError::StreamAborted(rule_name, inject)) => {
-                tracing::warn!(
-                    "stream aborted by rule '{}', injecting guidance and retrying with primary",
-                    rule_name
-                );
-                let mut retry_msgs = messages.clone();
-                retry_msgs.push(LlmMessage {
-                    role: LlmRole::System,
-                    content: vec![ContentPart::text(inject)],
-                    tool_call_id: None,
-                    tool_calls: None,
-                });
-                Self::aggregate_stream_cancellable(
-                    primary, retry_msgs, tools, on_chunk, cancel, &self.stream_rules,
-                )
-                .await
-            }
-            Err(e) => {
-                if cancel.is_cancelled() {
-                    return Err(LlmError::Cancelled);
+                Ok(resp) => {
+                    self.record_success(&role).await;
+                    self.balanced_model_active.store(false, Ordering::SeqCst);
+                    Ok(resp)
                 }
-                if !e.is_retryable() {
-                    return Err(e);
+                Err(LlmError::StreamAborted(rule_name, inject)) => {
+                    tracing::warn!(
+                        "stream aborted by rule '{}', injecting guidance and retrying with primary",
+                        rule_name
+                    );
+                    let mut retry_msgs = messages.clone();
+                    retry_msgs.push(LlmMessage {
+                        role: LlmRole::System,
+                        content: vec![ContentPart::text(inject)],
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    Self::aggregate_stream_cancellable(
+                        primary,
+                        retry_msgs,
+                        tools,
+                        on_chunk,
+                        cancel,
+                        &self.stream_rules,
+                    )
+                    .await
                 }
-                self.record_failure(&role).await;
-                tracing::debug!(
-                    "primary stream failed: {}, waiting before fallback", e
-                );
+                Err(e) => {
+                    if cancel.is_cancelled() {
+                        return Err(LlmError::Cancelled);
+                    }
+                    if !e.is_retryable() {
+                        return Err(e);
+                    }
+                    self.record_failure(&role).await;
+                    tracing::debug!(
+                        "primary stream failed: {}, waiting before balanced model",
+                        e
+                    );
 
-                // Delay before fallback to allow transient issues to settle
-                let cfg = self.config.read().await;
-                let base = cfg.retry_base_secs;
-                let jitter = cfg.retry_jitter;
-                drop(cfg);
-                let jitter_ms = (base as f32 * jitter * 1000.0) as u64;
-                tokio::time::sleep(Duration::from_secs(base) + Duration::from_millis(jitter_ms)).await;
+                    // Delay before balanced model to allow transient issues to settle
+                    let cfg = self.config.read().await;
+                    let base = cfg.retry_base_secs;
+                    let jitter = cfg.retry_jitter;
+                    drop(cfg);
+                    let jitter_ms = (base as f32 * jitter * 1000.0) as u64;
+                    tokio::time::sleep(
+                        Duration::from_secs(base) + Duration::from_millis(jitter_ms),
+                    )
+                    .await;
 
-                if cancel.is_cancelled() {
-                    return Err(LlmError::Cancelled);
-                }
-                self.fallback_active.store(true, Ordering::SeqCst);
+                    if cancel.is_cancelled() {
+                        return Err(LlmError::Cancelled);
+                    }
+                    self.balanced_model_active.store(true, Ordering::SeqCst);
 
-                // Fallback: single attempt with cancellation
-                let fb_result = Self::aggregate_stream_cancellable(
-                    self.fallback.clone(), messages, tools, on_chunk, cancel, &self.stream_rules,
-                )
-                .await;
+                    // Balanced model: single attempt with cancellation
+                    let fb_result = Self::aggregate_stream_cancellable(
+                        self.balanced_model.clone(),
+                        messages,
+                        tools,
+                        on_chunk,
+                        cancel,
+                        &self.stream_rules,
+                    )
+                    .await;
 
-                match fb_result {
-                    Ok(resp) => Ok(resp),
-                    Err(fb_err) => {
-                        Err(LlmError::AllEndpointsFailed(e.to_string(), fb_err.to_string()))
+                    match fb_result {
+                        Ok(resp) => Ok(resp),
+                        Err(fb_err) => Err(LlmError::AllEndpointsFailed(
+                            e.to_string(),
+                            fb_err.to_string(),
+                        )),
                     }
                 }
             }
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(LlmError::Timeout(format!(
+                "router streaming total timeout after {}s",
+                max_dur
+            ))),
         }
-    }).await {
-        Ok(result) => result,
-        Err(_) => Err(LlmError::Timeout(format!(
-            "router streaming total timeout after {}s", max_dur
-        ))),
-    }
     }
 
     async fn aggregate_stream_cancellable(
@@ -602,7 +633,11 @@ impl LlmRouter {
             finish_reason,
             usage: usage.unwrap_or_default(),
             model,
-            reasoning: if reasoning.is_empty() { None } else { Some(reasoning) },
+            reasoning: if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning)
+            },
         })
     }
 
@@ -623,15 +658,15 @@ impl LlmRouter {
         endpoint.health_check().await
     }
 
-    pub fn fallback_active(&self) -> bool {
-        self.fallback_active.load(Ordering::SeqCst)
+    pub fn balanced_model_active(&self) -> bool {
+        self.balanced_model_active.load(Ordering::SeqCst)
     }
 
-    /// §5.4: run health check on fallback endpoint
+    /// §5.4: run health check on balanced model endpoint
     pub async fn background_health_check(&self) -> bool {
-        match self.fallback.health_check().await {
+        match self.balanced_model.health_check().await {
             Ok(()) => {
-                self.fallback_active.store(false, Ordering::SeqCst);
+                self.balanced_model_active.store(false, Ordering::SeqCst);
                 true
             }
             Err(_) => false,
@@ -666,8 +701,8 @@ mod tests {
                     finish_reason: Some(FinishReason::Stop),
                     usage: Usage::default(),
                     model: None,
-                            reasoning: None,
-        })
+                    reasoning: None,
+                })
             }
         }
         async fn chat_with_tools(
@@ -684,8 +719,8 @@ mod tests {
                     finish_reason: Some(FinishReason::Stop),
                     usage: Usage::default(),
                     model: None,
-                            reasoning: None,
-        })
+                    reasoning: None,
+                })
             }
         }
         async fn chat_stream(
@@ -737,16 +772,16 @@ mod tests {
                 finish_reason: None,
                 usage: None,
                 model: None,
-                        reasoning: None,
-        }),
+                reasoning: None,
+            }),
             Ok(StreamChunk {
                 text: Some("world!".into()),
                 tool_calls: Vec::new(),
                 finish_reason: None,
                 usage: None,
                 model: None,
-                        reasoning: None,
-        }),
+                reasoning: None,
+            }),
             Ok(StreamChunk {
                 text: None,
                 tool_calls: vec![ToolCall {
@@ -769,7 +804,7 @@ mod tests {
                     total_tokens: 15,
                     model_name: None,
                     cost: None,
-        }),
+                }),
                 model: None,
                 reasoning: None,
             }),
@@ -801,31 +836,35 @@ mod tests {
 
         assert_eq!(resp.text, "Hello world!");
         assert_eq!(
-            *seen_text.lock().unwrap(), "Hello world!",
+            *seen_text.lock().unwrap(),
+            "Hello world!",
             "on_chunk must see every text delta"
         );
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "file");
         assert_eq!(resp.finish_reason, Some(FinishReason::ToolCalls));
         assert_eq!(resp.usage.total_tokens, 15);
-        assert!(!router.fallback_active(), "primary succeeded, no fallback");
+        assert!(
+            !router.balanced_model_active(),
+            "primary succeeded, no balanced model"
+        );
     }
 
     #[tokio::test]
-    async fn chat_fallback_on_primary_failure() {
+    async fn chat_balanced_model_on_primary_failure() {
         let failing = Arc::new(MockStreamClient {
             chunks: Vec::new(),
             fail_chat: true,
         }) as Arc<dyn LlmClient>;
         let ok = Arc::new(MockStreamClient {
             chunks: vec![Ok(StreamChunk {
-                text: Some("fallback response".into()),
+                text: Some("balanced model response".into()),
                 tool_calls: Vec::new(),
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
                 model: None,
-                        reasoning: None,
-        })],
+                reasoning: None,
+            })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
@@ -834,9 +873,9 @@ mod tests {
         let resp = router
             .chat(EndpointRole::DefaultModel, Vec::new())
             .await
-            .expect("fallback should succeed");
+            .expect("balanced model should succeed");
         assert_eq!(resp.text, "mock response");
-        assert!(router.fallback_active());
+        assert!(router.balanced_model_active());
     }
 
     #[tokio::test]
@@ -852,8 +891,8 @@ mod tests {
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
                 model: None,
-                        reasoning: None,
-        })],
+                reasoning: None,
+            })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
@@ -865,9 +904,7 @@ mod tests {
         }
 
         // Circuit breaker should reject requests directly
-        let result = router
-            .check_circuit(&EndpointRole::DefaultModel)
-            .await;
+        let result = router.check_circuit(&EndpointRole::DefaultModel).await;
         // Should fail because circuit is open
         assert!(result.is_err());
     }
@@ -1018,10 +1055,10 @@ mod tests {
     }
 
     #[test]
-    fn fallback_active_defaults_to_false() {
+    fn balanced_model_active_defaults_to_false() {
         let cfg = LlmConfig::default();
         let router = LlmRouter::new(cfg);
-        assert!(!router.fallback_active());
+        assert!(!router.balanced_model_active());
     }
 
     #[tokio::test]
@@ -1030,8 +1067,7 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(client.clone(), client);
         let result = router.health_check(EndpointRole::DefaultModel).await;
         assert!(result.is_ok());
     }
@@ -1042,8 +1078,7 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(client.clone(), client);
         let rule = StreamRule::new(
             "forbidden",
             r"secret_key",
@@ -1052,9 +1087,7 @@ mod tests {
         )
         .unwrap();
         router.set_stream_rules(vec![rule]).await;
-        let result = router
-            .check_stream_output("this is safe text")
-            .await;
+        let result = router.check_stream_output("this is safe text").await;
         assert!(result.is_none());
         let result = router
             .check_stream_output("here is secret_key=abc123")
@@ -1065,14 +1098,8 @@ mod tests {
 
     #[test]
     fn endpoint_role_health_index_mapping() {
-        assert_eq!(
-            LlmRouter::health_index(&EndpointRole::DefaultModel),
-            0
-        );
-        assert_eq!(
-            LlmRouter::health_index(&EndpointRole::BalancedModel),
-            1
-        );
+        assert_eq!(LlmRouter::health_index(&EndpointRole::DefaultModel), 0);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::BalancedModel), 1);
     }
 
     #[tokio::test]
@@ -1081,15 +1108,9 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(client.clone(), client);
         let resp = router
-            .chat_stream_with_tools_aggregated(
-                EndpointRole::DefaultModel,
-                vec![],
-                vec![],
-                |_| {},
-            )
+            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, vec![], vec![], |_| {})
             .await
             .expect("aggregation succeeds");
         assert!(resp.text.is_empty());
@@ -1097,54 +1118,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_stream_fallback_on_primary_failure() {
+    async fn chat_stream_balanced_model_on_primary_failure() {
         let failing = Arc::new(MockStreamClient {
-            chunks: vec![],
+            chunks: Vec::new(),
             fail_chat: true,
         }) as Arc<dyn LlmClient>;
         let ok = Arc::new(MockStreamClient {
-            chunks: vec![
-                Ok(StreamChunk {
-                    text: Some("fallback".into()),
-                    tool_calls: vec![],
-                    finish_reason: Some(FinishReason::Stop),
-                    usage: None,
-                    model: None,
-                            reasoning: None,
-        }),
-            ],
+            chunks: vec![Ok(StreamChunk {
+                text: Some("balanced".into()),
+                tool_calls: vec![],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(failing, ok);
-        let resp = router
-            .chat_stream(EndpointRole::DefaultModel, vec![])
-            .await;
+        let router = LlmRouter::new_with_clients(failing, ok);
+        let resp = router.chat_stream(EndpointRole::DefaultModel, vec![]).await;
         assert!(resp.is_ok());
-        assert!(router.fallback_active());
+        assert!(router.balanced_model_active());
     }
 
     #[tokio::test]
     async fn chat_stream_call_succeeds_primary() {
         let client = Arc::new(MockStreamClient {
-            chunks: vec![
-                Ok(StreamChunk {
-                    text: Some("hi".into()),
-                    tool_calls: vec![],
-                    finish_reason: Some(FinishReason::Stop),
-                    usage: None,
-                    model: None,
-                            reasoning: None,
-        }),
-            ],
+            chunks: vec![Ok(StreamChunk {
+                text: Some("hi".into()),
+                tool_calls: vec![],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router =
-            LlmRouter::new_with_clients(client.clone(), client);
-        let result = router
-            .chat_stream(EndpointRole::DefaultModel, vec![])
-            .await;
+        let router = LlmRouter::new_with_clients(client.clone(), client);
+        let result = router.chat_stream(EndpointRole::DefaultModel, vec![]).await;
         assert!(result.is_ok());
-        assert!(!router.fallback_active());
+        assert!(!router.balanced_model_active());
     }
 }

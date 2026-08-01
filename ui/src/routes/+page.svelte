@@ -5,7 +5,7 @@
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState } from '$lib/stores.js';
+	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState, imageDataUrl } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
@@ -18,6 +18,128 @@
 	let activeTaskId = $state(get(activeTaskIdStore));
 	let branchDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
 	let branchLoading = $state(false);
+	// Pending image attachments (multimodal): [{ mediaType, data }] with data
+	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
+	// sent along with the next message, cleared on submit.
+	let pendingImages = $state([]);
+	let imageFileInput = $state(null);
+
+	const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MiB per image
+	const MAX_IMAGES = 4;
+	// Downscale images so the longest edge does not exceed this. OpenAI vision
+	// guidance recommends ≤1568px; smaller payloads cut DB storage, snapshot
+	// serialization, IPC transfer, and LLM token cost.
+	const MAX_IMAGE_DIM = 1568;
+	const JPEG_QUALITY = 0.85;
+
+	/** Read a File as a { media_type, data } attachment without re-encoding. */
+	function readAsAttachment(file) {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => {
+				const dataUrl = String(reader.result || '');
+				const comma = dataUrl.indexOf(',');
+				const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+				resolve({ media_type: file.type || 'image/png', data: base64 });
+			};
+			reader.onerror = () => reject(new Error('图片读取失败'));
+			reader.readAsDataURL(file);
+		});
+	}
+
+	/**
+	 * Downscale and re-encode an image File to JPEG to reduce payload size.
+	 * Returns null if compression isn't possible (e.g. browser lacks the API).
+	 */
+	async function tryCompressImage(file) {
+		if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
+		try {
+			const bitmap = await createImageBitmap(file);
+			let { width, height } = bitmap;
+			const maxDim = Math.max(width, height);
+			if (maxDim > MAX_IMAGE_DIM) {
+				const scale = MAX_IMAGE_DIM / maxDim;
+				width = Math.round(width * scale);
+				height = Math.round(height * scale);
+			}
+			const canvas = document.createElement('canvas');
+			canvas.width = width;
+			canvas.height = height;
+			const ctx = canvas.getContext('2d');
+			if (!ctx) return null;
+			ctx.drawImage(bitmap, 0, 0, width, height);
+			bitmap.close?.();
+			const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+			const comma = dataUrl.indexOf(',');
+			return { media_type: 'image/jpeg', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl };
+		} catch (e) {
+			logger.warn('+page', 'image compression failed, using original', e);
+			return null;
+		}
+	}
+
+	/**
+	 * Convert a File to a { media_type, data } attachment (base64, no prefix).
+	 * Compresses to JPEG when the result is smaller than the original;
+	 * otherwise keeps the original encoding.
+	 */
+	async function fileToAttachment(file) {
+		if (file.size > MAX_IMAGE_BYTES) {
+			throw new Error('图片超过 10MB 上限');
+		}
+		const original = await readAsAttachment(file);
+		const compressed = await tryCompressImage(file);
+		if (compressed && compressed.data.length < original.data.length) {
+			return compressed;
+		}
+		return original;
+	}
+
+	async function addPendingImages(files) {
+		if (!files || files.length === 0) return;
+		const room = MAX_IMAGES - pendingImages.length;
+		if (room <= 0) {
+			addNotification(`最多支持 ${MAX_IMAGES} 张图片`, 'error', 3000);
+			return;
+		}
+		const list = Array.from(files).slice(0, room);
+		for (const f of list) {
+			if (!f.type.startsWith('image/')) {
+				addNotification(`不支持的文件类型: ${f.name}`, 'error', 3000);
+				continue;
+			}
+			try {
+				pendingImages = [...pendingImages, await fileToAttachment(f)];
+			} catch (e) {
+				addNotification(e.message || '图片读取失败', 'error', 3000);
+			}
+		}
+	}
+
+	function handlePaste(e) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		const images = [];
+		for (const item of items) {
+			if (item.type.startsWith('image/')) {
+				const file = item.getAsFile();
+				if (file) images.push(file);
+			}
+		}
+		if (images.length > 0) {
+			e.preventDefault();
+			addPendingImages(images);
+		}
+	}
+
+	function handleFileSelect(e) {
+		addPendingImages(e.target.files);
+		e.target.value = '';
+	}
+
+	function removePendingImage(index) {
+		pendingImages = pendingImages.filter((_, i) => i !== index);
+	}
 
 	// Right-click context menu state
 	let ctxMenu = $state({ open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '', selectedContent: '' });
@@ -169,23 +291,38 @@
 	async function handleContinue() {
 		if (!activeTaskId) return;
 		const tid = activeTaskId;
-		taskErrorId = null;
-		activeTaskError = false;
+		// Capture the ids of the trailing assistant messages BEFORE invoking
+		// continue_task. These are the partial outputs from the interrupted
+		// step that the backend will delete from the DB. We must remove them
+		// from the UI too, but only these — the dispatcher may start the retry
+		// before this function resumes and append NEW assistant messages
+		// (different run_id in their ids) that must NOT be dropped.
+		const currentMessages = get(taskMessagesStore)[tid] || [];
+		let trailingIdx = currentMessages.length;
+		while (trailingIdx > 0 && currentMessages[trailingIdx - 1].role === 'assistant') {
+			trailingIdx--;
+		}
+		const partialIds = new Set(
+			currentMessages.slice(trailingIdx).map((m) => m.id),
+		);
 		try {
 			await invoke('continue_task', { taskId: tid });
-			// Remove only the last partial assistant message(s) — the
-			// interrupted step's incomplete output. Previous completed
-			// steps are kept. The backend already deleted these from DB.
-			updateTaskMessages(tid, (m) => {
-				let i = m.length;
-				while (i > 0 && m[i - 1].role === 'assistant') i--;
-				return i < m.length ? m.slice(0, i) : m;
-			});
+			taskErrorId = null;
+			activeTaskError = false;
+			// Drop only the captured partial messages. New retry messages
+			// (arrived during the await) have different ids and are kept.
+			if (partialIds.size > 0) {
+				updateTaskMessages(tid, (m) => {
+					const filtered = m.filter((x) => !partialIds.has(x.id));
+					return filtered.length !== m.length ? filtered : m;
+				});
+			}
 			clearSeqMap(tid);
 			addNotification('正在继续生成…', 'info', 2000);
 			await loadTasks();
 		} catch (e) {
 			addNotification(`继续失败: ${e}`, 'error', 5000);
+			// Keep the banner visible so the user can retry.
 		}
 	}
 
@@ -537,8 +674,10 @@
 
 	async function handleSubmit() {
 		const text = transcriptInput.trim();
-		if (!text) return;
+		const images = pendingImages;
+		if (!text && images.length === 0) return;
 		transcriptInput = '';
+		pendingImages = [];
 		autoFollow = true;
 
 		const taskId = activeTaskId || '_draft';
@@ -548,12 +687,14 @@
 			content: text,
 			voice: false,
 			time: new Date().toLocaleTimeString(),
+			attachments: images,
 		});
 
 		try {
 			const result = await invoke('process_transcript', {
 				transcript: text,
 				activeTaskId: activeTaskId || null,
+				images: images.length > 0 ? images : null,
 			});
 			if (result && result.TaskCreated) {
 				adoptDraftMessages(result.TaskCreated);
@@ -562,7 +703,7 @@
 			}
 			loadTasks();
 		} catch (e) {
-			addNotification(`Error: ${e}`, 'error');
+			addNotification(`发送失败: ${e}`, 'error', 5000);
 		}
 	}
 
@@ -645,6 +786,7 @@
 						toolName={msg.toolName ?? ''}
 						messageId={msg.id}
 						stepNumber={msg.stepNumber}
+						attachments={msg.attachments}
 						onContextMenu={handleContextMenu}
 					/>
 				{/each}
@@ -652,7 +794,6 @@
 		{/if}
 		{#if activeTaskError}
 			<div class="continue-banner" in:fly={{ y: 8, duration: 200 }}>
-				<span class="continue-text">生成中断</span>
 				<button class="md-btn md-btn--filled continue-btn" onclick={handleContinue} type="button">
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
 					继续生成
@@ -662,6 +803,21 @@
 	</div>
 
 	<div class="input-area">
+		{#if pendingImages.length > 0}
+			<div class="image-preview-row">
+				{#each pendingImages as img, i (img.data + i)}
+					<div class="image-preview">
+						<img src={imageDataUrl(img)} alt="待发送图片" />
+						<button
+							class="image-preview-remove"
+							onclick={() => removePendingImage(i)}
+							aria-label="移除图片"
+							type="button"
+						>&times;</button>
+					</div>
+				{/each}
+			</div>
+		{/if}
 		<div class="input-row">
 			<button
 				class="md-btn md-btn--outlined"
@@ -684,12 +840,34 @@
 				placeholder={activeTaskId ? '追加指令' : '输入指令，或按 Ctrl+Shift+Space 录音'}
 				bind:value={transcriptInput}
 				onkeydown={handleKeydown}
+				onpaste={handlePaste}
 				class="md-input chat-input"
+			/>
+			<button
+				class="md-icon-button md-icon-button--outlined image-btn"
+				onclick={() => imageFileInput?.click()}
+				aria-label="添加图片"
+				title="添加图片（支持粘贴截图）"
+				type="button"
+			>
+				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+					<circle cx="8.5" cy="8.5" r="1.5" />
+					<polyline points="21 15 16 10 5 21" />
+				</svg>
+			</button>
+			<input
+				hidden
+				type="file"
+				accept="image/*"
+				multiple
+				bind:this={imageFileInput}
+				onchange={handleFileSelect}
 			/>
 			<button
 				class="md-icon-button md-icon-button--filled send-btn"
 				onclick={handleSubmit}
-				disabled={!transcriptInput.trim()}
+				disabled={!transcriptInput.trim() && pendingImages.length === 0}
 				aria-label="发送"
 				type="button"
 			>
@@ -752,8 +930,48 @@
 		gap: var(--md-sys-space-sm);
 		flex-shrink: 0;
 		max-width: 760px;
-		margin: 0 auto;
+		margin: 0 auto;		width: 100%;
+	}
+
+	.image-preview-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm);
+		padding: 0 var(--md-sys-space-2xs);
+	}
+	.image-preview {
+		position: relative;
+		width: 72px;
+		height: 72px;
+		border-radius: var(--md-sys-shape-small);
+		overflow: hidden;
+		border: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.image-preview img {
 		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+	.image-preview-remove {
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		width: 20px;
+		height: 20px;
+		border-radius: 50%;
+		border: none;
+		background: rgba(0, 0, 0, 0.6);
+		color: #fff;
+		font-size: 13px;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.image-btn {
+		flex-shrink: 0;
 	}
 
 	.input-row {
@@ -811,16 +1029,12 @@
 	.continue-banner {
 		display: flex;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-start;
 		gap: var(--md-sys-space-md);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		max-width: 760px;
 		margin: 0 auto;
 		width: 100%;
-	}
-	.continue-text {
-		color: var(--md-sys-color-error);
-		font-size: 13px;
 	}
 	.continue-btn {
 		gap: var(--md-sys-space-xs);

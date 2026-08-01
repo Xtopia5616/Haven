@@ -8,12 +8,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
 use haven_memory::Database;
+use haven_memory::repositories::messages::MessageAttachment;
 use haven_task::{TaskExecutor, TaskStatus};
 
 use crate::compactor::ContextCompactor;
 use crate::event::{AgentEventEmitter, EventDispatcher};
 use crate::session::SessionManager;
 use crate::types::{Action, BranchPoint, ReActSnapshot, ReActStep};
+
+/// Convert a stored message attachment into an image content part for the LLM.
+pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
+    ContentPart::Image {
+        content_type: "image_url".into(),
+        media_type: att.media_type.clone(),
+        data: att.data.clone(),
+    }
+}
 
 /// Upper bound for the pause-wait before re-checking task state. The status
 /// notifier is edge-triggered, so a transition that fires between the state
@@ -28,7 +38,7 @@ pub struct ReActEngine {
     compactor: ContextCompactor,
     max_steps: Mutex<u32>,
     max_observation_chars: usize,
-    fallback_notified: Mutex<HashSet<String>>,
+    balanced_model_notified: Mutex<HashSet<String>>,
     run_counter: AtomicU64,
     current_run_id: AtomicU64,
 }
@@ -49,7 +59,7 @@ impl ReActEngine {
             compactor: ContextCompactor::new(32_000, 4_096),
             max_steps: Mutex::new(max_steps),
             max_observation_chars,
-            fallback_notified: Mutex::new(HashSet::new()),
+            balanced_model_notified: Mutex::new(HashSet::new()),
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
         }
@@ -83,7 +93,11 @@ impl ReActEngine {
     /// plus per-task skill/MCP adapters registered via `load_skill`/`load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
     async fn build_tool_definitions_for_task(&self, task_id: &str) -> Vec<ToolDefinition> {
-        let schemas = self.executor.get_tools().list_schemas_for_task(task_id).await;
+        let schemas = self
+            .executor
+            .get_tools()
+            .list_schemas_for_task(task_id)
+            .await;
         schemas
             .iter()
             .map(|s| {
@@ -129,10 +143,27 @@ impl ReActEngine {
         for step_num in start_step..=max_steps {
             last_step = step_num;
             loop {
+                // Check cancellation first: end_task / rollback cancel the
+                // token, so the loop must exit silently without touching
+                // status or emitting events. The state check below would
+                // otherwise observe the Error sentinel of a task that
+                // end_task already removed from memory and announce a
+                // spurious "task interrupted" error.
+                let cancel = self.executor.cancellation_token(task_id).await;
+                if cancel.is_cancelled() {
+                    return Ok(());
+                }
                 let state = self.executor.get_task_state(task_id).await;
                 match state {
                     TaskStatus::Error | TaskStatus::Completed => {
-                        if state != TaskStatus::Completed {
+                        if state != TaskStatus::Completed
+                            && self
+                                .executor
+                                .list_tasks()
+                                .await
+                                .iter()
+                                .any(|t| t.id == task_id)
+                        {
                             self.emit_error(&emitter, task_id, "task interrupted").await;
                         }
                         return Ok(());
@@ -147,10 +178,6 @@ impl ReActEngine {
                         );
                     }
                     _ => break,
-                }
-                let cancel = self.executor.cancellation_token(task_id).await;
-                if cancel.is_cancelled() {
-                    return Ok(());
                 }
                 if self.executor.get_task_state(task_id).await == TaskStatus::Paused {
                     // notify_waiters only wakes waiters registered at the
@@ -171,20 +198,27 @@ impl ReActEngine {
                 emitter
                     .emit(crate::event::AgentEvent::Supplement {
                         task_id: task_id.into(),
-                        additional_context: supplement.clone(),
+                        additional_context: supplement.text.clone(),
                         step_number: step_num,
                         run_id,
                     })
                     .await;
                 let _ = self
                     .db
-                    .create_thought_step(task_id, step_num as i32, supplement);
+                    .create_thought_step(task_id, step_num as i32, &supplement.text);
+                let mut content = vec![ContentPart::text(format!(
+                    "Additional context from user: {}",
+                    supplement.text
+                ))];
+                content.extend(
+                    supplement
+                        .attachments
+                        .iter()
+                        .map(attachment_to_content_part),
+                );
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
-                    content: vec![ContentPart::text(format!(
-                        "Additional context from user: {}",
-                        supplement
-                    ))],
+                    content,
                     tool_calls: None,
                     tool_call_id: None,
                     parent_message_id: None,
@@ -196,11 +230,28 @@ impl ReActEngine {
                 emitter
                     .emit(crate::event::AgentEvent::Supplement {
                         task_id: task_id.into(),
-                        additional_context: s.clone(),
+                        additional_context: s.text.clone(),
                         step_number: step_num,
                         run_id,
                     })
                     .await;
+                let mut content = vec![ContentPart::text(format!("Steering: {}", s.text))];
+                content.extend(s.attachments.iter().map(attachment_to_content_part));
+                canonical.push(CanonicalMessage {
+                    role: CanonicalRole::User,
+                    content,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    parent_message_id: None,
+                });
+            }
+
+            // Deliver completed background-job results as context. These are
+            // kept separate from the steering queue so job output is never
+            // mistaken for a user reply (which would let the `ask` pause path
+            // resume the task without the user's answer).
+            let job_results = self.executor.drain_job_completions(task_id).await;
+            for s in &job_results {
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
                     content: vec![ContentPart::text(format!("Steering: {}", s))],
@@ -214,9 +265,7 @@ impl ReActEngine {
 
             // Rebuild tool definitions each step so that per-task tools
             // registered by `load_skill` / `load_mcp` are visible to the LLM.
-            let tools: Vec<ToolDefinition> = self
-                .build_tool_definitions_for_task(task_id)
-                .await;
+            let tools: Vec<ToolDefinition> = self.build_tool_definitions_for_task(task_id).await;
 
             let (chunk_tx, reasoning_tx, consumer_handle) =
                 EventDispatcher::spawn_chunk_consumer_raw(&emitter);
@@ -242,7 +291,10 @@ impl ReActEngine {
             tracing::trace!(
                 "ReAct step {} canonical messages: {:?}",
                 step_num,
-                llm_messages.iter().map(|m| (m.role.clone(), m.content.len())).collect::<Vec<_>>()
+                llm_messages
+                    .iter()
+                    .map(|m| (m.role.clone(), m.content.len()))
+                    .collect::<Vec<_>>()
             );
             let pt1 = partial_thought.clone();
             let pr1 = partial_reasoning.clone();
@@ -259,8 +311,7 @@ impl ReActEngine {
                                 t.clone(),
                                 step_num,
                                 run_id,
-                            ))
-                            {
+                            )) {
                                 tracing::warn!("thought chunk channel full, dropping: {}", e);
                             }
                         }
@@ -271,8 +322,7 @@ impl ReActEngine {
                                 r.clone(),
                                 step_num,
                                 run_id,
-                            ))
-                            {
+                            )) {
                                 tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                             }
                         }
@@ -282,8 +332,8 @@ impl ReActEngine {
                 .await
             {
                 Ok(resp) => {
-                    if router.fallback_active() {
-                        self.emit_fallback(&emitter, task_id, "switching to fallback model")
+                    if router.balanced_model_active() {
+                        self.emit_balanced_model(&emitter, task_id, "switching to balanced model")
                             .await;
                     }
                     resp
@@ -332,8 +382,7 @@ impl ReActEngine {
                                             t.clone(),
                                             step_num,
                                             run_id,
-                                        ))
-                                        {
+                                        )) {
                                             tracing::warn!(
                                                 "retry thought chunk channel full, dropping: {}",
                                                 e
@@ -347,8 +396,7 @@ impl ReActEngine {
                                             r.clone(),
                                             step_num,
                                             run_id,
-                                        ))
-                                        {
+                                        )) {
                                             tracing::warn!(
                                                 "retry reasoning chunk channel full, dropping: {}",
                                                 e
@@ -372,11 +420,19 @@ impl ReActEngine {
                             Err(e2) => {
                                 let err_msg = format!("Compaction retry also failed: {}", e2);
                                 self.persist_partial_on_error(
-                                    task_id, step_num, run_id,
-                                    &partial_thought, &partial_reasoning,
-                                    canonical, history, branch_points,
-                                    sessions, &session_id, &emitter,
-                                ).await;
+                                    task_id,
+                                    step_num,
+                                    run_id,
+                                    &partial_thought,
+                                    &partial_reasoning,
+                                    canonical,
+                                    history,
+                                    branch_points,
+                                    sessions,
+                                    &session_id,
+                                    &emitter,
+                                )
+                                .await;
                                 self.emit_error(&emitter, task_id, &err_msg).await;
                                 self.executor
                                     .update_task_status(task_id, TaskStatus::Error)
@@ -387,11 +443,19 @@ impl ReActEngine {
                     } else {
                         let err_msg = "context length exceeded but compaction failed".to_string();
                         self.persist_partial_on_error(
-                            task_id, step_num, run_id,
-                            &partial_thought, &partial_reasoning,
-                            canonical, history, branch_points,
-                            sessions, &session_id, &emitter,
-                        ).await;
+                            task_id,
+                            step_num,
+                            run_id,
+                            &partial_thought,
+                            &partial_reasoning,
+                            canonical,
+                            history,
+                            branch_points,
+                            sessions,
+                            &session_id,
+                            &emitter,
+                        )
+                        .await;
                         EventDispatcher::emit_task_error_from(&emitter, task_id, &err_msg).await;
                         self.executor
                             .update_task_status(task_id, TaskStatus::Error)
@@ -403,13 +467,21 @@ impl ReActEngine {
                     return Ok(());
                 }
                 Err(e) => {
-                    let err_msg = format!("Both reasoner and fallback failed: {}", e);
+                    let err_msg = format!("Both default model and balanced model failed: {}", e);
                     self.persist_partial_on_error(
-                        task_id, step_num, run_id,
-                        &partial_thought, &partial_reasoning,
-                        canonical, history, branch_points,
-                        sessions, &session_id, &emitter,
-                    ).await;
+                        task_id,
+                        step_num,
+                        run_id,
+                        &partial_thought,
+                        &partial_reasoning,
+                        canonical,
+                        history,
+                        branch_points,
+                        sessions,
+                        &session_id,
+                        &emitter,
+                    )
+                    .await;
                     EventDispatcher::emit_task_error_from(&emitter, task_id, &err_msg).await;
                     self.executor
                         .update_task_status(task_id, TaskStatus::Error)
@@ -448,14 +520,38 @@ impl ReActEngine {
 
             if let Some(ref reasoning) = response.reasoning {
                 sessions.persist_message("assistant", reasoning, Some("reasoning"));
+                // Reconcile the frontend's streamed reasoning with the
+                // authoritative complete text. The frontend builds reasoning
+                // only from batched deltas, so a dropped/delayed final chunk
+                // would permanently lose trailing characters. Emitting the
+                // complete reasoning as a final delta lets the frontend's
+                // cumulative-detection (delta.startsWith(curr) → replace)
+                // snap the content to the exact full text. This runs after the
+                // chunk batcher has flushed, so it is guaranteed to be the
+                // last reasoning event for this step.
+                emitter
+                    .emit(crate::event::AgentEvent::ReasoningChunk {
+                        task_id: task_id.into(),
+                        delta: reasoning.clone(),
+                        step_number: step_num,
+                        run_id,
+                    })
+                    .await;
             }
 
-            let (thought, actions) = Self::parse_reasoner_response(&response, step_num);
+            let (thought, actions) = Self::parse_default_model_response(&response, step_num);
             tracing::trace!(
                 "ReAct step {} parsed: thought={}, actions={}",
                 step_num,
-                thought.as_ref().map(|t| format!("{} chars", t.len())).unwrap_or_else(|| "none".into()),
-                actions.iter().map(|a| a.tool_name.as_str()).collect::<Vec<_>>().join(", ")
+                thought
+                    .as_ref()
+                    .map(|t| format!("{} chars", t.len()))
+                    .unwrap_or_else(|| "none".into()),
+                actions
+                    .iter()
+                    .map(|a| a.tool_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
 
             if let Some(ref t) = thought {
@@ -507,7 +603,14 @@ impl ReActEngine {
                     .await;
                 sessions.persist_message("assistant", &msg, Some("text"));
                 infer();
-                self.save_branch_point(task_id, canonical, history, step_num, branch_points, &session_id);
+                self.save_branch_point(
+                    task_id,
+                    canonical,
+                    history,
+                    step_num,
+                    branch_points,
+                    &session_id,
+                );
                 self.save_snapshot_with_branches(
                     task_id,
                     canonical,
@@ -537,7 +640,14 @@ impl ReActEngine {
                     .await;
                 sessions.persist_message("assistant", &final_text, Some("text"));
                 infer();
-                self.save_branch_point(task_id, canonical, history, step_num, branch_points, &session_id);
+                self.save_branch_point(
+                    task_id,
+                    canonical,
+                    history,
+                    step_num,
+                    branch_points,
+                    &session_id,
+                );
                 self.save_snapshot_with_branches(
                     task_id,
                     canonical,
@@ -595,7 +705,14 @@ impl ReActEngine {
                 });
             }
 
-            self.save_branch_point(task_id, canonical, history, step_num, branch_points, &session_id);
+            self.save_branch_point(
+                task_id,
+                canonical,
+                history,
+                step_num,
+                branch_points,
+                &session_id,
+            );
 
             use futures_util::StreamExt;
 
@@ -613,17 +730,24 @@ impl ReActEngine {
                         "executing tool '{}' at step {} (input keys: {:?})",
                         tool_name,
                         step_num,
-                        tool_input.as_object().map(|o| o.keys().collect::<Vec<_>>()).unwrap_or_default()
+                        tool_input
+                            .as_object()
+                            .map(|o| o.keys().collect::<Vec<_>>())
+                            .unwrap_or_default()
                     );
                     let result = executor
                         .execute_step(&task_id, &tool_name, tool_input.clone(), step_num)
                         .await;
-                    let (text, is_error) = match result {
+                    let (text, is_error, ask_question) = match result {
                         Ok(r) => {
                             tracing::debug!(
                                 "tool '{}' at step {} completed: success={}, {} chars",
-                                tool_name, step_num, r.success,
-                                serde_json::to_string(&r.output).map(|s| s.len()).unwrap_or(0)
+                                tool_name,
+                                step_num,
+                                r.success,
+                                serde_json::to_string(&r.output)
+                                    .map(|s| s.len())
+                                    .unwrap_or(0)
                             );
                             let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
                             let text = if r.success {
@@ -642,18 +766,40 @@ impl ReActEngine {
                             } else {
                                 text
                             };
-                            (text, !r.success)
+                            // The ask signal is read from the structured output
+                            // BEFORE truncation: parsing the truncated text
+                            // would yield invalid JSON when the output exceeds
+                            // the observation budget, silently dropping the
+                            // question and never pausing the task.
+                            let ask_question = if tool_name == "ask" && r.success {
+                                r.output
+                                    .get("question")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            } else {
+                                None
+                            };
+                            (text, !r.success, ask_question)
                         }
                         Err(e) => {
-                            tracing::debug!("tool '{}' at step {} failed: {}", tool_name, step_num, e);
-                            (e.to_string(), true)
+                            tracing::debug!(
+                                "tool '{}' at step {} failed: {}",
+                                tool_name,
+                                step_num,
+                                e
+                            );
+                            (e.to_string(), true, None)
                         }
                     };
-                    (action, tool_name, text, is_error)
+                    (action, tool_name, text, is_error, ask_question)
                 });
             }
 
             let mut any_tool_failure = false;
+            // If the agent invoked the `ask` tool, the task must pause and
+            // wait for the user's reply (delivered as a supplement). Collect
+            // every question in the batch so all are surfaced.
+            let mut asked_questions: Vec<String> = Vec::new();
             // Drain tool results while remaining responsive to cancellation.
             // Without select!, a cancel arriving mid-batch would only be
             // detected at the next step boundary — after all tools finish.
@@ -665,19 +811,33 @@ impl ReActEngine {
                         return Ok(());
                     }
                     item = tool_futures.next() => {
-                        let Some((action, tool_name, step_result, is_error)) = item else { break; };
+                        let Some((action, tool_name, step_result, is_error, ask_question)) = item else { break; };
                         if is_error {
                             any_tool_failure = true;
+                        }
+                        // Surface an `ask` result as a readable question rather
+                        // than raw JSON. The user's reply arrives via
+                        // process_input → supplement → Paused→Pending resume.
+                        if let Some(q) = &ask_question {
+                            asked_questions.push(q.clone());
                         }
                         let silent = action
                             .tool_input
                             .get("silent")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
+                        // For `ask`, the chat/review bubble shows the readable
+                        // question text; the canonical (model) context keeps
+                        // the raw JSON so the model can still parse the flag.
+                        let display_observation = if tool_name == "ask" {
+                            ask_question.unwrap_or_else(|| step_result.clone())
+                        } else {
+                            step_result.clone()
+                        };
                         emitter
                             .emit(crate::event::AgentEvent::Observation {
                                 task_id: task_id.into(),
-                                observation: step_result.clone(),
+                                observation: display_observation.clone(),
                                 tool_name: tool_name.clone(),
                                 step_number: step_num,
                                 run_id,
@@ -688,7 +848,7 @@ impl ReActEngine {
 
                         if let Some(last) = history.last_mut() {
                             last.action = Some(action.clone());
-                            last.observation = Some(step_result.clone());
+                            last.observation = Some(display_observation);
                         } else {
                             history.push(ReActStep {
                                 step_number: step_num,
@@ -709,7 +869,10 @@ impl ReActEngine {
                 }
             }
 
-            if any_tool_failure && step_num < max_steps - 1 {
+            // Skip the "try a different approach" nudge when the batch asked
+            // the user: it would be baked into the paused snapshot ahead of the
+            // user's real answer, contradicting the pending question.
+            if any_tool_failure && asked_questions.is_empty() && step_num < max_steps - 1 {
                 canonical.push(CanonicalMessage {
                     role: CanonicalRole::User,
                     content: vec![ContentPart::text(
@@ -719,6 +882,59 @@ impl ReActEngine {
                     tool_call_id: None,
                     parent_message_id: None,
                 });
+            }
+
+            // The agent asked the human a question: pause so the user can
+            // answer. Their reply arrives as a supplement and resumes the task
+            // (Paused → Pending → dispatcher re-enters the loop, injecting the
+            // answer as context at the top of the next step).
+            if !asked_questions.is_empty() {
+                let question = asked_questions.join("\n\n");
+                sessions.persist_message("assistant", &question, Some("text"));
+                // Save the snapshot at step_num+1 (matching the other pause
+                // paths) so the resumed turn gets a fresh step number.
+                self.save_snapshot_with_branches(
+                    task_id,
+                    canonical,
+                    history,
+                    step_num + 1,
+                    branch_points,
+                );
+                // Mark the task as awaiting a human answer BEFORE setting the
+                // status, so a background-job completion landing concurrently
+                // cannot auto-wake it (the consumer checks this gate). The flag
+                // is cleared centrally by `update_task_status` on reactivation.
+                self.executor.set_awaiting_answer(task_id, true).await;
+                // TOCTOU: a reply that arrived during the drain window went to
+                // the steering queue (task was still Running). Convert it to a
+                // supplement and, if present, resume immediately as Pending so
+                // the answer isn't stranded while the task sits Paused. The
+                // steering queue holds only user interjections now — background
+                // job results are buffered separately — so `has_answer` truly
+                // reflects a human reply.
+                let steering = self.executor.get_steering(task_id).await;
+                let has_answer = !steering.is_empty();
+                for s in &steering {
+                    let _ = self
+                        .executor
+                        .add_supplement_with_attachments(task_id, &s.text, &s.attachments)
+                        .await;
+                }
+                let status = if has_answer {
+                    TaskStatus::Pending
+                } else {
+                    TaskStatus::Paused
+                };
+                let status_str = status.as_str().to_string();
+                self.executor.update_task_status(task_id, status).await?;
+                emitter
+                    .emit(crate::event::AgentEvent::TaskUpdated {
+                        task_id: task_id.into(),
+                        status: status_str,
+                    })
+                    .await;
+                infer();
+                return Ok(());
             }
 
             let state = self.executor.get_task_state(task_id).await;
@@ -732,9 +948,7 @@ impl ReActEngine {
                 );
                 return Ok(());
             }
-            if state == TaskStatus::Error
-                || state == TaskStatus::Completed
-            {
+            if state == TaskStatus::Error || state == TaskStatus::Completed {
                 return Ok(());
             }
         }
@@ -755,7 +969,7 @@ impl ReActEngine {
     }
 
     /// Parse LLM response into thought text and actions.
-    pub fn parse_reasoner_response(
+    pub fn parse_default_model_response(
         response: &LlmResponse,
         step_number: u32,
     ) -> (Option<String>, Vec<Action>) {
@@ -851,7 +1065,14 @@ impl ReActEngine {
         // The canonical/history here represent the state BEFORE the failed
         // LLM call (the response was never pushed to canonical), so resuming
         // will retry the step cleanly.
-        self.save_branch_point(task_id, canonical, history, step_num, branch_points, session_id);
+        self.save_branch_point(
+            task_id,
+            canonical,
+            history,
+            step_num,
+            branch_points,
+            session_id,
+        );
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
@@ -923,26 +1144,26 @@ impl ReActEngine {
         }
     }
 
-    /// Emit fallback activated with per-task deduplication.
-    async fn emit_fallback(
+    /// Emit balanced model activated with per-task deduplication.
+    async fn emit_balanced_model(
         &self,
         emitter: &Arc<dyn AgentEventEmitter>,
         task_id: &str,
         reason: &str,
     ) {
         let should_emit = {
-            let mut notified = self.fallback_notified.lock().unwrap();
+            let mut notified = self.balanced_model_notified.lock().unwrap();
             notified.insert(task_id.to_string())
         };
         if should_emit {
-            EventDispatcher::emit_fallback_activated_from(emitter, task_id, reason).await;
+            EventDispatcher::emit_balanced_model_activated_from(emitter, task_id, reason).await;
         }
     }
 
-    /// Emit task error and clean up fallback dedup state.
+    /// Emit task error and clean up balanced model dedup state.
     async fn emit_error(&self, emitter: &Arc<dyn AgentEventEmitter>, task_id: &str, error: &str) {
         {
-            let mut notified = self.fallback_notified.lock().unwrap();
+            let mut notified = self.balanced_model_notified.lock().unwrap();
             notified.remove(task_id);
         }
         EventDispatcher::emit_task_error_from(emitter, task_id, error).await;
@@ -968,7 +1189,7 @@ mod tests {
     #[test]
     fn parse_empty_response_no_actions() {
         let r = resp("", vec![], None);
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought, None);
         assert!(actions.is_empty());
     }
@@ -977,7 +1198,7 @@ mod tests {
     fn parse_text_only_no_finish_reason_keeps_thought_no_action() {
         // step_number=1, Stop finish, but step>0 required for implicit final.
         let r = resp("hello", vec![], Some(FinishReason::Stop));
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&r, 0);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 0);
         assert_eq!(thought.as_deref(), Some("hello"));
         assert!(actions.is_empty(), "step 0 must not auto-finalize");
     }
@@ -985,7 +1206,7 @@ mod tests {
     #[test]
     fn parse_text_with_stop_finish_step_nonzero_auto_finalizes() {
         let r = resp("the answer is 42", vec![], Some(FinishReason::Stop));
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("the answer is 42"));
         assert_eq!(actions.len(), 1);
         assert!(actions[0].is_final);
@@ -1001,7 +1222,7 @@ mod tests {
             arguments: r#"{"path":"x.txt"}"#.into(),
         };
         let r = resp("thinking", vec![tc], Some(FinishReason::ToolCalls));
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("thinking"));
         assert_eq!(actions.len(), 1);
         assert!(!actions[0].is_final);
@@ -1018,7 +1239,7 @@ mod tests {
             arguments: r#"{"answer":"done"}"#.into(),
         };
         let r = resp("answering", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_reasoner_response(&r, 2);
+        let (_, actions) = ReActEngine::parse_default_model_response(&r, 2);
         assert!(actions[0].is_final);
     }
 
@@ -1031,7 +1252,7 @@ mod tests {
                 arguments: "{}".into(),
             };
             let r = resp("t", vec![tc], Some(FinishReason::ToolCalls));
-            let (_, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+            let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
             assert!(actions[0].is_final, "{name} should be final");
         }
     }
@@ -1044,7 +1265,7 @@ mod tests {
             arguments: "{}".into(),
         };
         let r = resp("", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert!(actions[0].tool_call_id.is_some());
         assert!(!actions[0].tool_call_id.as_ref().unwrap().is_empty());
     }
@@ -1057,18 +1278,26 @@ mod tests {
             arguments: "not json".into(),
         };
         let r = resp("", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert!(actions[0].tool_input.is_null());
     }
 
     #[test]
     fn parse_multiple_tool_calls_preserve_order() {
         let tcs = vec![
-            ToolCall { id: "a".into(), name: "search".into(), arguments: "{}".into() },
-            ToolCall { id: "b".into(), name: "read_file".into(), arguments: "{}".into() },
+            ToolCall {
+                id: "a".into(),
+                name: "search".into(),
+                arguments: "{}".into(),
+            },
+            ToolCall {
+                id: "b".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
         ];
         let r = resp("multi", tcs, Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(actions.len(), 2);
         assert_eq!(actions[0].tool_name, "search");
         assert_eq!(actions[1].tool_name, "read_file");
@@ -1077,9 +1306,13 @@ mod tests {
     #[test]
     fn parse_tool_calls_take_precedence_over_text_final() {
         // Even with Stop finish + step>0, tool_calls win over implicit final.
-        let tc = ToolCall { id: "x".into(), name: "read_file".into(), arguments: "{}".into() };
+        let tc = ToolCall {
+            id: "x".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        };
         let r = resp("text", vec![tc], Some(FinishReason::Stop));
-        let (_, actions) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(actions.len(), 1);
         assert!(!actions[0].is_final);
     }
@@ -1087,7 +1320,7 @@ mod tests {
     #[test]
     fn parse_text_trimmed_for_thought() {
         let r = resp("  spaced thought  ", vec![], Some(FinishReason::Stop));
-        let (thought, _) = ReActEngine::parse_reasoner_response(&r, 1);
+        let (thought, _) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("spaced thought"));
     }
 }

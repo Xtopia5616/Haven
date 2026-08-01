@@ -241,8 +241,10 @@ fn spawn_capture_thread(
                         } else {
                             data.to_vec()
                         };
-                        let processed = rs.lock().unwrap().process(&mono);
-                        r.lock().unwrap().push(&processed);
+                        let processed = rs.lock().expect("resampler lock poisoned").process(&mono);
+                        r.lock()
+                            .expect("ring buffer lock poisoned")
+                            .push(&processed);
                     },
                     err_fn,
                     None,
@@ -261,8 +263,10 @@ fn spawn_capture_thread(
                         } else {
                             f32_data
                         };
-                        let processed = rs.lock().unwrap().process(&mono);
-                        r.lock().unwrap().push(&processed);
+                        let processed = rs.lock().expect("resampler lock poisoned").process(&mono);
+                        r.lock()
+                            .expect("ring buffer lock poisoned")
+                            .push(&processed);
                     },
                     err_fn,
                     None,
@@ -281,8 +285,10 @@ fn spawn_capture_thread(
                         } else {
                             f32_data
                         };
-                        let processed = rs.lock().unwrap().process(&mono);
-                        r.lock().unwrap().push(&processed);
+                        let processed = rs.lock().expect("resampler lock poisoned").process(&mono);
+                        r.lock()
+                            .expect("ring buffer lock poisoned")
+                            .push(&processed);
                     },
                     err_fn,
                     None,
@@ -301,8 +307,10 @@ fn spawn_capture_thread(
                         } else {
                             f32_data
                         };
-                        let processed = rs.lock().unwrap().process(&mono);
-                        r.lock().unwrap().push(&processed);
+                        let processed = rs.lock().expect("resampler lock poisoned").process(&mono);
+                        r.lock()
+                            .expect("ring buffer lock poisoned")
+                            .push(&processed);
                     },
                     err_fn,
                     None,
@@ -338,30 +346,30 @@ fn spawn_capture_thread(
             for cmd in cmd_rx {
                 match cmd {
                     CaptureCmd::Drain(tx) => {
-                        let data = ring.lock().unwrap().drain();
+                        let data = ring.lock().expect("ring buffer lock poisoned").drain();
                         let _ = tx.send(data);
                     }
                     CaptureCmd::StopAndDrain(tx) => {
-                        let mut guard = stream.lock().unwrap();
+                        let mut guard = stream.lock().expect("capture stream lock poisoned");
                         if let Some(s) = guard.take() {
                             drop(s);
                         }
                         drop(guard);
-                        let data = ring.lock().unwrap().drain();
+                        let data = ring.lock().expect("ring buffer lock poisoned").drain();
                         failed.store(false, Ordering::SeqCst);
                         let _ = tx.send(data);
                     }
                     CaptureCmd::StopAndClear => {
-                        let mut guard = stream.lock().unwrap();
+                        let mut guard = stream.lock().expect("capture stream lock poisoned");
                         if let Some(s) = guard.take() {
                             drop(s);
                         }
                         drop(guard);
-                        ring.lock().unwrap().clear();
+                        ring.lock().expect("ring buffer lock poisoned").clear();
                         failed.store(false, Ordering::SeqCst);
                     }
                     CaptureCmd::Shutdown => {
-                        let mut guard = stream.lock().unwrap();
+                        let mut guard = stream.lock().expect("capture stream lock poisoned");
                         if let Some(s) = guard.take() {
                             drop(s);
                         }
@@ -413,7 +421,7 @@ impl InputPipeline {
     /// Install the unified input handler (replaces former
     /// `set_vad_status_callback` + `set_on_auto_stop`).
     pub fn set_handler(&self, handler: Arc<dyn InputHandler>) {
-        *self.handler.lock().unwrap() = Some(handler);
+        *self.handler.lock().expect("handler lock poisoned") = Some(handler);
     }
 
     pub async fn set_stt_client(&self, client: Box<dyn SttClient>) {
@@ -422,7 +430,7 @@ impl InputPipeline {
 
     pub async fn process_vad_frame(&self, frame: &[f32]) -> vad::VadSignal {
         let prob = {
-            let mut guard = self.vad_engine.lock().unwrap();
+            let mut guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
             let engine: Option<&mut vad::VadEngine> = guard.as_mut();
             match engine {
                 Some(e) => e.infer(frame),
@@ -435,7 +443,7 @@ impl InputPipeline {
             let state = det.state();
             (signal, state)
         };
-        if let Some(ref h) = *self.handler.lock().unwrap() {
+        if let Some(ref h) = *self.handler.lock().expect("handler lock poisoned") {
             h.on_vad_status(signal, state);
         }
         signal
@@ -468,11 +476,11 @@ impl InputPipeline {
         let cmd_tx = spawn_capture_thread(ring, resampler, failed.clone())?;
 
         let capture_handle = AudioCaptureHandle { cmd_tx };
-        *self.capture.lock().unwrap() = Some(capture_handle);
+        *self.capture.lock().expect("capture lock poisoned") = Some(capture_handle);
 
         {
             self.vad_detector.lock().await.reset();
-            let mut eng_guard = self.vad_engine.lock().unwrap();
+            let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
             match vad::VadEngine::new() {
                 Ok(e) => *eng_guard = Some(e),
                 Err(err) => {
@@ -483,10 +491,13 @@ impl InputPipeline {
         }
 
         let cancel = CancellationToken::new();
-        *self.cancel_token.lock().unwrap() = Some(cancel.clone());
+        *self
+            .cancel_token
+            .lock()
+            .expect("cancel_token lock poisoned") = Some(cancel.clone());
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        *self.result_rx.lock().unwrap() = Some(rx);
+        *self.result_rx.lock().expect("result_rx lock poisoned") = Some(rx);
 
         let loop_data = LoopData {
             config: self.config.clone(),
@@ -535,7 +546,7 @@ impl InputPipeline {
                 tracing::warn!("audio capture stream failed; stopping recording early");
                 Self::final_drain(&data, &mut accumulated_pcm).await;
                 let elapsed = start.elapsed();
-                let h = data.handler.lock().unwrap().clone();
+                let h = data.handler.lock().expect("handler lock poisoned").clone();
                 if let Some(h) = h {
                     h.on_auto_stop().await;
                 }
@@ -549,7 +560,7 @@ impl InputPipeline {
 
             if start.elapsed() >= max_duration {
                 Self::final_drain(&data, &mut accumulated_pcm).await;
-                let h = data.handler.lock().unwrap().clone();
+                let h = data.handler.lock().expect("handler lock poisoned").clone();
                 if let Some(h) = h {
                     h.on_auto_stop().await;
                 }
@@ -563,7 +574,7 @@ impl InputPipeline {
             }
 
             let new_data = {
-                let capture_guard = data.capture.lock().unwrap();
+                let capture_guard = data.capture.lock().expect("capture lock poisoned");
                 match capture_guard.as_ref() {
                     Some(capture) => capture.drain_ring_buffer(),
                     None => Vec::new(),
@@ -583,7 +594,8 @@ impl InputPipeline {
                     offset += VAD_FRAME_SAMPLES;
 
                     let prob = {
-                        let mut eng_guard = data.vad_engine.lock().unwrap();
+                        let mut eng_guard =
+                            data.vad_engine.lock().expect("vad_engine lock poisoned");
                         match eng_guard.as_mut() {
                             Some(engine) => engine.infer(frame),
                             None => 0.0,
@@ -595,7 +607,9 @@ impl InputPipeline {
                         let signal = det.process(prob);
                         let state = det.state();
                         if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
-                            if let Some(h) = data.handler.lock().unwrap().clone() {
+                            if let Some(h) =
+                                data.handler.lock().expect("handler lock poisoned").clone()
+                            {
                                 h.on_vad_status(signal, state);
                             }
                             last_vad_status = std::time::Instant::now();
@@ -605,7 +619,7 @@ impl InputPipeline {
 
                     if signal == vad::VadSignal::AutoStop {
                         Self::final_drain(&data, &mut accumulated_pcm).await;
-                        let h = data.handler.lock().unwrap().clone();
+                        let h = data.handler.lock().expect("handler lock poisoned").clone();
                         if let Some(h) = h {
                             h.on_auto_stop().await;
                         }
@@ -630,7 +644,7 @@ impl InputPipeline {
 
     async fn final_drain(data: &LoopData, accum: &mut Vec<f32>) {
         tokio::time::sleep(FINAL_DRAIN_TIMEOUT).await;
-        let capture_guard = data.capture.lock().unwrap();
+        let capture_guard = data.capture.lock().expect("capture lock poisoned");
         if let Some(ref capture) = *capture_guard {
             let remaining = capture.drain_ring_buffer();
             accum.extend_from_slice(&remaining);
@@ -650,8 +664,16 @@ impl InputPipeline {
             if *state != RecordingState::Recording && *state != RecordingState::Processing {
                 return Ok(());
             }
-            token = self.cancel_token.lock().unwrap().take();
-            rx = self.result_rx.lock().unwrap().take();
+            token = self
+                .cancel_token
+                .lock()
+                .expect("cancel_token lock poisoned")
+                .take();
+            rx = self
+                .result_rx
+                .lock()
+                .expect("result_rx lock poisoned")
+                .take();
             *state = RecordingState::Pending;
         }
 
@@ -663,11 +685,11 @@ impl InputPipeline {
             let _ = rx.await;
         }
 
-        if let Some(ref capture) = *self.capture.lock().unwrap() {
+        if let Some(ref capture) = *self.capture.lock().expect("capture lock poisoned") {
             let _ = capture.stop_and_clear();
         }
-        *self.capture.lock().unwrap() = None;
-        *self.vad_engine.lock().unwrap() = None;
+        *self.capture.lock().expect("capture lock poisoned") = None;
+        *self.vad_engine.lock().expect("vad_engine lock poisoned") = None;
         self.vad_detector.lock().await.reset();
 
         tracing::debug!("Recording cancelled");
@@ -683,17 +705,27 @@ impl InputPipeline {
         }
         drop(state);
 
-        let token = self.cancel_token.lock().unwrap().take();
+        let token = self
+            .cancel_token
+            .lock()
+            .expect("cancel_token lock poisoned")
+            .take();
         if let Some(token) = token {
             token.cancel();
         }
 
         let mut result = {
-            let rx = self.result_rx.lock().unwrap().take();
+            let rx = self
+                .result_rx
+                .lock()
+                .expect("result_rx lock poisoned")
+                .take();
             match rx {
                 Some(rx) => match rx.await {
                     Ok(mut inner) => {
-                        if let Some(ref capture) = *self.capture.lock().unwrap() {
+                        if let Some(ref capture) =
+                            *self.capture.lock().expect("capture lock poisoned")
+                        {
                             let remaining = capture.stop_and_drain()?;
                             if !remaining.is_empty() {
                                 inner.pcm.extend_from_slice(&remaining);
@@ -706,7 +738,9 @@ impl InputPipeline {
                         inner
                     }
                     Err(_) => {
-                        let pcm = if let Some(ref capture) = *self.capture.lock().unwrap() {
+                        let pcm = if let Some(ref capture) =
+                            *self.capture.lock().expect("capture lock poisoned")
+                        {
                             capture.stop_and_drain()?
                         } else {
                             Vec::new()
@@ -725,7 +759,9 @@ impl InputPipeline {
                     }
                 },
                 None => {
-                    let pcm = if let Some(ref capture) = *self.capture.lock().unwrap() {
+                    let pcm = if let Some(ref capture) =
+                        *self.capture.lock().expect("capture lock poisoned")
+                    {
                         capture.stop_and_drain()?
                     } else {
                         Vec::new()
@@ -745,8 +781,8 @@ impl InputPipeline {
             }
         };
 
-        *self.capture.lock().unwrap() = None;
-        *self.vad_engine.lock().unwrap() = None;
+        *self.capture.lock().expect("capture lock poisoned") = None;
+        *self.vad_engine.lock().expect("vad_engine lock poisoned") = None;
         self.vad_detector.lock().await.reset();
 
         // Run STT if a client is configured

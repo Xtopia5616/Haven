@@ -37,6 +37,14 @@ pub struct RecordingState {
 /// SkillInfo now sourced from `haven_tools::skills::SkillInfo` (M4-01).
 pub use haven_tools::SkillInfo;
 
+/// Convert any displayable error into a frontend-facing string while logging
+/// it at ERROR level. Replaces the repetitive `.map_err(log_err)`
+/// pattern so command failures are never silently swallowed.
+fn log_err<E: std::fmt::Display>(e: E) -> String {
+    tracing::error!("command error: {}", e);
+    e.to_string()
+}
+
 #[tauri::command]
 pub async fn start_recording(
     state: State<'_, Arc<AppState>>,
@@ -71,11 +79,7 @@ pub async fn stop_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let result = state
-        .pipeline
-        .stop_recording()
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = state.pipeline.stop_recording().await.map_err(log_err)?;
     let reason_str = match result.reason {
         RecordingReason::Manual => "manual",
         RecordingReason::Silence => "silence",
@@ -122,7 +126,7 @@ pub async fn stop_recording(
                 .agent
                 .process_input(&text, active.clone())
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(log_err)?;
             Ok(text)
         }
         None => {
@@ -143,11 +147,7 @@ pub async fn cancel_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state
-        .pipeline
-        .cancel_recording()
-        .await
-        .map_err(|e| e.to_string())?;
+    state.pipeline.cancel_recording().await.map_err(log_err)?;
     let _ = app.emit(
         "recording:stopped",
         RecordingEvent {
@@ -165,31 +165,58 @@ pub async fn process_transcript(
     state: State<'_, Arc<AppState>>,
     transcript: String,
     active_task_id: Option<String>,
+    images: Option<Vec<haven_memory::repositories::messages::MessageAttachment>>,
 ) -> Result<Value, String> {
+    let images = validate_images(images.unwrap_or_default())?;
     tracing::debug!(
-        "process_transcript called: text={:?} active_task_id={:?}",
+        "process_transcript called: text={:?} active_task_id={:?} images={}",
         transcript,
-        active_task_id
+        active_task_id,
+        images.len()
     );
     let result = state
         .agent
-        .process_input(&transcript, active_task_id.clone())
+        .process_input_with_images(&transcript, active_task_id.clone(), &images)
         .await
-        .map_err(|e| {
-            tracing::error!("process_transcript error: {:?}", e);
-            e.to_string()
-        })?;
+        .map_err(log_err)?;
     tracing::debug!("process_transcript result: {:?}", result);
     Ok(serde_json::to_value(result).unwrap_or_default())
+}
+
+/// Server-side validation for image attachments, mirroring the frontend
+/// limits (≤4 images, ≤10 MiB each, image/* MIME, decodable base64). The
+/// webview must not be the sole enforcement point for persisted payloads.
+fn validate_images(
+    images: Vec<haven_memory::repositories::messages::MessageAttachment>,
+) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+    const MAX_IMAGES: usize = 4;
+    const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+    use base64::Engine as _;
+    if images.len() > MAX_IMAGES {
+        return Err(format!("最多支持 {MAX_IMAGES} 张图片"));
+    }
+    for img in &images {
+        if !img.media_type.starts_with("image/") {
+            return Err(format!("不支持的图片类型: {}", img.media_type));
+        }
+        let decoded_len = img.data.len().saturating_mul(3) / 4;
+        if decoded_len > MAX_IMAGE_BYTES {
+            return Err("图片超过 10MB 上限".to_string());
+        }
+        if base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .is_err()
+        {
+            return Err("图片数据不是有效的 base64".to_string());
+        }
+    }
+    Ok(images)
 }
 
 #[tauri::command]
 pub async fn reopen_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     tracing::debug!("reopen_task called: task_id={}", task_id);
-    state.agent.reopen_task(&task_id).await.map_err(|e| {
-        tracing::error!("reopen_task error: {:?}", e);
-        e.to_string()
-    })?;
+    state.agent.reopen_task(&task_id).await.map_err(log_err)?;
     tracing::debug!("reopen_task done");
     Ok(())
 }
@@ -204,7 +231,7 @@ pub async fn get_tasks(state: State<'_, Arc<AppState>>) -> Result<TaskListRespon
 pub async fn end_task(
     state: State<'_, Arc<AppState>>,
     task_id: String,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<(), String> {
     // L3: capture the title BEFORE end_task removes the task from the
     // in-memory list; reading afterwards would fall back to the DB and lose
@@ -226,23 +253,10 @@ pub async fn end_task(
         })
         .unwrap_or_default();
 
-    let final_status = state
-        .executor
-        .end_task(&task_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    if final_status == haven_task::TaskStatus::Error {
-        let _ = app.emit(
-            "task:updated",
-            serde_json::json!({
-                "task_id": task_id,
-                "status": "error",
-                "title": title,
-            }),
-        );
-    } else {
-        state.agent.emit_task_completed(&task_id, &title).await;
-    }
+    let _ = state.executor.end_task(&task_id).await.map_err(log_err)?;
+    // end_task always ends as Completed — the user explicitly finished the
+    // task, so it is reported as completed (with notification), never error.
+    state.agent.emit_task_completed(&task_id, &title).await;
     Ok(())
 }
 
@@ -253,24 +267,20 @@ pub async fn resolve_confirmation(
     confirmed: bool,
     trust_session: Option<bool>,
 ) -> Result<(), String> {
-    state
+    // Resolve the confirmation and capture the step's risk level atomically
+    // (under the executor's tasks lock). This avoids the previous race where
+    // `confirm_step` and a separate `list_tasks()` lookup could observe a
+    // step that a concurrent `end_task`/rollback had already removed.
+    let risk_level = state
         .executor
-        .confirm_step(&step_id, confirmed)
-        .map_err(|e| e.to_string())?;
-    if trust_session.unwrap_or(false) && confirmed {
-        // Trust this risk level for the session
-        let tasks = state.executor.list_tasks().await;
-        if let Some(task) = tasks
-            .iter()
-            .find(|t| t.steps.iter().any(|s| s.id == step_id))
-            && let Some(step) = task.steps.iter().find(|s| s.id == step_id)
-        {
-            state
-                .tools
-                .safety_gateway
-                .trust_risk_level(step.risk_level)
-                .await;
-        }
+        .resolve_confirmation(&step_id, confirmed)
+        .await
+        .map_err(log_err)?;
+    if trust_session.unwrap_or(false)
+        && confirmed
+        && let Some(level) = risk_level
+    {
+        state.tools.safety_gateway.trust_risk_level(level).await;
     }
     Ok(())
 }
@@ -298,16 +308,12 @@ pub async fn get_history(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
-    let _ = state.db.finalize_stale_tasks(10);
-    state
-        .db
-        .list_tasks(limit, offset)
-        .map_err(|e| e.to_string())
+    state.db.list_tasks(limit, offset).map_err(log_err)
 }
 
 #[tauri::command]
 pub async fn count_history(state: State<'_, Arc<AppState>>) -> Result<i64, String> {
-    state.db.count_tasks().map_err(|e| e.to_string())
+    state.db.count_tasks().map_err(log_err)
 }
 
 #[tauri::command]
@@ -320,7 +326,7 @@ pub async fn search_history_paginated(
     state
         .db
         .search_tasks_paginated(&query, limit, offset)
-        .map_err(|e| e.to_string())
+        .map_err(log_err)
 }
 
 #[tauri::command]
@@ -328,10 +334,7 @@ pub async fn count_history_search(
     state: State<'_, Arc<AppState>>,
     query: String,
 ) -> Result<i64, String> {
-    state
-        .db
-        .count_tasks_search(&query)
-        .map_err(|e| e.to_string())
+    state.db.count_tasks_search(&query).map_err(log_err)
 }
 
 #[tauri::command]
@@ -348,11 +351,11 @@ pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Res
         .mcp_manager
         .reconnect(&name)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     // Restart health monitor for this client
     if let Some(client) = state.tools.mcp_manager.get_client(&name).await {
         let config = haven_common::config::ConfigLoader::load()
-            .map_err(|e| e.to_string())?
+            .map_err(log_err)?
             .config()
             .mcp_discovery
             .clone();
@@ -402,7 +405,7 @@ pub async fn mcp_tool_call(
                 "params": params,
                 "risk_level": risk_level,
             }))
-            .map_err(|e| e.to_string())?);
+            .map_err(log_err)?);
         }
         ConfirmationResult::Blocked => {
             return Err("MCP tool call blocked by security policy".to_string());
@@ -415,7 +418,7 @@ pub async fn mcp_tool_call(
         .mcp_manager
         .call_tool(&client, &tool, args, cancel)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     Ok(serde_json::json!({
         "success": result.success,
         "output": result.output,
@@ -430,9 +433,9 @@ pub async fn add_mcp_server(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Persist to config
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
     loader.config_mut().mcp_servers.push(config.clone());
-    loader.save().map_err(|e| e.to_string())?;
+    loader.save().map_err(log_err)?;
 
     // Create client and connect
     let client = std::sync::Arc::new(haven_tools::McpClient::new(
@@ -442,7 +445,7 @@ pub async fn add_mcp_server(
         &config.env,
     ));
     if config.enabled {
-        client.connect().await.map_err(|e| e.to_string())?;
+        client.connect().await.map_err(log_err)?;
         // Start health monitor
         let discovery = loader.config().mcp_discovery.clone();
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
@@ -481,14 +484,14 @@ pub async fn update_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
     let servers = &mut loader.config_mut().mcp_servers;
     if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
         let config_changed = existing.command != config.command
             || existing.args != config.args
             || existing.env != config.env;
         *existing = config.clone();
-        loader.save().map_err(|e| e.to_string())?;
+        loader.save().map_err(log_err)?;
 
         // If command/args/env changed, reconnect; if only enabled, toggle
         if config_changed {
@@ -500,7 +503,7 @@ pub async fn update_mcp_server(
                     &config.args,
                     &config.env,
                 ));
-                client.connect().await.map_err(|e| e.to_string())?;
+                client.connect().await.map_err(log_err)?;
                 let discovery = loader.config().mcp_discovery.clone();
                 let health_interval =
                     std::time::Duration::from_secs(discovery.health_interval_secs);
@@ -525,7 +528,7 @@ pub async fn update_mcp_server(
                 &config.args,
                 &config.env,
             ));
-            client.connect().await.map_err(|e| e.to_string())?;
+            client.connect().await.map_err(log_err)?;
             let discovery = loader.config().mcp_discovery.clone();
             let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
             let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
@@ -574,9 +577,9 @@ pub async fn remove_mcp_server(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Remove from config
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
     loader.config_mut().mcp_servers.retain(|s| s.name != name);
-    loader.save().map_err(|e| e.to_string())?;
+    loader.save().map_err(log_err)?;
 
     // Shutdown and remove from manager
     state.tools.mcp_manager.remove_client(&name).await;
@@ -602,11 +605,11 @@ pub async fn toggle_mcp_server(
     enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
     let servers = &mut loader.config_mut().mcp_servers;
     if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
         existing.enabled = enabled;
-        loader.save().map_err(|e| e.to_string())?;
+        loader.save().map_err(log_err)?;
     } else {
         return Err(format!("MCP server '{}' not found", name));
     }
@@ -627,7 +630,7 @@ pub async fn toggle_mcp_server(
             &config.args,
             &config.env,
         ));
-        client.connect().await.map_err(|e| e.to_string())?;
+        client.connect().await.map_err(log_err)?;
         let discovery = loader.config().mcp_discovery.clone();
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
         let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
@@ -675,7 +678,7 @@ pub async fn configure_mcp(
     let _ = state
         .db
         .save_mcp_server(&name, &transport, &config)
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     Ok(())
 }
 
@@ -695,7 +698,7 @@ pub async fn refresh_skills(
         .skills_engine
         .refresh_from_disk()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     // Rebuild tool catalog so skills appear in the Reasoner's tool list.
     state.tools.rebuild_catalog().await;
     // Notify the frontend that the registry changed so views can refetch.
@@ -717,14 +720,14 @@ pub async fn set_skill_enabled(
         .skills_engine
         .set_enabled(&name, enabled)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     // The engine's `set_enabled` already syncs its internal filter so the
     // toggle survives `refresh_from_disk`. Persist the filter to config.toml
     // so it also survives app restart.
     let filter = state.tools.skills_engine.enabled_filter().await;
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
     loader.config_mut().skills.enabled = filter;
-    loader.save().map_err(|e| e.to_string())?;
+    loader.save().map_err(log_err)?;
 
     // Rebuild tool catalog so the enable/disable takes effect in the Reasoner.
     state.tools.rebuild_catalog().await;
@@ -743,21 +746,21 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
         std::process::Command::new("explorer")
             .arg(root.as_os_str())
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(log_err)?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg(&root)
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(log_err)?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open")
             .arg(&root)
             .spawn()
-            .map_err(|e| e.to_string())?;
+            .map_err(log_err)?;
     }
     Ok(root.to_string_lossy().to_string())
 }
@@ -806,7 +809,7 @@ pub async fn execute_skill(
                     "params": params,
                     "risk_level": risk_level,
                 }))
-                .map_err(|e| e.to_string())?);
+                .map_err(log_err)?);
             }
             haven_tools::ConfirmationResult::Blocked => {
                 return Err("skill execution blocked by security policy".to_string());
@@ -829,7 +832,7 @@ pub async fn execute_skill(
         .await
         .execute(&skill, &params, cancel)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
 
     Ok(serde_json::json!({
         "success": result.success,
@@ -843,7 +846,7 @@ pub async fn search_history(
     state: State<'_, Arc<AppState>>,
     query: String,
 ) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
-    state.db.search_tasks(&query).map_err(|e| e.to_string())
+    state.db.search_tasks(&query).map_err(log_err)
 }
 
 #[tauri::command]
@@ -857,7 +860,6 @@ pub async fn search_history_filtered(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
-    let _ = state.db.finalize_stale_tasks(10);
     state
         .db
         .search_tasks_filtered(
@@ -868,7 +870,7 @@ pub async fn search_history_filtered(
             limit.unwrap_or(50),
             offset.unwrap_or(0),
         )
-        .map_err(|e| e.to_string())
+        .map_err(log_err)
 }
 
 /// Manually update a task's display title.
@@ -886,7 +888,7 @@ pub async fn update_task_title(
     state
         .db
         .update_task_title(&task_id, &title)
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     state.executor.update_task_title(&task_id, &title).await;
     let _ = app.emit(
         "task:title-updated",
@@ -900,25 +902,21 @@ pub async fn update_task_title(
 
 #[tauri::command]
 pub async fn delete_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
-    state.db.delete_task(&task_id).map_err(|e| e.to_string())?;
+    state.db.delete_task(&task_id).map_err(log_err)?;
     state.executor.remove_task(&task_id).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
-    let count = state
-        .db
-        .clear_tasks()
-        .map(|n| n as u64)
-        .map_err(|e| e.to_string())?;
+    let count = state.db.clear_tasks().map(|n| n as u64).map_err(log_err)?;
     state.executor.clear_all_tasks().await;
     Ok(count)
 }
 
 #[tauri::command]
 pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
-    let loader = haven_common::config::ConfigLoader::load().map_err(|e| e.to_string())?;
+    let loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
     let cfg = loader.config();
     Ok(serde_json::json!({
         "small_model": !cfg.llm.small_model.api_key.is_empty(),
@@ -954,30 +952,30 @@ pub async fn switch_model(
 
     // Lock and update config
     let mut loader = {
-        let guard = state.config_loader.lock().map_err(|e| e.to_string())?;
+        let guard = state.config_loader.lock().map_err(log_err)?;
         guard.clone()
     };
     {
         let cfg = loader.config_mut();
         let ep = match role.as_str() {
-            "small_model" | "namer" => &mut cfg.llm.small_model,
-            "default_model" | "reasoner" => &mut cfg.llm.default_model,
-            "balanced_model" | "fallback" => &mut cfg.llm.balanced_model,
+            "small_model" => &mut cfg.llm.small_model,
+            "default_model" => &mut cfg.llm.default_model,
+            "balanced_model" => &mut cfg.llm.balanced_model,
             _ => return Err(format!("unknown role: {}", role)),
         };
         ep.model_name = model_id;
     }
-    loader.save().map_err(|e| e.to_string())?;
+    loader.save().map_err(log_err)?;
 
     // Replace the in-memory config_loader
     {
-        let mut guard = state.config_loader.lock().map_err(|e| e.to_string())?;
+        let mut guard = state.config_loader.lock().map_err(log_err)?;
         *guard = loader;
     }
 
     // Hot-swap the LlmRouter
     let config = {
-        let guard = state.config_loader.lock().map_err(|e| e.to_string())?;
+        let guard = state.config_loader.lock().map_err(log_err)?;
         guard.config().clone()
     };
     let new_router = Arc::new(LlmRouter::new(config.llm.clone()));
@@ -991,10 +989,7 @@ pub async fn switch_model(
 
 /// Point the `file summary` operation at the configured small_model endpoint.
 /// A missing api_key disables the operation.
-async fn refresh_summarizer(
-    state: &Arc<AppState>,
-    endpoint: &haven_common::config::ModelEndpoint,
-) {
+async fn refresh_summarizer(state: &Arc<AppState>, endpoint: &haven_common::config::ModelEndpoint) {
     if endpoint.api_key.is_empty() {
         state.tools.set_summarizer(None).await;
         return;
@@ -1020,13 +1015,13 @@ pub async fn export_history(
             10000,
             0,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(log_err)?;
     serde_json::to_string_pretty(&serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
         "count": tasks.len(),
         "tasks": tasks,
     }))
-    .map_err(|e| e.to_string())
+    .map_err(log_err)
 }
 
 #[tauri::command]
@@ -1034,20 +1029,14 @@ pub async fn get_conversation_memory(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<haven_memory::repositories::messages::Message>, String> {
-    state
-        .db
-        .get_session_messages(&session_id)
-        .map_err(|e| e.to_string())
+    state.db.get_session_messages(&session_id).map_err(log_err)
 }
 
 #[tauri::command]
 pub async fn clear_conversation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // Close the current session and create a new one
     let _ = state.db.close_active_session();
-    let _ = state
-        .db
-        .get_or_create_active_session()
-        .map_err(|e| e.to_string())?;
+    let _ = state.db.get_or_create_active_session().map_err(log_err)?;
     Ok(())
 }
 
@@ -1056,7 +1045,7 @@ pub async fn clear_conversation(state: State<'_, Arc<AppState>>) -> Result<(), S
 pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<haven_memory::repositories::facts::Fact>, String> {
-    state.db.list_facts().map_err(|e| e.to_string())
+    state.db.list_facts().map_err(log_err)
 }
 
 #[tauri::command]
@@ -1072,12 +1061,12 @@ pub async fn add_fact(
     state
         .db
         .insert_fact(&subject, &predicate, &object, "user", 1.0, &tags)
-        .map_err(|e| e.to_string())
+        .map_err(log_err)
 }
 
 #[tauri::command]
 pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Result<(), String> {
-    state.db.delete_fact(&fact_id).map_err(|e| e.to_string())
+    state.db.delete_fact(&fact_id).map_err(log_err)
 }
 
 #[tauri::command]
@@ -1085,14 +1074,14 @@ pub async fn get_preference(
     state: State<'_, Arc<AppState>>,
     key: String,
 ) -> Result<Option<String>, String> {
-    state.db.get_preference(&key).map_err(|e| e.to_string())
+    state.db.get_preference(&key).map_err(log_err)
 }
 
 #[tauri::command]
 pub async fn list_preferences(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<(String, String)>, String> {
-    state.db.list_preferences().map_err(|e| e.to_string())
+    state.db.list_preferences().map_err(log_err)
 }
 
 #[tauri::command]
@@ -1101,21 +1090,18 @@ pub async fn update_preference(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .set_preference(&key, &value)
-        .map_err(|e| e.to_string())
+    state.db.set_preference(&key, &value).map_err(log_err)
 }
 
 #[tauri::command]
 pub async fn delete_preference(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
-    state.db.delete_preference(&key).map_err(|e| e.to_string())
+    state.db.delete_preference(&key).map_err(log_err)
 }
 
 #[tauri::command]
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
     let state = app.state::<Arc<AppState>>();
-    let cfg = state.config_loader.lock().map_err(|e| e.to_string())?;
+    let cfg = state.config_loader.lock().map_err(log_err)?;
     let settings = cfg.settings();
     Ok(settings)
 }
@@ -1127,14 +1113,14 @@ pub async fn update_settings(
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
     let old_hotkey = {
-        let cfg = state.config_loader.lock().map_err(|e| e.to_string())?;
+        let cfg = state.config_loader.lock().map_err(log_err)?;
         cfg.config().hotkey.key_binding.clone()
     };
 
     {
-        let mut loader = state.config_loader.lock().map_err(|e| e.to_string())?;
+        let mut loader = state.config_loader.lock().map_err(log_err)?;
         loader.apply_settings(&settings);
-        loader.save().map_err(|e| e.to_string())?;
+        loader.save().map_err(log_err)?;
     }
 
     // Propagate audio config to running pipeline
@@ -1161,7 +1147,7 @@ pub async fn update_settings(
 
     // Reload MCP servers from config
     let (mcp_servers, mcp_discovery, task_max_steps, llm_config, min_risk_level) = {
-        let cfg = state.config_loader.lock().map_err(|e| e.to_string())?;
+        let cfg = state.config_loader.lock().map_err(log_err)?;
         let config = cfg.config();
         (
             config.mcp_servers.clone(),
@@ -1271,21 +1257,21 @@ pub async fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
         return Err("自动启动仅支持生产版本（cargo tauri build）。开发模式下请手动运行。".into());
     }
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().enable().map_err(|e| e.to_string())?;
+    app.autolaunch().enable().map_err(log_err)?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().disable().map_err(|e| e.to_string())?;
+    app.autolaunch().disable().map_err(log_err)?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    app.autolaunch().is_enabled().map_err(log_err)
 }
 
 #[derive(Serialize)]
@@ -1303,15 +1289,12 @@ pub async fn get_task_for_review(
     let task = state
         .db
         .get_task(&task_id)
-        .map_err(|e| e.to_string())?
+        .map_err(log_err)?
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
 
     let messages = if let Some(ref session_id) = task.session_id {
         if !session_id.is_empty() {
-            state
-                .db
-                .get_session_messages(session_id)
-                .map_err(|e| e.to_string())?
+            state.db.get_session_messages(session_id).map_err(log_err)?
         } else {
             Vec::new()
         }
@@ -1319,10 +1302,7 @@ pub async fn get_task_for_review(
         Vec::new()
     };
 
-    let steps = state
-        .db
-        .get_task_steps(&task_id)
-        .map_err(|e| e.to_string())?;
+    let steps = state.db.get_task_steps(&task_id).map_err(log_err)?;
 
     Ok(TaskReviewResponse {
         task,
@@ -1346,7 +1326,7 @@ pub async fn rollback_task(
         .agent
         .rollback_task(&task_id, target_step, pause.unwrap_or(false))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(log_err)
 }
 
 /// Branch a task from a specific step into a new conversation. Copies all
@@ -1362,22 +1342,15 @@ pub async fn branch_task(
         .agent
         .branch_task(&task_id, target_step)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(log_err)
 }
 
 /// Resume a task that errored mid-step. Removes partial output persisted on
 /// error and sets the task to Pending so the dispatcher retries the failed
 /// step from the saved snapshot.
 #[tauri::command]
-pub async fn continue_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<(), String> {
-    state
-        .agent
-        .continue_task(&task_id)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn continue_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
+    state.agent.continue_task(&task_id).await.map_err(log_err)
 }
 
 #[cfg(test)]
@@ -1419,5 +1392,51 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"is_recording\":true"));
         assert!(json.contains("\"is_toggle\":true"));
+    }
+
+    fn att(
+        media_type: &str,
+        data: &str,
+    ) -> haven_memory::repositories::messages::MessageAttachment {
+        haven_memory::repositories::messages::MessageAttachment {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    #[test]
+    fn test_validate_images_accepts_valid() {
+        let imgs = vec![att("image/png", "aGVsbG8="), att("image/jpeg", "YWJj")];
+        let out = validate_images(imgs.clone()).unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_validate_images_rejects_over_count() {
+        let imgs: Vec<_> = (0..5).map(|_| att("image/png", "aGVsbG8=")).collect();
+        let err = validate_images(imgs).unwrap_err();
+        assert!(err.contains("最多支持"));
+    }
+
+    #[test]
+    fn test_validate_images_rejects_non_image_mime() {
+        let imgs = vec![att("application/x-msdownload", "aGVsbG8=")];
+        let err = validate_images(imgs).unwrap_err();
+        assert!(err.contains("不支持的图片类型"));
+    }
+
+    #[test]
+    fn test_validate_images_rejects_oversized() {
+        let big = "A".repeat(15 * 1024 * 1024);
+        let imgs = vec![att("image/png", &big)];
+        let err = validate_images(imgs).unwrap_err();
+        assert!(err.contains("10MB"));
+    }
+
+    #[test]
+    fn test_validate_images_rejects_invalid_base64() {
+        let imgs = vec![att("image/png", "not-base64!!!")];
+        let err = validate_images(imgs).unwrap_err();
+        assert!(err.contains("base64"));
     }
 }

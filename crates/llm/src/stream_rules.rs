@@ -1,6 +1,6 @@
 use regex::Regex;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A rule that is evaluated against every chunk of the LLM response stream.
 ///
@@ -44,7 +44,10 @@ impl<'de> Deserialize<'de> for StreamRule {
         }
         let h = Helper::deserialize(d)?;
         let pattern = Regex::new(&h.pattern_str).map_err(|e| {
-            de::Error::custom(format!("invalid stream rule regex '{}': {}", h.pattern_str, e))
+            de::Error::custom(format!(
+                "invalid stream rule regex '{}': {}",
+                h.pattern_str, e
+            ))
         })?;
         Ok(StreamRule {
             name: h.name,
@@ -75,10 +78,7 @@ pub struct StreamRuleMatch {
 
 /// Evaluates stream rules against accumulated text chunks.
 /// Returns the first matching rule (if any).
-pub fn check_stream_rules(
-    rules: &[StreamRule],
-    accumulated_text: &str,
-) -> Option<StreamRuleMatch> {
+pub fn check_stream_rules(rules: &[StreamRule], accumulated_text: &str) -> Option<StreamRuleMatch> {
     for rule in rules {
         if let Some(mat) = rule.pattern.find(accumulated_text) {
             return Some(StreamRuleMatch {
@@ -94,7 +94,12 @@ pub fn check_stream_rules(
 
 impl StreamRule {
     /// Create a new stream rule. The pattern string is compiled on construction.
-    pub fn new(name: &str, pattern_str: &str, inject: &str, mode: StreamRuleMode) -> Result<Self, regex::Error> {
+    pub fn new(
+        name: &str,
+        pattern_str: &str,
+        inject: &str,
+        mode: StreamRuleMode,
+    ) -> Result<Self, regex::Error> {
         let pattern = Regex::new(pattern_str)?;
         Ok(Self {
             name: name.into(),
@@ -132,7 +137,13 @@ mod tests {
 
     #[test]
     fn no_match_when_rule_not_triggered() {
-        let rule = StreamRule::new("test", r"forbidden_pattern", "Don't do that", StreamRuleMode::Warn).unwrap();
+        let rule = StreamRule::new(
+            "test",
+            r"forbidden_pattern",
+            "Don't do that",
+            StreamRuleMode::Warn,
+        )
+        .unwrap();
         let text = "This is a safe response.";
         let matched = check_stream_rules(&[rule], text);
         assert!(matched.is_none());
@@ -140,7 +151,13 @@ mod tests {
 
     #[test]
     fn warn_mode_returns_correct_mode() {
-        let rule = StreamRule::new("warn_test", r"warning_trigger", "Be careful", StreamRuleMode::Warn).unwrap();
+        let rule = StreamRule::new(
+            "warn_test",
+            r"warning_trigger",
+            "Be careful",
+            StreamRuleMode::Warn,
+        )
+        .unwrap();
         let text = "This contains warning_trigger in it.";
         let matched = check_stream_rules(&[rule], text);
         assert!(matched.is_some());

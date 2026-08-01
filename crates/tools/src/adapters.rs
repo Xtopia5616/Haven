@@ -178,11 +178,20 @@ mod tests {
             allowed_tools: vec![],
             instructions: "".into(),
         };
-        let skill = Arc::new(Skill::from_manifest_unchecked(manifest, PathBuf::from("."), true));
+        let skill = Arc::new(Skill::from_manifest_unchecked(
+            manifest,
+            PathBuf::from("."),
+            true,
+        ));
         let config = SkillsExecConfig::default();
         let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
         let adapter = SkillToolAdapter::new(skill, runner);
         let schema = adapter.input_schema();
-        assert!(schema.get("properties").and_then(|p| p.get("params")).is_some());
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.get("params"))
+                .is_some()
+        );
     }
 }

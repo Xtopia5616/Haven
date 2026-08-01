@@ -1,4 +1,6 @@
 <script>
+	import { cubicOut } from 'svelte/easing';
+
 	/** @type {{ isRecording?: boolean; processing?: boolean; duration?: number; vadState?: string; reason?: string | null; onCancel?: (() => Promise<void>) | null }} */
 	let {
 		isRecording = false,
@@ -8,6 +10,18 @@
 		reason = null,
 		onCancel = null,
 	} = $props();
+
+	// Entrance transition replacing the old CSS dropIn keyframes. The overlay
+	// is centered with a static `transform: translateX(-50%)`, so the inline
+	// transform must keep that offset during the animation or the overlay
+	// would jump off-center.
+	function dropIn(node, { duration = 300 } = {}) {
+		return {
+			duration,
+			easing: cubicOut,
+			css: (t) => `transform: translate(-50%, ${-10 * (1 - t)}px); opacity: ${t}`,
+		};
+	}
 
 	const display = $derived.by(() => {
 		const base = processing ? duration : duration;
@@ -37,6 +51,7 @@
 		role="status"
 		aria-live="assertive"
 		aria-label={processing ? 'transcribing' : 'recording'}
+		in:dropIn
 	>
 		<div class="pulse-ring"></div>
 		<div class="pulse-ring delay"></div>
@@ -74,17 +89,6 @@
 		border-radius: var(--md-sys-shape-extra-large);
 		box-shadow: var(--md-sys-elevation-3);
 		backdrop-filter: blur(8px);
-		animation: dropIn var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized);
-	}
-	@keyframes dropIn {
-		from {
-			opacity: 0;
-			transform: translate(-50%, -10px);
-		}
-		to {
-			opacity: 1;
-			transform: translate(-50%, 0);
-		}
 	}
 	.core {
 		position: relative;

@@ -13,7 +13,7 @@ impl Tool for PowerTool {
         "power".into()
     }
     fn description(&self) -> String {
-        "Power management: lock workstation, sleep, hibernate, query battery status".into()
+        "Lock, sleep, hibernate, or query battery status".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -33,12 +33,10 @@ impl Tool for PowerTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
 
         let op = input["operation"].as_str().unwrap_or("status").to_string();
 
@@ -67,7 +65,9 @@ impl Tool for PowerTool {
 #[cfg(windows)]
 mod imp {
     use serde_json::Value;
-    use windows_sys::Win32::System::Power::{SetSuspendState, GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    use windows_sys::Win32::System::Power::{
+        GetSystemPowerStatus, SYSTEM_POWER_STATUS, SetSuspendState,
+    };
 
     #[link(name = "user32")]
     unsafe extern "system" {
@@ -186,15 +186,83 @@ mod tests {
 
     #[test]
     fn test_power_tool_risk_level() {
-        assert_eq!(PowerTool.risk_level(&json!({"operation": "status"})), RiskLevel::Safe);
-        assert_eq!(PowerTool.risk_level(&json!({"operation": "lock"})), RiskLevel::High);
-        assert_eq!(PowerTool.risk_level(&json!({"operation": "sleep"})), RiskLevel::High);
-        assert_eq!(PowerTool.risk_level(&json!({"operation": "hibernate"})), RiskLevel::High);
+        assert_eq!(
+            PowerTool.risk_level(&json!({"operation": "status"})),
+            RiskLevel::Safe
+        );
+        assert_eq!(
+            PowerTool.risk_level(&json!({"operation": "lock"})),
+            RiskLevel::High
+        );
+        assert_eq!(
+            PowerTool.risk_level(&json!({"operation": "sleep"})),
+            RiskLevel::High
+        );
+        assert_eq!(
+            PowerTool.risk_level(&json!({"operation": "hibernate"})),
+            RiskLevel::High
+        );
     }
 
     #[test]
     fn test_power_tool_input_schema() {
         let schema = PowerTool.input_schema();
-        assert!(schema["properties"]["operation"]["enum"].as_array().is_some());
+        assert!(
+            schema["properties"]["operation"]["enum"]
+                .as_array()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_power_execute_status() {
+        let result = PowerTool
+            .execute(json!({"operation": "status"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        #[cfg(windows)]
+        {
+            assert!(result.output["ac_power"].as_str().is_some());
+            assert!(
+                result.output["battery_percent"].is_null()
+                    || result.output["battery_percent"].is_number()
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(result.output["available"], false);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_power_execute_default_status() {
+        let result = PowerTool
+            .execute(json!({}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        #[cfg(windows)]
+        {
+            assert!(result.output["ac_power"].as_str().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_power_execute_unknown_operation() {
+        let result = PowerTool
+            .execute(json!({"operation": "bogus"}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_power_execute_cancelled() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = PowerTool
+            .execute(json!({"operation": "status"}), cancel)
+            .await;
+        assert!(result.is_err());
     }
 }

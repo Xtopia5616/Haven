@@ -50,13 +50,79 @@ impl Tool for AudioTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let _ = input;
         let _ = cancel;
         Err(anyhow::anyhow!("audio tool not yet implemented"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Tool;
+    use serde_json::json;
+
+    #[test]
+    fn test_audio_tool_name() {
+        assert_eq!(AudioTool.name(), "audio");
+    }
+
+    #[test]
+    fn test_audio_tool_description() {
+        assert!(AudioTool.description().contains("audio"));
+    }
+
+    #[test]
+    fn test_audio_tool_risk_level() {
+        assert_eq!(
+            AudioTool.risk_level(&json!({"operation": "play"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            AudioTool.risk_level(&json!({"operation": "record"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(AudioTool.risk_level(&json!({})), RiskLevel::Low);
+    }
+
+    #[test]
+    fn test_audio_tool_input_schema() {
+        let schema = AudioTool.input_schema();
+        assert_eq!(schema["type"].as_str().unwrap(), "object");
+        let enum_vals = schema["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
+        let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(ops.contains(&"play"));
+        assert!(ops.contains(&"record"));
+        let required = schema["required"].as_array().unwrap();
+        let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req.contains(&"operation"));
+        assert!(schema["properties"]["file_path"]["type"].as_str().is_some());
+        assert!(schema["properties"]["duration"]["type"].as_str().is_some());
+        assert!(schema["properties"]["text"]["type"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_audio_execute_not_implemented() {
+        let result = AudioTool
+            .execute(
+                json!({"operation": "play", "file_path": "x.wav"}),
+                CancellationToken::new(),
+            )
+            .await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not yet implemented"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_execute_cancelled_still_not_implemented() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = AudioTool
+            .execute(json!({"operation": "record"}), cancel)
+            .await;
+        assert!(result.is_err());
     }
 }

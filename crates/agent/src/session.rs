@@ -53,18 +53,37 @@ impl SessionManager {
     /// Holds the session_id lock across the DB write to prevent a TOCTOU race
     /// with concurrent start_new_session / supplement_task calls.
     pub fn persist_message(&self, role: &str, content: &str, message_type: Option<&str>) {
+        self.persist_message_parts(role, content, message_type, &[]);
+    }
+
+    /// Persist a message with binary attachments (e.g. images for multimodal
+    /// requests). Same locking semantics as `persist_message`.
+    pub fn persist_message_parts(
+        &self,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        attachments: &[haven_memory::repositories::messages::MessageAttachment],
+    ) {
         let window_size = self.session_window_size;
         let guard = self.session_id.lock().unwrap();
         tracing::trace!(
-            "persist_message: session={} role={} type={:?} {} chars",
+            "persist_message: session={} role={} type={:?} {} chars, {} attachments",
             &guard,
             role,
             message_type,
-            content.len()
+            content.len(),
+            attachments.len()
         );
-        let _ =
-            self.db
-                .add_message_with_window(&guard, role, content, message_type, None, window_size);
+        let _ = self.db.add_message_with_window_full(
+            &guard,
+            role,
+            content,
+            message_type,
+            None,
+            window_size,
+            attachments,
+        );
     }
 
     /// Load the most recent conversation messages from DB as text lines that

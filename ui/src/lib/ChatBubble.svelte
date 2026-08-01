@@ -1,7 +1,40 @@
 <script>
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
+	import { fly } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+	import logger from '$lib/logger.js';
+	import { imageDataUrl } from '$lib/stores.js';
 
-	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, onContextMenu = null } = $props();
+	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, attachments = [], onContextMenu = null } = $props();
+
+	// Local open state for collapsible <details> blocks (reasoning +
+	// tool observations). The block expands while streaming so live output is
+	// visible, and auto-collapses once streaming ends (constraint
+	// tool_call_output_expand_during_collapse_after). Manual clicks after that
+	// persist: binding `open={streaming}` directly would re-apply the value on
+	// every content-driven re-render, overriding a manual toggle.
+	//
+	// $effect.pre runs before the DOM updates, so the open/collapse happens
+	// in the same frame as the streaming transition — no flash where the
+	// block briefly renders open before snapping shut.
+	let reasoningOpen = $state(untrack(() => streaming));
+	let observationOpen = $state(untrack(() => streaming));
+	let lastStreaming = untrack(() => streaming);
+	$effect.pre(() => {
+		// Only react to streaming TRANSITIONS, not to every re-render, so a
+		// manual toggle is never clobbered.
+		if (streaming === lastStreaming) return;
+		if (streaming) {
+			// Streaming (re)started → expand so live output is visible.
+			reasoningOpen = true;
+			observationOpen = true;
+		} else {
+			// Streaming ended → auto-collapse once.
+			reasoningOpen = false;
+			observationOpen = false;
+		}
+		lastStreaming = streaming;
+	});
 
 	let md = $state(null);
 	let mdHtml = $state('');
@@ -59,7 +92,7 @@
 			highlight(str, lang) {
 				if (!lang || !highlighter.getLanguage(lang)) return '';
 				try { return highlighter.highlight(str, { language: lang }).value; }
-				catch (e) { console.warn('[ChatBubble] highlight failed:', e); return ''; }
+				catch (e) { logger.warn('ChatBubble', 'highlight failed', e); return ''; }
 			},
 		});
 	});
@@ -81,6 +114,7 @@
 	role="button"
 	tabindex="0"
 	oncontextmenu={handleContextMenu}
+	in:fly={{ y: 4, duration: 200, easing: cubicOut }}
 >
 	<div class="bubble-header">
 		<span class="bubble-role">
@@ -97,14 +131,14 @@
 				>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
 			>
 		{:else if msgType === 'reasoning'}
-			<details class="reasoning-block" open={streaming}>
+			<details class="reasoning-block" bind:open={reasoningOpen}>
 				<summary class="reasoning-summary">Thinking...</summary>
 				<div class="reasoning-content"><em>{content}{#if streaming && content}<span class="caret"></span>{/if}</em></div>
 			</details>
 		{:else if msgType === 'tool'}
 			<div class="tool-call">&#9654; Calling {toolName}</div>
 			{#if content}
-				<details class="observation-block" open={streaming}>
+				<details class="observation-block" bind:open={observationOpen}>
 					<summary class="observation-summary">Result</summary>
 					<pre class="observation">{content}</pre>
 				</details>
@@ -118,7 +152,16 @@
 				<p>{content}{#if streaming && content}<span class="caret"></span>{/if}</p>
 			{/if}
 		{:else}
-			<p>{content}</p>
+			{#if attachments && attachments.length > 0}
+				<div class="attachments">
+					{#each attachments as att}
+						<img class="attachment-img" src={imageDataUrl(att)} alt="用户发送的图片" loading="lazy" />
+					{/each}
+				</div>
+			{/if}
+			{#if content}
+				<p>{content}</p>
+			{/if}
 		{/if}
 	</div>
 </div>
@@ -132,17 +175,6 @@
 		border-radius: var(--md-sys-shape-large);
 		font-size: 13px;
 		line-height: 1.5;
-		animation: bubbleIn var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-emphasized);
-	}
-	@keyframes bubbleIn {
-		from {
-			opacity: 0;
-			transform: translateY(4px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
 	}
 	.bubble.user {
 		margin-left: auto;
@@ -221,6 +253,24 @@
 		font-size: 12px;
 		font-weight: 600;
 		display: inline-block;
+	}
+	.attachments {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-xs);
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.attachment-img {
+		max-width: 240px;
+		max-height: 180px;
+		border-radius: var(--md-sys-shape-small);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
+		object-fit: contain;
+		display: block;
+		cursor: zoom-in;
+	}
+	.attachment-img:hover {
+		opacity: 0.9;
 	}
 	.observation-block {
 		margin-top: var(--md-sys-space-xs);

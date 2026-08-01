@@ -81,8 +81,15 @@ impl AgentLayer {
         self.sessions.start_new_session()
     }
 
-    fn persist_message(&self, role: &str, content: &str, message_type: Option<&str>) {
-        self.sessions.persist_message(role, content, message_type);
+    fn persist_message_parts(
+        &self,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        attachments: &[haven_memory::repositories::messages::MessageAttachment],
+    ) {
+        self.sessions
+            .persist_message_parts(role, content, message_type, attachments);
     }
 
     /// Reopen a terminal task to Paused state.
@@ -95,9 +102,7 @@ impl AgentLayer {
         // them back before we can update their status.
         self.executor.ensure_task_loaded(task_id).await?;
         let state = self.executor.get_task_state(task_id).await;
-        if state == TaskStatus::Completed
-            || state == TaskStatus::Error
-        {
+        if state == TaskStatus::Completed || state == TaskStatus::Error {
             self.executor
                 .update_task_status(task_id, TaskStatus::Paused)
                 .await?;
@@ -121,7 +126,10 @@ impl AgentLayer {
         // doesn't pay TCP+TLS handshake latency after a provider switch.
         let warm = new_router.clone();
         tokio::spawn(async move {
-            match warm.health_check(haven_llm::EndpointRole::DefaultModel).await {
+            match warm
+                .health_check(haven_llm::EndpointRole::DefaultModel)
+                .await
+            {
                 Ok(()) => tracing::info!("LLM connection pre-warmed after router swap"),
                 Err(e) => tracing::warn!("LLM pre-warm after swap failed: {}", e),
             }
@@ -143,6 +151,63 @@ impl AgentLayer {
             Box::pin(async move { agent.run_task_from_id(&task_id).await.map(|_| ()) })
         });
         executor.start_dispatcher(handler);
+
+        // Spawn a consumer for background-job completions. When a job
+        // finishes, inject the result into the owning task's context at the
+        // next ReAct step (via the job-completions buffer) and, if the task was
+        // Paused for scheduling reasons, wake it to Pending so the dispatcher
+        // resumes and the model processes the result — no manual `job_status`
+        // polling required.
+        //
+        // A task Paused because the `ask` tool is awaiting a human reply is
+        // NOT woken: resuming it would let the agent continue (and run tools)
+        // based on subprocess output before the user has answered. The result
+        // is still buffered and delivered as context once the user resumes.
+        let agent = self.clone();
+        let tools = self.executor.get_tools();
+        if let Some(mut rx) = tools.background_jobs.take_completion_receiver() {
+            tokio::spawn(async move {
+                while let Some(comp) = rx.recv().await {
+                    // Skip cancellations: a cancelled job was killed
+                    // intentionally (end_task/rollback), so notifying would
+                    // risk resurrecting an ended task.
+                    if comp.status == "cancelled" {
+                        continue;
+                    }
+                    let Some(tid) = comp.task_id else {
+                        continue;
+                    };
+                    // Only completed/failed carry a useful payload.
+                    let payload = match comp.status_json.get("output").and_then(|v| v.as_str()) {
+                        Some(o) => o.to_string(),
+                        None => comp
+                            .status_json
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    };
+                    let msg = format!(
+                        "Background job {} {}.\nOutput:\n{}",
+                        comp.job_id, comp.status, payload
+                    );
+                    agent.executor.add_job_completion(&tid, &msg).await;
+                    let state = agent.executor.get_task_state(&tid).await;
+                    let awaiting = agent.executor.is_awaiting_answer(&tid).await;
+                    if state == TaskStatus::Paused && !awaiting {
+                        if let Err(e) = agent
+                            .executor
+                            .update_task_status(&tid, TaskStatus::Pending)
+                            .await
+                        {
+                            tracing::warn!("job-completion wake task {} failed: {}", tid, e);
+                            continue;
+                        }
+                        agent.events.emit_task_updated(&tid, "pending").await;
+                    }
+                }
+            });
+        }
     }
 
     fn load_conversation_history(&self) -> Vec<String> {
@@ -199,30 +264,45 @@ impl AgentLayer {
         // If the task is currently Running, cancel it first so the ReAct loop
         // exits cleanly. Otherwise the loop's in-memory canonical/history would
         // diverge from the restored snapshot and overwrite it on the next save.
+        // The loop observes the token at every wait point (step top, LLM call,
+        // tool batch drain) and exits without touching status, so no Error
+        // marking is needed — setting Error here would only emit a spurious
+        // "task interrupted" error event and trigger terminal cleanup.
         let state = self.executor.get_task_state(task_id).await;
         if state == TaskStatus::Running {
             let cancel = self.executor.cancellation_token(task_id).await;
             cancel.cancel();
-            // Mark as Error to force the loop to return, then wait for it.
-            self.executor
-                .update_task_status(task_id, TaskStatus::Error)
-                .await?;
             // Wait until the loop handler releases the running slot.
             let mut waited = false;
             for _ in 0..50 {
-                if !self.executor.running_tasks_list().await.contains(&task_id.to_string()) {
+                if !self
+                    .executor
+                    .running_tasks_list()
+                    .await
+                    .contains(&task_id.to_string())
+                {
                     break;
                 }
                 waited = true;
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            if waited && self.executor.running_tasks_list().await.contains(&task_id.to_string()) {
+            if waited
+                && self
+                    .executor
+                    .running_tasks_list()
+                    .await
+                    .contains(&task_id.to_string())
+            {
                 tracing::warn!(
                     "rollback_task {}: handler did not exit within 5s; proceeding with restore (late step writes are guarded by execute_step)",
                     task_id
                 );
             }
         }
+
+        // Background jobs spawned before the rollback are stale relative to
+        // the restored snapshot: kill them so their children cannot leak.
+        self.executor.cancel_task_jobs(task_id).await;
 
         let state_json = match self.db.get_react_state(task_id)? {
             Some(s) => s,
@@ -295,15 +375,12 @@ impl AgentLayer {
                 .flatten()
                 .and_then(|t| t.session_id)
                 .and_then(|sid| {
-                    self.db
-                        .get_session_messages(&sid)
-                        .ok()
-                        .and_then(|msgs| {
-                            msgs.iter()
-                                .rev()
-                                .find(|m| m.role == "user")
-                                .map(|m| m.created_at.clone())
-                        })
+                    self.db.get_session_messages(&sid).ok().and_then(|msgs| {
+                        msgs.iter()
+                            .rev()
+                            .find(|m| m.role == "user")
+                            .map(|m| m.created_at.clone())
+                    })
                 });
             BranchPoint {
                 canonical: snapshot.canonical.clone(),
@@ -380,7 +457,8 @@ impl AgentLayer {
         // Rebuild per-task tool registrations from the restored history so
         // that tools loaded after the rollback point are dropped, and tools
         // loaded before it remain available.
-        self.restore_per_task_tools(task_id, &snapshot.history).await;
+        self.restore_per_task_tools(task_id, &snapshot.history)
+            .await;
 
         // Reload the task into executor memory (it may have been removed if we
         // marked a Running task as Error above, or was never loaded after restart).
@@ -418,11 +496,7 @@ impl AgentLayer {
     /// message up to and including the branch point into it, then creates a
     /// new Paused task seeded with the branch point's canonical/history so the
     /// user can continue from that point. Returns the new task id.
-    pub async fn branch_task(
-        &self,
-        task_id: &str,
-        target_step: u32,
-    ) -> anyhow::Result<String> {
+    pub async fn branch_task(&self, task_id: &str, target_step: u32) -> anyhow::Result<String> {
         // Load the source task + its saved ReAct snapshot.
         let source = self
             .db
@@ -458,13 +532,14 @@ impl AgentLayer {
             {
                 break;
             }
-            self.db.add_message_with_window(
+            self.db.add_message_with_window_full(
                 &new_session.id,
                 &m.role,
                 &m.content,
                 m.message_type.as_deref(),
                 m.tool_call_id.as_deref(),
                 usize::MAX,
+                &m.attachments,
             )?;
         }
 
@@ -551,15 +626,12 @@ impl AgentLayer {
                 .and_then(|bp| bp.last_msg_at.clone())
                 .or_else(|| {
                     // Find the last user message's timestamp in the session.
-                    self.db
-                        .get_session_messages(sid)
-                        .ok()
-                        .and_then(|msgs| {
-                            msgs.iter()
-                                .rev()
-                                .find(|m| m.role == "user")
-                                .map(|m| m.created_at.clone())
-                        })
+                    self.db.get_session_messages(sid).ok().and_then(|msgs| {
+                        msgs.iter()
+                            .rev()
+                            .find(|m| m.role == "user")
+                            .map(|m| m.created_at.clone())
+                    })
                 });
             if let Some(ts) = cutoff {
                 self.db.delete_messages_after(sid, &ts)?;
@@ -609,6 +681,29 @@ impl AgentLayer {
         }
         let conv_history = self.load_conversation_history();
 
+        // Multimodal: carry the first user message's image attachments into
+        // the initial canonical user message so the model sees them from the
+        // first turn (they were persisted by process_input_with_images).
+        // Sessions are per-task, so the FIRST user message is always the
+        // task's own input; later image follow-ups are supplements (injected
+        // by the ReAct loop at step start) and must NOT be attached to the
+        // initial turn or they would be duplicated.
+        let initial_attachments = self
+            .db
+            .get_task(task_id)
+            .ok()
+            .flatten()
+            .and_then(|t| t.session_id)
+            .and_then(|sid| {
+                self.db.get_session_messages(&sid).ok().and_then(|msgs| {
+                    msgs.into_iter()
+                        .find(|m| m.role == "user")
+                        .filter(|m| !m.attachments.is_empty())
+                        .map(|m| m.attachments)
+                })
+            })
+            .unwrap_or_default();
+
         let result = if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
             && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
         {
@@ -619,12 +714,19 @@ impl AgentLayer {
             );
             // Re-register per-task tools (skills/MCP) from saved history,
             // since in-memory registrations are lost on app restart.
-            self.restore_per_task_tools(task_id, &snapshot.history).await;
+            self.restore_per_task_tools(task_id, &snapshot.history)
+                .await;
             self.run_task_resumed(task_id, snapshot, &conv_history, run_id)
                 .await
         } else {
-            self.run_task(&task.id, &description, &context, &conv_history)
-                .await
+            self.run_task(
+                &task.id,
+                &description,
+                &context,
+                &conv_history,
+                &initial_attachments,
+            )
+            .await
         };
 
         // Generate title after first ReAct loop if not already set
@@ -731,7 +833,9 @@ impl AgentLayer {
         let infer = move || {
             let inference = inference.clone();
             let sid = sid.clone();
-            tokio::spawn(async move { inference.infer_all(&sid).await; });
+            tokio::spawn(async move {
+                inference.infer_all(&sid).await;
+            });
         };
         self.react_engine
             .run_react_loop(
@@ -755,11 +859,13 @@ impl AgentLayer {
         description: &str,
         context: &str,
         conversation_history: &[String],
+        initial_attachments: &[haven_memory::repositories::messages::MessageAttachment],
     ) -> anyhow::Result<Vec<ReActStep>> {
         tracing::debug!(
-            "run_task start: task_id={:?} context={:?}",
+            "run_task start: task_id={:?} context={:?} attachments={}",
             task_id,
-            context
+            context,
+            initial_attachments.len()
         );
         let mut history: Vec<ReActStep> = Vec::new();
         let system_prompt = self
@@ -767,6 +873,13 @@ impl AgentLayer {
             .build(description, &[], conversation_history)
             .await;
         tracing::debug!("run_task: system_prompt {} chars", system_prompt.len());
+
+        let mut initial_content = vec![ContentPart::text(context.to_string())];
+        initial_content.extend(
+            initial_attachments
+                .iter()
+                .map(crate::react::attachment_to_content_part),
+        );
 
         let mut canonical: Vec<CanonicalMessage> = vec![
             CanonicalMessage {
@@ -778,7 +891,7 @@ impl AgentLayer {
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
-                content: vec![ContentPart::text(context.to_string())],
+                content: initial_content,
                 tool_calls: None,
                 tool_call_id: None,
                 parent_message_id: None,
@@ -795,7 +908,9 @@ impl AgentLayer {
         let infer = move || {
             let inference = inference.clone();
             let sid = sid.clone();
-            tokio::spawn(async move { inference.infer_all(&sid).await; });
+            tokio::spawn(async move {
+                inference.infer_all(&sid).await;
+            });
         };
         let run_id = self.react_engine.next_run_id();
         self.react_engine
@@ -819,10 +934,24 @@ impl AgentLayer {
         transcript: &str,
         active_task_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
+        self.process_input_with_images(transcript, active_task_id, &[])
+            .await
+    }
+
+    /// Like `process_input`, but attaches binary payloads (e.g. images for
+    /// multimodal requests) to the user message. Attachments are persisted
+    /// with the message and injected into the ReAct context as image parts.
+    pub async fn process_input_with_images(
+        &self,
+        transcript: &str,
+        active_task_id: Option<String>,
+        images: &[haven_memory::repositories::messages::MessageAttachment],
+    ) -> anyhow::Result<ProcessResult> {
         tracing::debug!(
-            "process_input: text={:?} active_task_id={:?}",
+            "process_input: text={:?} active_task_id={:?} images={}",
             transcript,
-            active_task_id
+            active_task_id,
+            images.len()
         );
 
         if let Some(task_id) = active_task_id {
@@ -833,16 +962,18 @@ impl AgentLayer {
             {
                 self.sessions.switch_to_session(sid);
             }
-            self.persist_message("user", transcript, Some("text"));
+            self.persist_message_parts("user", transcript, Some("text"), images);
 
             let state = self.executor.get_task_state(&task_id).await;
 
             if state == TaskStatus::Running {
-                self.executor.add_steering(&task_id, transcript).await?;
+                self.executor
+                    .add_steering_with_attachments(&task_id, transcript, images)
+                    .await?;
             } else {
                 let was_in_memory = self
                     .executor
-                    .add_supplement(&task_id, transcript)
+                    .add_supplement_with_attachments(&task_id, transcript, images)
                     .await
                     .is_ok();
                 if !was_in_memory {
@@ -853,11 +984,7 @@ impl AgentLayer {
                             .unwrap_or_else(|_| self.ensure_session());
                         let task = self
                             .executor
-                            .create_task_with_summary(
-                                transcript,
-                                transcript,
-                                Some(&session_id),
-                            )
+                            .create_task_with_summary(transcript, transcript, Some(&session_id))
                             .await?;
                         self.events.emit_task_created(&task).await;
                         return Ok(ProcessResult::TaskCreated(task.id));
@@ -871,9 +998,7 @@ impl AgentLayer {
                     // the review flow — auto-converting them would resurrect a
                     // ghost task.
                     let fresh_state = self.executor.get_task_state(&task_id).await;
-                    if fresh_state == TaskStatus::Completed
-                        || fresh_state == TaskStatus::Error
-                    {
+                    if fresh_state == TaskStatus::Completed || fresh_state == TaskStatus::Error {
                         tracing::warn!(
                             "process_input: task {} is terminal ({:?}) despite active_task_id; dropping supplement to avoid resurrection",
                             task_id,
@@ -889,7 +1014,9 @@ impl AgentLayer {
                         // set — it was ended and should not be dispatchable.
                         self.executor.remove_task(&task_id).await;
                     } else {
-                        self.executor.add_supplement(&task_id, transcript).await?;
+                        self.executor
+                            .add_supplement_with_attachments(&task_id, transcript, images)
+                            .await?;
                         if fresh_state == TaskStatus::Paused {
                             self.executor
                                 .update_task_status(&task_id, TaskStatus::Pending)
@@ -911,14 +1038,10 @@ impl AgentLayer {
             let session_id = self
                 .start_new_session()
                 .unwrap_or_else(|_| self.ensure_session());
-            self.persist_message("user", transcript, Some("text"));
+            self.persist_message_parts("user", transcript, Some("text"), images);
             let task = self
                 .executor
-                .create_task_with_summary(
-                    transcript,
-                    transcript,
-                    Some(&session_id),
-                )
+                .create_task_with_summary(transcript, transcript, Some(&session_id))
                 .await?;
             tracing::info!("process_input created task: id={:?}", task.id);
             self.events.emit_task_created(&task).await;
@@ -1171,10 +1294,7 @@ mod tests {
         });
         agent.set_emitter(recorder.clone());
 
-        let task = executor
-            .create_task("test", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("test", None).await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
     }
@@ -1182,10 +1302,7 @@ mod tests {
     #[tokio::test]
     async fn build_system_prompt_succeeds() {
         let (agent, _) = make_test_agent();
-        let prompt = agent
-            .prompt_builder
-            .build("test task", &[], &[])
-            .await;
+        let prompt = agent.prompt_builder.build("test task", &[], &[]).await;
         assert!(prompt.contains("Available tools"));
     }
 
@@ -1201,7 +1318,12 @@ mod tests {
         )
         .unwrap();
 
-        let db = Arc::new(Database::open(&std::env::temp_dir().join(format!("haven_restore_db_{}.db", uuid::Uuid::new_v4()))).unwrap());
+        let db = Arc::new(
+            Database::open(
+                &std::env::temp_dir().join(format!("haven_restore_db_{}.db", uuid::Uuid::new_v4())),
+            )
+            .unwrap(),
+        );
         let tools = Arc::new(ToolsManager::new());
         tools
             .skills_engine
@@ -1251,7 +1373,7 @@ mod tests {
     async fn persist_message_adds_to_db() {
         let (agent, _) = make_test_agent();
         let sid = agent.ensure_session();
-        agent.persist_message("user", "test message", Some("text"));
+        agent.persist_message_parts("user", "test message", Some("text"), &[]);
         // Read back via db
         let agent_ref = agent.clone();
         let read_sid = sid.clone();
@@ -1266,8 +1388,32 @@ mod tests {
         let _ = (sid, msgs);
     }
 
+    #[tokio::test]
+    async fn persist_message_with_attachments_roundtrips() {
+        let (agent, _) = make_test_agent();
+        let sid = agent.ensure_session();
+        let att = haven_memory::repositories::messages::MessageAttachment {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        agent.persist_message_parts("user", "看图", Some("text"), std::slice::from_ref(&att));
+        let agent_ref = agent.clone();
+        let read_sid = sid.clone();
+        let db = agent_ref.db.clone();
+        let msgs = db.get_session_messages_limit(&read_sid, 50).unwrap();
+        let found = msgs
+            .iter()
+            .find(|m| m.role == "user" && m.content == "看图");
+        assert!(found.is_some(), "persisted message not found in db");
+        let msg = found.unwrap();
+        assert_eq!(msg.attachments.len(), 1);
+        assert_eq!(msg.attachments[0].media_type, "image/png");
+        assert_eq!(msg.attachments[0].data, "aGVsbG8=");
+        let _ = (sid, msgs);
+    }
+
     #[test]
-    fn parse_reasoner_response_final_answer_from_text() {
+    fn parse_default_model_response_final_answer_from_text() {
         let resp = LlmResponse {
             text: "Task done.".into(),
             tool_calls: vec![],
@@ -1282,7 +1428,7 @@ mod tests {
             model: None,
             reasoning: None,
         };
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&resp, 1);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
         assert_eq!(thought, Some("Task done.".into()));
         assert_eq!(actions.len(), 1);
         assert!(actions[0].is_final);
@@ -1290,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_reasoner_response_with_tool_calls() {
+    fn parse_default_model_response_with_tool_calls() {
         let resp = LlmResponse {
             text: "Opening file.".into(),
             tool_calls: vec![ToolCall {
@@ -1309,7 +1455,7 @@ mod tests {
             model: None,
             reasoning: None,
         };
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&resp, 2);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 2);
         assert_eq!(thought, Some("Opening file.".into()));
         assert_eq!(actions.len(), 1);
         assert!(!actions[0].is_final);
@@ -1321,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_reasoner_response_final_answer_tool_call() {
+    fn parse_default_model_response_final_answer_tool_call() {
         let resp = LlmResponse {
             text: "All done.".into(),
             tool_calls: vec![ToolCall {
@@ -1340,7 +1486,7 @@ mod tests {
             model: None,
             reasoning: None,
         };
-        let (thought, actions) = ReActEngine::parse_reasoner_response(&resp, 1);
+        let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
         assert_eq!(thought, Some("All done.".into()));
         assert_eq!(actions.len(), 1);
         assert!(actions[0].is_final);
@@ -1352,15 +1498,9 @@ mod tests {
     #[tokio::test]
     async fn process_input_does_not_resurrect_ended_task() {
         let (agent, executor) = make_test_agent();
-        let task = executor
-            .create_task("original", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("original", None).await.unwrap();
         executor.end_task(&task.id).await.unwrap();
-        assert_eq!(
-            executor.get_task_state(&task.id).await,
-            TaskStatus::Error
-        );
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
 
         let result = agent
             .process_input("more context", Some(task.id.clone()))
@@ -1375,11 +1515,9 @@ mod tests {
     #[tokio::test]
     async fn process_input_reactivates_paused_task() {
         let (agent, executor) = make_test_agent();
-        let task = executor
-            .create_task("original", None)
-            .await
-            .unwrap();
-        executor.update_task_status(&task.id, TaskStatus::Paused)
+        let task = executor.create_task("original", None).await.unwrap();
+        executor
+            .update_task_status(&task.id, TaskStatus::Paused)
             .await
             .unwrap();
 
@@ -1389,8 +1527,137 @@ mod tests {
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
-        let supps: Vec<String> = executor.get_supplements(&task.id).await;
+        let supps: Vec<String> = executor
+            .get_supplements(&task.id)
+            .await
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
         assert_eq!(supps, vec!["more context"]);
+    }
+
+    fn make_recording_emitter() -> Arc<RecordingEmitter> {
+        Arc::new(RecordingEmitter {
+            thoughts: std::sync::Mutex::new(Vec::new()),
+            supplements: std::sync::Mutex::new(Vec::new()),
+            completed: std::sync::Mutex::new(false),
+        })
+    }
+
+    #[tokio::test]
+    async fn run_task_from_id_attaches_first_user_message_images() {
+        let (agent, executor) = make_test_agent();
+        agent.set_emitter(make_recording_emitter());
+        let sid = agent.ensure_session();
+        let att = haven_memory::repositories::messages::MessageAttachment {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        agent.persist_message_parts("user", "看图", Some("text"), &[att]);
+        let task = executor
+            .create_task_with_summary("看图", "看图", Some(&sid))
+            .await
+            .unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+        let snapshot: crate::types::ReActSnapshot =
+            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+        let user_msg = snapshot
+            .canonical
+            .iter()
+            .find(|m| m.role == CanonicalRole::User)
+            .expect("initial user message exists");
+        assert!(
+            user_msg
+                .content
+                .iter()
+                .any(|p| matches!(p, ContentPart::Image { .. })),
+            "initial user message should carry the image part"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_task_from_id_ignores_later_image_supplement() {
+        let (agent, executor) = make_test_agent();
+        agent.set_emitter(make_recording_emitter());
+        let sid = agent.ensure_session();
+        agent.persist_message_parts("user", "plain task", Some("text"), &[]);
+        let task = executor
+            .create_task_with_summary("plain task", "plain task", Some(&sid))
+            .await
+            .unwrap();
+        // Image arrives AFTER the task input (a supplement) — it must not be
+        // attached to the initial user turn.
+        let att = haven_memory::repositories::messages::MessageAttachment {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        agent
+            .process_input_with_images("补充看图", Some(task.id.clone()), &[att])
+            .await
+            .unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+        let snapshot: crate::types::ReActSnapshot =
+            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+        let first_user = snapshot
+            .canonical
+            .iter()
+            .find(|m| m.role == CanonicalRole::User)
+            .expect("initial user message exists");
+        assert!(
+            !first_user
+                .content
+                .iter()
+                .any(|p| matches!(p, ContentPart::Image { .. })),
+            "image supplement must not be attached to the initial user turn"
+        );
+        // The supplement itself is still injected (with its image) later.
+        assert!(
+            snapshot.canonical.iter().any(|m| m
+                .content
+                .iter()
+                .any(|p| matches!(p, ContentPart::Image { .. }))),
+            "supplement image should be injected into the conversation"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_input_with_images_queues_and_persists_attachments() {
+        let (agent, executor) = make_test_agent();
+        let sid = agent.ensure_session();
+        let task = executor
+            .create_task_with_summary("original", "original", Some(&sid))
+            .await
+            .unwrap();
+        executor
+            .update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+
+        let att = haven_memory::repositories::messages::MessageAttachment {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        let result = agent
+            .process_input_with_images("看图", Some(task.id.clone()), std::slice::from_ref(&att))
+            .await
+            .unwrap();
+        assert_eq!(result, ProcessResult::Supplemented);
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
+        let supps = executor.get_supplements(&task.id).await;
+        assert_eq!(supps.len(), 1);
+        assert_eq!(supps[0].text, "看图");
+        assert_eq!(supps[0].attachments, vec![att]);
+
+        // Persisted with attachments in the task's session.
+        let db_task = agent.db.get_task(&task.id).unwrap().unwrap();
+        let sid = db_task.session_id.expect("task has session");
+        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let user_msg = msgs
+            .iter()
+            .find(|m| m.role == "user" && m.content == "看图")
+            .expect("user message persisted");
+        assert_eq!(user_msg.attachments.len(), 1);
+        assert_eq!(user_msg.attachments[0].media_type, "image/png");
     }
 
     #[tokio::test]
@@ -1410,10 +1677,7 @@ mod tests {
     #[tokio::test]
     async fn run_fact_inference_does_not_panic() {
         let (agent, executor) = make_test_agent();
-        let task = executor
-            .create_task("test", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("test", None).await.unwrap();
         executor.end_task(&task.id).await.unwrap();
         let sid = agent.sessions.current_session_id();
         agent.inference.infer_facts(&sid).await;
@@ -1673,15 +1937,219 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor
-            .create_task("echo hello", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("echo hello", None).await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(history.len() >= 2, "should have at least 2 steps");
         assert!(collector.has_action("echo"));
         assert!(collector.has_observation("echo"));
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn run_task_ask_tool_pauses_and_surfaces_question() {
+        // The `ask` tool signals the ReAct loop to pause and wait for the
+        // user's reply (delivered as a supplement on resume). Verify the task
+        // ends Paused and the question is persisted as an assistant message.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("I need to clarify before proceeding.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "tc1".into(),
+                    name: "ask".into(),
+                    arguments: r#"{"question":"Which path should I take: A or B?"}"#.into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+            // The loop pauses after `ask`, so a second response is never
+            // consumed; include a final_answer anyway to catch regressions
+            // where the loop incorrectly continues.
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Done.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let sid = agent.ensure_session();
+        let task = executor
+            .create_task("decide a path", Some(&sid))
+            .await
+            .unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+
+        // Task must be Paused, awaiting the user's answer.
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "ask should pause the task"
+        );
+        assert!(collector.has_action("ask"));
+        assert!(collector.has_observation("ask"));
+
+        // The question must be persisted so the user can see and answer it.
+        let db_task = agent.db.get_task(&task.id).unwrap().unwrap();
+        let sid = db_task.session_id.expect("task has a session");
+        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let found = msgs
+            .iter()
+            .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
+        assert!(found, "question should be persisted as assistant message");
+    }
+
+    #[tokio::test]
+    async fn run_task_ask_resumes_after_user_answer() {
+        // After `ask` pauses the task, the user's reply arrives as a
+        // supplement; the loop resumes and should reach final_answer.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            // Step 1: agent asks.
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Clarifying.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "tc1".into(),
+                    name: "ask".into(),
+                    arguments: r#"{"question":"A or B?"}"#.into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+            // Step 2 (after resume): final answer.
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Going with A.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let sid = agent.ensure_session();
+        let task = executor
+            .create_task("pick a path", Some(&sid))
+            .await
+            .unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "ask should pause"
+        );
+
+        // User answers; the supplement flips the task back to Pending.
+        executor
+            .add_supplement(&task.id, "Use option A.")
+            .await
+            .unwrap();
+        executor
+            .update_task_status(&task.id, TaskStatus::Pending)
+            .await
+            .unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "task should pause again after final answer"
+        );
+        // The final answer text should be persisted, proving the loop resumed
+        // past the `ask` step and reached final_answer.
+        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let answered = msgs
+            .iter()
+            .any(|m| m.role == "assistant" && m.content.contains("Going with A"));
+        assert!(answered, "final answer should be persisted after resume");
+    }
+
+    #[tokio::test]
+    async fn run_task_multiple_asks_surface_all_questions() {
+        // Two `ask` calls in one batch must both be surfaced (joined into one
+        // assistant message), not just the first.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Two questions.".into()),
+                tool_calls: vec![
+                    ToolCall {
+                        id: "tc1".into(),
+                        name: "ask".into(),
+                        arguments: r#"{"question":"First?"}"#.into(),
+                    },
+                    ToolCall {
+                        id: "tc2".into(),
+                        name: "ask".into(),
+                        arguments: r#"{"question":"Second?"}"#.into(),
+                    },
+                ],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let sid = agent.ensure_session();
+        let task = executor
+            .create_task("two questions", Some(&sid))
+            .await
+            .unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "ask should pause"
+        );
+        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let persisted: String = msgs
+            .iter()
+            .filter(|m| m.role == "assistant")
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            persisted.contains("First?"),
+            "first question missing: {}",
+            persisted
+        );
+        assert!(
+            persisted.contains("Second?"),
+            "second question missing: {}",
+            persisted
+        );
     }
 
     #[tokio::test]
@@ -1732,10 +2200,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor
-            .create_task("run parallel", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("run parallel", None).await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
         assert!(collector.has_action("delay_a"));
@@ -1785,10 +2250,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor
-            .create_task("test compaction", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("test compaction", None).await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
         assert!(
@@ -1807,10 +2269,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor
-            .create_task("compaction fail", None)
-            .await
-            .unwrap();
+        let task = executor.create_task("compaction fail", None).await.unwrap();
         let result = agent.run_task_from_id(&task.id).await;
         assert!(result.is_err(), "should error when compaction fails");
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
@@ -1833,9 +2292,27 @@ mod tests {
             .await
             .unwrap();
 
-        // Persist some messages into the source session.
-        agent.db.add_message(&session.id, "user", "hello", Some("text"), None).unwrap();
-        let m2 = agent.db.add_message(&session.id, "assistant", "hi there", Some("text"), None).unwrap();
+        // Persist some messages into the source session. The first carries an
+        // image attachment, which must survive the branch copy.
+        let att = haven_memory::repositories::messages::MessageAttachment {
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        };
+        agent
+            .db
+            .add_message_with_attachments(
+                &session.id,
+                "user",
+                "hello",
+                Some("text"),
+                None,
+                std::slice::from_ref(&att),
+            )
+            .unwrap();
+        let m2 = agent
+            .db
+            .add_message(&session.id, "assistant", "hi there", Some("text"), None)
+            .unwrap();
 
         // Build a snapshot with a branch point at step 1 whose last_msg_at is
         // the timestamp of the last persisted message.
@@ -1879,6 +2356,7 @@ mod tests {
         let new_msgs = agent.db.get_session_messages(&new_session_id).unwrap();
         assert_eq!(new_msgs.len(), 2);
         assert_eq!(new_msgs[0].content, "hello");
+        assert_eq!(new_msgs[0].attachments, vec![att]);
         assert_eq!(new_msgs[1].content, "hi there");
 
         // New task has a seeded react_state snapshot.
@@ -1943,8 +2421,20 @@ mod tests {
             .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
         // Add a partial assistant message that should be cleaned up.
-        agent.db.add_message(&session.id, "user", "hello", Some("text"), None).unwrap();
-        agent.db.add_message(&session.id, "assistant", "partial output", Some("text"), None).unwrap();
+        agent
+            .db
+            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(
+                &session.id,
+                "assistant",
+                "partial output",
+                Some("text"),
+                None,
+            )
+            .unwrap();
 
         agent.continue_task(&task.id).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
@@ -1982,8 +2472,14 @@ mod tests {
             .update_task_status(&task.id, TaskStatus::Error)
             .await
             .unwrap();
-        agent.db.add_message(&session.id, "user", "hello", Some("text"), None).unwrap();
-        agent.db.add_message(&session.id, "assistant", "partial", Some("text"), None).unwrap();
+        agent
+            .db
+            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(&session.id, "assistant", "partial", Some("text"), None)
+            .unwrap();
 
         // User-message rollback (pause=true) should truncate from the user msg.
         agent.rollback_task(&task.id, 1, true).await.unwrap();
@@ -2018,8 +2514,14 @@ mod tests {
             .db
             .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
-        agent.db.add_message(&session.id, "user", "hello", Some("text"), None).unwrap();
-        agent.db.add_message(&session.id, "assistant", "partial", Some("text"), None).unwrap();
+        agent
+            .db
+            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(&session.id, "assistant", "partial", Some("text"), None)
+            .unwrap();
 
         // Rollback to step 1 with pause=false (agent rollback).
         agent.rollback_task(&task.id, 1, false).await.unwrap();

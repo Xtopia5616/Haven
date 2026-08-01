@@ -1,4 +1,7 @@
 <script>
+	import { fade, scale } from 'svelte/transition';
+	import { cubicOut } from 'svelte/easing';
+
 	let { value = '', onChange, id = undefined, min = '', max = '' } = $props();
 
 	let open = $state(false);
@@ -209,8 +212,9 @@
 		aria-modal="true"
 		tabindex="-1"
 		onkeydown={handleNonInteractiveKeydown}
+		in:fade={{ duration: 200, easing: cubicOut }}
 	>
-		<div class="md-datepicker-dialog">
+		<div class="md-datepicker-dialog" in:scale={{ start: 0.92, duration: 300, easing: cubicOut }}>
 			<div class="md-datepicker-header">
 				<span class="md-datepicker-header-label">{headerLabel()}</span>
 				<button class="md-datepicker-header-year" onclick={goToYearView} type="button" aria-label="Switch to year view">
@@ -366,11 +370,6 @@
 		align-items: center;
 		justify-content: center;
 		z-index: var(--md-sys-z-dialog);
-		animation: fadeIn var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	@keyframes fadeIn {
-		from { opacity: 0; }
-		to { opacity: 1; }
 	}
 	.md-datepicker-dialog {
 		background: var(--md-sys-color-surface-container-high);
@@ -379,11 +378,6 @@
 		width: 360px;
 		max-width: 90vw;
 		overflow: hidden;
-		animation: dialogIn var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized);
-	}
-	@keyframes dialogIn {
-		from { opacity: 0; transform: scale(0.92); }
-		to { opacity: 1; transform: scale(1); }
 	}
 
 	/* ---------- Header ---------- */

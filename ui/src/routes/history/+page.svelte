@@ -169,6 +169,7 @@
 				voice: false,
 				time: formatDate(msg.created_at),
 				streaming: false,
+				attachments: msg.attachments || [],
 			});
 		}
 

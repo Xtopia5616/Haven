@@ -33,10 +33,14 @@ impl AppState {
 
         let db_finalize = db.clone();
         tokio::spawn(async move {
-            if let Ok(n) = db_finalize.finalize_stale_tasks(10)
+            // The previous process is gone, so any task left `running` can
+            // never resume — mark it errored immediately so the user sees the
+            // interrupted state and can retry via the continue flow. This runs
+            // before any UI fetches the task list.
+            if let Ok(n) = db_finalize.finalize_orphaned_running_tasks()
                 && n > 0
             {
-                tracing::info!("finalized {} stale task(s) from previous run", n);
+                tracing::info!("finalized {} orphaned running task(s) from previous run", n);
             }
         });
 
@@ -55,10 +59,11 @@ impl AppState {
         if small_model_endpoint.api_key.is_empty() {
             tracing::debug!("small_model not configured; file summary operation disabled");
         } else {
-            tools.set_summarizer(Some(Arc::new(haven_llm::client::HttpLlmClient::new(
-                small_model_endpoint.clone(),
-            ))))
-            .await;
+            tools
+                .set_summarizer(Some(Arc::new(haven_llm::client::HttpLlmClient::new(
+                    small_model_endpoint.clone(),
+                ))))
+                .await;
         }
 
         let agent = Arc::new(AgentLayer::new(
@@ -151,9 +156,14 @@ impl AppState {
         // doesn't pay TCP+TLS handshake latency (~50-200ms).
         let router_warm = router.clone();
         tokio::spawn(async move {
-            match router_warm.health_check(haven_llm::EndpointRole::DefaultModel).await {
+            match router_warm
+                .health_check(haven_llm::EndpointRole::DefaultModel)
+                .await
+            {
                 Ok(()) => tracing::info!("LLM connection pre-warmed"),
-                Err(e) => tracing::warn!("LLM pre-warm failed (will retry on first request): {}", e),
+                Err(e) => {
+                    tracing::warn!("LLM pre-warm failed (will retry on first request): {}", e)
+                }
             }
         });
 
@@ -181,5 +191,56 @@ impl AppState {
             log_filter_handles: filter_handles,
             config_loader: config_loader_arc,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn new_initializes_core_components_with_default_config() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let db_path = dir.path().join("test.db");
+
+        // Missing config file → created with defaults.
+        let loader = ConfigLoader::load_from(&cfg_path).unwrap();
+        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+
+        // Builtin tools are registered synchronously before new() returns.
+        assert!(state.tools.get_tool("file").await.is_some());
+        assert!(state.tools.get_tool("shell").await.is_some());
+
+        // The default config is loaded and accessible via the mutex.
+        let cfg = state.config_loader.lock().unwrap().config().clone();
+        assert!(cfg.task.max_steps > 0);
+        assert_eq!(cfg.stt.provider, "mcp");
+    }
+
+    #[tokio::test]
+    async fn new_uses_existing_config() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        let db_path = dir.path().join("test.db");
+        let loader = ConfigLoader::load_from(&cfg_path).unwrap();
+        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+        state
+            .config_loader
+            .lock()
+            .unwrap()
+            .config_mut()
+            .task
+            .max_steps = 42;
+        state.config_loader.lock().unwrap().save().unwrap();
+        drop(state);
+
+        let loader2 = ConfigLoader::load_from(&cfg_path).unwrap();
+        let state2 = AppState::new(&db_path, vec![], loader2).await.unwrap();
+        assert_eq!(
+            state2.config_loader.lock().unwrap().config().task.max_steps,
+            42
+        );
     }
 }

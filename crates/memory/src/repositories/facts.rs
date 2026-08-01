@@ -287,7 +287,13 @@ impl Database {
             }
 
             // Rule 3: "my project at /path" -> ("user", "project_path", "/path", 0.7)
-            let path_patterns = ["my project at ", "my project is at ", "my project is in ", "my code is at ", "my workspace is "];
+            let path_patterns = [
+                "my project at ",
+                "my project is at ",
+                "my project is in ",
+                "my code is at ",
+                "my workspace is ",
+            ];
             for pattern in &path_patterns {
                 if let Some(idx) = content.find(pattern) {
                     let obj = content_orig[idx + pattern.len()..]
@@ -309,7 +315,11 @@ impl Database {
             }
 
             // Rule 4: "actually I prefer Y" -> correction: lower confidence of existing facts with same predicate
-            if content.contains("actually") && (content.contains("prefer") || content.contains("use") || content.contains("want")) {
+            if content.contains("actually")
+                && (content.contains("prefer")
+                    || content.contains("use")
+                    || content.contains("want"))
+            {
                 corrected_predicates.push("likes".into());
             }
 
@@ -415,6 +425,7 @@ mod tests {
             is_compacted: false,
             compaction_id: None,
             parent_message_id: None,
+            attachments: vec![],
         }
     }
 
@@ -512,12 +523,26 @@ mod tests {
     #[test]
     fn test_search_facts() {
         let db = create_db();
-        db.insert_fact("user", "likes", "Rust programming", "user", 0.9, &["preference"])
-            .unwrap();
+        db.insert_fact(
+            "user",
+            "likes",
+            "Rust programming",
+            "user",
+            0.9,
+            &["preference"],
+        )
+        .unwrap();
         db.insert_fact("user", "dislikes", "Java", "user", 0.5, &["preference"])
             .unwrap();
-        db.insert_fact("user", "uses", "TypeScript", "inferred", 0.7, &["preference"])
-            .unwrap();
+        db.insert_fact(
+            "user",
+            "uses",
+            "TypeScript",
+            "inferred",
+            0.7,
+            &["preference"],
+        )
+        .unwrap();
 
         let results = db.search_facts("programming").unwrap();
         assert_eq!(results.len(), 1);
@@ -543,8 +568,15 @@ mod tests {
             .unwrap();
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
-        db.insert_fact("user", "project_path", "/home/app", "user", 0.8, &["workspace"])
-            .unwrap();
+        db.insert_fact(
+            "user",
+            "project_path",
+            "/home/app",
+            "user",
+            0.8,
+            &["workspace"],
+        )
+        .unwrap();
 
         let results = db.search_facts("preference").unwrap();
         assert_eq!(results.len(), 1);
@@ -646,7 +678,10 @@ mod tests {
 
         let remaining = db.get_facts("user").unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].confidence, 0.9, "should keep highest confidence");
+        assert_eq!(
+            remaining[0].confidence, 0.9,
+            "should keep highest confidence"
+        );
     }
 
     #[test]

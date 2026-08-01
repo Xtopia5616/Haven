@@ -99,9 +99,7 @@ impl ToolCircuitRegistry {
 
     pub fn allow_request(&self, tool_name: &str) -> bool {
         let mut breakers = self.breakers.lock().unwrap();
-        let breaker = breakers
-            .entry(tool_name.to_string())
-            .or_default();
+        let breaker = breakers.entry(tool_name.to_string()).or_default();
         breaker.allow_request()
     }
 
@@ -114,9 +112,7 @@ impl ToolCircuitRegistry {
 
     pub fn record_failure(&self, tool_name: &str) {
         let mut breakers = self.breakers.lock().unwrap();
-        let breaker = breakers
-            .entry(tool_name.to_string())
-            .or_default();
+        let breaker = breakers.entry(tool_name.to_string()).or_default();
         breaker.record_failure()
     }
 

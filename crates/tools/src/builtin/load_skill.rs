@@ -6,8 +6,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::skills::SkillsEngine;
-use crate::{Tool, ToolResult};
 use crate::skills::runner::SkillRunner;
+use crate::{Tool, ToolResult};
 
 pub struct LoadSkillTool {
     pub skills_engine: SkillsEngine,
@@ -20,7 +20,7 @@ impl Tool for LoadSkillTool {
         "load_skill".into()
     }
     fn description(&self) -> String {
-        "Load a skill's full tool schema by name. Use this when you need to access a skill listed in the Skill Index.".into()
+        "Load a skill's tools by skill name".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -38,7 +38,9 @@ impl Tool for LoadSkillTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
         let skill_name = input["skill_name"].as_str().unwrap_or("");
         if skill_name.is_empty() {
             anyhow::bail!("skill_name is required");
@@ -66,20 +68,24 @@ impl Tool for LoadSkillTool {
             }
         });
 
-        Ok(ToolResult::ok(serde_json::json!({"skill": schema, "status": "loaded", "skill_name": skill.name()})))
+        Ok(ToolResult::ok(
+            serde_json::json!({"skill": schema, "status": "loaded", "skill_name": skill.name()}),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::venv::VenvManager;
     use crate::Tool;
+    use crate::skills::venv::VenvManager;
     use haven_common::config::SkillsExecConfig;
     use serde_json::json;
     use tempfile::TempDir;
 
-    async fn make_engine_with_skill(enabled: bool) -> (SkillsEngine, Arc<RwLock<SkillRunner>>, tempfile::TempDir) {
+    async fn make_engine_with_skill(
+        enabled: bool,
+    ) -> (SkillsEngine, Arc<RwLock<SkillRunner>>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let skill_dir = dir.path().join("echo");
         std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
@@ -100,8 +106,15 @@ mod tests {
         let skill_runner = Arc::new(RwLock::new(SkillRunner::new(venv_mgr, exec_config)));
         let engine = SkillsEngine::new();
         // `enabled` flag: Some(["echo"]) enables only echo; Some([]) disables all.
-        let filter = if enabled { Some(vec!["echo".to_string()]) } else { Some(vec![]) };
-        engine.set_config(Some(skill_dir.parent().unwrap().to_path_buf()), filter).await.unwrap();
+        let filter = if enabled {
+            Some(vec!["echo".to_string()])
+        } else {
+            Some(vec![])
+        };
+        engine
+            .set_config(Some(skill_dir.parent().unwrap().to_path_buf()), filter)
+            .await
+            .unwrap();
         (engine, skill_runner, dir)
     }
 

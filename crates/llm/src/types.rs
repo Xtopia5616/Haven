@@ -21,7 +21,8 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
                 content: m.content,
                 tool_call_id: m.tool_call_id,
                 tool_calls: m.tool_calls.map(|calls| {
-                    calls.into_iter()
+                    calls
+                        .into_iter()
                         .map(|tc| ToolCall {
                             id: tc.id,
                             name: tc.name,
@@ -115,7 +116,9 @@ impl FinishReason {
             "length" | "max_tokens" | "incomplete" | "max_length" => Some(FinishReason::Length),
             "tool_calls" | "tool_use" | "tools" => Some(FinishReason::ToolCalls),
             "function_call" => Some(FinishReason::FunctionCall),
-            "content_filter" | "safety" | "blocked" | "moderation" => Some(FinishReason::ContentFilter),
+            "content_filter" | "safety" | "blocked" | "moderation" => {
+                Some(FinishReason::ContentFilter)
+            }
             _ => None,
         }
     }
@@ -189,8 +192,8 @@ pub enum LlmError {
     #[error("unknown error: {0}")]
     Unknown(String),
 
-    /// Composite error: primary + fallback both failed
-    #[error("all endpoints failed: primary={0}, fallback={1}")]
+    /// Composite error: primary + balanced model both failed
+    #[error("all endpoints failed: primary={0}, balanced_model={1}")]
     AllEndpointsFailed(String, String),
 
     /// Stream aborted by a configured stream rule (Abort mode).
@@ -284,7 +287,10 @@ mod tests {
     #[test]
     fn finish_reason_from_openai_known_strings() {
         assert_eq!(FinishReason::from_openai("stop"), Some(FinishReason::Stop));
-        assert_eq!(FinishReason::from_openai("length"), Some(FinishReason::Length));
+        assert_eq!(
+            FinishReason::from_openai("length"),
+            Some(FinishReason::Length)
+        );
         assert_eq!(
             FinishReason::from_openai("tool_calls"),
             Some(FinishReason::ToolCalls)
@@ -397,16 +403,16 @@ mod tests {
 
     #[test]
     fn llm_error_display_stream_truncated() {
-        assert!(LlmError::StreamTruncated
-            .to_string()
-            .contains("truncated"));
+        assert!(LlmError::StreamTruncated.to_string().contains("truncated"));
     }
 
     #[test]
     fn llm_error_display_context_length_exceeded() {
-        assert!(LlmError::ContextLengthExceeded
-            .to_string()
-            .contains("context length"));
+        assert!(
+            LlmError::ContextLengthExceeded
+                .to_string()
+                .contains("context length")
+        );
     }
 
     #[test]
@@ -467,7 +473,7 @@ mod tests {
             finish_reason: None,
             usage: None,
             model: None,
-                    reasoning: None,
+            reasoning: None,
         };
         assert_eq!(chunk.text, Some("delta".into()));
         assert!(chunk.tool_calls.is_empty());
