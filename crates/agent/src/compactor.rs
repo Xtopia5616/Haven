@@ -20,6 +20,7 @@ pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
             match part {
                 ContentPart::Text(t) => total += estimate_tokens(t),
                 ContentPart::Image { .. } => total += 200, // rough image token cost
+                ContentPart::Audio { .. } => total += 500, // rough audio token cost
             }
         }
         if msg.tool_calls.is_some() {
@@ -46,13 +47,24 @@ pub struct CompactionResult {
 /// Context window pressure monitor and auto-compactor.
 ///
 /// Monitors the total estimated token count of the canonical message list
-/// after each ReAct step. When the estimate exceeds `context_window - reserve_tokens`,
-/// it compresses the oldest messages into a single summary via the DefaultModel.
+/// after each ReAct step. When the estimate exceeds `context_window *
+/// trigger_ratio` (clamped to leave room for the model's response and a
+/// retry buffer), it compresses the oldest messages into a single summary
+/// via the DefaultModel.
+///
+/// `trigger_ratio` defaults to 0.75 — i.e. compact when 75% of the context
+/// window is consumed. The previous behaviour (`context_window -
+/// reserve_tokens`) was too conservative and triggered compaction only when
+/// the model was already close to overflowing, forcing an expensive
+/// retry-and-resummarize cycle.
 pub struct ContextCompactor {
     /// Soft limit: total context window in tokens (from model config).
     pub context_window: u32,
     /// Tokens to reserve for the response.
     pub reserve_tokens: u32,
+    /// Fraction of `context_window` at which to start compacting. Lower =
+    /// more aggressive. Must be in (0, 1).
+    pub trigger_ratio: f32,
 }
 
 impl ContextCompactor {
@@ -60,14 +72,33 @@ impl ContextCompactor {
         Self {
             context_window,
             reserve_tokens,
+            trigger_ratio: 0.75,
         }
     }
 
-    /// Returns true when the message list exceeds the compact threshold,
-    /// meaning compaction should be triggered before the next LLM call.
+    pub fn with_ratio(context_window: u32, reserve_tokens: u32, ratio: f32) -> Self {
+        Self {
+            context_window,
+            reserve_tokens,
+            trigger_ratio: ratio.clamp(0.1, 0.95),
+        }
+    }
+
+    /// Returns true when the message list exceeds the compact threshold.
+    ///
+    /// We use the *lower* of:
+    /// - `context_window * trigger_ratio` (proactive cap)
+    /// - `context_window - reserve_tokens` (response headroom floor)
+    ///
+    /// Whichever is smaller triggers compaction first. This preserves the
+    /// original "leave room for response" guarantee while compacting
+    /// earlier when the model has plenty of headroom.
     pub fn needs_compaction(&self, messages: &[CanonicalMessage]) -> bool {
         let estimated = estimate_message_tokens(messages);
-        estimated > self.context_window.saturating_sub(self.reserve_tokens)
+        let ratio_threshold = (self.context_window as f64 * self.trigger_ratio as f64) as u32;
+        let headroom_threshold = self.context_window.saturating_sub(self.reserve_tokens);
+        let threshold = ratio_threshold.min(headroom_threshold.max(1));
+        estimated > threshold
     }
 
     /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
@@ -131,6 +162,7 @@ impl ContextCompactor {
             content: vec![ContentPart::text(prompt)],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         }];
 
         match router.chat(EndpointRole::DefaultModel, llm_messages).await {
@@ -150,6 +182,7 @@ impl ContextCompactor {
                     tool_calls: None,
                     tool_call_id: None,
                     parent_message_id: None,
+                    reasoning: None,
                 });
                 compacted.extend_from_slice(suffix);
 
@@ -183,6 +216,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         }
     }
 
@@ -220,6 +254,55 @@ mod tests {
         let compactor = ContextCompactor::new(1000, 200);
         let msgs = vec![make_msg(CanonicalRole::User, "Hello")];
         assert!(!compactor.needs_compaction(&msgs));
+    }
+
+    #[test]
+    fn needs_compaction_triggers_proactively_below_headroom_floor() {
+        // 100K window, 8K reserve. The old behavior triggered at 92K
+        // (headroom floor). With a 75% ratio it triggers at 75K — earlier,
+        // leaving more room for the response + retry buffer.
+        let compactor = ContextCompactor::with_ratio(100_000, 8_000, 0.75);
+        let text = "This is a realistic English sentence used to estimate conversation \
+                    tokens in the compaction test suite. ";
+        let est_single = estimate_tokens(text);
+        assert!(est_single > 0);
+        // Target ~77K estimated: comfortably above the 75K ratio threshold
+        // and comfortably below the 92K headroom floor.
+        let count = (77_000 / est_single).max(1) as usize;
+        let msgs: Vec<_> = (0..count)
+            .map(|_| make_msg(CanonicalRole::User, text))
+            .collect();
+        let est = estimate_message_tokens(&msgs);
+        assert!(
+            est > 75_000 && est <= 92_000,
+            "estimate {} must land between 75K (ratio) and 92K (headroom)",
+            est
+        );
+        assert!(
+            compactor.needs_compaction(&msgs),
+            "should compact at 75% of window before hitting the 92K headroom floor"
+        );
+    }
+
+    #[test]
+    fn needs_compaction_respects_headroom_floor_when_ratio_is_loose() {
+        // With a near-1.0 ratio the headroom floor (window - reserve) must
+        // still win, so we never compact only when the model would overflow.
+        let compactor = ContextCompactor::with_ratio(10_000, 500, 0.95);
+        let text = "x".repeat(200);
+        // ~6K estimated: below 9.5K ratio threshold AND below 9.5K headroom.
+        let msgs: Vec<_> = (0..30)
+            .map(|_| make_msg(CanonicalRole::User, &text))
+            .collect();
+        assert!(!compactor.needs_compaction(&msgs));
+    }
+
+    #[test]
+    fn with_ratio_clamps_to_valid_range() {
+        let compactor = ContextCompactor::with_ratio(1000, 100, 2.0);
+        assert!(compactor.trigger_ratio <= 0.95);
+        let compactor = ContextCompactor::with_ratio(1000, 100, 0.0);
+        assert!(compactor.trigger_ratio >= 0.1);
     }
 
     #[test]

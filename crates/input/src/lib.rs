@@ -52,6 +52,9 @@ pub struct RecordingResult {
     pub reason: RecordingReason,
     pub duration_ms: u64,
     pub transcript: Option<String>,
+    /// When transcription was attempted but failed, the underlying error
+    /// message. Surfaced to the UI instead of a generic failure notice.
+    pub transcript_error: Option<String>,
 }
 
 const TARGET_SAMPLE_RATE: u32 = 16000;
@@ -59,7 +62,17 @@ const RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 5;
 const VAD_FRAME_SAMPLES: usize = 480;
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
 const RECORDING_LOOP_INTERVAL: Duration = Duration::from_millis(30);
-const FINAL_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
+/// Upper bound for a capture-thread command round-trip. The thread answers in
+/// microseconds; the timeout only guards against a dead capture thread.
+const CAPTURE_CMD_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often the capture thread polls the command channel while idle. Keeps
+/// command latency bounded (well under CAPTURE_CMD_TIMEOUT) while letting the
+/// thread observe recoverable CPAL stream errors and rebuild the stream.
+const STREAM_MONITOR_INTERVAL: Duration = Duration::from_millis(50);
+/// Max consecutive stream rebuilds before giving up on a recoverable error.
+/// A successful rebuild resets the counter; hitting the cap ends the
+/// recording early instead of spinning forever.
+const MAX_STREAM_RESTARTS: u32 = 3;
 
 pub struct RingBuffer {
     buf: Vec<f32>,
@@ -165,28 +178,54 @@ fn downmix(data: &[f32], channels: usize) -> Vec<f32> {
     mono
 }
 
+/// Fatal stream errors end the recording early (L7). Everything else —
+/// backend-specific glitches like shared-mode conflicts or transient
+/// underruns — is treated as recoverable: the capture thread rebuilds the
+/// stream instead of aborting the session.
+fn is_fatal_stream_error(err: &cpal::StreamError) -> bool {
+    matches!(err, cpal::StreamError::DeviceNotAvailable)
+}
+
 enum CaptureCmd {
     Drain(tokio::sync::oneshot::Sender<Vec<f32>>),
     StopAndDrain(tokio::sync::oneshot::Sender<Vec<f32>>),
     StopAndClear,
-    Shutdown,
 }
 
+#[derive(Clone)]
 struct AudioCaptureHandle {
     cmd_tx: mpsc::Sender<CaptureCmd>,
 }
 
 impl AudioCaptureHandle {
-    fn drain_ring_buffer(&self) -> Vec<f32> {
+    /// Ask the capture thread to drain the ring buffer. Async: the previous
+    /// `blocking_recv()` panicked ("Cannot block the current thread from
+    /// within a runtime") because the recording loop runs inside the tokio
+    /// runtime. Bounded by CAPTURE_CMD_TIMEOUT so a dead capture thread can
+    /// never hang the loop or a stop request.
+    async fn drain_ring_buffer(&self) -> Vec<f32> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self.cmd_tx.send(CaptureCmd::Drain(tx));
-        rx.blocking_recv().unwrap_or_default()
+        if self.cmd_tx.send(CaptureCmd::Drain(tx)).is_err() {
+            return Vec::new();
+        }
+        tokio::time::timeout(CAPTURE_CMD_TIMEOUT, rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default()
     }
 
-    fn stop_and_drain(&self) -> Result<Vec<f32>> {
+    async fn stop_and_drain(&self) -> Result<Vec<f32>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self.cmd_tx.send(CaptureCmd::StopAndDrain(tx));
-        Ok(rx.blocking_recv().unwrap_or_default())
+        if self.cmd_tx.send(CaptureCmd::StopAndDrain(tx)).is_err() {
+            return Ok(Vec::new());
+        }
+        let data = tokio::time::timeout(CAPTURE_CMD_TIMEOUT, rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        Ok(data)
     }
 
     fn stop_and_clear(&self) -> Result<()> {
@@ -195,16 +234,11 @@ impl AudioCaptureHandle {
     }
 }
 
-impl Drop for AudioCaptureHandle {
-    fn drop(&mut self) {
-        let _ = self.cmd_tx.send(CaptureCmd::Shutdown);
-    }
-}
-
 fn spawn_capture_thread(
     ring: Arc<StdMutex<RingBuffer>>,
     resampler: Arc<StdMutex<Resampler>>,
     failed: Arc<AtomicBool>,
+    stream_error: Arc<AtomicBool>,
 ) -> Result<mpsc::Sender<CaptureCmd>> {
     let host = cpal::default_host();
     let device = host
@@ -220,15 +254,34 @@ fn spawn_capture_thread(
 
     let ring_for_build = ring.clone();
     let resampler_for_build = resampler.clone();
-    let err_fn = {
-        let failed = failed.clone();
-        move |err: cpal::StreamError| {
-            tracing::error!("CPAL stream error: {err}");
-            failed.store(true, Ordering::SeqCst);
-        }
-    };
-
+    let build_failed = failed.clone();
+    let build_stream_error = stream_error.clone();
     let build = move |sf: SampleFormat| -> Result<Stream> {
+        // Error callback built per attempt: it must be Clone-able per sample
+        // format arm, and it distinguishes fatal (device lost) from
+        // recoverable (transient backend) errors. Recoverable errors set
+        // `stream_error`, which the capture thread observes between commands
+        // and responds to by rebuilding the stream — a transient glitch no
+        // longer aborts the recording (L7 only fires for fatal failures).
+        let err_fn = {
+            let failed = build_failed.clone();
+            let stream_error = build_stream_error.clone();
+            move |err: cpal::StreamError| {
+                if is_fatal_stream_error(&err) {
+                    // The device was unplugged/disabled: the stream cannot
+                    // recover, mark the recording as failed so the loop stops
+                    // early instead of recording silence until max_duration.
+                    tracing::error!("CPAL device lost: {err}");
+                    failed.store(true, Ordering::SeqCst);
+                } else {
+                    // Backend-specific errors (shared-mode conflicts,
+                    // transient underruns, …) can be recoverable; the capture
+                    // thread will try to rebuild the stream.
+                    tracing::error!("CPAL stream error (recoverable): {err}");
+                    stream_error.store(true, Ordering::SeqCst);
+                }
+            }
+        };
         match sf {
             SampleFormat::F32 => {
                 let r = ring_for_build.clone();
@@ -246,7 +299,7 @@ fn spawn_capture_thread(
                             .expect("ring buffer lock poisoned")
                             .push(&processed);
                     },
-                    err_fn,
+                    err_fn.clone(),
                     None,
                 )
             }
@@ -268,7 +321,7 @@ fn spawn_capture_thread(
                             .expect("ring buffer lock poisoned")
                             .push(&processed);
                     },
-                    err_fn,
+                    err_fn.clone(),
                     None,
                 )
             }
@@ -290,7 +343,7 @@ fn spawn_capture_thread(
                             .expect("ring buffer lock poisoned")
                             .push(&processed);
                     },
-                    err_fn,
+                    err_fn.clone(),
                     None,
                 )
             }
@@ -312,7 +365,7 @@ fn spawn_capture_thread(
                             .expect("ring buffer lock poisoned")
                             .push(&processed);
                     },
-                    err_fn,
+                    err_fn.clone(),
                     None,
                 )
             }
@@ -332,48 +385,90 @@ fn spawn_capture_thread(
                 Ok(s) => {
                     if let Err(e) = s.play() {
                         tracing::error!("CPAL stream play failed: {e}");
+                        failed.store(true, Ordering::SeqCst);
                         return;
                     }
                     Some(s)
                 }
                 Err(e) => {
                     tracing::error!("CPAL stream build failed: {e}");
+                    failed.store(true, Ordering::SeqCst);
                     return;
                 }
             };
             let stream = StdMutex::new(stream);
 
-            for cmd in cmd_rx {
-                match cmd {
-                    CaptureCmd::Drain(tx) => {
-                        let data = ring.lock().expect("ring buffer lock poisoned").drain();
-                        let _ = tx.send(data);
-                    }
-                    CaptureCmd::StopAndDrain(tx) => {
-                        let mut guard = stream.lock().expect("capture stream lock poisoned");
-                        if let Some(s) = guard.take() {
-                            drop(s);
+            // Command loop with a bounded poll: commands are served within
+            // STREAM_MONITOR_INTERVAL, and in between the thread watches for
+            // recoverable CPAL errors (`stream_error`) and rebuilds the
+            // stream, up to MAX_STREAM_RESTARTS consecutive failures. The
+            // thread exits when every command sender is dropped (channel
+            // disconnect) — dropping the stream and stopping capture. There
+            // is intentionally no `Shutdown` command / Drop side-effect:
+            // killing the thread at loop exit used to race `stop_and_drain`
+            // and silently drop the trailing audio.
+            let mut restart_count: u32 = 0;
+            loop {
+                match cmd_rx.recv_timeout(STREAM_MONITOR_INTERVAL) {
+                    Ok(cmd) => match cmd {
+                        CaptureCmd::Drain(tx) => {
+                            let data = ring.lock().expect("ring buffer lock poisoned").drain();
+                            let _ = tx.send(data);
                         }
+                        CaptureCmd::StopAndDrain(tx) => {
+                            let mut guard = stream.lock().expect("capture stream lock poisoned");
+                            if let Some(s) = guard.take() {
+                                drop(s);
+                            }
+                            drop(guard);
+                            let data = ring.lock().expect("ring buffer lock poisoned").drain();
+                            failed.store(false, Ordering::SeqCst);
+                            stream_error.store(false, Ordering::SeqCst);
+                            let _ = tx.send(data);
+                        }
+                        CaptureCmd::StopAndClear => {
+                            let mut guard = stream.lock().expect("capture stream lock poisoned");
+                            if let Some(s) = guard.take() {
+                                drop(s);
+                            }
+                            drop(guard);
+                            ring.lock().expect("ring buffer lock poisoned").clear();
+                            failed.store(false, Ordering::SeqCst);
+                            stream_error.store(false, Ordering::SeqCst);
+                        }
+                    },
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if !stream_error.swap(false, Ordering::SeqCst) {
+                            continue;
+                        }
+                        restart_count += 1;
+                        if restart_count > MAX_STREAM_RESTARTS {
+                            tracing::error!("CPAL stream failed {restart_count} times; giving up");
+                            failed.store(true, Ordering::SeqCst);
+                            let mut guard = stream.lock().expect("capture stream lock poisoned");
+                            *guard = None;
+                            continue;
+                        }
+                        tracing::warn!("CPAL stream error; rebuilding stream");
+                        let mut guard = stream.lock().expect("capture stream lock poisoned");
+                        *guard = None;
                         drop(guard);
-                        let data = ring.lock().expect("ring buffer lock poisoned").drain();
-                        failed.store(false, Ordering::SeqCst);
-                        let _ = tx.send(data);
-                    }
-                    CaptureCmd::StopAndClear => {
-                        let mut guard = stream.lock().expect("capture stream lock poisoned");
-                        if let Some(s) = guard.take() {
-                            drop(s);
+                        match build(sample_format) {
+                            Ok(s) => match s.play() {
+                                Ok(()) => {
+                                    *stream.lock().expect("capture stream lock poisoned") = Some(s);
+                                    restart_count = 0;
+                                    tracing::info!("CPAL stream rebuilt");
+                                }
+                                Err(e) => {
+                                    tracing::error!("CPAL stream rebuild play failed: {e}");
+                                }
+                            },
+                            Err(e) => {
+                                tracing::error!("CPAL stream rebuild failed: {e}");
+                            }
                         }
-                        drop(guard);
-                        ring.lock().expect("ring buffer lock poisoned").clear();
-                        failed.store(false, Ordering::SeqCst);
-                    }
-                    CaptureCmd::Shutdown => {
-                        let mut guard = stream.lock().expect("capture stream lock poisoned");
-                        if let Some(s) = guard.take() {
-                            drop(s);
-                        }
-                        return;
                     }
                 }
             }
@@ -424,8 +519,10 @@ impl InputPipeline {
         *self.handler.lock().expect("handler lock poisoned") = Some(handler);
     }
 
-    pub async fn set_stt_client(&self, client: Box<dyn SttClient>) {
-        *self.stt_client.lock().await = Some(client);
+    /// Install or clear the STT client. `None` disables transcription
+    /// (e.g. when the provider is set to `none` at runtime).
+    pub async fn set_stt_client(&self, client: Option<Box<dyn SttClient>>) {
+        *self.stt_client.lock().await = client;
     }
 
     pub async fn process_vad_frame(&self, frame: &[f32]) -> vad::VadSignal {
@@ -464,6 +561,7 @@ impl InputPipeline {
 
         let ring = Arc::new(StdMutex::new(RingBuffer::new(RING_CAPACITY)));
         let failed = Arc::new(AtomicBool::new(false));
+        let stream_error = Arc::new(AtomicBool::new(false));
         let resampler = Arc::new(StdMutex::new(Resampler::new(
             cpal::default_host()
                 .default_input_device()
@@ -473,7 +571,16 @@ impl InputPipeline {
             TARGET_SAMPLE_RATE as f64,
         )));
 
-        let cmd_tx = spawn_capture_thread(ring, resampler, failed.clone())?;
+        let cmd_tx = match spawn_capture_thread(ring, resampler, failed.clone(), stream_error) {
+            Ok(tx) => tx,
+            Err(e) => {
+                // Roll back the state we just set, otherwise a failed start
+                // leaves the pipeline stuck in `Recording` and every later
+                // stop attempt fails with "not recording".
+                *self.state.lock().await = RecordingState::Pending;
+                return Err(e);
+            }
+        };
 
         let capture_handle = AudioCaptureHandle { cmd_tx };
         *self.capture.lock().expect("capture lock poisoned") = Some(capture_handle);
@@ -523,19 +630,31 @@ impl InputPipeline {
             Duration::from_secs(config.max_duration_secs)
         };
 
+        // Clone the capture handle ONCE for the whole session. Clones are
+        // side-effect free (there is no Drop impl sending Shutdown anymore):
+        // the capture thread stays alive until every sender is dropped,
+        // which is exactly what lets `stop_recording` call `stop_and_drain`
+        // afterwards and capture the trailing audio between the loop's final
+        // drain and the actual stream teardown.
+        let capture_handle = {
+            let guard = data.capture.lock().expect("capture lock poisoned");
+            guard.as_ref().cloned()
+        };
+
         let mut accumulated_pcm: Vec<f32> = Vec::new();
         let mut vad_partial: Vec<f32> = Vec::new();
         let mut last_vad_status = std::time::Instant::now();
 
         loop {
             if cancel.is_cancelled() {
-                Self::final_drain(&data, &mut accumulated_pcm).await;
+                Self::final_drain(&mut accumulated_pcm, &capture_handle).await;
                 let elapsed = start.elapsed();
                 return RecordingResult {
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
                     transcript: None,
+                    transcript_error: None,
                 };
             }
 
@@ -544,25 +663,36 @@ impl InputPipeline {
             // silently recording silence until max_duration.
             if data.failed.load(Ordering::SeqCst) {
                 tracing::warn!("audio capture stream failed; stopping recording early");
-                Self::final_drain(&data, &mut accumulated_pcm).await;
+                Self::final_drain(&mut accumulated_pcm, &capture_handle).await;
                 let elapsed = start.elapsed();
                 let h = data.handler.lock().expect("handler lock poisoned").clone();
                 if let Some(h) = h {
-                    h.on_auto_stop().await;
+                    // Fire-and-forget: on_auto_stop drives `stop_recording`,
+                    // which awaits the loop's result channel. Awaiting it here
+                    // would deadlock (the loop can't return while blocked).
+                    tokio::spawn(async move {
+                        h.on_auto_stop().await;
+                    });
                 }
                 return RecordingResult {
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
                     duration_ms: elapsed.as_millis() as u64,
                     transcript: None,
+                    transcript_error: None,
                 };
             }
 
             if start.elapsed() >= max_duration {
-                Self::final_drain(&data, &mut accumulated_pcm).await;
+                Self::final_drain(&mut accumulated_pcm, &capture_handle).await;
                 let h = data.handler.lock().expect("handler lock poisoned").clone();
                 if let Some(h) = h {
-                    h.on_auto_stop().await;
+                    // Fire-and-forget: on_auto_stop drives `stop_recording`,
+                    // which awaits the loop's result channel. Awaiting it here
+                    // would deadlock (the loop can't return while blocked).
+                    tokio::spawn(async move {
+                        h.on_auto_stop().await;
+                    });
                 }
                 let elapsed = start.elapsed();
                 return RecordingResult {
@@ -570,15 +700,13 @@ impl InputPipeline {
                     reason: RecordingReason::MaxDuration,
                     duration_ms: elapsed.as_millis() as u64,
                     transcript: None,
+                    transcript_error: None,
                 };
             }
 
-            let new_data = {
-                let capture_guard = data.capture.lock().expect("capture lock poisoned");
-                match capture_guard.as_ref() {
-                    Some(capture) => capture.drain_ring_buffer(),
-                    None => Vec::new(),
-                }
+            let new_data = match &capture_handle {
+                Some(capture) => capture.drain_ring_buffer().await,
+                None => Vec::new(),
             };
 
             if !new_data.is_empty() {
@@ -618,10 +746,16 @@ impl InputPipeline {
                     };
 
                     if signal == vad::VadSignal::AutoStop {
-                        Self::final_drain(&data, &mut accumulated_pcm).await;
+                        Self::final_drain(&mut accumulated_pcm, &capture_handle).await;
                         let h = data.handler.lock().expect("handler lock poisoned").clone();
                         if let Some(h) = h {
-                            h.on_auto_stop().await;
+                            // Fire-and-forget: on_auto_stop drives
+                            // `stop_recording`, which awaits the loop's result
+                            // channel. Awaiting it here would deadlock (the
+                            // loop can't return while blocked).
+                            tokio::spawn(async move {
+                                h.on_auto_stop().await;
+                            });
                         }
                         let elapsed = start.elapsed();
                         return RecordingResult {
@@ -629,6 +763,7 @@ impl InputPipeline {
                             reason: RecordingReason::Silence,
                             duration_ms: elapsed.as_millis() as u64,
                             transcript: None,
+                            transcript_error: None,
                         };
                     }
                 }
@@ -638,15 +773,30 @@ impl InputPipeline {
                 }
             }
 
-            tokio::time::sleep(RECORDING_LOOP_INTERVAL).await;
+            // Poll cadence is RECORDING_LOOP_INTERVAL during active recording,
+            // but we must break out of the sleep the instant the user (or an
+            // auto-stop path) cancels the recording — otherwise the UI keeps
+            // the red "recording" overlay up for up to one full poll interval
+            // (~30 ms) before the loop notices and returns. Race the sleep
+            // against the cancel token so stop feels instant.
+            tokio::select! {
+                _ = tokio::time::sleep(RECORDING_LOOP_INTERVAL) => {}
+                _ = cancel.cancelled() => {}
+            }
         }
     }
 
-    async fn final_drain(data: &LoopData, accum: &mut Vec<f32>) {
-        tokio::time::sleep(FINAL_DRAIN_TIMEOUT).await;
-        let capture_guard = data.capture.lock().expect("capture lock poisoned");
-        if let Some(ref capture) = *capture_guard {
-            let remaining = capture.drain_ring_buffer();
+    async fn final_drain(accum: &mut Vec<f32>, capture_handle: &Option<AudioCaptureHandle>) {
+        // No more sleeping here: the 50 ms `FINAL_DRAIN_TIMEOUT` delay used
+        // to be the dominant source of "click stop, wait a beat before the
+        // overlay disappears" latency. Trailing audio is already captured by
+        // the `stop_and_drain` call that `stop_recording` makes right after
+        // this loop returns, so this drain is just an opportunistic grab of
+        // whatever the capture thread pushed between the loop's last
+        // `drain_ring_buffer` and the cancel signal — it doesn't need to
+        // wait for it.
+        if let Some(capture) = capture_handle {
+            let remaining = capture.drain_ring_buffer().await;
             accum.extend_from_slice(&remaining);
         }
     }
@@ -696,7 +846,73 @@ impl InputPipeline {
         Ok(())
     }
 
+    /// Stop the audio capture and return the captured PCM. Runs no STT and
+    /// leaves `transcript`/`transcript_error` unset. Splitting capture from
+    /// STT lets callers (Tauri commands, VAD auto-stop) emit
+    /// `recording:stopped` to the UI as soon as the recording has actually
+    /// ended, instead of making the user wait through STT and the agent
+    /// ReAct loop before the UI flips out of "recording" state.
+    pub async fn stop_capture(&self) -> Result<RecordingResult> {
+        let result = self.stop_capture_inner().await?;
+        // Set Pending immediately so the UI sees the recording as ended
+        // (state machine is back at Pending → a new start_recording is free
+        // to run) and so the cancelled recording loop's STT does not race a
+        // fresh session.
+        *self.state.lock().await = RecordingState::Pending;
+        Ok(result)
+    }
+
+    /// Run STT on a previously-captured result, mutating `transcript` /
+    /// `transcript_error` in place. Safe to call after `stop_capture`.
+    pub async fn transcribe(&self, result: &mut RecordingResult) {
+        if result.pcm.is_empty() {
+            return;
+        }
+        let stt_guard = self.stt_client.lock().await;
+        if let Some(ref client) = *stt_guard {
+            // `result.pcm` is always the resampled mono stream at
+            // TARGET_SAMPLE_RATE; encode it with its true format so the
+            // WAV header matches the data even if AudioConfig.sample_rate
+            // / channels were configured differently.
+            let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
+            match client.transcribe(&wav).await {
+                Ok(text) => {
+                    // Empty transcription (silence / too-short clip) means
+                    // "no speech": leave both fields unset so the caller
+                    // skips the message instead of submitting blank input.
+                    if !text.trim().is_empty() {
+                        result.transcript = Some(text);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("STT transcription failed: {}", e);
+                    result.transcript_error = Some(e.to_string());
+                }
+            }
+        } else {
+            result.transcript_error = Some(
+                "未配置 STT 服务（设置 → STT Provider 选择 MCP Server 或 LLM Adapter）".into(),
+            );
+        }
+    }
+
+    /// Backwards-compatible single-call stop: captures audio and runs STT
+    /// inline. New callers should prefer `stop_capture` + `transcribe` so
+    /// the UI can be notified that the recording has ended before STT
+    /// begins.
     pub async fn stop_recording(&self) -> Result<RecordingResult> {
+        let mut result = self.stop_capture().await?;
+        self.transcribe(&mut result).await;
+        tracing::debug!(
+            "Recording stopped, {} samples, reason={:?}, transcript={}",
+            result.pcm.len(),
+            result.reason,
+            result.transcript.is_some(),
+        );
+        Ok(result)
+    }
+
+    async fn stop_capture_inner(&self) -> Result<RecordingResult> {
         let mut state = self.state.lock().await;
         let prev_state = std::mem::replace(&mut *state, RecordingState::Processing);
         if prev_state != RecordingState::Recording {
@@ -714,7 +930,7 @@ impl InputPipeline {
             token.cancel();
         }
 
-        let mut result = {
+        let result = {
             let rx = self
                 .result_rx
                 .lock()
@@ -723,10 +939,12 @@ impl InputPipeline {
             match rx {
                 Some(rx) => match rx.await {
                     Ok(mut inner) => {
-                        if let Some(ref capture) =
-                            *self.capture.lock().expect("capture lock poisoned")
-                        {
-                            let remaining = capture.stop_and_drain()?;
+                        let capture = {
+                            let guard = self.capture.lock().expect("capture lock poisoned");
+                            guard.as_ref().cloned()
+                        };
+                        if let Some(capture) = capture {
+                            let remaining = capture.stop_and_drain().await?;
                             if !remaining.is_empty() {
                                 inner.pcm.extend_from_slice(&remaining);
                                 if inner.duration_ms == 0 {
@@ -738,12 +956,13 @@ impl InputPipeline {
                         inner
                     }
                     Err(_) => {
-                        let pcm = if let Some(ref capture) =
-                            *self.capture.lock().expect("capture lock poisoned")
-                        {
-                            capture.stop_and_drain()?
-                        } else {
-                            Vec::new()
+                        let capture = {
+                            let guard = self.capture.lock().expect("capture lock poisoned");
+                            guard.as_ref().cloned()
+                        };
+                        let pcm = match capture {
+                            Some(capture) => capture.stop_and_drain().await?,
+                            None => Vec::new(),
                         };
                         let duration_ms = if !pcm.is_empty() {
                             (pcm.len() as u64 * 1000) / TARGET_SAMPLE_RATE as u64
@@ -755,16 +974,18 @@ impl InputPipeline {
                             reason: RecordingReason::Manual,
                             duration_ms,
                             transcript: None,
+                            transcript_error: None,
                         }
                     }
                 },
                 None => {
-                    let pcm = if let Some(ref capture) =
-                        *self.capture.lock().expect("capture lock poisoned")
-                    {
-                        capture.stop_and_drain()?
-                    } else {
-                        Vec::new()
+                    let capture = {
+                        let guard = self.capture.lock().expect("capture lock poisoned");
+                        guard.as_ref().cloned()
+                    };
+                    let pcm = match capture {
+                        Some(capture) => capture.stop_and_drain().await?,
+                        None => Vec::new(),
                     };
                     let duration_ms = if !pcm.is_empty() {
                         (pcm.len() as u64 * 1000) / TARGET_SAMPLE_RATE as u64
@@ -776,6 +997,7 @@ impl InputPipeline {
                         reason: RecordingReason::Manual,
                         duration_ms,
                         transcript: None,
+                        transcript_error: None,
                     }
                 }
             }
@@ -785,32 +1007,6 @@ impl InputPipeline {
         *self.vad_engine.lock().expect("vad_engine lock poisoned") = None;
         self.vad_detector.lock().await.reset();
 
-        // Run STT if a client is configured
-        if !result.pcm.is_empty() {
-            let stt_guard = self.stt_client.lock().await;
-            if let Some(ref client) = *stt_guard {
-                let config = self.config.lock().await;
-                let wav = encode_wav_to_vec(&result.pcm, config.sample_rate, config.channels);
-                drop(config);
-                match client.transcribe(&wav).await {
-                    Ok(text) => {
-                        result.transcript = Some(text);
-                    }
-                    Err(e) => {
-                        tracing::warn!("STT transcription failed: {}", e);
-                    }
-                }
-            }
-            drop(stt_guard);
-        }
-
-        *self.state.lock().await = RecordingState::Pending;
-        tracing::debug!(
-            "Recording stopped, {} samples, reason={:?}, transcript={}",
-            result.pcm.len(),
-            result.reason,
-            result.transcript.is_some(),
-        );
         Ok(result)
     }
 
@@ -912,6 +1108,19 @@ mod tests {
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.4).abs() < 1e-6);
         assert!((mono[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fatal_stream_error_classification() {
+        assert!(is_fatal_stream_error(
+            &cpal::StreamError::DeviceNotAvailable
+        ));
+        let transient = cpal::StreamError::BackendSpecific {
+            err: cpal::BackendSpecificError {
+                description: "shared mode conflict".into(),
+            },
+        };
+        assert!(!is_fatal_stream_error(&transient));
     }
 
     #[test]
@@ -1017,7 +1226,11 @@ mod tests {
             }
         }
         let pipeline = InputPipeline::new();
-        pipeline.set_stt_client(Box::new(DummySttClient)).await;
+        pipeline.set_stt_client(Some(Box::new(DummySttClient))).await;
+        assert!(pipeline.stt_client.lock().await.is_some());
+        // Clearing with None disables transcription again.
+        pipeline.set_stt_client(None).await;
+        assert!(pipeline.stt_client.lock().await.is_none());
     }
 
     #[tokio::test]
@@ -1105,6 +1318,7 @@ mod tests {
             reason: RecordingReason::Manual,
             duration_ms: 0,
             transcript: None,
+            transcript_error: None,
         };
         assert_eq!(result.pcm.len(), 2);
         assert_eq!(result.reason, RecordingReason::Manual);
@@ -1120,8 +1334,34 @@ mod tests {
             reason: RecordingReason::Cancel,
             duration_ms: 0,
             transcript: None,
+            transcript_error: None,
         };
         assert!(result.pcm.is_empty());
         assert_eq!(result.duration_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn test_transcribe_skips_empty_text() {
+        // An empty transcription (silence / too-short clip) must leave both
+        // fields unset instead of surfacing as an error or blank input.
+        struct EmptySttClient;
+        #[async_trait::async_trait]
+        impl SttClient for EmptySttClient {
+            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<String> {
+                Ok("   ".into())
+            }
+        }
+        let pipeline = InputPipeline::new();
+        pipeline.set_stt_client(Some(Box::new(EmptySttClient))).await;
+        let mut result = RecordingResult {
+            pcm: vec![0.0; 160],
+            reason: RecordingReason::Manual,
+            duration_ms: 10,
+            transcript: None,
+            transcript_error: None,
+        };
+        pipeline.transcribe(&mut result).await;
+        assert!(result.transcript.is_none());
+        assert!(result.transcript_error.is_none());
     }
 }

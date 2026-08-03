@@ -36,6 +36,18 @@ impl Default for AudioConfig {
 #[serde(default)]
 pub struct ModelEndpoint {
     pub provider: String,
+    /// Wire protocol style for this endpoint. One of:
+    /// - `openai-chat` (default): OpenAI `/chat/completions` compatible
+    ///   (also Ollama, vLLM, DeepSeek, and most gateways)
+    /// - `openai-responses`: OpenAI Responses API (`/v1/responses`)
+    /// - `anthropic`: Anthropic Messages API (`/v1/messages`)
+    /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
+    ///
+    /// When empty/`None`, the style is derived from `provider`
+    /// (`anthropic` → anthropic, `google`/`gemini` → gemini, otherwise
+    /// openai-chat).
+    #[serde(default)]
+    pub api_style: Option<String>,
     pub base_url: String,
     pub api_key: String,
     #[serde(alias = "model")]
@@ -61,6 +73,13 @@ pub struct ModelEndpoint {
     pub auth_header_prefix: String,
     // §2.9: streaming timeout (None = no timeout until SSE ends)
     pub timeout_streaming_secs: Option<u64>,
+    // §2.8: reasoning effort for reasoning models ("low" | "medium" | "high"),
+    // forwarded to OpenAI-compatible APIs as `reasoning_effort`.
+    pub reasoning_effort: Option<String>,
+    // §3.16: cost tracking. USD per 1K tokens (input and output). When both
+    // are zero, cost is reported as None.
+    pub cost_per_1k_input_tokens: f64,
+    pub cost_per_1k_output_tokens: f64,
 }
 
 fn default_auth_header_name() -> String {
@@ -71,10 +90,26 @@ fn default_auth_header_prefix() -> String {
     "Bearer".into()
 }
 
+/// Compute USD cost for the given token counts using this endpoint's pricing.
+/// Returns `None` when both pricing fields are zero (cost not configured).
+pub fn compute_cost_usd(
+    endpoint: &ModelEndpoint,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+) -> Option<f64> {
+    if endpoint.cost_per_1k_input_tokens <= 0.0 && endpoint.cost_per_1k_output_tokens <= 0.0 {
+        return None;
+    }
+    let input = (prompt_tokens as f64 / 1000.0) * endpoint.cost_per_1k_input_tokens;
+    let output = (completion_tokens as f64 / 1000.0) * endpoint.cost_per_1k_output_tokens;
+    Some(input + output)
+}
+
 impl Default for ModelEndpoint {
     fn default() -> Self {
         Self {
             provider: "openai".into(),
+            api_style: None,
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
             model_name: "gpt-4o-mini".into(),
@@ -93,6 +128,9 @@ impl Default for ModelEndpoint {
             auth_header_name: default_auth_header_name(),
             auth_header_prefix: default_auth_header_prefix(),
             timeout_streaming_secs: None,
+            reasoning_effort: None,
+            cost_per_1k_input_tokens: 0.0,
+            cost_per_1k_output_tokens: 0.0,
         }
     }
 }
@@ -103,6 +141,8 @@ pub struct LlmConfig {
     pub small_model: ModelEndpoint,
     pub default_model: ModelEndpoint,
     pub balanced_model: ModelEndpoint,
+    pub image_model: ModelEndpoint,
+    pub audio_model: ModelEndpoint,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
     // §2.3/5.1: retry backoff parameters
@@ -110,6 +150,14 @@ pub struct LlmConfig {
     pub retry_factor: u32,
     pub retry_max_secs: u64,
     pub retry_jitter: f32,
+    /// Route recording transcription through the dedicated `audio_model`
+    /// endpoint. When false (or the endpoint is unconfigured), the default
+    /// model handles transcription.
+    pub stt_use_audio_model: bool,
+    /// Route image understanding (chat attachments and file-tool vision)
+    /// through the dedicated `image_model` endpoint. When false, the default
+    /// model handles images.
+    pub vision_use_image_model: bool,
 }
 
 impl Default for LlmConfig {
@@ -118,11 +166,15 @@ impl Default for LlmConfig {
             small_model: ModelEndpoint::default(),
             default_model: ModelEndpoint::default(),
             balanced_model: ModelEndpoint::default(),
+            image_model: ModelEndpoint::default(),
+            audio_model: ModelEndpoint::default(),
             max_total_duration_secs: 180,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,
             retry_jitter: 0.2,
+            stt_use_audio_model: true,
+            vision_use_image_model: true,
         }
     }
 }
@@ -202,8 +254,29 @@ impl Default for SecurityConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SttConfig {
+    /// Speech-to-text provider. One of:
+    /// - `mcp`: route through an MCP server exposing `stt.transcribe`
+    /// - `llm`: transcribe via the configured `audio_model` LLM endpoint
+    /// - `openai`: OpenAI Whisper-compatible `/audio/transcriptions`
+    ///   (also Groq, Deepgram's OpenAI-compatible endpoint, Together,
+    ///   local whisper.cpp/LM Studio, and most gateways)
+    /// - `groq`: Groq host with OpenAI-Whisper-compatible wire format
+    /// - `gemini`: Google Gemini `generateContent` audio transcription
+    /// - `deepgram`: Deepgram REST `/v1/listen`
+    /// - `assemblyai`: AssemblyAI `/v2/transcript`
+    /// - `none`: no transcription
     pub provider: String,
+    /// MCP server name when `provider == "mcp"`.
     pub mcp_server: Option<String>,
+    /// API key for cloud STT providers.
+    pub api_key: String,
+    /// Model id for providers that require one (e.g. `whisper-1`,
+    /// `nova-2`, `whisper-large-v3-turbo`).
+    pub model: String,
+    /// Base URL override for OpenAI-compatible providers. Overrides the
+    /// provider's default host when non-empty.
+    pub base_url: String,
+    /// Transcription timeout in seconds.
     pub timeout_secs: u64,
 }
 
@@ -212,6 +285,9 @@ impl Default for SttConfig {
         Self {
             provider: "mcp".into(),
             mcp_server: None,
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
             timeout_secs: 30,
         }
     }
@@ -514,6 +590,10 @@ impl From<&AppConfig> for Settings {
         llm.small_model.api_key = String::new();
         llm.default_model.api_key = String::new();
         llm.balanced_model.api_key = String::new();
+        llm.image_model.api_key = String::new();
+        llm.audio_model.api_key = String::new();
+        let mut stt = c.stt.clone();
+        stt.api_key = String::new();
         Self {
             audio: c.audio.clone(),
             llm,
@@ -521,7 +601,7 @@ impl From<&AppConfig> for Settings {
             task: c.task.clone(),
             memory: c.memory.clone(),
             security: c.security.clone(),
-            stt: c.stt.clone(),
+            stt,
             skills: c.skills.clone(),
             skills_exec: c.skills_exec.clone(),
             mcp_discovery: c.mcp_discovery.clone(),
@@ -623,16 +703,22 @@ impl ConfigLoader {
         let prev_small_key = self.config.llm.small_model.api_key.clone();
         let prev_default_key = self.config.llm.default_model.api_key.clone();
         let prev_balanced_key = self.config.llm.balanced_model.api_key.clone();
+        let prev_image_key = self.config.llm.image_model.api_key.clone();
+        let prev_audio_key = self.config.llm.audio_model.api_key.clone();
 
         let incoming = settings.llm.clone();
         self.config.llm.small_model = incoming.small_model.clone();
         self.config.llm.default_model = incoming.default_model.clone();
         self.config.llm.balanced_model = incoming.balanced_model.clone();
+        self.config.llm.image_model = incoming.image_model.clone();
+        self.config.llm.audio_model = incoming.audio_model.clone();
         self.config.llm.max_total_duration_secs = incoming.max_total_duration_secs;
         self.config.llm.retry_base_secs = incoming.retry_base_secs;
         self.config.llm.retry_factor = incoming.retry_factor;
         self.config.llm.retry_max_secs = incoming.retry_max_secs;
         self.config.llm.retry_jitter = incoming.retry_jitter;
+        self.config.llm.stt_use_audio_model = incoming.stt_use_audio_model;
+        self.config.llm.vision_use_image_model = incoming.vision_use_image_model;
 
         if settings.llm.small_model.api_key.is_empty() {
             self.config.llm.small_model.api_key = prev_small_key;
@@ -643,13 +729,27 @@ impl ConfigLoader {
         if settings.llm.balanced_model.api_key.is_empty() {
             self.config.llm.balanced_model.api_key = prev_balanced_key;
         }
+        if settings.llm.image_model.api_key.is_empty() {
+            self.config.llm.image_model.api_key = prev_image_key;
+        }
+        if settings.llm.audio_model.api_key.is_empty() {
+            self.config.llm.audio_model.api_key = prev_audio_key;
+        }
 
         self.config.audio = settings.audio.clone();
         self.config.hotkey = settings.hotkey.clone();
         self.config.task = settings.task.clone();
         self.config.memory = settings.memory.clone();
         self.config.security = settings.security.clone();
-        self.config.stt = settings.stt.clone();
+        self.config.stt = {
+            let incoming = settings.stt.clone();
+            let prev_key = self.config.stt.api_key.clone();
+            let mut s = incoming;
+            if s.api_key.is_empty() {
+                s.api_key = prev_key;
+            }
+            s
+        };
         self.config.skills = settings.skills.clone();
         self.config.skills_exec = settings.skills_exec.clone();
         self.config.mcp_servers = settings.mcp_servers.clone();
@@ -685,6 +785,11 @@ mod tests {
         assert_eq!(cfg.stt.provider, "mcp");
         assert_eq!(cfg.stt.timeout_secs, 30);
         assert!(cfg.stt.mcp_server.is_none());
+        assert!(cfg.stt.api_key.is_empty());
+        assert!(cfg.stt.model.is_empty());
+        assert!(cfg.stt.base_url.is_empty());
+        assert!(cfg.llm.stt_use_audio_model);
+        assert!(cfg.llm.vision_use_image_model);
     }
 
     #[test]
@@ -707,9 +812,11 @@ mod tests {
     fn apply_settings_preserves_keys_when_empty() {
         let mut cfg = AppConfig::default();
         cfg.llm.default_model.api_key = "keep-me".to_string();
+        cfg.llm.image_model.api_key = "keep-multi".to_string();
         let mut settings = Settings::from(&cfg);
         // frontend sends empty api key (masked)
         settings.llm.default_model.model_name = "new-model".to_string();
+        settings.llm.image_model.model_name = "gpt-4o".to_string();
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
@@ -717,6 +824,34 @@ mod tests {
         loader.apply_settings(&settings);
         assert_eq!(loader.config().llm.default_model.api_key, "keep-me");
         assert_eq!(loader.config().llm.default_model.model_name, "new-model");
+        assert_eq!(loader.config().llm.image_model.api_key, "keep-multi");
+        assert_eq!(loader.config().llm.image_model.model_name, "gpt-4o");
+    }
+
+    #[test]
+    fn apply_settings_preserves_stt_api_key_when_empty() {
+        let mut cfg = AppConfig::default();
+        cfg.stt.provider = "openai".into();
+        cfg.stt.api_key = "keep-stt-key".to_string();
+        let mut settings = Settings::from(&cfg);
+        // Frontend sends masked (empty) api key but a new model.
+        settings.stt.model = "whisper-1".to_string();
+        let mut loader = ConfigLoader {
+            path: PathBuf::from("unused"),
+            config: cfg,
+        };
+        loader.apply_settings(&settings);
+        assert_eq!(loader.config().stt.api_key, "keep-stt-key");
+        assert_eq!(loader.config().stt.model, "whisper-1");
+        assert_eq!(loader.config().stt.provider, "openai");
+    }
+
+    #[test]
+    fn settings_hide_stt_api_key() {
+        let mut cfg = AppConfig::default();
+        cfg.stt.api_key = "top-secret".to_string();
+        let settings = Settings::from(&cfg);
+        assert!(settings.stt.api_key.is_empty());
     }
 
     #[test]
@@ -727,6 +862,40 @@ mod tests {
         assert!(path.exists());
         assert_eq!(loader.config().audio.sample_rate, 16000);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_cost_usd_zero_rates_return_none() {
+        let ep = ModelEndpoint::default();
+        assert_eq!(compute_cost_usd(&ep, 1000, 500), None);
+    }
+
+    #[test]
+    fn compute_cost_usd_calculates_input_and_output() {
+        let mut ep = ModelEndpoint::default();
+        ep.cost_per_1k_input_tokens = 3.0;
+        ep.cost_per_1k_output_tokens = 15.0;
+        // 2k in + 1k out = 6.0 + 15.0
+        let cost = compute_cost_usd(&ep, 2000, 1000).unwrap();
+        assert!((cost - 21.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_cost_usd_output_only_config() {
+        let mut ep = ModelEndpoint::default();
+        ep.cost_per_1k_output_tokens = 10.0;
+        // input rate zero -> only output counted
+        let cost = compute_cost_usd(&ep, 5000, 200).unwrap();
+        assert!((cost - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compute_cost_usd_handles_fractional_tokens() {
+        let mut ep = ModelEndpoint::default();
+        ep.cost_per_1k_input_tokens = 1.0;
+        // 500 tokens -> 0.5
+        let cost = compute_cost_usd(&ep, 500, 0).unwrap();
+        assert!((cost - 0.5).abs() < 1e-9);
     }
 
     #[test]

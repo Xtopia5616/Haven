@@ -18,9 +18,6 @@ cargo test -p haven-memory -- preferences
 # Run with output
 cargo test -- --nocapture
 
-# Run with single thread (for DB-shared tests)
-cargo test -- --test-threads=1
-
 # Run clippy
 cargo clippy -- -D warnings
 

@@ -148,12 +148,14 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
                 content: vec![ContentPart::text(system_prompt)],
                 tool_call_id: None,
                 tool_calls: None,
+                reasoning: None,
             },
             LlmMessage {
                 role: LlmRole::User,
                 content: vec![ContentPart::text(&transcript)],
                 tool_call_id: None,
                 tool_calls: None,
+                reasoning: None,
             },
         ];
 

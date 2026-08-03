@@ -44,7 +44,6 @@ impl AgentLayer {
         max_steps: u32,
         session_window_size: usize,
         max_observation_chars: usize,
-        small_model_endpoint: Option<haven_common::config::ModelEndpoint>,
     ) -> Self {
         let sessions = Arc::new(SessionManager::new(db.clone(), session_window_size));
         let events = Arc::new(EventDispatcher::new());
@@ -56,10 +55,18 @@ impl AgentLayer {
             max_steps,
             max_observation_chars,
         ));
-        let inference = Arc::new(InferenceEngine::new(db.clone(), sessions.clone(), router));
+        let inference = Arc::new(InferenceEngine::new(
+            db.clone(),
+            sessions.clone(),
+            router.clone(),
+        ));
         let _ = db.set_preference("name", "Xtopia");
         let _ = db.insert_fact("user", "name", "Xtopia", "user", 1.0, &["identity"]);
-        let title = small_model_endpoint.map(TitleGenerator::new);
+        // Title generator is always available: it routes through the shared
+        // LlmRouter, which uses EndpointRole::SmallModel. If the small_model
+        // endpoint isn't configured the router will simply surface the error
+        // and `generate` returns None.
+        let title = Some(TitleGenerator::new(router));
 
         Self {
             db,
@@ -139,6 +146,12 @@ impl AgentLayer {
 
     pub fn set_max_steps(&self, max_steps: u32) {
         self.react_engine.set_max_steps(max_steps);
+    }
+
+    /// Live connectivity probe to the default-model endpoint (GET /models).
+    /// Used by the top-right status indicator to show Ready/Disconnected.
+    pub async fn check_llm_connection(&self) -> bool {
+        self.react_engine.check_connection().await
     }
 
     /// Spawn the TaskExecutor dispatcher with a runner wired to this
@@ -430,9 +443,37 @@ impl AgentLayer {
                 // User-message rollback: delete the user message itself too
                 // (inclusive), so the context is clean when the user re-sends
                 // an edited version.
-                self.db.delete_messages_from(sid, ts)?;
+                //
+                // `ts` (bp.last_msg_at) is the timestamp of the last message
+                // persisted BEFORE the target step ran — usually the step's
+                // thought, which is AFTER the user message. Deleting from
+                // `ts` alone would leave the rolled-back user input in the
+                // session, so it would reappear on the next review rebuild.
+                // Delete from the user message's own timestamp instead.
+                let user_ts = self
+                    .db
+                    .get_session_messages(sid)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|m| m.role == "user" && m.created_at.as_str() <= ts.as_str())
+                    .map(|m| m.created_at.clone())
+                    .max();
+                match user_ts {
+                    Some(u_ts) => {
+                        self.db.delete_messages_from(sid, &u_ts)?;
+                        // Rollback overwrites: drop step rows recorded after
+                        // the user message too (they belong to the discarded
+                        // timeline).
+                        self.db.delete_task_steps_after(task_id, &u_ts)?;
+                    }
+                    None => {
+                        self.db.delete_messages_from(sid, ts)?;
+                        self.db.delete_task_steps_after(task_id, ts)?;
+                    }
+                }
             } else {
                 self.db.delete_messages_after(sid, ts)?;
+                self.db.delete_task_steps_after(task_id, ts)?;
             }
         }
 
@@ -635,6 +676,11 @@ impl AgentLayer {
                 });
             if let Some(ts) = cutoff {
                 self.db.delete_messages_after(sid, &ts)?;
+                // Retry OVERWRITES the previous attempt: drop the step rows
+                // (tool badges, thought entries) recorded after the branch
+                // point too, so the review history stays linear. Only
+                // branching creates separate timelines.
+                self.db.delete_task_steps_after(task_id, &ts)?;
             }
         }
 
@@ -746,6 +792,8 @@ impl AgentLayer {
 
     pub async fn emit_task_completed(&self, task_id: &str, title: &str) {
         self.events.emit_task_completed(task_id, title).await;
+        // Drop cumulative token counters for the finished task.
+        self.react_engine.reset_cumulative_usage(task_id);
     }
 
     /// Generate a short title using small_model after the first ReAct loop
@@ -819,6 +867,7 @@ impl AgentLayer {
                         tool_calls: None,
                         tool_call_id: None,
                         parent_message_id: None,
+                        reasoning: None,
                     },
                 );
             }
@@ -888,6 +937,7 @@ impl AgentLayer {
                 tool_calls: None,
                 tool_call_id: None,
                 parent_message_id: None,
+                reasoning: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -895,6 +945,7 @@ impl AgentLayer {
                 tool_calls: None,
                 tool_call_id: None,
                 parent_message_id: None,
+                reasoning: None,
             },
         ];
 
@@ -1164,16 +1215,14 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router = Arc::new(LlmRouter::new_with_clients(client.clone(), client));
-        let agent = Arc::new(AgentLayer::new(
-            db,
-            executor.clone(),
-            router,
-            30,
-            50,
-            8000,
-            None,
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
         ));
+        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
 
         let recorder = Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
@@ -1215,16 +1264,14 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router = Arc::new(LlmRouter::new_with_clients(client.clone(), client));
-        let agent = Arc::new(AgentLayer::new(
-            db,
-            executor.clone(),
-            router,
-            30,
-            50,
-            8000,
-            None,
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
         ));
+        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
         (agent, executor)
     }
 
@@ -1236,8 +1283,14 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router = Arc::new(LlmRouter::new_with_clients(client.clone(), client));
-        let agent = AgentLayer::new(db, executor, router, 10, 20, 4000, None);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let agent = AgentLayer::new(db, executor, router, 10, 20, 4000);
         // Verify construction succeeded; session_id is set
         let sid = agent.ensure_session();
         assert!(!sid.is_empty());
@@ -1273,11 +1326,23 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
         let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router_a = Arc::new(LlmRouter::new_with_clients(client_a.clone(), client_a));
-        let agent = Arc::new(AgentLayer::new(db, executor, router_a, 10, 20, 4000, None));
+        let router_a = Arc::new(LlmRouter::new_with_clients(
+            client_a.clone(),
+            client_a.clone(),
+            client_a.clone(),
+            client_a.clone(),
+            client_a,
+        ));
+        let agent = Arc::new(AgentLayer::new(db, executor, router_a, 10, 20, 4000));
         // Create a new router via the same mock client factory
         let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router_b = Arc::new(LlmRouter::new_with_clients(client_b.clone(), client_b));
+        let router_b = Arc::new(LlmRouter::new_with_clients(
+            client_b.clone(),
+            client_b.clone(),
+            client_b.clone(),
+            client_b.clone(),
+            client_b,
+        ));
         agent.replace_router(router_b);
         // No panic == success
     }
@@ -1333,8 +1398,14 @@ mod tests {
         tools.rebuild_catalog().await;
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
-        let router = Arc::new(LlmRouter::new_with_clients(client.clone(), client));
-        let agent = Arc::new(AgentLayer::new(db, executor, router, 30, 50, 8000, None));
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let agent = Arc::new(AgentLayer::new(db, executor, router, 30, 50, 8000));
 
         // Simulate a history where load_skill was called.
         let history = vec![ReActStep {
@@ -1694,16 +1765,14 @@ mod tests {
         p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
-        let router = Arc::new(LlmRouter::new_with_clients(client.clone(), client));
-        let agent = Arc::new(AgentLayer::new(
-            db,
-            executor.clone(),
-            router,
-            30,
-            50,
-            8000,
-            None,
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
         ));
+        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
         (agent, executor)
     }
 
@@ -1718,6 +1787,7 @@ mod tests {
     enum ScriptedResponse {
         Err(LlmError),
         Chunk(StreamChunk),
+        ChunkThenErr(StreamChunk, LlmError),
     }
 
     impl ScriptedMock {
@@ -1783,6 +1853,9 @@ mod tests {
             match resp {
                 ScriptedResponse::Err(e) => Err(e),
                 ScriptedResponse::Chunk(chunk) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
+                ScriptedResponse::ChunkThenErr(chunk, e) => {
+                    Ok(Box::pin(stream::iter(vec![Ok(chunk), Err(e)])))
+                }
             }
         }
         async fn health_check(&self) -> Result<(), LlmError> {
@@ -1817,6 +1890,15 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|e| matches!(e, AgentEvent::Compaction { .. }))
+        }
+        fn has_notification(&self) -> Option<(String, String)> {
+            self.events.lock().unwrap().iter().find_map(|e| {
+                if let AgentEvent::Notification { title, body, .. } = e {
+                    Some((title.clone(), body.clone()))
+                } else {
+                    None
+                }
+            })
         }
     }
     #[async_trait]
@@ -2090,6 +2172,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_after_ask_answer_error_keeps_single_history() {
+        // Reproduce the reported issue: the agent asks a question, the user
+        // answers, the resumed step fails, and the user retries. Every retry
+        // must OVERWRITE the previous attempt's persisted output — the review
+        // history should show exactly one question, one answer, one response.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            // Step 1: ask the question.
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Asking.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "tc1".into(),
+                    name: "ask".into(),
+                    arguments: r#"{"question":"Proceed?"}"#.into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+            // Step 2 (after the answer): streams a partial thought, then fails.
+            ScriptedResponse::ChunkThenErr(
+                StreamChunk {
+                    text: Some("Let me think...".into()),
+                    tool_calls: vec![],
+                    finish_reason: None,
+                    usage: None,
+                    model: None,
+                    reasoning: None,
+                },
+                LlmError::Unknown("mock mid-stream failure".into()),
+            ),
+            // Step 2 retry: final answer.
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Answer accepted.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        agent.set_emitter(Arc::new(EventCollector::new()));
+        let sid = agent.ensure_session();
+        let task = executor.create_task("ask retry", Some(&sid)).await.unwrap();
+
+        // Turn 1: the ask pauses the task.
+        agent.run_task_from_id(&task.id).await.unwrap();
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+
+        // Turn 2: the user answers; the resumed step fails mid-stream.
+        executor.add_supplement(&task.id, "Yes").await.unwrap();
+        executor
+            .update_task_status(&task.id, TaskStatus::Pending)
+            .await
+            .unwrap();
+        let _ = agent.run_task_from_id(&task.id).await;
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
+
+        // Turn 3: retry via continue_task → Pending → re-run.
+        agent.continue_task(&task.id).await.unwrap();
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
+        agent.run_task_from_id(&task.id).await.unwrap();
+
+        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let steps = agent.db.get_task_steps(&task.id).unwrap();
+
+        // The failed attempt's partial text must be gone (overwritten).
+        let partials: Vec<&str> = msgs
+            .iter()
+            .filter(|m| m.role == "assistant" && m.content.contains("Let me think"))
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(
+            partials.is_empty(),
+            "partial output from the failed attempt should be deleted, got {:?}",
+            partials
+        );
+        // Exactly one question and one final answer.
+        let questions = msgs
+            .iter()
+            .filter(|m| m.role == "assistant" && m.content.contains("Proceed?"))
+            .count();
+        let finals = msgs
+            .iter()
+            .filter(|m| m.role == "assistant" && m.content.contains("Answer accepted."))
+            .count();
+        assert_eq!(questions, 1, "ask question must appear exactly once");
+        assert_eq!(finals, 1, "final answer must appear exactly once");
+
+        // Step rows from the failed attempt must be overwritten too — the
+        // review history stays linear (only branching splits timelines).
+        let stale_steps = steps
+            .iter()
+            .filter(|s| {
+                s.thought
+                    .as_deref()
+                    .is_some_and(|t| t.contains("Let me think"))
+            })
+            .count();
+        assert_eq!(
+            stale_steps, 0,
+            "step rows from the failed attempt should be deleted, got {:?}",
+            steps
+        );
+        let final_steps = steps
+            .iter()
+            .filter(|s| {
+                s.thought
+                    .as_deref()
+                    .is_some_and(|t| t.contains("Answer accepted."))
+            })
+            .count();
+        assert_eq!(final_steps, 1, "retried step must appear exactly once");
+    }
+
+    #[tokio::test]
+    async fn run_task_notify_tool_emits_notification_without_pausing() {
+        // The `notify` tool signals the ReAct loop to emit a Notification
+        // event (in-app toast + Windows). Unlike `ask`, it must NOT pause the
+        // task: the loop continues to the final answer.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::notify::NotifyTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Notifying the user.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "tc1".into(),
+                    name: "notify".into(),
+                    arguments: r#"{"title":"Build","body":"Compilation finished"}"#.into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Done.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let sid = agent.ensure_session();
+        let task = executor
+            .create_task("build and notify", Some(&sid))
+            .await
+            .unwrap();
+        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        assert!(history.len() >= 2, "should have at least 2 steps");
+
+        // The Notification event must carry the tool's title/body.
+        let (title, body) = collector
+            .has_notification()
+            .expect("notify should emit a Notification event");
+        assert_eq!(title, "Build");
+        assert_eq!(body, "Compilation finished");
+
+        // The chat/review observation must be readable, not raw JSON.
+        assert!(collector.has_observation("notify"));
+
+        // Unlike `ask`, notify must not pause the task mid-loop: the loop
+        // continued past the notify step (history has 2 steps) and reached the
+        // normal end state (Paused = conversation mode, waiting for follow-up).
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+    }
+
+    #[tokio::test]
     async fn run_task_multiple_asks_surface_all_questions() {
         // Two `ask` calls in one batch must both be surfaced (joined into one
         // assistant message), not just the first.
@@ -2322,6 +2593,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         }];
         let mut branch_points = HashMap::new();
         branch_points.insert(
@@ -2411,6 +2683,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 parent_message_id: None,
+                reasoning: None,
             }],
             history: vec![],
             step_number: 1,
@@ -2503,6 +2776,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         }];
         let snapshot = ReActSnapshot {
             canonical: canonical.clone(),
@@ -2530,5 +2804,83 @@ mod tests {
         let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
+    }
+
+    #[tokio::test]
+    async fn rollback_pause_true_removes_user_message_from_session() {
+        let (agent, executor) = make_test_agent();
+        let session = agent.db.create_session(None).unwrap();
+        let task = executor
+            .create_task("user rollback", Some(&session.id))
+            .await
+            .unwrap();
+        agent
+            .db
+            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(&session.id, "assistant", "thinking", Some("text"), None)
+            .unwrap();
+        // Branch point at step 1: canonical ends at the user message, but
+        // last_msg_at points at the thought that was persisted AFTER it (the
+        // realistic shape saved by save_branch_point).
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        let thought_ts = msgs
+            .iter()
+            .find(|m| m.role == "assistant")
+            .unwrap()
+            .created_at
+            .clone();
+        let canonical = vec![
+            CanonicalMessage {
+                role: CanonicalRole::System,
+                content: vec![ContentPart::text("sys")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+            CanonicalMessage {
+                role: CanonicalRole::User,
+                content: vec![ContentPart::text("hello")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+        ];
+        let mut branch_points = HashMap::new();
+        branch_points.insert(
+            1,
+            BranchPoint {
+                canonical: canonical.clone(),
+                history: vec![],
+                step_number: 1,
+                last_msg_at: Some(thought_ts),
+            },
+        );
+        let snapshot = ReActSnapshot {
+            canonical,
+            history: vec![],
+            step_number: 1,
+            branch_points,
+        };
+        agent
+            .db
+            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+
+        // User-message rollback: the user message itself must be removed from
+        // the session (its text returns to the composer for editing) — not
+        // left behind to reappear on the next review rebuild.
+        agent.rollback_task(&task.id, 1, true).await.unwrap();
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        assert!(
+            msgs.is_empty(),
+            "user message should be deleted from the session, got {:?}",
+            msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
+        );
     }
 }

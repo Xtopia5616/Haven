@@ -14,14 +14,13 @@ uuid.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 base64.workspace = true
-reqwest = { version = "0.12.28", features = ["json"] }
+reqwest = { version = "0.12.28", features = ["json", "multipart"] }
 tokio-util.workspace = true
 haven-memory = { path = "../memory" }
 haven-common = { path = "../common" }
 jsonschema = "0.18"
 sysinfo = "0.33"
 arboard = "3.4"
-winreg = "0.52"
 ignore = "0.4"
 regex = "1"
 grep-regex = "0.1"
@@ -33,6 +32,7 @@ futures-util.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

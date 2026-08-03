@@ -62,6 +62,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         }
     }
 

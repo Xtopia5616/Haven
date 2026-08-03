@@ -30,8 +30,7 @@
 			}
 		} catch (e) {
 			builtinTools = [];
-			logger.warn('tools', 'get_tools error', e);
-			addNotification('加载工具列表失败', 'error', 3000);
+			addNotification(`加载工具列表失败: ${e}`, 'error', 3000);
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
@@ -273,7 +272,7 @@
 
 <style>
 	.tools-page {
-		max-width: 1000px;
+		max-width: var(--md-sys-content-max-width);
 	}
 	h1 {
 		font-size: 24px;

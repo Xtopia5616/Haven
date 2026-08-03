@@ -171,6 +171,58 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('.supplement-badge').textContent).toContain('extra context');
 	});
 
+	it('renders an ask question card with an awaiting indicator', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '你想怎么做？',
+				type: 'ask',
+				awaiting: true,
+				options: ['方案 A', '方案 B'],
+			}),
+		);
+		expect(document.querySelector('.ask-card')).toBeTruthy();
+		expect(screen.getByText('你想怎么做？')).toBeTruthy();
+		expect(screen.getByText('等待你的回答...')).toBeTruthy();
+		expect(screen.getByText('方案 A')).toBeTruthy();
+		expect(screen.getByText('方案 B')).toBeTruthy();
+	});
+
+	it('hides options and awaiting feedback once answered or not awaiting', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '已问过',
+				type: 'ask',
+				awaiting: false,
+				options: ['方案 A'],
+			}),
+		);
+		expect(document.querySelector('.ask-card')).toBeTruthy();
+		expect(document.querySelector('.ask-waiting')).toBeNull();
+		expect(screen.queryByText('方案 A')).toBeNull();
+	});
+
+	it('triggers onQuickReply with the message id and clicked option', async () => {
+		const onQuickReply = vi.fn();
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '选择？',
+				type: 'ask',
+				messageId: 'ask-42',
+				awaiting: true,
+				options: ['立即执行'],
+				onQuickReply,
+			}),
+		);
+		await fireEvent.click(screen.getByText('立即执行'));
+		expect(onQuickReply).toHaveBeenCalledWith('ask-42', '立即执行');
+	});
+
 	it('calls onContextMenu with bubble metadata', async () => {
 		const onContextMenu = vi.fn();
 		render(

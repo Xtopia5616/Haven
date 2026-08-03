@@ -28,6 +28,7 @@ pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command 
 /// Interpreter selection + piped stdio WITHOUT the `CREATE_NO_WINDOW` flag.
 /// Callers decide whether to suppress the console window.
 pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::Command {
+    #[cfg(windows)]
     let mut std_cmd = match shell {
         "powershell" => {
             let mut c = std::process::Command::new("powershell");
@@ -37,6 +38,21 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
         _ => {
             let mut c = std::process::Command::new("cmd");
             c.args(["/C", command]);
+            c
+        }
+    };
+    #[cfg(not(windows))]
+    let mut std_cmd = match shell {
+        "bash" => {
+            let mut c = std::process::Command::new("bash");
+            c.args(["-c", command]);
+            c
+        }
+        // "sh" and unknown values fall back to POSIX sh; on Linux the shell
+        // tool schema only advertises sh/bash anyway.
+        _ => {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", command]);
             c
         }
     };

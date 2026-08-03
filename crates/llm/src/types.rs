@@ -30,6 +30,7 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
                         })
                         .collect()
                 }),
+                reasoning: m.reasoning,
             }
         })
         .collect()
@@ -45,6 +46,11 @@ pub struct LlmMessage {
     /// subsequent tool responses can be linked by tool_call_id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Internal reasoning/chain-of-thought from the model (e.g. DeepSeek's
+    /// reasoning_content). Echoed back to APIs that require it in
+    /// multi-turn requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -332,6 +338,7 @@ mod tests {
             content: vec![ContentPart::Text("system prompt".into())],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         };
         assert_eq!(msg.role.to_string(), "system");
         assert_eq!(msg.content.len(), 1);
@@ -344,6 +351,7 @@ mod tests {
             content: vec![ContentPart::text("hello")],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         };
         assert_eq!(msg.role.to_string(), "user");
         assert_eq!(msg.content.len(), 1);
@@ -356,6 +364,7 @@ mod tests {
             content: vec![],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         };
         assert_eq!(msg.role.to_string(), "assistant");
         assert!(msg.content.is_empty());
@@ -540,6 +549,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs.len(), 1);
@@ -554,6 +564,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "user");
@@ -567,6 +578,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("tid".into()),
             parent_message_id: None,
+            reasoning: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "tool");
@@ -581,6 +593,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "assistant");
@@ -597,6 +610,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].content.len(), 2);
@@ -611,6 +625,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 parent_message_id: None,
+                reasoning: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -618,6 +633,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 parent_message_id: None,
+                reasoning: None,
             },
         ];
         let msgs = convert_to_llm(cms);

@@ -10,6 +10,7 @@ pub mod util;
 
 use haven_common::config::{McpServerConfig, SkillsExecConfig, ToolConfig};
 use haven_common::types::RiskLevel;
+use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
+pub use builtin::{SelfTool, SelfToolContext};
 pub use circuit::ToolCircuitRegistry;
 pub use mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
@@ -37,32 +39,23 @@ pub struct ToolsManager {
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
     task_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
     tool_circuits: ToolCircuitRegistry,
-    /// Summarizer LLM client for the `file summary` operation (small_model).
-    summarizer: RwLock<Option<Arc<dyn haven_llm::LlmClient>>>,
+    /// Shared LlmRouter. Tools that need a model (currently the file `summary`
+    /// and image-understanding operations) call `router.chat(...)` — text
+    /// summarization uses the SmallModel role, image understanding uses the
+    /// ImageModel role; the router handles retries and the balanced-model
+    /// fallback.
+    router: RwLock<Option<Arc<LlmRouter>>>,
     /// Registry of background jobs (shell with background: true).
     pub background_jobs: Arc<bg::BackgroundJobs>,
+    /// App-level context for the `self` management tool (config loader, DB,
+    /// router, log file). Wired in by the desktop shell; `None` in headless
+    /// tests so the tool is simply not registered.
+    self_context: RwLock<Option<builtin::SelfToolContext>>,
 }
 
 impl ToolsManager {
     pub fn new() -> Self {
-        let registry = ToolRegistry::new();
-        let exec_config = SkillsExecConfig::default();
-        Self {
-            registry,
-            mcp_manager: McpManager::new(),
-            mcp_server_configs: Arc::new(RwLock::new(HashMap::new())),
-            skills_engine: skills::SkillsEngine::new(),
-            skill_runner: Arc::new(RwLock::new(SkillRunner::new(
-                VenvManager::new(exec_config.venv_root.clone()),
-                exec_config,
-            ))),
-            safety_gateway: SafetyGateway::new(RiskLevel::Low),
-            tool_settings: RwLock::new(HashMap::new()),
-            task_registrations: RwLock::new(HashMap::new()),
-            tool_circuits: ToolCircuitRegistry::new(),
-            summarizer: RwLock::new(None),
-            background_jobs: Arc::new(bg::BackgroundJobs::new()),
-        }
+        Self::new_with_exec_config(SkillsExecConfig::default())
     }
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
@@ -80,16 +73,24 @@ impl ToolsManager {
             tool_settings: RwLock::new(HashMap::new()),
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
-            summarizer: RwLock::new(None),
+            router: RwLock::new(None),
             background_jobs: Arc::new(bg::BackgroundJobs::new()),
+            self_context: RwLock::new(None),
         }
     }
 
-    /// Set (or clear, with `None`) the summarizer LLM client used by the
-    /// `file summary` operation, then rebuild the catalog so the file tool
-    /// picks it up.
-    pub async fn set_summarizer(&self, summarizer: Option<Arc<dyn haven_llm::LlmClient>>) {
-        *self.summarizer.write().await = summarizer;
+    /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
+    /// `file summary`) pick up the new endpoint config.
+    pub async fn set_router(&self, router: Arc<LlmRouter>) {
+        *self.router.write().await = Some(router);
+        self.rebuild_catalog().await;
+    }
+
+    /// Wire the app-level context for the `self` management tool and register
+    /// the tool. Called by the desktop shell after the config loader exists;
+    /// later catalog rebuilds keep the tool registered.
+    pub async fn set_self_context(&self, ctx: builtin::SelfToolContext) {
+        *self.self_context.write().await = Some(ctx);
         self.rebuild_catalog().await;
     }
 
@@ -129,15 +130,18 @@ impl ToolsManager {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
         // Register builtin tools (including progressive load_skill and load_mcp)
-        let summarizer = self.summarizer.read().await.clone();
+        let router = self.router.read().await.clone();
+        let self_context = self.self_context.read().await.clone();
         builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
             &self.skill_runner,
             &Arc::new(self.mcp_manager.clone()),
             &self.mcp_server_configs,
-            summarizer,
+            router,
             self.background_jobs.clone(),
+            self_context,
+            self.registry.clone(),
         )
         .await;
 

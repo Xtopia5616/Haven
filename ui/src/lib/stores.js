@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { invoke } from './tauri.js';
+import logger from '$lib/logger.js';
 
 export const recordingStore = writable({
 	isRecording: false,
@@ -14,6 +15,8 @@ export const settingsStore = writable({
 		small_model: { provider: 'openai', model: 'gpt-4o-mini', temperature: 0 },
 		default_model: { provider: 'anthropic', model: 'claude-sonnet-4-20250514', temperature: 0.7 },
 		balanced_model: { provider: 'local', model: 'llama3', temperature: 0.7 },
+		image_model: { provider: 'openai', model: 'gpt-4o', temperature: 0.2 },
+		audio_model: { provider: 'openai', model: 'gpt-4o-audio-preview', temperature: 0 },
 	},
 	hotkey: { key_binding: 'Ctrl+Shift+Space', mode: 'toggle', mute_hotkey: null },
 	autostart: false,
@@ -24,6 +27,9 @@ export const notificationStore = writable([]);
 let notificationSeq = 0;
 
 export function addNotification(msg, type = 'info', duration = 3000) {
+	if (type === 'error') {
+		logger.error('notification', msg);
+	}
 	let id = null;
 	notificationStore.update((n) => {
 		if (n.some((x) => x.msg === msg && x.type === type)) {
@@ -105,6 +111,13 @@ export function clearTaskMessages(taskId) {
  * dropped from the UI. User messages (no stepNumber) that appear after the
  * first removed message are also dropped since they belong to the discarded
  * timeline.
+ *
+ * The cut lands on the first NON-user message at/after the target step.
+ * User messages carry no stepNumber in the live view, but the review
+ * builder assigns them the stepNumber of the FOLLOWING assistant message —
+ * cutting ON a user message would drop the user's input from the view even
+ * though the backend kept it in the session (rollback only discards
+ * messages persisted after the branch point).
  */
 export function truncateTaskMessages(taskId, targetStep) {
 	if (!taskId) return;
@@ -112,7 +125,7 @@ export function truncateTaskMessages(taskId, targetStep) {
 		const list = m[taskId];
 		if (!list || list.length === 0) return m;
 		const cutIdx = list.findIndex(
-			(x) => x.stepNumber != null && x.stepNumber >= targetStep,
+			(x) => x.stepNumber != null && x.stepNumber >= targetStep && x.role !== 'user',
 		);
 		if (cutIdx === -1) return m;
 		const next = { ...m };
@@ -137,7 +150,7 @@ export function branchTaskMessages(sourceTaskId, newTaskId, targetStep) {
 		const list = m[sourceTaskId];
 		if (!list || list.length === 0) return m;
 		const cutIdx = list.findIndex(
-			(x) => x.stepNumber != null && x.stepNumber >= targetStep,
+			(x) => x.stepNumber != null && x.stepNumber >= targetStep && x.role !== 'user',
 		);
 		const kept = cutIdx === -1 ? [...list] : list.slice(0, cutIdx);
 		const next = { ...m };
@@ -165,6 +178,83 @@ export const reviewTargetStore = writable(null);
 // Active task ID that persists across SvelteKit page navigations so the
 // send handler and voice recording can supplement the same task.
 export const activeTaskIdStore = writable(null);
+
+/**
+ * Per-task token usage + cost reported by the agent. Keyed by task id.
+ * Updated on every `agent:usage` event so the chat toolbar can show
+ * running totals and remaining context budget.
+ *
+ * Shape: { [taskId]: {
+ *   promptTokens, completionTokens, totalTokens,
+ *   cumulativePromptTokens, cumulativeCompletionTokens, cumulativeTotalTokens,
+ *   costUsd, cumulativeCostUsd, contextWindow, model,
+ *   lastUpdated: number,
+ * }}
+ */
+export const taskTokenStatsStore = writable({});
+
+/**
+ * Update (or insert) the token-stats entry for a task. Replaces the whole
+ * task entry so stale fields don't accumulate across event variants.
+ * @param {string} taskId
+ * @param {object} stats
+ */
+export function updateTaskTokenStats(taskId, stats) {
+	if (!taskId) return;
+	taskTokenStatsStore.update((m) => ({
+		...m,
+		[taskId]: { ...(m[taskId] || {}), ...stats, lastUpdated: Date.now() },
+	}));
+}
+
+/** Clear token stats for a finished/reset task. */
+export function clearTaskTokenStats(taskId) {
+	if (!taskId) return;
+	taskTokenStatsStore.update((m) => {
+		if (!(taskId in m)) return m;
+		const next = { ...m };
+		delete next[taskId];
+		return next;
+	});
+}
+
+/**
+ * Format a token count for compact display. Examples:
+ *   123         -> "123"
+ *   12_345      -> "12.3K"
+ *   1_234_567   -> "1.23M"
+ * @param {number} n
+ * @returns {string}
+ */
+export function formatTokenCount(n) {
+	const v = Number(n) || 0;
+	if (v < 1_000) return String(v);
+	if (v < 10_000) {
+		const s = (v / 1_000).toFixed(2).replace(/\.?0+$/, '');
+		return s + 'K';
+	}
+	if (v < 1_000_000) {
+		const s = (v / 1_000).toFixed(1).replace(/\.0$/, '');
+		return s + 'K';
+	}
+	return (v / 1_000_000).toFixed(2).replace(/\.?0+$/, '') + 'M';
+}
+
+/**
+ * Format a USD cost. Examples:
+ *   0          -> "$0.00"
+ *   0.00123    -> "$0.0012"
+ *   0.1234     -> "$0.123"
+ *   1.5        -> "$1.50"
+ * @param {number | null | undefined} v
+ */
+export function formatCostUsd(v) {
+	if (v == null || !Number.isFinite(v)) return null;
+	if (v === 0) return '$0.00';
+	if (v < 0.01) return `$${v.toFixed(4)}`;
+	if (v < 1) return `$${v.toFixed(3)}`;
+	return `$${v.toFixed(2)}`;
+}
 
 /**
  * Build a `data:` URL from a message attachment ({ media_type, data } where

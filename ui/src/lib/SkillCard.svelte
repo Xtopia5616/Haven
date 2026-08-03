@@ -110,6 +110,7 @@
 						rows="3"
 						placeholder={'{"key": "value"}'}
 						onclick={(e) => e.stopPropagation()}
+						autocomplete="off"
 					></textarea>
 					<button class="btn-preview" onclick={runPreview} disabled={running}>
 						{running ? 'Running...' : 'Run'}

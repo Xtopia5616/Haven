@@ -27,8 +27,8 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
-	<div class="md-dialog-overlay" onclick={handleOverlayClick} onkeydown={handleOverlayKeydown} role="dialog" aria-modal="true" tabindex={-1} in:fade={{ duration: 200, easing: cubicOut }}>
-		<div class="md-dialog" role="presentation" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 300, easing: cubicOut }}>
+	<div class="md-dialog-overlay" onclick={handleOverlayClick} onkeydown={handleOverlayKeydown} role="dialog" aria-modal="true" tabindex={-1} in:fade={{ duration: 300, easing: cubicOut }}>
+		<div class="md-dialog" role="presentation" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
 			{#if title}
 				<div class="md-dialog-header">
 					<h3>{title}</h3>

@@ -6,13 +6,14 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_llm::types::LlmMessage;
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
 use haven_task::{TaskExecutor, TaskStatus};
 
 use crate::compactor::ContextCompactor;
-use crate::event::{AgentEventEmitter, EventDispatcher};
+use crate::event::{AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::session::SessionManager;
 use crate::types::{Action, BranchPoint, ReActSnapshot, ReActStep};
 
@@ -22,6 +23,23 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
         content_type: "image_url".into(),
         media_type: att.media_type.clone(),
         data: att.data.clone(),
+    }
+}
+
+/// Pick the endpoint role for an agent step. Conversations that carry image
+/// content parts route through the router's vision role — the dedicated
+/// `image_model` (vision-capable) endpoint when configured, otherwise the
+/// default model. Everything else uses the default model.
+async fn choose_agent_role(router: &LlmRouter, messages: &[LlmMessage]) -> EndpointRole {
+    let has_image = messages.iter().any(|m| {
+        m.content
+            .iter()
+            .any(|p| matches!(p, ContentPart::Image { .. }))
+    });
+    if has_image {
+        router.vision_role().await
+    } else {
+        EndpointRole::DefaultModel
     }
 }
 
@@ -41,6 +59,19 @@ pub struct ReActEngine {
     balanced_model_notified: Mutex<HashSet<String>>,
     run_counter: AtomicU64,
     current_run_id: AtomicU64,
+    /// Per-task cumulative token usage. Keyed by `task_id` so multiple
+    /// parallel tasks each track their own counters. Reset on task
+    /// completion to avoid leaking finished-task entries.
+    cumulative_usage: Mutex<HashMap<String, CumulativeUsage>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CumulativeUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    cost_usd: f64,
+    has_cost: bool,
 }
 
 impl ReActEngine {
@@ -56,12 +87,13 @@ impl ReActEngine {
             router: Arc::new(RwLock::new(router)),
             executor,
             db,
-            compactor: ContextCompactor::new(32_000, 4_096),
+            compactor: ContextCompactor::with_ratio(32_000, 4_096, 0.75),
             max_steps: Mutex::new(max_steps),
             max_observation_chars,
             balanced_model_notified: Mutex::new(HashSet::new()),
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
+            cumulative_usage: Mutex::new(HashMap::new()),
         }
     }
 
@@ -83,6 +115,16 @@ impl ReActEngine {
 
     pub fn set_current_run_id(&self, id: u64) {
         self.current_run_id.store(id, Ordering::SeqCst);
+    }
+
+    /// Live connectivity probe to the default-model endpoint (GET /models).
+    /// Used by the top-right status indicator to show Ready/Disconnected.
+    pub async fn check_connection(&self) -> bool {
+        let router = self.router();
+        router
+            .health_check(haven_llm::EndpointRole::DefaultModel)
+            .await
+            .is_ok()
     }
 
     fn router(&self) -> Arc<LlmRouter> {
@@ -222,6 +264,7 @@ impl ReActEngine {
                     tool_calls: None,
                     tool_call_id: None,
                     parent_message_id: None,
+                    reasoning: None,
                 });
             }
 
@@ -243,6 +286,7 @@ impl ReActEngine {
                     tool_calls: None,
                     tool_call_id: None,
                     parent_message_id: None,
+                    reasoning: None,
                 });
             }
 
@@ -258,6 +302,7 @@ impl ReActEngine {
                     tool_calls: None,
                     tool_call_id: None,
                     parent_message_id: None,
+                    reasoning: None,
                 });
             }
 
@@ -274,6 +319,7 @@ impl ReActEngine {
             let router = self.router();
             let cancel_res = self.executor.cancellation_token(task_id).await;
             let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
+            let role = choose_agent_role(&router, &llm_messages).await;
             let task_id_1 = task_id.to_string();
             // Accumulate streamed text locally so that if the LLM call fails
             // mid-stream, we can persist whatever was already received instead
@@ -300,7 +346,7 @@ impl ReActEngine {
             let pr1 = partial_reasoning.clone();
             let response = match router
                 .chat_stream_with_tools_aggregated_cancellable(
-                    EndpointRole::DefaultModel,
+                    role,
                     llm_messages,
                     tools.to_vec(),
                     move |c: &haven_llm::StreamChunk| {
@@ -336,6 +382,8 @@ impl ReActEngine {
                         self.emit_balanced_model(&emitter, task_id, "switching to balanced model")
                             .await;
                     }
+                    self.record_usage_and_emit(task_id, role, &resp, &emitter)
+                        .await;
                     resp
                 }
                 Err(haven_llm::LlmError::ContextLengthExceeded) => {
@@ -371,7 +419,7 @@ impl ReActEngine {
                         let pr2 = partial_reasoning.clone();
                         match router
                             .chat_stream_with_tools_aggregated_cancellable(
-                                EndpointRole::DefaultModel,
+                                role,
                                 llm_messages2,
                                 tools.to_vec(),
                                 move |c: &haven_llm::StreamChunk| {
@@ -412,6 +460,8 @@ impl ReActEngine {
                                 if let Some(handle) = consumer_handle2 {
                                     let _ = handle.await;
                                 }
+                                self.record_usage_and_emit(task_id, role, &retry_resp, &emitter)
+                                    .await;
                                 retry_resp
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
@@ -702,6 +752,7 @@ impl ReActEngine {
                     tool_calls,
                     tool_call_id: None,
                     parent_message_id: None,
+                    reasoning: response.reasoning.clone(),
                 });
             }
 
@@ -738,60 +789,114 @@ impl ReActEngine {
                     let result = executor
                         .execute_step(&task_id, &tool_name, tool_input.clone(), step_num)
                         .await;
-                    let (text, is_error, ask_question) = match result {
-                        Ok(r) => {
-                            tracing::debug!(
-                                "tool '{}' at step {} completed: success={}, {} chars",
-                                tool_name,
-                                step_num,
-                                r.success,
-                                serde_json::to_string(&r.output)
-                                    .map(|s| s.len())
-                                    .unwrap_or(0)
-                            );
-                            let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
-                            let text = if r.success {
-                                serde_json::to_string(&r.output)
-                                    .unwrap_or_else(|_| "success".into())
-                            } else {
-                                r.error.unwrap_or_else(|| "unknown failure".into())
-                            };
-                            let text = if text.len() > max_obs {
-                                let cutoff = text.floor_char_boundary(max_obs);
-                                format!(
-                                    "{}[... truncated {} chars omitted]",
-                                    &text[..cutoff],
-                                    text.len() - cutoff
+                    let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
+                        match result {
+                            Ok(r) => {
+                                tracing::debug!(
+                                    "tool '{}' at step {} completed: success={}, {} chars",
+                                    tool_name,
+                                    step_num,
+                                    r.success,
+                                    serde_json::to_string(&r.output)
+                                        .map(|s| s.len())
+                                        .unwrap_or(0)
+                                );
+                                let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
+                                let text = if r.success {
+                                    serde_json::to_string(&r.output)
+                                        .unwrap_or_else(|_| "success".into())
+                                } else {
+                                    r.error.unwrap_or_else(|| "unknown failure".into())
+                                };
+                                let text = if text.len() > max_obs {
+                                    let cutoff = text.floor_char_boundary(max_obs);
+                                    format!(
+                                        "{}[... truncated {} chars omitted]",
+                                        &text[..cutoff],
+                                        text.len() - cutoff
+                                    )
+                                } else {
+                                    text
+                                };
+                                // The ask signal is read from the structured output
+                                // BEFORE truncation: parsing the truncated text
+                                // would yield invalid JSON when the output exceeds
+                                // the observation budget, silently dropping the
+                                // question and never pausing the task.
+                                let (ask_question, ask_options) = if tool_name == "ask" && r.success
+                                {
+                                    let question = r
+                                        .output
+                                        .get("question")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+                                    let options = r
+                                        .output
+                                        .get("options")
+                                        .and_then(|v| v.as_array())
+                                        .map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|o| o.as_str().map(|s| s.to_string()))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    (question, options)
+                                } else {
+                                    (None, Vec::new())
+                                };
+                                // The notify signal (from the `notify` tool) is also
+                                // read from the structured output BEFORE truncation,
+                                // mirroring the ask handling above.
+                                let (notify_title, notify_body) = if tool_name == "notify"
+                                    && r.success
+                                    && r.output.get("notify").and_then(|v| v.as_bool())
+                                        == Some(true)
+                                {
+                                    let title = r
+                                        .output
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Haven")
+                                        .to_string();
+                                    let body = r
+                                        .output
+                                        .get("body")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    (Some(title), Some(body))
+                                } else {
+                                    (None, None)
+                                };
+                                (
+                                    text,
+                                    !r.success,
+                                    ask_question,
+                                    ask_options,
+                                    notify_title,
+                                    notify_body,
                                 )
-                            } else {
-                                text
-                            };
-                            // The ask signal is read from the structured output
-                            // BEFORE truncation: parsing the truncated text
-                            // would yield invalid JSON when the output exceeds
-                            // the observation budget, silently dropping the
-                            // question and never pausing the task.
-                            let ask_question = if tool_name == "ask" && r.success {
-                                r.output
-                                    .get("question")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                            } else {
-                                None
-                            };
-                            (text, !r.success, ask_question)
-                        }
-                        Err(e) => {
-                            tracing::debug!(
-                                "tool '{}' at step {} failed: {}",
-                                tool_name,
-                                step_num,
-                                e
-                            );
-                            (e.to_string(), true, None)
-                        }
-                    };
-                    (action, tool_name, text, is_error, ask_question)
+                            }
+                            Err(e) => {
+                                tracing::debug!(
+                                    "tool '{}' at step {} failed: {}",
+                                    tool_name,
+                                    step_num,
+                                    e
+                                );
+                                (e.to_string(), true, None, Vec::new(), None, None)
+                            }
+                        };
+                    (
+                        action,
+                        tool_name,
+                        text,
+                        is_error,
+                        ask_question,
+                        ask_options,
+                        notify_title,
+                        notify_body,
+                    )
                 });
             }
 
@@ -811,9 +916,33 @@ impl ReActEngine {
                         return Ok(());
                     }
                     item = tool_futures.next() => {
-                        let Some((action, tool_name, step_result, is_error, ask_question)) = item else { break; };
+                        let Some((
+                            action,
+                            tool_name,
+                            step_result,
+                            is_error,
+                            ask_question,
+                            ask_options,
+                            notify_title,
+                            notify_body,
+                        )) = item
+                        else {
+                            break;
+                        };
                         if is_error {
                             any_tool_failure = true;
+                        }
+                        // The `notify` tool requests a user-facing notification:
+                        // emit it (in-app toast + Windows) without pausing the
+                        // ReAct loop.
+                        if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
+                            emitter
+                                .emit(crate::event::AgentEvent::Notification {
+                                    task_id: task_id.into(),
+                                    title: title.clone(),
+                                    body: body.clone(),
+                                })
+                                .await;
                         }
                         // Surface an `ask` result as a readable question rather
                         // than raw JSON. The user's reply arrives via
@@ -821,16 +950,30 @@ impl ReActEngine {
                         if let Some(q) = &ask_question {
                             asked_questions.push(q.clone());
                         }
-                        let silent = action
-                            .tool_input
-                            .get("silent")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
+                        // `ask` must never be silent: hiding the question
+                        // while the task pauses for an answer would leave the
+                        // user waiting on a question they can't see.
+                        let silent = tool_name != "ask"
+                            && action
+                                .tool_input
+                                .get("silent")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                         // For `ask`, the chat/review bubble shows the readable
                         // question text; the canonical (model) context keeps
                         // the raw JSON so the model can still parse the flag.
+                        // Same for `notify`: show a readable confirmation
+                        // instead of the raw signal JSON.
                         let display_observation = if tool_name == "ask" {
                             ask_question.unwrap_or_else(|| step_result.clone())
+                        } else if tool_name == "notify" {
+                            let title = notify_title.clone().unwrap_or_else(|| "Haven".into());
+                            let body = notify_body.clone().unwrap_or_default();
+                            if body.is_empty() {
+                                step_result.clone()
+                            } else {
+                                format!("Notification sent: {title}: {body}")
+                            }
                         } else {
                             step_result.clone()
                         };
@@ -843,6 +986,7 @@ impl ReActEngine {
                                 run_id,
                                 silent,
                                 tool_call_id: action.tool_call_id.clone(),
+                                ask_options: ask_options.clone(),
                             })
                             .await;
 
@@ -864,6 +1008,7 @@ impl ReActEngine {
                             tool_calls: None,
                             tool_call_id: action.tool_call_id.clone(),
                             parent_message_id: None,
+                            reasoning: None,
                         });
                     }
                 }
@@ -881,6 +1026,7 @@ impl ReActEngine {
                     tool_calls: None,
                     tool_call_id: None,
                     parent_message_id: None,
+                    reasoning: None,
                 });
             }
 
@@ -1110,6 +1256,105 @@ impl ReActEngine {
         self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points);
     }
 
+    /// Update the per-task cumulative token counters and emit an
+    /// `AgentEvent::Usage` event so the UI can refresh its display.
+    /// `role` is the endpoint that produced the response (used for cost
+    /// lookup); `response` carries the token counts and model name.
+    async fn record_usage_and_emit(
+        &self,
+        task_id: &str,
+        role: EndpointRole,
+        response: &LlmResponse,
+        emitter: &Arc<dyn AgentEventEmitter>,
+    ) {
+        let usage = &response.usage;
+        if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
+            // No usage reported by the provider — nothing useful to surface.
+            return;
+        }
+
+        let router = self.router();
+        let step_cost = router
+            .compute_cost(role, usage.prompt_tokens, usage.completion_tokens)
+            .await;
+        let context_window = {
+            let cfg = router.config().await;
+            Self::context_window_for_role(&cfg, role)
+        };
+
+        let (cum_prompt, cum_completion, cum_total, cum_cost_opt) = {
+            let mut map = self.cumulative_usage.lock().unwrap();
+            let entry = map.entry(task_id.to_string()).or_default();
+            entry.prompt_tokens = entry.prompt_tokens.saturating_add(usage.prompt_tokens);
+            entry.completion_tokens = entry
+                .completion_tokens
+                .saturating_add(usage.completion_tokens);
+            entry.total_tokens = entry.total_tokens.saturating_add(usage.total_tokens);
+            if let Some(c) = step_cost {
+                entry.cost_usd += c;
+                entry.has_cost = true;
+            }
+            let cum_cost = if entry.has_cost {
+                Some(entry.cost_usd)
+            } else {
+                None
+            };
+            (
+                entry.prompt_tokens,
+                entry.completion_tokens,
+                entry.total_tokens,
+                cum_cost,
+            )
+        };
+
+        EventDispatcher::emit_usage_from(
+            emitter,
+            UsagePayload {
+                task_id: task_id.to_string(),
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+                cost_usd: step_cost,
+                model: response.model.clone().or_else(|| usage.model_name.clone()),
+                cumulative_prompt_tokens: cum_prompt,
+                cumulative_completion_tokens: cum_completion,
+                cumulative_total_tokens: cum_total,
+                cumulative_cost_usd: cum_cost_opt,
+                context_window,
+            },
+        )
+        .await;
+    }
+
+    /// Drop cumulative counters for a finished task so the map stays
+    /// bounded across long-running sessions.
+    pub fn reset_cumulative_usage(&self, task_id: &str) {
+        let mut map = self.cumulative_usage.lock().unwrap();
+        map.remove(task_id);
+    }
+
+    fn context_window_for_role(
+        cfg: &haven_common::config::LlmConfig,
+        role: EndpointRole,
+    ) -> Option<u32> {
+        let ep = match role {
+            EndpointRole::SmallModel => &cfg.small_model,
+            EndpointRole::DefaultModel => &cfg.default_model,
+            EndpointRole::BalancedModel => &cfg.balanced_model,
+            EndpointRole::ImageModel => &cfg.image_model,
+            EndpointRole::AudioModel => &cfg.audio_model,
+        };
+        // max_tokens is the per-response output cap, not the model's true
+        // context window. Providers don't surface the input+output budget
+        // here; consumers (UI) typically default to 32K when unknown. Return
+        // None so the UI falls back rather than reporting an incorrect cap.
+        if ep.max_tokens > 0 {
+            Some(ep.max_tokens)
+        } else {
+            None
+        }
+    }
+
     /// Check if context compaction is needed before the next LLM call.
     pub async fn maybe_compact(
         &self,
@@ -1167,13 +1412,146 @@ impl ReActEngine {
             notified.remove(task_id);
         }
         EventDispatcher::emit_task_error_from(emitter, task_id, error).await;
+        self.reset_cumulative_usage(task_id);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_llm::types::{FinishReason, LlmResponse, ToolCall};
+    use async_trait::async_trait;
+    use haven_llm::client::LlmClient;
+    use haven_llm::types::{FinishReason, LlmError, LlmResponse, LlmRole, StreamChunk, ToolCall};
+    use std::pin::Pin;
+
+    struct MockLlm;
+
+    #[async_trait]
+    impl LlmClient for MockLlm {
+        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::Unknown("mock: chat not implemented".into()))
+        }
+        async fn chat_with_tools(
+            &self,
+            _: Vec<LlmMessage>,
+            _: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::Unknown(
+                "mock: chat_with_tools not implemented".into(),
+            ))
+        }
+        async fn chat_stream(
+            &self,
+            _: Vec<LlmMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown(
+                "mock: chat_stream not implemented".into(),
+            ))
+        }
+        async fn chat_stream_with_tools(
+            &self,
+            _: Vec<LlmMessage>,
+            _: Vec<ToolDefinition>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown(
+                "mock: chat_stream_with_tools not implemented".into(),
+            ))
+        }
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    fn mock_router() -> LlmRouter {
+        let client: Arc<dyn LlmClient> = Arc::new(MockLlm);
+        LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        )
+    }
+
+    fn text_msg(role: LlmRole, text: &str) -> LlmMessage {
+        LlmMessage {
+            role,
+            content: vec![ContentPart::text(text)],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+        }
+    }
+
+    fn image_msg(role: LlmRole) -> LlmMessage {
+        LlmMessage {
+            role,
+            content: vec![ContentPart::Image {
+                content_type: "image_url".into(),
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_default_without_images() {
+        let router = mock_router();
+        let messages = vec![
+            text_msg(LlmRole::System, "be concise"),
+            text_msg(LlmRole::User, "hello"),
+        ];
+        assert_eq!(
+            choose_agent_role(&router, &messages).await,
+            EndpointRole::DefaultModel
+        );
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_default_when_image_model_unconfigured() {
+        let router = mock_router();
+        let messages = vec![image_msg(LlmRole::User)];
+        assert_eq!(
+            choose_agent_role(&router, &messages).await,
+            EndpointRole::DefaultModel
+        );
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_image_model_when_configured() {
+        let router = mock_router();
+        router
+            .force_role_configured(EndpointRole::ImageModel, true)
+            .await;
+        let messages = vec![image_msg(LlmRole::User)];
+        assert_eq!(
+            choose_agent_role(&router, &messages).await,
+            EndpointRole::ImageModel
+        );
+    }
+
+    #[tokio::test]
+    async fn choose_agent_role_default_when_image_routing_disabled() {
+        let router = mock_router();
+        router
+            .force_role_configured(EndpointRole::ImageModel, true)
+            .await;
+        router.force_routing_flags(true, false).await;
+        let messages = vec![image_msg(LlmRole::User)];
+        assert_eq!(
+            choose_agent_role(&router, &messages).await,
+            EndpointRole::DefaultModel
+        );
+    }
 
     fn resp(text: &str, tool_calls: Vec<ToolCall>, finish: Option<FinishReason>) -> LlmResponse {
         LlmResponse {

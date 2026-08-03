@@ -65,7 +65,7 @@
 		{/if}
 		<label>
 			<span>Name</span>
-			<input type="text" class="md-input" bind:value={name} placeholder="my-server" disabled={isEdit} />
+			<input type="text" class="md-input" bind:value={name} placeholder="my-server" disabled={isEdit} autocomplete="off" />
 		</label>
 		<label>
 			<span>Transport</span>
@@ -75,15 +75,15 @@
 		</label>
 		<label>
 			<span>Command</span>
-			<input type="text" class="md-input" bind:value={command} placeholder="python" />
+			<input type="text" class="md-input" bind:value={command} placeholder="python" autocomplete="off" />
 		</label>
 		<label>
 			<span>Args (one per line)</span>
-			<textarea class="md-textarea" bind:value={argsText} rows="3" placeholder="-m&#10;mcp_server"></textarea>
+			<textarea class="md-textarea" bind:value={argsText} rows="3" placeholder="-m&#10;mcp_server" autocomplete="off"></textarea>
 		</label>
 		<label>
 			<span>Env (KEY=VALUE, one per line)</span>
-			<textarea class="md-textarea" bind:value={envText} rows="3" placeholder="API_KEY=abc123"></textarea>
+			<textarea class="md-textarea" bind:value={envText} rows="3" placeholder="API_KEY=abc123" autocomplete="off"></textarea>
 		</label>
 		<label class="checkbox-label">
 			<input type="checkbox" bind:checked={enabled} />

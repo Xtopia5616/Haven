@@ -1,31 +1,31 @@
-use haven_common::config::ModelEndpoint;
-use haven_llm::client::{HttpLlmClient, LlmClient};
 use haven_llm::types::{ContentPart, LlmMessage, LlmRole};
+use haven_llm::{EndpointRole, LlmRouter};
 use std::sync::Arc;
 
 /// Generates concise conversation titles using the small_model endpoint.
 #[derive(Clone)]
 pub struct TitleGenerator {
-    client: Arc<dyn LlmClient>,
+    router: Arc<LlmRouter>,
 }
 
 impl TitleGenerator {
-    pub fn new(endpoint: ModelEndpoint) -> Self {
-        Self {
-            client: Arc::new(HttpLlmClient::new(endpoint)),
-        }
-    }
-
-    /// Test hook: construct with an arbitrary client implementation.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn new_with_client(client: Arc<dyn LlmClient>) -> Self {
-        Self { client }
+    pub fn new(router: Arc<LlmRouter>) -> Self {
+        Self { router }
     }
 
     /// Generate a short title from conversation messages.
     /// Returns `None` if the LLM call fails or returns empty text.
     pub async fn generate(&self, conversation: &[String]) -> Option<String> {
         if conversation.is_empty() {
+            return None;
+        }
+        // No-op without an outbound call when the small_model endpoint is not
+        // configured (mirrors the guard in the file tool's `summarize`).
+        if !self
+            .router
+            .is_role_configured(EndpointRole::SmallModel)
+            .await
+        {
             return None;
         }
         let conv_text = conversation.join("\n");
@@ -37,16 +37,18 @@ impl TitleGenerator {
                 )],
                 tool_call_id: None,
                 tool_calls: None,
+                reasoning: None,
             },
             LlmMessage {
                 role: LlmRole::User,
                 content: vec![ContentPart::text(conv_text)],
                 tool_call_id: None,
                 tool_calls: None,
+                reasoning: None,
             },
         ];
 
-        match self.client.chat(messages).await {
+        match self.router.chat(EndpointRole::SmallModel, messages).await {
             Ok(response) => {
                 let title = response.text.trim().trim_matches('"').trim().to_string();
                 if title.is_empty() || title.len() > 100 {
@@ -68,26 +70,19 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
+    use haven_llm::OpenAiAdapter;
+    use haven_llm::client::LlmClient;
     use haven_llm::types::{LlmError, LlmResponse};
     use std::pin::Pin;
     use std::sync::Mutex;
 
-    struct MockClient {
+    struct RecordingMock {
         result: Mutex<Result<LlmResponse, LlmError>>,
         calls: Mutex<Vec<Vec<LlmMessage>>>,
     }
 
-    impl MockClient {
-        fn new(result: Result<LlmResponse, LlmError>) -> Self {
-            Self {
-                result: Mutex::new(result),
-                calls: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
     #[async_trait]
-    impl LlmClient for MockClient {
+    impl LlmClient for RecordingMock {
         async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
             self.calls.lock().unwrap().push(messages);
             self.result.lock().unwrap().clone()
@@ -108,6 +103,48 @@ mod tests {
         }
     }
 
+    /// Builds a router with all four slots, where the small_model slot is the
+    /// recording mock so we can inspect the messages it receives.
+    struct TestRouter {
+        router: Arc<LlmRouter>,
+        mock: Arc<RecordingMock>,
+    }
+
+    async fn test_router(result: Result<LlmResponse, LlmError>) -> TestRouter {
+        let mock = Arc::new(RecordingMock {
+            result: Mutex::new(result),
+            calls: Mutex::new(Vec::new()),
+        });
+        // Real OpenAiAdapter for default_model, balanced_model, and
+        // image_model slots so the router can dispatch them if a test ever
+        // exercises the fallback chain.
+        let default_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
+            haven_common::config::ModelEndpoint::default(),
+        ));
+        let balanced_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
+            haven_common::config::ModelEndpoint::default(),
+        ));
+        let image_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
+            haven_common::config::ModelEndpoint::default(),
+        ));
+        let audio_client: Arc<dyn LlmClient> = Arc::new(OpenAiAdapter::new(
+            haven_common::config::ModelEndpoint::default(),
+        ));
+        let router = Arc::new(LlmRouter::new_with_clients(
+            mock.clone(),
+            default_client,
+            balanced_client,
+            image_client,
+            audio_client,
+        ));
+        // Simulate a configured small_model so generate() passes the
+        // is_role_configured guard and reaches the recording mock.
+        router
+            .force_role_configured(EndpointRole::SmallModel, true)
+            .await;
+        TestRouter { router, mock }
+    }
+
     fn ok_response(text: &str) -> Result<LlmResponse, LlmError> {
         Ok(LlmResponse {
             text: text.into(),
@@ -117,19 +154,30 @@ mod tests {
 
     #[tokio::test]
     async fn empty_conversation_returns_none() {
-        let mock = Arc::new(MockClient::new(ok_response("ignored")));
-        let client: Arc<dyn LlmClient> = mock.clone();
-        let generator = TitleGenerator::new_with_client(client);
+        let tr = test_router(ok_response("ignored")).await;
+        let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&[]).await.is_none());
         // No LLM call should be made for an empty conversation.
-        assert!(mock.calls.lock().unwrap().is_empty());
+        assert!(tr.mock.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unconfigured_small_model_returns_none_without_calls() {
+        let tr = test_router(ok_response("ignored")).await;
+        // The default (empty-key) config simulates an unconfigured small_model.
+        tr.router
+            .force_role_configured(EndpointRole::SmallModel, false)
+            .await;
+        let generator = TitleGenerator::new(tr.router);
+        assert!(generator.generate(&["hi".into()]).await.is_none());
+        // The guard must skip the LLM call entirely (no outbound HTTP).
+        assert!(tr.mock.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn generates_and_trims_title() {
-        let mock = Arc::new(MockClient::new(ok_response("  整理代码  ")));
-        let client: Arc<dyn LlmClient> = mock.clone();
-        let generator = TitleGenerator::new_with_client(client);
+        let tr = test_router(ok_response("  整理代码  ")).await;
+        let generator = TitleGenerator::new(tr.router);
         assert_eq!(
             generator
                 .generate(&["帮我整理代码".into()])
@@ -139,7 +187,7 @@ mod tests {
         );
 
         // The prompt must be a system + user message pair carrying the conversation.
-        let calls = mock.calls.lock().unwrap();
+        let calls = tr.mock.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].len(), 2);
         assert!(matches!(calls[0][0].role, LlmRole::System));
@@ -148,8 +196,8 @@ mod tests {
 
     #[tokio::test]
     async fn strips_surrounding_quotes() {
-        let client: Arc<dyn LlmClient> = Arc::new(MockClient::new(ok_response("\"整理代码\"")));
-        let generator = TitleGenerator::new_with_client(client.clone());
+        let tr = test_router(ok_response("\"整理代码\"")).await;
+        let generator = TitleGenerator::new(tr.router);
         assert_eq!(
             generator.generate(&["hi".into()]).await.as_deref(),
             Some("整理代码")
@@ -158,24 +206,23 @@ mod tests {
 
     #[tokio::test]
     async fn whitespace_only_response_returns_none() {
-        let client: Arc<dyn LlmClient> = Arc::new(MockClient::new(ok_response("   \n  ")));
-        let generator = TitleGenerator::new_with_client(client);
+        let tr = test_router(ok_response("   \n  ")).await;
+        let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&["hi".into()]).await.is_none());
     }
 
     #[tokio::test]
     async fn overly_long_response_returns_none() {
         let long = "x".repeat(101);
-        let client: Arc<dyn LlmClient> = Arc::new(MockClient::new(ok_response(&long)));
-        let generator = TitleGenerator::new_with_client(client);
+        let tr = test_router(ok_response(&long)).await;
+        let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&["hi".into()]).await.is_none());
     }
 
     #[tokio::test]
     async fn llm_error_returns_none() {
-        let client: Arc<dyn LlmClient> =
-            Arc::new(MockClient::new(Err(LlmError::ServerError("boom".into()))));
-        let generator = TitleGenerator::new_with_client(client);
+        let tr = test_router(Err(LlmError::ServerError("boom".into()))).await;
+        let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&["hi".into()]).await.is_none());
     }
 }

@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::events::*;
 use haven_common::McpServerConfig;
+use haven_common::config::{LlmConfig, ModelEndpoint};
 use haven_common::types::RiskLevel;
 use haven_input::RecordingReason;
 use haven_llm::LlmRouter;
@@ -8,6 +9,7 @@ use haven_llm::{ModelInfo, ModelRegistry};
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::task_steps::TaskStep;
 use haven_memory::repositories::tasks::Task;
+use haven_tools::stt::build_stt_client;
 use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent};
 use serde::Serialize;
 use serde_json::Value;
@@ -40,9 +42,58 @@ pub use haven_tools::SkillInfo;
 /// Convert any displayable error into a frontend-facing string while logging
 /// it at ERROR level. Replaces the repetitive `.map_err(log_err)`
 /// pattern so command failures are never silently swallowed.
-fn log_err<E: std::fmt::Display>(e: E) -> String {
+///
+/// `ctx` identifies the originating Tauri command and is logged as a
+/// separate line so the original `command error: <e>` line is preserved
+/// verbatim for log scrapers / dashboards.
+fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
+    tracing::error!("command `{}` failed", ctx);
     tracing::error!("command error: {}", e);
     e.to_string()
+}
+
+/// Resolve a model role string to its endpoint slot, or `None` for unknown
+/// roles. Single source of truth for the role names accepted by the model
+/// commands (`switch_model`, `set_reasoning_effort`).
+fn role_endpoint<'a>(cfg: &'a mut LlmConfig, role: &str) -> Option<&'a mut ModelEndpoint> {
+    match role {
+        "small_model" => Some(&mut cfg.small_model),
+        "default_model" => Some(&mut cfg.default_model),
+        "balanced_model" => Some(&mut cfg.balanced_model),
+        "image_model" => Some(&mut cfg.image_model),
+        "audio_model" => Some(&mut cfg.audio_model),
+        _ => None,
+    }
+}
+
+/// Normalize an endpoint URL for comparison: strip the trailing slash and
+/// lowercase it (scheme/host comparisons are case-insensitive).
+fn normalize_endpoint_url(url: &str) -> String {
+    url.trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Rebuild the router-dependent runtime after a model/config change: the
+/// agent's LlmRouter, the tools' router, and the pipeline STT client (which
+/// captures the router at construction — without a rebuild it keeps calling
+/// a stale router after a model switch).
+async fn hot_swap_router(state: &AppState, new_router: Arc<LlmRouter>) -> Result<(), String> {
+    state.agent.replace_router(new_router.clone());
+    state.tools.set_router(new_router.clone()).await;
+
+    let stt_config = {
+        let cfg = state.config_loader.lock().map_err(|e| log_err("hot_swap_router", e))?;
+        cfg.config().stt.clone()
+    };
+    match build_stt_client(new_router, state.tools.mcp_manager.clone(), &stt_config) {
+        Ok(client) => {
+            state.pipeline.set_stt_client(client).await;
+        }
+        Err(e) => {
+            tracing::warn!("STT client rebuild failed, transcription disabled: {e}");
+            state.pipeline.set_stt_client(None).await;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -79,7 +130,16 @@ pub async fn stop_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let result = state.pipeline.stop_recording().await.map_err(log_err)?;
+    // Stop the audio capture first, *then* notify the UI that the
+    // recording has ended. The previous ordering awaited STT (network
+    // call) and the agent ReAct loop (multiple LLM/tool round-trips)
+    // before emitting `recording:stopped`, so the UI kept the red
+    // "recording" overlay up for the entire post-processing run. With
+    // this split the overlay disappears within ~80 ms of the user
+    // clicking stop, and STT + agent run as background work that
+    // drives the rest of the UI through `transcription:*` / `task:*`
+    // events.
+    let result = state.pipeline.stop_capture().await.map_err(|e| log_err("stop_recording", e))?;
     let reason_str = match result.reason {
         RecordingReason::Manual => "manual",
         RecordingReason::Silence => "silence",
@@ -97,6 +157,15 @@ pub async fn stop_recording(
     );
 
     let session_id = uuid::Uuid::new_v4().to_string();
+    let mut result = result;
+
+    // Run STT inline. It is fast enough (sub-second to a couple of
+    // seconds) and the UI needs the transcript to know whether to
+    // auto-submit a user message. Running it here also keeps the
+    // existing `transcription:result` / `transcription:error` event
+    // ordering intact.
+    state.pipeline.transcribe(&mut result).await;
+
     match result.transcript {
         Some(text) => {
             let _ = app.emit(
@@ -126,17 +195,19 @@ pub async fn stop_recording(
                 .agent
                 .process_input(&text, active.clone())
                 .await
-                .map_err(log_err)?;
+                .map_err(|e| log_err("stop_recording", e))?;
             Ok(text)
         }
         None => {
-            let _ = app.emit(
-                "transcription:error",
-                TranscriptionErrorEvent {
-                    session_id,
-                    error: "转写失败，请检查 STT 服务配置".into(),
-                },
-            );
+            if let Some(err) = result.transcript_error {
+                let _ = app.emit(
+                    "transcription:error",
+                    TranscriptionErrorEvent {
+                        session_id,
+                        error: err,
+                    },
+                );
+            }
             Ok(String::new())
         }
     }
@@ -147,7 +218,7 @@ pub async fn cancel_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    state.pipeline.cancel_recording().await.map_err(log_err)?;
+    state.pipeline.cancel_recording().await.map_err(|e| log_err("cancel_recording", e))?;
     let _ = app.emit(
         "recording:stopped",
         RecordingEvent {
@@ -178,7 +249,7 @@ pub async fn process_transcript(
         .agent
         .process_input_with_images(&transcript, active_task_id.clone(), &images)
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("process_transcript", e))?;
     tracing::debug!("process_transcript result: {:?}", result);
     Ok(serde_json::to_value(result).unwrap_or_default())
 }
@@ -216,7 +287,7 @@ fn validate_images(
 #[tauri::command]
 pub async fn reopen_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     tracing::debug!("reopen_task called: task_id={}", task_id);
-    state.agent.reopen_task(&task_id).await.map_err(log_err)?;
+    state.agent.reopen_task(&task_id).await.map_err(|e| log_err("reopen_task", e))?;
     tracing::debug!("reopen_task done");
     Ok(())
 }
@@ -253,7 +324,7 @@ pub async fn end_task(
         })
         .unwrap_or_default();
 
-    let _ = state.executor.end_task(&task_id).await.map_err(log_err)?;
+    let _ = state.executor.end_task(&task_id).await.map_err(|e| log_err("end_task", e))?;
     // end_task always ends as Completed — the user explicitly finished the
     // task, so it is reported as completed (with notification), never error.
     state.agent.emit_task_completed(&task_id, &title).await;
@@ -275,7 +346,7 @@ pub async fn resolve_confirmation(
         .executor
         .resolve_confirmation(&step_id, confirmed)
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("resolve_confirmation", e))?;
     if trust_session.unwrap_or(false)
         && confirmed
         && let Some(level) = risk_level
@@ -308,12 +379,12 @@ pub async fn get_history(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
-    state.db.list_tasks(limit, offset).map_err(log_err)
+    state.db.list_tasks(limit, offset).map_err(|e| log_err("get_history", e))
 }
 
 #[tauri::command]
 pub async fn count_history(state: State<'_, Arc<AppState>>) -> Result<i64, String> {
-    state.db.count_tasks().map_err(log_err)
+    state.db.count_tasks().map_err(|e| log_err("count_history", e))
 }
 
 #[tauri::command]
@@ -326,7 +397,7 @@ pub async fn search_history_paginated(
     state
         .db
         .search_tasks_paginated(&query, limit, offset)
-        .map_err(log_err)
+        .map_err(|e| log_err("search_history_paginated", e))
 }
 
 #[tauri::command]
@@ -334,7 +405,7 @@ pub async fn count_history_search(
     state: State<'_, Arc<AppState>>,
     query: String,
 ) -> Result<i64, String> {
-    state.db.count_tasks_search(&query).map_err(log_err)
+    state.db.count_tasks_search(&query).map_err(|e| log_err("count_history_search", e))
 }
 
 #[tauri::command]
@@ -351,11 +422,11 @@ pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Res
         .mcp_manager
         .reconnect(&name)
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("reconnect_mcp", e))?;
     // Restart health monitor for this client
     if let Some(client) = state.tools.mcp_manager.get_client(&name).await {
         let config = haven_common::config::ConfigLoader::load()
-            .map_err(log_err)?
+            .map_err(|e| log_err("reconnect_mcp", e))?
             .config()
             .mcp_discovery
             .clone();
@@ -405,7 +476,7 @@ pub async fn mcp_tool_call(
                 "params": params,
                 "risk_level": risk_level,
             }))
-            .map_err(log_err)?);
+            .map_err(|e| log_err("mcp_tool_call", e))?);
         }
         ConfirmationResult::Blocked => {
             return Err("MCP tool call blocked by security policy".to_string());
@@ -418,7 +489,7 @@ pub async fn mcp_tool_call(
         .mcp_manager
         .call_tool(&client, &tool, args, cancel)
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("mcp_tool_call", e))?;
     Ok(serde_json::json!({
         "success": result.success,
         "output": result.output,
@@ -433,9 +504,9 @@ pub async fn add_mcp_server(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Persist to config
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("add_mcp_server", e))?;
     loader.config_mut().mcp_servers.push(config.clone());
-    loader.save().map_err(log_err)?;
+    loader.save().map_err(|e| log_err("add_mcp_server", e))?;
 
     // Create client and connect
     let client = std::sync::Arc::new(haven_tools::McpClient::new(
@@ -445,7 +516,7 @@ pub async fn add_mcp_server(
         &config.env,
     ));
     if config.enabled {
-        client.connect().await.map_err(log_err)?;
+        client.connect().await.map_err(|e| log_err("add_mcp_server", e))?;
         // Start health monitor
         let discovery = loader.config().mcp_discovery.clone();
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
@@ -484,14 +555,14 @@ pub async fn update_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("update_mcp_server", e))?;
     let servers = &mut loader.config_mut().mcp_servers;
     if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
         let config_changed = existing.command != config.command
             || existing.args != config.args
             || existing.env != config.env;
         *existing = config.clone();
-        loader.save().map_err(log_err)?;
+        loader.save().map_err(|e| log_err("update_mcp_server", e))?;
 
         // If command/args/env changed, reconnect; if only enabled, toggle
         if config_changed {
@@ -503,7 +574,7 @@ pub async fn update_mcp_server(
                     &config.args,
                     &config.env,
                 ));
-                client.connect().await.map_err(log_err)?;
+                client.connect().await.map_err(|e| log_err("update_mcp_server", e))?;
                 let discovery = loader.config().mcp_discovery.clone();
                 let health_interval =
                     std::time::Duration::from_secs(discovery.health_interval_secs);
@@ -528,7 +599,7 @@ pub async fn update_mcp_server(
                 &config.args,
                 &config.env,
             ));
-            client.connect().await.map_err(log_err)?;
+            client.connect().await.map_err(|e| log_err("update_mcp_server", e))?;
             let discovery = loader.config().mcp_discovery.clone();
             let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
             let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
@@ -577,9 +648,9 @@ pub async fn remove_mcp_server(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     // Remove from config
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("remove_mcp_server", e))?;
     loader.config_mut().mcp_servers.retain(|s| s.name != name);
-    loader.save().map_err(log_err)?;
+    loader.save().map_err(|e| log_err("remove_mcp_server", e))?;
 
     // Shutdown and remove from manager
     state.tools.mcp_manager.remove_client(&name).await;
@@ -605,11 +676,11 @@ pub async fn toggle_mcp_server(
     enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("toggle_mcp_server", e))?;
     let servers = &mut loader.config_mut().mcp_servers;
     if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
         existing.enabled = enabled;
-        loader.save().map_err(log_err)?;
+        loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
     } else {
         return Err(format!("MCP server '{}' not found", name));
     }
@@ -630,7 +701,7 @@ pub async fn toggle_mcp_server(
             &config.args,
             &config.env,
         ));
-        client.connect().await.map_err(log_err)?;
+        client.connect().await.map_err(|e| log_err("toggle_mcp_server", e))?;
         let discovery = loader.config().mcp_discovery.clone();
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
         let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
@@ -678,7 +749,7 @@ pub async fn configure_mcp(
     let _ = state
         .db
         .save_mcp_server(&name, &transport, &config)
-        .map_err(log_err)?;
+        .map_err(|e| log_err("configure_mcp", e))?;
     Ok(())
 }
 
@@ -698,7 +769,7 @@ pub async fn refresh_skills(
         .skills_engine
         .refresh_from_disk()
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("refresh_skills", e))?;
     // Rebuild tool catalog so skills appear in the Reasoner's tool list.
     state.tools.rebuild_catalog().await;
     // Notify the frontend that the registry changed so views can refetch.
@@ -720,14 +791,14 @@ pub async fn set_skill_enabled(
         .skills_engine
         .set_enabled(&name, enabled)
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("set_skill_enabled", e))?;
     // The engine's `set_enabled` already syncs its internal filter so the
     // toggle survives `refresh_from_disk`. Persist the filter to config.toml
     // so it also survives app restart.
     let filter = state.tools.skills_engine.enabled_filter().await;
-    let mut loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
+    let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("set_skill_enabled", e))?;
     loader.config_mut().skills.enabled = filter;
-    loader.save().map_err(log_err)?;
+    loader.save().map_err(|e| log_err("set_skill_enabled", e))?;
 
     // Rebuild tool catalog so the enable/disable takes effect in the Reasoner.
     state.tools.rebuild_catalog().await;
@@ -746,21 +817,21 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
         std::process::Command::new("explorer")
             .arg(root.as_os_str())
             .spawn()
-            .map_err(log_err)?;
+            .map_err(|e| log_err("open_skills_dir", e))?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
             .arg(&root)
             .spawn()
-            .map_err(log_err)?;
+            .map_err(|e| log_err("open_skills_dir", e))?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open")
             .arg(&root)
             .spawn()
-            .map_err(log_err)?;
+            .map_err(|e| log_err("open_skills_dir", e))?;
     }
     Ok(root.to_string_lossy().to_string())
 }
@@ -809,7 +880,7 @@ pub async fn execute_skill(
                     "params": params,
                     "risk_level": risk_level,
                 }))
-                .map_err(log_err)?);
+                .map_err(|e| log_err("execute_skill", e))?);
             }
             haven_tools::ConfirmationResult::Blocked => {
                 return Err("skill execution blocked by security policy".to_string());
@@ -832,7 +903,7 @@ pub async fn execute_skill(
         .await
         .execute(&skill, &params, cancel)
         .await
-        .map_err(log_err)?;
+        .map_err(|e| log_err("execute_skill", e))?;
 
     Ok(serde_json::json!({
         "success": result.success,
@@ -846,7 +917,7 @@ pub async fn search_history(
     state: State<'_, Arc<AppState>>,
     query: String,
 ) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
-    state.db.search_tasks(&query).map_err(log_err)
+    state.db.search_tasks(&query).map_err(|e| log_err("search_history", e))
 }
 
 #[tauri::command]
@@ -870,7 +941,7 @@ pub async fn search_history_filtered(
             limit.unwrap_or(50),
             offset.unwrap_or(0),
         )
-        .map_err(log_err)
+        .map_err(|e| log_err("search_history_filtered", e))
 }
 
 /// Manually update a task's display title.
@@ -888,7 +959,7 @@ pub async fn update_task_title(
     state
         .db
         .update_task_title(&task_id, &title)
-        .map_err(log_err)?;
+        .map_err(|e| log_err("update_task_title", e))?;
     state.executor.update_task_title(&task_id, &title).await;
     let _ = app.emit(
         "task:title-updated",
@@ -902,27 +973,38 @@ pub async fn update_task_title(
 
 #[tauri::command]
 pub async fn delete_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
-    state.db.delete_task(&task_id).map_err(log_err)?;
+    state.db.delete_task(&task_id).map_err(|e| log_err("delete_task", e))?;
     state.executor.remove_task(&task_id).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
-    let count = state.db.clear_tasks().map(|n| n as u64).map_err(log_err)?;
+    let count = state.db.clear_tasks().map(|n| n as u64).map_err(|e| log_err("clear_history", e))?;
     state.executor.clear_all_tasks().await;
     Ok(count)
 }
 
 #[tauri::command]
 pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
-    let loader = haven_common::config::ConfigLoader::load().map_err(log_err)?;
+    let loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("get_api_key_status", e))?;
     let cfg = loader.config();
     Ok(serde_json::json!({
         "small_model": !cfg.llm.small_model.api_key.is_empty(),
         "default_model": !cfg.llm.default_model.api_key.is_empty(),
         "balanced_model": !cfg.llm.balanced_model.api_key.is_empty(),
+        "image_model": !cfg.llm.image_model.api_key.is_empty(),
+        "audio_model": !cfg.llm.audio_model.api_key.is_empty(),
+        "stt": !cfg.stt.api_key.is_empty(),
     }))
+}
+
+/// Probe the configured default-model endpoint for live connectivity
+/// (GET /models). The top-right status indicator uses this to show
+/// Ready (green) when reachable or Disconnected (gray) when not.
+#[tauri::command]
+pub async fn check_llm_connection(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
+    Ok(state.agent.check_llm_connection().await)
 }
 
 /// §2.7: List available models from the built-in catalog
@@ -940,6 +1022,130 @@ pub async fn list_models(query: Option<String>) -> Result<Vec<ModelInfo>, String
     Ok(results)
 }
 
+/// Resolve the default base URL for an STT provider (used when the user has
+/// not overridden it), so the stored-key guard in `discover_models` can match
+/// the requested URL.
+fn stt_default_base_url(provider: &str) -> &'static str {
+    match provider {
+        "groq" => "https://api.groq.com/openai/v1",
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta",
+        "deepgram" => "https://api.deepgram.com/v1",
+        "assemblyai" => "https://api.assemblyai.com",
+        _ => "https://api.openai.com/v1",
+    }
+}
+
+/// §2.7: Fetch models from a provider's `/models` endpoint (OpenAI-
+/// compatible). Used by the settings UI to populate the model dropdown after
+/// the base URL and API key are entered. When `api_key` is empty (the
+/// frontend masks stored keys) and `role` names a configured slot, the stored
+/// key for that role is used — but only when the requested URL matches the
+/// role's configured endpoint, so the stored key can never be sent to an
+/// arbitrary renderer-supplied host.
+#[tauri::command]
+pub async fn discover_models(
+    base_url: String,
+    api_key: String,
+    role: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<ModelInfo>, String> {
+    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+        return Err("base_url must be an http(s) URL".to_string());
+    }
+    let key = if api_key.is_empty() {
+        if let Some(role) = role.as_deref() {
+            let state = app.state::<Arc<AppState>>();
+            let cfg = {
+                let guard = state.config_loader.lock().map_err(|e| log_err("discover_models", e))?;
+                guard.config().clone()
+            };
+            if role == "stt" {
+                let stt = &cfg.stt;
+                let stt_base = if stt.base_url.is_empty() {
+                    stt_default_base_url(&stt.provider)
+                } else {
+                    stt.base_url.as_str()
+                };
+                if normalize_endpoint_url(stt_base) == normalize_endpoint_url(&base_url) {
+                    stt.api_key.clone()
+                } else {
+                    String::new()
+                }
+            } else {
+                let mut llm = cfg.llm.clone();
+                match role_endpoint(&mut llm, role) {
+                    Some(ep)
+                        if normalize_endpoint_url(&ep.base_url)
+                            == normalize_endpoint_url(&base_url) =>
+                    {
+                        ep.api_key.clone()
+                    }
+                    _ => String::new(),
+                }
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        api_key
+    };
+    // Resolve the role endpoint's auth scheme so discovery works for
+    // Anthropic (`x-api-key`), Gemini (`x-goog-api-key`) and custom-gateway
+    // endpoints — not just OpenAI-style `Authorization: Bearer`.
+    let auth_header = {
+        let state = app.state::<Arc<AppState>>();
+        let cfg = {
+            let guard = state.config_loader.lock().map_err(|e| log_err("discover_models", e))?;
+            guard.config().clone()
+        };
+        if role.as_deref() == Some("stt") {
+            match cfg.stt.provider.as_str() {
+                "gemini" => Some(("x-goog-api-key".to_string(), key.clone())),
+                _ => Some(("Authorization".to_string(), format!("Bearer {}", key))),
+            }
+        } else {
+            let mut llm = cfg.llm.clone();
+            role.as_deref().and_then(|role| {
+                role_endpoint(&mut llm, role)
+                    .filter(|ep| {
+                        normalize_endpoint_url(&ep.base_url) == normalize_endpoint_url(&base_url)
+                    })
+                    .map(|ep| {
+                        let customized =
+                            ep.auth_header_name != "Authorization" || ep.auth_header_prefix != "Bearer";
+                        if customized {
+                            (
+                                ep.auth_header_name.clone(),
+                                format!("{} {}", ep.auth_header_prefix, key),
+                            )
+                        } else {
+                            match ep.provider.as_str() {
+                                "anthropic" => ("x-api-key".to_string(), key.clone()),
+                                "google" | "gemini" => ("x-goog-api-key".to_string(), key.clone()),
+                                _ => ("Authorization".to_string(), format!("Bearer {}", key)),
+                            }
+                        }
+                    })
+            })
+        }
+    };
+    let mut reg = ModelRegistry::new();
+    tracing::info!("discovering models from {}", base_url);
+    let models = reg
+        .discover_from(
+            &base_url,
+            &key,
+            auth_header.as_ref().map(|(n, v)| (n.as_str(), v.as_str())),
+        )
+        .await
+        .map_err(|e| {
+            tracing::warn!("model discovery failed for {}: {}", base_url, e);
+            e.to_string()
+        })?;
+    tracing::info!("discovered {} models from {}", models.len(), base_url);
+    Ok(models)
+}
+
 /// §2.7: Switch a model endpoint role to a different model.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
@@ -952,50 +1158,78 @@ pub async fn switch_model(
 
     // Lock and update config
     let mut loader = {
-        let guard = state.config_loader.lock().map_err(log_err)?;
+        let guard = state.config_loader.lock().map_err(|e| log_err("switch_model", e))?;
         guard.clone()
     };
     {
         let cfg = loader.config_mut();
-        let ep = match role.as_str() {
-            "small_model" => &mut cfg.llm.small_model,
-            "default_model" => &mut cfg.llm.default_model,
-            "balanced_model" => &mut cfg.llm.balanced_model,
-            _ => return Err(format!("unknown role: {}", role)),
-        };
+        let ep = role_endpoint(&mut cfg.llm, role.as_str())
+            .ok_or_else(|| format!("unknown role: {}", role))?;
         ep.model_name = model_id;
     }
-    loader.save().map_err(log_err)?;
+    loader.save().map_err(|e| log_err("switch_model", e))?;
 
     // Replace the in-memory config_loader
     {
-        let mut guard = state.config_loader.lock().map_err(log_err)?;
+        let mut guard = state.config_loader.lock().map_err(|e| log_err("switch_model", e))?;
         *guard = loader;
     }
 
-    // Hot-swap the LlmRouter
+    // Hot-swap the LlmRouter and all router-dependent runtime state
     let config = {
-        let guard = state.config_loader.lock().map_err(log_err)?;
+        let guard = state.config_loader.lock().map_err(|e| log_err("switch_model", e))?;
         guard.config().clone()
     };
     let new_router = Arc::new(LlmRouter::new(config.llm.clone()));
-    state.agent.replace_router(new_router);
-
-    // Refresh the file summary summarizer from the (possibly updated) small_model.
-    refresh_summarizer(&state, &config.llm.small_model).await;
+    hot_swap_router(&state, new_router).await?;
 
     Ok(())
 }
 
-/// Point the `file summary` operation at the configured small_model endpoint.
-/// A missing api_key disables the operation.
-async fn refresh_summarizer(state: &Arc<AppState>, endpoint: &haven_common::config::ModelEndpoint) {
-    if endpoint.api_key.is_empty() {
-        state.tools.set_summarizer(None).await;
-        return;
+/// Set the reasoning effort of a model endpoint role (e.g. "low"/"medium"/"high").
+/// Updates config.toml and hot-swaps the LlmRouter at runtime.
+#[tauri::command]
+pub async fn set_reasoning_effort(
+    role: String,
+    effort: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<Arc<AppState>>();
+
+    let normalized = match effort {
+        Some(e) if e.trim().is_empty() => None,
+        Some(e) => Some(e.trim().to_string()),
+        None => None,
+    };
+
+    // Lock and update config
+    let mut loader = {
+        let guard = state.config_loader.lock().map_err(|e| log_err("set_reasoning_effort", e))?;
+        guard.clone()
+    };
+    {
+        let cfg = loader.config_mut();
+        let ep = role_endpoint(&mut cfg.llm, role.as_str())
+            .ok_or_else(|| format!("unknown role: {}", role))?;
+        ep.reasoning_effort = normalized;
     }
-    let client = Arc::new(haven_llm::client::HttpLlmClient::new(endpoint.clone()));
-    state.tools.set_summarizer(Some(client)).await;
+    loader.save().map_err(|e| log_err("set_reasoning_effort", e))?;
+
+    // Replace the in-memory config_loader
+    {
+        let mut guard = state.config_loader.lock().map_err(|e| log_err("set_reasoning_effort", e))?;
+        *guard = loader;
+    }
+
+    // Hot-swap the LlmRouter and all router-dependent runtime state
+    let config = {
+        let guard = state.config_loader.lock().map_err(|e| log_err("set_reasoning_effort", e))?;
+        guard.config().clone()
+    };
+    let new_router = Arc::new(LlmRouter::new(config.llm.clone()));
+    hot_swap_router(&state, new_router).await?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1015,13 +1249,13 @@ pub async fn export_history(
             10000,
             0,
         )
-        .map_err(log_err)?;
+        .map_err(|e| log_err("export_history", e))?;
     serde_json::to_string_pretty(&serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
         "count": tasks.len(),
         "tasks": tasks,
     }))
-    .map_err(log_err)
+    .map_err(|e| log_err("export_history", e))
 }
 
 #[tauri::command]
@@ -1029,14 +1263,14 @@ pub async fn get_conversation_memory(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<haven_memory::repositories::messages::Message>, String> {
-    state.db.get_session_messages(&session_id).map_err(log_err)
+    state.db.get_session_messages(&session_id).map_err(|e| log_err("get_conversation_memory", e))
 }
 
 #[tauri::command]
 pub async fn clear_conversation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // Close the current session and create a new one
     let _ = state.db.close_active_session();
-    let _ = state.db.get_or_create_active_session().map_err(log_err)?;
+    let _ = state.db.get_or_create_active_session().map_err(|e| log_err("clear_conversation", e))?;
     Ok(())
 }
 
@@ -1045,7 +1279,7 @@ pub async fn clear_conversation(state: State<'_, Arc<AppState>>) -> Result<(), S
 pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<haven_memory::repositories::facts::Fact>, String> {
-    state.db.list_facts().map_err(log_err)
+    state.db.list_facts().map_err(|e| log_err("list_facts", e))
 }
 
 #[tauri::command]
@@ -1061,12 +1295,12 @@ pub async fn add_fact(
     state
         .db
         .insert_fact(&subject, &predicate, &object, "user", 1.0, &tags)
-        .map_err(log_err)
+        .map_err(|e| log_err("add_fact", e))
 }
 
 #[tauri::command]
 pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Result<(), String> {
-    state.db.delete_fact(&fact_id).map_err(log_err)
+    state.db.delete_fact(&fact_id).map_err(|e| log_err("delete_fact", e))
 }
 
 #[tauri::command]
@@ -1074,14 +1308,14 @@ pub async fn get_preference(
     state: State<'_, Arc<AppState>>,
     key: String,
 ) -> Result<Option<String>, String> {
-    state.db.get_preference(&key).map_err(log_err)
+    state.db.get_preference(&key).map_err(|e| log_err("get_preference", e))
 }
 
 #[tauri::command]
 pub async fn list_preferences(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<(String, String)>, String> {
-    state.db.list_preferences().map_err(log_err)
+    state.db.list_preferences().map_err(|e| log_err("list_preferences", e))
 }
 
 #[tauri::command]
@@ -1090,18 +1324,18 @@ pub async fn update_preference(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    state.db.set_preference(&key, &value).map_err(log_err)
+    state.db.set_preference(&key, &value).map_err(|e| log_err("update_preference", e))
 }
 
 #[tauri::command]
 pub async fn delete_preference(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
-    state.db.delete_preference(&key).map_err(log_err)
+    state.db.delete_preference(&key).map_err(|e| log_err("delete_preference", e))
 }
 
 #[tauri::command]
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
     let state = app.state::<Arc<AppState>>();
-    let cfg = state.config_loader.lock().map_err(log_err)?;
+    let cfg = state.config_loader.lock().map_err(|e| log_err("get_settings", e))?;
     let settings = cfg.settings();
     Ok(settings)
 }
@@ -1113,41 +1347,22 @@ pub async fn update_settings(
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
     let old_hotkey = {
-        let cfg = state.config_loader.lock().map_err(log_err)?;
+        let cfg = state.config_loader.lock().map_err(|e| log_err("update_settings", e))?;
         cfg.config().hotkey.key_binding.clone()
     };
 
     {
-        let mut loader = state.config_loader.lock().map_err(log_err)?;
+        let mut loader = state.config_loader.lock().map_err(|e| log_err("update_settings", e))?;
         loader.apply_settings(&settings);
-        loader.save().map_err(log_err)?;
+        loader.save().map_err(|e| log_err("update_settings", e))?;
     }
 
     // Propagate audio config to running pipeline
     state.pipeline.update_config(settings.audio).await;
 
-    // Propagate STT client change
-    use haven_tools::stt::{LlmSttAdapter, McpSttClient};
-    match settings.stt.provider.as_str() {
-        "mcp" => {
-            if let Some(ref server_name) = settings.stt.mcp_server {
-                let client = McpSttClient::new(
-                    state.tools.mcp_manager.clone(),
-                    server_name,
-                    settings.stt.timeout_secs,
-                );
-                state.pipeline.set_stt_client(Box::new(client)).await;
-            }
-        }
-        "llm" => {
-            state.pipeline.set_stt_client(Box::new(LlmSttAdapter)).await;
-        }
-        _ => {}
-    }
-
     // Reload MCP servers from config
     let (mcp_servers, mcp_discovery, task_max_steps, llm_config, min_risk_level) = {
-        let cfg = state.config_loader.lock().map_err(log_err)?;
+        let cfg = state.config_loader.lock().map_err(|e| log_err("update_settings", e))?;
         let config = cfg.config();
         (
             config.mcp_servers.clone(),
@@ -1159,11 +1374,9 @@ pub async fn update_settings(
     };
     state.tools.load_mcp_from_config(&mcp_servers).await;
     state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
-    state.tools.rebuild_catalog().await;
-    refresh_summarizer(&state, &llm_config.small_model).await;
-    state.agent.set_max_steps(task_max_steps);
     let new_router = Arc::new(LlmRouter::new(llm_config));
-    state.agent.replace_router(new_router);
+    hot_swap_router(&state, new_router).await?;
+    state.agent.set_max_steps(task_max_steps);
     state
         .tools
         .safety_gateway
@@ -1257,21 +1470,21 @@ pub async fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
         return Err("自动启动仅支持生产版本（cargo tauri build）。开发模式下请手动运行。".into());
     }
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().enable().map_err(log_err)?;
+    app.autolaunch().enable().map_err(|e| log_err("enable_autostart", e))?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().disable().map_err(log_err)?;
+    app.autolaunch().disable().map_err(|e| log_err("disable_autostart", e))?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(log_err)
+    app.autolaunch().is_enabled().map_err(|e| log_err("is_autostart_enabled", e))
 }
 
 #[derive(Serialize)]
@@ -1279,6 +1492,26 @@ pub struct TaskReviewResponse {
     pub task: Task,
     pub messages: Vec<Message>,
     pub steps: Vec<TaskStep>,
+}
+
+/// Load the session messages and steps for a task into a review response.
+/// Shared by `get_task_for_review` and `get_last_conversation`.
+fn review_response_for_task(
+    db: &haven_memory::Database,
+    task: Task,
+) -> Result<TaskReviewResponse, String> {
+    let messages = match task.session_id.as_deref() {
+        Some(session_id) if !session_id.is_empty() => {
+            db.get_session_messages(session_id).map_err(|e| log_err("is_autostart_enabled", e))?
+        }
+        _ => Vec::new(),
+    };
+    let steps = db.get_task_steps(&task.id).map_err(|e| log_err("is_autostart_enabled", e))?;
+    Ok(TaskReviewResponse {
+        task,
+        messages,
+        steps,
+    })
 }
 
 #[tauri::command]
@@ -1289,26 +1522,23 @@ pub async fn get_task_for_review(
     let task = state
         .db
         .get_task(&task_id)
-        .map_err(log_err)?
+        .map_err(|e| log_err("get_task_for_review", e))?
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
+    review_response_for_task(&state.db, task)
+}
 
-    let messages = if let Some(ref session_id) = task.session_id {
-        if !session_id.is_empty() {
-            state.db.get_session_messages(session_id).map_err(log_err)?
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    };
-
-    let steps = state.db.get_task_steps(&task_id).map_err(log_err)?;
-
-    Ok(TaskReviewResponse {
-        task,
-        messages,
-        steps,
-    })
+/// Return the most recent persisted task with its session messages and
+/// steps, for the chat page to auto-restore the last conversation on app
+/// start. Returns `None` when no task exists yet.
+#[tauri::command]
+pub async fn get_last_conversation(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<TaskReviewResponse>, String> {
+    let tasks = state.db.list_tasks(1, 0).map_err(|e| log_err("get_last_conversation", e))?;
+    match tasks.into_iter().next() {
+        Some(task) => review_response_for_task(&state.db, task).map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Roll back a task to a specific branch point. The task is rewound to
@@ -1326,7 +1556,7 @@ pub async fn rollback_task(
         .agent
         .rollback_task(&task_id, target_step, pause.unwrap_or(false))
         .await
-        .map_err(log_err)
+        .map_err(|e| log_err("rollback_task", e))
 }
 
 /// Branch a task from a specific step into a new conversation. Copies all
@@ -1342,7 +1572,7 @@ pub async fn branch_task(
         .agent
         .branch_task(&task_id, target_step)
         .await
-        .map_err(log_err)
+        .map_err(|e| log_err("branch_task", e))
 }
 
 /// Resume a task that errored mid-step. Removes partial output persisted on
@@ -1350,7 +1580,7 @@ pub async fn branch_task(
 /// step from the saved snapshot.
 #[tauri::command]
 pub async fn continue_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
-    state.agent.continue_task(&task_id).await.map_err(log_err)
+    state.agent.continue_task(&task_id).await.map_err(|e| log_err("continue_task", e))
 }
 
 #[cfg(test)]

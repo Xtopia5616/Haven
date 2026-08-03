@@ -212,9 +212,9 @@
 		aria-modal="true"
 		tabindex="-1"
 		onkeydown={handleNonInteractiveKeydown}
-		in:fade={{ duration: 200, easing: cubicOut }}
+		in:fade={{ duration: 300, easing: cubicOut }}
 	>
-		<div class="md-datepicker-dialog" in:scale={{ start: 0.92, duration: 300, easing: cubicOut }}>
+		<div class="md-datepicker-dialog" in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
 			<div class="md-datepicker-header">
 				<span class="md-datepicker-header-label">{headerLabel()}</span>
 				<button class="md-datepicker-header-year" onclick={goToYearView} type="button" aria-label="Switch to year view">

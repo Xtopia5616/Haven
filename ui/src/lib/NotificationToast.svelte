@@ -1,11 +1,21 @@
 <script>
-	import { onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { notificationStore } from './stores.js';
+	// The container stays mounted (empty when idle) and items are only
+	// populated after its first render: toasts inserted into a freshly
+	// created each block play no intro transition (the block effect has not
+	// run a reaction yet), which made the first toast appear instantly.
 	let items = $state([]);
-	const unsub = notificationStore.subscribe((v) => (items = v));
-	onDestroy(() => unsub());
+	let mounted = $state(false);
+	let unsub = null;
+	onMount(async () => {
+		mounted = true;
+		await tick();
+		unsub = notificationStore.subscribe((v) => (items = v));
+	});
+	onDestroy(() => unsub?.());
 
 	const icons = {
 		success: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`,
@@ -19,10 +29,10 @@
 	}
 </script>
 
-{#if items.length > 0}
+{#if mounted}
 	<div class="toast-container">
 		{#each items as item (item.id)}
-			<div class="toast toast-{item.type || 'info'}" in:fly={{ x: '100%', duration: 300, easing: cubicOut }}>
+			<div class="toast toast-{item.type || 'info'}" in:fly={{ x: '100%', duration: 450, easing: cubicOut }}>
 				<span class="toast-icon">{@html getIcon(item.type)}</span>
 				<span class="toast-msg">{item.msg}</span>
 			</div>

@@ -6,7 +6,7 @@ use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_task::TaskExecutor;
 use haven_tools::ToolsManager;
-use haven_tools::stt::{LlmSttAdapter, McpSttClient};
+use haven_tools::stt::build_stt_client;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
@@ -44,27 +44,16 @@ impl AppState {
             }
         });
 
-        let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 3));
-
         let cfg = config_loader.config().clone();
         let llm_config = cfg.llm.clone();
-        let small_model_endpoint = llm_config.small_model.clone();
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.task.max_steps;
         let session_window_size = cfg.memory.session_window_size;
         let max_observation_chars = cfg.task.max_observation_chars;
 
-        // The file `summary` operation uses the small_model endpoint directly.
-        if small_model_endpoint.api_key.is_empty() {
-            tracing::debug!("small_model not configured; file summary operation disabled");
-        } else {
-            tools
-                .set_summarizer(Some(Arc::new(haven_llm::client::HttpLlmClient::new(
-                    small_model_endpoint.clone(),
-                ))))
-                .await;
-        }
+        let tools = Arc::new(ToolsManager::new());
+
+        let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 3));
 
         let agent = Arc::new(AgentLayer::new(
             db.clone(),
@@ -73,12 +62,24 @@ impl AppState {
             max_steps,
             session_window_size,
             max_observation_chars,
-            Some(small_model_endpoint),
         ));
 
         let pipeline = Arc::new(InputPipeline::new());
 
         let stt_config = &cfg.stt;
+
+        // Build the STT client for the configured provider and wire it into
+        // the input pipeline. On error (e.g. `mcp` provider with no server)
+        // or `none`, the pipeline gets no client so transcription is disabled.
+        match build_stt_client(router.clone(), tools.mcp_manager.clone(), stt_config) {
+            Ok(client) => {
+                pipeline.set_stt_client(client).await;
+            }
+            Err(e) => {
+                tracing::warn!("STT client build failed, transcription disabled: {e}");
+                pipeline.set_stt_client(None).await;
+            }
+        }
 
         // Load MCP servers from config + start health monitors.
         let mcp_servers = cfg.mcp_servers.clone();
@@ -86,10 +87,11 @@ impl AppState {
         let skills_cfg_root = cfg.skills.root.clone();
         let skills_cfg_enabled = cfg.skills.enabled.clone();
         let tools_skills = tools.clone();
-        // Register builtin tools synchronously so the first user message
-        // doesn't race with the background catalog rebuild and end up with
-        // an empty tool list.
-        tools_skills.rebuild_catalog().await;
+        // Wire the router into the ToolsManager so the file `summary` and
+        // image-understanding operations can route through it (image_model
+        // for vision, small_model for summarization, with balanced-model
+        // fallback). Also rebuilds the catalog.
+        tools.set_router(router.clone()).await;
         tokio::spawn(async move {
             tools_skills
                 .discover_all(&mcp_servers, &mcp_discovery)
@@ -103,19 +105,6 @@ impl AppState {
             }
             tools_skills.rebuild_catalog().await;
         });
-
-        if stt_config.provider == "mcp" {
-            if let Some(server_name) = &stt_config.mcp_server {
-                let client = McpSttClient::new(
-                    tools.mcp_manager.clone(),
-                    server_name,
-                    stt_config.timeout_secs,
-                );
-                pipeline.set_stt_client(Box::new(client)).await;
-            }
-        } else {
-            pipeline.set_stt_client(Box::new(LlmSttAdapter)).await;
-        }
 
         let shell = Arc::new(DesktopShell::new());
 
@@ -180,6 +169,32 @@ impl AppState {
         });
 
         let config_loader_arc = Arc::new(std::sync::Mutex::new(config_loader));
+
+        // Wire the `self` management tool: the assistant can read its own
+        // status, change config, toggle skills/MCP servers, tail logs, and
+        // switch the runtime log level (via the tracing reload handles).
+        let log_path = cfg.log.file_enabled.then(|| {
+            cfg.log
+                .file_path
+                .clone()
+                .unwrap_or_else(haven_common::config::LogConfig::default_log_path)
+        });
+        let log_handles = filter_handles.clone();
+        let set_log_level = Some(Arc::new(move |level: String| {
+            for handle in &log_handles {
+                let _ = handle.modify(|filter| {
+                    *filter = EnvFilter::new(format!("haven={}", level));
+                });
+            }
+        }) as Arc<dyn Fn(String) + Send + Sync>);
+        let self_ctx = haven_tools::SelfToolContext {
+            config_loader: Some(config_loader_arc.clone()),
+            db: Some(db.clone()),
+            router: Some(router.clone()),
+            log_path,
+            set_log_level,
+        };
+        tools.set_self_context(self_ctx).await;
 
         Ok(Self {
             db,

@@ -85,11 +85,17 @@ impl ModelRegistry {
         }
     }
 
-    /// Fetch models from a provider's `/v1/models` endpoint
+    /// Fetch models from a provider's `/v1/models` endpoint.
+    ///
+    /// `auth_header` overrides the default `Authorization: Bearer <key>`
+    /// scheme with a literal `(header_name, header_value)` pair — used by the
+    /// settings UI for Anthropic (`x-api-key`), Gemini (`x-goog-api-key`) and
+    /// custom-gateway endpoints.
     pub async fn discover_from(
         &mut self,
         base_url: &str,
         api_key: &str,
+        auth_header: Option<(&str, &str)>,
     ) -> Result<Vec<ModelInfo>, crate::LlmError> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -97,15 +103,25 @@ impl ModelRegistry {
             .map_err(|e| crate::LlmError::Unknown(e.to_string()))?;
 
         let url = format!("{}/models", base_url.trim_end_matches('/'));
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .send()
-            .await
-            .map_err(crate::LlmError::from)?;
+        let mut req = client.get(&url);
+        if let Some((name, value)) = auth_header {
+            if let Ok(name) = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                && let Ok(value) = reqwest::header::HeaderValue::from_str(value)
+            {
+                req = req.header(name, value);
+            }
+        } else if !api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+        let resp = req.send().await.map_err(crate::LlmError::from)?;
 
         if !resp.status().is_success() {
-            return Ok(Vec::new());
+            let code = resp.status().as_u16();
+            return Err(if code == 401 || code == 403 {
+                crate::LlmError::Auth(format!("status {}", resp.status()))
+            } else {
+                crate::LlmError::ServerError(format!("status {}", resp.status()))
+            });
         }
 
         let json: serde_json::Value = resp

@@ -61,6 +61,12 @@ pub enum ContentPart {
         media_type: String,
         data: String,
     },
+    Audio {
+        #[serde(rename = "type")]
+        content_type: String,
+        media_type: String,
+        data: String,
+    },
 }
 
 impl ContentPart {
@@ -105,6 +111,11 @@ pub struct CanonicalMessage {
     /// Parent message ID for tree-structured conversation history (§2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_message_id: Option<String>,
+    /// Internal reasoning/chain-of-thought from the model (e.g. DeepSeek's
+    /// reasoning_content). Kept on assistant messages so it can be echoed
+    /// back to APIs that require it in multi-turn requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +214,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::System);
@@ -219,6 +231,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("call_abc".into()),
             parent_message_id: None,
+            reasoning: None,
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -235,6 +248,7 @@ mod tests {
             }]),
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
 
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -248,6 +262,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::Tool);
@@ -339,6 +354,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -359,6 +375,7 @@ mod tests {
             }]),
             tool_call_id: None,
             parent_message_id: None,
+            reasoning: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

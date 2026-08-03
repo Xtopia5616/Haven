@@ -47,7 +47,7 @@
 	</button>
 
 	{#if open}
-		<div class="md-select-menu" role="listbox" in:fly={{ y: -4, duration: 200, easing: cubicOut }}>
+		<div class="md-select-menu" role="listbox" in:fly={{ y: -4, duration: 300, easing: cubicOut }}>
 			{#each options as opt}
 				<button
 					class="md-select-option"

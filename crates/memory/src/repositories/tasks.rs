@@ -466,6 +466,19 @@ mod tests {
     }
 
     #[test]
+    fn test_list_tasks_returns_most_recent_first() {
+        let db = create_db();
+        let first = db.create_task(None, "first", "").unwrap();
+        let second = db.create_task(None, "second", "").unwrap();
+        let tasks = db.list_tasks(1, 0).unwrap();
+        assert_eq!(tasks.len(), 1);
+        // The most recent task must come first — the app start
+        // conversation restore relies on this ordering.
+        assert_eq!(tasks[0].id, second.id);
+        assert_ne!(tasks[0].id, first.id);
+    }
+
+    #[test]
     fn test_get_task_found() {
         let db = create_db();
         let created = db.create_task(None, "input", "").unwrap();

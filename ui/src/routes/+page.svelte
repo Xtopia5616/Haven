@@ -1,11 +1,12 @@
 <script>
 	import logger from '$lib/logger.js';
+	import { buildReviewMessages } from '$lib/reviewMessages.js';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, seqLastSeen, pruneSeq, updateModelState, imageDataUrl } from '$lib/stores.js';
+	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, taskTokenStatsStore, updateTaskTokenStats, clearTaskTokenStats, formatTokenCount, formatCostUsd, seqLastSeen, pruneSeq, updateModelState, modelStateStore, imageDataUrl, recordingOverlay } from '$lib/stores.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
@@ -23,6 +24,166 @@
 	// sent along with the next message, cleared on submit.
 	let pendingImages = $state([]);
 	let imageFileInput = $state(null);
+
+	// Recording state (mirror of the global recordingOverlay store) so the
+	// toolbar mic button can toggle start/stop inline.
+	let recordingState = $state({ isRecording: false });
+	$effect(() => {
+		const unsub = recordingOverlay.subscribe((v) => { recordingState = v; });
+		return unsub;
+	});
+
+	// Model switcher state: the registry catalog plus the current default
+	// model name, displayed on the toolbar button and filtered in the menu.
+	let modelMenuOpen = $state(false);
+	let taskMenuOpen = $state(false);
+	let modelOptions = $state([]);
+	let currentModelName = $state('');
+	let currentModelId = $state('');
+	let currentEffort = $state('');
+	let transcriptTextarea = $state(null);
+	// The configured recording hotkey binding, loaded from settings and kept
+	// in sync via `hotkey:rebind` so placeholders show the real value.
+	let hotkeyBinding = $state('Ctrl+Shift+Space');
+
+	// Active task token stats (mirrored from taskTokenStatsStore so this page
+	// can render a compact budget widget). Cleared when the active task
+	// changes; updated on every `agent:usage` event.
+	/**
+	 * @typedef {object} TaskTokenStats
+	 * @property {number} promptTokens
+	 * @property {number} completionTokens
+	 * @property {number} totalTokens
+	 * @property {number} cumulativePromptTokens
+	 * @property {number} cumulativeCompletionTokens
+	 * @property {number} cumulativeTotalTokens
+	 * @property {number|null} costUsd
+	 * @property {number|null} cumulativeCostUsd
+	 * @property {number|null} contextWindow
+	 * @property {string|null} model
+	 */
+
+	/** @type {TaskTokenStats | null} */
+	let tokenStats = $state(null);
+	$effect(() => {
+		const unsub = taskTokenStatsStore.subscribe((m) => {
+			tokenStats = activeTaskId ? (/** @type {TaskTokenStats | undefined} */ (m[activeTaskId]) || null) : null;
+		});
+		return unsub;
+	});
+	// Clear per-task stats when the active task changes so a stale entry
+	// from a previous task doesn't bleed into the new task's display.
+	$effect(() => {
+		const _ = activeTaskId;
+		// Subscribe so any store change refreshes; the actual filter is in
+		// the subscription above. This effect just guarantees an unsubscribed
+		// task is wiped when the user starts a fresh conversation.
+		if (!activeTaskId) tokenStats = null;
+	});
+
+	/**
+	 * Context-window utilization for the active task. Returns
+	 * `{ used, window, ratio }` where `used` is the last reported prompt
+	 * token count (per-step, not cumulative) and `window` is the model's
+	 * configured budget. Returns `null` when no data is available.
+	 */
+	const contextBudget = $derived.by(() => {
+		if (!tokenStats) return null;
+		const window = tokenStats.contextWindow || 0;
+		const used = tokenStats.promptTokens || 0;
+		if (!window) return null;
+		const ratio = Math.min(1, used / window);
+		return { used, window, ratio };
+	});
+
+	// Send/stop merged button: text takes priority (always send); with no
+	// text and the agent actively generating output the button becomes
+	// "stop task". Also mirrors the agent's model state so the button can
+	// distinguish "generating right now" from an idle running task.
+	let modelState = $state('ready');
+	$effect(() => {
+		const unsub = modelStateStore.subscribe((v) => { modelState = v; });
+		return unsub;
+	});
+	const hasInput = $derived(transcriptInput.trim().length > 0 || pendingImages.length > 0);
+	const isGenerating = $derived(modelState === 'streaming' || modelState === 'tool');
+	const taskRunning = $derived(
+		!!activeTaskId &&
+		tasks.some((t) => t.id === activeTaskId && (t.status === 'running' || t.status === 'pending'))
+	);
+	// While the agent is generating, clicking send with input queues the
+	// message and delivers it once the current output completes (rather than
+	// interrupting turn). Held here until flushed.
+	let queuedSend = $state(null);
+	// The merged send button becomes "stop task" only when there is no input
+	// and the agent is actively working (generating output, a running/pending
+	// task), or a follow-up is queued awaiting delivery. With fresh input
+	// present, it always stays a send button.
+	const stopMode = $derived(
+		!hasInput && (!!queuedSend || isGenerating || taskRunning)
+	);
+	// Tasks executing in parallel (running or waiting). When 2+ exist, the
+	// new-task button turns into a switcher menu: switch to a parallel task
+	// or start a new one. Otherwise the button keeps its default behavior.
+	const parallelTasks = $derived(tasks.filter((t) => t.status === 'running' || t.status === 'pending'));
+	const showTaskMenu = $derived(parallelTasks.length >= 2);
+
+	function buildTokenTooltip(/** @type {TaskTokenStats} */ s) {
+		const parts = [];
+		parts.push(`本轮 ${s.promptTokens || 0} → ${s.completionTokens || 0} tokens`);
+		parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
+		if (s.model) parts.push(`模型 ${s.model}`);
+		if (s.contextWindow) {
+			const pct = s.promptTokens && s.contextWindow
+				? `${((s.promptTokens / s.contextWindow) * 100).toFixed(0)}%`
+				: '?';
+			parts.push(`上下文 ${pct} / ${formatTokenCount(s.contextWindow)}`);
+		}
+		if (s.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(s.cumulativeCostUsd)}`);
+		return parts.join('\n');
+	}
+
+	const effortOptions = [
+		{ value: '', label: '默认' },
+		{ value: 'low', label: '低' },
+		{ value: 'medium', label: '中' },
+		{ value: 'high', label: '高' },
+	];
+
+	async function handleRecordClick() {
+		try {
+			if (recordingState.isRecording) {
+				await invoke('stop_recording');
+			} else {
+				await invoke('start_recording');
+			}
+		} catch (e) {
+			addNotification(`录音失败: ${e}`, 'error', 3000);
+		}
+	}
+
+	async function handleModelSelect(m) {
+		modelMenuOpen = false;
+		try {
+			await invoke('switch_model', { role: 'default_model', modelId: m.id });
+			currentModelId = m.id;
+			currentModelName = m.name || m.id;
+			addNotification(`已切换默认模型: ${currentModelName}`, 'success', 3000);
+		} catch (e) {
+			addNotification(`切换模型失败: ${e}`, 'error', 4000);
+		}
+	}
+
+	async function handleEffortSelect(value) {
+		const label = effortOptions.find((o) => o.value === value)?.label || '默认';
+		try {
+			await invoke('set_reasoning_effort', { role: 'default_model', effort: value || null });
+			currentEffort = value || '';
+			addNotification(`思考强度: ${label}`, 'success', 2500);
+		} catch (e) {
+			addNotification(`设置思考强度失败: ${e}`, 'error', 4000);
+		}
+	}
 
 	const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MiB per image
 	const MAX_IMAGES = 4;
@@ -220,10 +381,29 @@
 	});
 
 	function handleWindowClick(e) {
-		if (!ctxMenu.open) return;
-		const el = document.querySelector('.ctx-menu');
-		if (el && !el.contains(e.target)) closeCtxMenu();
+		if (ctxMenu.open) {
+			const el = document.querySelector('.ctx-menu');
+			if (el && !el.contains(e.target)) closeCtxMenu();
+		}
+		if (modelMenuOpen) {
+			const menu = document.querySelector('.model-menu');
+			const btn = document.querySelector('.model-switch-btn');
+			if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+				modelMenuOpen = false;
+			}
+		}
+		if (taskMenuOpen) {
+			const menu = document.querySelector('.task-menu');
+			const btn = document.querySelector('.task-switch-btn');
+			if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+				taskMenuOpen = false;
+			}
+		}
 	}
+
+	$effect(() => {
+		if (taskMenuOpen && parallelTasks.length < 2) taskMenuOpen = false;
+	});
 
 	function handleWindowContextMenu(e) {
 		if (ctxMenu.open) closeCtxMenu();
@@ -265,21 +445,75 @@
 	}
 
 	function newTask() {
-		if (activeTaskId) clearTaskMessages(activeTaskId);
+		if (activeTaskId) {
+			clearTaskMessages(activeTaskId);
+			clearTaskTokenStats(activeTaskId);
+		}
+		queuedSend = null;
 		suppressAutoTask = true;
 		activeTaskId = null;
 		activeTaskIdStore.set(null);
-		// Allow loadTasks auto-assign after the current call stack unwinds.
-		setTimeout(() => { suppressAutoTask = false; }, 0);
+		// 新对话 = explicit fresh start: don't auto-restore the previous
+		// conversation on the next app launch (cleared when a new task is
+		// actually created).
+		if (browser) localStorage.setItem('haven.no_auto_restore', '1');
+		taskMenuOpen = false;
+		if (parallelTasks.length === 0) {
+			// Nothing running that could hijack the draft: allow loadTasks
+			// auto-assign after the current call stack unwinds (e.g. a task
+			// created by a voice transcript).
+			setTimeout(() => { suppressAutoTask = false; }, 0);
+		} else {
+			// A task is still running in the background: stay on the fresh
+			// draft until a new task is actually created, otherwise a task
+			// event would auto-assign back to the running task and the next
+			// message would be appended to it instead of starting a new one.
+			suppressAutoTask = true;
+		}
+	}
+
+	// Switch the chat view to another parallel task. Merges the persisted
+	// DB messages with any in-memory streaming messages that arrived
+	// concurrently (the task may still be running).
+	async function switchToTask(taskId) {
+		taskMenuOpen = false;
+		try {
+			const result = await invoke('get_task_for_review', { taskId });
+			updateTaskMessages(taskId, (existing) => {
+				// Drop DB step badges for steps already represented by a live
+				// tool card (the running task may be mid-step): the live card
+				// keeps streaming its observation. Their ids differ, so plain
+				// id dedup would leave both visible.
+				const toolSteps = new Set(
+					existing.filter((m) => m.type === 'tool' && m.stepNumber != null)
+						.map((m) => m.stepNumber)
+				);
+				const dbMessages = buildReviewMessages(result).filter(
+					(m) => !(m.type === 'tool' && m.stepNumber != null && toolSteps.has(m.stepNumber))
+				);
+				const dbIds = new Set(dbMessages.map((m) => m.id));
+				const streaming = existing.filter((m) => m.streaming);
+				return [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
+			});
+			suppressAutoTask = false;
+			activeTaskId = taskId;
+			activeTaskIdStore.set(taskId);
+			const t = tasks.find((x) => x.id === taskId);
+			addNotification(`已切换到：${t?.title || '任务'}`, 'info', 1500);
+		} catch (e) {
+			addNotification(`切换任务失败: ${e}`, 'error', 4000);
+		}
 	}
 
 	async function endTask() {
 		if (!activeTaskId) return;
 		suppressAutoTask = true;
 		const endedId = activeTaskId;
+		queuedSend = null;
 		try {
 			await invoke('end_task', { taskId: endedId });
 			clearTaskMessages(endedId);
+			clearTaskTokenStats(endedId);
 		} catch (e) {
 			addNotification(`结束任务失败: ${e}`, 'error', 3000);
 		}
@@ -328,7 +562,7 @@
 
 	let unlisteners = [];
 	let messagesEl;
-	let autoFollow = true;
+	let autoFollow = $state(true);
 	let scrollRafPending = false;
 	let dead = false;
 	// Suppresses loadTasks() auto-assigning activeTaskId during explicit
@@ -421,6 +655,11 @@
 		autoFollow = atBottom;
 	}
 
+	function jumpToBottom() {
+		autoFollow = true;
+		if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+	}
+
 	onMount(async () => {
 		// Process review target first so loadTasks won't overwrite
 		// activeTaskId with a stale paused task whose messages are gone.
@@ -441,19 +680,97 @@
 
 		await loadTasks();
 
+		// Load the current default model for the toolbar model switcher and
+		// populate the menu with models discovered from the default provider's
+		// `/models` endpoint, mirroring the settings page behavior. Empty
+		// api_key falls back to the stored key via the role name, and
+		// discovery is skipped when no base URL is set.
+		invoke('get_settings').then((s) => {
+			const dm = s?.llm?.default_model;
+			if (dm?.model_name) {
+				currentModelId = dm.model_name;
+				currentModelName = dm.model_name;
+			}
+			currentEffort = dm?.reasoning_effort || '';
+			if (s?.hotkey?.key_binding) {
+				hotkeyBinding = s.hotkey.key_binding;
+			}
+			if (dm?.base_url) {
+				invoke('discover_models', { baseUrl: dm.base_url, apiKey: '', role: 'default_model' })
+					.then((list) => {
+						modelOptions = list || [];
+					})
+					.catch((e) => {
+						logger.warn('+page', 'discover_models error', e);
+						modelOptions = [];
+					});
+			}
+		}).catch((e) => {
+			logger.warn('+page', 'get_settings error', e);
+		});
+
 		if (!reviewTarget && activeTaskId && !tasks.some(t => t.id === activeTaskId)) {
 			activeTaskId = null;
 			activeTaskIdStore.set(null);
 		}
 
+		// Auto-restore the last conversation from a previous run so reopening
+		// the app shows where you left off. Skipped when a review target is
+		// pending, a task is already active, or the user explicitly started a
+		// fresh conversation (新对话) and no new task has been created since.
+		if (!reviewTarget && !activeTaskId && browser && !localStorage.getItem('haven.no_auto_restore')) {
+			try {
+				const last = await invoke('get_last_conversation');
+				if (last?.task) {
+					const wasError = last.task.status === 'error';
+					// Reopen so follow-up messages continue this task instead
+					// of being dropped as a terminal-task supplement.
+					await invoke('reopen_task', { taskId: last.task.id });
+					updateTaskMessages(last.task.id, () => buildReviewMessages(last));
+					activeTaskId = last.task.id;
+					activeTaskIdStore.set(activeTaskId);
+					if (wasError) {
+						taskErrorId = last.task.id;
+						activeTaskError = true;
+					}
+					await loadTasks();
+				}
+			} catch (e) {
+				logger.warn('+page', 'auto-restore conversation error', e);
+			}
+		}
+
 		try {
 			await safeListen('task:created', () => {
+				if (browser) localStorage.removeItem('haven.no_auto_restore');
 				loadTasks();
 			});
-			await safeListen('task:updated', () => {
+			await safeListen('task:updated', (event) => {
+				const data = event.payload || {};
+				const isActive = data.task_id && activeTaskId && data.task_id === activeTaskId;
+				if (
+					isActive &&
+					(data.status === 'paused' || data.status === 'completed' || data.status === 'error')
+				) {
+					// The agent's output turn is over: deliver any follow-up
+					// message the user queued while it was generating.
+					flushQueuedSend();
+				}
+				// A resume (pending) means the user's answer was received:
+				// stop showing the awaiting indicator on ask cards. Note the
+				// ask pause itself arrives as 'paused' right after the card is
+				// created, so that status must NOT clear the indicator.
+				if (isActive && data.status === 'pending') {
+					clearAskAwaiting(data.task_id);
+				}
 				loadTasks();
 			});
-			await safeListen('task:completed', () => {
+			await safeListen('task:completed', (event) => {
+				const data = event.payload || {};
+				if (data.task_id && activeTaskId && data.task_id === activeTaskId) {
+					clearAskAwaiting(data.task_id);
+					flushQueuedSend();
+				}
 				loadTasks();
 			});
 		await safeListen('task:error', (event) => {
@@ -461,6 +778,10 @@
 				if (task_id && task_id === activeTaskId) {
 					taskErrorId = task_id;
 					activeTaskError = true;
+					clearAskAwaiting(task_id);
+					// A failed turn is also "output complete": release a queued
+					// follow-up so the user's message isn't silently dropped.
+					flushQueuedSend();
 				}
 				loadTasks();
 			});
@@ -468,6 +789,12 @@
 				const { task_id, title } = event.payload;
 				const idx = tasks.findIndex(t => t.id === task_id);
 				if (idx >= 0) tasks[idx] = { ...tasks[idx], title };
+			});
+			await safeListen('hotkey:rebind', (event) => {
+				const data = event.payload || {};
+				if (data.new_binding) {
+					hotkeyBinding = data.new_binding;
+				}
 			});
 			await safeListen('agent:thought', (event) => {
 				const data = event.payload;
@@ -587,21 +914,27 @@
 				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
 				updateTaskMessages(tid, (m) => {
 					const idx = m.findIndex((x) => x.id === toolId);
-					if (idx >= 0) {
-						const next = [...m];
-						next[idx] = { ...next[idx], content: data.observation, streaming: false };
-						return next;
-					}
-				return [...m, {
+					const isAsk = data.tool_name === 'ask';
+					const msg = {
 						id: toolId,
 						role: 'assistant',
 						content: data.observation,
 						toolName: data.tool_name,
-						type: 'tool',
+						type: isAsk ? 'ask' : 'tool',
 						voice: false,
 						stepNumber: data.step_number,
 						streaming: false,
-					}];
+						...(isAsk ? { options: data.ask_options || [], awaiting: true } : {}),
+					};
+					if (idx >= 0) {
+						// Preserve the fields set by the action handler (e.g. the
+						// bubble's timestamp) — only overwrite the observation
+						// content and related fields.
+						const next = [...m];
+						next[idx] = { ...next[idx], ...msg, streaming: false };
+						return next;
+					}
+					return [...m, msg];
 				});
 			});
 		await safeListen('confirm:requested', (event) => {
@@ -619,6 +952,30 @@
 				taskId: data.task_id,
 				riskLevel: data.risk_level || 'medium',
 			};
+		});
+		// Token usage / cost stats — emitted after every LLM step.
+		await safeListen('agent:usage', (event) => {
+			const d = event.payload || {};
+			if (!d.task_id) return;
+			updateTaskTokenStats(d.task_id, {
+				promptTokens: d.prompt_tokens || 0,
+				completionTokens: d.completion_tokens || 0,
+				totalTokens: d.total_tokens || 0,
+				cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
+				cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
+				cumulativeTotalTokens: d.cumulative_total_tokens || 0,
+				costUsd: d.cost_usd ?? null,
+				cumulativeCostUsd: d.cumulative_cost_usd ?? null,
+				contextWindow: d.context_window ?? null,
+				model: d.model ?? null,
+			});
+		});
+		// Context compaction notice — summarize a portion of the history.
+		await safeListen('agent:compaction', (event) => {
+			const d = event.payload || {};
+			const before = formatTokenCount(d.tokens_before || 0);
+			const after = formatTokenCount(d.tokens_after || 0);
+			addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
 		});
 		} catch (e) {
 			logger.warn('+page', 'safeListen error', e);
@@ -667,19 +1024,25 @@
 				}
 			}
 		} catch (e) {
-			logger.warn('+page', 'loadTasks error', e);
-			addNotification('加载任务列表失败', 'error', 3000);
+			addNotification(`加载任务列表失败: ${e}`, 'error', 3000);
 		}
 	}
 
-	async function handleSubmit() {
-		const text = transcriptInput.trim();
-		const images = pendingImages;
-		if (!text && images.length === 0) return;
-		transcriptInput = '';
-		pendingImages = [];
-		autoFollow = true;
+	// Deliver a user message to the backend. Shared by the normal send
+	// button and the queued follow-up flush (which sends a stashed message
+	// once the agent's current output completes).
+	// The agent's ask questions are "awaiting" only while the task is paused
+	// for the user's reply. Clear that state whenever the task resumes (the
+	// user answered — by quick reply, typing, or voice) or its turn ends
+	// (completed/error), so the "等待你的回答" indicator doesn't linger on
+	// answered or abandoned questions.
+	function clearAskAwaiting(taskId) {
+		updateTaskMessages(taskId, (m) =>
+			m.map((x) => (x.type === 'ask' && x.awaiting ? { ...x, awaiting: false } : x))
+		);
+	}
 
+	async function submitMessage(text, images) {
 		const taskId = activeTaskId || '_draft';
 		addTaskMessage(taskId, {
 			id: `${Date.now()}-u-${Math.random().toString(36).slice(2, 6)}`,
@@ -700,6 +1063,7 @@
 				adoptDraftMessages(result.TaskCreated);
 				activeTaskId = result.TaskCreated;
 				activeTaskIdStore.set(activeTaskId);
+				suppressAutoTask = false;
 			}
 			loadTasks();
 		} catch (e) {
@@ -707,12 +1071,118 @@
 		}
 	}
 
+	// The agent asked a question and offered quick-reply buttons. Sending an
+	// option is just delivering a normal user message (which resumes the
+	// paused task as the answer), so reuse submitMessage. Clear the awaiting
+	// state on the specific ask card answered so the "等待你的回答" indicator
+	// goes away without affecting any other pending question in the same task.
+	function handleQuickReply(msgId, answer) {
+		if (!activeTaskId || !answer) return;
+		if (msgId) {
+			updateTaskMessages(activeTaskId, (m) =>
+				m.map((x) => (x.id === msgId && x.awaiting ? { ...x, awaiting: false } : x))
+			);
+		}
+		autoFollow = true;
+		submitMessage(answer, []);
+	}
+
+	// The agent is generating output and the user clicked send. Queue the
+	// message locally and deliver it once the current output completes, so it
+	// is appended as a follow-up user input instead of interrupting the turn.
+	// Only applies with an active task: on a fresh draft (新任务) the message
+	// must always send immediately so it starts a new parallel task instead
+	// of being staged for the still-generating one.
+	function submitOrQueue() {
+		if (isGenerating && activeTaskId) {
+			const text = transcriptInput;
+			const images = pendingImages;
+			if (!text.trim() && images.length === 0) return;
+			if (queuedSend) {
+				queuedSend = {
+					text: text.trim() ? (queuedSend.text ? queuedSend.text + '\n' + text : text) : queuedSend.text,
+					images: [...queuedSend.images, ...images],
+				};
+			} else {
+				queuedSend = { text, images };
+			}
+			transcriptInput = '';
+			pendingImages = [];
+			addNotification('已排队，将在本轮输出结束后发送', 'info', 2500);
+			return;
+		}
+		handleSubmit();
+	}
+
+	// Send any message queued while generating, once the agent's output turn
+	// completes (task paused / completed / errored).
+	function flushQueuedSend() {
+		if (!queuedSend) return;
+		const { text, images } = queuedSend;
+		queuedSend = null;
+		if (!text.trim() && images.length === 0) return;
+		autoFollow = true;
+		submitMessage(text, images);
+	}
+
+	// Dismiss a queued follow-up so it is neither shown nor sent.
+	function cancelQueuedSend() {
+		if (!queuedSend) return;
+		addNotification('已取消暂存的消息', 'info', 1500);
+		queuedSend = null;
+	}
+
+	function handleSubmit() {
+		const text = transcriptInput.trim();
+		const images = pendingImages;
+		if (!text && images.length === 0) return;
+		transcriptInput = '';
+		pendingImages = [];
+		autoFollow = true;
+
+		submitMessage(text, images);
+	}
+
 	function handleKeydown(e) {
-		if (e.key === 'Enter' && !e.shiftKey) {
+		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();
-			handleSubmit();
+			submitOrQueue();
 		}
 	}
+
+	// Auto-grow the input to fit its content. While the content is a single
+	// line, the vertical padding is balanced so the text renders centered
+	// (matching the placeholder); multi-line content uses a fixed padding.
+	const CHAT_INPUT_MIN_H = 44;
+	const CHAT_INPUT_BASE_PAD = 8;
+	const CHAT_INPUT_LINE_H = 20.3; // 14px font-size × 1.45 line-height
+	function autoGrowInput() {
+		const el = transcriptTextarea;
+		if (!el) return;
+		el.style.height = 'auto';
+		el.style.paddingTop = '';
+		el.style.paddingBottom = '';
+		const contentH = el.scrollHeight;
+		const singleLine = contentH <= CHAT_INPUT_MIN_H;
+		el.style.height = Math.max(CHAT_INPUT_MIN_H, contentH) + 'px';
+		if (singleLine) {
+			// Balance the vertical padding against the inner height (border
+			// excluded) so the single line of text sits exactly centered.
+			const innerH = el.clientHeight;
+			const totalPad = Math.max(0, innerH - CHAT_INPUT_LINE_H);
+			const pad = Math.floor(totalPad / 2);
+			el.style.paddingTop = pad + 'px';
+			el.style.paddingBottom = totalPad - pad + 'px';
+			el.style.setProperty('--chat-pad', pad + 'px');
+		} else {
+			el.style.setProperty('--chat-pad', CHAT_INPUT_BASE_PAD + 'px');
+		}
+	}
+	$effect(() => {
+		transcriptInput;
+		transcriptTextarea;
+		if (browser) autoGrowInput();
+	});
 
 	async function handleConfirm({ stepId, approved, trustSession }) {
 		try {
@@ -765,40 +1235,77 @@
 		</div>
 	{/if}
 
-	<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
-		{#if messages.length === 0}
-			<div class="welcome" in:fly={{ y: 12, duration: 220 }}>
-				<Logo size={48} />
-				<h2>Haven</h2>
-				<p>PC 语音助手 · 按 Ctrl+Shift+Space 开始录音，或直接输入指令</p>
-			</div>
-		{:else}
-			<div class="message-list">
-				{#each messages as msg, i (msg.id)}
-					{@const isLast = i === messages.length - 1}
-					<ChatBubble
-						role={msg.role}
-						content={msg.content}
-						type={msg.type}
-						voice={msg.voice}
-						time={msg.time}
-						streaming={msg.streaming && isLast}
-						toolName={msg.toolName ?? ''}
-						messageId={msg.id}
-						stepNumber={msg.stepNumber}
-						attachments={msg.attachments}
-						onContextMenu={handleContextMenu}
-					/>
-				{/each}
-			</div>
-		{/if}
-		{#if activeTaskError}
-			<div class="continue-banner" in:fly={{ y: 8, duration: 200 }}>
-				<button class="md-btn md-btn--filled continue-btn" onclick={handleContinue} type="button">
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-					继续生成
-				</button>
-			</div>
+	<div class="messages-wrap">
+		<div class="messages-area" bind:this={messagesEl} onscroll={onScroll}>
+			{#if messages.length === 0}
+				<div class="welcome" in:fly={{ y: 12, duration: 330 }}>
+					<Logo size={48} />
+					<h2>Haven</h2>
+					<p>PC 语音助手 · 按 {hotkeyBinding} 开始录音，或直接输入指令</p>
+				</div>
+			{:else}
+				<div class="message-list">
+					{#each messages as msg, i (msg.id)}
+						{@const isLast = i === messages.length - 1}
+						<ChatBubble
+							role={msg.role}
+							content={msg.content}
+							type={msg.type}
+							voice={msg.voice}
+							time={msg.time}
+							streaming={msg.streaming && isLast}
+							toolName={msg.toolName ?? ''}
+							messageId={msg.id}
+							stepNumber={msg.stepNumber}
+							attachments={msg.attachments}
+							options={msg.options ?? []}
+							awaiting={msg.awaiting ?? false}
+							onContextMenu={handleContextMenu}
+							onQuickReply={handleQuickReply}
+						/>
+					{/each}
+				</div>
+			{/if}
+			{#if activeTaskError}
+				<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
+					<button class="md-btn md-btn--filled continue-btn" onclick={handleContinue} type="button">
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+						继续生成
+					</button>
+				</div>
+			{/if}
+			{#if queuedSend}
+				<div class="queued-followup" in:fly={{ y: 8, duration: 250 }}>
+					<div class="queued-followup-body">
+						<div class="queued-followup-tag">
+							<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 13.5" /></svg>
+							待发送
+						</div>
+						{#if queuedSend.text}
+							<p class="queued-followup-text">{queuedSend.text}</p>
+						{/if}
+						{#if queuedSend.images.length > 0}
+							<div class="queued-followup-images">
+								{#each queuedSend.images as img, i (img.data + i)}
+									<img src={imageDataUrl(img)} alt="暂存图片" />
+								{/each}
+							</div>
+						{/if}
+					</div>
+					<button
+						class="queued-followup-close"
+						onclick={cancelQueuedSend}
+						aria-label="取消暂存的消息"
+						title="取消暂存的消息"
+						type="button"
+					>&times;</button>
+				</div>
+			{/if}
+		</div>
+		{#if !autoFollow && messages.length > 0}
+			<button class="jump-bottom" onclick={jumpToBottom} aria-label="返回底部" title="返回底部" type="button">
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg>
+			</button>
 		{/if}
 	</div>
 
@@ -818,64 +1325,187 @@
 				{/each}
 			</div>
 		{/if}
+		<div class="stats-row">
+			<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : '等待 LLM 调用统计'}>
+				{#if tokenStats}
+					<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M4 6h16M4 12h10M4 18h16" />
+					</svg>
+					<div class="token-text">
+						<span class="token-cumulative">{formatTokenCount(tokenStats.cumulativeTotalTokens)}</span>
+						{#if tokenStats.cumulativeCostUsd != null}
+							<span class="token-cost">· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span>
+						{/if}
+					</div>
+					{#if contextBudget}
+						<div
+							class="token-budget"
+							class:warn={contextBudget.ratio >= 0.75}
+							class:danger={contextBudget.ratio >= 0.9}
+							aria-label={`上下文使用 ${(contextBudget.ratio * 100).toFixed(0)}%`}
+						>
+							<div class="token-budget-fill" style="width: {(contextBudget.ratio * 100).toFixed(1)}%"></div>
+						</div>
+					{/if}
+				{:else}
+					<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M4 6h16M4 12h10M4 18h16" />
+					</svg>
+					<span class="token-text token-idle">—</span>
+				{/if}
+			</div>
+		</div>
 		<div class="input-row">
-			<button
-				class="md-btn md-btn--outlined"
-				onclick={() => { newTask(); }}
-				type="button"
-			>
-				新任务
-			</button>
-			{#if activeTaskId}
-				<button
-					class="md-btn md-btn--outlined end-task-btn"
-					onclick={() => { endTask(); }}
-					type="button"
-				>
-					结束任务
-				</button>
-			{/if}
-			<input
-				type="text"
-				placeholder={activeTaskId ? '追加指令' : '输入指令，或按 Ctrl+Shift+Space 录音'}
+			<textarea
+				bind:this={transcriptTextarea}
+				rows="1"
+				placeholder={activeTaskId ? '追加指令，Enter 发送，Shift+Enter 换行' : `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`}
 				bind:value={transcriptInput}
 				onkeydown={handleKeydown}
 				onpaste={handlePaste}
 				class="md-input chat-input"
-			/>
-			<button
-				class="md-icon-button md-icon-button--outlined image-btn"
-				onclick={() => imageFileInput?.click()}
-				aria-label="添加图片"
-				title="添加图片（支持粘贴截图）"
-				type="button"
-			>
-				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-					<circle cx="8.5" cy="8.5" r="1.5" />
-					<polyline points="21 15 16 10 5 21" />
-				</svg>
-			</button>
-			<input
-				hidden
-				type="file"
-				accept="image/*"
-				multiple
-				bind:this={imageFileInput}
-				onchange={handleFileSelect}
-			/>
-			<button
-				class="md-icon-button md-icon-button--filled send-btn"
-				onclick={handleSubmit}
-				disabled={!transcriptInput.trim() && pendingImages.length === 0}
-				aria-label="发送"
-				type="button"
-			>
-				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<line x1="12" y1="19" x2="12" y2="5" />
-					<polyline points="5 12 12 5 19 12" />
-				</svg>
-			</button>
+				autocomplete="off"
+			></textarea>
+		</div>
+		<div class="toolbar-row">
+			<div class="toolbar-left">
+				<div class="task-switch">
+					<button
+						class="md-btn md-btn--outlined task-switch-btn"
+						onclick={() => { if (showTaskMenu) { taskMenuOpen = !taskMenuOpen; } else { newTask(); } }}
+						title={showTaskMenu ? '切换并行任务或开始新任务' : '开始一个新任务'}
+						type="button"
+					>
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+						新任务
+						{#if showTaskMenu}
+							<svg class="task-switch-caret" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+						{/if}
+					</button>
+					{#if taskMenuOpen}
+						<div class="task-menu">
+							<div class="task-menu-title">正在执行的任务</div>
+							{#each parallelTasks as t}
+								<button
+									class="task-menu-item"
+									class:selected={t.id === activeTaskId}
+									onclick={() => switchToTask(t.id)}
+									type="button"
+								>
+									<span class="task-menu-item-title">{t.title || t.id.slice(0, 8)}</span>
+									<span class="task-menu-item-status" class:running={t.status === 'running'}>
+										{t.status === 'running' ? '运行中' : '等待中'}
+									</span>
+								</button>
+							{/each}
+							<div class="task-menu-divider"></div>
+							<button class="task-menu-item task-menu-new" onclick={() => newTask()} type="button">
+								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+								新建任务
+							</button>
+						</div>
+					{/if}
+				</div>
+			</div>
+			<div class="toolbar-right">
+				<button
+					class="md-icon-button image-btn"
+					onclick={() => imageFileInput?.click()}
+					aria-label="添加图片"
+					title="添加图片（支持粘贴截图）"
+					type="button"
+				>
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+						<circle cx="8.5" cy="8.5" r="1.5" />
+						<polyline points="21 15 16 10 5 21" />
+					</svg>
+				</button>
+				<input
+					hidden
+					type="file"
+					accept="image/*"
+					multiple
+					bind:this={imageFileInput}
+					onchange={handleFileSelect}
+				/>
+				<button
+					class="md-icon-button record-btn"
+					class:recording={recordingState.isRecording}
+					onclick={handleRecordClick}
+					aria-label={recordingState.isRecording ? '停止录音' : '开始录音'}
+					title={recordingState.isRecording ? '停止录音' : '开始录音'}
+					type="button"
+				>
+					{#if recordingState.isRecording}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+					{:else}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v1a7 7 0 0 1-14 0v-1" /><line x1="12" y1="19" x2="12" y2="22" /></svg>
+					{/if}
+				</button>
+				<div class="model-switch">
+					<button
+						class="md-icon-button model-switch-btn"
+						onclick={() => (modelMenuOpen = !modelMenuOpen)}
+						title={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
+						aria-label="切换默认模型"
+						type="button"
+					>
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2" /><rect x="9.5" y="9.5" width="5" height="5" /></svg>
+					</button>
+					{#if modelMenuOpen}
+						<div class="model-menu">
+							<div class="model-menu-title">切换默认模型</div>
+							{#each modelOptions as m}
+								<button
+									class="model-item"
+									class:selected={m.id === currentModelId}
+									onclick={() => handleModelSelect(m)}
+									type="button"
+								>
+									<span class="model-item-name">{m.name}</span>
+									<span class="model-item-provider">{m.provider}</span>
+								</button>
+							{/each}
+							<div class="model-menu-divider"></div>
+							<div class="model-menu-title">思考强度</div>
+							<div class="effort-row">
+								{#each effortOptions as opt}
+									<button
+										class="effort-item"
+										class:selected={currentEffort === opt.value}
+										onclick={() => handleEffortSelect(opt.value)}
+										type="button"
+									>{opt.label}</button>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				</div>
+				<button
+					class="md-icon-button send-btn"
+					class:stop-mode={stopMode}
+					onclick={isGenerating ? submitOrQueue : stopMode ? () => endTask() : handleSubmit}
+					disabled={!hasInput && !isGenerating && !taskRunning}
+					aria-label={hasInput ? '发送' : stopMode ? '停止任务' : '发送'}
+					title={hasInput ? '发送' : stopMode ? '停止任务' : '发送'}
+					type="button"
+				>
+					{#if hasInput}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<line x1="12" y1="19" x2="12" y2="5" />
+							<polyline points="5 12 12 5 19 12" />
+						</svg>
+					{:else if stopMode}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+					{:else}
+						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<line x1="12" y1="19" x2="12" y2="5" />
+							<polyline points="5 12 12 5 19 12" />
+						</svg>
+					{/if}
+				</button>
+			</div>
 		</div>
 	</div>
 </div>
@@ -887,14 +1517,46 @@
 		flex: 1;
 		min-height: 0;
 	}
+	.messages-wrap {
+		position: relative;
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		/* Chat content has its own narrower reading-friendly cap; the
+		 * layout shell handles the wider-page case so we only need to
+		 * keep messages from getting too narrow on small viewports. */
+		max-width: clamp(560px, 92vw, 760px);
+		margin: 0 auto;
+		width: 100%;
+	}
 	.messages-area {
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
-		padding: var(--md-sys-space-xs) var(--md-sys-space-xs) var(--md-sys-space-lg);
-		max-width: 760px;
-		margin: 0 auto;
-		width: 100%;
+		padding: var(--md-sys-space-md);
+	}
+	.jump-bottom {
+		position: absolute;
+		right: var(--md-sys-space-md);
+		bottom: var(--md-sys-space-sm);
+		width: 36px;
+		height: 36px;
+		border: none;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+		cursor: pointer;
+		box-shadow: var(--md-sys-elevation-2);
+		transition: background var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		z-index: 5;
+	}
+	.jump-bottom:hover {
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
 	}
 	.welcome {
 		text-align: center;
@@ -923,26 +1585,26 @@
 	}
 
 	.input-area {
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-		padding: var(--md-sys-space-sm) 0 var(--md-sys-space-lg);
+		background: var(--md-sys-color-surface-container-low);
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-md);
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-sm);
+		gap: var(--md-sys-space-xs);
 		flex-shrink: 0;
-		max-width: 760px;
-		margin: 0 auto;		width: 100%;
+		max-width: clamp(560px, 92vw, 760px);
+		margin: 0 auto;
+		width: 100%;
 	}
 
 	.image-preview-row {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm);
-		padding: 0 var(--md-sys-space-2xs);
 	}
 	.image-preview {
 		position: relative;
-		width: 72px;
-		height: 72px;
+		width: 64px;
+		height: 64px;
 		border-radius: var(--md-sys-shape-small);
 		overflow: hidden;
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -976,31 +1638,326 @@
 
 	.input-row {
 		display: flex;
-		gap: var(--md-sys-space-sm);
-		align-items: center;
-	}
-	.input-row :global(.md-btn) {
-		height: var(--md-comp-button-touch-height);
-	}
-	.end-task-btn {
-		--md-sys-color-primary: var(--md-sys-color-error);
-		--md-sys-color-on-primary: var(--md-sys-color-on-error);
-	}
-	.end-task-btn:hover {
-		color: var(--md-sys-color-on-error);
-		background: var(--md-sys-color-error);
+		gap: var(--md-sys-space-xs);
+		align-items: flex-end;
 	}
 	.chat-input {
+		--chat-pad: 8px;
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px solid transparent;
 		border-radius: var(--md-sys-shape-medium);
-		height: var(--md-comp-button-touch-height);
+		min-height: 44px;
+		height: auto;
 		flex: 1;
 		min-width: 0;
+		padding: var(--chat-pad) var(--md-sys-space-md);
+		resize: none;
+		overflow-y: auto;
+		line-height: 1.45;
+		font-size: 14px;
+	}
+	.chat-input::placeholder {
+		/* Placeholder line-height tracks the balanced padding so it stays
+		   vertically centered exactly like the (balanced) input text. */
+		line-height: calc(44px - 2 * var(--chat-pad) - 2px);
+	}
+	.chat-input:hover {
+		border-color: var(--md-sys-color-outline-variant);
 	}
 	.chat-input:focus {
+		border-color: var(--md-sys-color-primary);
+		border-width: 2px;
+		padding: var(--chat-pad) calc(var(--md-sys-space-md) - 1px);
+	}
+
+	.toolbar-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+	}
+	.toolbar-left {
+		flex: 0 0 auto;
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+	}
+	.toolbar-right {
+		flex: 0 0 auto;
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		margin-left: auto;
+	}
+	.toolbar-row :global(.md-btn) {
+		height: 40px;
+		padding: 0 var(--md-sys-space-md);
+		font-size: 13px;
+	}
+	.toolbar-row :global(.md-icon-button) {
+		width: 40px;
+		height: 40px;
+		min-width: 40px;
+		min-height: 40px;
+		padding: 0;
+	}
+	.record-btn {
+		flex-shrink: 0;
+	}
+	.record-btn.recording {
+		--_ib-fg: var(--md-sys-color-error);
+		--_ib-bg: var(--md-sys-color-error-container);
+	}
+	.task-switch {
+		position: relative;
+		flex-shrink: 0;
+	}
+	.task-switch-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+	}
+	.task-switch-caret {
+		flex-shrink: 0;
+	}
+	.task-menu {
+		position: absolute;
+		left: 0;
+		bottom: calc(100% + 8px);
+		z-index: 1000;
+		min-width: 240px;
+		max-width: 320px;
+		max-height: 320px;
+		overflow-y: auto;
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
+		padding: var(--md-sys-space-xs);
+		box-shadow: var(--md-sys-elevation-2);
+	}
+	.task-menu-title {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.4px;
+		text-transform: uppercase;
+		color: var(--md-sys-color-on-surface-variant);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	.task-menu-item {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+		width: 100%;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: none;
+		background: transparent;
+		color: var(--md-sys-color-on-surface);
+		font-size: 13px;
+		font-family: inherit;
+		cursor: pointer;
+		border-radius: var(--md-sys-shape-small);
+		transition: background var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.task-menu-item:hover {
+		background: var(--md-sys-color-surface-container-highest);
+	}
+	.task-menu-item.selected .task-menu-item-title {
+		color: var(--md-sys-color-primary);
+		font-weight: 600;
+	}
+	.task-menu-item-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.task-menu-item-status {
+		flex-shrink: 0;
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.task-menu-item-status.running {
+		color: var(--md-sys-color-primary);
+	}
+	.task-menu-divider {
+		height: 1px;
+		background: var(--md-sys-color-outline-variant);
+		margin: var(--md-sys-space-xs) 0;
+	}
+	.task-menu-new {
+		justify-content: flex-start;
+		gap: var(--md-sys-space-sm);
+		color: var(--md-sys-color-primary);
+		font-weight: 600;
+	}
+	.stats-row {
+		display: flex;
+		justify-content: flex-end;
+		align-items: center;
+		min-height: 28px;
+		padding: 0 var(--md-sys-space-xs);
+	}
+	.token-stats {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		min-width: 84px;
+		height: 36px;
+		padding: 0 var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-corner-medium, 8px);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		background: var(--md-sys-color-surface-container, transparent);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 12px;
+		line-height: 1;
+		flex-shrink: 0;
+		transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.token-stats.active {
+		border-color: var(--md-sys-color-primary);
+	}
+	.token-icon {
+		opacity: 0.75;
+		flex-shrink: 0;
+	}
+	.token-text {
+		display: inline-flex;
+		gap: 4px;
+		align-items: baseline;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.token-cumulative {
+		font-weight: 600;
+		color: var(--md-sys-color-on-surface);
+	}
+	.token-cost {
+		opacity: 0.7;
+	}
+	.token-idle {
+		opacity: 0.5;
+	}
+	.token-budget {
+		position: relative;
+		width: 36px;
+		height: 4px;
+		border-radius: 999px;
+		background: var(--md-sys-color-surface-variant, rgba(0, 0, 0, 0.06));
+		overflow: hidden;
+		flex-shrink: 0;
+	}
+	.token-budget-fill {
+		position: absolute;
+		inset: 0 auto 0 0;
+		background: var(--md-sys-color-primary);
+		transition: width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard),
+			background var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
+	}
+	.token-budget.warn .token-budget-fill {
+		background: #c97a00;
+	}
+	.token-budget.danger .token-budget-fill {
+		background: var(--md-sys-color-error, #b3261e);
+	}
+	.model-switch {
+		position: relative;
+		flex-shrink: 0;
+	}
+	.model-menu {
+		position: absolute;
+		right: 0;
+		bottom: calc(100% + 8px);
+		z-index: 1000;
+		min-width: 240px;
+		max-height: 320px;
+		overflow-y: auto;
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		padding: var(--md-sys-space-xs);
+		box-shadow: var(--md-sys-elevation-2);
+	}
+	.model-menu-title {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.4px;
+		text-transform: uppercase;
+		color: var(--md-sys-color-on-surface-variant);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	.model-item {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
+		width: 100%;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: none;
+		background: transparent;
+		color: var(--md-sys-color-on-surface);
+		font-size: 13px;
+		font-family: inherit;
+		cursor: pointer;
+		border-radius: var(--md-sys-shape-small);
+		transition: background var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.model-item:hover {
+		background: var(--md-sys-color-surface-container-highest);
+	}
+	.model-item.selected .model-item-name {
+		color: var(--md-sys-color-primary);
+		font-weight: 600;
+	}
+	.model-item-provider {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.model-menu-divider {
+		height: 1px;
+		background: var(--md-sys-color-outline-variant);
+		margin: var(--md-sys-space-xs) 0;
+	}
+	.effort-row {
+		display: flex;
+		gap: var(--md-sys-space-xs);
+		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
+	}
+	.effort-item {
+		flex: 1;
+		height: 32px;
+		border: 1px solid var(--md-sys-color-outline);
+		border-radius: var(--md-sys-shape-small);
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 12px;
+		font-weight: 600;
+		font-family: inherit;
+		cursor: pointer;
+		transition: background-color var(--md-sys-motion-duration-fast)
+				var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.effort-item:hover {
+		border-color: var(--md-sys-color-primary);
+	}
+	.effort-item.selected {
+		border-color: var(--md-sys-color-primary);
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
 	}
 	.send-btn {
 		flex-shrink: 0;
+		--_ib-fg: var(--md-sys-color-on-primary);
+		--_ib-bg: var(--md-sys-color-primary);
+		--_ib-state: var(--md-sys-color-on-primary);
+	}
+	.send-btn:hover {
+		box-shadow: var(--md-sys-elevation-1);
+	}
+	.send-btn.stop-mode {
+		--_ib-fg: var(--md-sys-color-on-error);
+		--_ib-bg: var(--md-sys-color-error);
+		--_ib-state: var(--md-sys-color-on-error);
 	}
 	.ctx-menu {
 		position: fixed; z-index: 1000;
@@ -1032,12 +1989,83 @@
 		justify-content: flex-start;
 		gap: var(--md-sys-space-md);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		max-width: 760px;
+		max-width: clamp(560px, 92vw, 760px);
 		margin: 0 auto;
 		width: 100%;
 	}
 	.continue-btn {
 		gap: var(--md-sys-space-xs);
 		font-size: 13px;
+	}
+
+	.queued-followup {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--md-sys-space-sm);
+		max-width: clamp(560px, 92vw, 760px);
+		margin: var(--md-sys-space-sm) auto 0;
+		width: 100%;
+	}
+	.queued-followup-body {
+		flex: 1;
+		min-width: 0;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px dashed var(--md-sys-color-outline-variant);
+		color: var(--md-sys-color-on-surface-variant);
+		align-self: flex-end;
+		max-width: 72%;
+	}
+	.queued-followup-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.3px;
+		text-transform: uppercase;
+		color: var(--md-sys-color-tertiary);
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.queued-followup-text {
+		margin: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--md-sys-color-on-surface);
+	}
+	.queued-followup-images {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-xs);
+		margin-top: var(--md-sys-space-sm);
+	}
+	.queued-followup-images img {
+		width: 48px;
+		height: 48px;
+		object-fit: cover;
+		border-radius: var(--md-sys-shape-small);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		display: block;
+	}
+	.queued-followup-close {
+		flex-shrink: 0;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		border: none;
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 15px;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.queued-followup-close:hover {
+		background: var(--md-sys-color-surface-container-highest);
 	}
 </style>

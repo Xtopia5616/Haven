@@ -18,6 +18,11 @@ import {
 	modelStateStore,
 	updateModelState,
 	clearModelStateTimer,
+	taskTokenStatsStore,
+	updateTaskTokenStats,
+	clearTaskTokenStats,
+	formatTokenCount,
+	formatCostUsd,
 } from './stores.js';
 
 describe('addNotification', () => {
@@ -61,6 +66,20 @@ describe('addNotification', () => {
 		const items = get(notificationStore);
 		expect(items).toHaveLength(1);
 		expect(items[0].msg).toBe('b');
+	});
+
+	it('logs error notifications via logger.error', () => {
+		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		addNotification('boom', 'error');
+		addNotification('ok', 'info');
+		addNotification('oops', 'warning');
+		const errorCalls = spy.mock.calls.filter((args) =>
+			typeof args[0] === 'string' && args[0].includes('[ERROR]')
+		);
+		expect(errorCalls).toHaveLength(1);
+		expect(errorCalls[0][0]).toContain('notification');
+		expect(errorCalls[0][0]).toContain('boom');
+		spy.mockRestore();
 	});
 });
 
@@ -135,6 +154,33 @@ describe('truncateTaskMessages', () => {
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
 	});
 
+	it('does not cut on a user message at the target step', () => {
+		// Review-mode messages: user inputs carry the stepNumber of the
+		// following assistant message. Cutting ON the user message would drop
+		// the user's input from the view while the backend keeps it (it was
+		// persisted before the branch point). The cut lands on the first
+		// non-user message at/after the target step; user messages before the
+		// cut are kept, those after it belong to the discarded timeline.
+		setTaskMessages('t1', [
+			{ id: 'u1', role: 'user', stepNumber: 1 },
+			{ id: 't1', stepNumber: 1 },
+			{ id: 'o1', stepNumber: 1 },
+			{ id: 'u2', role: 'user', stepNumber: 2 },
+			{ id: 't2', stepNumber: 2 },
+		]);
+		truncateTaskMessages('t1', 2);
+		expect(storeMap().t1.map((x) => x.id)).toEqual(['u1', 't1', 'o1', 'u2']);
+	});
+
+	it('keeps the first user message when rolling back to step 1', () => {
+		setTaskMessages('t1', [
+			{ id: 'u1', role: 'user', stepNumber: 1 },
+			{ id: 't1', stepNumber: 1 },
+		]);
+		truncateTaskMessages('t1', 1);
+		expect(storeMap().t1.map((x) => x.id)).toEqual(['u1']);
+	});
+
 	it('is a no-op for a missing task', () => {
 		setTaskMessages('t1', msgs());
 		truncateTaskMessages('nope', 3);
@@ -167,6 +213,16 @@ describe('branchTaskMessages', () => {
 		setTaskMessages('src', msgs());
 		branchTaskMessages('src', 'dst', 99);
 		expect(storeMap().dst.map((x) => x.id)).toEqual(['a', 'b', 'c']);
+	});
+
+	it('keeps a user message at the target step', () => {
+		setTaskMessages('src', [
+			{ id: 'u1', role: 'user', stepNumber: 3 },
+			{ id: 't1', stepNumber: 3 },
+			{ id: 't2', stepNumber: 4 },
+		]);
+		branchTaskMessages('src', 'dst', 3);
+		expect(storeMap().dst.map((x) => x.id)).toEqual(['u1']);
 	});
 });
 
@@ -287,5 +343,100 @@ describe('updateModelState', () => {
 		clearModelStateTimer();
 		vi.advanceTimersByTime(10000);
 		expect(get(modelStateStore)).toBe('waiting');
+	});
+});
+
+describe('taskTokenStatsStore', () => {
+	/** @returns {any} */
+	const statsMap = () => get(taskTokenStatsStore);
+
+	beforeEach(() => {
+		taskTokenStatsStore.set({});
+	});
+
+	it('updateTaskTokenStats inserts a new task entry', () => {
+		updateTaskTokenStats('t1', { totalTokens: 5 });
+		expect(statsMap().t1.totalTokens).toBe(5);
+		expect(statsMap().t1.lastUpdated).toBeGreaterThan(0);
+	});
+
+	it('updateTaskTokenStats merges over the existing entry', () => {
+		updateTaskTokenStats('t1', { promptTokens: 1 });
+		updateTaskTokenStats('t1', { completionTokens: 2 });
+		expect(statsMap().t1.promptTokens).toBe(1);
+		expect(statsMap().t1.completionTokens).toBe(2);
+	});
+
+	it('updateTaskTokenStats isolates different tasks', () => {
+		updateTaskTokenStats('t1', { totalTokens: 10 });
+		updateTaskTokenStats('t2', { totalTokens: 20 });
+		expect(statsMap().t1.totalTokens).toBe(10);
+		expect(statsMap().t2.totalTokens).toBe(20);
+	});
+
+	it('clearTaskTokenStats removes only the target task', () => {
+		updateTaskTokenStats('t1', { totalTokens: 10 });
+		updateTaskTokenStats('t2', { totalTokens: 20 });
+		clearTaskTokenStats('t1');
+		expect(statsMap().t1).toBeUndefined();
+		expect(statsMap().t2.totalTokens).toBe(20);
+	});
+
+	it('clearTaskTokenStats is a no-op for unknown tasks', () => {
+		updateTaskTokenStats('t1', { totalTokens: 10 });
+		clearTaskTokenStats('nope');
+		expect(statsMap().t1.totalTokens).toBe(10);
+	});
+
+	it('updateTaskTokenStats ignores a missing task id', () => {
+		updateTaskTokenStats('', { totalTokens: 10 });
+		expect(statsMap()).toEqual({});
+	});
+});
+
+describe('formatTokenCount', () => {
+	it('formats plain counts without suffix', () => {
+		expect(formatTokenCount(0)).toBe('0');
+		expect(formatTokenCount(999)).toBe('999');
+	});
+
+	it('formats thousands with K suffix', () => {
+		expect(formatTokenCount(1234)).toBe('1.23K');
+		expect(formatTokenCount(12000)).toBe('12K');
+	});
+
+	it('formats millions with M suffix', () => {
+		expect(formatTokenCount(1234567)).toBe('1.23M');
+	});
+
+	it('tolerates non-numeric input', () => {
+		expect(formatTokenCount(undefined)).toBe('0');
+		expect(formatTokenCount(/** @type {any} */ ('300'))).toBe('300');
+	});
+});
+
+describe('formatCostUsd', () => {
+	it('returns null for missing or non-finite values', () => {
+		expect(formatCostUsd(null)).toBeNull();
+		expect(formatCostUsd(undefined)).toBeNull();
+		expect(formatCostUsd(NaN)).toBeNull();
+		expect(formatCostUsd(Infinity)).toBeNull();
+	});
+
+	it('formats zero', () => {
+		expect(formatCostUsd(0)).toBe('$0.00');
+	});
+
+	it('uses 4 decimals for sub-cent costs', () => {
+		expect(formatCostUsd(0.00123)).toBe('$0.0012');
+	});
+
+	it('uses 3 decimals under one dollar', () => {
+		expect(formatCostUsd(0.1234)).toBe('$0.123');
+	});
+
+	it('uses 2 decimals for whole dollars', () => {
+		expect(formatCostUsd(1.5)).toBe('$1.50');
+		expect(formatCostUsd(21)).toBe('$21.00');
 	});
 });

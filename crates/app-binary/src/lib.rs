@@ -148,6 +148,7 @@ impl AgentEventEmitter for TauriEmitter {
                 run_id,
                 silent,
                 tool_call_id,
+                ask_options,
             } => {
                 tracing::debug!(
                     "TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}",
@@ -167,6 +168,7 @@ impl AgentEventEmitter for TauriEmitter {
                         "run_id": run_id,
                         "silent": silent,
                         "tool_call_id": tool_call_id,
+                        "ask_options": ask_options,
                     }),
                 );
             }
@@ -300,6 +302,36 @@ impl AgentEventEmitter for TauriEmitter {
                         .show();
                 }
             }
+            AgentEvent::Notification {
+                task_id,
+                title,
+                body,
+            } => {
+                tracing::info!(
+                    "TauriEmitter::on_notification: task={} title={} body={}",
+                    task_id,
+                    title,
+                    body
+                );
+                // In-app toast: the frontend shows it via addNotification.
+                let _ = self.handle.emit(
+                    "notification:show",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "title": title,
+                        "body": body,
+                    }),
+                );
+                // Windows desktop notification. The `notify` tool is an
+                // explicit agent request, so both channels are used by default.
+                let _ = self
+                    .handle
+                    .notification()
+                    .builder()
+                    .title(if title.is_empty() { "Haven" } else { &title })
+                    .body(body)
+                    .show();
+            }
             AgentEvent::TitleUpdated { task_id, title } => {
                 let _ = self.handle.emit(
                     "task:title-updated",
@@ -392,6 +424,36 @@ impl AgentEventEmitter for TauriEmitter {
                     }),
                 );
             }
+            AgentEvent::Usage {
+                task_id,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost_usd,
+                model,
+                cumulative_prompt_tokens,
+                cumulative_completion_tokens,
+                cumulative_total_tokens,
+                cumulative_cost_usd,
+                context_window,
+            } => {
+                let _ = self.handle.emit(
+                    "agent:usage",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "cost_usd": cost_usd,
+                        "model": model,
+                        "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                        "cumulative_completion_tokens": cumulative_completion_tokens,
+                        "cumulative_total_tokens": cumulative_total_tokens,
+                        "cumulative_cost_usd": cumulative_cost_usd,
+                        "context_window": context_window,
+                    }),
+                );
+            }
         }
     }
 }
@@ -409,6 +471,22 @@ struct HavenShellHandler {
 #[async_trait::async_trait]
 impl desktop::ShellHandler for HavenShellHandler {
     async fn on_recording_start(&self) {
+        // Start the pipeline first: emitting `recording:started` before the
+        // pipeline is actually recording would leave the UI stuck in the
+        // recording state (and every stop attempt failing with "not
+        // recording") if startup errors.
+        if let Err(e) = self.pipeline.start_recording().await {
+            tracing::warn!("pipeline start_recording failed: {e}");
+            self.shell_arc.stop_recording().await;
+            let _ = self.app_h.emit(
+                "recording:error",
+                serde_json::json!({
+                    "session_id": uuid::Uuid::new_v4().to_string(),
+                    "error": format!("录音启动失败，请检查麦克风/STT 配置: {e}"),
+                }),
+            );
+            return;
+        }
         let _ = self.app_h.emit(
             "recording:started",
             events::RecordingEvent {
@@ -418,13 +496,15 @@ impl desktop::ShellHandler for HavenShellHandler {
                 duration_ms: None,
             },
         );
-        let _ = self.pipeline.start_recording().await;
     }
 
     async fn on_recording_stop(&self) {
-        let result = self.pipeline.stop_recording().await;
+        // Same split as the `stop_recording` Tauri command: stop the audio
+        // capture first and notify the UI, then run STT in the background.
+        // Without this, VAD-triggered auto-stops would also keep the
+        // "recording" overlay visible for the duration of the STT call.
+        let result = self.pipeline.stop_capture().await;
         if let Ok(result) = result {
-            let _ = self.pipeline.encode_wav(&result.pcm).await;
             let reason_str = match result.reason {
                 haven_input::RecordingReason::Manual => "manual",
                 haven_input::RecordingReason::Silence => "silence",
@@ -445,6 +525,18 @@ impl desktop::ShellHandler for HavenShellHandler {
                 haven_input::RecordingReason::Silence | haven_input::RecordingReason::MaxDuration
             ) {
                 self.shell_arc.reset_toggle_on_auto_stop().await;
+            }
+
+            let mut result = result;
+            self.pipeline.transcribe(&mut result).await;
+            if let Some(err) = result.transcript_error {
+                let _ = self.app_h.emit(
+                    "transcription:error",
+                    events::TranscriptionErrorEvent {
+                        session_id: uuid::Uuid::new_v4().to_string(),
+                        error: err,
+                    },
+                );
             }
         }
     }
@@ -594,6 +686,15 @@ pub fn run() {
             let is_hold = cfg.config().hotkey.mode == haven_common::types::HotkeyMode::Hold;
             let key_binding = cfg.config().hotkey.key_binding.clone();
 
+            // The global-shortcut and tray callbacks run on plugin/main
+            // threads that are outside the tokio runtime, where
+            // `Handle::current()` panics ("there is no reactor running").
+            // All callbacks therefore dispatch work through
+            // `tauri::async_runtime::spawn`, which is safe from any thread
+            // (unlike `Handle::block_on`, which panics with "Cannot start a
+            // runtime from within a runtime" when the callback fires on the
+            // async runtime's own thread).
+
             // --------------------- System tray (build first) ---------------------
             let show = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
             let mute = MenuItemBuilder::with_id("mute", "Mute").build(app)?;
@@ -616,11 +717,10 @@ pub fn run() {
                             });
                         }
                         "mute" => {
-                            let shell = &state.shell;
-                            tokio::task::block_in_place(|| {
-                                let rt = tokio::runtime::Handle::current();
-                                let shell_state = rt.block_on(shell.get_state());
-                                rt.block_on(shell.set_muted(!shell_state.is_muted));
+                            let shell = state.shell.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let shell_state = shell.get_state().await;
+                                shell.set_muted(!shell_state.is_muted).await;
                             });
                         }
                         "settings" => {
@@ -632,9 +732,14 @@ pub fn run() {
                         }
                         "quit" => {
                             tracing::info!("Quit selected from system tray");
-                            let _ = state.db.close_active_session();
-                            tracing::info!("session closed on tray quit");
-                            std::process::exit(0);
+                            // Graceful exit instead of `std::process::exit`:
+                            // `app.exit(0)` lets RunEvent::Exit run the cleanup
+                            // (pause running tasks, close the active session)
+                            // and keeps the process exit code 0 so `tauri dev`
+                            // treats it as a normal exit rather than an abrupt
+                            // termination that can leave the dev session and
+                            // terminal running.
+                            app.exit(0);
                         }
                         _ => {}
                     }
@@ -723,25 +828,27 @@ pub fn run() {
             });
 
             let _sc = shortcut;
-            let result = handle.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
-                let state = _app.state::<Arc<AppState>>();
-                let shell = &state.shell;
-                tokio::task::block_in_place(|| {
-                    let rt = tokio::runtime::Handle::current();
-                    let shell_state = rt.block_on(shell.get_state());
+            let result = handle.global_shortcut().on_shortcut(shortcut, move |app, _sc, event| {
+                let state = app.state::<Arc<AppState>>();
+                let shell = state.shell.clone();
+                let pressed = event.state == ShortcutState::Pressed;
+                // `spawn` (unlike `block_on`) is safe from any thread, so a
+                // shortcut callback firing on the async runtime's own thread
+                // can't panic with "Cannot start a runtime from within a
+                // runtime".
+                tauri::async_runtime::spawn(async move {
+                    let shell_state = shell.get_state().await;
                     if shell_state.is_muted {
                         return;
                     }
                     if shell_state.hold_mode {
-                        if event.state == ShortcutState::Pressed {
-                            rt.block_on(shell.hold_press());
+                        if pressed {
+                            shell.hold_press().await;
                         } else {
-                            rt.block_on(shell.hold_release());
+                            shell.hold_release().await;
                         }
-                    } else {
-                        if event.state == ShortcutState::Pressed {
-                            rt.block_on(shell.toggle_recording());
-                        }
+                    } else if pressed {
+                        shell.toggle_recording().await;
                     }
                 });
             });
@@ -768,6 +875,7 @@ pub fn run() {
             commands::cancel_recording,
             commands::process_transcript,
             commands::reopen_task,
+            commands::get_last_conversation,
             commands::get_tasks,
             commands::end_task,
             commands::resolve_confirmation,
@@ -782,8 +890,11 @@ pub fn run() {
             commands::delete_task,
             commands::clear_history,
             commands::get_api_key_status,
+            commands::check_llm_connection,
             commands::list_models,
+            commands::discover_models,
             commands::switch_model,
+            commands::set_reasoning_effort,
             commands::list_mcp_tools,
             commands::reconnect_mcp,
             commands::mcp_tool_call,
@@ -949,7 +1060,6 @@ fn init_app_state(
             30,
             50,
             8000,
-            None,
         ));
         let pipeline = Arc::new(haven_input::InputPipeline::new());
         let shell = Arc::new(crate::desktop::DesktopShell::new());

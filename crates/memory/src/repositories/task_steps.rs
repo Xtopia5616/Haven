@@ -148,6 +148,19 @@ impl Database {
         }
         Ok(steps)
     }
+
+    /// Delete every step row created strictly after the given timestamp.
+    /// Used by retry/rollback: the re-run OVERWRITES the previous attempt's
+    /// recorded steps instead of appending to them, so the review history
+    /// stays linear — only branching creates separate timelines.
+    pub fn delete_task_steps_after(&self, task_id: &str, created_at: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM task_steps WHERE task_id = ?1 AND created_at > ?2",
+            rusqlite::params![task_id, created_at],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -268,5 +281,26 @@ mod tests {
         assert_eq!(steps[1].step_index, 1);
         assert_eq!(steps[2].step_index, 2);
         assert_eq!(steps[0].action_tool.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn delete_task_steps_after_removes_only_newer_rows() {
+        let db = test_db();
+        seed_task(&db, "task-1");
+        let first = db.create_thought_step("task-1", 1, "first").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let cutoff = chrono::Utc::now().to_rfc3339();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let second = db.create_thought_step("task-1", 2, "second").unwrap();
+
+        db.delete_task_steps_after("task-1", &cutoff).unwrap();
+        let steps = db.get_task_steps("task-1").unwrap();
+        assert_eq!(
+            steps.len(),
+            1,
+            "only the row created before the cutoff survives"
+        );
+        assert_eq!(steps[0].id, first.id);
+        assert_ne!(steps[0].id, second.id);
     }
 }

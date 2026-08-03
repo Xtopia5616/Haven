@@ -6,8 +6,15 @@
 
 :root {
 	/* ---------- Typography ---------- */
-	--md-sys-typescale-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-		'Helvetica Neue', Arial, sans-serif;
+	/* Cross-platform CJK fallback chain:
+	 *   Windows: Segoe UI (Latin) + Microsoft YaHei (CJK)
+	 *   macOS  : -apple-system (SF) + PingFang SC
+	 *   Linux  : Noto Sans CJK / Source Han Sans / WenQuanYi
+	 * Instead of the dated SimSun / Droid Sans Fallback rendering. */
+	--md-sys-typescale-body: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+		'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC',
+		'Source Han Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei',
+		Roboto, 'Helvetica Neue', Arial, sans-serif;
 	--md-sys-typescale-mono: 'Consolas', 'SF Mono', 'Courier New', monospace;
 	--md-ref-typeface-brand: 'Segoe UI Display', -apple-system, BlinkMacSystemFont, sans-serif;
 
@@ -51,15 +58,21 @@
 	--md-sys-space-3xl: 32px;
 	--md-sys-space-4xl: 48px;
 
+	/* Unified content shell width used by all non-chat routes (settings /
+	 * history / tools). Pages reference this token via var(...) and the
+	 * layout's .page-shell applies it automatically with clamp() so content
+	 * scales with viewport width but never grows past this cap. */
+	--md-sys-content-max-width: 880px;
+
 	/* ---------- Motion (expressive spring-like) ---------- */
 	--md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
 	--md-sys-motion-easing-emphasized: cubic-bezier(0.3, 0, 0, 1);
 	--md-sys-motion-easing-decelerated: cubic-bezier(0, 0, 0, 1);
 	--md-sys-motion-easing-accelerated: cubic-bezier(0.3, 0, 1, 1);
-	--md-sys-motion-duration-fast: 100ms;
-	--md-sys-motion-duration-short: 200ms;
-	--md-sys-motion-duration-medium: 300ms;
-	--md-sys-motion-duration-long: 450ms;
+	--md-sys-motion-duration-fast: 150ms;
+	--md-sys-motion-duration-short: 300ms;
+	--md-sys-motion-duration-medium: 450ms;
+	--md-sys-motion-duration-long: 700ms;
 
 	--md-sys-z-drawer: 1000;
 	--md-sys-z-dialog: 1100;

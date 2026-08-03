@@ -18,6 +18,6 @@ If first arg is a crate name, map it to the package:
 Then add any remaining args as a filter (`-- <filter>`).
 
 Special flags (pass through to cargo test):
-  --nocapture, --no-fail-fast, --release, --doc, -- --test-threads=1
+  --nocapture, --no-fail-fast, --release, --doc
 
 Do NOT cd into crate directories — always run from workspace root.

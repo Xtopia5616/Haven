@@ -33,7 +33,52 @@
 	let durationTimer;
 	let processingTimer;
 	let modelState = $state('ready'); // synced from modelStateStore on mount
-	modelStateStore.subscribe((v) => modelState = v);
+	// Probe state is declared BEFORE the subscribe below: the store's
+	// `subscribe` fires synchronously (SSR/mount) with the current value, and
+	// `probeLlmConnection` reads these bindings without awaiting first, so
+	// they must be initialized already.
+	let llmConnected = $state(null);
+	let llmProbeTimer;
+	let llmProbeInFlight = false;
+	let llmProbeFailureStreak = 0;
+	const LLM_PROBE_INTERVAL_MS = 15000;
+	const LLM_PROBE_MAX_INTERVAL_MS = 120000;
+	modelStateStore.subscribe((v) => {
+		modelState = v;
+		if (v === 'ready') probeLlmConnection();
+	});
+
+	async function probeLlmConnection() {
+		if (modelState !== 'ready' || llmProbeInFlight) return;
+		llmProbeInFlight = true;
+		try {
+			llmConnected = await invoke('check_llm_connection');
+			llmProbeFailureStreak = 0;
+		} catch (e) {
+			logger.warn('+layout', 'check_llm_connection error', e);
+			llmConnected = false;
+			llmProbeFailureStreak = Math.min(llmProbeFailureStreak + 1, 4);
+		} finally {
+			llmProbeInFlight = false;
+		}
+	}
+
+	// Adaptive schedule: back off on consecutive failures (15s → 30s → 60s →
+	// 120s cap), reset to 15s after a successful probe. A dead endpoint no
+	// longer causes an unconditional multi-second network request every 15s.
+	function scheduleLlmProbe() {
+		const interval =
+			llmProbeFailureStreak === 0
+				? LLM_PROBE_INTERVAL_MS
+				: Math.min(
+						LLM_PROBE_INTERVAL_MS * 2 ** llmProbeFailureStreak,
+						LLM_PROBE_MAX_INTERVAL_MS,
+					);
+		llmProbeTimer = setTimeout(() => {
+			probeLlmConnection();
+			scheduleLlmProbe();
+		}, interval);
+	}
 
 	let notifyCfg = $state({
 		task_created: { in_app: true },
@@ -93,7 +138,6 @@
 		try {
 			await invoke('cancel_recording');
 		} catch (e) {
-			logger.warn('+layout', 'cancel_recording error', e);
 			addNotification(`停止录音失败: ${e}`, 'error', 3000);
 		}
 		setOverlay({
@@ -325,13 +369,25 @@
 			const activeId = get(activeTaskIdStore);
 			if (data.task_id && activeId && data.task_id !== activeId) return;
 			updateModelState('balanced_model');
-			addNotification(`balanced model: ${data.reason}`, 'warning');
+			addNotification(`Balanced Model: ${data.reason}`, 'warning');
 		});
+		await safeListen('notification:show', (event) => {
+			const data = event.payload || {};
+			const title = data.title || 'Haven';
+			const body = data.body || '新通知';
+			// When the title is the default "Haven", showing "Haven: msg" is
+			// redundant — the toast itself already lives in the app.
+			addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
+		});
+
+		probeLlmConnection();
+		scheduleLlmProbe();
 	});
 
 	onDestroy(() => {
 		stopTimer();
 		if (processingTimer) clearTimeout(processingTimer);
+		if (llmProbeTimer) clearTimeout(llmProbeTimer);
 		clearModelStateTimer();
 		unlisteners.forEach((u) => u && u());
 	});
@@ -368,7 +424,10 @@
 					<span class="status-text">Tool</span>
 				{:else if modelState === 'balanced_model'}
 					<StatusDot color="error" animate={true} />
-					<span class="status-text">balanced model</span>
+					<span class="status-text">Balanced Model</span>
+				{:else if llmConnected === false}
+					<StatusDot color="outline" />
+					<span class="status-text">Disconnected</span>
 				{:else}
 					<StatusDot color="success" />
 					<span class="status-text">Ready</span>
@@ -413,7 +472,7 @@
 
 	<main class="content" class:content--chat={$page.url.pathname === '/'}>
 		{#key $page.url.pathname}
-			<div class="page-shell" in:fade={{ duration: 180, easing: cubicOut }}>
+			<div class="page-shell" in:fade={{ duration: 280, easing: cubicOut }}>
 				{@render children()}
 			</div>
 		{/key}
@@ -481,17 +540,6 @@
 	.theme-toggle {
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	@keyframes pulse {
-		0%,
-		100% {
-			opacity: 1;
-			transform: scale(1);
-		}
-		50% {
-			opacity: 0.35;
-			transform: scale(0.85);
-		}
-	}
 
 	.tabbar {
 		flex-shrink: 0;
@@ -509,10 +557,22 @@
 	}
 	.content--chat {
 		overflow: hidden;
-		padding-bottom: 0;
+		padding: 0;
 		display: flex;
 		flex-direction: column;
 	}
+	.page-shell {
+		width: 100%;
+		margin: 0 auto;
+	}
+	/* Non-chat routes: cap content at the shared content max-width and
+	 * let it grow with viewport (clamp ensures a sensible minimum on
+	 * narrow windows and a consistent cap on wide ones). Chat opts out
+	 * via .content--chat and uses its own internal constraints. */
+	.content:not(.content--chat) .page-shell {
+		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
+	}
+
 	.content--chat .page-shell {
 		flex: 1;
 		min-height: 0;
@@ -539,6 +599,5 @@
 	.recording-label {
 		color: var(--md-sys-color-error);
 		font-weight: 700;
-		animation: pulse 1.2s var(--md-sys-motion-easing-emphasized) infinite;
 	}
 </style>

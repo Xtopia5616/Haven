@@ -24,6 +24,7 @@
 	const todayISO = $derived(new Date().toISOString().slice(0, 10));
 
 	import logger from '$lib/logger.js';
+	import { buildReviewMessages, formatDate } from '$lib/reviewMessages.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
@@ -87,7 +88,6 @@
 			tasks = [];
 			totalCount = 0;
 			hasMore = false;
-			logger.warn('history', 'loadHistory error');
 			addNotification('加载历史记录失败', 'error', 3000);
 		}
 		if (seq === loadHistorySeq) loading = false;
@@ -107,7 +107,6 @@
 			}
 		} catch {
 			hasMore = false;
-			logger.warn('history', 'loadMore error');
 			addNotification('加载更多历史记录失败', 'error', 3000);
 		}
 		loading = false;
@@ -148,109 +147,10 @@
 			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title, wasError: task.status === 'error' });
 			await goto('/');
 		} catch (e) {
-			logger.error('history', 'Failed to load task for review', e);
 			addNotification(`加载任务详情失败: ${e}`, 'error', 4000);
 		}
 	}
 
-	function buildReviewMessages(data) {
-		const items = [];
-		const msgs = data.messages || [];
-		const task = data.task || {};
-
-		const msgIds = new Set();
-		for (const msg of msgs) {
-			msgIds.add(msg.id);
-			items.push({
-				id: msg.id,
-				role: msg.role,
-				content: msg.content,
-				type: msg.message_type === 'text' ? undefined : msg.message_type || undefined,
-				voice: false,
-				time: formatDate(msg.created_at),
-				streaming: false,
-				attachments: msg.attachments || [],
-			});
-		}
-
-	// Steps only supplement action/observation (tool) badges.
-	// Thought-only steps are skipped because their text is already
-	// represented in session messages, avoiding duplication.
-	for (const step of data.steps || []) {
-		const stepId = `step-${step.id}`;
-		if (msgIds.has(stepId)) continue;
-		if (!step.action_tool) continue;
-		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
-		items.push({
-			id: stepId,
-			role: 'assistant',
-			content: obs || '',
-			type: 'tool',
-			toolName: step.action_tool,
-			voice: false,
-			time: formatDate(step.created_at),
-			streaming: false,
-			stepNumber: step.step_index,
-		});
-	}
-	// Thought-only steps are not added as separate items (their text is in
-	// session messages), but we still need their step_index for stepNumber
-	// inference — otherwise tasks with no tool steps (e.g. errored on the
-	// first LLM call) leave all messages without a stepNumber, breaking
-	// rollback. Match by content (trimmed) to the corresponding session
-	// message.
-	for (const step of data.steps || []) {
-		if (step.action_tool) continue;
-		if (step.thought == null) continue;
-		const thoughtTrimmed = step.thought.trim();
-		if (!thoughtTrimmed) continue;
-		for (const item of items) {
-			if (item.role === 'assistant' && item.stepNumber == null
-				&& item.content.trim() === thoughtTrimmed) {
-				item.stepNumber = step.step_index;
-				break;
-			}
-		}
-	}
-		items.sort((a, b) => {
-			if (a.time < b.time) return -1;
-			if (a.time > b.time) return 1;
-			return 0;
-		});
-		// Fallback: if no messages or steps exist, show the task input text
-		// so the review page is not completely empty.
-		if (items.length === 0 && task.input_text) {
-			items.push({
-				id: `placeholder-${task.id}`,
-				role: 'user',
-				content: task.input_text,
-				voice: false,
-				time: formatDate(task.created_at || new Date().toISOString()),
-				streaming: false,
-			});
-		}
-		// Infer stepNumber for assistant session messages by backward-forward pass.
-		// Backward: tool messages precede their action/observation in time, so
-		// walking backwards assigns stepNumber to preceding assistant messages.
-		let lastStep = null;
-		for (let i = items.length - 1; i >= 0; i--) {
-			if (items[i].stepNumber != null) lastStep = items[i].stepNumber;
-			else if (items[i].role === 'assistant' && lastStep != null) items[i].stepNumber = lastStep;
-		}
-		// Forward: catch any assistant messages after the last tool message.
-		lastStep = null;
-		for (let i = 0; i < items.length; i++) {
-			if (items[i].stepNumber != null) lastStep = items[i].stepNumber;
-			else if (items[i].role === 'assistant' && lastStep != null) items[i].stepNumber = lastStep;
-		}
-		// Forward: assign stepNumber of the following assistant response to user messages.
-		let nextStep = null;
-		for (let i = items.length - 1; i >= 0; i--) {
-			if (items[i].stepNumber != null) nextStep = items[i].stepNumber;
-			else if (items[i].role === 'user' && nextStep != null) items[i].stepNumber = nextStep;
-		}
-		return items;
-	}
 
 	async function deleteTask(taskId) {
 		try {
@@ -313,16 +213,6 @@
 		}
 	}
 
-	function formatDate(iso) {
-		const d = new Date(iso);
-		const y = d.getFullYear();
-		const m = String(d.getMonth() + 1).padStart(2, '0');
-		const day = String(d.getDate()).padStart(2, '0');
-		const h = String(d.getHours()).padStart(2, '0');
-		const min = String(d.getMinutes()).padStart(2, '0');
-		const s = String(d.getSeconds()).padStart(2, '0');
-		return `${y}/${m}/${day} ${h}:${min}:${s}`;
-	}
 
 	function displayTitle(task) {
 		if (task.title) return task.title;
@@ -400,9 +290,8 @@
 			a.download = `haven-history-${new Date().toISOString().slice(0, 10)}.json`;
 			a.click();
 			URL.revokeObjectURL(url);
-		} catch {
-			logger.warn('history', 'export failed');
-			addNotification('导出失败', 'error', 4000);
+		} catch (e) {
+			addNotification(`导出失败: ${e}`, 'error', 4000);
 		}
 	}
 </script>
@@ -439,6 +328,7 @@
 			placeholder="Search"
 			bind:value={searchQuery}
 			oninput={handleSearchInput}
+			autocomplete="off"
 		/>
 		<div class="filter-controls">
 			<MaterialSelect
@@ -518,6 +408,7 @@
 								onblur={() => saveTitle(task.id)}
 								onclick={(e) => e.stopPropagation()}
 								autofocus
+								autocomplete="off"
 							/>
 						{:else}
 							<span
@@ -656,7 +547,7 @@
 
 <style>
 	.history-page {
-		max-width: 1000px;
+		max-width: var(--md-sys-content-max-width);
 	}
 	.header-row {
 		display: flex;

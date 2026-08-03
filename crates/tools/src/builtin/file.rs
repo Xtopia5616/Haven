@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use base64::Engine;
 use haven_common::types::RiskLevel;
-use haven_llm::LlmClient;
+use haven_llm::EndpointRole;
+use haven_llm::LlmRouter;
 use haven_llm::types::{ContentPart, LlmMessage, LlmRole};
 use serde_json::Value;
 use std::path::{Component, Path};
@@ -73,14 +74,14 @@ fn classify_by_extension(path: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Send an image file to the `small_model` (vision-capable) endpoint and
-/// return the model's description / extracted text. Reuses the same LLM client
-/// as `summarize`. Returns a `ToolResult` even on failure so the agent can
-/// reason about partial results.
+/// Send an image file to the `image_model` (vision-capable) endpoint and
+/// return the model's description / extracted text. Routes through the shared
+/// LlmRouter so image_model failures fall back to balanced_model. Returns
+/// a `ToolResult` even on failure so the agent can reason about partial results.
 async fn understand_image(
     path: &str,
     focus: Option<&str>,
-    summarizer: Option<Arc<dyn LlmClient>>,
+    summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     // Validate the extension first so a non-image path is rejected even when
@@ -95,9 +96,13 @@ async fn understand_image(
             "image": true,
             "path": path,
             "understand_unavailable": true,
-            "reason": "No small_model endpoint configured, so image content cannot be analyzed."
+            "reason": "No router installed, so image content cannot be analyzed."
         })));
     };
+    // Use the same vision routing policy as chat images (the router's
+    // `vision_role`): dedicated image_model when enabled and configured,
+    // otherwise the default model.
+    let role = client.vision_role().await;
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
@@ -136,6 +141,7 @@ async fn understand_image(
             content: vec![ContentPart::text(sys)],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         },
         LlmMessage {
             role: LlmRole::User,
@@ -146,13 +152,14 @@ async fn understand_image(
             }],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         },
     ];
 
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(SUMMARY_TIMEOUT_SECS),
-            client.chat(messages),
+            client.chat(role, messages),
         )
         .await
     };
@@ -238,7 +245,7 @@ async fn read_full(
     path: &str,
     max_chars: usize,
     focus: Option<&str>,
-    summarizer: Option<Arc<dyn LlmClient>>,
+    summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let (kind, _mime) = classify_by_extension(path);
@@ -478,13 +485,16 @@ async fn read_lines(
 
 #[derive(Default)]
 pub struct FileOpTool {
-    /// Summarizer LLM client (the `small_model` endpoint). `None` disables the
-    /// `summary` operation with a helpful message.
-    summarizer: Option<Arc<dyn LlmClient>>,
+    /// Shared LlmRouter. `None` means the router has not been installed yet
+    /// (transient state during startup). When present, the `summary` and image
+    /// understanding operations route through `router.chat(...)`: image
+    /// understanding uses the image_model role, text summarization uses
+    /// small_model. The router handles retries and the balanced-model fallback.
+    summarizer: Option<Arc<LlmRouter>>,
 }
 
 impl FileOpTool {
-    pub fn new(summarizer: Option<Arc<dyn LlmClient>>) -> Self {
+    pub fn new(summarizer: Option<Arc<LlmRouter>>) -> Self {
         Self { summarizer }
     }
 }
@@ -746,16 +756,23 @@ async fn summarize(
     end_line: u64,
     focus: Option<&str>,
     input_budget: usize,
-    summarizer: Option<Arc<dyn LlmClient>>,
+    summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let Some(client) = summarizer else {
         return Ok(ToolResult::ok(serde_json::json!({
             "summary_unavailable": true,
             "path": path,
-            "reason": "No small_model endpoint configured. Read the file in parts with start_line/end_line instead.",
+            "reason": "No router installed. Read the file in parts with start_line/end_line instead.",
         })));
     };
+    if !client.is_role_configured(EndpointRole::SmallModel).await {
+        return Ok(ToolResult::ok(serde_json::json!({
+            "summary_unavailable": true,
+            "path": path,
+            "reason": "No small_model endpoint configured. Read the file in parts with start_line/end_line instead.",
+        })));
+    }
 
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
@@ -793,19 +810,21 @@ async fn summarize(
             content: vec![ContentPart::text(sys)],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         },
         LlmMessage {
             role: LlmRole::User,
             content: vec![ContentPart::text(content)],
             tool_call_id: None,
             tool_calls: None,
+            reasoning: None,
         },
     ];
 
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(SUMMARY_TIMEOUT_SECS),
-            client.chat(messages),
+            client.chat(EndpointRole::SmallModel, messages),
         )
         .await
     };

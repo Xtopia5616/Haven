@@ -34,7 +34,10 @@
 	const speaking = $derived(vadState === 'speech' && isRecording && !processing);
 
 	function handleEsc(e) {
-		if ((e.key === 'Escape' || e.key === 'Esc') && isRecording && !processing && onCancel) {
+		// Cancel whenever the overlay is visible (recording or processing):
+		// cancel_recording is a no-op when the pipeline is idle, so an extra
+		// ESC press can't break anything.
+		if ((e.key === 'Escape' || e.key === 'Esc') && (isRecording || processing) && onCancel) {
 			e.preventDefault();
 			onCancel();
 		}
@@ -63,7 +66,7 @@
 				<span class="state-label">{speaking ? '正在聆听…' : '请说…'}</span>
 			{/if}
 			<span class="timer">{display}</span>
-			{#if isRecording && !processing}
+			{#if onCancel}
 				<span class="hint">Esc 取消</span>
 			{/if}
 			{#if isRecording && !processing && reason}

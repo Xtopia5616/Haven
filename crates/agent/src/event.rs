@@ -31,6 +31,9 @@ pub enum AgentEvent {
         run_id: u64,
         silent: bool,
         tool_call_id: Option<String>,
+        /// Quick-reply options surfaced when the observation comes from the
+        /// `ask` tool, so the UI can render clickable answer buttons.
+        ask_options: Vec<String>,
     },
     TaskCreated(TaskInfo),
     TaskCompleted {
@@ -76,6 +79,33 @@ pub enum AgentEvent {
     TitleUpdated {
         task_id: String,
         title: String,
+    },
+    /// A user-facing notification requested by the agent (via the `notify`
+    /// tool). Surfaced both in-app (toast) and as a Windows notification.
+    Notification {
+        task_id: String,
+        title: String,
+        body: String,
+    },
+    /// Token-usage statistics for one LLM call (or aggregate). Surfaces
+    /// prompt/completion/total tokens and the USD cost when the active
+    /// endpoint has pricing configured. Emitted after every ReAct step so
+    /// the UI can display a running counter and remaining context budget.
+    Usage {
+        task_id: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cost_usd: Option<f64>,
+        model: Option<String>,
+        /// Cumulative totals across the entire task (incl. this step).
+        cumulative_prompt_tokens: u32,
+        cumulative_completion_tokens: u32,
+        cumulative_total_tokens: u32,
+        cumulative_cost_usd: Option<f64>,
+        /// Configured context window for the model (tokens). When `None`,
+        /// the UI falls back to a generic budget indicator.
+        context_window: Option<u32>,
     },
 }
 
@@ -432,6 +462,45 @@ impl EventDispatcher {
             })
             .await;
     }
+
+    pub async fn emit_usage_from(
+        emitter: &Arc<dyn AgentEventEmitter>,
+        usage: crate::event::UsagePayload,
+    ) {
+        emitter
+            .emit(AgentEvent::Usage {
+                task_id: usage.task_id,
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+                cost_usd: usage.cost_usd,
+                model: usage.model,
+                cumulative_prompt_tokens: usage.cumulative_prompt_tokens,
+                cumulative_completion_tokens: usage.cumulative_completion_tokens,
+                cumulative_total_tokens: usage.cumulative_total_tokens,
+                cumulative_cost_usd: usage.cumulative_cost_usd,
+                context_window: usage.context_window,
+            })
+            .await;
+    }
+}
+
+/// Bundle of values for emitting an `AgentEvent::Usage` without forcing every
+/// caller to construct the full enum variant inline. Keeps the emit helper
+/// signature narrow.
+#[derive(Debug, Clone)]
+pub struct UsagePayload {
+    pub task_id: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cost_usd: Option<f64>,
+    pub model: Option<String>,
+    pub cumulative_prompt_tokens: u32,
+    pub cumulative_completion_tokens: u32,
+    pub cumulative_total_tokens: u32,
+    pub cumulative_cost_usd: Option<f64>,
+    pub context_window: Option<u32>,
 }
 
 #[cfg(test)]

@@ -7,21 +7,261 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
+	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import StatusDot from '$lib/StatusDot.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import { addNotification } from '$lib/stores.js';
 
 	let llmConfig = $state({
-		small_model: { provider: 'openai', model_name: 'gpt-4o-mini', temperature: 0, base_url: '', api_key: '' },
-		default_model: { provider: 'anthropic', model_name: 'claude-sonnet-4-20250514', temperature: 0.7, base_url: '', api_key: '' },
-		balanced_model: { provider: 'local', model_name: 'llama3', temperature: 0.7, base_url: 'http://localhost:11434', api_key: '' },
+		small_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-mini', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
+		default_model: { provider: 'anthropic', api_style: '', model_name: 'claude-sonnet-4-20250514', temperature: 0.7, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
+		balanced_model: { provider: 'local', api_style: '', model_name: 'llama3', temperature: 0.7, base_url: 'http://localhost:11434', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
+		image_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o', temperature: 0.2, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
+		audio_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-audio-preview', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
+		stt_use_audio_model: true,
+		vision_use_image_model: true,
 	});
 
 	let keyConfigured = $state({
 		small_model: false,
 		default_model: false,
 		balanced_model: false,
+		image_model: false,
+		audio_model: false,
+		stt: false,
 	});
+
+	// Single source of truth for the LLM endpoint cards; adding a model role
+	// here renders its card without duplicating markup. Cards are grouped:
+	// core models (agent loop) first, then specialized (vision / speech).
+	const modelCards = [
+		{ key: 'default_model', label: 'Default Model', hint: 'Primary reasoning & tool-use agent', prefix: 'dm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
+		{ key: 'balanced_model', label: 'Balanced Model', hint: 'Used when Default Model is unavailable', prefix: 'bm', basePlaceholder: 'http://localhost:11434', group: 'core' },
+		{ key: 'small_model', label: 'Small Model', hint: 'Title generation & lightweight reasoning', prefix: 'sm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
+		{ key: 'image_model', label: 'Image Model', hint: 'Image understanding (vision-capable)', prefix: 'im', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
+		{ key: 'audio_model', label: 'Audio Model', hint: 'Audio transcription (speech-to-text)', prefix: 'au', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
+	];
+	const coreModelCards = modelCards.filter((c) => c.group === 'core');
+	const specializedModelCards = modelCards.filter((c) => c.group === 'specialized');
+
+	// Per-card model discovery: fetched model IDs from the provider's
+	// `/models` endpoint, shown as autocomplete options on the Model field.
+	// `stt` holds STT-provider model lists fetched with the STT key.
+	let modelsByKey = $state({ stt: [] });
+	let modelFetching = $state({ stt: false });
+	let fetchTimers = {};
+	// Timestamp of the last fetch notification per card, so bursts of
+	// auto-fetch (focus / typing) don't spam the same message.
+	let lastFetchNotify = $state({ stt: 0 });
+
+	// Default base URL per API style, filled in when the user picks a style
+	// and the Base URL field is still empty (never overwrites a custom URL).
+	const styleDefaultBaseUrl = {
+		'openai-chat': 'https://api.openai.com/v1',
+		'openai-responses': 'https://api.openai.com/v1',
+		'anthropic': 'https://api.anthropic.com',
+		'gemini': 'https://generativelanguage.googleapis.com',
+	};
+
+	const OPENAI_COMPAT_STT = new Set(['openai', 'groq']);
+	const GEMINI_STT = new Set(['gemini']);
+
+	// STT provider choices offered inside the Audio Model card's Provider
+	// selector (values are prefixed `stt:` so they never collide with LLM
+	// wire-protocol styles like `openai-chat`). The `openai-chat` LLM style
+	// doubles as the "transcribe via the audio_model LLM" mode; Gemini audio
+	// transcription is covered by the `stt:gemini` option, so no separate
+	// LLM `gemini` style is offered for this slot.
+	const STT_STYLE_OPTIONS = [
+		{ value: 'stt:openai', label: 'OpenAI Whisper' },
+		{ value: 'stt:groq', label: 'Groq' },
+		{ value: 'stt:gemini', label: 'Google Gemini' },
+		{ value: 'stt:deepgram', label: 'Deepgram' },
+		{ value: 'stt:assemblyai', label: 'AssemblyAI' },
+		{ value: 'stt:mcp', label: 'MCP Server' },
+		{ value: 'stt:none', label: 'None' },
+	];
+	const STT_STYLE_SET = new Set(STT_STYLE_OPTIONS.map((o) => o.value));
+
+	function sttProviderFromStyle(style) {
+		return style.startsWith('stt:') ? style.slice(4) : null;
+	}
+
+	// Current value of the Audio Model card's API Style selector: either an LLM
+	// wire-protocol style (`auto` / `openai-chat` / …) or an `stt:*` provider.
+	// Stored separately from `llmConfig.audio_model.api_style` so switching to
+	// an STT provider never clobbers the endpoint's LLM wire protocol.
+	let audioApiStyle = $state('auto');
+
+	function isOpenAiCompatibleStt(provider) {
+		return OPENAI_COMPAT_STT.has(provider);
+	}
+
+	function isGeminiStt(provider) {
+		return GEMINI_STT.has(provider);
+	}
+
+	// True when the Audio Model card's API Style is set to an STT provider.
+	// In this mode the card's API Key / Model / Base URL fields bind to the
+	// STT config instead of the audio_model endpoint, so credentials are
+	// entered once and never duplicated in a separate STT section.
+	function isAudioSttMode() {
+		return STT_STYLE_SET.has(audioApiStyle);
+	}
+
+	function audioSttProvider() {
+		return sttProviderFromStyle(audioApiStyle) || stt.provider;
+	}
+
+	function isCloudSttProvider(provider) {
+		return ['openai', 'groq', 'gemini', 'deepgram', 'assemblyai'].includes(provider);
+	}
+
+	function sttModelPlaceholder(provider) {
+		if (provider === 'deepgram') return 'nova-3';
+		if (provider === 'assemblyai') return 'assemblyai_default';
+		if (provider === 'groq') return 'whisper-large-v3-turbo';
+		if (isGeminiStt(provider)) return 'gemini-2.5-flash';
+		return 'whisper-1';
+	}
+
+	function sttBasePlaceholder(provider) {
+		return isGeminiStt(provider) ? 'https://generativelanguage.googleapis.com/v1beta' : 'https://api.openai.com/v1';
+	}
+
+	// Model-list discovery for STT providers. OpenAI-compatible hosts expose
+	// a `/models` endpoint (fetched like the LLM cards); Deepgram ships fixed
+	// model ids; AssemblyAI has no public model list.
+	function sttFetchBaseUrl(provider) {
+		if (stt.base_url.trim()) return stt.base_url.trim();
+		if (provider === 'groq') return 'https://api.groq.com/openai/v1';
+		if (provider === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta';
+		return 'https://api.openai.com/v1';
+	}
+
+	function sttModelOptions(provider) {
+		if (provider === 'deepgram') {
+			return [
+				{ value: 'nova-3', label: 'nova-3' },
+				{ value: 'nova-2', label: 'nova-2' },
+				{ value: 'whisper-large-v3', label: 'whisper-large-v3' },
+				{ value: 'whisper-large-v3-turbo', label: 'whisper-large-v3-turbo' },
+			];
+		}
+		if (provider === 'assemblyai') {
+			return [
+				{ value: 'assemblyai_default', label: 'AssemblyAI Default' },
+				{ value: 'universal', label: 'universal' },
+				{ value: 'universal-2', label: 'universal-2' },
+				{ value: 'universal-3-pro', label: 'universal-3-pro' },
+			];
+		}
+		return (modelsByKey.stt || []).map((m) => ({ value: m.id, label: m.name || m.id }));
+	}
+
+	async function fetchSttModels() {
+		const provider = audioSttProvider();
+		if (provider === 'deepgram' || provider === 'assemblyai' || provider === 'mcp' || provider === 'none') {
+			return; // fixed lists or nothing to fetch
+		}
+		const base = sttFetchBaseUrl(provider);
+		if (!base || (!stt.api_key && !keyConfigured.stt)) {
+			modelsByKey.stt = [];
+			return;
+		}
+		modelFetching.stt = true;
+		try {
+			const list = await invoke('discover_models', { baseUrl: base, apiKey: stt.api_key, role: 'stt' });
+			const prev = JSON.stringify(modelsByKey.stt || []);
+			modelsByKey.stt = list || [];
+			if (JSON.stringify(modelsByKey.stt) !== prev) {
+				notifyFetch('stt', `已获取 ${(list || []).length} 个模型`, 'success', 2500);
+			}
+		} catch (e) {
+			const msg = typeof e === 'string' ? e : (e?.message || String(e));
+			modelsByKey.stt = [];
+			notifyFetch('stt', `获取模型失败: ${msg}`, 'error', 4000);
+		} finally {
+			modelFetching.stt = false;
+		}
+	}
+
+	function scheduleSttFetch() {
+		clearTimeout(fetchTimers.stt);
+		fetchTimers.stt = setTimeout(() => fetchSttModels(), 600);
+	}
+
+	function onApiStyleChange(key, v) {
+		if (key === 'audio_model') {
+			if (STT_STYLE_SET.has(v)) {
+				// STT provider picked: sync the STT config; the endpoint's LLM
+				// api_style stays untouched so switching back to `openai-chat`
+				// restores the previous wire protocol. Stale model-list caches
+				// from the previous provider are dropped.
+				audioApiStyle = v;
+				const provider = sttProviderFromStyle(v);
+				if (provider) stt.provider = provider;
+				modelsByKey.stt = [];
+				return;
+			}
+			// LLM style picked (openai-chat): transcription routes through
+			// the audio_model endpoint, so there is no separate "LLM Adapter"
+			// STT option. The endpoint provider is fixed to the wire protocol.
+			if (v !== 'auto') {
+				stt.provider = 'llm';
+				llmConfig.audio_model.provider = 'openai';
+			}
+			audioApiStyle = v;
+		}
+		llmConfig[key].api_style = v === 'auto' ? '' : v;
+		const url = styleDefaultBaseUrl[v];
+		if (url && !llmConfig[key].base_url.trim()) {
+			llmConfig[key].base_url = url;
+		}
+	}
+
+	function notifyFetch(key, message, type, duration) {
+		const now = Date.now();
+		if (now - (lastFetchNotify[key] || 0) < 2500) return;
+		lastFetchNotify[key] = now;
+		addNotification(message, type, duration);
+	}
+
+	async function fetchModels(key) {
+		const ep = llmConfig[key];
+		// Stored keys are masked: when the slot is already configured the
+		// backend falls back to the stored key via the role name.
+		if (!ep || !ep.base_url || (!ep.api_key && !keyConfigured[key])) {
+			modelsByKey[key] = [];
+			return;
+		}
+		modelFetching[key] = true;
+		try {
+			const list = await invoke('discover_models', {
+				baseUrl: ep.base_url,
+				apiKey: ep.api_key,
+				role: key,
+			});
+			const prev = modelsByKey[key] || [];
+			const next = list || [];
+			modelsByKey[key] = next;
+			logger.debug('settings', `discovered ${next.length} models for ${key}`);
+			if (JSON.stringify(prev) !== JSON.stringify(next)) {
+				notifyFetch(key, `已获取 ${next.length} 个模型`, 'success', 2500);
+			}
+		} catch (e) {
+			const msg = typeof e === 'string' ? e : (e?.message || String(e));
+			modelsByKey[key] = [];
+			notifyFetch(key, `获取模型失败: ${msg}`, 'error', 4000);
+		} finally {
+			modelFetching[key] = false;
+		}
+	}
+
+	function scheduleFetch(key) {
+		clearTimeout(fetchTimers[key]);
+		fetchTimers[key] = setTimeout(() => fetchModels(key), 600);
+	}
 
 	let hotkeyMode = $state('toggle');
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
@@ -40,7 +280,14 @@
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let security = $state({ confirmation_mode: 'always', min_risk_level: 'low' });
 
-	let stt = $state({ provider: 'mcp', mcp_server: '', timeout_secs: 30 });
+	let stt = $state({
+		provider: 'mcp',
+		mcp_server: '',
+		api_key: '',
+		model: '',
+		base_url: '',
+		timeout_secs: 30,
+	});
 	let notification = $state({
 		task_created: { in_app: true, windows: false },
 		task_completed: { in_app: true, windows: true },
@@ -51,6 +298,9 @@
 
 	let preferences = $state([]);
 	let prefLoaded = $state(false);
+	// Names of configured MCP servers, offered in the Audio Model card's
+	// Model field when the STT provider is an MCP server.
+	let mcpServerNames = $state([]);
 
 	let keyChangeDialog = $state({ open: false, model: '', label: '' });
 	let newKeyValue = $state('');
@@ -89,8 +339,30 @@
 				stt = {
 					provider: settings.stt?.provider || 'mcp',
 					mcp_server: settings.stt?.mcp_server || '',
+					api_key: settings.stt?.api_key || '',
+					model: settings.stt?.model || '',
+					base_url: settings.stt?.base_url || '',
 					timeout_secs: settings.stt?.timeout_secs || 30,
 				};
+				// Audio Model Provider selector reflects the STT provider when
+				// one is explicitly configured; `llm` maps back to the
+				// endpoint's LLM wire style (the "transcribe via audio_model"
+				// mode). A legacy `gemini` wire style is folded into the
+				// `stt:gemini` option — Gemini audio transcription is a
+				// single path now.
+				const sttCfg = settings.stt;
+				let llmAudioStyle = settings.llm?.audio_model?.api_style || '';
+				if (llmAudioStyle === 'gemini') {
+					audioApiStyle = 'stt:gemini';
+					if (!sttCfg || sttCfg.provider === 'mcp') stt.provider = 'gemini';
+				} else if (sttCfg?.provider === 'llm') {
+					audioApiStyle = llmAudioStyle || 'openai-chat';
+				} else if (sttCfg && (sttCfg.provider !== 'mcp' || sttCfg.mcp_server || sttCfg.api_key || sttCfg.model || sttCfg.base_url)) {
+					audioApiStyle = `stt:${sttCfg.provider}`;
+				} else {
+					audioApiStyle = llmAudioStyle || 'auto';
+				}
+				mcpServerNames = (settings.mcp_servers || []).map((s) => s.name || '').filter(Boolean);
 			notification = settings.notification || notification;
 			log = settings.log || log;
 			if (settings.appearance?.accent_color) {
@@ -103,22 +375,19 @@
 			}
 			}
 		} catch (e) {
-			logger.warn('settings', 'load settings error', e);
-			addNotification('加载设置失败', 'error', 4000);
+			addNotification(`加载设置失败: ${e}`, 'error', 4000);
 		}
 		try {
 			keyConfigured = await invoke('get_api_key_status');
 			if (!mounted) return;
 		} catch (e) {
-			logger.warn('settings', 'get_api_key_status error', e);
-			addNotification('获取 API Key 状态失败', 'error', 3000);
+			addNotification(`获取 API Key 状态失败: ${e}`, 'error', 3000);
 		}
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
 			if (!mounted) return;
 		} catch (e) {
-			logger.warn('settings', 'is_autostart_enabled error', e);
-			addNotification('获取开机自启状态失败', 'error', 3000);
+			addNotification(`获取开机自启状态失败: ${e}`, 'error', 3000);
 		}
 		await loadPreferences();
 	});
@@ -140,7 +409,6 @@
 			await invoke('delete_preference', { key });
 			preferences = preferences.filter(([k]) => k !== key);
 		} catch (e) {
-			logger.warn('settings', 'delete preference error', e);
 			addNotification(`删除偏好失败: ${e}`, 'error', 3000);
 		}
 	}
@@ -175,6 +443,9 @@
 					stt: {
 						provider: stt.provider,
 						mcp_server: stt.mcp_server || null,
+						api_key: stt.api_key,
+						model: stt.model,
+						base_url: stt.base_url,
 						timeout_secs: stt.timeout_secs,
 					},
 					notification: {
@@ -207,7 +478,6 @@
 				}
 			}
 		} catch (e) {
-			logger.error('settings', 'save failed', e);
 			addNotification(`保存设置失败: ${e}`, 'error', 5000);
 		}
 	}
@@ -223,7 +493,12 @@
 
 	function confirmKeyChange() {
 		if (newKeyValue.trim()) {
-			llmConfig[keyChangeDialog.model].api_key = newKeyValue.trim();
+			if (keyChangeDialog.model === 'stt') {
+				stt.api_key = newKeyValue.trim();
+			} else {
+				llmConfig[keyChangeDialog.model].api_key = newKeyValue.trim();
+				scheduleFetch(keyChangeDialog.model);
+			}
 			keyConfigured[keyChangeDialog.model] = true;
 		}
 		keyChangeDialog = { open: false, model: '', label: '' };
@@ -245,119 +520,170 @@
 	<div class="section">
 		<h2>LLM Configuration</h2>
 
+		{#snippet modelCard(card)}
 		<div class="model-card">
-			<h3>small model</h3>
-			<p class="model-hint">Title generation &amp; lightweight reasoning</p>
+			<h3>{card.label}</h3>
+			<p class="model-hint">{card.hint}</p>
+			{#if card.key !== 'audio_model'}
+				<div class="form-row">
+					<label for="{card.prefix}-provider">Provider</label>
+					<input id="{card.prefix}-provider" type="text" class="md-input" bind:value={llmConfig[card.key].provider} autocomplete="off" />
+				</div>
+			{/if}
 			<div class="form-row">
-				<label for="sm-provider">Provider</label>
-				<input id="sm-provider" type="text" class="md-input" bind:value={llmConfig.small_model.provider} />
+				<label for="{card.prefix}-api-style">{card.key === 'audio_model' ? 'Provider' : 'API Style'}</label>
+				<MaterialSelect
+					id="{card.prefix}-api-style"
+					value={card.key === 'audio_model' ? audioApiStyle : (llmConfig[card.key].api_style || 'auto')}
+					options={card.key === 'audio_model'
+						? [
+							// Only wire protocols that accept audio input; the
+							// unsupported ones (anthropic, openai-responses)
+							// are omitted for this slot, as is the `gemini`
+							// LLM style — Gemini audio transcription is the
+							// `stt:gemini` option below.
+							{ value: 'auto', label: 'Auto (from provider)' },
+							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+							...STT_STYLE_OPTIONS,
+						]
+						: [
+							{ value: 'auto', label: 'Auto (from provider)' },
+							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+							{ value: 'openai-responses', label: 'OpenAI Responses API' },
+							{ value: 'anthropic', label: 'Anthropic (Claude)' },
+							{ value: 'gemini', label: 'Google Gemini' },
+						]}
+					onChange={(v) => onApiStyleChange(card.key, v)}
+				/>
 			</div>
-			<div class="form-row">
-				<label for="sm-model">Model</label>
-				<input id="sm-model" type="text" class="md-input" bind:value={llmConfig.small_model.model_name} />
-			</div>
-			<div class="form-row">
-				<label for="sm-base-url">Base URL</label>
-				<input id="sm-base-url" type="text" class="md-input" bind:value={llmConfig.small_model.base_url} placeholder="https://api.openai.com/v1" />
-			</div>
-			<div class="form-row">
-				<label for="sm-api-key">API Key</label>
-				{#if keyConfigured.small_model}
-					<div class="key-status-row">
-						<StatusDot />
-						<span class="key-configured-label">Configured</span>
+			{#if card.key === 'audio_model' && isAudioSttMode() && (isOpenAiCompatibleStt(audioSttProvider()) || isGeminiStt(audioSttProvider()))}
+				<div class="form-row">
+					<label for="{card.prefix}-base-url">Base URL</label>
+					<input id="{card.prefix}-base-url" type="text" class="md-input" bind:value={stt.base_url} placeholder={sttBasePlaceholder(audioSttProvider())} autocomplete="off" />
+				</div>
+			{:else}
+				<div class="form-row">
+					<label for="{card.prefix}-base-url">Base URL</label>
+					<input id="{card.prefix}-base-url" type="text" class="md-input" bind:value={llmConfig[card.key].base_url} placeholder={card.basePlaceholder} oninput={() => scheduleFetch(card.key)} autocomplete="off" />
+				</div>
+			{/if}
+			{#if card.key === 'audio_model' && isAudioSttMode() && isCloudSttProvider(audioSttProvider())}
+				<div class="form-row">
+					<label for="{card.prefix}-api-key">API Key</label>
+					<div class="key-status-row" class:key-not-configured={!keyConfigured.stt}>
+						<StatusDot color={keyConfigured.stt ? 'success' : 'outline'} />
+						<span class="key-configured-label">{keyConfigured.stt ? 'Configured' : 'Not Configured'}</span>
 						<button
+							id="{card.prefix}-api-key"
 							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog('small_model', 'small model')}
+							onclick={() => openKeyDialog('stt', 'STT API Key')}
 						>
-							Change
+							{keyConfigured.stt ? 'Change' : 'Set'}
 						</button>
 					</div>
-				{:else}
-					<input id="sm-api-key" type="password" class="md-input" bind:value={llmConfig.small_model.api_key} placeholder="sk-..." />
+				</div>
+			{:else}
+				<div class="form-row">
+					<label for="{card.prefix}-api-key">API Key</label>
+					<div class="key-status-row" class:key-not-configured={!keyConfigured[card.key]}>
+						<StatusDot color={keyConfigured[card.key] ? 'success' : 'outline'} />
+						<span class="key-configured-label">{keyConfigured[card.key] ? 'Configured' : 'Not Configured'}</span>
+						<button
+							id="{card.prefix}-api-key"
+							class="md-btn md-btn--xs md-btn--outlined"
+							onclick={() => openKeyDialog(card.key, card.label)}
+						>
+							{keyConfigured[card.key] ? 'Change' : 'Set'}
+						</button>
+					</div>
+				</div>
+			{/if}
+			{#if card.key === 'audio_model' && isAudioSttMode()}
+				{#if audioSttProvider() === 'mcp'}
+					<div class="form-row">
+						<label for="{card.prefix}-model">MCP Server</label>
+						<div class="model-input-row">
+							<MaterialAutocomplete
+								id="{card.prefix}-model"
+								value={stt.mcp_server}
+								options={mcpServerNames.map((n) => ({ value: n, label: n }))}
+								placeholder="Pick a configured MCP server"
+								loading={false}
+								onChange={(v) => { stt.mcp_server = v; }}
+							/>
+						</div>
+					</div>
+				{:else if isCloudSttProvider(audioSttProvider())}
+					<div class="form-row">
+						<label for="{card.prefix}-model">Model</label>
+						<div class="model-input-row">
+							<MaterialAutocomplete
+								id="{card.prefix}-model"
+								value={stt.model}
+								options={sttModelOptions(audioSttProvider())}
+								placeholder={sttModelPlaceholder(audioSttProvider())}
+								loading={modelFetching.stt}
+								onChange={(v) => { stt.model = v; }}
+								onFocus={() => scheduleSttFetch()}
+							/>
+						</div>
+					</div>
 				{/if}
-			</div>
-			<div class="form-row">
-				<label for="sm-temp">Temperature</label>
-				<MaterialNumberField id="sm-temp" value={llmConfig.small_model.temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig.small_model.temperature = v; }} />
-			</div>
+			{:else}
+				<div class="form-row">
+					<label for="{card.prefix}-model">Model</label>
+					<div class="model-input-row">
+						<MaterialAutocomplete
+							id="{card.prefix}-model"
+							value={llmConfig[card.key].model_name}
+							options={(modelsByKey[card.key] || []).map((m) => ({ value: m.id, label: m.name || m.id }))}
+							placeholder="Type or pick from fetched models"
+							loading={modelFetching[card.key]}
+							onChange={(v) => { llmConfig[card.key].model_name = v; }}
+							onFocus={() => scheduleFetch(card.key)}
+						/>
+					</div>
+				</div>
+			{/if}
+		<div class="form-row">
+			<label for="{card.prefix}-temp">Temperature</label>
+			<MaterialNumberField id="{card.prefix}-temp" value={llmConfig[card.key].temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig[card.key].temperature = v; }} />
+		</div>
+		<div class="form-row cost-row">
+			<label for="{card.prefix}-cost-in">Cost In ($/1K)</label>
+			<MaterialNumberField id="{card.prefix}-cost-in" value={llmConfig[card.key].cost_per_1k_input_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig[card.key].cost_per_1k_input_tokens = v; }} />
+			<span class="cost-sep">/</span>
+			<label for="{card.prefix}-cost-out">Out ($/1K)</label>
+			<MaterialNumberField id="{card.prefix}-cost-out" value={llmConfig[card.key].cost_per_1k_output_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig[card.key].cost_per_1k_output_tokens = v; }} />
+		</div>
+		<p class="cost-hint">USD per 1K tokens (input/output). Leave 0 to disable cost display for this model.</p>
+	</div>
+	{/snippet}
+
+		<h3 class="model-group-heading">Core Models</h3>
+		<div class="model-grid">
+			{#each coreModelCards as card}
+				{@render modelCard(card)}
+			{/each}
 		</div>
 
-		<div class="model-card">
-			<h3>Default Model</h3>
-			<p class="model-hint">Primary reasoning &amp; tool-use agent</p>
-			<div class="form-row">
-				<label for="dm-provider">Provider</label>
-				<input id="dm-provider" type="text" class="md-input" bind:value={llmConfig.default_model.provider} />
-			</div>
-			<div class="form-row">
-				<label for="dm-model">Model</label>
-				<input id="dm-model" type="text" class="md-input" bind:value={llmConfig.default_model.model_name} />
-			</div>
-			<div class="form-row">
-				<label for="dm-base-url">Base URL</label>
-				<input id="dm-base-url" type="text" class="md-input" bind:value={llmConfig.default_model.base_url} placeholder="https://api.openai.com/v1" />
-			</div>
-			<div class="form-row">
-				<label for="dm-api-key">API Key</label>
-				{#if keyConfigured.default_model}
-					<div class="key-status-row">
-						<StatusDot />
-						<span class="key-configured-label">Configured</span>
-						<button
-							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog('default_model', 'Default Model')}
-						>
-							Change
-						</button>
-					</div>
-				{:else}
-					<input id="dm-api-key" type="password" class="md-input" bind:value={llmConfig.default_model.api_key} placeholder="sk-..." />
-				{/if}
-			</div>
-			<div class="form-row">
-				<label for="dm-temp">Temperature</label>
-				<MaterialNumberField id="dm-temp" value={llmConfig.default_model.temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig.default_model.temperature = v; }} />
-			</div>
+		<h3 class="model-group-heading">Specialized Models</h3>
+		<div class="model-grid">
+			{#each specializedModelCards as card}
+				{@render modelCard(card)}
+			{/each}
 		</div>
 
-		<div class="model-card">
-			<h3>balanced model</h3>
-			<p class="model-hint">Used when Default Model is unavailable</p>
-			<div class="form-row">
-				<label for="bm-provider">Provider</label>
-				<input id="bm-provider" type="text" class="md-input" bind:value={llmConfig.balanced_model.provider} />
-			</div>
-			<div class="form-row">
-				<label for="bm-model">Model</label>
-				<input id="bm-model" type="text" class="md-input" bind:value={llmConfig.balanced_model.model_name} />
-			</div>
-			<div class="form-row">
-				<label for="bm-base-url">Base URL</label>
-				<input id="bm-base-url" type="text" class="md-input" bind:value={llmConfig.balanced_model.base_url} placeholder="http://localhost:11434" />
-			</div>
-			<div class="form-row">
-				<label for="bm-api-key">API Key</label>
-				{#if keyConfigured.balanced_model}
-					<div class="key-status-row">
-						<StatusDot />
-						<span class="key-configured-label">Configured</span>
-						<button
-							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog('balanced_model', 'balanced model')}
-						>
-							Change
-						</button>
-					</div>
-				{:else}
-					<input id="bm-api-key" type="password" class="md-input" bind:value={llmConfig.balanced_model.api_key} placeholder="sk-..." />
-				{/if}
-			</div>
-			<div class="form-row">
-				<label for="bm-temp">Temperature</label>
-				<MaterialNumberField id="bm-temp" value={llmConfig.balanced_model.temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig.balanced_model.temperature = v; }} />
-			</div>
+		<h3 class="routing-heading">Model Routing</h3>
+		<div class="form-row switch-row">
+			<span class="switch-label">Recording transcription uses the dedicated audio model</span>
+			<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(v) => { llmConfig.stt_use_audio_model = v; }} />
 		</div>
+		<div class="form-row switch-row">
+			<span class="switch-label">Image understanding uses the dedicated image model</span>
+			<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(v) => { llmConfig.vision_use_image_model = v; }} />
+		</div>
+		<p class="model-hint">Turn off to route recording transcription and image understanding through the Default Model instead.</p>
 	</div>
 
 	<div class="section">
@@ -399,17 +725,10 @@
 
 	<div class="section">
 		<h2>STT (Speech-to-Text)</h2>
-		<div class="form-row">
-			<label for="stt-provider">Provider</label>
-			<MaterialSelect id="stt-provider" value={stt.provider} options={[{ value: 'mcp', label: 'MCP Server' }, { value: 'llm', label: 'LLM Adapter' }, { value: 'none', label: 'None' }]} onChange={(v) => { stt.provider = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="stt-mcp-server">MCP Server Name</label>
-			<input id="stt-mcp-server" type="text" class="md-input" bind:value={stt.mcp_server} placeholder="e.g. stt-server" />
-		</div>
+		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 卡的 Provider 下拉框及其字段中完成。此处仅设置转写超时。</p>
 		<div class="form-row">
 			<label for="stt-timeout">Timeout (sec)</label>
-			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={120} onChange={(v) => { stt.timeout_secs = v; }} />
+			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(v) => { stt.timeout_secs = v; }} />
 		</div>
 	</div>
 
@@ -488,6 +807,7 @@
 						placeholder="#RRGGBB"
 						maxlength="7"
 						value={customAccentHex}
+						autocomplete="off"
 						oninput={(e) => {
 							const val = /** @type {HTMLInputElement} */(e.target).value;
 							customAccentHex = val;
@@ -599,15 +919,16 @@
 <MaterialDialog
 	open={keyChangeDialog.open}
 	onClose={() => { keyChangeDialog = { open: false, model: '', label: '' }; newKeyValue = ''; }}
-	title="Change API Key"
+	title={keyChangeDialog.model ? (keyConfigured[keyChangeDialog.model] ? 'Change API Key' : 'Set API Key') : 'API Key'}
 >
 	{#snippet children()}
-		<p class="dialog-hint">Enter a new API key for <strong>{keyChangeDialog.label}</strong>. The existing key will be replaced.</p>
+		<p class="dialog-hint">Enter the API key for <strong>{keyChangeDialog.label}</strong>.</p>
 		<input
 			type="password"
 			class="md-input"
 			bind:value={newKeyValue}
 			placeholder="sk-..."
+			autocomplete="new-password"
 		/>
 	{/snippet}
 	{#snippet footer()}
@@ -622,7 +943,7 @@
 </MaterialDialog>
 
 <style>
-	.settings-page { max-width: 800px; }
+	.settings-page { max-width: var(--md-sys-content-max-width); }
 	h1 { font-size: 24px; font-weight: 600; margin-bottom: var(--md-sys-space-xl); color: var(--md-sys-color-on-surface); }
 	.section {
 		background: var(--md-sys-color-surface-container);
@@ -640,12 +961,47 @@
 		border-radius: var(--md-sys-shape-medium); padding: var(--md-sys-space-md); margin-bottom: var(--md-sys-space-md);
 	}
 	.model-card h3 { font-size: 14px; font-weight: 600; color: var(--md-sys-color-primary); margin-bottom: var(--md-sys-space-md); }
+	.model-group-heading {
+		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
+		margin-top: var(--md-sys-space-lg); margin-bottom: var(--md-sys-space-sm);
+		text-transform: uppercase; letter-spacing: 0.5px;
+	}
+	.model-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+		gap: var(--md-sys-space-md);
+	}
+	.model-grid .model-card { margin-bottom: 0; }
+	.model-input-row { display: flex; align-items: center; gap: var(--md-sys-space-sm); flex: 1; min-width: 0; }
+	.model-input-row .md-input { flex: 1; min-width: 0; }
+	.routing-heading {
+		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
+		margin-top: var(--md-sys-space-lg); margin-bottom: var(--md-sys-space-sm);
+		text-transform: uppercase; letter-spacing: 0.5px;
+	}
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
 	.form-row {
 		display: flex; align-items: center; margin-bottom: var(--md-sys-space-sm); gap: var(--md-sys-space-md);
 	}
 	.form-row label,
 	.form-row .form-label { width: 120px; color: var(--md-sys-color-on-surface-variant); font-size: 13px; flex-shrink: 0; }
+
+	.cost-row {
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	.cost-row label { width: auto; font-size: 12px; }
+	.cost-row :global(.md-number-field) { width: 90px; flex-shrink: 0; }
+	.cost-sep {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 13px;
+	}
+	.cost-hint {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		margin-top: calc(-1 * var(--md-sys-space-xs));
+		margin-bottom: var(--md-sys-space-md);
+	}
 
 	.switch-row {
 		display: flex;
@@ -763,12 +1119,19 @@
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex: 1;
+		min-height: var(--md-comp-textfield-container-height);
 	}
 	.key-configured-label {
 		color: var(--md-sys-color-success);
 		font-size: 13px;
 		font-weight: 500;
 		flex: 1;
+	}
+	.key-status-row.key-not-configured {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.key-status-row.key-not-configured .key-configured-label {
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.dialog-hint {
 		color: var(--md-sys-color-on-surface-variant);

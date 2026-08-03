@@ -31,9 +31,9 @@
 		tabindex="0"
 		onclick={handleCancel}
 		onkeydown={handleOverlayKeydown}
-		in:fade={{ duration: 200, easing: cubicOut }}
+		in:fade={{ duration: 300, easing: cubicOut }}
 	>
-		<div class="dialog" role="presentation" tabindex="-1" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 300, easing: cubicOut }}>
+		<div class="dialog" role="presentation" tabindex="-1" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
 			<h3>High-Risk Operation</h3>
 			<div class="detail">
 				<div><strong>Tool:</strong> {toolName}</div>

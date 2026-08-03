@@ -26,7 +26,7 @@ impl Tool for ShellTool {
         "shell".into()
     }
     fn description(&self) -> String {
-        "Execute a shell command on the user's PC (cmd or powershell)".into()
+        "Execute a shell command on the user's PC".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -34,11 +34,15 @@ impl Tool for ShellTool {
     }
 
     fn input_schema(&self) -> Value {
+        #[cfg(windows)]
+        let shells = ["cmd", "powershell"];
+        #[cfg(not(windows))]
+        let shells = ["sh", "bash"];
         serde_json::json!({
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "Shell command to execute" },
-                "shell": { "type": "string", "enum": ["cmd", "powershell"], "description": "Which shell to run the command in", "default": "cmd" },
+                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in" },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
                 "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately", "default": false }
             },
@@ -52,7 +56,10 @@ impl Tool for ShellTool {
             anyhow::bail!("command is required");
         }
         let silent = input["silent"].as_bool().unwrap_or(false);
+        #[cfg(windows)]
         let shell = input["shell"].as_str().unwrap_or("cmd");
+        #[cfg(not(windows))]
+        let shell = input["shell"].as_str().unwrap_or("sh");
         let max_chars = self.max_output_chars();
 
         if cancel.is_cancelled() {
@@ -176,8 +183,16 @@ mod tests {
         assert!(req.contains(&"command"));
         let shell_enum = schema["properties"]["shell"]["enum"].as_array().unwrap();
         let shells: Vec<&str> = shell_enum.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(shells.contains(&"cmd"));
-        assert!(shells.contains(&"powershell"));
+        #[cfg(windows)]
+        {
+            assert!(shells.contains(&"cmd"));
+            assert!(shells.contains(&"powershell"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(shells.contains(&"sh"));
+            assert!(shells.contains(&"bash"));
+        }
     }
 
     #[cfg(windows)]

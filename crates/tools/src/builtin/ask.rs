@@ -35,7 +35,12 @@ impl Tool for AskTool {
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "The question to ask the human. Be specific and concise; list the options if there is a choice to make."
+                    "description": "The question to ask the human. Be specific and concise."
+                },
+                "options": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional short suggested answers. Each becomes a quick-reply button, so keep them terse (a few words)."
                 },
                 "context": {
                     "type": "string",
@@ -59,6 +64,15 @@ impl Tool for AskTool {
             anyhow::bail!("question must not be empty");
         }
         let context = input["context"].as_str().map(|s| s.to_string());
+        let options: Vec<String> = input["options"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // The `ask` flag is the signal the ReAct loop keys on to pause the
         // task and wait for the user's reply (delivered as a supplement).
@@ -66,6 +80,7 @@ impl Tool for AskTool {
             "ask": true,
             "question": question,
             "context": context,
+            "options": options,
             "awaiting_answer": true,
             "hint": "The task is paused. The user's next message will be used as the answer and the task will resume.",
         })))
@@ -112,6 +127,19 @@ mod tests {
         assert_eq!(result.output["question"], "Which file?");
         assert_eq!(result.output["context"], "two candidates");
         assert_eq!(result.output["awaiting_answer"], true);
+        assert_eq!(result.output["options"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn test_ask_with_options() {
+        let result = AskTool
+            .execute(
+                json!({"question": "which?", "options": ["A", "B", ""]}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["options"], serde_json::json!(["A", "B"]));
     }
 
     #[tokio::test]

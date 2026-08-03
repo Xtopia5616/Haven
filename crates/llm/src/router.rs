@@ -5,20 +5,24 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::client::{HttpLlmClient, LlmClient, with_retry};
+use crate::adapters::adapter_for;
+use crate::client::{LlmClient, with_retry};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
 use crate::types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
     ToolDefinition,
 };
 use futures_util::StreamExt;
-use haven_common::config::LlmConfig;
+use haven_common::config::{LlmConfig, compute_cost_usd};
 use tokio::sync::mpsc;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointRole {
+    SmallModel,
     DefaultModel,
     BalancedModel,
+    ImageModel,
+    AudioModel,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,59 +159,177 @@ impl EndpointHealth {
 
 pub struct LlmRouter {
     config: Arc<RwLock<LlmConfig>>,
+    pub small_model: Arc<dyn LlmClient>,
     pub default_model: Arc<dyn LlmClient>,
     pub balanced_model: Arc<dyn LlmClient>,
+    pub image_model: Arc<dyn LlmClient>,
+    pub audio_model: Arc<dyn LlmClient>,
     balanced_model_active: AtomicBool,
-    // §5.3: per-endpoint health (index 0 = default_model, 1 = balanced_model)
-    health: RwLock<[EndpointHealth; 2]>,
+    // §5.3: per-endpoint health (index: 0=SmallModel, 1=DefaultModel, 2=BalancedModel, 3=ImageModel, 4=AudioModel)
+    health: RwLock<[EndpointHealth; 5]>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
 }
 
 impl LlmRouter {
     pub fn new(config: LlmConfig) -> Self {
-        let default_model = Arc::new(HttpLlmClient::new(config.default_model.clone()));
-        let balanced_model = Arc::new(HttpLlmClient::new(config.balanced_model.clone()));
+        let small_model = Arc::from(adapter_for(&config.small_model));
+        let default_model = Arc::from(adapter_for(&config.default_model));
+        let balanced_model = Arc::from(adapter_for(&config.balanced_model));
+        let image_model = Arc::from(adapter_for(&config.image_model));
+        let audio_model = Arc::from(adapter_for(&config.audio_model));
         Self {
             config: Arc::new(RwLock::new(config)),
+            small_model,
             default_model,
             balanced_model,
+            image_model,
+            audio_model,
             balanced_model_active: AtomicBool::new(false),
-            health: RwLock::new([EndpointHealth::new(), EndpointHealth::new()]),
+            health: RwLock::new([
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+            ]),
             stream_rules: RwLock::new(Vec::new()),
         }
     }
 
     pub fn new_with_clients(
+        small_model: Arc<dyn LlmClient>,
         default_model: Arc<dyn LlmClient>,
         balanced_model: Arc<dyn LlmClient>,
+        image_model: Arc<dyn LlmClient>,
+        audio_model: Arc<dyn LlmClient>,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(LlmConfig::default())),
+            small_model,
             default_model,
             balanced_model,
+            image_model,
+            audio_model,
             balanced_model_active: AtomicBool::new(false),
-            health: RwLock::new([EndpointHealth::new(), EndpointHealth::new()]),
+            health: RwLock::new([
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+                EndpointHealth::new(),
+            ]),
             stream_rules: RwLock::new(Vec::new()),
         }
     }
 
     pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
         match role {
+            EndpointRole::SmallModel => self.small_model.clone(),
             EndpointRole::DefaultModel => self.default_model.clone(),
             EndpointRole::BalancedModel => self.balanced_model.clone(),
+            EndpointRole::ImageModel => self.image_model.clone(),
+            EndpointRole::AudioModel => self.audio_model.clone(),
         }
     }
 
     fn health_index(role: &EndpointRole) -> usize {
         match role {
-            EndpointRole::DefaultModel => 0,
-            EndpointRole::BalancedModel => 1,
+            EndpointRole::SmallModel => 0,
+            EndpointRole::DefaultModel => 1,
+            EndpointRole::BalancedModel => 2,
+            EndpointRole::ImageModel => 3,
+            EndpointRole::AudioModel => 4,
+        }
+    }
+
+    /// Returns true if the role has a non-empty api_key configured.
+    /// Used by tools that should no-op gracefully when an endpoint is not set up.
+    pub async fn is_role_configured(&self, role: EndpointRole) -> bool {
+        let cfg = self.config.read().await;
+        match role {
+            EndpointRole::SmallModel => !cfg.small_model.api_key.is_empty(),
+            EndpointRole::DefaultModel => !cfg.default_model.api_key.is_empty(),
+            EndpointRole::BalancedModel => !cfg.balanced_model.api_key.is_empty(),
+            EndpointRole::ImageModel => !cfg.image_model.api_key.is_empty(),
+            EndpointRole::AudioModel => !cfg.audio_model.api_key.is_empty(),
         }
     }
 
     fn health(&self, role: &EndpointRole) -> usize {
         Self::health_index(role)
+    }
+
+    /// Test utility: force the configured state of a role (empty vs non-empty
+    /// api_key). `new_with_clients` builds with a default config where all
+    /// keys are empty; cross-crate tests that exercise `is_role_configured`
+    /// guards use this to simulate a configured endpoint.
+    #[doc(hidden)]
+    pub async fn force_role_configured(&self, role: EndpointRole, configured: bool) {
+        let mut cfg = self.config.write().await;
+        let key = if configured {
+            "sk-test".to_string()
+        } else {
+            String::new()
+        };
+        match role {
+            EndpointRole::SmallModel => cfg.small_model.api_key = key,
+            EndpointRole::DefaultModel => cfg.default_model.api_key = key,
+            EndpointRole::BalancedModel => cfg.balanced_model.api_key = key,
+            EndpointRole::ImageModel => cfg.image_model.api_key = key,
+            EndpointRole::AudioModel => cfg.audio_model.api_key = key,
+        }
+    }
+
+    /// Test utility: set the routing flags (`stt_use_audio_model`,
+    /// `vision_use_image_model`).
+    #[doc(hidden)]
+    pub async fn force_routing_flags(
+        &self,
+        stt_use_audio_model: bool,
+        vision_use_image_model: bool,
+    ) {
+        let mut cfg = self.config.write().await;
+        cfg.stt_use_audio_model = stt_use_audio_model;
+        cfg.vision_use_image_model = vision_use_image_model;
+    }
+
+    /// Resolve the endpoint role used for speech-to-text transcription.
+    /// Returns `Some(AudioModel)` when `stt_use_audio_model` is enabled and
+    /// the audio_model endpoint is configured; `None` when the flag is enabled
+    /// but the endpoint is missing (callers should surface a setup hint); and
+    /// `Some(DefaultModel)` when the flag is disabled.
+    pub async fn stt_role(&self) -> Option<EndpointRole> {
+        let cfg = self.config.read().await;
+        if cfg.stt_use_audio_model {
+            if cfg.audio_model.api_key.is_empty() {
+                None
+            } else {
+                Some(EndpointRole::AudioModel)
+            }
+        } else {
+            Some(EndpointRole::DefaultModel)
+        }
+    }
+
+    /// Resolve the endpoint role for image understanding in chat: the
+    /// dedicated image_model when `vision_use_image_model` is enabled and the
+    /// endpoint is configured, otherwise the default model.
+    pub async fn vision_role(&self) -> EndpointRole {
+        let cfg = self.config.read().await;
+        if cfg.vision_use_image_model && !cfg.image_model.api_key.is_empty() {
+            EndpointRole::ImageModel
+        } else {
+            EndpointRole::DefaultModel
+        }
+    }
+
+    /// Whether image understanding should prefer the dedicated image_model
+    /// slot. Tools that maintain their own legacy fallback chains use this
+    /// instead of `vision_role`.
+    pub async fn vision_dedicated_enabled(&self) -> bool {
+        let cfg = self.config.read().await;
+        cfg.vision_use_image_model
     }
 
     // §2.6: check circuit breaker before dispatching
@@ -460,6 +582,7 @@ impl LlmRouter {
                         content: vec![ContentPart::text(inject)],
                         tool_call_id: None,
                         tool_calls: None,
+                        reasoning: None,
                     });
                     Self::aggregate_stream_cancellable(
                         primary,
@@ -658,6 +781,30 @@ impl LlmRouter {
         endpoint.health_check().await
     }
 
+    pub async fn config(&self) -> tokio::sync::RwLockReadGuard<'_, LlmConfig> {
+        self.config.read().await
+    }
+
+    /// Compute USD cost for a given role + token counts based on the
+    /// currently configured `cost_per_1k_*` rates. Returns `None` when the
+    /// role is unpriced (both rates zero).
+    pub async fn compute_cost(
+        &self,
+        role: EndpointRole,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    ) -> Option<f64> {
+        let cfg = self.config.read().await;
+        let endpoint = match role {
+            EndpointRole::SmallModel => &cfg.small_model,
+            EndpointRole::DefaultModel => &cfg.default_model,
+            EndpointRole::BalancedModel => &cfg.balanced_model,
+            EndpointRole::ImageModel => &cfg.image_model,
+            EndpointRole::AudioModel => &cfg.audio_model,
+        };
+        compute_cost_usd(endpoint, prompt_tokens, completion_tokens)
+    }
+
     pub fn balanced_model_active(&self) -> bool {
         self.balanced_model_active.load(Ordering::SeqCst)
     }
@@ -759,8 +906,42 @@ mod tests {
     fn router_selects_correct_endpoint() {
         let cfg = LlmConfig::default();
         let router = LlmRouter::new(cfg);
+        let _sm = router.select_endpoint(EndpointRole::SmallModel);
         let _re = router.select_endpoint(EndpointRole::DefaultModel);
         let _fa = router.select_endpoint(EndpointRole::BalancedModel);
+        let _mm = router.select_endpoint(EndpointRole::ImageModel);
+        let _au = router.select_endpoint(EndpointRole::AudioModel);
+    }
+
+    #[tokio::test]
+    async fn is_role_configured_reports_api_key_state() {
+        let mut cfg = LlmConfig::default();
+        cfg.small_model.api_key = "sk-test".into();
+        cfg.default_model.api_key = String::new();
+        cfg.balanced_model.api_key = "sk-bal".into();
+        cfg.image_model.api_key = "sk-mm".into();
+        cfg.audio_model.api_key = "sk-au".into();
+        let router = LlmRouter::new(cfg);
+        assert!(
+            router.is_role_configured(EndpointRole::SmallModel).await,
+            "small_model api_key is set"
+        );
+        assert!(
+            !router.is_role_configured(EndpointRole::DefaultModel).await,
+            "default_model api_key is empty"
+        );
+        assert!(
+            router.is_role_configured(EndpointRole::BalancedModel).await,
+            "balanced_model api_key is set"
+        );
+        assert!(
+            router.is_role_configured(EndpointRole::ImageModel).await,
+            "image_model api_key is set"
+        );
+        assert!(
+            router.is_role_configured(EndpointRole::AudioModel).await,
+            "audio_model api_key is set"
+        );
     }
 
     #[tokio::test]
@@ -814,7 +995,13 @@ mod tests {
             chunks,
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
 
         use std::sync::Arc as StdArc;
         use std::sync::Mutex as StdMutex;
@@ -868,7 +1055,13 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
-        let router = LlmRouter::new_with_clients(failing, ok);
+        let router = LlmRouter::new_with_clients(
+            failing.clone(),
+            failing.clone(),
+            ok.clone(),
+            ok.clone(),
+            ok,
+        );
 
         let resp = router
             .chat(EndpointRole::DefaultModel, Vec::new())
@@ -876,6 +1069,42 @@ mod tests {
             .expect("balanced model should succeed");
         assert_eq!(resp.text, "mock response");
         assert!(router.balanced_model_active());
+    }
+
+    #[tokio::test]
+    async fn chat_small_model_uses_small_model_endpoint() {
+        // Small model role should be routed to the small_model slot, and the
+        // balanced model should NOT be activated when it succeeds.
+        let small = Arc::new(MockStreamClient {
+            chunks: Vec::new(),
+            fail_chat: false,
+        }) as Arc<dyn LlmClient>;
+        let default = Arc::new(MockStreamClient {
+            chunks: Vec::new(),
+            fail_chat: true,
+        }) as Arc<dyn LlmClient>;
+        let balanced = Arc::new(MockStreamClient {
+            chunks: Vec::new(),
+            fail_chat: true,
+        }) as Arc<dyn LlmClient>;
+
+        let router = LlmRouter::new_with_clients(
+            small,
+            default,
+            balanced.clone(),
+            balanced.clone(),
+            balanced,
+        );
+
+        let resp = router
+            .chat(EndpointRole::SmallModel, Vec::new())
+            .await
+            .expect("small_model should succeed");
+        assert_eq!(resp.text, "mock response");
+        assert!(
+            !router.balanced_model_active(),
+            "small_model succeeded directly; balanced model should not be active"
+        );
     }
 
     #[tokio::test]
@@ -896,7 +1125,13 @@ mod tests {
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
 
-        let router = LlmRouter::new_with_clients(failing, ok);
+        let router = LlmRouter::new_with_clients(
+            failing.clone(),
+            failing.clone(),
+            ok.clone(),
+            ok.clone(),
+            ok,
+        );
 
         // First 3 calls should fail and trigger circuit breaker
         for _ in 0..3 {
@@ -1067,7 +1302,13 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let result = router.health_check(EndpointRole::DefaultModel).await;
         assert!(result.is_ok());
     }
@@ -1078,7 +1319,13 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let rule = StreamRule::new(
             "forbidden",
             r"secret_key",
@@ -1098,8 +1345,11 @@ mod tests {
 
     #[test]
     fn endpoint_role_health_index_mapping() {
-        assert_eq!(LlmRouter::health_index(&EndpointRole::DefaultModel), 0);
-        assert_eq!(LlmRouter::health_index(&EndpointRole::BalancedModel), 1);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::SmallModel), 0);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::DefaultModel), 1);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::BalancedModel), 2);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::ImageModel), 3);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::AudioModel), 4);
     }
 
     #[tokio::test]
@@ -1108,7 +1358,13 @@ mod tests {
             chunks: vec![],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let resp = router
             .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, vec![], vec![], |_| {})
             .await
@@ -1134,7 +1390,13 @@ mod tests {
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(failing, ok);
+        let router = LlmRouter::new_with_clients(
+            failing.clone(),
+            failing.clone(),
+            ok.clone(),
+            ok.clone(),
+            ok,
+        );
         let resp = router.chat_stream(EndpointRole::DefaultModel, vec![]).await;
         assert!(resp.is_ok());
         assert!(router.balanced_model_active());
@@ -1153,7 +1415,13 @@ mod tests {
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
-        let router = LlmRouter::new_with_clients(client.clone(), client);
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
         let result = router.chat_stream(EndpointRole::DefaultModel, vec![]).await;
         assert!(result.is_ok());
         assert!(!router.balanced_model_active());
