@@ -56,10 +56,10 @@ impl Database {
 
     pub fn cache_get_messages(
         &self,
-        session_id: &str,
+        task_id: &str,
     ) -> Option<Vec<crate::repositories::messages::Message>> {
         let cache = self.cache.lock().ok()?;
-        let entry = cache.get(session_id)?.messages.as_ref()?;
+        let entry = cache.get(task_id)?.messages.as_ref()?;
         if entry.expiry > Instant::now() {
             Some(entry.data.clone())
         } else {
@@ -80,13 +80,13 @@ impl Database {
 
     pub fn cache_put_messages(
         &self,
-        session_id: &str,
+        task_id: &str,
         data: Vec<crate::repositories::messages::Message>,
         ttl_secs: u64,
         expected_gen: u64,
     ) {
         if let Ok(mut cache) = self.cache.lock() {
-            let qc = cache.entry(session_id.to_string()).or_insert(QueryCache {
+            let qc = cache.entry(task_id.to_string()).or_insert(QueryCache {
                 messages: None,
                 tasks: None,
                 facts: None,
@@ -171,9 +171,9 @@ impl Database {
         }
     }
 
-    pub fn cache_invalidate_messages(&self, session_id: &str) {
+    pub fn cache_invalidate_messages(&self, task_id: &str) {
         if let Ok(mut cache) = self.cache.lock()
-            && let Some(qc) = cache.get_mut(session_id)
+            && let Some(qc) = cache.get_mut(task_id)
         {
             qc.messages = None;
             qc.generation = qc.generation.wrapping_add(1);
@@ -206,10 +206,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    fn make_msg(id: &str, session_id: &str) -> crate::repositories::messages::Message {
+    fn make_msg(id: &str, task_id: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
             id: id.into(),
-            session_id: session_id.into(),
+            task_id: task_id.into(),
             role: "user".into(),
             content: format!("content-{}", id),
             message_type: Some("text".into()),
@@ -225,7 +225,6 @@ mod tests {
     fn make_task(id: &str) -> crate::repositories::tasks::Task {
         crate::repositories::tasks::Task {
             id: id.into(),
-            session_id: None,
             input_text: format!("input-{}", id),
             title: None,
             status: "pending".into(),
@@ -233,6 +232,7 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".into(),
             transcript: "".into(),
             react_state: None,
+            parent_task_id: None,
         }
     }
 

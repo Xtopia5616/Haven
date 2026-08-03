@@ -1,0 +1,294 @@
+﻿//! Capture engine: a single long-lived thread that owns the exclusive-mode
+//! capture backend and the ring buffer, and serves the recording loop's
+//! drain requests.
+//!
+//! **Mode policy** — WASAPI exclusive mode is the only capture path: it
+//! talks directly to the device, bypassing the Windows audio effects chain
+//! (enhancement APOs) whose bugs intermittently deliver digital silence
+//! (e.g. the Elevoc/ELEVO AI noise-suppression APO found on many laptops).
+//! Shared mode is deliberately not used: a shared-mode stream that has run
+//! once in a process poisons exclusive-mode capture for the rest of that
+//! process (see `backend` module docs).
+//!
+//! **Silent-capture detection** — if the first [`SILENCE_CHECK_DELAY`] of a
+//! recording is pure digital silence (the device delivered no signal at
+//! all), the engine aborts the recording immediately and sets
+//! `silent_abort`. The pipeline surfaces this as an error and the request is
+//! never sent, instead of shipping an all-zero recording.
+//!
+//! Responsibilities:
+//!
+//! - **Lifecycle** — open/close the capture backend on `Start` / `Stop`.
+//!   The exclusive backend runs only while recording because it monopolizes
+//!   the device.
+//! - **Ring feeding** — the engine polls the device via `pull` between
+//!   commands, converting raw audio to mono 16 kHz f32 in the ring.
+//! - **Fatal errors** — device loss sets `stream_failed` so the recording
+//!   loop stops early (L7) instead of draining a dead ring.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, mpsc};
+use std::time::{Duration, Instant};
+
+use anyhow::{Result, anyhow};
+
+use backend::{CaptureSignals, ExclusiveBackend};
+
+mod backend;
+mod resample;
+mod ring;
+
+pub use backend::{SIGNAL_FLOOR, TARGET_SAMPLE_RATE};
+pub use resample::{Resampler, downmix};
+pub use ring::RingBuffer;
+
+/// Upper bound for a command round-trip. The engine answers in microseconds;
+/// the timeout only guards against a dead engine thread.
+const CMD_TIMEOUT: Duration = Duration::from_secs(2);
+/// Engine command-channel poll cadence.
+const MONITOR_INTERVAL: Duration = Duration::from_millis(20);
+/// How much of a fresh recording is observed before deciding the capture is
+/// delivering pure digital silence and aborting with an error.
+const SILENCE_CHECK_DELAY: Duration = Duration::from_millis(400);
+/// Ring capacity: 20 seconds of 16 kHz mono.
+const RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 20;
+
+enum EngineCommand {
+    Start(tokio::sync::oneshot::Sender<Result<()>>),
+    StopAndDrain(tokio::sync::oneshot::Sender<Vec<f32>>),
+    StopAndClear,
+    Drain(tokio::sync::oneshot::Sender<Vec<f32>>),
+}
+
+/// Client-side handle to the engine thread.
+#[derive(Clone)]
+pub struct EngineHandle {
+    cmd_tx: mpsc::Sender<EngineCommand>,
+    /// Set on a fatal stream error; the recording loop stops early when it
+    /// observes it (instead of draining a dead ring until max duration).
+    pub stream_failed: Arc<AtomicBool>,
+    /// Set when the engine aborts a recording because the capture delivered
+    /// pure digital silence for the opening [`SILENCE_CHECK_DELAY`]. The
+    /// pipeline turns this into an error and never sends the request.
+    pub silent_abort: Arc<AtomicBool>,
+}
+
+impl EngineHandle {
+    /// Open the exclusive capture backend and clear the ring.
+    pub async fn start(&self) -> Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(EngineCommand::Start(tx))
+            .is_err()
+        {
+            return Err(anyhow!("capture engine is gone"));
+        }
+        match tokio::time::timeout(CMD_TIMEOUT, rx).await {
+            Ok(Ok(Ok(()))) => Ok(()),
+            Ok(Ok(Err(e))) => Err(e),
+            _ => Err(anyhow!("capture engine did not respond to start")),
+        }
+    }
+
+    pub async fn drain(&self) -> Vec<f32> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.cmd_tx.send(EngineCommand::Drain(tx)).is_err() {
+            return Vec::new();
+        }
+        tokio::time::timeout(CMD_TIMEOUT, rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default()
+    }
+
+    /// Stop the exclusive backend (releasing the device), drain the ring and
+    /// report the final tail.
+    pub async fn stop_and_drain(&self) -> Result<Vec<f32>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.cmd_tx.send(EngineCommand::StopAndDrain(tx)).is_err() {
+            return Ok(Vec::new());
+        }
+        let data = tokio::time::timeout(CMD_TIMEOUT, rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        Ok(data)
+    }
+
+    /// Cancel path: stop the exclusive backend and drop the ring contents.
+    pub fn stop_and_clear(&self) {
+        let _ = self.cmd_tx.send(EngineCommand::StopAndClear);
+    }
+}
+
+/// Spawn the capture engine thread.
+pub fn spawn_engine() -> Result<EngineHandle> {
+    let ring = Arc::new(StdMutex::new(RingBuffer::new(RING_CAPACITY)));
+    let stream_failed = Arc::new(AtomicBool::new(false));
+    let silent_abort = Arc::new(AtomicBool::new(false));
+
+    let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>();
+    let handle = EngineHandle {
+        cmd_tx: cmd_tx.clone(),
+        stream_failed: stream_failed.clone(),
+        silent_abort: silent_abort.clone(),
+    };
+
+    std::thread::Builder::new()
+        .name("haven-audio-engine".into())
+        .spawn(move || {
+            let _ = wasapi::initialize_mta();
+            let mut engine = Engine {
+                ring,
+                backend: None,
+                signals: CaptureSignals::new(),
+                out_failed: stream_failed,
+                out_silent_abort: silent_abort,
+                recording: false,
+                started_at: None,
+                silent_checked: false,
+            };
+            loop {
+                match cmd_rx.recv_timeout(MONITOR_INTERVAL) {
+                    Ok(cmd) => match cmd {
+                        EngineCommand::Start(reply) => {
+                            engine.cmd_start(reply);
+                        }
+                        EngineCommand::Drain(tx) => {
+                            let data = engine.ring.lock().expect("ring lock poisoned").drain();
+                            let _ = tx.send(data);
+                        }
+                        EngineCommand::StopAndDrain(tx) => {
+                            let data = engine.cmd_stop_and_drain();
+                            let _ = tx.send(data);
+                        }
+                        EngineCommand::StopAndClear => {
+                            engine.cmd_stop_and_clear();
+                        }
+                    },
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        engine.teardown();
+                        return;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        engine.poll_timeout();
+                    }
+                }
+            }
+        })
+        .map_err(|e| anyhow!("failed to spawn capture engine: {e}"))?;
+
+    Ok(handle)
+}
+
+struct Engine {
+    ring: Arc<StdMutex<RingBuffer>>,
+    backend: Option<ExclusiveBackend>,
+    signals: CaptureSignals,
+    /// Stable; exposed on the handle (L7).
+    out_failed: Arc<AtomicBool>,
+    /// Stable; exposed on the handle (silent-capture abort).
+    out_silent_abort: Arc<AtomicBool>,
+    recording: bool,
+    started_at: Option<Instant>,
+    silent_checked: bool,
+}
+
+impl Engine {
+    fn cmd_start(&mut self, reply: tokio::sync::oneshot::Sender<Result<()>>) {
+        // Release any leftover session before opening a new one.
+        if let Some(mut backend) = self.backend.take() {
+            let _ = backend.stop();
+        }
+        self.signals = Self::new_signals(&self.out_failed);
+        self.ring.lock().expect("ring lock poisoned").clear();
+        self.out_failed.store(false, Ordering::SeqCst);
+        self.out_silent_abort.store(false, Ordering::SeqCst);
+
+        let result = ExclusiveBackend::new(self.ring.clone(), self.signals.clone())
+            .and_then(|mut b| b.start().map(|_| b));
+        match result {
+            Ok(backend) => {
+                self.backend = Some(backend);
+                self.recording = true;
+                self.started_at = Some(Instant::now());
+                self.silent_checked = false;
+                tracing::info!("recording started via exclusive capture");
+                let _ = reply.send(Ok(()));
+            }
+            Err(e) => {
+                tracing::error!("exclusive capture start failed: {e:#}");
+                self.recording = false;
+                let _ = reply.send(Err(e));
+            }
+        }
+    }
+
+    fn cmd_stop_and_drain(&mut self) -> Vec<f32> {
+        // Release the exclusive backend immediately (it monopolizes the
+        // device).
+        if let Some(mut backend) = self.backend.take() {
+            let _ = backend.stop();
+        }
+        self.recording = false;
+        self.started_at = None;
+        self.out_failed.store(false, Ordering::SeqCst);
+        self.ring.lock().expect("ring lock poisoned").drain()
+    }
+
+    fn cmd_stop_and_clear(&mut self) {
+        if let Some(mut backend) = self.backend.take() {
+            let _ = backend.stop();
+        }
+        self.recording = false;
+        self.started_at = None;
+        self.out_failed.store(false, Ordering::SeqCst);
+        self.ring.lock().expect("ring lock poisoned").clear();
+    }
+
+    /// Background work between commands: feed the ring and run the
+    /// silent-capture check.
+    fn poll_timeout(&mut self) {
+        // Exclusive mode is pulled by the engine thread: read whatever the
+        // device has delivered since the last poll.
+        if let Some(backend) = self.backend.as_mut()
+            && let Err(e) = backend.pull() {
+                tracing::error!("capture pull failed: {e:#}");
+                self.out_failed.store(true, Ordering::SeqCst);
+                if let Some(mut backend) = self.backend.take() {
+                    let _ = backend.stop();
+                }
+            }
+
+        if self.recording && !self.silent_checked
+            && let Some(started) = self.started_at
+                && started.elapsed() >= SILENCE_CHECK_DELAY {
+                    self.silent_checked = true;
+                    if !self.signals.has_signal.load(Ordering::SeqCst) {
+                        tracing::error!(
+                            "capture delivered no signal in the first {}ms; aborting recording",
+                            SILENCE_CHECK_DELAY.as_millis()
+                        );
+                        self.out_silent_abort.store(true, Ordering::SeqCst);
+                        self.recording = false;
+                        self.started_at = None;
+                        if let Some(mut backend) = self.backend.take() {
+                            let _ = backend.stop();
+                        }
+                    }
+                }
+    }
+
+    fn teardown(&mut self) {
+        if let Some(mut backend) = self.backend.take() {
+            let _ = backend.stop();
+        }
+    }
+
+    fn new_signals(_out_failed: &Arc<AtomicBool>) -> CaptureSignals {
+        CaptureSignals::new()
+    }
+}

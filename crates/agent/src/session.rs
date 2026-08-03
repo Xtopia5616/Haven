@@ -11,13 +11,9 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(db: Arc<Database>, session_window_size: usize) -> Self {
-        let session_id = db
-            .get_or_create_active_session()
-            .map(|s| s.id)
-            .unwrap_or_else(|_| "default".to_string());
         Self {
             db,
-            session_id: Mutex::new(session_id),
+            session_id: Mutex::new("default".to_string()),
             session_window_size,
         }
     }
@@ -124,14 +120,17 @@ mod tests {
     }
 
     #[test]
-    fn new_creates_active_session() {
+    fn new_starts_with_default_session() {
         let db = test_db();
         let sm = SessionManager::new(db.clone(), 10);
-        let id = sm.current_session_id();
+        // Startup no longer pre-loads an active session from DB — that path
+        // would resurrect orphans from crashed runs and pollute history.
+        assert_eq!(sm.current_session_id(), "default");
+        // First ensure_session lazily creates one and caches it.
+        let id = sm.ensure_session();
         assert!(!id.is_empty());
         assert_ne!(id, "default");
-        // DB now has one active session matching the id.
-        assert_eq!(db.get_or_create_active_session().unwrap().id, id);
+        assert_eq!(sm.ensure_session(), id);
     }
 
     #[test]
@@ -148,7 +147,8 @@ mod tests {
     fn start_new_session_closes_previous_and_switches() {
         let db = test_db();
         let sm = SessionManager::new(db.clone(), 10);
-        let first = sm.current_session_id();
+        // Lazily create the first session so we have a real id to close later.
+        let first = sm.ensure_session();
         let second = sm.start_new_session().unwrap();
         assert_ne!(first, second);
         assert_eq!(sm.current_session_id(), second);
@@ -162,6 +162,7 @@ mod tests {
     fn persist_and_load_conversation_history() {
         let db = test_db();
         let sm = SessionManager::new(db, 10);
+        sm.ensure_session();
         sm.persist_message("user", "hello there", None);
         sm.persist_message("assistant", "hi back", None);
         let history = sm.load_conversation_history();
@@ -174,6 +175,7 @@ mod tests {
     fn load_conversation_history_respects_window_size() {
         let db = test_db();
         let sm = SessionManager::new(db, 2);
+        sm.ensure_session();
         sm.persist_message("user", "msg1", None);
         sm.persist_message("user", "msg2", None);
         sm.persist_message("user", "msg3", None);
@@ -187,10 +189,8 @@ mod tests {
     fn switch_to_session_updates_current_id() {
         let db = test_db();
         let sm = SessionManager::new(db, 10);
-        let before = sm.current_session_id();
         sm.switch_to_session("custom-session-id");
         assert_eq!(sm.current_session_id(), "custom-session-id");
-        assert_ne!(before, "custom-session-id");
     }
 
     #[test]

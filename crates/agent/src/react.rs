@@ -181,6 +181,10 @@ impl ReActEngine {
         let max_steps = *self.max_steps.lock().unwrap();
         let mut last_step = start_step.saturating_sub(1);
         let session_id = sessions.current_session_id();
+        // Guard so an empty model response is retried at most once per task.
+        // Initialized outside the step loop so the assignment below is read by
+        // later iterations (keeps the lint clean).
+        let mut retried_empty = false;
 
         for step_num in start_step..=max_steps {
             last_step = step_num;
@@ -589,7 +593,51 @@ impl ReActEngine {
                     .await;
             }
 
-            let (thought, actions) = Self::parse_default_model_response(&response, step_num);
+            let (mut thought, mut actions) = Self::parse_default_model_response(&response, step_num);
+
+            // A completely empty model response (no text, no reasoning, no
+            // tool calls) is almost always a transient upstream glitch. Retry
+            // the same context once before concluding the model decided
+            // nothing — otherwise the task would instantly "complete" with a
+            // "No action decided." message and pause without answering.
+            if thought.is_none() && actions.is_empty() && !retried_empty {
+                retried_empty = true;
+                tracing::warn!(
+                    "ReAct step {} task {} model returned an empty response; retrying once",
+                    step_num,
+                    task_id
+                );
+                match router
+                    .chat_stream_with_tools_aggregated(
+                        role,
+                        haven_llm::types::convert_to_llm(canonical.clone()),
+                        tools.to_vec(),
+                        |_| {},
+                    )
+                    .await
+                {
+                    Ok(retry_resp) => {
+                        let (t2, a2) = Self::parse_default_model_response(&retry_resp, step_num);
+                        if t2.is_some() || !a2.is_empty() {
+                            thought = t2;
+                            actions = a2;
+                        } else {
+                            tracing::warn!(
+                                "ReAct step {} retry also returned an empty response",
+                                step_num
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "ReAct step {} empty-response retry failed: {}",
+                            step_num,
+                            e
+                        );
+                    }
+                }
+            }
+
             tracing::trace!(
                 "ReAct step {} parsed: thought={}, actions={}",
                 step_num,

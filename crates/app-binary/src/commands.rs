@@ -3,7 +3,7 @@ use crate::events::*;
 use haven_common::McpServerConfig;
 use haven_common::config::{LlmConfig, ModelEndpoint};
 use haven_common::types::RiskLevel;
-use haven_input::RecordingReason;
+use haven_input::{RecordingReason, RecordingResult};
 use haven_llm::LlmRouter;
 use haven_llm::{ModelInfo, ModelRegistry};
 use haven_memory::repositories::messages::Message;
@@ -96,22 +96,137 @@ async fn hot_swap_router(state: &AppState, new_router: Arc<LlmRouter>) -> Result
     Ok(())
 }
 
+/// Transcribe a captured recording, emit `transcription:result` /
+/// `transcription:error`, and auto-submit non-empty transcripts to the agent
+/// in the background.
+///
+/// Shared by the `stop_recording` Tauri command and the shell hotkey/VAD stop
+/// path (`HavenShellHandler::on_recording_stop`), so both surfaces behave
+/// identically — previously the shell path silently dropped the transcript.
+///
+/// The agent submission runs on a background task: the caller (the Tauri
+/// command, whose UI promise stays pending) returns as soon as the recording
+/// is finalized, and rapid re-recordings never run two concurrent ReAct loops
+/// inline on the same command path.
+pub(crate) async fn finalize_transcription(
+    state: &Arc<AppState>,
+    app: &tauri::AppHandle,
+    mut result: RecordingResult,
+) -> Option<String> {
+    state.pipeline.transcribe(&mut result).await;
+
+    match result.transcript {
+        Some(text) => {
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let _ = app.emit(
+                "transcription:result",
+                TranscriptionResultEvent {
+                    session_id: session_id.clone(),
+                    text: text.clone(),
+                    duration_ms: result.duration_ms,
+                    confidence: None,
+                },
+            );
+            // Auto-submit transcript to agent in the background.
+            // Find the most-recently-created running or pending task so voice
+            // follow-ups supplement the active task instead of creating a
+            // brand-new one every time.
+            let agent = state.agent.clone();
+            let executor = state.executor.clone();
+            let submit_text = text.clone();
+            tokio::spawn(async move {
+                let active = {
+                    let tasks = executor.list_tasks().await;
+                    tasks
+                        .iter()
+                        .find(|t| {
+                            let s = t.status.as_str();
+                            s == "running" || s == "pending"
+                        })
+                        .map(|t| t.id.clone())
+                };
+                if let Err(e) = agent.process_input(&submit_text, active).await {
+                    tracing::error!("auto-submit transcription failed: {e}");
+                }
+            });
+            Some(text)
+        }
+        None => {
+            if let Some(err) = result.transcript_error {
+                let _ = app.emit(
+                    "transcription:error",
+                    TranscriptionErrorEvent {
+                        session_id: uuid::Uuid::new_v4().to_string(),
+                        error: err,
+                    },
+                );
+            } else {
+                // STT succeeded but returned no text (silence / too-short
+                // clip): there is nothing to submit, but the UI still needs
+                // the "transcribing" overlay closed. The frontend treats an
+                // empty `transcription:result` as "close, add no message".
+                let _ = app.emit(
+                    "transcription:result",
+                    TranscriptionResultEvent {
+                        session_id: uuid::Uuid::new_v4().to_string(),
+                        text: String::new(),
+                        duration_ms: result.duration_ms,
+                        confidence: None,
+                    },
+                );
+            }
+            None
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn start_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     if let Err(e) = state.pipeline.start_recording().await {
+        // The hotkey may have started a recording a moment earlier, or a VAD
+        // auto-stop may be finalizing: the pipeline is busy, not broken.
+        let pipeline_state = state.pipeline.get_state().await;
+        if matches!(
+            pipeline_state,
+            haven_input::RecordingState::Recording
+        ) {
+            state.shell.sync_recording(true).await;
+            let session_id = uuid::Uuid::new_v4().to_string();
+            let _ = app.emit(
+                "recording:started",
+                RecordingEvent {
+                    is_recording: true,
+                    session_id: Some(session_id),
+                    reason: None,
+                    duration_ms: None,
+                },
+            );
+            return Ok(());
+        }
+        let msg = if matches!(
+            pipeline_state,
+            haven_input::RecordingState::Processing
+        ) {
+            "正在处理上一条录音，请稍候再试".to_string()
+        } else {
+            format!("录音启动失败，请检查麦克风/STT 配置: {e}")
+        };
         let session_id = uuid::Uuid::new_v4().to_string();
         let _ = app.emit(
             "recording:error",
             serde_json::json!({
                 "session_id": session_id,
-                "error": format!("录音启动失败，请检查麦克风/STT 配置: {e}"),
+                "error": msg,
             }),
         );
-        return Err(e.to_string());
+        return Err(msg);
     }
+    // Keep the shell state in sync so the tray icon, the mute hotkey and the
+    // recording toggle reflect a UI-button-started recording.
+    state.shell.sync_recording(true).await;
     let session_id = uuid::Uuid::new_v4().to_string();
     let _ = app.emit(
         "recording:started",
@@ -139,7 +254,26 @@ pub async fn stop_recording(
     // clicking stop, and STT + agent run as background work that
     // drives the rest of the UI through `transcription:*` / `task:*`
     // events.
-    let result = state.pipeline.stop_capture().await.map_err(|e| log_err("stop_recording", e))?;
+    let result = match state.pipeline.stop_capture().await {
+        Ok(result) => result,
+        Err(e) => {
+            // Another path (VAD auto-stop, mute, double click) already owns
+            // the stop: the pipeline is Pending (finished) or Processing
+            // (finalizing elsewhere). Not an error for the UI — emitting a
+            // failure toast here would blame the user for a race they won.
+            let pipeline_state = state.pipeline.get_state().await;
+            if matches!(
+                pipeline_state,
+                haven_input::RecordingState::Pending | haven_input::RecordingState::Processing
+            ) {
+                state.shell.sync_recording(false).await;
+                return Ok(String::new());
+            }
+            return Err(log_err("stop_recording", e));
+        }
+    };
+    // Keep the shell state in sync (tray icon, mute hotkey, toggle).
+    state.shell.sync_recording(false).await;
     let reason_str = match result.reason {
         RecordingReason::Manual => "manual",
         RecordingReason::Silence => "silence",
@@ -156,61 +290,11 @@ pub async fn stop_recording(
         },
     );
 
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let mut result = result;
-
-    // Run STT inline. It is fast enough (sub-second to a couple of
-    // seconds) and the UI needs the transcript to know whether to
-    // auto-submit a user message. Running it here also keeps the
-    // existing `transcription:result` / `transcription:error` event
-    // ordering intact.
-    state.pipeline.transcribe(&mut result).await;
-
-    match result.transcript {
-        Some(text) => {
-            let _ = app.emit(
-                "transcription:result",
-                TranscriptionResultEvent {
-                    session_id: session_id.clone(),
-                    text: text.clone(),
-                    duration_ms: result.duration_ms,
-                    confidence: None,
-                },
-            );
-            // Auto-submit transcript to agent.
-            // Find the most-recently-created running or pending task so
-            // voice follow-ups supplement the active task instead of
-            // creating a brand-new one every time.
-            let active = {
-                let tasks = state.executor.list_tasks().await;
-                tasks
-                    .iter()
-                    .find(|t| {
-                        let s = t.status.as_str();
-                        s == "running" || s == "pending"
-                    })
-                    .map(|t| t.id.clone())
-            };
-            let _ = state
-                .agent
-                .process_input(&text, active.clone())
-                .await
-                .map_err(|e| log_err("stop_recording", e))?;
-            Ok(text)
-        }
-        None => {
-            if let Some(err) = result.transcript_error {
-                let _ = app.emit(
-                    "transcription:error",
-                    TranscriptionErrorEvent {
-                        session_id,
-                        error: err,
-                    },
-                );
-            }
-            Ok(String::new())
-        }
-    }
+    // STT + agent auto-submit run in the background (see
+    // `finalize_transcription`); the command returns as soon as the
+    // recording has been handed off.
+    let text = finalize_transcription(state.inner(), &app, result).await;
+    Ok(text.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -219,6 +303,7 @@ pub async fn cancel_recording(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     state.pipeline.cancel_recording().await.map_err(|e| log_err("cancel_recording", e))?;
+    state.shell.sync_recording(false).await;
     let _ = app.emit(
         "recording:stopped",
         RecordingEvent {

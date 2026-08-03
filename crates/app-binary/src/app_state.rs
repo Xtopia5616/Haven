@@ -66,6 +66,11 @@ impl AppState {
 
         let pipeline = Arc::new(InputPipeline::new());
 
+        // Start the long-lived audio capture thread now so the microphone
+        // stream is already playing when the user first records — the first
+        // words after a click are never lost to device-init latency.
+        pipeline.prewarm().await;
+
         let stt_config = &cfg.stt;
 
         // Build the STT client for the configured provider and wire it into
@@ -153,18 +158,6 @@ impl AppState {
                 Err(e) => {
                     tracing::warn!("LLM pre-warm failed (will retry on first request): {}", e)
                 }
-            }
-        });
-
-        // Session recovery: deferred to background (non-critical).
-        let db_session = db.clone();
-        let agent_session = agent.clone();
-        tokio::spawn(async move {
-            let session_id = agent_session.ensure_session();
-            if let Ok(Some(session)) = db_session.get_session(&session_id)
-                && session.ended_at.is_none()
-            {
-                tracing::info!("session '{}' recovered from previous run", session_id);
             }
         });
 

@@ -95,8 +95,12 @@ pub enum VadSignal {
 
 pub struct VadDetector {
     state: VadState,
-    threshold: f32,
-    silence_max_frames: u32,
+    /// VAD probability at or above which a frame counts as speech. Wired from
+    /// `AudioConfig.vad_threshold` via `InputPipeline::update_config`.
+    pub(crate) threshold: f32,
+    /// Consecutive silent frames (30 ms each) after speech that trigger an
+    /// auto-stop. Derived from `AudioConfig.silence_timeout_ms`.
+    pub(crate) silence_max_frames: u32,
 }
 
 impl VadDetector {

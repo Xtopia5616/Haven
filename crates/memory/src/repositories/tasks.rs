@@ -1,12 +1,10 @@
-use crate::db::Database;
+﻿use crate::db::Database;
 use chrono::Utc;
-use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Task {
     pub id: String,
-    pub session_id: Option<String>,
     pub input_text: String,
     pub title: Option<String>,
     pub status: String,
@@ -14,12 +12,14 @@ pub struct Task {
     pub updated_at: String,
     pub transcript: String,
     pub react_state: Option<String>,
+    /// Parent task ID for branching: a branch is a new task whose messages
+    /// were copied from the source task, linked via this column.
+    pub parent_task_id: Option<String>,
 }
 
 impl Database {
     pub fn create_task(
         &self,
-        session_id: Option<&str>,
         input_text: &str,
         transcript: &str,
     ) -> anyhow::Result<Task> {
@@ -27,14 +27,13 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO tasks (id, session_id, input_text, status, created_at, updated_at, transcript)
-             VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6)",
-            rusqlite::params![id, session_id, input_text, now, now, transcript],
+            "INSERT INTO tasks (id, input_text, status, created_at, updated_at, transcript)
+             VALUES (?1, ?2, 'pending', ?3, ?4, ?5)",
+            rusqlite::params![id, input_text, now, now, transcript],
         )?;
         self.cache_invalidate_tasks();
         Ok(Task {
             id,
-            session_id: session_id.map(String::from),
             input_text: input_text.into(),
             title: None,
             status: "pending".into(),
@@ -42,27 +41,59 @@ impl Database {
             updated_at: now,
             transcript: transcript.into(),
             react_state: None,
+            parent_task_id: None,
+        })
+    }
+
+    /// Create a task as a branch of `parent_id`: the child carries the
+    /// branching pointer (parent_task_id) but its messages are copied
+    /// separately by the caller.
+    pub fn create_branch_task(
+        &self,
+        parent_id: &str,
+        input_text: &str,
+        transcript: &str,
+    ) -> anyhow::Result<Task> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO tasks (id, input_text, status, created_at, updated_at, transcript, parent_task_id)
+             VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, input_text, now, now, transcript, parent_id],
+        )?;
+        self.cache_invalidate_tasks();
+        Ok(Task {
+            id,
+            input_text: input_text.into(),
+            title: None,
+            status: "pending".into(),
+            created_at: now.clone(),
+            updated_at: now,
+            transcript: transcript.into(),
+            react_state: None,
+            parent_task_id: Some(parent_id.to_string()),
         })
     }
 
     pub fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, title, status, created_at, updated_at, transcript, react_state
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
              FROM tasks WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(Task {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                input_text: row.get(2)?,
-                title: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                input_text: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                transcript: row.get(6)?,
+                react_state: row.get(7)?,
+                parent_task_id: row.get(8)?,
             })),
             None => Ok(None),
         }
@@ -104,20 +135,20 @@ impl Database {
         };
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, title, status, created_at, updated_at, transcript, react_state
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
              FROM tasks ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
             Ok(Task {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                input_text: row.get(2)?,
-                title: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                input_text: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                transcript: row.get(6)?,
+                react_state: row.get(7)?,
+                parent_task_id: row.get(8)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -134,21 +165,21 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, title, status, created_at, updated_at, transcript, react_state
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
              ORDER BY created_at DESC LIMIT 50",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern], |row| {
             Ok(Task {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                input_text: row.get(2)?,
-                title: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                input_text: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                transcript: row.get(6)?,
+                react_state: row.get(7)?,
+                parent_task_id: row.get(8)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -183,21 +214,21 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, input_text, title, status, created_at, updated_at, transcript, react_state
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
             Ok(Task {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                input_text: row.get(2)?,
-                title: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                input_text: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                transcript: row.get(6)?,
+                react_state: row.get(7)?,
+                parent_task_id: row.get(8)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -209,49 +240,15 @@ impl Database {
 
     pub fn delete_task(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
-        // Wrap message deletion + task deletion in a transaction so a
-        // reader between the two DELETEs doesn't see orphaned messages.
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let mut deleted_session_id: Option<String> = None;
-        let result = (|| {
-            // Look up the task's session_id and delete its session messages so
-            // the conversation history does not linger after task deletion.
-            // These queries are inlined here (rather than calling self.get_task
-            // / self.delete_session_messages) because those methods re-acquire
-            // self.conn(), which would deadlock against the guard held here.
-            let session_id: Option<String> = conn
-                .query_row(
-                    "SELECT session_id FROM tasks WHERE id = ?1",
-                    rusqlite::params![id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()?
-                .flatten();
-            if let Some(ref session_id) = session_id {
-                let _ = conn.execute(
-                    "DELETE FROM messages WHERE session_id = ?1",
-                    rusqlite::params![session_id],
-                );
-                deleted_session_id = Some(session_id.clone());
-            }
-            let affected =
-                conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
-            if affected == 0 {
-                anyhow::bail!("task '{}' not found in database", id);
-            }
-            Ok::<(), anyhow::Error>(())
-        })();
-        if result.is_err() {
-            let _ = conn.execute_batch("ROLLBACK");
-        } else {
-            conn.execute_batch("COMMIT")?;
+        // messages, task_steps and compaction_entries cascade on task delete
+        // (ON DELETE CASCADE), so a single statement keeps history consistent.
+        let affected = conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+        if affected == 0 {
+            anyhow::bail!("task '{}' not found in database", id);
         }
-        result?;
         drop(conn);
         self.cache_invalidate_tasks();
-        if let Some(sid) = deleted_session_id {
-            self.cache_invalidate_messages(&sid);
-        }
+        self.cache_invalidate_messages(id);
         Ok(())
     }
 
@@ -273,7 +270,7 @@ impl Database {
     /// Mark every still-`running` task as `error`. Called once at app
     /// startup: since the previous process is gone, any `running` task can
     /// never resume and must be surfaced as errored so the user can retry it
-    /// via the continue flow. `paused`/`pending` tasks are left untouched —
+    /// via the continue flow. `paused`/`pending` tasks are left untouched 鈥?
     /// they represent legitimately waiting work that should survive a
     /// restart.
     pub fn finalize_orphaned_running_tasks(&self) -> anyhow::Result<usize> {
@@ -375,7 +372,7 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT id, session_id, input_text, title, status, created_at, updated_at, transcript, react_state \
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id \
              FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -394,14 +391,14 @@ impl Database {
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
             Ok(Task {
                 id: row.get(0)?,
-                session_id: row.get(1)?,
-                input_text: row.get(2)?,
-                title: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-                transcript: row.get(7)?,
-                react_state: row.get(8)?,
+                input_text: row.get(1)?,
+                title: row.get(2)?,
+                status: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+                transcript: row.get(6)?,
+                react_state: row.get(7)?,
+                parent_task_id: row.get(8)?,
             })
         })?;
 
@@ -446,9 +443,8 @@ mod tests {
     #[test]
     fn test_create_task() {
         let db = create_db();
-        let task = db.create_task(None, "input text", "transcript").unwrap();
+        let task = db.create_task("input text", "transcript").unwrap();
         assert!(!task.id.is_empty());
-        assert_eq!(task.session_id.as_deref(), None);
         assert_eq!(task.input_text, "input text");
         assert_eq!(task.title, None);
         assert_eq!(task.status, "pending");
@@ -456,23 +452,35 @@ mod tests {
         assert!(!task.updated_at.is_empty());
         assert_eq!(task.transcript, "transcript");
         assert!(task.react_state.is_none());
+        assert!(task.parent_task_id.is_none());
     }
 
     #[test]
-    fn test_create_task_no_session() {
+    fn test_create_task_without_session_works() {
         let db = create_db();
-        let task = db.create_task(None, "input", "").unwrap();
-        assert!(task.session_id.is_none());
+        let task = db.create_task("input", "").unwrap();
+        assert!(task.parent_task_id.is_none());
+    }
+
+    #[test]
+    fn test_create_branch_task_links_parent() {
+        let db = create_db();
+        let parent = db.create_task("parent", "").unwrap();
+        let branch = db
+            .create_branch_task(&parent.id, "branch", "branch transcript")
+            .unwrap();
+        assert_eq!(branch.parent_task_id.as_deref(), Some(parent.id.as_str()));
+        assert_ne!(branch.id, parent.id);
     }
 
     #[test]
     fn test_list_tasks_returns_most_recent_first() {
         let db = create_db();
-        let first = db.create_task(None, "first", "").unwrap();
-        let second = db.create_task(None, "second", "").unwrap();
+        let first = db.create_task("first", "").unwrap();
+        let second = db.create_task("second", "").unwrap();
         let tasks = db.list_tasks(1, 0).unwrap();
         assert_eq!(tasks.len(), 1);
-        // The most recent task must come first — the app start
+        // The most recent task must come first 鈥?the app start
         // conversation restore relies on this ordering.
         assert_eq!(tasks[0].id, second.id);
         assert_ne!(tasks[0].id, first.id);
@@ -481,7 +489,7 @@ mod tests {
     #[test]
     fn test_get_task_found() {
         let db = create_db();
-        let created = db.create_task(None, "input", "").unwrap();
+        let created = db.create_task("input", "").unwrap();
         let found = db.get_task(&created.id).unwrap();
         assert!(found.is_some());
         let found = found.unwrap();
@@ -499,7 +507,7 @@ mod tests {
     #[test]
     fn test_update_task_status() {
         let db = create_db();
-        let task = db.create_task(None, "input", "").unwrap();
+        let task = db.create_task("input", "").unwrap();
         db.update_task_status(&task.id, "running").unwrap();
         let updated = db.get_task(&task.id).unwrap().unwrap();
         assert_eq!(updated.status, "running");
@@ -508,9 +516,9 @@ mod tests {
     #[test]
     fn test_list_tasks_default() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
-        db.create_task(None, "c", "").unwrap();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
+        db.create_task("c", "").unwrap();
 
         let tasks = db.list_tasks(50, 0).unwrap();
         assert_eq!(tasks.len(), 3);
@@ -520,7 +528,7 @@ mod tests {
     fn test_list_tasks_limit_offset() {
         let db = create_db();
         for i in 0..5 {
-            db.create_task(None, &format!("task-{}", i), "").unwrap();
+            db.create_task(&format!("task-{}", i), "").unwrap();
         }
         let tasks = db.list_tasks(2, 0).unwrap();
         assert_eq!(tasks.len(), 2);
@@ -535,11 +543,11 @@ mod tests {
     #[test]
     fn test_list_tasks_caching() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
+        db.create_task("a", "").unwrap();
         let first = db.list_tasks(50, 0).unwrap();
         assert_eq!(first.len(), 1);
 
-        db.create_task(None, "b", "").unwrap();
+        db.create_task("b", "").unwrap();
         let second = db.list_tasks(50, 0).unwrap();
         assert_eq!(second.len(), 2);
     }
@@ -547,9 +555,9 @@ mod tests {
     #[test]
     fn test_search_tasks() {
         let db = create_db();
-        db.create_task(None, "rust compiler", "").unwrap();
-        db.create_task(None, "python script", "").unwrap();
-        db.create_task(None, "rust debugging", "").unwrap();
+        db.create_task("rust compiler", "").unwrap();
+        db.create_task("python script", "").unwrap();
+        db.create_task("rust debugging", "").unwrap();
 
         let results = db.search_tasks("rust").unwrap();
         assert_eq!(results.len(), 2);
@@ -564,7 +572,7 @@ mod tests {
     #[test]
     fn test_search_tasks_in_transcript() {
         let db = create_db();
-        db.create_task(None, "task", "transcript about rust")
+        db.create_task("task", "transcript about rust")
             .unwrap();
         let results = db.search_tasks("rust").unwrap();
         assert_eq!(results.len(), 1);
@@ -574,7 +582,7 @@ mod tests {
     fn test_search_tasks_paginated() {
         let db = create_db();
         for i in 0..5 {
-            db.create_task(None, &format!("rust task {}", i), "")
+            db.create_task(&format!("rust task {}", i), "")
                 .unwrap();
         }
 
@@ -595,16 +603,16 @@ mod tests {
     fn test_count_tasks() {
         let db = create_db();
         assert_eq!(db.count_tasks().unwrap(), 0);
-        db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
         assert_eq!(db.count_tasks().unwrap(), 2);
     }
 
     #[test]
     fn test_count_tasks_search() {
         let db = create_db();
-        db.create_task(None, "hello world", "").unwrap();
-        db.create_task(None, "goodbye", "").unwrap();
+        db.create_task("hello world", "").unwrap();
+        db.create_task("goodbye", "").unwrap();
         assert_eq!(db.count_tasks_search("hello").unwrap(), 1);
         assert_eq!(db.count_tasks_search("good").unwrap(), 1);
         assert_eq!(db.count_tasks_search("xyz").unwrap(), 0);
@@ -613,7 +621,7 @@ mod tests {
     #[test]
     fn test_delete_task() {
         let db = create_db();
-        let task = db.create_task(None, "input", "").unwrap();
+        let task = db.create_task("input", "").unwrap();
         db.delete_task(&task.id).unwrap();
         assert!(db.get_task(&task.id).unwrap().is_none());
         assert_eq!(db.count_tasks().unwrap(), 0);
@@ -630,9 +638,9 @@ mod tests {
     #[test]
     fn test_clear_tasks() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
-        db.create_task(None, "c", "").unwrap();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
+        db.create_task("c", "").unwrap();
 
         let count = db.clear_tasks().unwrap();
         assert_eq!(count, 3);
@@ -649,19 +657,19 @@ mod tests {
     #[test]
     fn test_finalize_orphaned_running_tasks() {
         let db = create_db();
-        let running = db.create_task(None, "running", "").unwrap();
+        let running = db.create_task("running", "").unwrap();
         db.update_task_status(&running.id, "running").unwrap();
-        let paused = db.create_task(None, "paused", "").unwrap();
+        let paused = db.create_task("paused", "").unwrap();
         db.update_task_status(&paused.id, "paused").unwrap();
-        let pending = db.create_task(None, "pending", "").unwrap();
-        let done = db.create_task(None, "done", "").unwrap();
+        let pending = db.create_task("pending", "").unwrap();
+        let done = db.create_task("done", "").unwrap();
         db.update_task_status(&done.id, "completed").unwrap();
 
         let count = db.finalize_orphaned_running_tasks().unwrap();
         assert_eq!(count, 1);
 
         assert_eq!(db.get_task(&running.id).unwrap().unwrap().status, "error");
-        // paused/pending are left alone — they are legitimate waiting work.
+        // paused/pending are left alone 鈥?they are legitimate waiting work.
         assert_eq!(db.get_task(&paused.id).unwrap().unwrap().status, "paused");
         assert_eq!(db.get_task(&pending.id).unwrap().unwrap().status, "pending");
         assert_eq!(db.get_task(&done.id).unwrap().unwrap().status, "completed");
@@ -670,8 +678,8 @@ mod tests {
     #[test]
     fn test_delete_old_tasks() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
 
         let count = db.delete_old_tasks(0).unwrap();
         assert_eq!(count, 2);
@@ -681,7 +689,7 @@ mod tests {
     #[test]
     fn test_delete_old_tasks_keeps_recent() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
+        db.create_task("a", "").unwrap();
 
         let count = db.delete_old_tasks(365).unwrap();
         assert_eq!(count, 0);
@@ -691,8 +699,8 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_query_only() {
         let db = create_db();
-        db.create_task(None, "rust compile", "").unwrap();
-        db.create_task(None, "python run", "").unwrap();
+        db.create_task("rust compile", "").unwrap();
+        db.create_task("python run", "").unwrap();
 
         let results = db
             .search_tasks_filtered(Some("rust"), None, None, None, 50, 0)
@@ -703,8 +711,8 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_status() {
         let db = create_db();
-        let t1 = db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
+        let t1 = db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
         db.update_task_status(&t1.id, "completed").unwrap();
 
         let results = db
@@ -717,8 +725,8 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_date_range() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
 
         let results = db
             .search_tasks_filtered(None, None, Some("2000-01-01"), Some("2099-12-31"), 50, 0)
@@ -734,8 +742,8 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_combined() {
         let db = create_db();
-        let t1 = db.create_task(None, "rust compiler bug", "").unwrap();
-        db.create_task(None, "python script", "").unwrap();
+        let t1 = db.create_task("rust compiler bug", "").unwrap();
+        db.create_task("python script", "").unwrap();
         db.update_task_status(&t1.id, "completed").unwrap();
 
         let results = db
@@ -748,8 +756,8 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_no_filters() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
-        db.create_task(None, "b", "").unwrap();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
 
         let results = db
             .search_tasks_filtered(None, None, None, None, 50, 0)
@@ -760,7 +768,7 @@ mod tests {
     #[test]
     fn test_search_tasks_filtered_empty_query_ignored() {
         let db = create_db();
-        db.create_task(None, "a", "").unwrap();
+        db.create_task("a", "").unwrap();
 
         let results = db
             .search_tasks_filtered(Some(""), None, None, None, 50, 0)
@@ -771,7 +779,7 @@ mod tests {
     #[test]
     fn test_save_and_get_react_state() {
         let db = create_db();
-        let task = db.create_task(None, "input", "").unwrap();
+        let task = db.create_task("input", "").unwrap();
 
         let result = db.get_react_state(&task.id).unwrap();
         assert!(result.is_none());
@@ -787,7 +795,7 @@ mod tests {
     #[test]
     fn test_save_react_state_overwrites() {
         let db = create_db();
-        let task = db.create_task(None, "input", "").unwrap();
+        let task = db.create_task("input", "").unwrap();
 
         db.save_react_state(&task.id, r#"{"v":1}"#).unwrap();
         db.save_react_state(&task.id, r#"{"v":2}"#).unwrap();

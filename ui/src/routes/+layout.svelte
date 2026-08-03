@@ -232,6 +232,15 @@
 				const activeId = get(activeTaskIdStore);
 				const taskId = activeId || '_draft';
 				addTaskMessage(taskId, newMessage({ role: 'user', content: text, voice: true, time: new Date().toLocaleTimeString() }));
+			} else {
+				// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
+				// 明确反馈，否则看起来像"点了没反应"。
+				const durationMs = data.duration_ms || 0;
+				if (durationMs > 0 && durationMs < 1000) {
+					addNotification('录音时间太短，请再试一次', 'warning', 3000);
+				} else {
+					addNotification('未检测到语音，请再试一次', 'error', 4000);
+				}
 			}
 			setOverlay({
 				visible: false,

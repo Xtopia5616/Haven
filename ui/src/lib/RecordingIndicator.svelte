@@ -24,9 +24,8 @@
 	}
 
 	const display = $derived.by(() => {
-		const base = processing ? duration : duration;
-		const mins = Math.floor(base / 60);
-		const secs = base % 60;
+		const mins = Math.floor(duration / 60);
+		const secs = duration % 60;
 		return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 	});
 
@@ -56,23 +55,32 @@
 		aria-label={processing ? 'transcribing' : 'recording'}
 		in:dropIn
 	>
-		<div class="pulse-ring"></div>
-		<div class="pulse-ring delay"></div>
-		<div class="core" class:speaking class:processing></div>
-		<div class="info">
+		<div class="mic-badge" class:speaking class:processing aria-hidden="true">
+			<svg viewBox="0 0 24 24" fill="currentColor">
+				<path
+					d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.08c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z"
+				/>
+			</svg>
 			{#if processing}
-				<span class="state-label">处理中…转写</span>
-			{:else}
-				<span class="state-label">{speaking ? '正在聆听…' : '请说…'}</span>
-			{/if}
-			<span class="timer">{display}</span>
-			{#if onCancel}
-				<span class="hint">Esc 取消</span>
-			{/if}
-			{#if isRecording && !processing && reason}
-				<span class="reason">结束原因: {reason}</span>
+				<span class="spinner-ring"></span>
 			{/if}
 		</div>
+		<div class="info">
+			<span class="state-label">
+				{#if processing}
+					处理中…转写
+				{:else}
+					{speaking ? '正在聆听…' : '请说…'}
+				{/if}
+			</span>
+			<span class="timer">{display}</span>
+		</div>
+		{#if onCancel && isRecording && !processing}
+			<span class="hint">Esc 取消</span>
+		{/if}
+		{#if isRecording && !processing && reason}
+			<span class="reason">结束原因: {reason}</span>
+		{/if}
 	</div>
 {/if}
 
@@ -82,72 +90,62 @@
 		top: 64px;
 		left: 50%;
 		transform: translateX(-50%);
-		z-index: 998;
+		z-index: var(--md-sys-z-overlay, 998);
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-lg);
-		padding: var(--md-sys-space-md) var(--md-sys-space-xl);
-		background: color-mix(in srgb, var(--md-sys-color-surface-container-highest) 92%, transparent);
+		gap: var(--md-sys-space-md);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-3xl) var(--md-sys-space-sm) var(--md-sys-space-sm);
+		background: var(--md-sys-color-surface);
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-extra-large);
+		border-radius: var(--md-sys-shape-full);
 		box-shadow: var(--md-sys-elevation-3);
-		backdrop-filter: blur(8px);
 	}
-	.core {
+	.mic-badge {
 		position: relative;
-		width: 18px;
-		height: 18px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 40px;
+		height: 40px;
 		border-radius: 50%;
+		flex-shrink: 0;
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
+		animation: mic-breathe 2s var(--md-sys-motion-easing-emphasized) infinite;
+		transition: background-color var(--md-sys-motion-duration-medium)
+			var(--md-sys-motion-easing-standard);
+	}
+	.mic-badge svg {
+		width: 22px;
+		height: 22px;
+	}
+	.mic-badge.speaking {
 		background: var(--md-sys-color-error);
-		animation: breathe 1.1s var(--md-sys-motion-easing-emphasized) infinite;
-		box-shadow: 0 0 8px color-mix(in srgb, var(--md-sys-color-error) 60%, transparent);
+		color: var(--md-sys-color-on-error);
+		animation-duration: 1s;
 	}
-	.core.speaking {
-		animation: breatheSpeak 0.55s var(--md-sys-motion-easing-emphasized) infinite;
-		box-shadow: 0 0 14px color-mix(in srgb, var(--md-sys-color-error) 95%, transparent);
+	.mic-badge.processing {
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+		animation: none;
 	}
-	.core.processing {
-		background: var(--md-sys-color-primary);
-		box-shadow: 0 0 10px color-mix(in srgb, var(--md-sys-color-primary) 80%, transparent);
-		animation: spin 1s linear infinite;
-		border-radius: 40%;
-	}
-	.pulse-ring {
+	.spinner-ring {
 		position: absolute;
-		left: 11px;
-		width: 18px;
-		height: 18px;
+		inset: -3px;
 		border-radius: 50%;
-		border: 2px solid color-mix(in srgb, var(--md-sys-color-error) 60%, transparent);
-		opacity: 0;
-		animation: ripple 1.4s var(--md-sys-motion-easing-standard) infinite;
+		border: 2px solid transparent;
+		border-top-color: var(--md-sys-color-primary);
+		animation: spin 1s linear infinite;
 	}
-	.pulse-ring.delay {
-		animation-delay: 0.7s;
-	}
-	.overlay.processing .pulse-ring {
-		border-color: color-mix(in srgb, var(--md-sys-color-primary) 60%, transparent);
-	}
-	@keyframes breathe {
+	@keyframes mic-breathe {
 		0%,
 		100% {
 			transform: scale(1);
-			opacity: 1;
+			box-shadow: 0 0 0 0 color-mix(in srgb, var(--md-sys-color-error) 30%, transparent);
 		}
 		50% {
-			transform: scale(0.8);
-			opacity: 0.7;
-		}
-	}
-	@keyframes breatheSpeak {
-		0%,
-		100% {
-			transform: scale(1.25);
-			opacity: 1;
-		}
-		50% {
-			transform: scale(0.85);
-			opacity: 0.85;
+			transform: scale(1.08);
+			box-shadow: 0 0 0 6px transparent;
 		}
 	}
 	@keyframes spin {
@@ -158,23 +156,13 @@
 			transform: rotate(360deg);
 		}
 	}
-	@keyframes ripple {
-		0% {
-			transform: scale(1);
-			opacity: 0.6;
-		}
-		100% {
-			transform: scale(2.8);
-			opacity: 0;
-		}
-	}
 	.info {
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		font-size: 12px;
 	}
 	.state-label {
+		font-size: 13px;
 		font-weight: 700;
 		color: var(--md-sys-color-on-surface);
 	}
@@ -184,16 +172,15 @@
 	.timer {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 13px;
-		color: var(--md-sys-color-error);
 		font-weight: 700;
+		color: var(--md-sys-color-error);
 	}
 	.overlay.processing .timer {
 		color: var(--md-sys-color-primary);
 	}
 	.hint {
-		font-size: 10px;
+		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
 	}
 	.reason {
 		font-size: 10px;

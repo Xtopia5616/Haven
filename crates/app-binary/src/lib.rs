@@ -527,17 +527,13 @@ impl desktop::ShellHandler for HavenShellHandler {
                 self.shell_arc.reset_toggle_on_auto_stop().await;
             }
 
-            let mut result = result;
-            self.pipeline.transcribe(&mut result).await;
-            if let Some(err) = result.transcript_error {
-                let _ = self.app_h.emit(
-                    "transcription:error",
-                    events::TranscriptionErrorEvent {
-                        session_id: uuid::Uuid::new_v4().to_string(),
-                        error: err,
-                    },
-                );
-            }
+            // Same finalize path as the `stop_recording` Tauri command: run
+            // STT, emit `transcription:result` / `transcription:error` and
+            // auto-submit the transcript to the agent in the background.
+            // Without this, hotkey / VAD-triggered stops silently dropped the
+            // transcript — the text never reached the chat UI nor the agent.
+            let state = self.app_h.state::<Arc<AppState>>();
+            crate::commands::finalize_transcription(state.inner(), &self.app_h, result).await;
         }
     }
 

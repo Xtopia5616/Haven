@@ -416,7 +416,7 @@ mod tests {
     fn make_message(content: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
             id: uuid::Uuid::new_v4().to_string(),
-            session_id: "s1".into(),
+            task_id: "t1".into(),
             role: "user".into(),
             content: content.into(),
             message_type: Some("text".into()),

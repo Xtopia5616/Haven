@@ -153,9 +153,29 @@
 	async function handleRecordClick() {
 		try {
 			if (recordingState.isRecording) {
-				await invoke('stop_recording');
+				// Optimistic stop: flip the overlay instantly; the backend
+				// confirms via recording:stopped ~50 ms later.
+				recordingOverlay.update((v) => ({ ...v, isRecording: false, visible: false }));
+				try {
+					await invoke('stop_recording');
+				} catch (e) {
+					recordingOverlay.update((v) => ({ ...v, isRecording: true, visible: true }));
+					throw e;
+				}
 			} else {
-				await invoke('start_recording');
+				// Optimistic start: the button/overlay respond immediately so
+				// the brief stream-startup wait (~90 ms) behind `start_recording`
+				// is not perceived as a laggy click.
+				recordingOverlay.update((v) => ({ ...v, isRecording: true, visible: true }));
+				try {
+					await invoke('start_recording');
+				} catch (e) {
+					recordingOverlay.update((v) => ({ ...v, isRecording: false, visible: false }));
+					// The backend already emits `recording:error` with a
+					// friendly message (surfaced as a notification by the
+					// layout), so do not re-throw — that would show a second,
+					// redundant error toast.
+				}
 			}
 		} catch (e) {
 			addNotification(`录音失败: ${e}`, 'error', 3000);
@@ -741,7 +761,21 @@
 		}
 
 		try {
-			await safeListen('task:created', () => {
+			await safeListen('task:created', (event) => {
+				const tid = event.payload?.task_id;
+				if (tid) {
+					// Voice input appends the transcript to `_draft` before the
+					// backend task exists; once it is created, migrate those
+					// draft messages into the task and focus it. Without this,
+					// the agent's response (ask card / answer) lands in a task
+					// stream the chat view is not showing — visible only after
+					// re-entering the page (e.g. via history).
+					adoptDraftMessages(tid);
+					if (!suppressAutoTask) {
+						activeTaskId = tid;
+						activeTaskIdStore.set(tid);
+					}
+				}
 				if (browser) localStorage.removeItem('haven.no_auto_restore');
 				loadTasks();
 			});
@@ -1325,36 +1359,6 @@
 				{/each}
 			</div>
 		{/if}
-		<div class="stats-row">
-			<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : '等待 LLM 调用统计'}>
-				{#if tokenStats}
-					<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M4 6h16M4 12h10M4 18h16" />
-					</svg>
-					<div class="token-text">
-						<span class="token-cumulative">{formatTokenCount(tokenStats.cumulativeTotalTokens)}</span>
-						{#if tokenStats.cumulativeCostUsd != null}
-							<span class="token-cost">· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span>
-						{/if}
-					</div>
-					{#if contextBudget}
-						<div
-							class="token-budget"
-							class:warn={contextBudget.ratio >= 0.75}
-							class:danger={contextBudget.ratio >= 0.9}
-							aria-label={`上下文使用 ${(contextBudget.ratio * 100).toFixed(0)}%`}
-						>
-							<div class="token-budget-fill" style="width: {(contextBudget.ratio * 100).toFixed(1)}%"></div>
-						</div>
-					{/if}
-				{:else}
-					<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M4 6h16M4 12h10M4 18h16" />
-					</svg>
-					<span class="token-text token-idle">—</span>
-				{/if}
-			</div>
-		</div>
 		<div class="input-row">
 			<textarea
 				bind:this={transcriptTextarea}
@@ -1404,6 +1408,34 @@
 								新建任务
 							</button>
 						</div>
+					{/if}
+				</div>
+				<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : '等待 LLM 调用统计'}>
+					{#if tokenStats}
+						<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<path d="M4 6h16M4 12h10M4 18h16" />
+						</svg>
+						<div class="token-text">
+							<span class="token-cumulative">{formatTokenCount(tokenStats.cumulativeTotalTokens)}</span>
+							{#if tokenStats.cumulativeCostUsd != null}
+								<span class="token-cost">· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span>
+							{/if}
+						</div>
+						{#if contextBudget}
+							<div
+								class="token-budget"
+								class:warn={contextBudget.ratio >= 0.75}
+								class:danger={contextBudget.ratio >= 0.9}
+								aria-label={`上下文使用 ${(contextBudget.ratio * 100).toFixed(0)}%`}
+							>
+								<div class="token-budget-fill" style="width: {(contextBudget.ratio * 100).toFixed(1)}%"></div>
+							</div>
+						{/if}
+					{:else}
+						<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<path d="M4 6h16M4 12h10M4 18h16" />
+						</svg>
+						<span class="token-text token-idle">—</span>
 					{/if}
 				</div>
 			</div>
@@ -1789,19 +1821,12 @@
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
 	}
-	.stats-row {
-		display: flex;
-		justify-content: flex-end;
-		align-items: center;
-		min-height: 28px;
-		padding: 0 var(--md-sys-space-xs);
-	}
 	.token-stats {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		min-width: 84px;
-		height: 36px;
+		height: 40px;
 		padding: 0 var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-corner-medium, 8px);
 		border: 1px solid var(--md-sys-color-outline-variant);

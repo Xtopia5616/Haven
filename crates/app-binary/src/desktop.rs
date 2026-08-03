@@ -104,11 +104,37 @@ impl DesktopShell {
         self.set_tray(TrayStatus::Normal).await;
     }
 
+    /// Sync shell state with a recording started outside the shell (e.g. the
+    /// UI record button, which drives the pipeline directly). Updates the
+    /// flags and tray icon WITHOUT re-triggering the handler — calling
+    /// `toggle_recording`/`hold_press` here would double-start the pipeline.
+    /// Without this sync the tray icon stays idle, the mute hotkey would not
+    /// stop a UI-started recording, and the toggle hotkey would attempt a
+    /// duplicate start.
+    pub async fn sync_recording(&self, recording: bool) {
+        {
+            let mut state = self.state.lock().await;
+            state.is_recording = recording;
+            state.tray_status = if recording {
+                TrayStatus::Recording
+            } else {
+                TrayStatus::Normal
+            };
+        }
+        self.set_tray(if recording {
+            TrayStatus::Recording
+        } else {
+            TrayStatus::Normal
+        })
+        .await;
+    }
+
     pub async fn toggle_recording(&self) {
         let mut state = self.state.lock().await;
         if state.is_muted {
             return;
         }
+        let was_recording = state.is_recording;
         state.is_recording_toggle = !state.is_recording_toggle;
         let new_val = state.is_recording_toggle;
         if new_val {
@@ -123,7 +149,11 @@ impl DesktopShell {
             h.on_toggle_change(new_val);
         }
         if new_val {
-            if let Some(h) = self.handler_snap().await {
+            // Already recording via another source (UI button): keep the
+            // toggle flag but do not double-start the pipeline.
+            if !was_recording
+                && let Some(h) = self.handler_snap().await
+            {
                 h.on_recording_start().await;
             }
             self.set_tray(TrayStatus::Recording).await;
@@ -167,19 +197,29 @@ impl DesktopShell {
     }
 
     pub async fn set_muted(&self, muted: bool) {
-        let mut state = self.state.lock().await;
-        state.is_muted = muted;
-        if muted {
-            state.tray_status = TrayStatus::Muted;
-            if state.is_recording {
+        let was_recording;
+        {
+            let mut state = self.state.lock().await;
+            state.is_muted = muted;
+            was_recording = state.is_recording;
+            if muted {
+                state.tray_status = TrayStatus::Muted;
                 state.is_recording = false;
+            } else {
+                state.tray_status = TrayStatus::Normal;
             }
-        } else {
-            state.tray_status = TrayStatus::Normal;
         }
-        drop(state);
         if let Some(h) = self.handler_snap().await {
             h.on_mute_change(muted);
+        }
+        if muted && was_recording {
+            // Muting while recording: stop the capture immediately so the
+            // microphone is released instead of keeping the stream hot while
+            // the user believes the mic is off. The handler finalizes the
+            // recording (STT + transcript) as a normal stop.
+            if let Some(h) = self.handler_snap().await {
+                h.on_recording_stop().await;
+            }
         }
         self.set_tray(if muted {
             TrayStatus::Muted
@@ -251,6 +291,21 @@ mod tests {
         let shell = DesktopShell::new();
         shell.toggle_recording().await;
         shell.stop_recording().await;
+        let state = shell.get_state().await;
+        assert!(!state.is_recording);
+        assert_eq!(state.tray_status, TrayStatus::Normal);
+    }
+
+    #[tokio::test]
+    async fn test_sync_recording_sets_state_and_tray() {
+        let shell = DesktopShell::new();
+        shell.sync_recording(true).await;
+        let state = shell.get_state().await;
+        assert!(state.is_recording);
+        assert_eq!(state.tray_status, TrayStatus::Recording);
+        // `is_recording_toggle` is shell-hotkey-only; sync must not set it.
+        assert!(!state.is_recording_toggle);
+        shell.sync_recording(false).await;
         let state = shell.get_state().await;
         assert!(!state.is_recording);
         assert_eq!(state.tray_status, TrayStatus::Normal);
