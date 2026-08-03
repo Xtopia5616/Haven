@@ -49,7 +49,11 @@ impl RingBuffer {
         if self.len == 0 {
             return out;
         }
-        let tail_start = if self.len < self.cap { 0 } else { self.head };
+        // The oldest sample sits at `head - len` (circularly). Using the
+        // plain `head - len` window is wrong once the writer has wrapped
+        // around the buffer at least once: `len < cap` no longer implies the
+        // data starts at index 0.
+        let tail_start = (self.head + self.cap - self.len) % self.cap;
         for i in 0..self.len {
             out.push(self.buf[(tail_start + i) % self.cap]);
         }
@@ -69,7 +73,7 @@ impl RingBuffer {
         if self.len == 0 {
             return 0.0;
         }
-        let tail_start = if self.len < self.cap { 0 } else { self.head };
+        let tail_start = (self.head + self.cap - self.len) % self.cap;
         let sum_sq: f64 = (0..self.len)
             .map(|i| {
                 let s = self.buf[(tail_start + i) % self.cap];
@@ -112,6 +116,33 @@ mod tests {
         rb.clear();
         assert_eq!(rb.len(), 0);
         assert!(rb.drain().is_empty());
+    }
+
+    #[test]
+    fn drain_after_wraparound_reads_latest_data() {
+        let mut rb = RingBuffer::new(10);
+        // Fill exactly to capacity so `head` wraps to 0, then overwrite the
+        // two oldest entries.
+        rb.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        rb.push(&[11.0, 12.0]);
+        assert_eq!(
+            rb.drain(),
+            vec![3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]
+        );
+        // head=2 now. New data lands past the wrap point; a drain that reads
+        // from index 0 would return the stale [11, 12] instead of [13, 14].
+        rb.push(&[13.0, 14.0]);
+        assert_eq!(rb.drain(), vec![13.0, 14.0]);
+    }
+
+    #[test]
+    fn rms_after_wraparound_uses_latest_window() {
+        let mut rb = RingBuffer::new(4);
+        rb.push(&[1.0, 2.0, 3.0, 4.0]);
+        rb.push(&[5.0, 6.0]);
+        // Held samples are [5, 6, 3, 4]; RMS = sqrt((25+36+9+16)/4).
+        assert_eq!(rb.len(), 4);
+        assert!((rb.rms() - 4.636809).abs() < 1e-4);
     }
 
     #[test]

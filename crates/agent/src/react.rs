@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -14,7 +14,6 @@ use haven_task::{TaskExecutor, TaskStatus};
 
 use crate::compactor::ContextCompactor;
 use crate::event::{AgentEventEmitter, EventDispatcher, UsagePayload};
-use crate::session::SessionManager;
 use crate::types::{Action, BranchPoint, ReActSnapshot, ReActStep};
 
 /// Convert a stored message attachment into an image content part for the LLM.
@@ -27,7 +26,7 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
 }
 
 /// Pick the endpoint role for an agent step. Conversations that carry image
-/// content parts route through the router's vision role — the dedicated
+/// content parts route through the router's vision role 鈥?the dedicated
 /// `image_model` (vision-capable) endpoint when configured, otherwise the
 /// default model. Everything else uses the default model.
 async fn choose_agent_role(router: &LlmRouter, messages: &[LlmMessage]) -> EndpointRole {
@@ -56,6 +55,7 @@ pub struct ReActEngine {
     compactor: ContextCompactor,
     max_steps: Mutex<u32>,
     max_observation_chars: usize,
+    message_window_size: usize,
     balanced_model_notified: Mutex<HashSet<String>>,
     run_counter: AtomicU64,
     current_run_id: AtomicU64,
@@ -82,6 +82,7 @@ impl ReActEngine {
         db: Arc<Database>,
         max_steps: u32,
         max_observation_chars: usize,
+        message_window_size: usize,
     ) -> Self {
         Self {
             router: Arc::new(RwLock::new(router)),
@@ -90,6 +91,7 @@ impl ReActEngine {
             compactor: ContextCompactor::with_ratio(32_000, 4_096, 0.75),
             max_steps: Mutex::new(max_steps),
             max_observation_chars,
+            message_window_size,
             balanced_model_notified: Mutex::new(HashSet::new()),
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
@@ -174,13 +176,11 @@ impl ReActEngine {
         start_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: Arc<dyn AgentEventEmitter>,
-        sessions: &SessionManager,
         infer: &(dyn Fn() + Send + Sync),
         run_id: u64,
     ) -> anyhow::Result<()> {
         let max_steps = *self.max_steps.lock().unwrap();
         let mut last_step = start_step.saturating_sub(1);
-        let session_id = sessions.current_session_id();
         // Guard so an empty model response is retried at most once per task.
         // Initialized outside the step loop so the assignment below is read by
         // later iterations (keeps the lint clean).
@@ -397,7 +397,7 @@ impl ReActEngine {
                     );
                     if let Some(result) = self.compactor.compact(canonical, &self.router()).await {
                         tracing::debug!(
-                            "compacted {} → {} tokens",
+                            "compacted {} 鈫?{} tokens",
                             result.tokens_before,
                             result.tokens_after
                         );
@@ -482,8 +482,6 @@ impl ReActEngine {
                                     canonical,
                                     history,
                                     branch_points,
-                                    sessions,
-                                    &session_id,
                                     &emitter,
                                 )
                                 .await;
@@ -505,8 +503,6 @@ impl ReActEngine {
                             canonical,
                             history,
                             branch_points,
-                            sessions,
-                            &session_id,
                             &emitter,
                         )
                         .await;
@@ -531,8 +527,6 @@ impl ReActEngine {
                         canonical,
                         history,
                         branch_points,
-                        sessions,
-                        &session_id,
                         &emitter,
                     )
                     .await;
@@ -573,13 +567,13 @@ impl ReActEngine {
             );
 
             if let Some(ref reasoning) = response.reasoning {
-                sessions.persist_message("assistant", reasoning, Some("reasoning"));
+                self.persist_task_message(task_id, "assistant", reasoning, Some("reasoning"));
                 // Reconcile the frontend's streamed reasoning with the
                 // authoritative complete text. The frontend builds reasoning
                 // only from batched deltas, so a dropped/delayed final chunk
                 // would permanently lose trailing characters. Emitting the
                 // complete reasoning as a final delta lets the frontend's
-                // cumulative-detection (delta.startsWith(curr) → replace)
+                // cumulative-detection (delta.startsWith(curr) 鈫?replace)
                 // snap the content to the exact full text. This runs after the
                 // chunk batcher has flushed, so it is guaranteed to be the
                 // last reasoning event for this step.
@@ -598,7 +592,7 @@ impl ReActEngine {
             // A completely empty model response (no text, no reasoning, no
             // tool calls) is almost always a transient upstream glitch. Retry
             // the same context once before concluding the model decided
-            // nothing — otherwise the task would instantly "complete" with a
+            // nothing 鈥?otherwise the task would instantly "complete" with a
             // "No action decided." message and pause without answering.
             if thought.is_none() && actions.is_empty() && !retried_empty {
                 retried_empty = true;
@@ -699,7 +693,7 @@ impl ReActEngine {
                         status: "paused".into(),
                     })
                     .await;
-                sessions.persist_message("assistant", &msg, Some("text"));
+                self.persist_task_message(task_id, "assistant", &msg, Some("text"));
                 infer();
                 self.save_branch_point(
                     task_id,
@@ -707,7 +701,6 @@ impl ReActEngine {
                     history,
                     step_num,
                     branch_points,
-                    &session_id,
                 );
                 self.save_snapshot_with_branches(
                     task_id,
@@ -736,7 +729,7 @@ impl ReActEngine {
                         status: "paused".into(),
                     })
                     .await;
-                sessions.persist_message("assistant", &final_text, Some("text"));
+                self.persist_task_message(task_id, "assistant", &final_text, Some("text"));
                 infer();
                 self.save_branch_point(
                     task_id,
@@ -744,7 +737,6 @@ impl ReActEngine {
                     history,
                     step_num,
                     branch_points,
-                    &session_id,
                 );
                 self.save_snapshot_with_branches(
                     task_id,
@@ -759,7 +751,7 @@ impl ReActEngine {
             if let Some(ref t) = thought {
                 let text = t.trim();
                 if !text.is_empty() {
-                    sessions.persist_message("assistant", text, Some("text"));
+                    self.persist_task_message(task_id, "assistant", text, Some("text"));
                 }
             }
 
@@ -810,7 +802,6 @@ impl ReActEngine {
                 history,
                 step_num,
                 branch_points,
-                &session_id,
             );
 
             use futures_util::StreamExt;
@@ -955,7 +946,7 @@ impl ReActEngine {
             let mut asked_questions: Vec<String> = Vec::new();
             // Drain tool results while remaining responsive to cancellation.
             // Without select!, a cancel arriving mid-batch would only be
-            // detected at the next step boundary — after all tools finish.
+            // detected at the next step boundary 鈥?after all tools finish.
             loop {
                 tokio::select! {
                     biased;
@@ -994,7 +985,7 @@ impl ReActEngine {
                         }
                         // Surface an `ask` result as a readable question rather
                         // than raw JSON. The user's reply arrives via
-                        // process_input → supplement → Paused→Pending resume.
+                        // process_input 鈫?supplement 鈫?Paused鈫扨ending resume.
                         if let Some(q) = &ask_question {
                             asked_questions.push(q.clone());
                         }
@@ -1080,11 +1071,11 @@ impl ReActEngine {
 
             // The agent asked the human a question: pause so the user can
             // answer. Their reply arrives as a supplement and resumes the task
-            // (Paused → Pending → dispatcher re-enters the loop, injecting the
+            // (Paused 鈫?Pending 鈫?dispatcher re-enters the loop, injecting the
             // answer as context at the top of the next step).
             if !asked_questions.is_empty() {
                 let question = asked_questions.join("\n\n");
-                sessions.persist_message("assistant", &question, Some("text"));
+                self.persist_task_message(task_id, "assistant", &question, Some("text"));
                 // Save the snapshot at step_num+1 (matching the other pause
                 // paths) so the resumed turn gets a fresh step number.
                 self.save_snapshot_with_branches(
@@ -1103,8 +1094,8 @@ impl ReActEngine {
                 // the steering queue (task was still Running). Convert it to a
                 // supplement and, if present, resume immediately as Pending so
                 // the answer isn't stranded while the task sits Paused. The
-                // steering queue holds only user interjections now — background
-                // job results are buffered separately — so `has_answer` truly
+                // steering queue holds only user interjections now 鈥?background
+                // job results are buffered separately 鈥?so `has_answer` truly
                 // reflects a human reply.
                 let steering = self.executor.get_steering(task_id).await;
                 let has_answer = !steering.is_empty();
@@ -1156,10 +1147,32 @@ impl ReActEngine {
                 status: "paused".into(),
             })
             .await;
-        sessions.persist_message("assistant", "Task completed.", Some("text"));
+        self.persist_task_message(task_id, "assistant", "Task completed.", Some("text"));
         infer();
         self.save_snapshot_with_branches(task_id, canonical, history, last_step + 1, branch_points);
         Ok(())
+    }
+
+    /// Persist an assistant message into the task's message stream, applying
+    /// the configured sliding-window trim. Delegates to the shared
+    /// `crate::persist_task_message` so this path cannot drift from the
+    /// user-turn persistence path (same trim, same error policy).
+    fn persist_task_message(
+        &self,
+        task_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+    ) {
+        let _ = crate::persist_task_message(
+            &self.db,
+            task_id,
+            role,
+            content,
+            message_type,
+            &[],
+            self.message_window_size,
+        );
     }
 
     /// Parse LLM response into thought text and actions.
@@ -1213,7 +1226,7 @@ impl ReActEngine {
         (thought, actions)
     }
 
-    /// Save snapshot including branch points for tree-structured rollback (§2).
+    /// Save snapshot including branch points for tree-structured rollback (搂2).
     fn save_snapshot_with_branches(
         &self,
         task_id: &str,
@@ -1248,8 +1261,6 @@ impl ReActEngine {
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         branch_points: &mut HashMap<u32, BranchPoint>,
-        sessions: &SessionManager,
-        session_id: &str,
         emitter: &Arc<dyn AgentEventEmitter>,
     ) {
         // Save a branch point BEFORE persisting the partial output, so
@@ -1265,23 +1276,22 @@ impl ReActEngine {
             history,
             step_num,
             branch_points,
-            session_id,
         );
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
         if !reasoning_text.trim().is_empty() {
-            sessions.persist_message("assistant", reasoning_text.trim(), Some("reasoning"));
+            self.persist_task_message(task_id, "assistant", reasoning_text.trim(), Some("reasoning"));
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            sessions.persist_message("assistant", text, Some("text"));
+            self.persist_task_message(task_id, "assistant", text, Some("text"));
             EventDispatcher::emit_thought_from(emitter, task_id, text, step_num, run_id, &self.db)
                 .await;
         }
     }
 
-    /// Save a branch point at the current step before tool execution (§2).
+    /// Save a branch point at the current step before tool execution (搂2).
     fn save_branch_point(
         &self,
         task_id: &str,
@@ -1289,9 +1299,8 @@ impl ReActEngine {
         history: &[ReActStep],
         step_number: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
-        session_id: &str,
     ) {
-        let last_msg_at = self.db.get_last_message_created_at(session_id);
+        let last_msg_at = self.db.get_last_message_created_at(task_id);
         branch_points.insert(
             step_number,
             BranchPoint {
@@ -1317,7 +1326,7 @@ impl ReActEngine {
     ) {
         let usage = &response.usage;
         if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
-            // No usage reported by the provider — nothing useful to surface.
+            // No usage reported by the provider 鈥?nothing useful to surface.
             return;
         }
 
@@ -1419,7 +1428,7 @@ impl ReActEngine {
         let router = self.router();
         if let Some(result) = self.compactor.compact(canonical, &router).await {
             tracing::info!(
-                "compaction for task {}: {} tokens → {} tokens ({} msgs summarized)",
+                "compaction for task {}: {} tokens 鈫?{} tokens ({} msgs summarized)",
                 task_id,
                 result.tokens_before,
                 result.tokens_after,
@@ -1750,3 +1759,4 @@ mod tests {
         assert_eq!(thought.as_deref(), Some("spaced thought"));
     }
 }
+

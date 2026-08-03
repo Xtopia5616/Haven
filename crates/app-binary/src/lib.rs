@@ -904,8 +904,6 @@ pub fn run() {
             commands::set_skill_enabled,
             commands::open_skills_dir,
             commands::execute_skill,
-            commands::get_conversation_memory,
-            commands::clear_conversation,
             commands::list_facts,
             commands::add_fact,
             commands::delete_fact,
@@ -941,8 +939,6 @@ pub fn run() {
                 {
                     tracing::info!("paused {} running task(s) on exit", n);
                 }
-                let _ = state.db.close_active_session();
-                tracing::info!("session closed on app exit");
             }
         });
 }

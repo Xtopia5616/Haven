@@ -354,7 +354,7 @@ mod tests {
     fn make_message(content: &str) -> super::super::messages::Message {
         super::super::messages::Message {
             id: uuid::Uuid::new_v4().to_string(),
-            session_id: "test-session".into(),
+            task_id: "test-task".into(),
             role: "user".into(),
             content: content.into(),
             message_type: Some("text".into()),

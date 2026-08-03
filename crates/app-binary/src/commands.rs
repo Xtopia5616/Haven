@@ -1343,22 +1343,6 @@ pub async fn export_history(
     .map_err(|e| log_err("export_history", e))
 }
 
-#[tauri::command]
-pub async fn get_conversation_memory(
-    state: State<'_, Arc<AppState>>,
-    session_id: String,
-) -> Result<Vec<haven_memory::repositories::messages::Message>, String> {
-    state.db.get_session_messages(&session_id).map_err(|e| log_err("get_conversation_memory", e))
-}
-
-#[tauri::command]
-pub async fn clear_conversation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    // Close the current session and create a new one
-    let _ = state.db.close_active_session();
-    let _ = state.db.get_or_create_active_session().map_err(|e| log_err("clear_conversation", e))?;
-    Ok(())
-}
-
 // M6-04: Fact management commands
 #[tauri::command]
 pub async fn list_facts(
@@ -1579,19 +1563,16 @@ pub struct TaskReviewResponse {
     pub steps: Vec<TaskStep>,
 }
 
-/// Load the session messages and steps for a task into a review response.
+/// Load the task's messages and steps into a review response.
 /// Shared by `get_task_for_review` and `get_last_conversation`.
 fn review_response_for_task(
     db: &haven_memory::Database,
     task: Task,
 ) -> Result<TaskReviewResponse, String> {
-    let messages = match task.session_id.as_deref() {
-        Some(session_id) if !session_id.is_empty() => {
-            db.get_session_messages(session_id).map_err(|e| log_err("is_autostart_enabled", e))?
-        }
-        _ => Vec::new(),
-    };
-    let steps = db.get_task_steps(&task.id).map_err(|e| log_err("is_autostart_enabled", e))?;
+    let messages = db
+        .get_task_messages(&task.id)
+        .map_err(|e| log_err("review_response_for_task", e))?;
+    let steps = db.get_task_steps(&task.id).map_err(|e| log_err("review_response_for_task", e))?;
     Ok(TaskReviewResponse {
         task,
         messages,
@@ -1645,8 +1626,9 @@ pub async fn rollback_task(
 }
 
 /// Branch a task from a specific step into a new conversation. Copies all
-/// messages up to that step into a new child session and creates a new Paused
-/// task seeded with the branch point state. Returns the new task id.
+/// messages up to that step into a new child task (parent_task_id links back)
+/// and creates a new Paused task seeded with the branch point state. Returns
+/// the new task id.
 #[tauri::command]
 pub async fn branch_task(
     state: State<'_, Arc<AppState>>,

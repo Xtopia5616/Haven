@@ -202,103 +202,118 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .map(|c| c > 0)
         .unwrap_or(false);
     if has_sessions {
-        // Very old databases may lack sessions.parent_id (added later).
-        let has_parent_id: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='parent_id'")?
-            .query_row([], |r| r.get::<_, i32>(0))
-            .map(|c| c > 0)
-            .unwrap_or(false);
-        if !has_parent_id {
-            conn.execute(
-                "ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id)",
-                [],
-            )?;
-        }
-
+        // The whole conversion runs inside a single transaction: a crash
+        // mid-migration rolls everything back, so the next startup re-runs
+        // the conversion from a clean state instead of failing on partial
+        // artifacts (messages_rebuild left behind, session_id already gone).
+        // PRAGMA foreign_keys must be toggled OUTSIDE the transaction (it is
+        // a no-op inside one), so it happens before BEGIN.
         let fk_on: bool = conn
             .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
             .unwrap_or(false);
         if fk_on {
             conn.execute_batch("PRAGMA foreign_keys=OFF")?;
         }
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            // Very old databases may lack sessions.parent_id (added later).
+            let has_parent_id: bool = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='parent_id'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            if !has_parent_id {
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN parent_id TEXT REFERENCES sessions(id)",
+                    [],
+                )?;
+            }
 
-        // 1. messages → task_id. Messages whose session has no task (orphaned
-        //    by crashed runs) are dropped.
-        conn.execute_batch(
-            "CREATE TABLE messages_rebuild (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
-                content TEXT NOT NULL,
-                message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                tool_call_id TEXT,
-                attachments TEXT,
-                is_compacted INTEGER NOT NULL DEFAULT 0,
-                compaction_id TEXT,
-                parent_message_id TEXT REFERENCES messages(id)
-            );
-            INSERT INTO messages_rebuild
-                (id, task_id, role, content, message_type, created_at, tool_call_id,
-                 attachments, is_compacted, compaction_id, parent_message_id)
-            SELECT m.id, t.id, m.role, m.content, m.message_type, m.created_at, m.tool_call_id,
-                   m.attachments, m.is_compacted, m.compaction_id, m.parent_message_id
-            FROM messages m
-            JOIN tasks t ON t.session_id = m.session_id;
-            DROP TABLE messages;
-            ALTER TABLE messages_rebuild RENAME TO messages;
-            ",
-        )?;
+            // 1. messages → task_id. Messages whose session has no task
+            //    (orphaned by crashed runs) are dropped.
+            conn.execute_batch(
+                "CREATE TABLE messages_rebuild (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+                    content TEXT NOT NULL,
+                    message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning')),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    tool_call_id TEXT,
+                    attachments TEXT,
+                    is_compacted INTEGER NOT NULL DEFAULT 0,
+                    compaction_id TEXT,
+                    parent_message_id TEXT REFERENCES messages(id)
+                );
+                INSERT INTO messages_rebuild
+                    (id, task_id, role, content, message_type, created_at, tool_call_id,
+                     attachments, is_compacted, compaction_id, parent_message_id)
+                SELECT m.id, t.id, m.role, m.content, m.message_type, m.created_at, m.tool_call_id,
+                       m.attachments, m.is_compacted, m.compaction_id, m.parent_message_id
+                FROM messages m
+                JOIN tasks t ON t.session_id = m.session_id;
+                DROP TABLE messages;
+                ALTER TABLE messages_rebuild RENAME TO messages;
+                ",
+            )?;
 
-        // 2. compaction_entries → task_id (same join, orphans dropped).
-        conn.execute_batch(
-            "CREATE TABLE compaction_entries_rebuild (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                summary TEXT NOT NULL,
-                first_kept_entry_id TEXT,
-                tokens_before INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            INSERT INTO compaction_entries_rebuild
-                (id, task_id, summary, first_kept_entry_id, tokens_before, created_at)
-            SELECT c.id, t.id, c.summary, c.first_kept_entry_id, c.tokens_before, c.created_at
-            FROM compaction_entries c
-            JOIN tasks t ON t.session_id = c.session_id;
-            DROP TABLE compaction_entries;
-            ALTER TABLE compaction_entries_rebuild RENAME TO compaction_entries;
-            ",
-        )?;
+            // 2. compaction_entries → task_id (same join, orphans dropped).
+            conn.execute_batch(
+                "CREATE TABLE compaction_entries_rebuild (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                    summary TEXT NOT NULL,
+                    first_kept_entry_id TEXT,
+                    tokens_before INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                INSERT INTO compaction_entries_rebuild
+                    (id, task_id, summary, first_kept_entry_id, tokens_before, created_at)
+                SELECT c.id, t.id, c.summary, c.first_kept_entry_id, c.tokens_before, c.created_at
+                FROM compaction_entries c
+                JOIN tasks t ON t.session_id = c.session_id;
+                DROP TABLE compaction_entries;
+                ALTER TABLE compaction_entries_rebuild RENAME TO compaction_entries;
+                ",
+            )?;
 
-        // 3. tasks: drop session_id, express branching via parent_task_id
-        //    (old sessions.parent_id → the task owning the parent session).
-        conn.execute_batch(
-            "CREATE TABLE tasks_rebuild (
-                id TEXT PRIMARY KEY,
-                input_text TEXT NOT NULL DEFAULT '',
-                title TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','running','paused','completed','failed','error')),
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                transcript TEXT NOT NULL DEFAULT '',
-                react_state TEXT,
-                parent_task_id TEXT REFERENCES tasks(id)
-            );
-            INSERT INTO tasks_rebuild
-                (id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id)
-            SELECT t.id, t.input_text, t.title, t.status, t.created_at, t.updated_at, t.transcript, t.react_state,
-                   (SELECT t2.id FROM tasks t2
-                    JOIN sessions s2 ON t2.session_id = s2.id
-                    WHERE s2.id = (SELECT s.parent_id FROM sessions s WHERE s.id = t.session_id))
-            FROM tasks t;
-            DROP TABLE tasks;
-            ALTER TABLE tasks_rebuild RENAME TO tasks;
-            ",
-        )?;
+            // 3. tasks: drop session_id, express branching via parent_task_id
+            //    (old sessions.parent_id → the task owning the parent session).
+            conn.execute_batch(
+                "CREATE TABLE tasks_rebuild (
+                    id TEXT PRIMARY KEY,
+                    input_text TEXT NOT NULL DEFAULT '',
+                    title TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','running','paused','completed','failed','error')),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    transcript TEXT NOT NULL DEFAULT '',
+                    react_state TEXT,
+                    parent_task_id TEXT REFERENCES tasks(id)
+                );
+                INSERT INTO tasks_rebuild
+                    (id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id)
+                SELECT t.id, t.input_text, t.title, t.status, t.created_at, t.updated_at, t.transcript, t.react_state,
+                       (SELECT t2.id FROM tasks t2
+                        JOIN sessions s2 ON t2.session_id = s2.id
+                        WHERE s2.id = (SELECT s.parent_id FROM sessions s WHERE s.id = t.session_id))
+                FROM tasks t;
+                DROP TABLE tasks;
+                ALTER TABLE tasks_rebuild RENAME TO tasks;
+                ",
+            )?;
 
-        // 4. Drop the sessions table and its legacy indexes.
-        conn.execute_batch("DROP TABLE sessions")?;
+            // 4. Drop the sessions table and its legacy indexes.
+            conn.execute_batch("DROP TABLE sessions")?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = conn.execute_batch("ROLLBACK");
+        } else {
+            conn.execute_batch("COMMIT")?;
+        }
+        result?;
         if fk_on {
             conn.execute_batch("PRAGMA foreign_keys=ON")?;
         }
@@ -307,6 +322,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     // Indexes for the merged schema (idempotent; also covers fresh databases).
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
+         CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
          DROP INDEX IF EXISTS idx_messages_session;
          DROP INDEX IF EXISTS idx_tasks_session;
          CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
@@ -788,6 +804,17 @@ mod tests {
             })
             .unwrap();
         assert!(parent.is_none());
+
+        // The created_at index survives the table rebuild (it was dropped
+        // with the old messages table and must be recreated).
+        let idx_created_at: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_created_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_created_at, 1, "idx_messages_created_at must survive conversion");
     }
 
     #[test]

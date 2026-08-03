@@ -6,10 +6,8 @@ use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use tokio::sync::Semaphore;
 
-use crate::session::SessionManager;
-
 /// Maximum characters of transcript sent to the BalancedModel for fact
-/// extraction. Prevents unbounded token cost on long sessions.
+/// extraction. Prevents unbounded token cost on long conversations.
 const MAX_TRANSCRIPT_CHARS: usize = 4000;
 
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
@@ -42,8 +40,7 @@ pub struct InferenceEngine {
 }
 
 impl InferenceEngine {
-    pub fn new(db: Arc<Database>, sessions: Arc<SessionManager>, router: Arc<LlmRouter>) -> Self {
-        let _ = sessions; // Session ID is now passed explicitly to infer methods.
+    pub fn new(db: Arc<Database>, router: Arc<LlmRouter>) -> Self {
         Self {
             db,
             router,
@@ -51,19 +48,18 @@ impl InferenceEngine {
         }
     }
 
-    /// Extract facts from the specified session's user messages.
+    /// Extract facts from the specified task's user messages.
     ///
-    /// Takes an explicit `session_id` to avoid a race where the global
-    /// current-session pointer has already switched to the next task by
-    /// the time this fire-and-forget task runs.
+    /// Takes an explicit `task_id` so the fire-and-forget background task is
+    /// immune to any concurrent task switching.
     ///
     /// Tries LLM-assisted extraction via the BalancedModel first. On any
     /// failure (network error, circuit breaker open, bad JSON), falls back
     /// to the rule-based extractor so inference is never silently skipped.
     /// An empty `Ok([])` from the LLM is treated as a valid "no facts found"
     /// response and does NOT trigger the fallback.
-    pub async fn infer_facts(&self, session_id: &str) {
-        let messages = match self.db.get_session_messages(session_id) {
+    pub async fn infer_facts(&self, task_id: &str) {
+        let messages = match self.db.get_task_messages(task_id) {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!("fact inference: failed to load messages: {}", e);
@@ -100,7 +96,7 @@ impl InferenceEngine {
                 let _ = self.db.flush_low_confidence(0.3);
             }
             Ok(_) => {
-                tracing::debug!("LLM found no facts in session {}", session_id);
+                tracing::debug!("LLM found no facts in task {}", task_id);
             }
             Err(e) => {
                 tracing::warn!("LLM fact extraction failed ({}), falling back to rules", e);
@@ -181,18 +177,18 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
         Ok(facts)
     }
 
-    /// Run cross-session preference inference.
-    pub fn infer_preferences(&self, session_id: &str) {
-        if let Ok(messages) = self.db.get_session_messages(session_id) {
+    /// Run preference inference over a task's messages.
+    pub fn infer_preferences(&self, task_id: &str) {
+        if let Ok(messages) = self.db.get_task_messages(task_id) {
             let inferred = self.db.infer_preferences_from_messages(&messages);
             let _ = self.db.save_inferred_preferences(&inferred);
         }
     }
 
     /// Run both fact and preference inference (common exit point in the ReAct loop).
-    pub async fn infer_all(&self, session_id: &str) {
-        self.infer_facts(session_id).await;
-        self.infer_preferences(session_id);
+    pub async fn infer_all(&self, task_id: &str) {
+        self.infer_facts(task_id).await;
+        self.infer_preferences(task_id);
     }
 }
 
@@ -250,7 +246,7 @@ mod tests {
     fn make_message(content: &str) -> Message {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
-            session_id: "s1".into(),
+            task_id: "t1".into(),
             role: "user".into(),
             content: content.into(),
             message_type: Some("text".into()),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::sync::Arc;
 
 mod compactor;
@@ -6,7 +6,6 @@ mod event;
 mod inference;
 mod prompt;
 mod react;
-mod session;
 mod title;
 mod types;
 
@@ -16,19 +15,44 @@ pub use haven_task::{RunHandler, TaskExecutor, TaskInfo, TaskStatus};
 pub use inference::InferenceEngine;
 pub use prompt::SystemPromptBuilder;
 pub use react::ReActEngine;
-pub use session::SessionManager;
 pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
 
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::LlmRouter;
 use haven_memory::Database;
+use haven_memory::repositories::messages::MessageAttachment;
 
 use crate::title::TitleGenerator;
+
+/// The single persistence entry point for chat messages: insert a message
+/// into a task's message stream with the sliding-window trim applied. Both
+/// user turns (AgentLayer) and assistant turns (ReActEngine) go through this
+/// one implementation so the two paths cannot drift apart.
+pub(crate) fn persist_task_message(
+    db: &Database,
+    task_id: &str,
+    role: &str,
+    content: &str,
+    message_type: Option<&str>,
+    attachments: &[MessageAttachment],
+    window_size: usize,
+) -> anyhow::Result<()> {
+    db.add_message_with_window_full(
+        task_id,
+        role,
+        content,
+        message_type,
+        None,
+        window_size,
+        attachments,
+    )?;
+    Ok(())
+}
 
 pub struct AgentLayer {
     db: Arc<Database>,
     executor: Arc<TaskExecutor>,
-    sessions: Arc<SessionManager>,
+    conversation_window_size: usize,
     events: Arc<EventDispatcher>,
     prompt_builder: Arc<SystemPromptBuilder>,
     react_engine: Arc<ReActEngine>,
@@ -42,10 +66,9 @@ impl AgentLayer {
         executor: Arc<TaskExecutor>,
         router: Arc<LlmRouter>,
         max_steps: u32,
-        session_window_size: usize,
+        conversation_window_size: usize,
         max_observation_chars: usize,
     ) -> Self {
-        let sessions = Arc::new(SessionManager::new(db.clone(), session_window_size));
         let events = Arc::new(EventDispatcher::new());
         let prompt_builder = Arc::new(SystemPromptBuilder::new(executor.get_tools(), db.clone()));
         let react_engine = Arc::new(ReActEngine::new(
@@ -54,12 +77,9 @@ impl AgentLayer {
             db.clone(),
             max_steps,
             max_observation_chars,
+            conversation_window_size,
         ));
-        let inference = Arc::new(InferenceEngine::new(
-            db.clone(),
-            sessions.clone(),
-            router.clone(),
-        ));
+        let inference = Arc::new(InferenceEngine::new(db.clone(), router.clone()));
         let _ = db.set_preference("name", "Xtopia");
         let _ = db.insert_fact("user", "name", "Xtopia", "user", 1.0, &["identity"]);
         // Title generator is always available: it routes through the shared
@@ -71,7 +91,7 @@ impl AgentLayer {
         Self {
             db,
             executor,
-            sessions,
+            conversation_window_size,
             events,
             prompt_builder,
             react_engine,
@@ -80,29 +100,30 @@ impl AgentLayer {
         }
     }
 
-    pub fn ensure_session(&self) -> String {
-        self.sessions.ensure_session()
-    }
-
-    pub fn start_new_session(&self) -> anyhow::Result<String> {
-        self.sessions.start_new_session()
-    }
-
+    /// Persist a message into the task's message stream (conversation history).
     fn persist_message_parts(
         &self,
+        task_id: &str,
         role: &str,
         content: &str,
         message_type: Option<&str>,
         attachments: &[haven_memory::repositories::messages::MessageAttachment],
-    ) {
-        self.sessions
-            .persist_message_parts(role, content, message_type, attachments);
+    ) -> anyhow::Result<()> {
+        persist_task_message(
+            &self.db,
+            task_id,
+            role,
+            content,
+            message_type,
+            attachments,
+            self.conversation_window_size,
+        )
     }
 
     /// Reopen a terminal task to Paused state.
-    /// Used by the history review flow — shows the task as active on the chat
+    /// Used by the history review flow 鈥?shows the task as active on the chat
     /// page.  The dispatcher won't pick it up until the user sends a
-    /// follow-up message (which calls supplement_task → Paused→Pending).
+    /// follow-up message (which calls supplement_task 鈫?Paused鈫扨ending).
     pub async fn reopen_task(&self, task_id: &str) -> anyhow::Result<()> {
         // Terminal tasks (Error/Completed) are removed from the in-memory
         // list by unmark_running, so ensure_task_loaded is needed to bring
@@ -169,7 +190,7 @@ impl AgentLayer {
         // finishes, inject the result into the owning task's context at the
         // next ReAct step (via the job-completions buffer) and, if the task was
         // Paused for scheduling reasons, wake it to Pending so the dispatcher
-        // resumes and the model processes the result — no manual `job_status`
+        // resumes and the model processes the result 鈥?no manual `job_status`
         // polling required.
         //
         // A task Paused because the `ask` tool is awaiting a human reply is
@@ -223,8 +244,16 @@ impl AgentLayer {
         }
     }
 
-    fn load_conversation_history(&self) -> Vec<String> {
-        self.sessions.load_conversation_history()
+    /// Load the most recent conversation messages for a task as text lines
+    /// that get fed into the ReAct system prompt as Conversation History.
+    fn load_conversation_history(&self, task_id: &str) -> Vec<String> {
+        self.db
+            .get_task_messages_limit(task_id, self.conversation_window_size)
+            .ok()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| format!("[{}] {}", m.role, m.content))
+            .collect()
     }
 
     /// Rebuild per-task tool registrations from saved step history.
@@ -279,7 +308,7 @@ impl AgentLayer {
         // diverge from the restored snapshot and overwrite it on the next save.
         // The loop observes the token at every wait point (step top, LLM call,
         // tool batch drain) and exits without touching status, so no Error
-        // marking is needed — setting Error here would only emit a spurious
+        // marking is needed 鈥?setting Error here would only emit a spurious
         // "task interrupted" error event and trigger terminal cleanup.
         let state = self.executor.get_task_state(task_id).await;
         if state == TaskStatus::Running {
@@ -320,30 +349,26 @@ impl AgentLayer {
         let state_json = match self.db.get_react_state(task_id)? {
             Some(s) => s,
             None => {
-                // No saved state at all — this happens when a task errored
+                // No saved state at all 鈥?this happens when a task errored
                 // before any snapshot was saved (e.g. first LLM call failed
                 // in an older version without Fix 1). We can't restore
                 // canonical, but we can still truncate session messages so
                 // the user can edit and re-send their input.
                 tracing::warn!(
-                    "rollback_task {}: no react_state — falling back to session-only truncation",
+                    "rollback_task {}: no react_state 鈥?falling back to message-only truncation",
                     task_id
                 );
-                if let Ok(Some(task)) = self.db.get_task(task_id)
-                    && let Some(ref sid) = task.session_id
-                {
-                    let msgs = self.db.get_session_messages(sid).unwrap_or_default();
-                    let cutoff = msgs
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == "user")
-                        .map(|m| m.created_at.clone());
-                    if let Some(ref ts) = cutoff {
-                        if pause {
-                            let _ = self.db.delete_messages_from(sid, ts);
-                        } else {
-                            let _ = self.db.delete_messages_after(sid, ts);
-                        }
+                let msgs = self.db.get_task_messages(task_id).unwrap_or_default();
+                let cutoff = msgs
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "user")
+                    .map(|m| m.created_at.clone());
+                if let Some(ref ts) = cutoff {
+                    if pause {
+                        let _ = self.db.delete_messages_from(task_id, ts);
+                    } else {
+                        let _ = self.db.delete_messages_after(task_id, ts);
                     }
                 }
                 // Reload into memory and set status.
@@ -367,7 +392,7 @@ impl AgentLayer {
         // If no branch_point exists at the target step, the step likely
         // failed before save_branch_point was called (e.g. LLM error
         // mid-stream). In that case the snapshot's current canonical/history
-        // IS the pre-step state — use it directly.
+        // IS the pre-step state 鈥?use it directly.
         let bp = if let Some(bp) = snapshot.branch_points.get(&target_step).cloned() {
             bp
         } else {
@@ -383,17 +408,13 @@ impl AgentLayer {
             // it).
             let cutoff_ts = self
                 .db
-                .get_task(task_id)
+                .get_task_messages(task_id)
                 .ok()
-                .flatten()
-                .and_then(|t| t.session_id)
-                .and_then(|sid| {
-                    self.db.get_session_messages(&sid).ok().and_then(|msgs| {
-                        msgs.iter()
-                            .rev()
-                            .find(|m| m.role == "user")
-                            .map(|m| m.created_at.clone())
-                    })
+                .and_then(|msgs| {
+                    msgs.iter()
+                        .rev()
+                        .find(|m| m.role == "user")
+                        .map(|m| m.created_at.clone())
                 });
             BranchPoint {
                 canonical: snapshot.canonical.clone(),
@@ -432,27 +453,23 @@ impl AgentLayer {
         // timeline.
         snapshot.branch_points.retain(|&k, _| k <= target_step);
 
-        // Truncate session messages persisted after the branch point so the
-        // conversation context matches the restored snapshot. The session_id
-        // is used directly — no need to mutate the global SessionManager.
-        if let Ok(Some(task)) = self.db.get_task(task_id)
-            && let Some(ref sid) = task.session_id
-            && let Some(ref ts) = bp.last_msg_at
-        {
+        // Truncate task messages persisted after the branch point so the
+        // conversation context matches the restored snapshot.
+        if let Some(ref ts) = bp.last_msg_at {
             if pause {
                 // User-message rollback: delete the user message itself too
                 // (inclusive), so the context is clean when the user re-sends
                 // an edited version.
                 //
                 // `ts` (bp.last_msg_at) is the timestamp of the last message
-                // persisted BEFORE the target step ran — usually the step's
+                // persisted BEFORE the target step ran 鈥?usually the step's
                 // thought, which is AFTER the user message. Deleting from
                 // `ts` alone would leave the rolled-back user input in the
-                // session, so it would reappear on the next review rebuild.
+                // task, so it would reappear on the next review rebuild.
                 // Delete from the user message's own timestamp instead.
                 let user_ts = self
                     .db
-                    .get_session_messages(sid)
+                    .get_task_messages(task_id)
                     .unwrap_or_default()
                     .iter()
                     .filter(|m| m.role == "user" && m.created_at.as_str() <= ts.as_str())
@@ -460,19 +477,19 @@ impl AgentLayer {
                     .max();
                 match user_ts {
                     Some(u_ts) => {
-                        self.db.delete_messages_from(sid, &u_ts)?;
+                        self.db.delete_messages_from(task_id, &u_ts)?;
                         // Rollback overwrites: drop step rows recorded after
                         // the user message too (they belong to the discarded
                         // timeline).
                         self.db.delete_task_steps_after(task_id, &u_ts)?;
                     }
                     None => {
-                        self.db.delete_messages_from(sid, ts)?;
+                        self.db.delete_messages_from(task_id, ts)?;
                         self.db.delete_task_steps_after(task_id, ts)?;
                     }
                 }
             } else {
-                self.db.delete_messages_after(sid, ts)?;
+                self.db.delete_messages_after(task_id, ts)?;
                 self.db.delete_task_steps_after(task_id, ts)?;
             }
         }
@@ -533,7 +550,7 @@ impl AgentLayer {
     }
 
     /// Branch a task from a specific step into a brand-new conversation.
-    /// Creates a new child session (parent = source session), copies every
+    /// Creates a new child task (parent_task_id = source task), copies every
     /// message up to and including the branch point into it, then creates a
     /// new Paused task seeded with the branch point's canonical/history so the
     /// user can continue from that point. Returns the new task id.
@@ -543,10 +560,6 @@ impl AgentLayer {
             .db
             .get_task(task_id)?
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", task_id))?;
-        let source_session = source
-            .session_id
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("source task has no session"))?;
 
         let state_json = self
             .db
@@ -559,49 +572,54 @@ impl AgentLayer {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("no branch point at step {}", target_step))?;
 
-        // Create a new child session linked to the source session.
-        let new_session = self.db.create_session(Some(&source_session))?;
-
-        // Copy every message up to (and including) the branch point's
-        // last_msg_at into the new session. Use a very large window so the
-        // sliding-window trim never fires during the copy.
-        let cutoff = bp.last_msg_at.as_deref();
-        let msgs = self.db.get_session_messages(&source_session)?;
-        for m in &msgs {
-            if let Some(ts) = cutoff
-                && m.created_at.as_str() > ts
-            {
-                break;
-            }
-            self.db.add_message_with_window_full(
-                &new_session.id,
-                &m.role,
-                &m.content,
-                m.message_type.as_deref(),
-                m.tool_call_id.as_deref(),
-                usize::MAX,
-                &m.attachments,
-            )?;
-        }
-
-        // Build the new task's ReAct snapshot from the branch point.
-        let new_snapshot = ReActSnapshot {
-            canonical: bp.canonical.clone(),
-            history: bp.history.clone(),
-            step_number: bp.step_number,
-            branch_points: HashMap::new(),
-        };
-
         // Create the new task in the DB (status pending), then overwrite its
-        // status to paused and save the seeded react_state.
-        let record = self.db.create_task(
-            Some(&new_session.id),
-            &source.input_text,
-            &source.transcript,
-        )?;
+        // status to paused and save the seeded react_state. The branch task
+        // row must exist before messages can reference it (FK), so on any
+        // failure below the half-created record is deleted again — otherwise
+        // a ghost Paused task without react_state would linger forever.
+        let record = self
+            .db
+            .create_branch_task(task_id, &source.input_text, &source.transcript)?;
         self.db.update_task_status(&record.id, "paused")?;
-        let json = serde_json::to_string(&new_snapshot)?;
-        self.db.save_react_state(&record.id, &json)?;
+
+        let result = (|| -> anyhow::Result<()> {
+            // Copy every message up to (and including) the branch point's
+            // last_msg_at into the new task. Use a very large window so the
+            // sliding-window trim never fires during the copy.
+            let cutoff = bp.last_msg_at.as_deref();
+            let msgs = self.db.get_task_messages(task_id)?;
+            for m in &msgs {
+                if let Some(ts) = cutoff
+                    && m.created_at.as_str() > ts
+                {
+                    break;
+                }
+                self.db.add_message_with_window_full(
+                    &record.id,
+                    &m.role,
+                    &m.content,
+                    m.message_type.as_deref(),
+                    m.tool_call_id.as_deref(),
+                    usize::MAX,
+                    &m.attachments,
+                )?;
+            }
+
+            // Build the new task's ReAct snapshot from the branch point.
+            let new_snapshot = ReActSnapshot {
+                canonical: bp.canonical.clone(),
+                history: bp.history.clone(),
+                step_number: bp.step_number,
+                branch_points: HashMap::new(),
+            };
+            let json = serde_json::to_string(&new_snapshot)?;
+            self.db.save_react_state(&record.id, &json)?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = self.db.delete_task(&record.id);
+            return Err(e);
+        }
 
         // Load into executor memory and set to Paused (do NOT auto-dispatch).
         self.executor.ensure_task_loaded(&record.id).await?;
@@ -621,11 +639,10 @@ impl AgentLayer {
         self.events.emit_task_updated(&record.id, "paused").await;
 
         tracing::info!(
-            "branched task {} from step {} -> new task {} (session {})",
+            "branched task {} from step {} -> new task {}",
             task_id,
             target_step,
-            record.id,
-            new_session.id
+            record.id
         );
         Ok(record.id)
     }
@@ -650,11 +667,9 @@ impl AgentLayer {
         }
 
         // Load the snapshot saved on error to find the branch point's
-        // last_msg_at — the timestamp of the last message BEFORE the partial
+        // last_msg_at 鈥?the timestamp of the last message BEFORE the partial
         // output. We delete everything after it so the retry starts clean.
-        if let Ok(Some(task)) = self.db.get_task(task_id)
-            && let Some(ref sid) = task.session_id
-            && let Ok(Some(state_json)) = self.db.get_react_state(task_id)
+        if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
             && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
         {
             // The snapshot's step_number is the step that failed. Try to
@@ -666,8 +681,8 @@ impl AgentLayer {
                 .get(&snapshot.step_number)
                 .and_then(|bp| bp.last_msg_at.clone())
                 .or_else(|| {
-                    // Find the last user message's timestamp in the session.
-                    self.db.get_session_messages(sid).ok().and_then(|msgs| {
+                    // Find the last user message's timestamp in the task.
+                    self.db.get_task_messages(task_id).ok().and_then(|msgs| {
                         msgs.iter()
                             .rev()
                             .find(|m| m.role == "user")
@@ -675,7 +690,7 @@ impl AgentLayer {
                     })
                 });
             if let Some(ts) = cutoff {
-                self.db.delete_messages_after(sid, &ts)?;
+                self.db.delete_messages_after(task_id, &ts)?;
                 // Retry OVERWRITES the previous attempt: drop the step rows
                 // (tool badges, thought entries) recorded after the branch
                 // point too, so the review history stays linear. Only
@@ -716,37 +731,26 @@ impl AgentLayer {
         };
         let context = task.input.clone();
 
-        // Switch to the task's session so conversation history and
-        // subsequent message persistence target the correct session.
-        // This matters for rollback where the SessionManager may be
-        // pointing at a different session than the dispatched task.
-        if let Ok(Some(db_task)) = self.db.get_task(task_id)
-            && let Some(ref sid) = db_task.session_id
-        {
-            self.sessions.switch_to_session(sid);
-        }
-        let conv_history = self.load_conversation_history();
+        // Conversation history and message persistence are keyed by the task
+        // itself 鈥?there is no separate session indirection anymore.
+        let conv_history = self.load_conversation_history(task_id);
 
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
         // first turn (they were persisted by process_input_with_images).
-        // Sessions are per-task, so the FIRST user message is always the
-        // task's own input; later image follow-ups are supplements (injected
-        // by the ReAct loop at step start) and must NOT be attached to the
-        // initial turn or they would be duplicated.
+        // The FIRST user message is always the task's own input; later image
+        // follow-ups are supplements (injected by the ReAct loop at step
+        // start) and must NOT be attached to the initial turn or they would
+        // be duplicated.
         let initial_attachments = self
             .db
-            .get_task(task_id)
+            .get_task_messages(task_id)
             .ok()
-            .flatten()
-            .and_then(|t| t.session_id)
-            .and_then(|sid| {
-                self.db.get_session_messages(&sid).ok().and_then(|msgs| {
-                    msgs.into_iter()
-                        .find(|m| m.role == "user")
-                        .filter(|m| !m.attachments.is_empty())
-                        .map(|m| m.attachments)
-                })
+            .and_then(|msgs| {
+                msgs.into_iter()
+                    .find(|m| m.role == "user")
+                    .filter(|m| !m.attachments.is_empty())
+                    .map(|m| m.attachments)
             })
             .unwrap_or_default();
 
@@ -813,14 +817,13 @@ impl AgentLayer {
         {
             return;
         }
-        // Build conversation context from session messages
-        let messages = if let Ok(Some(task)) = db.get_task(&task_id)
-            && let Some(ref sid) = task.session_id
-        {
-            db.get_session_messages_limit(sid, 10).unwrap_or_default()
-        } else {
+        // Build conversation context from the task's messages
+        let messages = db
+            .get_task_messages_limit(&task_id, 10)
+            .unwrap_or_default();
+        if messages.is_empty() {
             return;
-        };
+        }
         let conv_lines: Vec<String> = messages
             .iter()
             .map(|m| format!("{}: {}", m.role, m.content))
@@ -878,12 +881,12 @@ impl AgentLayer {
             None => return Ok(history),
         };
         let inference = self.inference.clone();
-        let sid = self.sessions.current_session_id();
+        let tid = task_id.to_string();
         let infer = move || {
             let inference = inference.clone();
-            let sid = sid.clone();
+            let tid = tid.clone();
             tokio::spawn(async move {
-                inference.infer_all(&sid).await;
+                inference.infer_all(&tid).await;
             });
         };
         self.react_engine
@@ -894,7 +897,6 @@ impl AgentLayer {
                 start_step,
                 &mut branch_points,
                 emitter_arc,
-                &self.sessions,
                 &infer,
                 run_id,
             )
@@ -955,12 +957,12 @@ impl AgentLayer {
             None => return Ok(history),
         };
         let inference = self.inference.clone();
-        let sid = self.sessions.current_session_id();
+        let tid = task_id.to_string();
         let infer = move || {
             let inference = inference.clone();
-            let sid = sid.clone();
+            let tid = tid.clone();
             tokio::spawn(async move {
-                inference.infer_all(&sid).await;
+                inference.infer_all(&tid).await;
             });
         };
         let run_id = self.react_engine.next_run_id();
@@ -972,7 +974,6 @@ impl AgentLayer {
                 1,
                 &mut branch_points,
                 emitter_arc,
-                &self.sessions,
                 &infer,
                 run_id,
             )
@@ -1006,14 +1007,15 @@ impl AgentLayer {
         );
 
         if let Some(task_id) = active_task_id {
-            // Switch to the task's session so persisted messages are
-            // associated with the correct session for review.
-            if let Ok(Some(task)) = self.db.get_task(&task_id)
-                && let Some(ref sid) = task.session_id
+            if let Err(e) =
+                self.persist_message_parts(&task_id, "user", transcript, Some("text"), images)
             {
-                self.sessions.switch_to_session(sid);
+                tracing::warn!(
+                    "process_input: failed to persist user message for task {}: {}",
+                    task_id,
+                    e
+                );
             }
-            self.persist_message_parts("user", transcript, Some("text"), images);
 
             let state = self.executor.get_task_state(&task_id).await;
 
@@ -1028,14 +1030,10 @@ impl AgentLayer {
                     .await
                     .is_ok();
                 if !was_in_memory {
-                    // Task may be stale/deleted — fall back to creating a new task
+                    // Task may be stale/deleted 鈥?fall back to creating a new task
                     if self.executor.ensure_task_loaded(&task_id).await.is_err() {
-                        let session_id = self
-                            .start_new_session()
-                            .unwrap_or_else(|_| self.ensure_session());
                         let task = self
-                            .executor
-                            .create_task_with_summary(transcript, transcript, Some(&session_id))
+                            .create_task_with_first_message(transcript, images)
                             .await?;
                         self.events.emit_task_created(&task).await;
                         return Ok(ProcessResult::TaskCreated(task.id));
@@ -1046,7 +1044,7 @@ impl AgentLayer {
                     // add_supplement). Only non-terminal tasks may be
                     // reactivated by a follow-up message; Completed/Error tasks
                     // were ended on purpose and must be reopened explicitly via
-                    // the review flow — auto-converting them would resurrect a
+                    // the review flow 鈥?auto-converting them would resurrect a
                     // ghost task.
                     let fresh_state = self.executor.get_task_state(&task_id).await;
                     if fresh_state == TaskStatus::Completed || fresh_state == TaskStatus::Error {
@@ -1062,7 +1060,7 @@ impl AgentLayer {
                             .emit_task_updated(&task_id, fresh_state.as_str())
                             .await;
                         // Do not keep the reloaded terminal task in the working
-                        // set — it was ended and should not be dispatchable.
+                        // set 鈥?it was ended and should not be dispatchable.
                         self.executor.remove_task(&task_id).await;
                     } else {
                         self.executor
@@ -1086,18 +1084,46 @@ impl AgentLayer {
             }
             Ok(ProcessResult::Supplemented)
         } else {
-            let session_id = self
-                .start_new_session()
-                .unwrap_or_else(|_| self.ensure_session());
-            self.persist_message_parts("user", transcript, Some("text"), images);
             let task = self
-                .executor
-                .create_task_with_summary(transcript, transcript, Some(&session_id))
+                .create_task_with_first_message(transcript, images)
                 .await?;
             tracing::info!("process_input created task: id={:?}", task.id);
             self.events.emit_task_created(&task).await;
             Ok(ProcessResult::TaskCreated(task.id))
         }
+    }
+
+    /// Create a new task and persist the triggering user message into it,
+    /// in that order 鈥?the message (and its attachments) must be on disk
+    /// BEFORE the task is registered with the executor, otherwise the
+    /// dispatcher could start the ReAct loop and miss the first user turn.
+    async fn create_task_with_first_message(
+        &self,
+        input: &str,
+        images: &[haven_memory::repositories::messages::MessageAttachment],
+    ) -> anyhow::Result<haven_task::TaskInfo> {
+        let record = self.db.create_task(input, input)?;
+        // The first user turn (and its attachments) must be on disk BEFORE
+        // the dispatcher can pick the task up; if persisting fails, remove
+        // the task row again so no input-less task ever gets dispatched.
+        if let Err(e) = self.persist_message_parts(&record.id, "user", input, Some("text"), images)
+        {
+            let _ = self.db.delete_task(&record.id);
+            return Err(e);
+        }
+        self.executor.ensure_task_loaded(&record.id).await?;
+        // Wake the dispatcher now that the message is persisted.
+        self.executor
+            .update_task_status(&record.id, TaskStatus::Pending)
+            .await?;
+        let task = self
+            .executor
+            .list_tasks()
+            .await
+            .into_iter()
+            .find(|t| t.id == record.id)
+            .ok_or_else(|| anyhow::anyhow!("task '{}' not registered", record.id))?;
+        Ok(task)
     }
 }
 
@@ -1232,7 +1258,7 @@ mod tests {
         agent.set_emitter(recorder.clone());
 
         let task = executor
-            .create_task_with_summary("do stuff", "do stuff summary", None)
+            .create_task_with_summary("do stuff", "do stuff summary")
             .await
             .unwrap();
         executor
@@ -1255,7 +1281,7 @@ mod tests {
         );
     }
 
-    // ─── Pure-logic and data-layer tests (no LLM required) ───
+    // 鈹€鈹€鈹€ Pure-logic and data-layer tests (no LLM required) 鈹€鈹€鈹€
 
     fn make_test_agent() -> (Arc<AgentLayer>, Arc<TaskExecutor>) {
         let mut p = std::env::temp_dir();
@@ -1291,19 +1317,19 @@ mod tests {
             client,
         ));
         let agent = AgentLayer::new(db, executor, router, 10, 20, 4000);
-        // Verify construction succeeded; session_id is set
-        let sid = agent.ensure_session();
-        assert!(!sid.is_empty());
+        // Verify construction succeeded; no per-session indirection remains.
+        let task = agent.db.create_task("input", "transcript").unwrap();
+        assert!(!task.id.is_empty());
     }
 
     #[test]
-    fn ensure_session_returns_non_empty() {
+    fn agent_constructs_without_session_machinery() {
         let (agent, _) = make_test_agent();
-        let sid = agent.ensure_session();
-        assert!(!sid.is_empty());
-        // Calling again returns the same session
-        let sid2 = agent.ensure_session();
-        assert_eq!(sid, sid2);
+        let task = agent.db.create_task("input", "").unwrap();
+        assert!(!task.id.is_empty());
+        // Two tasks never share message keys 鈥?each owns its own stream.
+        let other = agent.db.create_task("input2", "").unwrap();
+        assert_ne!(task.id, other.id);
     }
 
     #[test]
@@ -1359,7 +1385,7 @@ mod tests {
         });
         agent.set_emitter(recorder.clone());
 
-        let task = executor.create_task("test", None).await.unwrap();
+        let task = executor.create_task("test").await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
     }
@@ -1443,44 +1469,48 @@ mod tests {
     #[tokio::test]
     async fn persist_message_adds_to_db() {
         let (agent, _) = make_test_agent();
-        let sid = agent.ensure_session();
-        agent.persist_message_parts("user", "test message", Some("text"), &[]);
+        let task = agent.db.create_task("input", "").unwrap();
+        agent.persist_message_parts(&task.id, "user", "test message", Some("text"), &[]).unwrap();
         // Read back via db
         let agent_ref = agent.clone();
-        let read_sid = sid.clone();
         let db = agent_ref.db.clone();
-        let msgs = db.get_session_messages_limit(&read_sid, 50).unwrap();
+        let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
         // Messages may or may not be immediately flushed depending on cache
-        // — verify at minimum the message is retrievable
+        // 鈥?verify at minimum the message is retrievable
         let found = msgs
             .iter()
             .find(|m| m.role == "user" && m.content == "test message");
         assert!(found.is_some(), "persisted user message not found in db");
-        let _ = (sid, msgs);
     }
 
     #[tokio::test]
     async fn persist_message_with_attachments_roundtrips() {
         let (agent, _) = make_test_agent();
-        let sid = agent.ensure_session();
+        let task = agent.db.create_task("input", "").unwrap();
         let att = haven_memory::repositories::messages::MessageAttachment {
             media_type: "image/png".into(),
             data: "aGVsbG8=".into(),
         };
-        agent.persist_message_parts("user", "看图", Some("text"), std::slice::from_ref(&att));
+        agent
+            .persist_message_parts(
+                &task.id,
+                "user",
+                "鐪嬪浘",
+                Some("text"),
+                std::slice::from_ref(&att),
+            )
+            .unwrap();
         let agent_ref = agent.clone();
-        let read_sid = sid.clone();
         let db = agent_ref.db.clone();
-        let msgs = db.get_session_messages_limit(&read_sid, 50).unwrap();
+        let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
         let found = msgs
             .iter()
-            .find(|m| m.role == "user" && m.content == "看图");
+            .find(|m| m.role == "user" && m.content == "鐪嬪浘");
         assert!(found.is_some(), "persisted message not found in db");
         let msg = found.unwrap();
         assert_eq!(msg.attachments.len(), 1);
         assert_eq!(msg.attachments[0].media_type, "image/png");
         assert_eq!(msg.attachments[0].data, "aGVsbG8=");
-        let _ = (sid, msgs);
     }
 
     #[test]
@@ -1565,11 +1595,11 @@ mod tests {
 
     /// M3/H10: a follow-up message must NOT resurrect a task that was ended.
     /// Terminal tasks are only reactivated explicitly via `reopen_task`
-    /// (Completed/Error → Paused) in the review flow.
+    /// (Completed/Error 鈫?Paused) in the review flow.
     #[tokio::test]
     async fn process_input_does_not_resurrect_ended_task() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("original", None).await.unwrap();
+        let task = executor.create_task("original").await.unwrap();
         executor.end_task(&task.id).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
 
@@ -1586,7 +1616,7 @@ mod tests {
     #[tokio::test]
     async fn process_input_reactivates_paused_task() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("original", None).await.unwrap();
+        let task = executor.create_task("original").await.unwrap();
         executor
             .update_task_status(&task.id, TaskStatus::Paused)
             .await
@@ -1619,16 +1649,12 @@ mod tests {
     async fn run_task_from_id_attaches_first_user_message_images() {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let sid = agent.ensure_session();
+        let task = executor.create_task_with_summary("鐪嬪浘", "鐪嬪浘").await.unwrap();
         let att = haven_memory::repositories::messages::MessageAttachment {
             media_type: "image/png".into(),
             data: "aGVsbG8=".into(),
         };
-        agent.persist_message_parts("user", "看图", Some("text"), &[att]);
-        let task = executor
-            .create_task_with_summary("看图", "看图", Some(&sid))
-            .await
-            .unwrap();
+        agent.persist_message_parts(&task.id, "user", "鐪嬪浘", Some("text"), &[att]).unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
         let snapshot: crate::types::ReActSnapshot =
             serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
@@ -1650,20 +1676,19 @@ mod tests {
     async fn run_task_from_id_ignores_later_image_supplement() {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let sid = agent.ensure_session();
-        agent.persist_message_parts("user", "plain task", Some("text"), &[]);
         let task = executor
-            .create_task_with_summary("plain task", "plain task", Some(&sid))
+            .create_task_with_summary("plain task", "plain task")
             .await
             .unwrap();
-        // Image arrives AFTER the task input (a supplement) — it must not be
+        agent.persist_message_parts(&task.id, "user", "plain task", Some("text"), &[]).unwrap();
+        // Image arrives AFTER the task input (a supplement) 鈥?it must not be
         // attached to the initial user turn.
         let att = haven_memory::repositories::messages::MessageAttachment {
             media_type: "image/png".into(),
             data: "aGVsbG8=".into(),
         };
         agent
-            .process_input_with_images("补充看图", Some(task.id.clone()), &[att])
+            .process_input_with_images("琛ュ厖鐪嬪浘", Some(task.id.clone()), &[att])
             .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -1694,9 +1719,8 @@ mod tests {
     #[tokio::test]
     async fn process_input_with_images_queues_and_persists_attachments() {
         let (agent, executor) = make_test_agent();
-        let sid = agent.ensure_session();
         let task = executor
-            .create_task_with_summary("original", "original", Some(&sid))
+            .create_task_with_summary("original", "original")
             .await
             .unwrap();
         executor
@@ -1709,23 +1733,21 @@ mod tests {
             data: "aGVsbG8=".into(),
         };
         let result = agent
-            .process_input_with_images("看图", Some(task.id.clone()), std::slice::from_ref(&att))
+            .process_input_with_images("鐪嬪浘", Some(task.id.clone()), std::slice::from_ref(&att))
             .await
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         let supps = executor.get_supplements(&task.id).await;
         assert_eq!(supps.len(), 1);
-        assert_eq!(supps[0].text, "看图");
+        assert_eq!(supps[0].text, "鐪嬪浘");
         assert_eq!(supps[0].attachments, vec![att]);
 
-        // Persisted with attachments in the task's session.
-        let db_task = agent.db.get_task(&task.id).unwrap().unwrap();
-        let sid = db_task.session_id.expect("task has session");
-        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        // Persisted with attachments in the task's message stream.
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let user_msg = msgs
             .iter()
-            .find(|m| m.role == "user" && m.content == "看图")
+            .find(|m| m.role == "user" && m.content == "鐪嬪浘")
             .expect("user message persisted");
         assert_eq!(user_msg.attachments.len(), 1);
         assert_eq!(user_msg.attachments[0].media_type, "image/png");
@@ -1748,14 +1770,13 @@ mod tests {
     #[tokio::test]
     async fn run_fact_inference_does_not_panic() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("test", None).await.unwrap();
+        let task = executor.create_task("test").await.unwrap();
         executor.end_task(&task.id).await.unwrap();
-        let sid = agent.sessions.current_session_id();
-        agent.inference.infer_facts(&sid).await;
-        agent.inference.infer_preferences(&sid);
+        agent.inference.infer_facts(&task.id).await;
+        agent.inference.infer_preferences(&task.id);
     }
 
-    // ─── Integration tests for the ReAct core loop (refine §11) ───
+    // 鈹€鈹€鈹€ Integration tests for the ReAct core loop (refine 搂11) 鈹€鈹€鈹€
 
     fn make_test_agent_with(
         client: Arc<dyn LlmClient>,
@@ -2019,7 +2040,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("echo hello", None).await.unwrap();
+        let task = executor.create_task("echo hello").await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(history.len() >= 2, "should have at least 2 steps");
         assert!(collector.has_action("echo"));
@@ -2069,11 +2090,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let sid = agent.ensure_session();
-        let task = executor
-            .create_task("decide a path", Some(&sid))
-            .await
-            .unwrap();
+        let task = executor.create_task("decide a path").await.unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
 
         // Task must be Paused, awaiting the user's answer.
@@ -2086,9 +2103,7 @@ mod tests {
         assert!(collector.has_observation("ask"));
 
         // The question must be persisted so the user can see and answer it.
-        let db_task = agent.db.get_task(&task.id).unwrap().unwrap();
-        let sid = db_task.session_id.expect("task has a session");
-        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let found = msgs
             .iter()
             .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
@@ -2135,11 +2150,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let sid = agent.ensure_session();
-        let task = executor
-            .create_task("pick a path", Some(&sid))
-            .await
-            .unwrap();
+        let task = executor.create_task("pick a path").await.unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
         assert_eq!(
             executor.get_task_state(&task.id).await,
@@ -2164,7 +2175,7 @@ mod tests {
         );
         // The final answer text should be persisted, proving the loop resumed
         // past the `ask` step and reached final_answer.
-        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let answered = msgs
             .iter()
             .any(|m| m.role == "assistant" && m.content.contains("Going with A"));
@@ -2175,7 +2186,7 @@ mod tests {
     async fn retry_after_ask_answer_error_keeps_single_history() {
         // Reproduce the reported issue: the agent asks a question, the user
         // answers, the resumed step fails, and the user retries. Every retry
-        // must OVERWRITE the previous attempt's persisted output — the review
+        // must OVERWRITE the previous attempt's persisted output 鈥?the review
         // history should show exactly one question, one answer, one response.
         let tools = Arc::new(ToolsManager::new());
         tools
@@ -2224,8 +2235,7 @@ mod tests {
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
         agent.set_emitter(Arc::new(EventCollector::new()));
-        let sid = agent.ensure_session();
-        let task = executor.create_task("ask retry", Some(&sid)).await.unwrap();
+        let task = executor.create_task("ask retry").await.unwrap();
 
         // Turn 1: the ask pauses the task.
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -2240,12 +2250,12 @@ mod tests {
         let _ = agent.run_task_from_id(&task.id).await;
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
 
-        // Turn 3: retry via continue_task → Pending → re-run.
+        // Turn 3: retry via continue_task 鈫?Pending 鈫?re-run.
         agent.continue_task(&task.id).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         agent.run_task_from_id(&task.id).await.unwrap();
 
-        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let steps = agent.db.get_task_steps(&task.id).unwrap();
 
         // The failed attempt's partial text must be gone (overwritten).
@@ -2271,7 +2281,7 @@ mod tests {
         assert_eq!(questions, 1, "ask question must appear exactly once");
         assert_eq!(finals, 1, "final answer must appear exactly once");
 
-        // Step rows from the failed attempt must be overwritten too — the
+        // Step rows from the failed attempt must be overwritten too 鈥?the
         // review history stays linear (only branching splits timelines).
         let stale_steps = steps
             .iter()
@@ -2336,11 +2346,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let sid = agent.ensure_session();
-        let task = executor
-            .create_task("build and notify", Some(&sid))
-            .await
-            .unwrap();
+        let task = executor.create_task("build and notify").await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(history.len() >= 2, "should have at least 2 steps");
 
@@ -2393,18 +2399,14 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let sid = agent.ensure_session();
-        let task = executor
-            .create_task("two questions", Some(&sid))
-            .await
-            .unwrap();
+        let task = executor.create_task("two questions").await.unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
         assert_eq!(
             executor.get_task_state(&task.id).await,
             TaskStatus::Paused,
             "ask should pause"
         );
-        let msgs = agent.db.get_session_messages(&sid).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let persisted: String = msgs
             .iter()
             .filter(|m| m.role == "assistant")
@@ -2471,7 +2473,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("run parallel", None).await.unwrap();
+        let task = executor.create_task("run parallel").await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
         assert!(collector.has_action("delay_a"));
@@ -2521,7 +2523,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("test compaction", None).await.unwrap();
+        let task = executor.create_task("test compaction").await.unwrap();
         let history = agent.run_task_from_id(&task.id).await.unwrap();
         assert!(!history.is_empty());
         assert!(
@@ -2540,7 +2542,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("compaction fail", None).await.unwrap();
+        let task = executor.create_task("compaction fail").await.unwrap();
         let result = agent.run_task_from_id(&task.id).await;
         assert!(result.is_err(), "should error when compaction fails");
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
@@ -2550,20 +2552,16 @@ mod tests {
     async fn branch_task_creates_new_task_with_copied_messages() {
         let (agent, executor) = make_test_agent();
 
-        // Set up a source task with a session, a couple of messages, and a
-        // saved react_state containing a branch point at step 1.
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("branch me", Some(&session.id))
-            .await
-            .unwrap();
+        // Set up a source task, a couple of messages, and a saved react_state
+        // containing a branch point at step 1.
+        let task = executor.create_task("branch me").await.unwrap();
         agent.db.update_task_status(&task.id, "paused").unwrap();
         executor
             .update_task_status(&task.id, TaskStatus::Paused)
             .await
             .unwrap();
 
-        // Persist some messages into the source session. The first carries an
+        // Persist some messages into the source task. The first carries an
         // image attachment, which must survive the branch copy.
         let att = haven_memory::repositories::messages::MessageAttachment {
             media_type: "image/png".into(),
@@ -2572,7 +2570,7 @@ mod tests {
         agent
             .db
             .add_message_with_attachments(
-                &session.id,
+                &task.id,
                 "user",
                 "hello",
                 Some("text"),
@@ -2582,7 +2580,7 @@ mod tests {
             .unwrap();
         let m2 = agent
             .db
-            .add_message(&session.id, "assistant", "hi there", Some("text"), None)
+            .add_message(&task.id, "assistant", "hi there", Some("text"), None)
             .unwrap();
 
         // Build a snapshot with a branch point at step 1 whose last_msg_at is
@@ -2621,11 +2619,15 @@ mod tests {
         // New task should be Paused.
         assert_eq!(executor.get_task_state(&new_id).await, TaskStatus::Paused);
 
-        // New task has its own session with the copied messages.
+        // New task is a branch of the source (parent_task_id), with the
+        // copied messages.
         let new_task = agent.db.get_task(&new_id).unwrap().unwrap();
-        let new_session_id = new_task.session_id.unwrap();
-        assert_ne!(new_session_id, session.id);
-        let new_msgs = agent.db.get_session_messages(&new_session_id).unwrap();
+        assert_eq!(
+            new_task.parent_task_id.as_deref(),
+            Some(task.id.as_str()),
+            "branched task should link back to its parent"
+        );
+        let new_msgs = agent.db.get_task_messages(&new_id).unwrap();
         assert_eq!(new_msgs.len(), 2);
         assert_eq!(new_msgs[0].content, "hello");
         assert_eq!(new_msgs[0].attachments, vec![att]);
@@ -2642,11 +2644,7 @@ mod tests {
     #[tokio::test]
     async fn branch_task_missing_branch_point_errors() {
         let (agent, executor) = make_test_agent();
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("no bp", Some(&session.id))
-            .await
-            .unwrap();
+        let task = executor.create_task("no bp").await.unwrap();
         // Save a snapshot with no branch points.
         let snapshot = ReActSnapshot {
             canonical: vec![],
@@ -2665,11 +2663,7 @@ mod tests {
     #[tokio::test]
     async fn continue_task_resumes_errored_task() {
         let (agent, executor) = make_test_agent();
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("test continue", Some(&session.id))
-            .await
-            .unwrap();
+        let task = executor.create_task("test continue").await.unwrap();
         // Simulate an errored task with a saved snapshot.
         agent.db.update_task_status(&task.id, "error").unwrap();
         executor
@@ -2696,12 +2690,12 @@ mod tests {
         // Add a partial assistant message that should be cleaned up.
         agent
             .db
-            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .add_message(&task.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
             .add_message(
-                &session.id,
+                &task.id,
                 "assistant",
                 "partial output",
                 Some("text"),
@@ -2712,7 +2706,7 @@ mod tests {
         agent.continue_task(&task.id).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         // The partial output should have been deleted (only the user message remains).
-        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
     }
@@ -2720,24 +2714,16 @@ mod tests {
     #[tokio::test]
     async fn continue_task_non_error_fails() {
         let (agent, executor) = make_test_agent();
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("not error", Some(&session.id))
-            .await
-            .unwrap();
+        let task = executor.create_task("not error").await.unwrap();
         // Task is Pending, not Error — should refuse.
         let result = agent.continue_task(&task.id).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn rollback_without_react_state_truncates_session() {
+    async fn rollback_without_react_state_truncates_messages() {
         let (agent, executor) = make_test_agent();
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("no state", Some(&session.id))
-            .await
-            .unwrap();
+        let task = executor.create_task("no state").await.unwrap();
         // No react_state saved — simulate an old task that errored before
         // snapshots were persisted.
         agent.db.update_task_status(&task.id, "error").unwrap();
@@ -2747,28 +2733,24 @@ mod tests {
             .unwrap();
         agent
             .db
-            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .add_message(&task.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&session.id, "assistant", "partial", Some("text"), None)
+            .add_message(&task.id, "assistant", "partial", Some("text"), None)
             .unwrap();
 
         // User-message rollback (pause=true) should truncate from the user msg.
         agent.rollback_task(&task.id, 1, true).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
-        let msgs = agent.db.get_session_messages(&session.id).unwrap();
-        assert!(msgs.is_empty(), "session should be empty after rollback");
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        assert!(msgs.is_empty(), "messages should be empty after rollback");
     }
 
     #[tokio::test]
     async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         let (agent, executor) = make_test_agent();
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("no bp", Some(&session.id))
-            .await
-            .unwrap();
+        let task = executor.create_task("no bp").await.unwrap();
         // Save a snapshot with no branch_points at the target step.
         let canonical = vec![CanonicalMessage {
             role: CanonicalRole::System,
@@ -2790,42 +2772,38 @@ mod tests {
             .unwrap();
         agent
             .db
-            .add_message(&session.id, "user", "hello", Some("text"), None)
+            .add_message(&task.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&session.id, "assistant", "partial", Some("text"), None)
+            .add_message(&task.id, "assistant", "partial", Some("text"), None)
             .unwrap();
 
         // Rollback to step 1 with pause=false (agent rollback).
         agent.rollback_task(&task.id, 1, false).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         // The partial assistant message should be deleted, user message kept.
-        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
     }
 
     #[tokio::test]
-    async fn rollback_pause_true_removes_user_message_from_session() {
+    async fn rollback_pause_true_removes_user_message_from_task() {
         let (agent, executor) = make_test_agent();
-        let session = agent.db.create_session(None).unwrap();
-        let task = executor
-            .create_task("user rollback", Some(&session.id))
-            .await
+        let task = executor.create_task("user rollback").await.unwrap();
+        agent
+            .db
+            .add_message(&task.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&session.id, "user", "hello", Some("text"), None)
-            .unwrap();
-        agent
-            .db
-            .add_message(&session.id, "assistant", "thinking", Some("text"), None)
+            .add_message(&task.id, "assistant", "thinking", Some("text"), None)
             .unwrap();
         // Branch point at step 1: canonical ends at the user message, but
         // last_msg_at points at the thought that was persisted AFTER it (the
         // realistic shape saved by save_branch_point).
-        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let thought_ts = msgs
             .iter()
             .find(|m| m.role == "assistant")
@@ -2872,15 +2850,17 @@ mod tests {
             .unwrap();
 
         // User-message rollback: the user message itself must be removed from
-        // the session (its text returns to the composer for editing) — not
+        // the task (its text returns to the composer for editing) — not
         // left behind to reappear on the next review rebuild.
         agent.rollback_task(&task.id, 1, true).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
-        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
         assert!(
             msgs.is_empty(),
-            "user message should be deleted from the session, got {:?}",
+            "user message should be deleted from the task, got {:?}",
             msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
     }
 }
+
+

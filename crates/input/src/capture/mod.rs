@@ -1,14 +1,13 @@
-﻿//! Capture engine: a single long-lived thread that owns the exclusive-mode
-//! capture backend and the ring buffer, and serves the recording loop's
-//! drain requests.
+﻿//! Capture engine: a single long-lived thread that owns the CPAL capture
+//! backend and the ring buffer, and serves the recording loop's drain
+//! requests.
 //!
-//! **Mode policy** — WASAPI exclusive mode is the only capture path: it
-//! talks directly to the device, bypassing the Windows audio effects chain
-//! (enhancement APOs) whose bugs intermittently deliver digital silence
-//! (e.g. the Elevoc/ELEVO AI noise-suppression APO found on many laptops).
-//! Shared mode is deliberately not used: a shared-mode stream that has run
-//! once in a process poisons exclusive-mode capture for the rest of that
-//! process (see `backend` module docs).
+//! **Capture path** — a CPAL input stream (WASAPI shared mode on Windows) is
+//! opened on `Start` and torn down on `Stop`. The audio callback converts
+//! whatever sample format the device delivers to mono 16 kHz f32, pushes it
+//! into the ring, and flips `has_signal` as soon as real audio is seen. The
+//! engine thread only drains the ring on command and runs the silent-capture
+//! check; audio delivery itself is callback-driven.
 //!
 //! **Silent-capture detection** — if the first [`SILENCE_CHECK_DELAY`] of a
 //! recording is pure digital silence (the device delivered no signal at
@@ -18,13 +17,13 @@
 //!
 //! Responsibilities:
 //!
-//! - **Lifecycle** — open/close the capture backend on `Start` / `Stop`.
-//!   The exclusive backend runs only while recording because it monopolizes
-//!   the device.
-//! - **Ring feeding** — the engine polls the device via `pull` between
-//!   commands, converting raw audio to mono 16 kHz f32 in the ring.
-//! - **Fatal errors** — device loss sets `stream_failed` so the recording
-//!   loop stops early (L7) instead of draining a dead ring.
+//! - **Lifecycle** — open/close the CPAL stream on `Start` / `Stop`. The
+//!   stream runs only while recording because it claims the microphone.
+//! - **Ring feeding** — the stream callback feeds the ring with mono 16 kHz
+//!   f32 directly.
+//! - **Fatal errors** — stream errors (device loss) arrive via CPAL's error
+//!   callback, which sets `stream_failed` so the recording loop stops early
+//!   (L7) instead of draining a dead ring.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, mpsc};
@@ -32,14 +31,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 
-use backend::{CaptureSignals, ExclusiveBackend};
+use backend::{CaptureSignals, CpalBackend};
 
 mod backend;
 mod resample;
 mod ring;
 
 pub use backend::{SIGNAL_FLOOR, TARGET_SAMPLE_RATE};
-pub use resample::{Resampler, downmix};
+pub use resample::Resampler;
 pub use ring::RingBuffer;
 
 /// Upper bound for a command round-trip. The engine answers in microseconds;
@@ -74,7 +73,7 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
-    /// Open the exclusive capture backend and clear the ring.
+    /// Open the capture stream and clear the ring.
     pub async fn start(&self) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if self
@@ -103,7 +102,7 @@ impl EngineHandle {
             .unwrap_or_default()
     }
 
-    /// Stop the exclusive backend (releasing the device), drain the ring and
+    /// Stop the capture stream (releasing the device), drain the ring and
     /// report the final tail.
     pub async fn stop_and_drain(&self) -> Result<Vec<f32>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -118,7 +117,7 @@ impl EngineHandle {
         Ok(data)
     }
 
-    /// Cancel path: stop the exclusive backend and drop the ring contents.
+    /// Cancel path: stop the capture stream and drop the ring contents.
     pub fn stop_and_clear(&self) {
         let _ = self.cmd_tx.send(EngineCommand::StopAndClear);
     }
@@ -140,7 +139,6 @@ pub fn spawn_engine() -> Result<EngineHandle> {
     std::thread::Builder::new()
         .name("haven-audio-engine".into())
         .spawn(move || {
-            let _ = wasapi::initialize_mta();
             let mut engine = Engine {
                 ring,
                 backend: None,
@@ -186,7 +184,7 @@ pub fn spawn_engine() -> Result<EngineHandle> {
 
 struct Engine {
     ring: Arc<StdMutex<RingBuffer>>,
-    backend: Option<ExclusiveBackend>,
+    backend: Option<CpalBackend>,
     signals: CaptureSignals,
     /// Stable; exposed on the handle (L7).
     out_failed: Arc<AtomicBool>,
@@ -208,7 +206,7 @@ impl Engine {
         self.out_failed.store(false, Ordering::SeqCst);
         self.out_silent_abort.store(false, Ordering::SeqCst);
 
-        let result = ExclusiveBackend::new(self.ring.clone(), self.signals.clone())
+        let result = CpalBackend::new(self.ring.clone(), self.signals.clone())
             .and_then(|mut b| b.start().map(|_| b));
         match result {
             Ok(backend) => {
@@ -216,11 +214,11 @@ impl Engine {
                 self.recording = true;
                 self.started_at = Some(Instant::now());
                 self.silent_checked = false;
-                tracing::info!("recording started via exclusive capture");
+                tracing::info!("recording started via cpal capture");
                 let _ = reply.send(Ok(()));
             }
             Err(e) => {
-                tracing::error!("exclusive capture start failed: {e:#}");
+                tracing::error!("cpal capture start failed: {e:#}");
                 self.recording = false;
                 let _ = reply.send(Err(e));
             }
@@ -228,8 +226,7 @@ impl Engine {
     }
 
     fn cmd_stop_and_drain(&mut self) -> Vec<f32> {
-        // Release the exclusive backend immediately (it monopolizes the
-        // device).
+        // Release the stream immediately (it claims the microphone).
         if let Some(mut backend) = self.backend.take() {
             let _ = backend.stop();
         }
@@ -249,37 +246,28 @@ impl Engine {
         self.ring.lock().expect("ring lock poisoned").clear();
     }
 
-    /// Background work between commands: feed the ring and run the
-    /// silent-capture check.
+    /// Background work between commands: run the silent-capture check. Audio
+    /// delivery is callback-driven, so nothing is pulled here.
     fn poll_timeout(&mut self) {
-        // Exclusive mode is pulled by the engine thread: read whatever the
-        // device has delivered since the last poll.
-        if let Some(backend) = self.backend.as_mut()
-            && let Err(e) = backend.pull() {
-                tracing::error!("capture pull failed: {e:#}");
-                self.out_failed.store(true, Ordering::SeqCst);
+        if self.recording
+            && !self.silent_checked
+            && let Some(started) = self.started_at
+            && started.elapsed() >= SILENCE_CHECK_DELAY
+        {
+            self.silent_checked = true;
+            if !self.signals.has_signal.load(Ordering::SeqCst) {
+                tracing::error!(
+                    "capture delivered no signal in the first {}ms; aborting recording",
+                    SILENCE_CHECK_DELAY.as_millis()
+                );
+                self.out_silent_abort.store(true, Ordering::SeqCst);
+                self.recording = false;
+                self.started_at = None;
                 if let Some(mut backend) = self.backend.take() {
                     let _ = backend.stop();
                 }
             }
-
-        if self.recording && !self.silent_checked
-            && let Some(started) = self.started_at
-                && started.elapsed() >= SILENCE_CHECK_DELAY {
-                    self.silent_checked = true;
-                    if !self.signals.has_signal.load(Ordering::SeqCst) {
-                        tracing::error!(
-                            "capture delivered no signal in the first {}ms; aborting recording",
-                            SILENCE_CHECK_DELAY.as_millis()
-                        );
-                        self.out_silent_abort.store(true, Ordering::SeqCst);
-                        self.recording = false;
-                        self.started_at = None;
-                        if let Some(mut backend) = self.backend.take() {
-                            let _ = backend.stop();
-                        }
-                    }
-                }
+        }
     }
 
     fn teardown(&mut self) {
@@ -288,7 +276,10 @@ impl Engine {
         }
     }
 
-    fn new_signals(_out_failed: &Arc<AtomicBool>) -> CaptureSignals {
-        CaptureSignals::new()
+    fn new_signals(out_failed: &Arc<AtomicBool>) -> CaptureSignals {
+        CaptureSignals {
+            has_signal: Arc::new(AtomicBool::new(false)),
+            stream_failed: out_failed.clone(),
+        }
     }
 }

@@ -48,7 +48,7 @@ impl AppState {
         let llm_config = cfg.llm.clone();
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.task.max_steps;
-        let session_window_size = cfg.memory.session_window_size;
+        let conversation_window_size = cfg.memory.session_window_size;
         let max_observation_chars = cfg.task.max_observation_chars;
 
         let tools = Arc::new(ToolsManager::new());
@@ -60,7 +60,7 @@ impl AppState {
             executor.clone(),
             router.clone(),
             max_steps,
-            session_window_size,
+            conversation_window_size,
             max_observation_chars,
         ));
 

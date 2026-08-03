@@ -381,9 +381,6 @@
 		{/if}
 		<div class="history-meta">
 			<span class="meta-date">{formatDate(task.created_at)}</span>
-			{#if task.session_id}
-				<span class="meta-session" title={task.session_id}>ID: {task.session_id.slice(0, 8)}</span>
-			{/if}
 		</div>
 	</div>
 				</button>
@@ -431,9 +428,6 @@
 					{/if}
 					<div class="history-meta">
 						<span class="meta-date">{formatDate(task.created_at)}</span>
-						{#if task.session_id}
-							<span class="meta-session" title={task.session_id}>ID: {task.session_id.slice(0, 8)}</span>
-						{/if}
 						<button
 							class="md-btn md-btn--xs md-btn--text delete-btn-meta"
 							onclick={(e) => (e.stopPropagation(), deleteTarget = task)}
@@ -749,10 +743,6 @@
 		opacity: 0.75;
 	}
 	.meta-date {
-		font-family: var(--md-sys-typescale-mono);
-		font-size: 10px;
-	}
-	.meta-session {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 10px;
 	}

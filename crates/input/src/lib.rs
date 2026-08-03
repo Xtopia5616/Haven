@@ -1,10 +1,8 @@
 //! Input pipeline: recording orchestration, VAD and transcription.
 //!
 //! The pipeline owns the high-level recording state machine; the actual
-//! audio capture lives in [`capture`] (the capture engine thread + backends).
-//! Capture policy: WASAPI **exclusive** mode by default (reliable, bypasses
-//! the Windows effects chain), with **shared** mode as the engine's fallback
-//! when the device cannot be opened exclusively.
+//! audio capture lives in [`capture`] (the capture engine thread + CPAL
+//! backend).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -117,11 +115,9 @@ impl InputPipeline {
     }
 
     /// Start the capture engine at app startup so the first recording pays no
-    /// engine-spawn latency. No capture stream is opened here: a shared-mode
-    /// stream would poison exclusive-mode capture for the rest of the process
-    /// on affected devices (the shared→exclusive sequence delivers digital
-    /// silence), and an exclusive stream must not monopolize the microphone
-    /// while the app sits idle. `start_recording` opens the stream itself.
+    /// engine-spawn latency. No capture stream is opened here (the microphone
+    /// is only claimed while recording); `start_recording` opens the stream
+    /// itself.
     pub async fn prewarm(&self) {
         let mut guard = self.engine.lock().expect("engine lock poisoned");
         if guard.is_some() {
@@ -169,7 +165,7 @@ impl InputPipeline {
             }
         };
 
-        // Exclusive mode is the only capture path (see `capture` docs).
+        // Open the capture stream (see `capture` docs).
         if let Err(e) = handle.start().await {
             *self.state.lock().await = RecordingState::Pending;
             return Err(e);
@@ -210,7 +206,7 @@ impl InputPipeline {
             let _ = tx.send(result);
         });
 
-        tracing::debug!("Recording started (exclusive-primary capture + VAD loop)");
+        tracing::debug!("Recording started (cpal capture + VAD loop)");
         Ok(())
     }
 
@@ -567,7 +563,7 @@ impl InputPipeline {
         };
 
         // Capture the tail that accumulated between the loop's last drain and
-        // the exclusive stream teardown.
+        // the stream teardown.
         let handle = self.engine.lock().expect("engine lock poisoned").clone();
         if let Some(handle) = handle {
             let remaining = handle.stop_and_drain().await?;

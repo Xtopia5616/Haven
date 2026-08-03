@@ -18,11 +18,13 @@ impl Resampler {
         }
     }
 
-    /// Convert `mono` (source rate) into the target rate. State is carried
-    /// across calls so chunk boundaries never lose samples.
-    pub fn process(&mut self, mono: &[f32]) -> Vec<f32> {
+    /// Convert `mono` (source rate) into the target rate, writing into the
+    /// caller-provided `out` buffer (cleared first) so the real-time audio
+    /// callback never heap-allocates. State is carried across calls so chunk
+    /// boundaries never lose samples.
+    pub fn process_into(&mut self, mono: &[f32], out: &mut Vec<f32>) {
         self.leftover.extend(mono);
-        let mut out = Vec::new();
+        out.clear();
         while (self.position + self.ratio * 0.5) < self.leftover.len() as f64 {
             let i = self.position.floor() as usize;
             let frac = (self.position - i as f64) as f32;
@@ -38,6 +40,12 @@ impl Resampler {
             }
             self.position -= consumed as f64;
         }
+    }
+
+    /// Convenience wrapper for one-shot conversions (tests, warm-ups).
+    pub fn process(&mut self, mono: &[f32]) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.process_into(mono, &mut out);
         out
     }
 
@@ -45,20 +53,6 @@ impl Resampler {
         self.leftover.clear();
         self.position = 0.0;
     }
-}
-
-/// Average interleaved multi-channel samples into a mono stream.
-pub fn downmix(data: &[f32], channels: usize) -> Vec<f32> {
-    if channels == 1 {
-        return data.to_vec();
-    }
-    let frames = data.len() / channels;
-    let mut mono = Vec::with_capacity(frames);
-    for f in 0..frames {
-        let sum: f32 = (0..channels).map(|c| data[f * channels + c]).sum();
-        mono.push(sum / channels as f32);
-    }
-    mono
 }
 
 #[cfg(test)]
@@ -104,14 +98,5 @@ mod tests {
         for (a, b) in out_whole.iter().zip(out_chunked.iter()) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
-    }
-
-    #[test]
-    fn downmix_stereo_to_mono() {
-        let stereo = vec![0.5, 0.3, 0.1, 0.9];
-        let mono = downmix(&stereo, 2);
-        assert_eq!(mono.len(), 2);
-        assert!((mono[0] - 0.4).abs() < 1e-6);
-        assert!((mono[1] - 0.5).abs() < 1e-6);
     }
 }

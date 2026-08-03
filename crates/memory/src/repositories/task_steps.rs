@@ -172,7 +172,7 @@ mod tests {
     }
 
     fn seed_task(db: &Database, task_id: &str) {
-        db.create_task(None, "test", "test").unwrap();
+        db.create_task("test", "test").unwrap();
         // Override the id to match test expectations
         let conn = db.conn();
         let _ = conn.execute(
