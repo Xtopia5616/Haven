@@ -10,6 +10,7 @@ import {
 	truncateTaskMessages,
 	branchTaskMessages,
 	adoptDraftMessages,
+	moveTaskMessages,
 	clearTaskMessages,
 	seqLastSeen,
 	pruneSeq,
@@ -248,6 +249,38 @@ describe('adoptDraftMessages', () => {
 		adoptDraftMessages('t1');
 		expect(storeMap().t1).toHaveLength(1);
 		expect(storeMap()._draft).toBeUndefined();
+	});
+});
+
+describe('moveTaskMessages', () => {
+	/** @returns {any} */
+	const storeMap = () => get(taskMessagesStore);
+
+	beforeEach(() => {
+		taskMessagesStore.set({});
+	});
+
+	it('moves messages from a stale task into a newly created one', () => {
+		setTaskMessages('stale', [{ id: 's1' }, { id: 's2' }]);
+		setTaskMessages('new', [{ id: 'n1' }]);
+		moveTaskMessages('stale', 'new');
+		const m = storeMap();
+		expect(m.new.map((x) => x.id)).toEqual(['n1', 's1', 's2']);
+		expect(m.stale).toEqual([]);
+	});
+
+	it('moves draft messages into a new task', () => {
+		addTaskMessage('_draft', { id: 'd1' });
+		moveTaskMessages('_draft', 't9');
+		const m = storeMap();
+		expect(m.t9.map((x) => x.id)).toEqual(['d1']);
+		expect(m._draft).toEqual([]);
+	});
+
+	it('is a no-op for same-key or empty sources', () => {
+		moveTaskMessages('a', 'a');
+		moveTaskMessages('a', 'b');
+		expect(storeMap()).toEqual({});
 	});
 });
 

@@ -528,10 +528,12 @@ impl desktop::ShellHandler for HavenShellHandler {
             }
 
             // Same finalize path as the `stop_recording` Tauri command: run
-            // STT, emit `transcription:result` / `transcription:error` and
-            // auto-submit the transcript to the agent in the background.
-            // Without this, hotkey / VAD-triggered stops silently dropped the
-            // transcript — the text never reached the chat UI nor the agent.
+            // STT and emit `transcription:result` / `transcription:error`.
+            // The frontend then submits the transcript through
+            // `process_transcript` like a typed message, so voice input
+            // continues the open conversation. Without this, hotkey / VAD-
+            // triggered stops silently dropped the transcript — the text
+            // never reached the chat UI nor the agent.
             let state = self.app_h.state::<Arc<AppState>>();
             crate::commands::finalize_transcription(state.inner(), &self.app_h, result).await;
         }

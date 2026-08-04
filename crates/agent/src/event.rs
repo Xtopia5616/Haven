@@ -392,6 +392,21 @@ impl EventDispatcher {
         }
     }
 
+    /// Surface a user-facing notification (used by fired reminders, which are
+    /// not tied to a task). Same event the `notify` tool produces.
+    pub async fn emit_notification(&self, title: &str, body: &str) {
+        let emitter = self.emitter.lock().unwrap().clone();
+        if let Some(emitter) = emitter {
+            emitter
+                .emit(AgentEvent::Notification {
+                    task_id: String::new(),
+                    title: title.into(),
+                    body: body.into(),
+                })
+                .await;
+        }
+    }
+
     // ── Static helpers for working with Arc<dyn AgentEventEmitter> ──
 
     pub async fn emit_thought_from(

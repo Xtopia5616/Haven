@@ -21,12 +21,14 @@
 		try {
 			const result = await invoke('get_tools');
 			if (result && result.tools) {
-				builtinTools = result.tools.map((t) => ({
-					name: t.name || 'unknown',
-					desc: t.description || '',
-					risk: t.risk_level || 'unknown',
-					schema: t.input_schema || {},
-				}));
+				builtinTools = result.tools
+					.map((t) => ({
+						name: t.name || 'unknown',
+						desc: t.description || '',
+						risk: t.risk_level || 'unknown',
+						schema: t.input_schema || {},
+					}))
+					.sort((a, b) => a.name.localeCompare(b.name));
 			}
 		} catch (e) {
 			builtinTools = [];

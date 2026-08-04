@@ -27,6 +27,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 haven-llm = { path = "../llm" }
 futures-util.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -37,4 +38,6 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Power",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }

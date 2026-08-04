@@ -2185,6 +2185,7 @@ dependencies = [
  "haven-llm",
  "haven-memory",
  "ignore",
+ "image",
  "jsonschema",
  "regex",
  "reqwest 0.12.28",

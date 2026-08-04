@@ -96,18 +96,17 @@ async fn hot_swap_router(state: &AppState, new_router: Arc<LlmRouter>) -> Result
     Ok(())
 }
 
-/// Transcribe a captured recording, emit `transcription:result` /
-/// `transcription:error`, and auto-submit non-empty transcripts to the agent
-/// in the background.
+/// Transcribe a captured recording and emit `transcription:result` /
+/// `transcription:error`.
 ///
 /// Shared by the `stop_recording` Tauri command and the shell hotkey/VAD stop
 /// path (`HavenShellHandler::on_recording_stop`), so both surfaces behave
 /// identically — previously the shell path silently dropped the transcript.
 ///
-/// The agent submission runs on a background task: the caller (the Tauri
-/// command, whose UI promise stays pending) returns as soon as the recording
-/// is finalized, and rapid re-recordings never run two concurrent ReAct loops
-/// inline on the same command path.
+/// The transcript is **not** submitted to the agent here: the frontend
+/// listens for `transcription:result` and delivers the text through the same
+/// `process_transcript` path as a typed message, so voice input continues the
+/// currently open conversation (task) instead of always starting a new one.
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,
@@ -127,28 +126,6 @@ pub(crate) async fn finalize_transcription(
                     confidence: None,
                 },
             );
-            // Auto-submit transcript to agent in the background.
-            // Find the most-recently-created running or pending task so voice
-            // follow-ups supplement the active task instead of creating a
-            // brand-new one every time.
-            let agent = state.agent.clone();
-            let executor = state.executor.clone();
-            let submit_text = text.clone();
-            tokio::spawn(async move {
-                let active = {
-                    let tasks = executor.list_tasks().await;
-                    tasks
-                        .iter()
-                        .find(|t| {
-                            let s = t.status.as_str();
-                            s == "running" || s == "pending"
-                        })
-                        .map(|t| t.id.clone())
-                };
-                if let Err(e) = agent.process_input(&submit_text, active).await {
-                    tracing::error!("auto-submit transcription failed: {e}");
-                }
-            });
             Some(text)
         }
         None => {
@@ -290,9 +267,9 @@ pub async fn stop_recording(
         },
     );
 
-    // STT + agent auto-submit run in the background (see
-    // `finalize_transcription`); the command returns as soon as the
-    // recording has been handed off.
+    // STT runs inside `finalize_transcription`; the frontend submits the
+    // transcript via `process_transcript` (same path as typed input). The
+    // command returns as soon as the recording has been handed off.
     let text = finalize_transcription(state.inner(), &app, result).await;
     Ok(text.unwrap_or_default())
 }

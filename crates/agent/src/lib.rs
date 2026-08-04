@@ -21,6 +21,9 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
+use haven_tools::ReminderMode;
+use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::title::TitleGenerator;
 
@@ -47,6 +50,22 @@ pub(crate) fn persist_task_message(
         attachments,
     )?;
     Ok(())
+}
+
+/// Cap on the tool-result text embedded in a fired-reminder notification.
+const NOTIFICATION_SUMMARY_MAX_CHARS: usize = 800;
+
+/// Trim a long tool result to fit a notification body.
+fn truncate_notification(text: &str) -> String {
+    if text.chars().count() <= NOTIFICATION_SUMMARY_MAX_CHARS {
+        return text.to_string();
+    }
+    let cutoff = text.floor_char_boundary(NOTIFICATION_SUMMARY_MAX_CHARS);
+    format!(
+        "{}[... {} chars omitted]",
+        &text[..cutoff],
+        text.chars().count() - cutoff
+    )
 }
 
 pub struct AgentLayer {
@@ -242,6 +261,123 @@ impl AgentLayer {
                 }
             });
         }
+        // Spawn a consumer for fired reminders: the fire behavior is chosen
+        // by the reminder's mode.
+        // - `notify`: surface it as a Notification event (in-app toast +
+        //   Windows notification), exactly like the `notify` tool's signal.
+        // - `tool`: execute the scheduled tool with its stored arguments
+        //   (no LLM round-trip), then notify the user of the outcome.
+        // - `continue`: resume the task that scheduled the reminder — the
+        //   reminder text is injected into that task's conversation and the
+        //   task is woken, so a scheduled "keep going at 3pm" continues the
+        //   same ReAct loop without anyone speaking. Legacy rows without a
+        //   task id fall back to running the text as a brand-new task.
+        let agent = self.clone();
+        let tools = self.executor.get_tools();
+        if let Some(mut rx) = tools.reminders.take_fired_receiver() {
+            tokio::spawn(async move {
+                while let Some(fired) = rx.recv().await {
+                    match fired.mode {
+                        ReminderMode::Tool => {
+                            let Some(tool_name) = fired.tool_name else {
+                                agent
+                                    .events
+                                    .emit_notification(&fired.title, &fired.body)
+                                    .await;
+                                continue;
+                            };
+                            let args = fired.tool_args.unwrap_or(Value::Null);
+                            let exec_tools = agent.executor.get_tools();
+                            match exec_tools
+                                .execute_tool(
+                                    fired.task_id.as_deref(),
+                                    &tool_name,
+                                    args,
+                                    CancellationToken::new(),
+                                )
+                                .await
+                            {
+                                Ok(result) => {
+                                    let summary = if result.success {
+                                        serde_json::to_string(&result.output)
+                                            .unwrap_or_else(|_| "success".into())
+                                    } else {
+                                        result.error.unwrap_or_else(|| "unknown failure".into())
+                                    };
+                                    let summary = truncate_notification(&summary);
+                                    agent
+                                        .events
+                                        .emit_notification(
+                                            &fired.title,
+                                            &format!("reminder tool '{tool_name}':\n{summary}"),
+                                        )
+                                        .await;
+                                }
+                                Err(e) => {
+                                    agent
+                                        .events
+                                        .emit_notification(
+                                            &fired.title,
+                                            &format!("reminder tool '{tool_name}' failed: {e}"),
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                        ReminderMode::Continue => {
+                            let message = fired
+                                .prompt
+                                .clone()
+                                .or_else(|| Some(fired.body.clone()))
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| "Reminder fired: continue the task.".into());
+                            match agent
+                                .process_input_with_images(&message, fired.task_id.clone(), &[])
+                                .await
+                            {
+                                Ok(result) => tracing::info!(
+                                    "reminder {} resumed task: {:?}",
+                                    fired.reminder_id,
+                                    result
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "reminder {} failed to resume task: {}",
+                                    fired.reminder_id,
+                                    e
+                                ),
+                            }
+                            // Also surface the notification so the user sees
+                            // the reminder while the task continues.
+                            agent
+                                .events
+                                .emit_notification(&fired.title, &fired.body)
+                                .await;
+                        }
+                        ReminderMode::Notify => {
+                            agent
+                                .events
+                                .emit_notification(&fired.title, &fired.body)
+                                .await;
+                        }
+                    }
+                }
+            });
+        }
+        // Re-arm reminders persisted by a previous run: overdue ones (the app
+        // was closed when they expired) fire immediately, future ones resume
+        // their countdown. Runs in the background; the notification consumer
+        // spawned above delivers the overdue fires.
+        let restore_tools = self.executor.get_tools();
+        tokio::spawn(async move {
+            let overdue = restore_tools.reminders.restore_pending().await;
+            if overdue > 0 {
+                tracing::info!(
+                    "restored {} overdue reminder(s) from previous run",
+                    overdue
+                );
+            }
+        });
     }
 
     /// Load the most recent conversation messages for a task as text lines

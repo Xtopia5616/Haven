@@ -75,6 +75,15 @@ pub const MIGRATIONS: &[&str] = &[
         tokens_before INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
+    "CREATE TABLE IF NOT EXISTS reminders (
+        id TEXT PRIMARY KEY,
+        due_at TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT 'Haven',
+        body TEXT NOT NULL,
+        prompt TEXT,
+        fired INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
     "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
@@ -279,6 +288,10 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 
             // 3. tasks: drop session_id, express branching via parent_task_id
             //    (old sessions.parent_id → the task owning the parent session).
+            //    status is normalized here too: pre-cancelled-fix databases
+            //    can still hold 'cancelled' rows, which the rebuilt CHECK
+            //    excludes — copying them verbatim would abort the whole
+            //    conversion and brick the database.
             conn.execute_batch(
                 "CREATE TABLE tasks_rebuild (
                     id TEXT PRIMARY KEY,
@@ -294,7 +307,9 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 );
                 INSERT INTO tasks_rebuild
                     (id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id)
-                SELECT t.id, t.input_text, t.title, t.status, t.created_at, t.updated_at, t.transcript, t.react_state,
+                SELECT t.id, t.input_text, t.title,
+                       CASE WHEN t.status = 'cancelled' THEN 'error' ELSE t.status END,
+                       t.created_at, t.updated_at, t.transcript, t.react_state,
                        (SELECT t2.id FROM tasks t2
                         JOIN sessions s2 ON t2.session_id = s2.id
                         WHERE s2.id = (SELECT s.parent_id FROM sessions s WHERE s.id = t.session_id))
@@ -313,9 +328,44 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         } else {
             conn.execute_batch("COMMIT")?;
         }
-        result?;
+        // Restore the FK pragma on BOTH paths (before `result?` propagates
+        // the error) so a failed conversion can never leave the connection
+        // with foreign_keys silently disabled.
         if fk_on {
             conn.execute_batch("PRAGMA foreign_keys=ON")?;
+        }
+        result?;
+    }
+
+    // Reminders get an optional prompt column: when set, the app wakes the
+    // LLM with this text at due time instead of only showing a notification.
+    let has_reminder_prompt: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('reminders') WHERE name='prompt'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_reminder_prompt {
+        conn.execute("ALTER TABLE reminders ADD COLUMN prompt TEXT", [])?;
+    }
+
+    // Reminders get the fire-mode columns: `mode` selects what happens when
+    // the reminder fires (notify = show a notification, tool = call the tool
+    // in tool_name/tool_args, continue = resume the task in task_id), and
+    // task_id/tool_name/tool_args carry the mode-specific payload. Existing
+    // rows default to 'notify' (mode defaults preserve the old behavior).
+    for (col, ddl) in [
+        ("mode", "ALTER TABLE reminders ADD COLUMN mode TEXT NOT NULL DEFAULT 'notify'"),
+        ("task_id", "ALTER TABLE reminders ADD COLUMN task_id TEXT"),
+        ("tool_name", "ALTER TABLE reminders ADD COLUMN tool_name TEXT"),
+        ("tool_args", "ALTER TABLE reminders ADD COLUMN tool_args TEXT"),
+    ] {
+        let has_col: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('reminders') WHERE name=?1")?
+            .query_row([col], |r| r.get::<_, i32>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if !has_col {
+            conn.execute(ddl, [])?;
         }
     }
 
@@ -475,7 +525,7 @@ mod tests {
                 input_text TEXT NOT NULL DEFAULT '',
                 title TEXT,
                 status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','running','paused','completed','failed','error')),
+                    CHECK(status IN ('pending','running','paused','completed','failed','error','cancelled')),
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 transcript TEXT NOT NULL DEFAULT '',
@@ -562,6 +612,7 @@ mod tests {
             "mcp_servers",
             "messages",
             "preferences",
+            "reminders",
             "task_steps",
             "tasks",
             "whitelist",
@@ -853,6 +904,28 @@ mod tests {
             })
             .unwrap();
         assert_eq!(t2_msgs, 1);
+    }
+
+    #[test]
+    fn test_legacy_cancelled_status_normalized_during_conversion() {
+        // A database from before the cancelled-fix migration can hold
+        // status='cancelled' rows. The conversion rebuilds tasks with a CHECK
+        // that excludes 'cancelled' — those rows must be normalized to
+        // 'error' instead of aborting the whole migration.
+        let conn = create_test_conn();
+        create_legacy_schema(&conn);
+        conn.execute_batch(
+            "INSERT INTO sessions (id, status) VALUES ('s1', 'active');
+             INSERT INTO tasks (id, session_id, input_text, status) VALUES ('t1', 's1', 'legacy', 'cancelled');
+            ",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 0").unwrap();
+        run_migrations(&conn).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "error", "cancelled rows must be normalized to error");
     }
 
     #[test]

@@ -28,9 +28,13 @@ impl Tool for WindowTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["list", "foreground", "focus", "close"] },
+                "operation": {
+                    "type": "string",
+                    "enum": ["list", "foreground", "focus", "close", "screenshot"]
+                },
                 "title": { "type": "string", "description": "Window title to match (substring, used for focus/close)" },
-                "pid": { "type": "integer", "description": "Filter windows by PID" }
+                "pid": { "type": "integer", "description": "Filter windows by PID" },
+                "path": { "type": "string", "description": "Optional output path for screenshot; defaults to a temp file" }
             },
             "required": ["operation"]
         })
@@ -79,6 +83,14 @@ impl Tool for WindowTool {
                 let t = title.ok_or_else(|| anyhow::anyhow!("title is required for close"))?;
                 imp::close_window_by_title(&t)?;
                 Ok(ToolResult::ok(serde_json::json!({"closed": t})))
+            }
+            "screenshot" => {
+                let path = input["path"]
+                    .as_str()
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| std::path::PathBuf::from(p.trim()));
+                let shot = imp::capture_screen(path)?;
+                Ok(ToolResult::ok(shot))
             }
             _ => anyhow::bail!("unknown window operation: {}", op),
         }
@@ -230,6 +242,108 @@ mod imp {
 
         Ok(found)
     }
+
+    /// Capture the primary screen and save it as a PNG. `path` defaults to a
+    /// fresh file in the system temp directory. The pixel buffer is copied
+    /// out of the GDI device context before it is released, then encoded
+    /// with the `image` crate — the capture itself never touches the file.
+    pub fn capture_screen(path: Option<std::path::PathBuf>) -> anyhow::Result<Value> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDCW, DeleteDC,
+            DeleteObject, GetDIBits, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+            BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+        unsafe {
+            let width = GetSystemMetrics(SM_CXSCREEN);
+            let height = GetSystemMetrics(SM_CYSCREEN);
+            if width <= 0 || height <= 0 {
+                anyhow::bail!("failed to query screen size ({width}x{height})");
+            }
+
+            let screen_dc = CreateDCW(std::ptr::null(), "DISPLAY".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr(), std::ptr::null(), std::ptr::null());
+            if screen_dc.is_null() {
+                anyhow::bail!("failed to create screen DC");
+            }
+            let mem_dc = CreateCompatibleDC(screen_dc);
+            if mem_dc.is_null() {
+                DeleteDC(screen_dc);
+                anyhow::bail!("failed to create memory DC");
+            }
+            let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+            if bitmap.is_null() {
+                DeleteDC(mem_dc);
+                DeleteDC(screen_dc);
+                anyhow::bail!("failed to create compatible bitmap");
+            }
+            let old_obj = SelectObject(mem_dc, bitmap as HGDIOBJ);
+            let ok = BitBlt(mem_dc, 0, 0, width, height, screen_dc, 0, 0, SRCCOPY);
+
+            // Read the pixel data out before releasing the DCs.
+            let mut bmi: BITMAPINFO = std::mem::zeroed();
+            bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            bmi.bmiHeader.biWidth = width;
+            bmi.bmiHeader.biHeight = -height; // top-down rows
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+            let copied = GetDIBits(
+                mem_dc,
+                bitmap,
+                0,
+                height as u32,
+                pixels.as_mut_ptr() as *mut _,
+                &mut bmi,
+                DIB_RGB_COLORS,
+            );
+
+            if !old_obj.is_null() {
+                SelectObject(mem_dc, old_obj);
+            }
+            DeleteObject(bitmap as _);
+            DeleteDC(mem_dc);
+            DeleteDC(screen_dc);
+
+            if ok == 0 {
+                anyhow::bail!("BitBlt failed");
+            }
+            if copied == 0 {
+                anyhow::bail!("GetDIBits failed");
+            }
+
+            // BGRA (GDI) -> RGBA for the image crate.
+            let mut rgba = pixels.clone();
+            for px in rgba.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+                .ok_or_else(|| anyhow::anyhow!("invalid screenshot buffer"))?;
+
+            let path = match path {
+                Some(p) => p,
+                None => std::env::temp_dir().join(format!(
+                    "haven-screenshot-{}.png",
+                    uuid::Uuid::new_v4().simple()
+                )),
+            };
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            img.save(&path)?;
+
+            Ok(serde_json::json!({
+                "path": path.to_string_lossy().to_string(),
+                "width": width,
+                "height": height,
+                "format": "png",
+                "hint": "Open the image with the file tool (read) to view it.",
+            }))
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -250,6 +364,10 @@ mod imp {
 
     pub fn close_window_by_title(_title: &str) -> anyhow::Result<()> {
         anyhow::bail!("window operations require Windows")
+    }
+
+    pub fn capture_screen(_path: Option<std::path::PathBuf>) -> anyhow::Result<Value> {
+        anyhow::bail!("screenshot requires Windows")
     }
 }
 

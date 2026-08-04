@@ -171,6 +171,26 @@ export function adoptDraftMessages(taskId) {
 	});
 }
 
+/**
+ * Move messages between task keys. Used when the backend reports
+ * `TaskCreated` for a voice/typed submission whose messages were appended
+ * under a different key — either `_draft` (no task was open) or a stale task
+ * id the UI auto-restored while STT was running. Without the move, the user's
+ * message would stay hidden in the old key while the new task only shows the
+ * agent's reply.
+ */
+export function moveTaskMessages(fromTaskId, toTaskId) {
+	if (!fromTaskId || !toTaskId || fromTaskId === toTaskId) return;
+	taskMessagesStore.update((m) => {
+		const list = m[fromTaskId] || [];
+		if (list.length === 0) return m;
+		const next = { ...m };
+		next[fromTaskId] = [];
+		next[toTaskId] = [...(next[toTaskId] || []), ...list];
+		return next;
+	});
+}
+
 // Review target for navigating from history to chat with a task context.
 // Set by history page before navigating to /, consumed by +page.svelte on mount.
 export const reviewTargetStore = writable(null);

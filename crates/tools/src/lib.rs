@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
-pub use builtin::{SelfTool, SelfToolContext};
+pub use builtin::{ReminderMode, SelfTool, SelfToolContext};
 pub use circuit::ToolCircuitRegistry;
 pub use mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
@@ -47,6 +47,10 @@ pub struct ToolsManager {
     router: RwLock<Option<Arc<LlmRouter>>>,
     /// Registry of background jobs (shell with background: true).
     pub background_jobs: Arc<bg::BackgroundJobs>,
+    /// Registry of in-process reminders (the `reminder` tool). The fired
+    /// channel is consumed by the agent layer, which notifies, runs the
+    /// scheduled tool, or resumes the scheduling task (see `ReminderMode`).
+    pub reminders: Arc<builtin::reminder::ReminderCenter>,
     /// App-level context for the `self` management tool (config loader, DB,
     /// router, log file). Wired in by the desktop shell; `None` in headless
     /// tests so the tool is simply not registered.
@@ -75,6 +79,7 @@ impl ToolsManager {
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
             background_jobs: Arc::new(bg::BackgroundJobs::new()),
+            reminders: Arc::new(builtin::reminder::ReminderCenter::new()),
             self_context: RwLock::new(None),
         }
     }
@@ -88,8 +93,10 @@ impl ToolsManager {
 
     /// Wire the app-level context for the `self` management tool and register
     /// the tool. Called by the desktop shell after the config loader exists;
-    /// later catalog rebuilds keep the tool registered.
+    /// later catalog rebuilds keep the tool registered. Also hands the DB to
+    /// the reminder registry so reminders persist across restarts.
     pub async fn set_self_context(&self, ctx: builtin::SelfToolContext) {
+        self.reminders.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
         self.rebuild_catalog().await;
     }
@@ -140,6 +147,7 @@ impl ToolsManager {
             &self.mcp_server_configs,
             router,
             self.background_jobs.clone(),
+            self.reminders.clone(),
             self_context,
             self.registry.clone(),
         )
@@ -303,7 +311,20 @@ impl ToolsManager {
             .get_tool_for_task(task_id, tool_name)
             .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
-        tool.validate_input(&input)?;
+
+        // The reminder tool needs the scheduling task id to support `continue`
+        // (resume that task) and `tool` (run with the task's per-task tool
+        // context) modes. It is injected privately here — after the LLM-facing
+        // input was captured by the caller — so it never reaches the tool
+        // schema, the step history, or the LLM.
+        let mut exec_input = input;
+        if tool_name == "reminder"
+            && let Some(tid) = task_id
+            && let Some(obj) = exec_input.as_object_mut()
+        {
+            obj.insert("_task_id".into(), serde_json::json!(tid));
+        }
+        tool.validate_input(&exec_input)?;
         let settings = self.tool_settings.read().await;
         let cfg = settings.get(tool_name);
         let timeout_secs = cfg
@@ -327,7 +348,7 @@ impl ToolsManager {
             }
 
             match tool
-                .execute_with_timeout(input.clone(), cancel.clone(), timeout_secs)
+                .execute_with_timeout(exec_input.clone(), cancel.clone(), timeout_secs)
                 .await
             {
                 Ok(result) => {

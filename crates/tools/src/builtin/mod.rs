@@ -3,6 +3,7 @@ pub mod audio;
 pub mod clipboard;
 pub mod env_var;
 pub mod file;
+pub mod input;
 pub mod job_status;
 pub mod load_mcp;
 pub mod load_skill;
@@ -11,6 +12,7 @@ pub mod notify;
 pub mod power;
 pub mod process;
 pub mod registry;
+pub mod reminder;
 pub mod search;
 pub mod self_tool;
 pub mod shell;
@@ -28,6 +30,7 @@ use crate::mcp::McpManager;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 
+pub use reminder::{ReminderCenter, ReminderFired, ReminderMode, ReminderTool};
 pub use self_tool::{SelfTool, SelfToolContext};
 
 #[allow(clippy::too_many_arguments)]
@@ -39,6 +42,7 @@ pub async fn register_builtin_tools(
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     router: Option<Arc<haven_llm::LlmRouter>>,
     background_jobs: Arc<BackgroundJobs>,
+    reminders: Arc<ReminderCenter>,
     self_context: Option<SelfToolContext>,
     registry: ToolRegistry,
 ) {
@@ -52,6 +56,10 @@ pub async fn register_builtin_tools(
     }));
     tools.push(Arc::new(job_status::JobStatusTool {
         jobs: background_jobs,
+    }));
+    tools.push(Arc::new(input::InputTool));
+    tools.push(Arc::new(reminder::ReminderTool {
+        center: reminders,
     }));
     tools.push(Arc::new(system::SystemInfoTool));
     tools.push(Arc::new(env_var::EnvTool));

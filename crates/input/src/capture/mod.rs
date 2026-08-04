@@ -1,13 +1,15 @@
 ﻿//! Capture engine: a single long-lived thread that owns the CPAL capture
-//! backend and the ring buffer, and serves the recording loop's drain
-//! requests.
+//! backend and the ring buffer, and serves the recording loop's commands.
 //!
 //! **Capture path** — a CPAL input stream (WASAPI shared mode on Windows) is
 //! opened on `Start` and torn down on `Stop`. The audio callback converts
 //! whatever sample format the device delivers to mono 16 kHz f32, pushes it
-//! into the ring, and flips `has_signal` as soon as real audio is seen. The
-//! engine thread only drains the ring on command and runs the silent-capture
-//! check; audio delivery itself is callback-driven.
+//! into the ring, and flips `has_signal` as soon as real audio is seen.
+//!
+//! **Consumption** — the ring is mutex-protected and shared with the
+//! recording loop, which drains it directly (`EngineHandle::drain_shared`)
+//! with no engine round-trip. The engine thread handles start/stop commands
+//! and runs the silent-capture check on its poll cadence while recording.
 //!
 //! **Silent-capture detection** — if the first [`SILENCE_CHECK_DELAY`] of a
 //! recording is pure digital silence (the device delivered no signal at
@@ -44,11 +46,14 @@ pub use ring::RingBuffer;
 /// Upper bound for a command round-trip. The engine answers in microseconds;
 /// the timeout only guards against a dead engine thread.
 const CMD_TIMEOUT: Duration = Duration::from_secs(2);
-/// Engine command-channel poll cadence.
+/// Engine command-channel poll cadence while a recording is active.
 const MONITOR_INTERVAL: Duration = Duration::from_millis(20);
 /// How much of a fresh recording is observed before deciding the capture is
-/// delivering pure digital silence and aborting with an error.
-const SILENCE_CHECK_DELAY: Duration = Duration::from_millis(400);
+/// delivering pure digital silence and aborting with an error. Deliberately
+/// generous: WASAPI streams start with a silence transient, the effects APO
+/// can gate quiet input to digital zero, and users take a beat to start
+/// speaking after pressing record.
+const SILENCE_CHECK_DELAY: Duration = Duration::from_millis(3000);
 /// Ring capacity: 20 seconds of 16 kHz mono.
 const RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 20;
 
@@ -56,13 +61,15 @@ enum EngineCommand {
     Start(tokio::sync::oneshot::Sender<Result<()>>),
     StopAndDrain(tokio::sync::oneshot::Sender<Vec<f32>>),
     StopAndClear,
-    Drain(tokio::sync::oneshot::Sender<Vec<f32>>),
 }
 
 /// Client-side handle to the engine thread.
 #[derive(Clone)]
 pub struct EngineHandle {
     cmd_tx: mpsc::Sender<EngineCommand>,
+    /// Shared ring; the recording loop drains it directly (mutex-protected),
+    /// so audio consumption needs no command round-trip.
+    ring: Arc<StdMutex<RingBuffer>>,
     /// Set on a fatal stream error; the recording loop stops early when it
     /// observes it (instead of draining a dead ring until max duration).
     pub stream_failed: Arc<AtomicBool>,
@@ -90,16 +97,12 @@ impl EngineHandle {
         }
     }
 
-    pub async fn drain(&self) -> Vec<f32> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        if self.cmd_tx.send(EngineCommand::Drain(tx)).is_err() {
-            return Vec::new();
-        }
-        tokio::time::timeout(CMD_TIMEOUT, rx)
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .unwrap_or_default()
+    /// Drain the ring directly. No engine round-trip: the ring is
+    /// mutex-protected, so the recording loop consumes audio without waiting
+    /// for the engine's command poll. Only the mutex is contended, and only
+    /// for the duration of one copy.
+    pub fn drain_shared(&self) -> Vec<f32> {
+        self.ring.lock().expect("ring lock poisoned").drain()
     }
 
     /// Stop the capture stream (releasing the device), drain the ring and
@@ -132,6 +135,7 @@ pub fn spawn_engine() -> Result<EngineHandle> {
     let (cmd_tx, cmd_rx) = mpsc::channel::<EngineCommand>();
     let handle = EngineHandle {
         cmd_tx: cmd_tx.clone(),
+        ring: ring.clone(),
         stream_failed: stream_failed.clone(),
         silent_abort: silent_abort.clone(),
     };
@@ -150,28 +154,40 @@ pub fn spawn_engine() -> Result<EngineHandle> {
                 silent_checked: false,
             };
             loop {
-                match cmd_rx.recv_timeout(MONITOR_INTERVAL) {
-                    Ok(cmd) => match cmd {
-                        EngineCommand::Start(reply) => {
-                            engine.cmd_start(reply);
+                // Poll while recording (the silent-capture check runs on the
+                // poll cadence); block indefinitely while idle so an idle
+                // engine does not wake 50x/sec and keep the CPU out of low
+                // power states.
+                let cmd = if engine.recording {
+                    match cmd_rx.recv_timeout(MONITOR_INTERVAL) {
+                        Ok(cmd) => Some(cmd),
+                        Err(mpsc::RecvTimeoutError::Timeout) => None,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            engine.teardown();
+                            return;
                         }
-                        EngineCommand::Drain(tx) => {
-                            let data = engine.ring.lock().expect("ring lock poisoned").drain();
-                            let _ = tx.send(data);
-                        }
-                        EngineCommand::StopAndDrain(tx) => {
-                            let data = engine.cmd_stop_and_drain();
-                            let _ = tx.send(data);
-                        }
-                        EngineCommand::StopAndClear => {
-                            engine.cmd_stop_and_clear();
-                        }
-                    },
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        engine.teardown();
-                        return;
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                } else {
+                    match cmd_rx.recv() {
+                        Ok(cmd) => Some(cmd),
+                        Err(_) => {
+                            engine.teardown();
+                            return;
+                        }
+                    }
+                };
+                match cmd {
+                    Some(EngineCommand::Start(reply)) => {
+                        engine.cmd_start(reply);
+                    }
+                    Some(EngineCommand::StopAndDrain(tx)) => {
+                        let data = engine.cmd_stop_and_drain();
+                        let _ = tx.send(data);
+                    }
+                    Some(EngineCommand::StopAndClear) => {
+                        engine.cmd_stop_and_clear();
+                    }
+                    None => {
                         engine.poll_timeout();
                     }
                 }

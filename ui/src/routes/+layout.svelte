@@ -1,6 +1,7 @@
 <script>
 	import '../app.css';
-	import { addNotification, recordingOverlay, newMessage, taskMessagesStore, addTaskMessage, activeTaskIdStore, modelStateStore, updateModelState, clearModelStateTimer } from '$lib/stores.js';
+	import { addNotification, recordingOverlay, activeTaskIdStore, modelStateStore, updateModelState, clearModelStateTimer } from '$lib/stores.js';
+	import { submitVoiceTranscript } from '$lib/voiceSubmit.js';
 	import { themeStore } from '$lib/themeStore.js';
 	import { listen, invoke } from '$lib/tauri.js';
 	import logger from '$lib/logger.js';
@@ -229,9 +230,13 @@
 			const data = event.payload || {};
 			const text = (data.text || '').trim();
 			if (text) {
-				const activeId = get(activeTaskIdStore);
-				const taskId = activeId || '_draft';
-				addTaskMessage(taskId, newMessage({ role: 'user', content: text, voice: true, time: new Date().toLocaleTimeString() }));
+				// Same path as a typed message (see `submitVoiceTranscript`):
+				// appends the voice message, submits with the current
+				// `activeTaskId`, and migrates the message into the task if
+				// the backend created a fresh one.
+				submitVoiceTranscript(text).catch((e) =>
+					addNotification(`语音提交失败: ${e}`, 'error', 5000)
+				);
 			} else {
 				// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
 				// 明确反馈，否则看起来像"点了没反应"。

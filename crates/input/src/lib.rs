@@ -117,7 +117,9 @@ impl InputPipeline {
     /// Start the capture engine at app startup so the first recording pays no
     /// engine-spawn latency. No capture stream is opened here (the microphone
     /// is only claimed while recording); `start_recording` opens the stream
-    /// itself.
+    /// itself. The VAD model is also preloaded here (off the async runtime
+    /// thread) so the first recording does not stall on ONNX graph
+    /// compilation.
     pub async fn prewarm(&self) {
         let mut guard = self.engine.lock().expect("engine lock poisoned");
         if guard.is_some() {
@@ -132,6 +134,20 @@ impl InputPipeline {
                 tracing::warn!("audio capture engine prewarm failed: {e}");
             }
         }
+        drop(guard);
+
+        let vad_engine = self.vad_engine.clone();
+        tokio::spawn(async move {
+            let loaded = tokio::task::spawn_blocking(vad::VadEngine::new).await;
+            match loaded {
+                Ok(Ok(e)) => {
+                    *vad_engine.lock().expect("vad_engine lock poisoned") = Some(e);
+                    tracing::debug!("VAD engine preloaded");
+                }
+                Ok(Err(err)) => tracing::warn!("VAD engine preload failed: {err}"),
+                Err(_) => tracing::warn!("VAD engine preload task panicked"),
+            }
+        });
     }
 
     pub async fn get_vad_state(&self) -> vad::VadState {
@@ -173,12 +189,35 @@ impl InputPipeline {
 
         {
             self.vad_detector.lock().await.reset();
-            let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
-            match vad::VadEngine::new() {
-                Ok(e) => *eng_guard = Some(e),
-                Err(err) => {
-                    tracing::warn!("VAD engine init failed, VAD disabled: {err}");
-                    *eng_guard = None;
+            // Reuse the prewarmed VAD engine; only load on demand (first
+            // recording after a failed prewarm). The model stays resident
+            // across recordings — graph compilation is the slow part, and a
+            // fresh recording only needs the recurrent state reset.
+            let needs_load = {
+                let guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
+                guard.is_none()
+            };
+            if needs_load {
+                let loaded = tokio::task::spawn_blocking(vad::VadEngine::new).await;
+                let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
+                match loaded {
+                    Ok(Ok(e)) => *eng_guard = Some(e),
+                    Ok(Err(err)) => {
+                        tracing::warn!("VAD engine init failed, VAD disabled: {err}");
+                        *eng_guard = None;
+                    }
+                    Err(_) => {
+                        tracing::warn!("VAD engine init task panicked, VAD disabled");
+                        *eng_guard = None;
+                    }
+                }
+                if let Some(e) = eng_guard.as_mut() {
+                    e.reset();
+                }
+            } else {
+                let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
+                if let Some(e) = eng_guard.as_mut() {
+                    e.reset();
                 }
             }
         }
@@ -291,7 +330,7 @@ impl InputPipeline {
             }
 
             let new_data = match &capture_handle {
-                Some(handle) => handle.drain().await,
+                Some(handle) => handle.drain_shared(),
                 None => Vec::new(),
             };
 
@@ -310,15 +349,43 @@ impl InputPipeline {
 
                 let mut offset = 0;
                 while offset + VAD_FRAME_SAMPLES <= vad_input.len() {
+                    // Cancellation wins over VAD latency: each inference runs
+                    // on the blocking pool so a slow model (tract in debug
+                    // builds) cannot stall the stop path.
+                    if cancel.is_cancelled() {
+                        let elapsed = start.elapsed();
+                        return RecordingResult {
+                            pcm: accumulated_pcm,
+                            reason: RecordingReason::Manual,
+                            duration_ms: elapsed.as_millis() as u64,
+                            transcript: None,
+                            transcript_error: None,
+                        };
+                    }
                     let frame = &vad_input[offset..offset + VAD_FRAME_SAMPLES];
                     offset += VAD_FRAME_SAMPLES;
 
                     let prob = {
-                        let mut eng_guard =
-                            data.vad_engine.lock().expect("vad_engine lock poisoned");
-                        match eng_guard.as_mut() {
-                            Some(engine) => engine.infer(frame),
-                            None => 0.0,
+                        let engine = data.vad_engine.clone();
+                        let frame_owned = frame.to_vec();
+                        tokio::select! {
+                            res = tokio::task::spawn_blocking(move || {
+                                let mut guard = engine.lock().expect("vad_engine lock poisoned");
+                                match guard.as_mut() {
+                                    Some(e) => e.infer(&frame_owned),
+                                    None => 0.0,
+                                }
+                            }) => res.unwrap_or(0.0),
+                            _ = cancel.cancelled() => {
+                                let elapsed = start.elapsed();
+                                return RecordingResult {
+                                    pcm: accumulated_pcm,
+                                    reason: RecordingReason::Manual,
+                                    duration_ms: elapsed.as_millis() as u64,
+                                    transcript: None,
+                                    transcript_error: None,
+                                };
+                            }
                         }
                     };
 
@@ -402,7 +469,9 @@ impl InputPipeline {
         if let Some(ref handle) = *self.engine.lock().expect("engine lock poisoned") {
             handle.stop_and_clear();
         }
-        *self.vad_engine.lock().expect("vad_engine lock poisoned") = None;
+        // The VAD engine stays resident across recordings (state was reset at
+        // the next start); releasing it here would re-pay ONNX graph
+        // compilation on the next recording.
         self.vad_detector.lock().await.reset();
 
         tracing::debug!("Recording cancelled");
@@ -460,25 +529,6 @@ impl InputPipeline {
             // `result.pcm` is always the resampled mono stream at
             // TARGET_SAMPLE_RATE.
             let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
-
-            // TEMP DEBUG (to be removed): save every recording as a WAV file
-            // so the captured audio can be inspected while diagnosing
-            // "开头识别不到 / 全零" issues. Files land in
-            // %TEMP%\haven_recordings\rec_<timestamp>.wav.
-            {
-                let dir = std::env::temp_dir().join("haven_recordings");
-                if std::fs::create_dir_all(&dir).is_ok() {
-                    let ts = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0);
-                    let path = dir.join(format!("rec_{}.wav", ts));
-                    match std::fs::write(&path, &wav) {
-                        Ok(()) => tracing::info!("saved recording to {}", path.display()),
-                        Err(e) => tracing::warn!("failed to save recording: {}", e),
-                    }
-                }
-            }
 
             match client.transcribe(&wav).await {
                 Ok(text) => {
@@ -574,7 +624,9 @@ impl InputPipeline {
             }
         }
 
-        *self.vad_engine.lock().expect("vad_engine lock poisoned") = None;
+        // The VAD engine stays resident across recordings (state was reset at
+        // the next start); releasing it here would re-pay ONNX graph
+        // compilation on the next recording.
         self.vad_detector.lock().await.reset();
 
         Ok(result)
