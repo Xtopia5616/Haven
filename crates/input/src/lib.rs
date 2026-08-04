@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use capture::{EngineHandle, TARGET_SAMPLE_RATE};
-use haven_common::SttClient;
+use haven_llm::SttClient;
 
 pub use haven_common::config::AudioConfig;
 

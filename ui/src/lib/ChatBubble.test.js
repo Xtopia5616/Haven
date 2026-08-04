@@ -165,6 +165,37 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
+	it('renders a structured tool result card for JSON observations', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: JSON.stringify({ results: [{ path: 'C:\\a.rs' }], count: 1, mode: 'filename' }),
+				type: 'tool',
+				toolName: 'search',
+			}),
+		);
+		expect(screen.getByText('▶ Calling search')).toBeTruthy();
+		expect(document.querySelector('.tool-card')).toBeTruthy();
+		expect(screen.getByText('文件搜索')).toBeTruthy();
+		expect(screen.getByText('C:\\a.rs')).toBeTruthy();
+		expect(document.querySelector('details.observation-block')).toBeNull();
+	});
+
+	it('falls back to the raw observation block for unknown tool shapes', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: JSON.stringify({ status: 200 }),
+				type: 'tool',
+				toolName: 'shell',
+			}),
+		);
+		expect(document.querySelector('.tool-card')).toBeNull();
+		expect(document.querySelector('details.observation-block')).toBeTruthy();
+	});
+
 	it('renders supplement messages as a badge', () => {
 		render(ChatBubble, base({ role: 'assistant', content: 'extra context', type: 'supplement' }));
 		expect(document.querySelector('.supplement-badge')).toBeTruthy();
@@ -182,7 +213,7 @@ describe('ChatBubble', () => {
 				options: ['方案 A', '方案 B'],
 			}),
 		);
-		expect(document.querySelector('.ask-card')).toBeTruthy();
+		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('你想怎么做？')).toBeTruthy();
 		expect(screen.getByText('等待你的回答...')).toBeTruthy();
 		expect(screen.getByText('方案 A')).toBeTruthy();
@@ -200,7 +231,7 @@ describe('ChatBubble', () => {
 				options: ['方案 A'],
 			}),
 		);
-		expect(document.querySelector('.ask-card')).toBeTruthy();
+		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(document.querySelector('.ask-waiting')).toBeNull();
 		expect(screen.queryByText('方案 A')).toBeNull();
 	});

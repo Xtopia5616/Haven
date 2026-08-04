@@ -70,7 +70,7 @@ pub fn collect_byte_cap(max_chars: usize) -> usize {
 
 /// A background job that has reached a terminal state, surfaced to a consumer
 /// (the agent layer) so the owning task can be auto-notified of the result
-/// instead of the model having to poll `job_status`.
+/// instead of the model having to poll `status`.
 #[derive(Clone, Debug)]
 pub struct JobCompletion {
     pub job_id: String,
@@ -192,7 +192,7 @@ impl BackgroundJobs {
         }
         // Unpredictable job id: a sequential counter would let any task's
         // agent enumerate and read other tasks' background outputs through
-        // job_status (which is RiskLevel::Safe).
+        // status (which is RiskLevel::Safe).
         let id = format!("job-{}", uuid::Uuid::new_v4().simple());
         let started_at = chrono::Utc::now().to_rfc3339();
         let (kill_tx, kill_rx) = oneshot::channel();
@@ -294,7 +294,7 @@ impl BackgroundJobs {
                 "job_id": job_id,
                 "status": "running",
                 "started_at": started_at,
-                "hint": "The job is still running. Poll again with the job_status tool.",
+                "hint": "The job is still running. Poll again with the status tool.",
             }),
             _ => render_status_json(job_id, &entry.state),
         }

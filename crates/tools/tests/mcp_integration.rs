@@ -25,6 +25,7 @@ async fn create_client() -> Arc<McpClient> {
         "python",
         &[fixture_path()],
         &[],
+        true,
     ));
     client.connect().await.unwrap();
     client

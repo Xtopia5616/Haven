@@ -1,6 +1,5 @@
 pub mod compaction;
 pub mod facts;
-pub mod mcp_servers;
 pub mod messages;
 pub mod preferences;
 pub mod reminders;

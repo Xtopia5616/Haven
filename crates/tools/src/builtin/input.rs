@@ -19,10 +19,10 @@ impl Tool for InputTool {
     }
 
     fn description(&self) -> String {
-        "Simulate keyboard and mouse input on the desktop: type (Unicode text), \
-         key (named keys or chords like ctrl+c, win+r, alt+tab), click (mouse button \
-         at x,y), move (mouse to x,y), scroll (wheel delta). Coordinates are screen \
-         pixels, origin top-left. Use to drive other applications the user asked about."
+        "Simulate keyboard/mouse input on the desktop: type, \
+         key, click, \
+         move, scroll. Coordinates are screen \
+         pixels from the top-left."
             .into()
     }
 
@@ -50,7 +50,7 @@ impl Tool for InputTool {
                 },
                 "key": {
                     "type": "string",
-                    "description": "Key name or chord, e.g. enter, esc, tab, ctrl+c, win+r, alt+tab (key only)"
+                    "description": "Key name or chord (enter, esc, tab, ctrl+c)"
                 },
                 "x": {
                     "type": "integer",

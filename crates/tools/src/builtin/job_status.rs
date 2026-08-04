@@ -17,7 +17,7 @@ pub struct JobStatusTool {
 #[async_trait]
 impl Tool for JobStatusTool {
     fn name(&self) -> String {
-        "job_status".into()
+        "status".into()
     }
     fn description(&self) -> String {
         "Check a background job's status by job_id".into()
@@ -46,7 +46,7 @@ impl Tool for JobStatusTool {
         }
         let job_id = input["job_id"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("job_id is required for job_status"))?;
+            .ok_or_else(|| anyhow::anyhow!("job_id is required for status"))?;
         let status = self.jobs.status(job_id).await;
         Ok(ToolResult::ok(status))
     }
@@ -59,18 +59,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_job_status_name() {
+    fn test_status_name() {
         assert_eq!(
             JobStatusTool {
                 jobs: Arc::new(BackgroundJobs::new())
             }
             .name(),
-            "job_status"
+            "status"
         );
     }
 
     #[test]
-    fn test_job_status_risk_level() {
+    fn test_status_risk_level() {
         let tool = JobStatusTool {
             jobs: Arc::new(BackgroundJobs::new()),
         };
@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn test_job_status_schema() {
+    fn test_status_schema() {
         let tool = JobStatusTool {
             jobs: Arc::new(BackgroundJobs::new()),
         };
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_job_status_unknown_job() {
+    async fn test_status_unknown_job() {
         let tool = JobStatusTool {
             jobs: Arc::new(BackgroundJobs::new()),
         };
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_job_status_requires_job_id() {
+    async fn test_status_requires_job_id() {
         let tool = JobStatusTool {
             jobs: Arc::new(BackgroundJobs::new()),
         };
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_job_status_cancelled() {
+    async fn test_status_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let tool = JobStatusTool {

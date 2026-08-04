@@ -61,6 +61,7 @@
 		'openai-responses': 'https://api.openai.com/v1',
 		'anthropic': 'https://api.anthropic.com',
 		'gemini': 'https://generativelanguage.googleapis.com',
+		'llama.cpp': 'http://127.0.0.1:8080',
 	};
 
 	const OPENAI_COMPAT_STT = new Set(['openai', 'groq']);
@@ -549,6 +550,7 @@
 						: [
 							{ value: 'auto', label: 'Auto (from provider)' },
 							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+							{ value: 'llama.cpp', label: 'llama.cpp server' },
 							{ value: 'openai-responses', label: 'OpenAI Responses API' },
 							{ value: 'anthropic', label: 'Anthropic (Claude)' },
 							{ value: 'gemini', label: 'Google Gemini' },
@@ -1111,8 +1113,11 @@
 		font-size: 13px;
 	}
 	.save-btn {
+		position: sticky;
+		bottom: var(--md-sys-space-xs);
 		display: block;
-		margin: 0 auto;
+		margin: var(--md-sys-space-md) auto 0;
+		z-index: 1;
 	}
 	.key-status-row {
 		display: flex;

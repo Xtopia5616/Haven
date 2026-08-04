@@ -3,6 +3,7 @@ pub mod auth;
 pub mod client;
 pub mod registry;
 pub mod router;
+pub mod stt;
 pub mod stream_rules;
 pub mod types;
 
@@ -11,6 +12,7 @@ pub use auth::AuthResolver;
 pub use client::{LlmClient, with_retry};
 pub use registry::{ModelInfo, ModelRegistry};
 pub use router::{EndpointRole, LlmRouter};
+pub use stt::{McpToolCaller, SttClient, build_stt_client};
 pub use types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
     ToolDefinition, ToolFunction, Usage,

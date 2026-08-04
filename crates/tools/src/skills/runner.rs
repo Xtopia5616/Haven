@@ -177,7 +177,6 @@ mod tests {
                 description: "Echoes input".into(),
                 version: None,
                 language: Language::Python,
-                allowed_tools: vec![],
                 instructions: "".into(),
             },
             PathBuf::from("examples/skills/echo"),

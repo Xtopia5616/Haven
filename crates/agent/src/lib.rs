@@ -209,7 +209,7 @@ impl AgentLayer {
         // finishes, inject the result into the owning task's context at the
         // next ReAct step (via the job-completions buffer) and, if the task was
         // Paused for scheduling reasons, wake it to Pending so the dispatcher
-        // resumes and the model processes the result 鈥?no manual `job_status`
+        // resumes and the model processes the result no manual `status`
         // polling required.
         //
         // A task Paused because the `ask` tool is awaiting a human reply is
@@ -349,12 +349,6 @@ impl AgentLayer {
                             }
                             // Also surface the notification so the user sees
                             // the reminder while the task continues.
-                            agent
-                                .events
-                                .emit_notification(&fired.title, &fired.body)
-                                .await;
-                        }
-                        ReminderMode::Notify => {
                             agent
                                 .events
                                 .emit_notification(&fired.title, &fired.body)

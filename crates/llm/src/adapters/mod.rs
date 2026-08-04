@@ -24,6 +24,7 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &str {
     match endpoint.provider.as_str() {
         "anthropic" => "anthropic",
         "google" | "gemini" => "gemini",
+        "llama" | "llama.cpp" | "llamacpp" => "llama.cpp",
         _ => "openai-chat",
     }
 }
@@ -31,8 +32,9 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &str {
 /// Build the protocol adapter for an endpoint.
 ///
 /// Dispatch happens on the resolved `api_style` (see `api_style_for`):
-/// - `openai-chat`: OpenAI-compatible `/chat/completions` (OpenAI, Ollama,
-///   vLLM, DeepSeek, and most third-party gateways)
+/// - `openai-chat` / `llama.cpp`: OpenAI-compatible `/chat/completions`
+///   (OpenAI, Ollama, vLLM, DeepSeek, llama.cpp server, and most third-party
+///   gateways)
 /// - `openai-responses`: OpenAI Responses API
 /// - `anthropic`: Anthropic Messages API
 /// - `gemini`: Google Gemini API
@@ -193,6 +195,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(api_style_for(&unknown), "openai-chat");
+        let llama = ModelEndpoint {
+            provider: "llama.cpp".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&llama), "llama.cpp");
+        let llama_alias = ModelEndpoint {
+            provider: "llama".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&llama_alias), "llama.cpp");
+        let llamacpp = ModelEndpoint {
+            provider: "llamacpp".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&llamacpp), "llama.cpp");
     }
 
     #[test]
@@ -214,6 +231,13 @@ mod tests {
         assert_eq!(adapter_for(&responses).style(), "openai-responses");
         let openai = ModelEndpoint::default();
         assert_eq!(adapter_for(&openai).style(), "openai-chat");
+        // llama.cpp speaks the OpenAI-compatible wire protocol and is served by
+        // the same adapter, so its reported style matches openai-chat.
+        let llama = ModelEndpoint {
+            provider: "llama.cpp".into(),
+            ..Default::default()
+        };
+        assert_eq!(adapter_for(&llama).style(), "openai-chat");
     }
 
     #[tokio::test]

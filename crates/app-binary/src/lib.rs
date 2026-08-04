@@ -900,7 +900,6 @@ pub fn run() {
             commands::update_mcp_server,
             commands::remove_mcp_server,
             commands::toggle_mcp_server,
-            commands::configure_mcp,
             commands::list_skills,
             commands::refresh_skills,
             commands::set_skill_enabled,

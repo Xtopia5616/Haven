@@ -4,7 +4,6 @@ pub mod builtin;
 pub mod circuit;
 pub mod mcp;
 pub mod skills;
-pub mod stt;
 pub mod tool;
 pub mod util;
 
@@ -282,6 +281,16 @@ impl ToolsManager {
     /// Remove a single MCP server config from the in-memory map.
     pub async fn remove_mcp_server_config(&self, name: &str) {
         self.mcp_server_configs.write().await.remove(name);
+    }
+
+    /// List all known MCP server configs (enabled and disabled).
+    pub async fn list_mcp_server_configs(&self) -> Vec<McpServerConfig> {
+        self.mcp_server_configs
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect()
     }
 }
 
@@ -582,7 +591,6 @@ mod tests {
             description: "demo skill".into(),
             version: None,
             language: crate::skills::Language::Python,
-            allowed_tools: vec![],
             instructions: "do stuff".into(),
         };
         let skill = Skill::from_manifest_unchecked(manifest, std::path::PathBuf::from("."), true);

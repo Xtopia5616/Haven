@@ -61,7 +61,6 @@ pub struct SkillManifest {
     pub description: String,
     pub version: Option<String>,
     pub language: Language,
-    pub allowed_tools: Vec<String>,
     /// Full text of the `## Instructions` section, verbatim
     /// (`{{param}}` placeholders preserved for later render phases).
     pub instructions: String,
@@ -87,9 +86,6 @@ impl Skill {
     }
     pub fn language(&self) -> &Language {
         &self.manifest.language
-    }
-    pub fn allowed_tools(&self) -> &[String] {
-        &self.manifest.allowed_tools
     }
     pub fn instructions(&self) -> &str {
         &self.manifest.instructions
@@ -148,7 +144,6 @@ pub struct SkillInfo {
     pub description: String,
     pub version: Option<String>,
     pub language: String,
-    pub allowed_tools: Vec<String>,
     pub enabled: bool,
     /// Absolute path (UTF-8 lossy) to the skill directory.
     pub root: String,
@@ -162,7 +157,6 @@ impl From<&Skill> for SkillInfo {
             description: s.description().to_string(),
             version: s.version().map(str::to_string),
             language: s.language().as_str().to_string(),
-            allowed_tools: s.allowed_tools().to_vec(),
             enabled: s.enabled(),
             root: s.root().to_string_lossy().to_string(),
             has_script: s.has_script(),
@@ -184,7 +178,6 @@ impl From<&Skill> for SkillInfo {
 /// ## Metadata
 /// - name: <name>
 /// - description: <desc>
-/// - allowed_tools: [a, b]
 /// - version: 1.0.0
 /// - language: python
 ///
@@ -206,7 +199,6 @@ pub fn parse_skill_md(input: &str) -> anyhow::Result<SkillManifest> {
     let mut description = String::new();
     let mut version: Option<String> = None;
     let mut language = Language::Python;
-    let mut allowed_tools: Vec<String> = Vec::new();
 
     let mut current_section: Option<String> = None;
     let mut metadata_lines: Vec<String> = Vec::new();
@@ -260,20 +252,6 @@ pub fn parse_skill_md(input: &str) -> anyhow::Result<SkillManifest> {
             "description" => description = val,
             "version" => version = Some(val),
             "language" => language = Language::parse(&val),
-            "allowed_tools" => {
-                let inner = val.trim_start_matches('[').trim_end_matches(']');
-                if !inner.is_empty() {
-                    allowed_tools = inner
-                        .split(',')
-                        .map(|s| {
-                            s.trim()
-                                .trim_matches(|c: char| c == '"' || c == '\'')
-                                .to_string()
-                        })
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                }
-            }
             _ => {}
         }
     }
@@ -294,7 +272,6 @@ pub fn parse_skill_md(input: &str) -> anyhow::Result<SkillManifest> {
         description,
         version,
         language,
-        allowed_tools,
         instructions,
     })
 }
@@ -588,13 +565,12 @@ mod tests {
 
     #[test]
     fn parse_full_skill_md() {
-        let md = "# Skill: file-organizer\n\n## Metadata\n- name: file-organizer\n- description: org files\n- allowed_tools: [\"file_read\", file_move]\n- version: 1.0.0\n- language: python\n\n## Instructions\nDo the thing.\n";
+        let md = "# Skill: file-organizer\n\n## Metadata\n- name: file-organizer\n- description: org files\n- version: 1.0.0\n- language: python\n\n## Instructions\nDo the thing.\n";
         let m = parse_skill_md(md).unwrap();
         assert_eq!(m.name, "file-organizer");
         assert_eq!(m.description, "org files");
         assert_eq!(m.version.as_deref(), Some("1.0.0"));
         assert_eq!(m.language, Language::Python);
-        assert_eq!(m.allowed_tools, vec!["file_read", "file_move"]);
         assert!(m.instructions.contains("Do the thing."));
     }
 
@@ -627,11 +603,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_allowed_tools_empty_when_brackets() {
-        let md =
-            "# Skill: x\n## Metadata\n- allowed_tools: []\n- description: d\n## Instructions\ni\n";
+    fn parse_ignores_unknown_metadata_fields() {
+        // `allowed_tools` is no longer part of the metadata schema; unknown
+        // fields must be ignored so legacy SKILL.md files keep parsing.
+        let md = "# Skill: x\n## Metadata\n- allowed_tools: [a, b]\n- description: d\n## Instructions\ni\n";
         let m = parse_skill_md(md).unwrap();
-        assert!(m.allowed_tools.is_empty());
+        assert_eq!(m.name, "x");
+        assert_eq!(m.description, "d");
     }
 
     #[test]

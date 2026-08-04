@@ -21,7 +21,7 @@ impl Tool for NotifyTool {
     }
 
     fn description(&self) -> String {
-        "Send the user a notification.Use it to alert the use about something they should check without pausing the task".into()
+        "Send the user a notification without pausing the task — alert them about something worth checking".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

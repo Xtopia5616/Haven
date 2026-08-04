@@ -3,7 +3,6 @@
 ## Metadata
 - name: echo
 - description: Echos input as JSON output
-- allowed_tools: []
 - version: 1.0.0
 - language: python
 

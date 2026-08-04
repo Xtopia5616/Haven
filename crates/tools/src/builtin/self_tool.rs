@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use haven_common::config::{ConfigLoader, LogConfig, LogLevel};
-use haven_common::types::RiskLevel;
+use haven_common::config::{ConfigLoader, LogConfig, LogLevel, McpServerConfig};
+use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
 use haven_memory::Database;
@@ -40,9 +40,11 @@ const OPERATIONS: &[&str] = &[
     "skills_list",
     "skill_enable",
     "skill_disable",
+    "skill_create",
     "mcp_list",
     "mcp_connect",
     "mcp_disconnect",
+    "mcp_add",
     "logs_tail",
     "logs_level",
     "tasks",
@@ -350,6 +352,97 @@ impl SelfTool {
         }))
     }
 
+    async fn op_skill_create(&self, input: &Value) -> anyhow::Result<Value> {
+        const MAX_INSTRUCTIONS_BYTES: usize = 256 * 1024;
+        const MAX_SCRIPT_BYTES: usize = 512 * 1024;
+
+        let name = input["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("name is required (the new skill name)"))?;
+        validate_skill_name(name)?;
+        let description = input["description"]
+            .as_str()
+            .filter(|d| !d.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("description is required"))?;
+        let instructions = input["instructions"]
+            .as_str()
+            .filter(|i| !i.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("instructions are required (the '## Instructions' body)")
+            })?;
+        if instructions.len() > MAX_INSTRUCTIONS_BYTES {
+            anyhow::bail!("instructions too large (max {MAX_INSTRUCTIONS_BYTES} bytes)");
+        }
+        let language = input["language"].as_str().unwrap_or("python");
+        if language.len() > 32 {
+            anyhow::bail!("language too long (max 32 characters)");
+        }
+        let version = input["version"]
+            .as_str()
+            .map(|v| v.replace(['\n', '\r'], " ").trim().to_string())
+            .filter(|v| !v.is_empty());
+        if let Some(v) = &version
+            && v.len() > 64
+        {
+            anyhow::bail!("version too long (max 64 characters)");
+        }
+        let script = input["script"].as_str().map(str::to_string);
+        if let Some(s) = &script
+            && s.len() > MAX_SCRIPT_BYTES
+        {
+            anyhow::bail!("script too large (max {MAX_SCRIPT_BYTES} bytes)");
+        }
+
+        let root = self.skills_engine.resolved_root().await;
+        let skill_dir = root.join(name);
+        if skill_dir.exists() {
+            anyhow::bail!(
+                "skill '{}' already exists at {}",
+                name,
+                skill_dir.display()
+            );
+        }
+
+        tokio::fs::create_dir_all(&skill_dir).await?;
+        let desc_line = description.replace(['\n', '\r'], " ");
+        let mut md = format!(
+            "# Skill: {name}\n\n## Metadata\n- name: {name}\n- description: {desc_line}\n"
+        );
+        if let Some(v) = &version {
+            md.push_str(&format!("- version: {v}\n"));
+        }
+        md.push_str(&format!(
+            "- language: {language}\n\n## Instructions\n{instructions}\n"
+        ));
+        tokio::fs::write(skill_dir.join("SKILL.md"), md).await?;
+
+        let mut has_script = false;
+        if let Some(script) = script {
+            let scripts = skill_dir.join("scripts");
+            tokio::fs::create_dir_all(&scripts).await?;
+            tokio::fs::write(scripts.join("main.py"), script).await?;
+            has_script = true;
+        }
+
+        self.skills_engine.refresh_from_disk().await?;
+        // Ensure the new skill is enabled: no-op when the filter is None
+        // (all enabled), adds it to the allowlist otherwise.
+        self.skills_engine.set_enabled(name, true).await?;
+        let filter = self.skills_engine.enabled_filter().await;
+        self.mutate_config(|loader| {
+            loader.config_mut().skills.enabled = filter;
+            Ok(())
+        })?;
+
+        Ok(serde_json::json!({
+            "name": name,
+            "created": true,
+            "root": skill_dir.to_string_lossy(),
+            "has_script": has_script,
+        }))
+    }
+
     async fn mcp_status(&self) -> Value {
         let configs = self.server_configs.read().await;
         let mut servers = Vec::with_capacity(configs.len());
@@ -407,6 +500,64 @@ impl SelfTool {
         }
         self.mcp_manager.remove_client(name).await;
         Ok(serde_json::json!({ "name": name, "connected": false }))
+    }
+
+    async fn op_mcp_add(&self, input: &Value) -> anyhow::Result<Value> {
+        let name = input["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to add)"))?;
+        let command = input["command"]
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("command is required (the binary to spawn)"))?;
+        let args = string_array(input, "args");
+        let env = string_array(input, "env");
+        let enabled = input["enabled"].as_bool().unwrap_or(true);
+        let auto_connect = input["auto_connect"].as_bool().unwrap_or(true);
+
+        {
+            let cfg = self.read_config()?;
+            if cfg.config().mcp_servers.iter().any(|s| s.name == name) {
+                anyhow::bail!("MCP server '{}' already exists in config", name);
+            }
+        }
+
+        let config = McpServerConfig {
+            name: name.to_string(),
+            transport: McpTransportType::Stdio,
+            command: command.to_string(),
+            args,
+            env,
+            enabled,
+        };
+        self.mutate_config(|loader| {
+            loader.config_mut().mcp_servers.push(config.clone());
+            Ok(())
+        })?;
+        // Keep the in-memory index in sync so `mcp_connect` / `load_mcp` see it.
+        self.server_configs
+            .write()
+            .await
+            .insert(config.name.clone(), config.clone());
+
+        let mut result = serde_json::json!({
+            "name": config.name,
+            "enabled": enabled,
+            "saved": true,
+        });
+        if enabled && auto_connect {
+            match self.mcp_manager.connect_server(&config).await {
+                Ok(()) => result["connected"] = serde_json::json!(true),
+                Err(e) => {
+                    result["connected"] = serde_json::json!(false);
+                    result["warning"] = format!("config saved but connect failed: {e}").into();
+                }
+            }
+        } else {
+            result["connected"] = serde_json::json!(false);
+        }
+        Ok(result)
     }
 
     async fn op_logs_tail(&self, input: &Value) -> anyhow::Result<Value> {
@@ -600,6 +751,36 @@ fn set_value_at(root: &mut Value, path: &str, value: Value) -> anyhow::Result<()
     Ok(())
 }
 
+/// Extract an array of strings from `input[key]`, ignoring non-string
+/// elements (used by `mcp_add` for `args` / `env`).
+fn string_array(input: &Value, key: &str) -> Vec<String> {
+    input[key]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Validate a skill name for safe use as a directory and as the
+/// `skill::<name>` tool identifier.
+fn validate_skill_name(name: &str) -> anyhow::Result<()> {
+    let ok = !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
+        anyhow::bail!(
+            "invalid skill name '{}': use 1-128 characters of a-z, A-Z, 0-9, '-' or '_'",
+            name
+        );
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Tool for SelfTool {
     fn name(&self) -> String {
@@ -607,10 +788,7 @@ impl Tool for SelfTool {
     }
 
     fn description(&self) -> String {
-        "Inspect and manage Haven's own state: read status and configuration, \
-         change config values (config_set), enable/disable skills, connect or \
-         disconnect MCP servers, tail or set the log level, and list recent \
-         tasks or failed-task errors for diagnosis."
+        "Inspect and manage Haven's own state."
             .into()
     }
 
@@ -620,7 +798,8 @@ impl Tool for SelfTool {
             RiskLevel::Low
         } else if SESSION_MUTATING_OPS.contains(&op)
             || op == "logs_level"
-            || op.starts_with("skill_")
+            || op == "skill_enable"
+            || op == "skill_disable"
         {
             RiskLevel::Medium
         } else {
@@ -648,6 +827,48 @@ impl Tool for SelfTool {
                     "type": "string",
                     "description": "Skill or MCP server name"
                 },
+                "command": {
+                    "type": "string",
+                    "description": "MCP server command to spawn (mcp_add)"
+                },
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Command-line args for the MCP server (mcp_add)"
+                },
+                "env": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "KEY=VALUE environment variables for the MCP server (mcp_add)"
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the new MCP server is enabled (mcp_add, default true)"
+                },
+                "auto_connect": {
+                    "type": "boolean",
+                    "description": "Connect the new MCP server right away (mcp_add, default true)"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Skill description shown to the agent (skill_create)"
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": "The '## Instructions' body of the new SKILL.md (skill_create)"
+                },
+                "language": {
+                    "type": "string",
+                    "description": "Skill language (skill_create, default python)"
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Skill version string (skill_create, optional)"
+                },
+                "script": {
+                    "type": "string",
+                    "description": "Optional content of scripts/main.py for the new skill (skill_create)"
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Row/line limit (default 10-50, max 500 for logs)"
@@ -673,9 +894,11 @@ impl Tool for SelfTool {
             "skills_list" => self.op_skills_list().await?,
             "skill_enable" => self.op_skill_set(&input, true).await?,
             "skill_disable" => self.op_skill_set(&input, false).await?,
+            "skill_create" => self.op_skill_create(&input).await?,
             "mcp_list" => self.op_mcp_list().await?,
             "mcp_connect" => self.op_mcp_connect(&input).await?,
             "mcp_disconnect" => self.op_mcp_disconnect(&input).await?,
+            "mcp_add" => self.op_mcp_add(&input).await?,
             "logs_tail" => self.op_logs_tail(&input).await?,
             "logs_level" => self.op_logs_level(&input).await?,
             "tasks" => self.op_tasks(&input).await?,
@@ -941,6 +1164,238 @@ mod tests {
             )
             .await;
         assert!(err.is_ok(), "disconnecting an unknown server is a no-op");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_add_persists_and_updates_index() {
+        let (tool, _dir) = make_tool();
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_add",
+                    "name": "new-srv",
+                    "command": "python",
+                    "args": ["-m", "demo"],
+                    "env": ["API_KEY=abc"],
+                    "enabled": true,
+                    "auto_connect": false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["saved"], json!(true));
+        assert_eq!(result.output["connected"], json!(false));
+
+        // Persisted to config.
+        let loader = tool.read_config().unwrap();
+        let server = loader
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "new-srv")
+            .unwrap();
+        assert_eq!(server.command, "python");
+        assert_eq!(server.args, vec!["-m", "demo"]);
+        assert_eq!(server.env, vec!["API_KEY=abc"]);
+        assert!(server.enabled);
+
+        // Visible in the in-memory index (used by load_mcp / mcp_connect).
+        let index = tool.server_configs.read().await;
+        assert!(index.contains_key("new-srv"));
+        assert_eq!(index["new-srv"].args, vec!["-m", "demo"]);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_add_duplicate_rejected() {
+        let (tool, _dir) = make_tool();
+        tool.mutate_config(|l| {
+            l.config_mut().mcp_servers.push(McpServerConfig {
+                name: "dup".into(),
+                command: "python".into(),
+                ..Default::default()
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        let err = tool
+            .execute(
+                json!({"operation": "mcp_add", "name": "dup", "command": "node"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_add_missing_command_rejected() {
+        let (tool, _dir) = make_tool();
+        let err = tool
+            .execute(
+                json!({"operation": "mcp_add", "name": "srv"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("command is required"));
+    }
+
+    #[tokio::test]
+    async fn test_skill_create_builds_skill_on_disk() {
+        let (tool, dir) = make_tool();
+        tool.skills_engine
+            .set_config(Some(dir.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "skill_create",
+                    "name": "organizer",
+                    "description": "Organizes files",
+                    "instructions": "Group files by extension.\nUse file_move.",
+                    "version": "1.0.0",
+                    "language": "python",
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["created"], json!(true));
+        assert_eq!(result.output["has_script"], json!(false));
+
+        // SKILL.md written with the expected layout.
+        let md = std::fs::read_to_string(dir.path().join("organizer").join("SKILL.md")).unwrap();
+        assert!(md.contains("# Skill: organizer"));
+        assert!(md.contains("- description: Organizes files"));
+        assert!(md.contains("- version: 1.0.0"));
+        assert!(md.contains("## Instructions"));
+        assert!(md.contains("Group files by extension."));
+
+        // Engine sees it and the config filter stays None (all enabled).
+        let skill = tool.skills_engine.get_skill("organizer").await.unwrap();
+        assert!(skill.enabled());
+        let loader = tool.read_config().unwrap();
+        assert_eq!(loader.config().skills.enabled, None);
+    }
+
+    #[tokio::test]
+    async fn test_skill_create_with_script() {
+        let (tool, dir) = make_tool();
+        tool.skills_engine
+            .set_config(Some(dir.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "skill_create",
+                    "name": "echo",
+                    "description": "Echo skill",
+                    "instructions": "Echo the input.",
+                    "script": "import sys, json\nprint(json.load(sys.stdin))\n",
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["has_script"], json!(true));
+
+        let script = std::fs::read_to_string(dir.path().join("echo").join("scripts").join("main.py"))
+            .unwrap();
+        assert!(script.contains("json.load"));
+        assert!(tool.skills_engine.get_skill("echo").await.unwrap().has_script());
+    }
+
+    #[tokio::test]
+    async fn test_skill_create_invalid_name_rejected() {
+        let (tool, dir) = make_tool();
+        tool.skills_engine
+            .set_config(Some(dir.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        for bad in ["../escape", "a/b", "has space", "中文", "a:b"] {
+            let err = tool
+                .execute(
+                    json!({
+                        "operation": "skill_create",
+                        "name": bad,
+                        "description": "d",
+                        "instructions": "i",
+                    }),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("invalid skill name"),
+                "'{bad}' should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_skill_create_existing_rejected() {
+        let (tool, dir) = make_tool();
+        tool.skills_engine
+            .set_config(Some(dir.path().to_path_buf()), None)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join("taken")).unwrap();
+        std::fs::write(
+            dir.path().join("taken").join("SKILL.md"),
+            "# Skill: taken\n## Metadata\n- description: d\n## Instructions\ni\n",
+        )
+        .unwrap();
+        tool.skills_engine.refresh_from_disk().await.unwrap();
+
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "skill_create",
+                    "name": "taken",
+                    "description": "d",
+                    "instructions": "i",
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_skill_create_adds_to_existing_allowlist() {
+        let (tool, dir) = make_tool();
+        // Exhaustive empty allowlist: nothing enabled.
+        tool.skills_engine
+            .set_config(Some(dir.path().to_path_buf()), Some(vec![]))
+            .await
+            .unwrap();
+
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "skill_create",
+                    "name": "solo",
+                    "description": "d",
+                    "instructions": "i",
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["created"], json!(true));
+
+        // The new skill was added to the allowlist and persisted.
+        let loader = tool.read_config().unwrap();
+        assert_eq!(loader.config().skills.enabled, Some(vec!["solo".to_string()]));
+        assert!(tool.skills_engine.get_skill("solo").await.unwrap().enabled());
     }
 
     #[tokio::test]

@@ -1,21 +1,65 @@
+//! Speech-to-text (STT) capability, unified with the chat/vision adapters.
+//!
+//! Every transcription implementation lives here next to the `LlmClient`
+//! adapters, and [`build_stt_client`] is the single dispatch entry point
+//! (the STT counterpart of `adapters::adapter_for`). Providers:
+//! - `none`: no client
+//! - `mcp`: route through an MCP server exposing `stt.transcribe`
+//! - `llm`: transcribe via the `audio_model` LLM endpoint (see
+//!   [`LlmSttAdapter`])
+//! - `openai` / `groq`: OpenAI-Whisper-compatible `/audio/transcriptions`
+//! - `gemini`: Google Gemini `generateContent` audio transcription
+//! - `deepgram`: Deepgram REST `/v1/listen`
+//! - `assemblyai`: AssemblyAI `/v2/transcript` job polling
+
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
-use haven_common::SttClient;
 use haven_common::config::SttConfig;
-use haven_llm::LlmRouter;
-use haven_llm::types::{ContentPart, LlmMessage, LlmRole};
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
-use crate::mcp::McpManager;
+use crate::types::{ContentPart, LlmMessage, LlmRole};
+use crate::LlmRouter;
+
+/// Trait for speech-to-text conversion.
+/// Implementations receive WAV bytes and return transcribed text.
+#[async_trait]
+pub trait SttClient: Send + Sync {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<String>;
+}
+
+/// Outcome of an MCP tool invocation, decoupled from the tools crate's
+/// `ToolResult` so the llm crate (which cannot depend on tools) can build
+/// `McpSttClient` against a generic caller.
+pub struct McpToolOutcome {
+    pub success: bool,
+    pub error: Option<String>,
+    pub output: Value,
+}
+
+/// Generic MCP tool invocation surface implemented by the tools crate's
+/// `McpManager`. Keeps `McpSttClient` dependency-free.
+#[async_trait]
+pub trait McpToolCaller: Send + Sync {
+    async fn invoke_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpToolOutcome>;
+}
 
 /// Build the STT client for a given config. Returns `None` when the configured
 /// provider does not need a client (e.g. `none`), and returns an error for an
-/// unknown provider id.
+/// unknown provider id. `mcp` is the MCP caller injected by the app layer
+/// (required only for the `mcp` provider).
 pub fn build_stt_client(
     router: Arc<LlmRouter>,
-    manager: McpManager,
+    mcp: Option<Arc<dyn McpToolCaller>>,
     cfg: &SttConfig,
 ) -> Result<Option<Box<dyn SttClient>>> {
     let timeout = Duration::from_secs(cfg.timeout_secs);
@@ -25,7 +69,10 @@ pub fn build_stt_client(
             let server = cfg.mcp_server.clone().ok_or_else(|| {
                 anyhow::anyhow!("STT provider is 'mcp' but no mcp_server is configured")
             })?;
-            Box::new(McpSttClient::new(manager, &server, cfg.timeout_secs))
+            let caller = mcp.ok_or_else(|| {
+                anyhow::anyhow!("STT provider is 'mcp' but no MCP caller is available")
+            })?;
+            Box::new(McpSttClient::new(caller, &server, cfg.timeout_secs))
         }
         "llm" => Box::new(LlmSttAdapter::new(router)),
         "openai" => Box::new(OpenAiWhisperClient::new(
@@ -49,15 +96,15 @@ pub fn build_stt_client(
 /// STT client that routes transcription through an MCP server.
 /// Calls the `stt.transcribe` tool with base64-encoded WAV audio.
 pub struct McpSttClient {
-    manager: McpManager,
+    caller: Arc<dyn McpToolCaller>,
     server_name: String,
     timeout: Duration,
 }
 
 impl McpSttClient {
-    pub fn new(manager: McpManager, server_name: &str, timeout_secs: u64) -> Self {
+    pub fn new(caller: Arc<dyn McpToolCaller>, server_name: &str, timeout_secs: u64) -> Self {
         Self {
-            manager,
+            caller,
             server_name: server_name.into(),
             timeout: Duration::from_secs(timeout_secs),
         }
@@ -73,11 +120,11 @@ impl SttClient for McpSttClient {
             "audio": audio_b64,
         });
 
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = CancellationToken::new();
 
         let result = tokio::time::timeout(self.timeout, async {
-            self.manager
-                .call_tool(&self.server_name, "stt.transcribe", input, cancel)
+            self.caller
+                .invoke_tool(&self.server_name, "stt.transcribe", input, cancel)
                 .await
         })
         .await
@@ -591,11 +638,12 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
-    use haven_llm::EndpointRole;
-    use haven_llm::client::LlmClient;
-    use haven_llm::types::{LlmError, LlmResponse};
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::client::LlmClient;
+    use crate::types::{LlmError, LlmResponse, StreamChunk};
+    use crate::EndpointRole;
 
     struct MockSttClient {
         response: String,
@@ -649,10 +697,8 @@ mod tests {
         async fn chat_stream(
             &self,
             _messages: Vec<LlmMessage>,
-        ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<haven_llm::types::StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
+        {
             Ok(Box::pin(futures_util::stream::empty()))
         }
 
@@ -718,10 +764,8 @@ mod tests {
         async fn chat_stream(
             &self,
             _: Vec<LlmMessage>,
-        ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<haven_llm::types::StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
+        {
             Ok(Box::pin(futures_util::stream::empty()))
         }
         async fn health_check(&self) -> Result<(), LlmError> {
@@ -760,6 +804,27 @@ mod tests {
         );
     }
 
+    /// No-op MCP caller for dispatch tests (only the `mcp` provider's
+    /// missing-server error path is exercised, so the caller never fires).
+    struct NoopMcpCaller;
+
+    #[async_trait]
+    impl McpToolCaller for NoopMcpCaller {
+        async fn invoke_tool(
+            &self,
+            _server_name: &str,
+            _tool_name: &str,
+            _input: Value,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<McpToolOutcome> {
+            Ok(McpToolOutcome {
+                success: true,
+                error: None,
+                output: serde_json::json!({ "text": "mock" }),
+            })
+        }
+    }
+
     fn test_stt_cfg(provider: &str) -> SttConfig {
         SttConfig {
             provider: provider.into(),
@@ -777,19 +842,29 @@ mod tests {
             ..Default::default()
         };
         let router = mock_router("unused");
-        let mgr = McpManager::new();
-        let client = build_stt_client(router.clone(), mgr.clone(), &cfg).unwrap();
+        let mcp: Arc<dyn McpToolCaller> = Arc::new(NoopMcpCaller);
+        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
         assert!(client.is_none());
 
         let cfg = test_stt_cfg("mcp");
-        let err = build_stt_client(router.clone(), mgr.clone(), &cfg)
+        let err = build_stt_client(router.clone(), Some(mcp.clone()), &cfg)
             .err()
             .expect("expected mcp without server to fail");
         assert!(err.to_string().contains("mcp_server"));
 
+        let cfg = SttConfig {
+            provider: "mcp".into(),
+            mcp_server: Some("svc".into()),
+            ..Default::default()
+        };
+        let err = build_stt_client(router.clone(), None, &cfg)
+            .err()
+            .expect("expected mcp without caller to fail");
+        assert!(err.to_string().contains("MCP caller"));
+
         for provider in ["openai", "groq", "gemini", "deepgram", "assemblyai"] {
             let cfg = test_stt_cfg(provider);
-            let client = build_stt_client(router.clone(), mgr.clone(), &cfg).unwrap();
+            let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
             assert!(client.is_some(), "provider {provider} should yield a client");
         }
     }
@@ -797,7 +872,7 @@ mod tests {
     #[test]
     fn build_stt_client_unknown_provider_errors() {
         let cfg = test_stt_cfg("not-a-provider");
-        let err = build_stt_client(mock_router("unused"), McpManager::new(), &cfg)
+        let err = build_stt_client(mock_router("unused"), None, &cfg)
             .err()
             .expect("expected unknown provider to fail");
         assert!(err.to_string().contains("unknown STT provider"));

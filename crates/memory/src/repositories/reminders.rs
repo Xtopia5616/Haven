@@ -123,10 +123,10 @@ mod tests {
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "drink water",
-            "notify",
+            "tool",
             None,
-            None,
-            None,
+            Some("notify"),
+            Some(r#"{"title":"Haven","body":"drink water"}"#),
             None,
         )
         .unwrap();
@@ -163,7 +163,8 @@ mod tests {
         assert_eq!(pending[0].task_id.as_deref(), Some("task-7"));
         assert_eq!(pending[0].prompt.as_deref(), Some("check the weather"));
         assert_eq!(pending[1].id, "r1");
-        assert_eq!(pending[1].mode, "notify");
+        assert_eq!(pending[1].mode, "tool");
+        assert_eq!(pending[1].tool_name.as_deref(), Some("notify"));
         assert_eq!(pending[1].prompt, None);
         assert_eq!(pending[2].id, "r3");
         assert_eq!(pending[2].mode, "tool");
@@ -180,9 +181,9 @@ mod tests {
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "x",
-            "notify",
+            "tool",
             None,
-            None,
+            Some("notify"),
             None,
             None,
         )
@@ -199,9 +200,9 @@ mod tests {
             "2026-08-04T02:00:00+08:00",
             "Haven",
             "x",
-            "notify",
+            "tool",
             None,
-            None,
+            Some("notify"),
             None,
             None,
         )

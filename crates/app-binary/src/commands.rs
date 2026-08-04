@@ -5,14 +5,15 @@ use haven_common::config::{LlmConfig, ModelEndpoint};
 use haven_common::types::RiskLevel;
 use haven_input::{RecordingReason, RecordingResult};
 use haven_llm::LlmRouter;
+use haven_llm::stt::build_stt_client;
 use haven_llm::{ModelInfo, ModelRegistry};
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::task_steps::TaskStep;
 use haven_memory::repositories::tasks::Task;
-use haven_tools::stt::build_stt_client;
 use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
@@ -84,7 +85,9 @@ async fn hot_swap_router(state: &AppState, new_router: Arc<LlmRouter>) -> Result
         let cfg = state.config_loader.lock().map_err(|e| log_err("hot_swap_router", e))?;
         cfg.config().stt.clone()
     };
-    match build_stt_client(new_router, state.tools.mcp_manager.clone(), &stt_config) {
+    let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
+        Arc::new(state.tools.mcp_manager.clone());
+    match build_stt_client(new_router, Some(mcp_caller), &stt_config) {
         Ok(client) => {
             state.pipeline.set_stt_client(client).await;
         }
@@ -474,7 +477,35 @@ pub async fn count_history_search(
 pub async fn list_mcp_tools(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<McpServerSnapshot>, String> {
-    Ok(state.tools.mcp_manager.snapshot().await)
+    let mut snapshots: HashMap<String, McpServerSnapshot> = state
+        .tools
+        .mcp_manager
+        .snapshot()
+        .await
+        .into_iter()
+        .map(|s| (s.name.clone(), s))
+        .collect();
+
+    // Include configured-but-disabled servers (no live client) so the UI can
+    // show their state and re-enable them without re-adding.
+    for config in state.tools.list_mcp_server_configs().await {
+        let entry = snapshots.entry(config.name.clone()).or_insert_with(|| {
+            McpServerSnapshot {
+                name: config.name.clone(),
+                transport: "stdio".into(),
+                enabled: config.enabled,
+                status: McpClientStatus::Disconnected,
+                tools: vec![],
+                last_error: None,
+                last_seen_at: None,
+            }
+        });
+        entry.enabled = config.enabled;
+    }
+
+    let mut result: Vec<_> = snapshots.into_values().collect();
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
 }
 
 #[tauri::command]
@@ -576,6 +607,7 @@ pub async fn add_mcp_server(
         &config.command,
         &config.args,
         &config.env,
+        config.enabled,
     ));
     if config.enabled {
         client.connect().await.map_err(|e| log_err("add_mcp_server", e))?;
@@ -635,6 +667,7 @@ pub async fn update_mcp_server(
                     &config.command,
                     &config.args,
                     &config.env,
+                    config.enabled,
                 ));
                 client.connect().await.map_err(|e| log_err("update_mcp_server", e))?;
                 let discovery = loader.config().mcp_discovery.clone();
@@ -660,6 +693,7 @@ pub async fn update_mcp_server(
                 &config.command,
                 &config.args,
                 &config.env,
+                config.enabled,
             ));
             client.connect().await.map_err(|e| log_err("update_mcp_server", e))?;
             let discovery = loader.config().mcp_discovery.clone();
@@ -740,30 +774,26 @@ pub async fn toggle_mcp_server(
 ) -> Result<(), String> {
     let mut loader = haven_common::config::ConfigLoader::load().map_err(|e| log_err("toggle_mcp_server", e))?;
     let servers = &mut loader.config_mut().mcp_servers;
-    if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
+    let config = if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
         existing.enabled = enabled;
-        loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
+        existing.clone()
     } else {
         return Err(format!("MCP server '{}' not found", name));
-    }
-
-    let config = loader
-        .config()
-        .mcp_servers
-        .iter()
-        .find(|s| s.name == name)
-        .cloned()
-        .ok_or_else(|| format!("MCP server '{}' not found", name))?;
+    };
 
     if enabled {
-        // Reconnect
+        // Reconnect. Connect BEFORE persisting the enabled flag: if the
+        // server is unreachable, config must stay disabled so it never
+        // diverges from the (absent) live client and monitor.
         let client = std::sync::Arc::new(haven_tools::McpClient::new(
             &config.name,
             &config.command,
             &config.args,
             &config.env,
+            enabled,
         ));
         client.connect().await.map_err(|e| log_err("toggle_mcp_server", e))?;
+        loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
         let discovery = loader.config().mcp_discovery.clone();
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
         let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
@@ -778,6 +808,8 @@ pub async fn toggle_mcp_server(
         );
         state.tools.mcp_manager.add_client(client).await;
     } else {
+        // Disable: no connect to validate, persist the flag now.
+        loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
         state.tools.mcp_manager.remove_client(&name).await;
     }
 
@@ -798,20 +830,6 @@ pub async fn toggle_mcp_server(
             },
         },
     );
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn configure_mcp(
-    state: State<'_, Arc<AppState>>,
-    name: String,
-    transport: String,
-    config: String,
-) -> Result<(), String> {
-    let _ = state
-        .db
-        .save_mcp_server(&name, &transport, &config)
-        .map_err(|e| log_err("configure_mcp", e))?;
     Ok(())
 }
 

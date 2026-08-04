@@ -67,7 +67,7 @@ impl Tool for ShellTool {
         }
 
         // Background mode: hand the command to the job registry and return
-        // immediately. The agent polls job_status with the returned job_id.
+        // immediately. The agent polls status with the returned job_id.
         if input["background"].as_bool().unwrap_or(false) {
             let job_id = self.jobs.spawn_shell(cmd, shell, max_chars).await?;
             return Ok(ToolResult::ok(serde_json::json!({

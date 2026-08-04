@@ -3,10 +3,10 @@ use haven_agent::AgentLayer;
 use haven_common::config::ConfigLoader;
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
+use haven_llm::stt::build_stt_client;
 use haven_memory::Database;
 use haven_task::TaskExecutor;
 use haven_tools::ToolsManager;
-use haven_tools::stt::build_stt_client;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
@@ -76,7 +76,9 @@ impl AppState {
         // Build the STT client for the configured provider and wire it into
         // the input pipeline. On error (e.g. `mcp` provider with no server)
         // or `none`, the pipeline gets no client so transcription is disabled.
-        match build_stt_client(router.clone(), tools.mcp_manager.clone(), stt_config) {
+        let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
+            std::sync::Arc::new(tools.mcp_manager.clone());
+        match build_stt_client(router.clone(), Some(mcp_caller), stt_config) {
             Ok(client) => {
                 pipeline.set_stt_client(client).await;
             }

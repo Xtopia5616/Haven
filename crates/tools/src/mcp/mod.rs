@@ -1,8 +1,9 @@
 use crate::ToolResult;
+use haven_llm::stt::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -67,6 +68,7 @@ pub enum McpClientStatus {
 pub struct McpServerSnapshot {
     pub name: String,
     pub transport: String,
+    pub enabled: bool,
     pub status: McpClientStatus,
     pub tools: Vec<McpToolInfo>,
     pub last_error: Option<String>,
@@ -156,6 +158,7 @@ pub struct McpClient {
     command: String,
     args: Vec<String>,
     env: Vec<String>,
+    enabled: Arc<AtomicBool>,
     inner: Arc<Mutex<Option<McpClientInner>>>,
     status: Arc<Mutex<McpClientStatus>>,
     next_id: AtomicU64,
@@ -200,12 +203,13 @@ impl RateLimiter {
 }
 
 impl McpClient {
-    pub fn new(name: &str, command: &str, args: &[String], env: &[String]) -> Self {
+    pub fn new(name: &str, command: &str, args: &[String], env: &[String], enabled: bool) -> Self {
         Self {
             name: name.into(),
             command: command.into(),
             args: args.to_vec(),
             env: env.to_vec(),
+            enabled: Arc::new(AtomicBool::new(enabled)),
             inner: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new(McpClientStatus::Disconnected)),
             next_id: AtomicU64::new(1),
@@ -221,6 +225,10 @@ impl McpClient {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
     }
 
     pub async fn status(&self) -> McpClientStatus {
@@ -247,6 +255,7 @@ impl McpClient {
         McpServerSnapshot {
             name: self.name.clone(),
             transport: "stdio".into(),
+            enabled: self.enabled(),
             status: self.status.lock().await.clone(),
             tools: self.tools_cache.lock().await.clone().unwrap_or_default(),
             last_error: self.last_error.lock().await.clone(),
@@ -311,11 +320,24 @@ impl McpClient {
 
         let server_name = result["serverInfo"]["name"].as_str().unwrap_or("?");
         let server_version = result["serverInfo"]["version"].as_str().unwrap_or("?");
+        let server_protocol = result["protocolVersion"].as_str().unwrap_or("?");
+        if let Some(warning) = result["warning"].as_str() {
+            tracing::warn!("MCP server '{}' warning: {}", self.name, warning);
+        }
+        if server_protocol != PROTOCOL_VERSION {
+            tracing::warn!(
+                "MCP server '{}' negotiated protocol version '{}' (client supports '{}')",
+                self.name,
+                server_protocol,
+                PROTOCOL_VERSION
+            );
+        }
         tracing::info!(
-            "MCP server '{}' connected: {} v{}",
+            "MCP server '{}' connected: {} v{} (protocol {})",
             self.name,
             server_name,
-            server_version
+            server_version,
+            server_protocol
         );
 
         // Send initialized notification
@@ -722,6 +744,7 @@ impl McpManager {
                 &server.command,
                 &server.args,
                 &server.env,
+                server.enabled,
             ));
             let name = client.name().to_string();
             self.clients
@@ -792,6 +815,7 @@ impl McpManager {
             &config.command,
             &config.args,
             &config.env,
+            config.enabled,
         ));
 
         let listener_client = client.clone();
@@ -931,6 +955,27 @@ impl McpManager {
     }
 }
 
+/// Bridge from the llm crate's generic MCP tool surface into the live
+/// `McpManager`, so the STT `mcp` provider can be built without the llm
+/// crate depending on tools.
+#[async_trait::async_trait]
+impl McpToolCaller for McpManager {
+    async fn invoke_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<McpToolOutcome> {
+        let result = self.call_tool(server_name, tool_name, input, cancel).await?;
+        Ok(McpToolOutcome {
+            success: result.success,
+            error: result.error,
+            output: result.output,
+        })
+    }
+}
+
 impl Default for McpManager {
     fn default() -> Self {
         Self::new()
@@ -1000,6 +1045,7 @@ mod tests {
         let snap = McpServerSnapshot {
             name: "test".into(),
             transport: "stdio".into(),
+            enabled: true,
             status: McpClientStatus::Connected,
             tools: vec![],
             last_error: None,
@@ -1008,6 +1054,7 @@ mod tests {
         let json = serde_json::to_value(&snap).unwrap();
         assert_eq!(json["name"], "test");
         assert_eq!(json["status"], "Connected");
+        assert_eq!(json["enabled"], true);
         assert_eq!(json["last_seen_at"], 12345);
     }
 
@@ -1030,17 +1077,19 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_client_new_initial_state() {
-        let client = McpClient::new("test", "echo", &[], &[]);
+        let client = McpClient::new("test", "echo", &[], &[], true);
         assert_eq!(client.name(), "test");
+        assert!(client.enabled());
         let status = client.status().await;
         assert!(matches!(status, McpClientStatus::Disconnected));
     }
 
     #[tokio::test]
     async fn mcp_client_snapshot_initial() {
-        let client = McpClient::new("test", "echo", &[], &[]);
+        let client = McpClient::new("test", "echo", &[], &[], true);
         let snap = client.snapshot().await;
         assert_eq!(snap.name, "test");
+        assert!(snap.enabled);
         assert!(matches!(snap.status, McpClientStatus::Disconnected));
         assert!(snap.tools.is_empty());
     }

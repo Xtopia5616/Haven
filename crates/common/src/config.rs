@@ -39,13 +39,14 @@ pub struct ModelEndpoint {
     /// Wire protocol style for this endpoint. One of:
     /// - `openai-chat` (default): OpenAI `/chat/completions` compatible
     ///   (also Ollama, vLLM, DeepSeek, and most gateways)
+    /// - `llama.cpp`: llama.cpp server (OpenAI-compatible `/chat/completions`)
     /// - `openai-responses`: OpenAI Responses API (`/v1/responses`)
     /// - `anthropic`: Anthropic Messages API (`/v1/messages`)
     /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
     ///
     /// When empty/`None`, the style is derived from `provider`
-    /// (`anthropic` → anthropic, `google`/`gemini` → gemini, otherwise
-    /// openai-chat).
+    /// (`anthropic` → anthropic, `google`/`gemini` → gemini,
+    /// `llama`/`llama.cpp`/`llamacpp` → llama.cpp, otherwise openai-chat).
     #[serde(default)]
     pub api_style: Option<String>,
     pub base_url: String,

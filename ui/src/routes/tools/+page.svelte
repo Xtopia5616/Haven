@@ -164,6 +164,23 @@
 		}
 	}
 
+	async function handleMcpToggle(name, enabled) {
+		const prev = mcpServers.map((s) => ({ ...s }));
+		mcpServers = mcpServers.map((s) => (s.name === name ? { ...s, enabled } : s));
+		try {
+			await invoke('toggle_mcp_server', { name, enabled });
+			addNotification(
+				`${name} 已${enabled ? '启用' : '禁用'}`,
+				'success',
+				2000,
+			);
+			await refreshMcpServers();
+		} catch (e) {
+			mcpServers = prev;
+			addNotification(`切换 ${name} 失败: ${e}`, 'error', 3000);
+		}
+	}
+
 	const tabs = [
 		{ id: 'builtin', label: 'BUILTIN' },
 		{ id: 'mcp', label: 'MCP' },
@@ -229,7 +246,7 @@
 							onEdit={openEditDialog}
 							onRemove={handleRemove}
 							onReconnect={handleReconnect}
-							onToggle={() => {}}
+							onToggle={handleMcpToggle}
 						/>
 					{/each}
 				</div>

@@ -505,7 +505,7 @@ impl Tool for FileOpTool {
         "file".into()
     }
     fn description(&self) -> String {
-        "Read, write, edit, copy, move, delete, list, or summarize files. Reads text files; for images uses vision to describe/transcribe them".into()
+        "Read, write, edit, copy, move, delete, list, or summarize files (text files; images via vision)".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {

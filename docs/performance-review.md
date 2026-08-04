@@ -14,33 +14,6 @@
 
 ## 🔴 高优先级（最大收益）
 
-### 1. 流式输出时 O(n²) markdown 重渲染 + 整块 DOM 重建
-**文件:** `ui/src/lib/ChatBubble.svelte:102-106`, `:174-175`
-
-每个 token delta 触发整个累积文本的 `md.render(text)` + `{@html}` 整块替换。长会话线性叠加成 O(n²)；流式中间状态（未闭合 ` ``` ` 等）还会造成可见的布局抖动。
-
-**修复:**
-- 流式期间渲染纯文本（带 caret），仅在 `streaming=false` 时跑一次 markdown
-
-```svelte
-{#if !streaming && mdHtml}
-  <div class="md-content">{@html mdHtml}</div>
-{:else if content}
-  <p class="md-streaming">{content}{#if streaming}<span class="caret"></span>{/if}</p>
-{/if}
-```
-
-```js
-$effect(() => {
-  if (!mounted || !md || role !== 'assistant' || msgType) return;
-  if (streaming) { mdHtml = ''; return; }
-  const text = content || '';
-  mdHtml = text ? md.render(text) : '';
-});
-```
-
----
-
 ### 2. markdown-it + highlight.js 每个 ChatBubble 独立构造
 **文件:** `ui/src/lib/ChatBubble.svelte:65-98`
 

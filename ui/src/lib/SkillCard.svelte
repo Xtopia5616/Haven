@@ -87,17 +87,6 @@
 		<div class="card-body">
 			<p class="desc">{skill.description || 'No description'}</p>
 
-			<h4>Allowed Tools</h4>
-			{#if skill.allowed_tools && skill.allowed_tools.length > 0}
-				<div class="tool-list">
-					{#each skill.allowed_tools as tool}
-						<div class="tool-item">{tool}</div>
-					{/each}
-				</div>
-			{:else}
-				<p class="empty-note">All tools allowed</p>
-			{/if}
-
 			<h4>Root</h4>
 			<code class="path">{skill.root}</code>
 
@@ -221,25 +210,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		margin: var(--md-sys-space-md) 0;
 		line-height: 1.45;
-	}
-	.tool-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-xs);
-	}
-	.tool-item {
-		font-size: 11px;
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		padding: var(--md-sys-space-2xs) var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-extra-small);
-		font-weight: 600;
-	}
-	.empty-note {
-		font-size: 12px;
-		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.7;
-		font-style: italic;
 	}
 	.path {
 		font-size: 11px;

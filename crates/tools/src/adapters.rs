@@ -120,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_adapter_qualified_name() {
-        let client = McpClient::new("test-server", "echo", &[], &[]);
+        let client = McpClient::new("test-server", "echo", &[], &[], true);
         let info = McpToolInfo {
             name: "greet".into(),
             description: "Greets the user".into(),
@@ -139,7 +139,6 @@ mod tests {
             description: "Echoes input".into(),
             version: None,
             language: Language::Python,
-            allowed_tools: vec![],
             instructions: "".into(),
         };
         let skill = Arc::new(Skill::from_manifest_unchecked(
@@ -157,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_adapter_input_schema() {
-        let client = McpClient::new("test-server", "echo", &[], &[]);
+        let client = McpClient::new("test-server", "echo", &[], &[], true);
         let info = McpToolInfo {
             name: "greet".into(),
             description: "Greets the user".into(),
@@ -175,7 +174,6 @@ mod tests {
             description: "desc".into(),
             version: None,
             language: Language::Python,
-            allowed_tools: vec![],
             instructions: "".into(),
         };
         let skill = Arc::new(Skill::from_manifest_unchecked(

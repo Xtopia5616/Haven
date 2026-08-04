@@ -14,10 +14,9 @@ use crate::{Tool, ToolResult};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReminderMode {
-    /// Show an in-app toast + Windows notification (title/body) only.
-    #[default]
-    Notify,
     /// Call the tool in `tool_name` with `tool_args` (no LLM involved).
+    /// To send a message at fire time, call the `notify` tool here.
+    #[default]
     Tool,
     /// Resume the task that scheduled the reminder: the task continues with
     /// the reminder text as a new instruction in the same conversation.
@@ -27,7 +26,6 @@ pub enum ReminderMode {
 impl ReminderMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            ReminderMode::Notify => "notify",
             ReminderMode::Tool => "tool",
             ReminderMode::Continue => "continue",
         }
@@ -35,7 +33,6 @@ impl ReminderMode {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "notify" => Some(ReminderMode::Notify),
             "tool" => Some(ReminderMode::Tool),
             "continue" => Some(ReminderMode::Continue),
             _ => None,
@@ -43,9 +40,9 @@ impl ReminderMode {
     }
 }
 
-/// A reminder that fired; delivered to the app layer so it can surface an
-/// in-app toast + Windows notification (`Notify`), run a tool (`Tool`), or
-/// resume the scheduling task (`Continue`).
+/// A reminder that fired; delivered to the app layer so it can run a tool
+/// (`Tool`, including `notify` for a message) or resume the scheduling task
+/// (`Continue`).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReminderFired {
     pub reminder_id: String,
@@ -179,7 +176,7 @@ impl ReminderCenter {
                 .map(|d| d.with_timezone(&chrono::Utc))
                 .unwrap_or(now);
             let remaining = (due - now).num_seconds();
-            let mode = ReminderMode::parse(&row.mode).unwrap_or(ReminderMode::Notify);
+            let mode = ReminderMode::parse(&row.mode).unwrap_or(ReminderMode::Tool);
             let tool_args = row
                 .tool_args
                 .as_deref()
@@ -445,9 +442,10 @@ impl ReminderCenter {
 /// delay, list pending ones, or cancel one. Timers run detached from the
 /// ReAct loop, so the agent can schedule and continue working.
 ///
-/// Three fire behaviors are available via `mode`:
-/// - `notify` (default): show a notification with `title`/`body`.
-/// - `tool`: call the tool in `tool_name` with `tool_args`.
+/// Two fire behaviors are available via `mode`:
+/// - `tool` (default): call the tool in `tool_name` with `tool_args` —
+///   use `tool_name` `notify` with `tool_args` `{title, body}` to send a
+///   message at fire time.
 /// - `continue`: resume the task that scheduled the reminder, delivering
 ///   `prompt` as the continuation instruction in the same conversation.
 pub struct ReminderTool {
@@ -461,15 +459,9 @@ impl Tool for ReminderTool {
     }
 
     fn description(&self) -> String {
-        "Schedule in-app reminders and timers: set schedules an action at a \
-         delay_secs or an absolute ISO 8601 due_at time; list shows pending \
-         reminders; cancel stops one. The action at fire time is chosen by \
-         mode: notify shows a notification (title/body); tool calls the tool \
-         in tool_name with tool_args (no LLM round-trip); continue resumes \
-         the current task later — the task pauses after your final answer \
-         and continues with the prompt text when the reminder fires (e.g. \
-         'remind me at 2026-08-05T15:00:00+08:00 to keep summarizing' with \
-         mode 'continue' and prompt 'continue summarizing the document')."
+        "Schedule actions to run later, mode picks what happens when \
+         it fires: tool (default) calls the tool; continue \
+         resumes the current task later."
             .into()
     }
 
@@ -488,32 +480,32 @@ impl Tool for ReminderTool {
                 "operation": {
                     "type": "string",
                     "enum": ["set", "list", "cancel"],
-                    "description": "set = schedule, list = pending reminders, cancel = stop one"
+                    "description": "set = schedule, list = pending, cancel = stop one"
                 },
                 "delay_secs": {
                     "type": "integer",
-                    "description": "Delay in seconds before the reminder fires (set only; use due_at OR delay_secs)"
+                    "description": "Delay in seconds before firing (set only; use delay_secs OR due_at)"
                 },
                 "due_at": {
                     "type": "string",
-                    "description": "Absolute fire time as ISO 8601, e.g. 2026-08-05T15:00:00+08:00 (set only; use due_at OR delay_secs)"
+                    "description": "Absolute fire time, ISO 8601 e.g. 2026-08-05T15:00:00+08:00 (set only; use due_at OR delay_secs)"
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["notify", "tool", "continue"],
-                    "description": "What happens when the reminder fires (set only): notify = show a notification with title/body; tool = call the tool in tool_name with tool_args; continue = pause and later resume the current task, delivering prompt as the continuation instruction"
+                    "enum": ["tool", "continue"],
+                    "description": "Action when it fires (set only): tool (default) = call tool_name with tool_args, e.g. tool_name 'notify' to send a message; continue = resume the current task with prompt as the continuation instruction"
                 },
                 "title": {
                     "type": "string",
-                    "description": "Short reminder title (defaults to 'Haven')"
+                    "description": "Reminder title (defaults to 'Haven')"
                 },
                 "body": {
                     "type": "string",
-                    "description": "The reminder message shown when it fires (set only)"
+                    "description": "Reminder message shown when it fires (set only)"
                 },
                 "tool_name": {
                     "type": "string",
-                    "description": "Tool to call when the reminder fires (set only, mode=tool), e.g. 'file'"
+                    "description": "Tool to call when it fires (set only, mode=tool), e.g. 'notify'"
                 },
                 "tool_args": {
                     "type": "object",
@@ -521,7 +513,7 @@ impl Tool for ReminderTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "mode=continue: the continuation instruction delivered to the task when it resumes, e.g. 'continue summarizing the document'"
+                    "description": "Continuation instruction delivered to the task when it resumes (set only, mode=continue)"
                 },
                 "reminder_id": {
                     "type": "string",
@@ -550,13 +542,10 @@ impl Tool for ReminderTool {
                 let body = input["body"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("body is required for set"))?;
-                let mode = match input["mode"].as_str().unwrap_or("notify") {
-                    "notify" => ReminderMode::Notify,
+                let mode = match input["mode"].as_str().unwrap_or("tool") {
                     "tool" => ReminderMode::Tool,
                     "continue" => ReminderMode::Continue,
-                    other => anyhow::bail!(
-                        "unknown reminder mode: {other} (expected notify, tool or continue)"
-                    ),
+                    other => anyhow::bail!("unknown reminder mode: {other} (expected tool or continue)"),
                 };
                 // `_task_id` is injected privately by ToolsManager::execute_tool
                 // (never part of the LLM-visible schema or step history) so the
@@ -636,15 +625,15 @@ mod tests {
         }
     }
 
-    fn notify_spec(delay: u64, title: &str, body: &str) -> ReminderSpec {
+    fn tool_spec(delay: u64, title: &str, body: &str) -> ReminderSpec {
         ReminderSpec {
             due_at: None,
             delay_secs: Some(delay),
             title: title.into(),
             body: body.into(),
-            mode: ReminderMode::Notify,
+            mode: ReminderMode::Tool,
             task_id: None,
-            tool_name: None,
+            tool_name: Some("notify".into()),
             tool_args: None,
             prompt: None,
         }
@@ -674,11 +663,11 @@ mod tests {
 
     #[test]
     fn test_reminder_mode_roundtrip() {
-        assert_eq!(ReminderMode::parse("notify"), Some(ReminderMode::Notify));
         assert_eq!(ReminderMode::parse("tool"), Some(ReminderMode::Tool));
         assert_eq!(ReminderMode::parse("continue"), Some(ReminderMode::Continue));
+        assert_eq!(ReminderMode::parse("notify"), None);
         assert_eq!(ReminderMode::parse("bogus"), None);
-        assert_eq!(ReminderMode::default(), ReminderMode::Notify);
+        assert_eq!(ReminderMode::default(), ReminderMode::Tool);
         assert_eq!(ReminderMode::Tool.as_str(), "tool");
         assert_eq!(ReminderMode::Continue.as_str(), "continue");
     }
@@ -883,12 +872,18 @@ mod tests {
 
         let plain = tool
             .execute(
-                json!({"operation": "set", "delay_secs": 3600, "body": "x"}),
+                json!({
+                    "operation": "set",
+                    "delay_secs": 3600,
+                    "body": "x",
+                    "mode": "tool",
+                    "tool_name": "notify"
+                }),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
-        assert_eq!(plain.output["mode"], json!("notify"));
+        assert_eq!(plain.output["mode"], json!("tool"));
         assert_eq!(plain.output["wakes_task"], json!(false));
     }
 
@@ -897,7 +892,14 @@ mod tests {
         let tool = make_tool();
         let result = tool
             .execute(
-                json!({"operation": "set", "delay_secs": 3600, "title": "Drink", "body": "water"}),
+                json!({
+                    "operation": "set",
+                    "delay_secs": 3600,
+                    "title": "Drink",
+                    "body": "water",
+                    "mode": "tool",
+                    "tool_name": "notify"
+                }),
                 CancellationToken::new(),
             )
             .await
@@ -911,7 +913,7 @@ mod tests {
         assert_eq!(list.output["reminders"].as_array().unwrap().len(), 1);
         assert_eq!(list.output["reminders"][0]["id"], json!(id));
         assert_eq!(list.output["reminders"][0]["body"], json!("water"));
-        assert_eq!(list.output["reminders"][0]["mode"], json!("notify"));
+        assert_eq!(list.output["reminders"][0]["mode"], json!("tool"));
 
         let cancelled = tool
             .execute(
@@ -945,7 +947,7 @@ mod tests {
         let mut rx = center.take_fired_receiver().expect("receiver available");
         let tool = ReminderTool { center: center.clone() };
         let id = center
-            .set(notify_spec(1, "Test", "fire now"))
+            .set(tool_spec(1, "Test", "fire now"))
             .await
             .unwrap();
         let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -953,13 +955,14 @@ mod tests {
             .expect("timed out waiting for reminder")
             .expect("channel closed");
         assert_eq!(fired.reminder_id, id);
-        assert_eq!(fired.mode, ReminderMode::Notify);
+        assert_eq!(fired.mode, ReminderMode::Tool);
+        assert_eq!(fired.tool_name.as_deref(), Some("notify"));
         assert_eq!(fired.title, "Test");
         assert_eq!(fired.body, "fire now");
 
         // Fired reminders are reaped by the next set (cap stays clean).
         center
-            .set(notify_spec(3600, "Next", "still pending"))
+            .set(tool_spec(3600, "Next", "still pending"))
             .await
             .unwrap();
         assert_eq!(center.list().await.len(), 1);
@@ -980,10 +983,7 @@ mod tests {
         let mut rx = center.take_fired_receiver().expect("receiver available");
 
         // A future reminder (5s out) and an overdue one (already past).
-        let future_id = center
-            .set(notify_spec(5, "Future", "later"))
-            .await
-            .unwrap();
+        let future_id = center.set(tool_spec(5, "Future", "later")).await.unwrap();
         let overdue_id = format!("rem-{}", uuid::Uuid::new_v4().simple());
         db.save_reminder(
             &overdue_id,
@@ -1033,14 +1033,14 @@ mod tests {
         let center = Arc::new(ReminderCenter::new());
         center.set_db(Some(db.clone())).await;
         let id = center
-            .set(notify_spec(3600, "Drink", "water"))
+            .set(tool_spec(3600, "Drink", "water"))
             .await
             .unwrap();
         let pending = db.list_pending_reminders().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
         assert_eq!(pending[0].body, "water");
-        assert_eq!(pending[0].mode, "notify");
+        assert_eq!(pending[0].mode, "tool");
 
         // Cancel removes the row.
         assert!(center.cancel(&id).await);

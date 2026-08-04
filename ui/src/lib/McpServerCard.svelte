@@ -36,6 +36,11 @@
 		const s = server.status;
 		return s === 'Connecting' || (typeof s === 'object' && 'Connecting' in s);
 	}
+
+	function handleToggle(e) {
+		e.stopPropagation();
+		onToggle?.(server.name, !server.enabled);
+	}
 </script>
 
 <div class="server-card" class:expanded>
@@ -44,6 +49,13 @@
 			<div class="card-name">{server.name}</div>
 			<div class="card-meta">
 				<span class="transport-badge">{server.transport || 'stdio'}</span>
+				<span
+					class="enabled-badge"
+					class:enabled={server.enabled}
+					class:disabled={!server.enabled}
+				>
+					{server.enabled ? 'Enabled' : 'Disabled'}
+				</span>
 				<span class="status-badge" class:connected={isConnected()} class:offline={isOffline()} class:connecting={isConnecting()}>
 					{statusLabel(server.status)}
 				</span>
@@ -57,6 +69,13 @@
 			{/if}
 		</div>
 		<div class="card-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="presentation">
+			<MaterialIconButton
+				variant={server.enabled ? 'primary' : 'default'}
+				label={server.enabled ? 'Disable' : 'Enable'}
+				onclick={handleToggle}
+			>
+				{server.enabled ? '◐' : '○'}
+			</MaterialIconButton>
 			{#if isOffline()}
 				<MaterialIconButton variant="primary" label="Reconnect" onclick={() => onReconnect?.(server.name)}>↻</MaterialIconButton>
 			{/if}
@@ -142,6 +161,19 @@
 		padding: 2px var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
 		font-weight: 700;
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.enabled-badge {
+		padding: 2px var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		font-weight: 700;
+	}
+	.enabled-badge.enabled {
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+	}
+	.enabled-badge.disabled {
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
 	}

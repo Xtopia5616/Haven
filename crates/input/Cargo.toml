@@ -16,4 +16,5 @@ base64.workspace = true
 tokio-util.workspace = true
 async-trait.workspace = true
 haven-common = { path = "../common" }
+haven-llm = { path = "../llm" }
 

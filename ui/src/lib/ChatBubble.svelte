@@ -4,6 +4,7 @@
 	import { cubicOut } from 'svelte/easing';
 	import logger from '$lib/logger.js';
 	import { imageDataUrl } from '$lib/stores.js';
+	import ToolResultCard, { canRenderToolResult } from '$lib/ToolResultCard.svelte';
 
 	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, attachments = [], options = [], awaiting = false, onContextMenu = null, onQuickReply = null } = $props();
 
@@ -138,36 +139,24 @@
 		{:else if msgType === 'tool'}
 			<div class="tool-call">&#9654; Calling {toolName}</div>
 			{#if content}
-				<details class="observation-block" bind:open={observationOpen}>
-					<summary class="observation-summary">Result</summary>
-					<pre class="observation">{content}</pre>
-				</details>
+				{#if canRenderToolResult(toolName, content)}
+					<ToolResultCard {toolName} {content} />
+				{:else}
+					<details class="observation-block" bind:open={observationOpen}>
+						<summary class="observation-summary">Result</summary>
+						<pre class="observation">{content}</pre>
+					</details>
+				{/if}
 			{/if}
 		{:else if msgType === 'ask'}
-			<div class="ask-card">
-				<div class="ask-header">
-					<span class="ask-icon" aria-hidden="true">&#63;</span>
-					<span class="ask-label">Haven 需要你确认</span>
-				</div>
-				<p class="ask-question">{content}</p>
-				{#if options && options.length > 0 && awaiting}
-					<div class="ask-options">
-						{#each options as opt (opt)}
-							<button
-								class="ask-option"
-								onclick={() => onQuickReply?.(messageId, opt)}
-								type="button"
-							>{opt}</button>
-						{/each}
-					</div>
-				{/if}
-				{#if awaiting}
-					<div class="ask-waiting">
-						<span class="ask-waiting-dot"></span>
-						等待你的回答...
-					</div>
-				{/if}
-			</div>
+			<ToolResultCard
+				type="ask"
+				content={content}
+				options={options}
+				awaiting={awaiting}
+				messageId={messageId}
+				onQuickReply={onQuickReply}
+			/>
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if role === 'assistant'}
@@ -278,82 +267,6 @@
 		font-size: 12px;
 		font-weight: 600;
 		display: inline-block;
-	}
-	.ask-card {
-		background: color-mix(in srgb, var(--md-sys-color-secondary-container) 55%, var(--md-sys-color-surface));
-		border: 1px solid var(--md-sys-color-secondary);
-		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-md);
-		min-width: 220px;
-		max-width: 380px;
-	}
-	.ask-header {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	.ask-icon {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 20px;
-		height: 20px;
-		border-radius: 50%;
-		background: var(--md-sys-color-secondary);
-		color: var(--md-sys-color-on-secondary);
-		font-size: 12px;
-		font-weight: 700;
-		flex: none;
-	}
-	.ask-label {
-		font-size: 12px;
-		font-weight: 700;
-		color: var(--md-sys-color-on-secondary-container);
-	}
-	.ask-question {
-		margin: 0 0 var(--md-sys-space-sm);
-		font-size: 13px;
-		line-height: 1.5;
-		color: var(--md-sys-color-on-surface);
-	}
-	.ask-options {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-xs);
-		margin-bottom: var(--md-sys-space-sm);
-	}
-	.ask-option {
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-md);
-		font-size: 12px;
-		font-weight: 600;
-		cursor: pointer;
-		transition: filter 0.15s ease;
-	}
-	.ask-option:hover {
-		filter: brightness(0.95);
-	}
-	.ask-waiting {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		font-size: 12px;
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.ask-waiting-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--md-sys-color-secondary);
-		animation: ask-pulse 1.2s ease-in-out infinite;
-	}
-	@keyframes ask-pulse {
-		0%, 100% { opacity: 1; transform: scale(1); }
-		50% { opacity: 0.35; transform: scale(0.8); }
 	}
 	.attachments {
 		display: flex;

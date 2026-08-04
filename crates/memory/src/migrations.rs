@@ -49,14 +49,10 @@ pub const MIGRATIONS: &[&str] = &[
         pattern TEXT,
         added_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
-    "CREATE TABLE IF NOT EXISTS mcp_servers (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        transport TEXT NOT NULL CHECK(transport IN ('stdio','sse')),
-        config TEXT NOT NULL DEFAULT '{}',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )",
+    // No-op placeholder: the `mcp_servers` table was removed (MCP config now
+    // lives in config.toml `[[mcp_servers]]`). Kept to preserve the append-only
+    // migration index — existing databases keep their (unused) table.
+    "SELECT 1 -- mcp_servers table removed; MCP config now in config.toml",
     "CREATE TABLE IF NOT EXISTS facts (
         id TEXT PRIMARY KEY,
         subject TEXT NOT NULL,
@@ -75,21 +71,30 @@ pub const MIGRATIONS: &[&str] = &[
         tokens_before INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
-    "CREATE TABLE IF NOT EXISTS reminders (
-        id TEXT PRIMARY KEY,
-        due_at TEXT NOT NULL,
-        title TEXT NOT NULL DEFAULT 'Haven',
-        body TEXT NOT NULL,
-        prompt TEXT,
-        fired INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )",
     "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
     "CREATE INDEX IF NOT EXISTS idx_task_steps_task ON task_steps(task_id)",
     "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)",
     "CREATE INDEX IF NOT EXISTS idx_facts_confidence ON facts(confidence)",
+    // Appended last (append-only): the reminders table was originally added
+    // mid-array, which existing databases (user_version already past its
+    // index) never re-ran — leaving them without the table and bricking the
+    // startup migration. Schema includes all current columns so fresh
+    // databases skip the per-column ALTERs below.
+    "CREATE TABLE IF NOT EXISTS reminders (
+        id TEXT PRIMARY KEY,
+        due_at TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT 'Haven',
+        body TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'tool',
+        task_id TEXT,
+        tool_name TEXT,
+        tool_args TEXT,
+        prompt TEXT,
+        fired INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
 ];
 
 pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -99,7 +104,9 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     let mut ran_any = false;
     for (i, sql) in MIGRATIONS.iter().enumerate() {
         if i as i32 >= version {
-            conn.execute(sql, [])?;
+            // execute_batch (not execute) so no-op placeholder statements
+            // such as "SELECT 1" (removed tables) are allowed.
+            conn.execute_batch(sql)?;
             ran_any = true;
         }
     }
@@ -337,6 +344,35 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         result?;
     }
 
+    // Reminders: ensure the table exists BEFORE the per-column ALTERs below.
+    // The CREATE lives in MIGRATIONS too, but the version-gated loop cannot
+    // be relied on: some existing databases carry a user_version higher than
+    // the array length (past migrations were pruned from the array), so they
+    // would never re-run the CREATE and every ALTER below would fail with
+    // "no such table". Full current schema — the ALTERs then no-op.
+    let has_reminders_table: bool = conn
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reminders'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_reminders_table {
+        conn.execute_batch(
+            "CREATE TABLE reminders (
+                id TEXT PRIMARY KEY,
+                due_at TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT 'Haven',
+                body TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'tool',
+                task_id TEXT,
+                tool_name TEXT,
+                tool_args TEXT,
+                prompt TEXT,
+                fired INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )?;
+    }
+
     // Reminders get an optional prompt column: when set, the app wakes the
     // LLM with this text at due time instead of only showing a notification.
     let has_reminder_prompt: bool = conn
@@ -349,12 +385,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     }
 
     // Reminders get the fire-mode columns: `mode` selects what happens when
-    // the reminder fires (notify = show a notification, tool = call the tool
-    // in tool_name/tool_args, continue = resume the task in task_id), and
-    // task_id/tool_name/tool_args carry the mode-specific payload. Existing
-    // rows default to 'notify' (mode defaults preserve the old behavior).
+    // the reminder fires (tool = call the tool in tool_name/tool_args —
+    // use tool_name 'notify' to send a message; continue = resume the task
+    // in task_id), and task_id/tool_name/tool_args carry the mode-specific
+    // payload. Existing rows default to 'tool'.
     for (col, ddl) in [
-        ("mode", "ALTER TABLE reminders ADD COLUMN mode TEXT NOT NULL DEFAULT 'notify'"),
+        ("mode", "ALTER TABLE reminders ADD COLUMN mode TEXT NOT NULL DEFAULT 'tool'"),
         ("task_id", "ALTER TABLE reminders ADD COLUMN task_id TEXT"),
         ("tool_name", "ALTER TABLE reminders ADD COLUMN tool_name TEXT"),
         ("tool_args", "ALTER TABLE reminders ADD COLUMN tool_args TEXT"),
@@ -368,6 +404,18 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             conn.execute(ddl, [])?;
         }
     }
+
+    // Backfill legacy 'notify'-mode reminders created under the previous
+    // schema (which was dropped in favor of mode='tool'). Those rows carried
+    // no tool_name, so map them to the equivalent "send a message" action:
+    // mode='tool' calling tool_name='notify' with the reminder title/body.
+    conn.execute(
+        "UPDATE reminders
+         SET mode = 'tool', tool_name = 'notify',
+             tool_args = json_object('title', title, 'body', body)
+         WHERE mode = 'notify'",
+        [],
+    )?;
 
     // Indexes for the merged schema (idempotent; also covers fresh databases).
     conn.execute_batch(
@@ -479,6 +527,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use serde_json;
 
     fn create_test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -569,14 +618,6 @@ mod tests {
                 pattern TEXT,
                 added_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
-            CREATE TABLE mcp_servers (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                transport TEXT NOT NULL CHECK(transport IN ('stdio','sse')),
-                config TEXT NOT NULL DEFAULT '{}',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
             CREATE TABLE facts (
                 id TEXT PRIMARY KEY,
                 subject TEXT NOT NULL,
@@ -609,7 +650,6 @@ mod tests {
         let expected = &[
             "compaction_entries",
             "facts",
-            "mcp_servers",
             "messages",
             "preferences",
             "reminders",
@@ -686,6 +726,37 @@ mod tests {
         run_migrations(&conn).unwrap();
         let tables_after = get_tables(&conn);
         assert_eq!(tables_after.len(), table_count_before);
+    }
+
+    #[test]
+    fn test_legacy_notify_reminders_backfilled_to_tool() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        // Simulate a pre-existing row from the previous schema (mode='notify'
+        // with no tool_name), which the migration must rewrite to the
+        // equivalent tool/notify action.
+        conn.execute(
+            "INSERT INTO reminders (id, due_at, title, body, mode, tool_name, tool_args, prompt, fired, created_at)
+             VALUES ('legacy-1', '2099-01-01T00:00:00Z', 'Drink', 'water', 'notify', NULL, NULL, NULL, 0,
+                     (datetime('now')))",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let row: (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT mode, tool_name, tool_args FROM reminders WHERE id='legacy-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "tool");
+        assert_eq!(row.1.as_deref(), Some("notify"));
+        let args: serde_json::Value = serde_json::from_str(row.2.as_deref().unwrap()).unwrap();
+        assert_eq!(args["title"], "Drink");
+        assert_eq!(args["body"], "water");
     }
 
     #[test]
