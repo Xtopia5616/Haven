@@ -84,6 +84,105 @@ struct TauriEmitter {
 #[async_trait::async_trait]
 impl AgentEventEmitter for TauriEmitter {
     async fn emit(&self, event: AgentEvent) {
+        self.trace_event(&event);
+        let channel = Self::channel(&event);
+        let chunk_seq = match &event {
+            AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. } => {
+                Some(self.chunk_seq.fetch_add(1, Ordering::Relaxed))
+            }
+            _ => None,
+        };
+        let payload = Self::payload(&event, chunk_seq);
+        let _ = self.handle.emit(channel, payload);
+        self.emit_secondary(&event);
+        self.maybe_show_toast(&event);
+    }
+}
+
+impl TauriEmitter {
+    /// 单一事实来源：AgentEvent 变体 → 前端订阅的 channel 名。
+    fn channel(event: &AgentEvent) -> &'static str {
+        match event {
+            AgentEvent::Thought { .. } => "agent:thought",
+            AgentEvent::Action { .. } => "agent:action",
+            AgentEvent::Observation { .. } => "agent:observation",
+            AgentEvent::TaskCreated(_) => "task:created",
+            AgentEvent::TaskCompleted { .. } => "task:completed",
+            AgentEvent::TaskUpdated { .. } => "task:updated",
+            AgentEvent::TaskError { .. } => "task:error",
+            AgentEvent::Notification { .. } => "notification:show",
+            AgentEvent::TitleUpdated { .. } => "task:title-updated",
+            AgentEvent::BalancedModelActivated { .. } => "agent:balanced_model",
+            AgentEvent::ThoughtChunk { .. } => "agent:thought_chunk",
+            AgentEvent::ReasoningChunk { .. } => "agent:reasoning_chunk",
+            AgentEvent::Supplement { .. } => "agent:supplement",
+            AgentEvent::Compaction { .. } => "agent:compaction",
+            AgentEvent::Usage { .. } => "agent:usage",
+        }
+    }
+
+    /// 剥掉 serde 枚举 tag（`{"Thought": {...}}` → `{...}`），适用于除特例外的
+    /// 所有变体。
+    fn variant_payload(event: &AgentEvent) -> serde_json::Value {
+        let v = serde_json::to_value(event).expect("AgentEvent is serializable");
+        v.as_object()
+            .expect("serialized AgentEvent is a map")
+            .values()
+            .next()
+            .expect("serialized AgentEvent has exactly one variant")
+            .clone()
+    }
+
+    /// 构造 wire 载荷。`variant_payload` 之外的五个特例在构造时覆盖：
+    /// - `TaskCreated` 投影为 `{task_id, status, title}`，不泄漏 TaskInfo 内部的
+    ///   `id` / `input` / `summary` 等字段
+    /// - `TaskCompleted` 补 `status: "completed"`（变体本身没有该字段）
+    /// - `TaskUpdated` 补 `title: ""`（wire 上始终带 title 键）
+    /// - `Action` 额外派生 `silent`
+    /// - `ThoughtChunk` / `ReasoningChunk` 插入单调递增的 `seq`（调用方传入已
+    ///   自增的值，本函数保持纯函数化以便单测）
+    fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
+        let mut payload = match event {
+            AgentEvent::TaskCreated(task) => {
+                return serde_json::json!({
+                    "task_id": task.id,
+                    "status": task.status.as_str(),
+                    "title": task.title,
+                });
+            }
+            AgentEvent::TaskCompleted { task_id, title } => {
+                return serde_json::json!({
+                    "task_id": task_id,
+                    "status": "completed",
+                    "title": title,
+                });
+            }
+            AgentEvent::TaskUpdated { task_id, status } => {
+                return serde_json::json!({
+                    "task_id": task_id,
+                    "status": status,
+                    "title": "",
+                });
+            }
+            _ => Self::variant_payload(event),
+        };
+        match event {
+            AgentEvent::Action {
+                tool_name, input, ..
+            } => {
+                payload["silent"] =
+                    serde_json::json!(haven_tools::is_silent_action(tool_name, input));
+            }
+            AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. } => {
+                payload["seq"] = serde_json::json!(chunk_seq.unwrap_or(0));
+            }
+            _ => {}
+        }
+        payload
+    }
+
+    /// 保留原有按变体区分的 tracing 日志（语义不变）。
+    fn trace_event(&self, event: &AgentEvent) {
         match event {
             AgentEvent::Thought {
                 task_id,
@@ -98,28 +197,14 @@ impl AgentEventEmitter for TauriEmitter {
                     run_id,
                     thought.len()
                 );
-                let _ = self.handle.emit(
-                    "agent:thought",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "thought": thought,
-                        "step_number": step_number,
-                        "run_id": run_id,
-                    }),
-                );
             }
             AgentEvent::Action {
                 task_id,
                 tool_name,
-                input,
                 step_number,
                 run_id,
-                tool_call_id,
+                ..
             } => {
-                let silent = input
-                    .get("silent")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
                 tracing::debug!(
                     "TauriEmitter::on_action: task={} tool={} step={} run={}",
                     task_id,
@@ -127,28 +212,14 @@ impl AgentEventEmitter for TauriEmitter {
                     step_number,
                     run_id
                 );
-                let _ = self.handle.emit(
-                    "agent:action",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "tool_name": tool_name,
-                        "input": input,
-                        "step_number": step_number,
-                        "run_id": run_id,
-                        "silent": silent,
-                        "tool_call_id": tool_call_id,
-                    }),
-                );
             }
             AgentEvent::Observation {
                 task_id,
-                observation,
                 tool_name,
                 step_number,
                 run_id,
                 silent,
-                tool_call_id,
-                ask_options,
+                ..
             } => {
                 tracing::debug!(
                     "TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}",
@@ -158,19 +229,6 @@ impl AgentEventEmitter for TauriEmitter {
                     run_id,
                     silent
                 );
-                let _ = self.handle.emit(
-                    "agent:observation",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "observation": observation,
-                        "tool_name": tool_name,
-                        "step_number": step_number,
-                        "run_id": run_id,
-                        "silent": silent,
-                        "tool_call_id": tool_call_id,
-                        "ask_options": ask_options,
-                    }),
-                );
             }
             AgentEvent::TaskCreated(task) => {
                 tracing::info!(
@@ -178,14 +236,79 @@ impl AgentEventEmitter for TauriEmitter {
                     task.id,
                     task.status.as_str()
                 );
-                let _ = self.handle.emit(
-                    "task:created",
-                    serde_json::json!({
-                        "task_id": task.id,
-                        "status": task.status.as_str(),
-                        "title": task.title,
-                    }),
+            }
+            AgentEvent::TaskCompleted { task_id, title } => {
+                tracing::info!(
+                    "TauriEmitter::on_task_completed: task={} title={}",
+                    task_id,
+                    title
                 );
+            }
+            AgentEvent::TaskUpdated { task_id, status } => {
+                tracing::info!(
+                    "TauriEmitter::on_task_updated: task={} status={}",
+                    task_id,
+                    status
+                );
+                if status == "paused" {
+                    tracing::warn!(
+                        "TauriEmitter emitting task:updated with paused status for task {}",
+                        task_id
+                    );
+                }
+            }
+            AgentEvent::Notification {
+                task_id,
+                title,
+                body,
+            } => {
+                tracing::info!(
+                    "TauriEmitter::on_notification: task={} title={} body={}",
+                    task_id,
+                    title,
+                    body
+                );
+            }
+            AgentEvent::Compaction {
+                task_id,
+                tokens_before,
+                tokens_after,
+                ..
+            } => {
+                tracing::debug!(
+                    "TauriEmitter::on_compaction: task={} tokens {}→{}",
+                    task_id,
+                    tokens_before,
+                    tokens_after
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// `TaskCompleted` / `TaskError` 在 `task:updated` 上的副发。三条形状统一为
+    /// `{task_id, status, title}` —— `error` 字段只保留在 `task:error` 主通道。
+    fn emit_secondary(&self, event: &AgentEvent) {
+        let payload = match event {
+            AgentEvent::TaskCompleted { task_id, title } => serde_json::json!({
+                "task_id": task_id,
+                "status": "completed",
+                "title": title,
+            }),
+            AgentEvent::TaskError { task_id, .. } => serde_json::json!({
+                "task_id": task_id,
+                "status": "error",
+                "title": "",
+            }),
+            _ => return,
+        };
+        let _ = self.handle.emit("task:updated", payload);
+    }
+
+    /// 四个通知变体的 Windows 桌面通知（其余变体直接返回）。
+    fn maybe_show_toast(&self, event: &AgentEvent) {
+        match event {
+            AgentEvent::TaskCreated(task) => {
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
@@ -195,9 +318,9 @@ impl AgentEventEmitter for TauriEmitter {
                     .unwrap_or(false);
                 if notify {
                     let display = if task.input.is_empty() {
-                        task.id
+                        &task.id
                     } else {
-                        task.input
+                        &task.input
                     };
                     let _ = self
                         .handle
@@ -208,28 +331,7 @@ impl AgentEventEmitter for TauriEmitter {
                         .show();
                 }
             }
-            AgentEvent::TaskCompleted { task_id, title } => {
-                tracing::info!(
-                    "TauriEmitter::on_task_completed: task={} title={}",
-                    task_id,
-                    title
-                );
-                let _ = self.handle.emit(
-                    "task:completed",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "status": "completed",
-                        "title": title,
-                    }),
-                );
-                let _ = self.handle.emit(
-                    "task:updated",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "status": "completed",
-                        "title": title,
-                    }),
-                );
+            AgentEvent::TaskCompleted { task_id: _, title } => {
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
@@ -247,44 +349,7 @@ impl AgentEventEmitter for TauriEmitter {
                         .show();
                 }
             }
-            AgentEvent::TaskUpdated { task_id, status } => {
-                tracing::info!(
-                    "TauriEmitter::on_task_updated: task={} status={}",
-                    task_id,
-                    status
-                );
-                if status == "paused" {
-                    tracing::warn!(
-                        "TauriEmitter emitting task:updated with paused status for task {}",
-                        task_id
-                    );
-                }
-                let _ = self.handle.emit(
-                    "task:updated",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "status": status,
-                        "title": "",
-                    }),
-                );
-            }
-            AgentEvent::TaskError { task_id, error } => {
-                let _ = self.handle.emit(
-                    "task:error",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "error": error,
-                    }),
-                );
-                let _ = self.handle.emit(
-                    "task:updated",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "status": "error",
-                        "error": error,
-                        "title": "",
-                    }),
-                );
+            AgentEvent::TaskError { task_id: _, error } => {
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
@@ -303,157 +368,22 @@ impl AgentEventEmitter for TauriEmitter {
                 }
             }
             AgentEvent::Notification {
-                task_id,
+                task_id: _,
                 title,
                 body,
             } => {
-                tracing::info!(
-                    "TauriEmitter::on_notification: task={} title={} body={}",
-                    task_id,
-                    title,
-                    body
-                );
                 // In-app toast: the frontend shows it via addNotification.
-                let _ = self.handle.emit(
-                    "notification:show",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "title": title,
-                        "body": body,
-                    }),
-                );
                 // Windows desktop notification. The `notify` tool is an
                 // explicit agent request, so both channels are used by default.
                 let _ = self
                     .handle
                     .notification()
                     .builder()
-                    .title(if title.is_empty() { "Haven" } else { &title })
+                    .title(if title.is_empty() { "Haven" } else { title })
                     .body(body)
                     .show();
             }
-            AgentEvent::TitleUpdated { task_id, title } => {
-                let _ = self.handle.emit(
-                    "task:title-updated",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "title": title,
-                    }),
-                );
-            }
-            AgentEvent::BalancedModelActivated { task_id, reason } => {
-                let _ = self.handle.emit(
-                    "agent:balanced_model",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "reason": reason,
-                    }),
-                );
-            }
-            AgentEvent::ThoughtChunk {
-                task_id,
-                delta,
-                step_number,
-                run_id,
-            } => {
-                let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
-                let _ = self.handle.emit(
-                    "agent:thought_chunk",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "delta": delta,
-                        "step_number": step_number,
-                        "run_id": run_id,
-                        "seq": seq,
-                    }),
-                );
-            }
-            AgentEvent::ReasoningChunk {
-                task_id,
-                delta,
-                step_number,
-                run_id,
-            } => {
-                let seq = self.chunk_seq.fetch_add(1, Ordering::Relaxed);
-                let _ = self.handle.emit(
-                    "agent:reasoning_chunk",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "delta": delta,
-                        "step_number": step_number,
-                        "run_id": run_id,
-                        "seq": seq,
-                    }),
-                );
-            }
-            AgentEvent::Supplement {
-                task_id,
-                additional_context,
-                step_number,
-                run_id,
-            } => {
-                let _ = self.handle.emit(
-                    "agent:supplement",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "additional_context": additional_context,
-                        "step_number": step_number,
-                        "run_id": run_id,
-                    }),
-                );
-            }
-            AgentEvent::Compaction {
-                task_id,
-                summary,
-                tokens_before,
-                tokens_after,
-            } => {
-                tracing::debug!(
-                    "TauriEmitter::on_compaction: task={} tokens {}→{}",
-                    task_id,
-                    tokens_before,
-                    tokens_after
-                );
-                let _ = self.handle.emit(
-                    "agent:compaction",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "summary": summary,
-                        "tokens_before": tokens_before,
-                        "tokens_after": tokens_after,
-                    }),
-                );
-            }
-            AgentEvent::Usage {
-                task_id,
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
-                cost_usd,
-                model,
-                cumulative_prompt_tokens,
-                cumulative_completion_tokens,
-                cumulative_total_tokens,
-                cumulative_cost_usd,
-                context_window,
-            } => {
-                let _ = self.handle.emit(
-                    "agent:usage",
-                    serde_json::json!({
-                        "task_id": task_id,
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": total_tokens,
-                        "cost_usd": cost_usd,
-                        "model": model,
-                        "cumulative_prompt_tokens": cumulative_prompt_tokens,
-                        "cumulative_completion_tokens": cumulative_completion_tokens,
-                        "cumulative_total_tokens": cumulative_total_tokens,
-                        "cumulative_cost_usd": cumulative_cost_usd,
-                        "context_window": context_window,
-                    }),
-                );
-            }
+            _ => {}
         }
     }
 }
@@ -478,24 +408,13 @@ impl desktop::ShellHandler for HavenShellHandler {
         if let Err(e) = self.pipeline.start_recording().await {
             tracing::warn!("pipeline start_recording failed: {e}");
             self.shell_arc.stop_recording().await;
-            let _ = self.app_h.emit(
-                "recording:error",
-                serde_json::json!({
-                    "session_id": uuid::Uuid::new_v4().to_string(),
-                    "error": format!("录音启动失败，请检查麦克风/STT 配置: {e}"),
-                }),
+            crate::commands::emit_recording_error(
+                &self.app_h,
+                format!("录音启动失败，请检查麦克风/STT 配置: {e}"),
             );
             return;
         }
-        let _ = self.app_h.emit(
-            "recording:started",
-            events::RecordingEvent {
-                is_recording: true,
-                session_id: Some(uuid::Uuid::new_v4().to_string()),
-                reason: None,
-                duration_ms: None,
-            },
-        );
+        crate::commands::emit_recording_started(&self.app_h);
     }
 
     async fn on_recording_stop(&self) {
@@ -505,20 +424,10 @@ impl desktop::ShellHandler for HavenShellHandler {
         // "recording" overlay visible for the duration of the STT call.
         let result = self.pipeline.stop_capture().await;
         if let Ok(result) = result {
-            let reason_str = match result.reason {
-                haven_input::RecordingReason::Manual => "manual",
-                haven_input::RecordingReason::Silence => "silence",
-                haven_input::RecordingReason::MaxDuration => "max_duration",
-                haven_input::RecordingReason::Cancel => "cancel",
-            };
-            let _ = self.app_h.emit(
-                "recording:stopped",
-                events::RecordingEvent {
-                    is_recording: false,
-                    session_id: None,
-                    reason: Some(reason_str.to_string()),
-                    duration_ms: Some(result.duration_ms),
-                },
+            crate::commands::emit_recording_stopped(
+                &self.app_h,
+                crate::commands::recording_reason_str(result.reason),
+                Some(result.duration_ms),
             );
             if matches!(
                 result.reason,
@@ -1097,6 +1006,283 @@ fn app_data_dir() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_task::{TaskInfo, TaskStatus};
+    use serde_json::json;
+
+    fn test_task_info() -> TaskInfo {
+        TaskInfo {
+            id: "task-1".into(),
+            input: "my input".into(),
+            summary: "my summary".into(),
+            title: Some("My Title".into()),
+            status: TaskStatus::Running,
+            steps: vec![],
+            supplement_queue: vec![],
+            steering_queue: vec![],
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn channel_maps_every_variant_to_expected_channel() {
+        let cases: Vec<(AgentEvent, &str)> = vec![
+            (
+                AgentEvent::Thought {
+                    task_id: "t".into(),
+                    thought: "x".into(),
+                    step_number: 1,
+                    run_id: 1,
+                },
+                "agent:thought",
+            ),
+            (
+                AgentEvent::Action {
+                    task_id: "t".into(),
+                    tool_name: "read_file".into(),
+                    input: json!({}),
+                    step_number: 1,
+                    run_id: 1,
+                    tool_call_id: None,
+                },
+                "agent:action",
+            ),
+            (
+                AgentEvent::Observation {
+                    task_id: "t".into(),
+                    observation: "o".into(),
+                    tool_name: "read_file".into(),
+                    step_number: 1,
+                    run_id: 1,
+                    silent: false,
+                    tool_call_id: None,
+                    ask_options: vec![],
+                },
+                "agent:observation",
+            ),
+            (AgentEvent::TaskCreated(test_task_info()), "task:created"),
+            (
+                AgentEvent::TaskCompleted {
+                    task_id: "t".into(),
+                    title: "x".into(),
+                },
+                "task:completed",
+            ),
+            (
+                AgentEvent::TaskUpdated {
+                    task_id: "t".into(),
+                    status: "paused".into(),
+                },
+                "task:updated",
+            ),
+            (
+                AgentEvent::TaskError {
+                    task_id: "t".into(),
+                    error: "e".into(),
+                },
+                "task:error",
+            ),
+            (
+                AgentEvent::Notification {
+                    task_id: "t".into(),
+                    title: "x".into(),
+                    body: "y".into(),
+                },
+                "notification:show",
+            ),
+            (
+                AgentEvent::TitleUpdated {
+                    task_id: "t".into(),
+                    title: "x".into(),
+                },
+                "task:title-updated",
+            ),
+            (
+                AgentEvent::BalancedModelActivated {
+                    task_id: "t".into(),
+                    reason: "r".into(),
+                },
+                "agent:balanced_model",
+            ),
+            (
+                AgentEvent::ThoughtChunk {
+                    task_id: "t".into(),
+                    delta: "d".into(),
+                    step_number: 1,
+                    run_id: 1,
+                },
+                "agent:thought_chunk",
+            ),
+            (
+                AgentEvent::ReasoningChunk {
+                    task_id: "t".into(),
+                    delta: "d".into(),
+                    step_number: 1,
+                    run_id: 1,
+                },
+                "agent:reasoning_chunk",
+            ),
+            (
+                AgentEvent::Supplement {
+                    task_id: "t".into(),
+                    additional_context: "c".into(),
+                    step_number: 1,
+                    run_id: 1,
+                },
+                "agent:supplement",
+            ),
+            (
+                AgentEvent::Compaction {
+                    task_id: "t".into(),
+                    summary: "s".into(),
+                    tokens_before: 1,
+                    tokens_after: 2,
+                },
+                "agent:compaction",
+            ),
+            (
+                AgentEvent::Usage {
+                    task_id: "t".into(),
+                    prompt_tokens: 1,
+                    completion_tokens: 2,
+                    total_tokens: 3,
+                    cost_usd: None,
+                    model: None,
+                    cumulative_prompt_tokens: 1,
+                    cumulative_completion_tokens: 2,
+                    cumulative_total_tokens: 3,
+                    cumulative_cost_usd: None,
+                    context_window: None,
+                },
+                "agent:usage",
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(
+                TauriEmitter::channel(&event),
+                expected,
+                "channel mismatch for {:?}",
+                event
+            );
+        }
+    }
+
+    #[test]
+    fn variant_payload_strips_enum_tag() {
+        let event = AgentEvent::Thought {
+            task_id: "t1".into(),
+            thought: "hello".into(),
+            step_number: 2,
+            run_id: 7,
+        };
+        assert_eq!(
+            TauriEmitter::variant_payload(&event),
+            json!({
+                "task_id": "t1",
+                "thought": "hello",
+                "step_number": 2,
+                "run_id": 7,
+            })
+        );
+    }
+
+    #[test]
+    fn payload_adds_silent_to_action() {
+        let event = AgentEvent::Action {
+            task_id: "t".into(),
+            tool_name: "read_file".into(),
+            input: json!({"silent": true, "path": "/tmp/x"}),
+            step_number: 1,
+            run_id: 1,
+            tool_call_id: Some("call-1".into()),
+        };
+        let payload = TauriEmitter::payload(&event, None);
+        assert_eq!(payload["silent"], json!(true));
+        assert_eq!(payload["tool_name"], json!("read_file"));
+        assert_eq!(payload["tool_call_id"], json!("call-1"));
+    }
+
+    #[test]
+    fn payload_never_silences_ask() {
+        let event = AgentEvent::Action {
+            task_id: "t".into(),
+            tool_name: "ask".into(),
+            input: json!({"silent": true}),
+            step_number: 1,
+            run_id: 1,
+            tool_call_id: None,
+        };
+        let payload = TauriEmitter::payload(&event, None);
+        assert_eq!(payload["silent"], json!(false));
+    }
+
+    #[test]
+    fn payload_injects_seq_for_chunk_variants() {
+        let thought = AgentEvent::ThoughtChunk {
+            task_id: "t".into(),
+            delta: "d".into(),
+            step_number: 1,
+            run_id: 1,
+        };
+        let payload = TauriEmitter::payload(&thought, Some(42));
+        assert_eq!(payload["seq"], json!(42));
+        assert_eq!(payload["delta"], json!("d"));
+
+        let reasoning = AgentEvent::ReasoningChunk {
+            task_id: "t".into(),
+            delta: "d".into(),
+            step_number: 1,
+            run_id: 1,
+        };
+        let payload = TauriEmitter::payload(&reasoning, Some(43));
+        assert_eq!(payload["seq"], json!(43));
+    }
+
+    #[test]
+    fn payload_projects_task_created_without_leaking_internal_fields() {
+        let event = AgentEvent::TaskCreated(test_task_info());
+        let payload = TauriEmitter::payload(&event, None);
+        assert_eq!(
+            payload,
+            json!({
+                "task_id": "task-1",
+                "status": "running",
+                "title": "My Title",
+            })
+        );
+        assert!(payload.get("id").is_none(), "must not leak TaskInfo.id");
+        assert!(
+            payload.get("input").is_none(),
+            "must not leak TaskInfo.input"
+        );
+        assert!(
+            payload.get("summary").is_none(),
+            "must not leak TaskInfo.summary"
+        );
+    }
+
+    #[test]
+    fn payload_preserves_task_completed_and_updated_wire_shape() {
+        let completed = AgentEvent::TaskCompleted {
+            task_id: "t".into(),
+            title: "X".into(),
+        };
+        let payload = TauriEmitter::payload(&completed, None);
+        assert_eq!(
+            payload,
+            json!({"task_id": "t", "status": "completed", "title": "X"})
+        );
+
+        let updated = AgentEvent::TaskUpdated {
+            task_id: "t".into(),
+            status: "paused".into(),
+        };
+        let payload = TauriEmitter::payload(&updated, None);
+        assert_eq!(
+            payload,
+            json!({"task_id": "t", "status": "paused", "title": ""})
+        );
+    }
 
     #[test]
     fn test_parse_shortcut_ctrl_shift_space() {

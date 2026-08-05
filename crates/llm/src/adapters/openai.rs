@@ -81,6 +81,13 @@ struct OpenAiRequest {
     response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +160,7 @@ struct OpenAiResponse {
 struct OpenAiStreamResponse {
     #[serde(alias = "candidates")]
     choices: Vec<OpenAiChoice>,
+    usage: Option<OpenAiUsage>,
     model: Option<String>,
 }
 
@@ -364,6 +372,13 @@ impl OpenAiAdapter {
             seed: self.endpoint.seed,
             response_format: self.endpoint.response_format.clone(),
             reasoning_effort: self.endpoint.reasoning_effort.clone(),
+            stream_options: if stream {
+                Some(StreamOptions {
+                    include_usage: true,
+                })
+            } else {
+                None
+            },
         }
     }
 
@@ -637,6 +652,7 @@ impl OpenAiAdapter {
             tool_calls_acc: Vec<ToolCall>,
             last_model: Option<String>,
             has_finish_reason: bool,
+            usage: Option<Usage>,
         }
 
         let mapped = futures_util::stream::unfold(
@@ -647,6 +663,7 @@ impl OpenAiAdapter {
                 tool_calls_acc: Vec::new(),
                 last_model: None,
                 has_finish_reason: false,
+                usage: None,
             },
             move |mut state| async move {
                 if state.done {
@@ -663,7 +680,7 @@ impl OpenAiAdapter {
                                     text: None,
                                     tool_calls: std::mem::take(&mut state.tool_calls_acc),
                                     finish_reason: None,
-                                    usage: None,
+                                    usage: state.usage.take(),
                                     model: state.last_model.clone(),
                                     reasoning: None,
                                 })
@@ -677,6 +694,15 @@ impl OpenAiAdapter {
                     Ok(resp) => {
                         if let Some(model) = &resp.model {
                             state.last_model = Some(model.clone());
+                        }
+                        if let Some(u) = resp.usage {
+                            state.usage = Some(Usage {
+                                prompt_tokens: u.prompt_tokens,
+                                completion_tokens: u.completion_tokens,
+                                total_tokens: u.total_tokens,
+                                model_name: state.last_model.clone(),
+                                cost: None,
+                            });
                         }
                         if let Some(choice) = resp.choices.into_iter().next() {
                             if let Some(delta) = choice_delta(&choice)
@@ -724,7 +750,7 @@ impl OpenAiAdapter {
                                     reasoning: None,
                                     tool_calls: Vec::new(),
                                     finish_reason: None,
-                                    usage: None,
+                                    usage: state.usage.take(),
                                     model: state.last_model.clone(),
                                 }),
                                 state,
@@ -950,6 +976,19 @@ mod tests {
         assert!(body_stream.stream);
         let body_no_stream = client.build_request_body(vec![], vec![], false);
         assert!(!body_no_stream.stream);
+    }
+
+    #[test]
+    fn build_request_body_stream_options_requests_usage() {
+        let ep = ModelEndpoint::default();
+        let client = OpenAiAdapter::new(ep);
+        let body_stream = client.build_request_body(vec![], vec![], true);
+        let opts = body_stream
+            .stream_options
+            .expect("stream request must ask for usage");
+        assert!(opts.include_usage);
+        let body_no_stream = client.build_request_body(vec![], vec![], false);
+        assert!(body_no_stream.stream_options.is_none());
     }
 
     #[test]
@@ -1279,5 +1318,23 @@ mod tests {
     fn convert_tools_empty_vec() {
         let result = OpenAiAdapter::convert_tools(vec![]);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn stream_response_parses_usage_from_final_chunk() {
+        let json = r#"{"id":"c1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"model":"gpt-5"}"#;
+        let resp: OpenAiStreamResponse = serde_json::from_str(json).unwrap();
+        let usage = resp.usage.expect("final chunk must carry usage");
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
+    }
+
+    #[test]
+    fn stream_response_usage_absent_parses_fine() {
+        let json = r#"{"id":"c1","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#;
+        let resp: OpenAiStreamResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.usage.is_none());
+        assert!(!resp.choices.is_empty());
     }
 }

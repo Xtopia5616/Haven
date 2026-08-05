@@ -426,6 +426,7 @@ mod tests {
             compaction_id: None,
             parent_message_id: None,
             attachments: vec![],
+            voice: false,
         }
     }
 

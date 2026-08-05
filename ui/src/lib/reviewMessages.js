@@ -2,6 +2,36 @@
 // steps) into the chat bubble message list used by the chat page and the
 // history review flow.
 
+/**
+ * Merge DB-loaded messages with any in-memory streaming messages that
+ * arrived concurrently (e.g. a task still running while the user
+ * navigates back). Streams append only when the DB doesn't already have
+ * a bubble with the same id.
+ *
+ * @param {Array<object>} dbMessages   buildReviewMessages() result
+ * @param {Array<object>} existing     current taskMessages entry
+ * @param {{ dropToolSteps?: boolean }} [opts]
+ *   dropToolSteps — when true, drop DB tool-step badges whose stepNumber
+ *     is already represented by a live streaming tool card in `existing`.
+ *     Used by switchToTask to avoid duplicate display while a task runs.
+ */
+export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
+	const { dropToolSteps = false } = opts;
+	let filteredDb = dbMessages;
+	if (dropToolSteps) {
+		const toolSteps = new Set(
+			existing.filter((m) => m.type === 'tool' && m.stepNumber != null)
+				.map((m) => m.stepNumber)
+		);
+		filteredDb = dbMessages.filter(
+			(m) => !(m.type === 'tool' && m.stepNumber != null && toolSteps.has(m.stepNumber))
+		);
+	}
+	const dbIds = new Set(filteredDb.map((m) => m.id));
+	const streaming = existing.filter((m) => m.streaming);
+	return [...filteredDb, ...streaming.filter((m) => !dbIds.has(m.id))];
+}
+
 export function formatDate(iso) {
 	const d = new Date(iso);
 	const y = d.getFullYear();
@@ -26,7 +56,7 @@ export function buildReviewMessages(data) {
 			role: msg.role,
 			content: msg.content,
 			type: msg.message_type === 'text' ? undefined : msg.message_type || undefined,
-			voice: false,
+			voice: !!msg.voice,
 			time: formatDate(msg.created_at),
 			streaming: false,
 			attachments: msg.attachments || [],
@@ -129,14 +159,17 @@ export function buildReviewMessages(data) {
 	// inference — otherwise tasks with no tool steps (e.g. errored on the
 	// first LLM call) leave all messages without a stepNumber, breaking
 	// rollback. Match by content (trimmed) to the corresponding session
-	// message.
+	// message. User items are matched too: interjections (steering) and
+	// answers to paused tasks (supplements) are persisted as thought steps
+	// carrying the user's own words, so the input must resolve to that step
+	// even when nothing follows it (e.g. the task errored right after).
 	for (const step of data.steps || []) {
 		if (step.action_tool) continue;
 		if (step.thought == null) continue;
 		const thoughtTrimmed = step.thought.trim();
 		if (!thoughtTrimmed) continue;
 		for (const item of items) {
-			if (item.role === 'assistant' && item.stepNumber == null
+			if ((item.role === 'assistant' || item.role === 'user') && item.stepNumber == null
 				&& item.content.trim() === thoughtTrimmed) {
 				item.stepNumber = step.step_index;
 				break;

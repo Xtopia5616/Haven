@@ -3,14 +3,14 @@ pub mod auth;
 pub mod client;
 pub mod registry;
 pub mod router;
-pub mod stt;
 pub mod stream_rules;
+pub mod stt;
 pub mod types;
 
 pub use adapters::{AnthropicAdapter, OpenAiAdapter};
 pub use auth::AuthResolver;
 pub use client::{LlmClient, with_retry};
-pub use registry::{ModelInfo, ModelRegistry};
+pub use registry::{ModelInfo, ModelRegistry, context_window_for};
 pub use router::{EndpointRole, LlmRouter};
 pub use stt::{McpToolCaller, SttClient, build_stt_client};
 pub use types::{

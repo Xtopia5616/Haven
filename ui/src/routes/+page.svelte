@@ -1,12 +1,16 @@
 <script>
 	import logger from '$lib/logger.js';
-	import { buildReviewMessages } from '$lib/reviewMessages.js';
+	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.js';
+	import { accumulateStreamChunk, applyThoughtSnap, stepId, toolId, finalizeStreamBlocks, newToolMessage } from '$lib/streaming.js';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
-	import { invoke, listen } from '$lib/tauri.js';
-	import { taskMessagesStore, taskStore, addNotification, addTaskMessage, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, taskTokenStatsStore, updateTaskTokenStats, clearTaskTokenStats, formatTokenCount, formatCostUsd, seqLastSeen, pruneSeq, updateModelState, modelStateStore, imageDataUrl, recordingOverlay } from '$lib/stores.js';
+	import { invoke } from '$lib/tauri.js';
+	import { registerListeners } from '$lib/events.js';
+	import { taskMessagesStore, taskStore, addNotification, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, taskTokenStatsStore, updateTaskTokenStats, clearTaskTokenStats, restoreTaskTokenStats, formatTokenCount, formatCostUsd, seqLastSeen, pruneSeq, updateModelState, modelStateStore, imageDataUrl, recordingOverlay, DRAFT_KEY } from '$lib/stores.js';
+	import { submitTranscript } from '$lib/submit.js';
+	import { syncStore, syncStoreImmediate } from '$lib/syncStore.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import BranchDialog from '$lib/BranchDialog.svelte';
@@ -19,6 +23,7 @@
 	let activeTaskId = $state(get(activeTaskIdStore));
 	let branchDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
 	let branchLoading = $state(false);
+
 	// Pending image attachments (multimodal): [{ mediaType, data }] with data
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
@@ -28,10 +33,7 @@
 	// Recording state (mirror of the global recordingOverlay store) so the
 	// toolbar mic button can toggle start/stop inline.
 	let recordingState = $state({ isRecording: false });
-	$effect(() => {
-		const unsub = recordingOverlay.subscribe((v) => { recordingState = v; });
-		return unsub;
-	});
+	$effect(() => syncStore(recordingOverlay, (v) => { recordingState = v; }));
 
 	// Model switcher state: the registry catalog plus the current default
 	// model name, displayed on the toolbar button and filtered in the menu.
@@ -61,16 +63,15 @@
 	 * @property {number|null} cumulativeCostUsd
 	 * @property {number|null} contextWindow
 	 * @property {string|null} model
+	 * @property {boolean} [estimated] - totals restored from a rough backend
+	 *   estimate (task predates usage persistence), not real recorded usage.
 	 */
 
 	/** @type {TaskTokenStats | null} */
 	let tokenStats = $state(null);
-	$effect(() => {
-		const unsub = taskTokenStatsStore.subscribe((m) => {
-			tokenStats = activeTaskId ? (/** @type {TaskTokenStats | undefined} */ (m[activeTaskId]) || null) : null;
-		});
-		return unsub;
-	});
+	$effect(() => syncStore(taskTokenStatsStore, (m) => {
+		tokenStats = activeTaskId ? (/** @type {TaskTokenStats | undefined} */ (m[activeTaskId]) || null) : null;
+	}));
 	// Clear per-task stats when the active task changes so a stale entry
 	// from a previous task doesn't bleed into the new task's display.
 	$effect(() => {
@@ -101,26 +102,30 @@
 	// "stop task". Also mirrors the agent's model state so the button can
 	// distinguish "generating right now" from an idle running task.
 	let modelState = $state('ready');
-	$effect(() => {
-		const unsub = modelStateStore.subscribe((v) => { modelState = v; });
-		return unsub;
-	});
+	$effect(() => syncStore(modelStateStore, (v) => { modelState = v; }));
 	const hasInput = $derived(transcriptInput.trim().length > 0 || pendingImages.length > 0);
 	const isGenerating = $derived(modelState === 'streaming' || modelState === 'tool');
 	const taskRunning = $derived(
 		!!activeTaskId &&
 		tasks.some((t) => t.id === activeTaskId && (t.status === 'running' || t.status === 'pending'))
 	);
-	// While the agent is generating, clicking send with input queues the
-	// message and delivers it once the current output completes (rather than
-	// interrupting turn). Held here until flushed.
-	let queuedSend = $state(null);
+	// While the agent is generating, a sent message is delivered immediately
+	// to the backend: the agent injects it in the gap between tool calls and
+	// the final content, so it can steer the answer instead of waiting for
+	// the whole turn to finish.
 	// The merged send button becomes "stop task" only when there is no input
 	// and the agent is actively working (generating output, a running/pending
-	// task), or a follow-up is queued awaiting delivery. With fresh input
-	// present, it always stays a send button.
+	// task). With fresh input present, it always stays a send button.
 	const stopMode = $derived(
-		!hasInput && (!!queuedSend || isGenerating || taskRunning)
+		!hasInput && (isGenerating || taskRunning)
+	);
+	// Tooltip for the idle token widget. While the active task is still
+	// running (streaming, tool-calling, or queued) more `agent:usage`
+	// events are expected, so "waiting" is accurate. A finished or
+	// history-opened conversation with no persisted usage will never
+	// receive events — show a neutral hint instead of waiting forever.
+	const tokenStatsHint = $derived(
+		isGenerating || taskRunning ? '等待 LLM 统计' : '暂无统计'
 	);
 	// Tasks executing in parallel (running or waiting). When 2+ exist, the
 	// new-task button turns into a switcher menu: switch to a parallel task
@@ -140,6 +145,7 @@
 			parts.push(`上下文 ${pct} / ${formatTokenCount(s.contextWindow)}`);
 		}
 		if (s.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(s.cumulativeCostUsd)}`);
+		if (s.estimated) parts.push('估算值（历史对话，未计费）');
 		return parts.join('\n');
 	}
 
@@ -340,6 +346,16 @@
 				const next = messages.slice(idx + 1).find(m => m.stepNumber != null);
 				if (next) return next.stepNumber;
 			}
+			// Fallback for an interrupted message that was never processed
+			// (no step row and nothing after it — sent while the task was
+			// erroring, or the app closed before the steering drained).
+			// Target the step after the last completed one; the backend
+			// discards just this message when no branch point covers it.
+			const maxStep = messages.reduce(
+				(acc, m) => (m.stepNumber != null ? Math.max(acc, m.stepNumber) : acc),
+				0
+			);
+			return maxStep + 1;
 		}
 		return null;
 	}
@@ -438,7 +454,7 @@
 			if (role === 'user') {
 				// User-message rollback: pause the task and put the message
 				// text back in the input box so the user can edit and re-send.
-				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: true });
+				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: true, targetMessageId: msgId });
 				// Remove the user message and everything after it, keeping
 				// messages before it. This avoids truncateTaskMessages, which
 				// would match the user message itself if it has an inferred
@@ -452,7 +468,7 @@
 				transcriptInput = content;
 				addNotification('已回退，请编辑后重新发送', 'info', 3000);
 			} else {
-				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: false });
+				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: false, targetMessageId: msgId });
 				truncateTaskMessages(activeTaskId, stepNumber);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
@@ -469,7 +485,6 @@
 			clearTaskMessages(activeTaskId);
 			clearTaskTokenStats(activeTaskId);
 		}
-		queuedSend = null;
 		suppressAutoTask = true;
 		activeTaskId = null;
 		activeTaskIdStore.set(null);
@@ -499,22 +514,15 @@
 		taskMenuOpen = false;
 		try {
 			const result = await invoke('get_task_for_review', { taskId });
-			updateTaskMessages(taskId, (existing) => {
-				// Drop DB step badges for steps already represented by a live
-				// tool card (the running task may be mid-step): the live card
-				// keeps streaming its observation. Their ids differ, so plain
-				// id dedup would leave both visible.
-				const toolSteps = new Set(
-					existing.filter((m) => m.type === 'tool' && m.stepNumber != null)
-						.map((m) => m.stepNumber)
-				);
-				const dbMessages = buildReviewMessages(result).filter(
-					(m) => !(m.type === 'tool' && m.stepNumber != null && toolSteps.has(m.stepNumber))
-				);
-				const dbIds = new Set(dbMessages.map((m) => m.id));
-				const streaming = existing.filter((m) => m.streaming);
-				return [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
-			});
+			const dbMessages = buildReviewMessages(result);
+			// Drop DB step badges for steps already represented by a live
+			// tool card (the running task may be mid-step): the live card
+			// keeps streaming its observation. Their ids differ, so plain
+			// id dedup would leave both visible.
+			updateTaskMessages(taskId, (existing) =>
+				mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true })
+			);
+			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
 			suppressAutoTask = false;
 			activeTaskId = taskId;
 			activeTaskIdStore.set(taskId);
@@ -529,7 +537,6 @@
 		if (!activeTaskId) return;
 		suppressAutoTask = true;
 		const endedId = activeTaskId;
-		queuedSend = null;
 		try {
 			await invoke('end_task', { taskId: endedId });
 			clearTaskMessages(endedId);
@@ -580,7 +587,9 @@
 		}
 	}
 
-	let unlisteners = [];
+	// Tauri event listener handle (registered in onMount, disposed in
+	// onDestroy). See eventRegistrations below.
+	let eventRegistrations = null;
 	let messagesEl;
 	let autoFollow = $state(true);
 	let scrollRafPending = false;
@@ -597,11 +606,7 @@
 	// Also read the current value once on mount via get(), otherwise values
 	// set before subscription (e.g. by history review) are never received.
 	let taskMessagesDict = $state({});
-	$effect(() => {
-		taskMessagesDict = get(taskMessagesStore);
-		const unsub = taskMessagesStore.subscribe((v) => { taskMessagesDict = v; });
-		return unsub;
-	});
+	$effect(() => syncStoreImmediate(taskMessagesStore, (v) => { taskMessagesDict = v; }, get));
 
 	// Derive visible messages for the current view.
 	$effect(() => {
@@ -609,7 +614,7 @@
 		if (activeTaskId) {
 			messages = Array.isArray(dict[activeTaskId]) ? dict[activeTaskId] : [];
 		} else {
-			messages = Array.isArray(dict['_draft']) ? dict['_draft'] : [];
+			messages = Array.isArray(dict[DRAFT_KEY]) ? dict[DRAFT_KEY] : [];
 		}
 	});
 
@@ -624,15 +629,6 @@
 			activeTaskError = false;
 		}
 	});
-
-	async function safeListen(event, handler) {
-		try {
-			const unsub = await listen(event, handler);
-			unlisteners.push(unsub);
-		} catch (e) {
-			logger.error('+page', `Failed to register listener for '${event}'`, e);
-		}
-	}
 
 	// Auto-scroll to the newest message whenever messages change.
 	$effect(() => {
@@ -678,6 +674,51 @@
 	function jumpToBottom() {
 		autoFollow = true;
 		if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+	}
+
+	// Streaming chunk handler factory: finalizes the preceding reasoning block
+	// on the first thought chunk, dedups by per-step seq, and accumulates the
+	// delta into the in-memory message list.
+	function chunkHandler(stepIdPrefix, msgType) {
+		return (event) => {
+			const data = event.payload;
+			const tid = data.task_id;
+			const sid = stepId(stepIdPrefix, tid, data.step_number, data.run_id);
+			const delta = data.delta || '';
+			const seq = data.seq;
+			updateModelState('streaming');
+			if (seqLastSeen(sid, seq)) return;
+
+			// When the first text chunk arrives, the reasoning phase is
+			// over — finalize any streaming reasoning block for this step.
+			// This runs BEFORE the empty-delta check so that even an empty
+			// transition chunk finalizes reasoning.
+			if (stepIdPrefix === 'thought') {
+				const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+				let reasoningFinalized = false;
+				updateTaskMessages(tid, (m) => {
+					const rIdx = m.findIndex((x) => x.id === reasoningId && x.streaming);
+					if (rIdx < 0) return m;
+					reasoningFinalized = true;
+					return m.map((x) =>
+						x.id === reasoningId ? { ...x, streaming: false } : x
+					);
+				});
+				if (reasoningFinalized) pruneSeq(reasoningId);
+			}
+
+			if (!delta) return;
+			updateTaskMessages(tid, (m) =>
+				accumulateStreamChunk(m, {
+					stepId: sid,
+					stepIdPrefix,
+					delta,
+					msgType,
+					stepNumber: data.step_number,
+					time: new Date().toLocaleTimeString(),
+				})
+			);
+		};
 	}
 
 	onMount(async () => {
@@ -747,6 +788,7 @@
 					// of being dropped as a terminal-task supplement.
 					await invoke('reopen_task', { taskId: last.task.id });
 					updateTaskMessages(last.task.id, () => buildReviewMessages(last));
+					restoreTaskTokenStats(last.task.id, last.usage, last.usage_estimated);
 					activeTaskId = last.task.id;
 					activeTaskIdStore.set(activeTaskId);
 					if (wasError) {
@@ -760,8 +802,8 @@
 			}
 		}
 
-		try {
-			await safeListen('task:created', (event) => {
+		const registrations = registerListeners({
+			'task:created': (event) => {
 				const tid = event.payload?.task_id;
 				if (tid) {
 					// Voice input appends the transcript to `_draft` before the
@@ -778,18 +820,10 @@
 				}
 				if (browser) localStorage.removeItem('haven.no_auto_restore');
 				loadTasks();
-			});
-			await safeListen('task:updated', (event) => {
+			},
+			'task:updated': (event) => {
 				const data = event.payload || {};
 				const isActive = data.task_id && activeTaskId && data.task_id === activeTaskId;
-				if (
-					isActive &&
-					(data.status === 'paused' || data.status === 'completed' || data.status === 'error')
-				) {
-					// The agent's output turn is over: deliver any follow-up
-					// message the user queued while it was generating.
-					flushQueuedSend();
-				}
 				// A resume (pending) means the user's answer was received:
 				// stop showing the awaiting indicator on ask cards. Note the
 				// ask pause itself arrives as 'paused' right after the card is
@@ -798,168 +832,124 @@
 					clearAskAwaiting(data.task_id);
 				}
 				loadTasks();
-			});
-			await safeListen('task:completed', (event) => {
+			},
+			'task:completed': (event) => {
 				const data = event.payload || {};
 				if (data.task_id && activeTaskId && data.task_id === activeTaskId) {
 					clearAskAwaiting(data.task_id);
-					flushQueuedSend();
 				}
 				loadTasks();
-			});
-		await safeListen('task:error', (event) => {
-			const { task_id } = event.payload;
+			},
+			'task:error': (event) => {
+				const { task_id } = event.payload;
 				if (task_id && task_id === activeTaskId) {
 					taskErrorId = task_id;
 					activeTaskError = true;
 					clearAskAwaiting(task_id);
-					// A failed turn is also "output complete": release a queued
-					// follow-up so the user's message isn't silently dropped.
-					flushQueuedSend();
 				}
 				loadTasks();
-			});
-			await safeListen('task:title-updated', (event) => {
+			},
+			'task:title-updated': (event) => {
 				const { task_id, title } = event.payload;
 				const idx = tasks.findIndex(t => t.id === task_id);
 				if (idx >= 0) tasks[idx] = { ...tasks[idx], title };
-			});
-			await safeListen('hotkey:rebind', (event) => {
+			},
+			'hotkey:rebind': (event) => {
 				const data = event.payload || {};
 				if (data.new_binding) {
 					hotkeyBinding = data.new_binding;
 				}
-			});
-			await safeListen('agent:thought', (event) => {
+			},
+			'agent:thought': (event) => {
 				const data = event.payload;
 				const tid = data.task_id;
-				const stepId = `thought-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-				const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-				pruneSeq(stepId);
+				const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
+				const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+				pruneSeq(thoughtId);
 				pruneSeq(reasoningId);
 				updateModelState('ready');
+				updateTaskMessages(tid, (m) =>
+					applyThoughtSnap(m, {
+						stepId: thoughtId,
+						reasoningId,
+						thought: data.thought,
+						stepNumber: data.step_number,
+						time: new Date().toLocaleTimeString(),
+					})
+				);
+			},
+			'agent:thought_chunk': chunkHandler('thought', undefined),
+			'agent:reasoning_chunk': chunkHandler('reasoning', 'reasoning'),
+			'agent:supplement': (event) => {
+				// The agent injected a user message (mid-turn steering or a
+				// resumed-task supplement) into its context. Mark the matching
+				// user bubble as received so the user knows their input was
+				// picked up mid-turn rather than deferred.
+				const data = event.payload || {};
+				const tid = data.task_id;
+				const ctx = (data.additional_context || '').trim();
+				if (!tid || !ctx) return;
 				updateTaskMessages(tid, (m) => {
-					const reasoningFixed = m.map((x) =>
-						x.id === reasoningId ? { ...x, streaming: false } : x
-					);
-					const idx = reasoningFixed.findIndex((x) => x.id === stepId);
-					if (idx >= 0) {
-						const next = [...reasoningFixed];
-						next[idx] = { ...next[idx], content: data.thought, streaming: false, type: undefined };
-						return next;
+					let marked = false;
+					const next = [...m];
+					for (let i = next.length - 1; i >= 0; i--) {
+						const x = next[i];
+						if (x.role === 'user' && !x.received && (x.content || '').trim() === ctx) {
+							next[i] = { ...x, received: true };
+							marked = true;
+							break;
+						}
 					}
-					return [...reasoningFixed, {
-						id: stepId, role: 'assistant', content: data.thought,
-						type: undefined, voice: false, stepNumber: data.step_number,
-						time: new Date().toLocaleTimeString(), streaming: false,
-					}];
+					return marked ? next : m;
 				});
-			});
-	function listenChunk(eventName, stepIdPrefix, msgType) {
-		return safeListen(eventName, (event) => {
-			const data = event.payload;
-			const tid = data.task_id;
-			const stepId = `${stepIdPrefix}-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-			const delta = data.delta || '';
-			const seq = data.seq;
-			updateModelState('streaming');
-			if (seqLastSeen(stepId, seq)) return;
-
-			// When the first text chunk arrives, the reasoning phase is
-				// over — finalize any streaming reasoning block for this step.
-				// This runs BEFORE the empty-delta check so that even an empty
-				// transition chunk finalizes reasoning.
-				if (stepIdPrefix === 'thought') {
-					const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-					let reasoningFinalized = false;
-					updateTaskMessages(tid, (m) => {
-						const rIdx = m.findIndex((x) => x.id === reasoningId && x.streaming);
-						if (rIdx < 0) return m;
-						reasoningFinalized = true;
-						return m.map((x) =>
-							x.id === reasoningId ? { ...x, streaming: false } : x
-						);
-					});
-					if (reasoningFinalized) pruneSeq(reasoningId);
-				}
-
-				if (!delta) return;
-				updateTaskMessages(tid, (m) => {
-					const idx = m.findIndex((x) => x.id === stepId);
-					if (idx >= 0 && m[idx].streaming === false) return m;
-					if (idx >= 0) {
-						const curr = m[idx].content || '';
-						// Some non-OpenAI providers send cumulative text per chunk
-						const content = delta.startsWith(curr) ? delta : curr + delta;
-						const next = [...m];
-						next[idx] = { ...next[idx], content, streaming: true };
-						return next;
-					}
-					return [...m, {
-						id: stepId, role: 'assistant', content: delta,
-						type: msgType, voice: false, stepNumber: data.step_number,
-						time: new Date().toLocaleTimeString(), streaming: true,
-					}];
-				});
-			});
-		}
-			await listenChunk('agent:thought_chunk', 'thought', undefined);
-			await listenChunk('agent:reasoning_chunk', 'reasoning', 'reasoning');
-			await safeListen('agent:supplement', () => {
-			});
-			await safeListen('agent:action', (event) => {
+			},
+			'agent:action': (event) => {
 				const data = event.payload;
-				if (data.silent) return;
 				const tid = data.task_id;
 				updateModelState('tool');
-				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
-				const reasoningId = `reasoning-${tid}-${data.step_number}-${data.run_id ?? 0}`;
-				const thoughtId = `thought-${tid}-${data.step_number}-${data.run_id ?? 0}`;
+				const toolMsgId = toolId(tid, data.step_number, data.run_id, data.tool_call_id || data.tool_name);
+				const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+				const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
 				pruneSeq(reasoningId);
 				pruneSeq(thoughtId);
+				if (data.silent) {
+					// Silent tool: no card is shown, but the preceding text
+					// must still be finalized so it is inserted immediately.
+					updateTaskMessages(tid, (m) => finalizeStreamBlocks(m, reasoningId, thoughtId));
+					return;
+				}
 				updateTaskMessages(tid, (m) => {
 					// Finalize any streaming reasoning and thought blocks —
 					// a tool action means the text/reasoning phase is over.
-					const fixed = m.map((x) =>
-						(x.id === reasoningId || x.id === thoughtId)
-							? { ...x, streaming: false }
-							: x
-					);
-					const existing = fixed.find((x) => x.id === toolId);
+					// Clearing `segmented` drops straggler chunks that flush
+					// out of the batcher after this event.
+					const fixed = finalizeStreamBlocks(m, reasoningId, thoughtId);
+					const existing = fixed.find((x) => x.id === toolMsgId);
 					if (existing) return fixed;
-					return [...fixed, {
-						id: toolId,
-						role: 'assistant',
-						content: '',
-						toolName: data.tool_name,
-						type: 'tool',
-						voice: false,
+					return [...fixed, newToolMessage({
+						id: toolMsgId,
 						stepNumber: data.step_number,
+						toolName: data.tool_name,
 						time: new Date().toLocaleTimeString(),
 						streaming: true,
-					}];
+					})];
 				});
-			});
-			await safeListen('agent:observation', (event) => {
+			},
+			'agent:observation': (event) => {
 				const data = event.payload;
 				if (data.silent) return;
 				const tid = data.task_id;
 				updateModelState('streaming');
-				const toolId = `tool-${tid}-${data.step_number}-${data.run_id ?? 0}-${data.tool_call_id || data.tool_name}`;
+				const toolMsgId = toolId(tid, data.step_number, data.run_id, data.tool_call_id || data.tool_name);
 				updateTaskMessages(tid, (m) => {
-					const idx = m.findIndex((x) => x.id === toolId);
-					const isAsk = data.tool_name === 'ask';
-					const msg = {
-						id: toolId,
-						role: 'assistant',
-						content: data.observation,
-						toolName: data.tool_name,
-						type: isAsk ? 'ask' : 'tool',
-						voice: false,
+					const idx = m.findIndex((x) => x.id === toolMsgId);
+					const msg = newToolMessage({
+						id: toolMsgId,
 						stepNumber: data.step_number,
-						streaming: false,
-						...(isAsk ? { options: data.ask_options || [], awaiting: true } : {}),
-					};
+						toolName: data.tool_name,
+						content: data.observation,
+						askOptions: data.ask_options || [],
+					});
 					if (idx >= 0) {
 						// Preserve the fields set by the action handler (e.g. the
 						// bubble's timestamp) — only overwrite the observation
@@ -970,50 +960,52 @@
 					}
 					return [...m, msg];
 				});
-			});
-		await safeListen('confirm:requested', (event) => {
-			const data = event.payload;
-			if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
-			// If a confirmation is already pending, auto-reject the previous
-			// one so the backend doesn't wait forever for a resolve_confirmation
-			// that the user will never see.
-			if (confirmDialog.stepId) {
-				invoke('resolve_confirmation', { stepId: confirmDialog.stepId, confirmed: false, trustSession: false }).catch(() => {});
-			}
-			confirmDialog = {
-				stepId: data.step_id,
-				toolName: data.tool_name,
-				taskId: data.task_id,
-				riskLevel: data.risk_level || 'medium',
-			};
-		});
-		// Token usage / cost stats — emitted after every LLM step.
-		await safeListen('agent:usage', (event) => {
-			const d = event.payload || {};
-			if (!d.task_id) return;
-			updateTaskTokenStats(d.task_id, {
-				promptTokens: d.prompt_tokens || 0,
-				completionTokens: d.completion_tokens || 0,
-				totalTokens: d.total_tokens || 0,
-				cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
-				cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
-				cumulativeTotalTokens: d.cumulative_total_tokens || 0,
-				costUsd: d.cost_usd ?? null,
-				cumulativeCostUsd: d.cumulative_cost_usd ?? null,
-				contextWindow: d.context_window ?? null,
-				model: d.model ?? null,
-			});
-		});
-		// Context compaction notice — summarize a portion of the history.
-		await safeListen('agent:compaction', (event) => {
-			const d = event.payload || {};
-			const before = formatTokenCount(d.tokens_before || 0);
-			const after = formatTokenCount(d.tokens_after || 0);
-			addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
-		});
-		} catch (e) {
-			logger.warn('+page', 'safeListen error', e);
-		}
+			},
+			'confirm:requested': (event) => {
+				const data = event.payload;
+				if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
+				// If a confirmation is already pending, auto-reject the previous
+				// one so the backend doesn't wait forever for a resolve_confirmation
+				// that the user will never see.
+				if (confirmDialog.stepId) {
+					invoke('resolve_confirmation', { stepId: confirmDialog.stepId, confirmed: false, trustSession: false }).catch(() => {});
+				}
+				confirmDialog = {
+					stepId: data.step_id,
+					toolName: data.tool_name,
+					taskId: data.task_id,
+					riskLevel: data.risk_level || 'medium',
+				};
+			},
+			// Token usage / cost stats — emitted after every LLM step.
+			'agent:usage': (event) => {
+				const d = event.payload || {};
+				if (!d.task_id) return;
+				updateTaskTokenStats(d.task_id, {
+					promptTokens: d.prompt_tokens || 0,
+					completionTokens: d.completion_tokens || 0,
+					totalTokens: d.total_tokens || 0,
+					cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
+					cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
+					cumulativeTotalTokens: d.cumulative_total_tokens || 0,
+					costUsd: d.cost_usd ?? null,
+					cumulativeCostUsd: d.cumulative_cost_usd ?? null,
+					contextWindow: d.context_window ?? null,
+					model: d.model ?? null,
+					// A real usage event supersedes any restored estimate.
+					estimated: false,
+				});
+			},
+			// Context compaction notice — summarize a portion of the history.
+			'agent:compaction': (event) => {
+				const d = event.payload || {};
+				const before = formatTokenCount(d.tokens_before || 0);
+				const after = formatTokenCount(d.tokens_after || 0);
+				addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
+			},
+		}, { tag: '+page' });
+		eventRegistrations = registrations;
+		await registrations.ready;
 
 		if (browser) {
 			window.addEventListener('click', handleWindowClick);
@@ -1023,7 +1015,7 @@
 
 	onDestroy(() => {
 		dead = true;
-		unlisteners.forEach((u) => u());
+		eventRegistrations?.dispose();
 		if (browser) {
 			window.removeEventListener('click', handleWindowClick);
 			window.removeEventListener('contextmenu', handleWindowContextMenu);
@@ -1077,24 +1069,9 @@
 	}
 
 	async function submitMessage(text, images) {
-		const taskId = activeTaskId || '_draft';
-		addTaskMessage(taskId, {
-			id: `${Date.now()}-u-${Math.random().toString(36).slice(2, 6)}`,
-			role: 'user',
-			content: text,
-			voice: false,
-			time: new Date().toLocaleTimeString(),
-			attachments: images,
-		});
-
 		try {
-			const result = await invoke('process_transcript', {
-				transcript: text,
-				activeTaskId: activeTaskId || null,
-				images: images.length > 0 ? images : null,
-			});
+			const result = await submitTranscript(text, { images });
 			if (result && result.TaskCreated) {
-				adoptDraftMessages(result.TaskCreated);
 				activeTaskId = result.TaskCreated;
 				activeTaskIdStore.set(activeTaskId);
 				suppressAutoTask = false;
@@ -1121,51 +1098,6 @@
 		submitMessage(answer, []);
 	}
 
-	// The agent is generating output and the user clicked send. Queue the
-	// message locally and deliver it once the current output completes, so it
-	// is appended as a follow-up user input instead of interrupting the turn.
-	// Only applies with an active task: on a fresh draft (新任务) the message
-	// must always send immediately so it starts a new parallel task instead
-	// of being staged for the still-generating one.
-	function submitOrQueue() {
-		if (isGenerating && activeTaskId) {
-			const text = transcriptInput;
-			const images = pendingImages;
-			if (!text.trim() && images.length === 0) return;
-			if (queuedSend) {
-				queuedSend = {
-					text: text.trim() ? (queuedSend.text ? queuedSend.text + '\n' + text : text) : queuedSend.text,
-					images: [...queuedSend.images, ...images],
-				};
-			} else {
-				queuedSend = { text, images };
-			}
-			transcriptInput = '';
-			pendingImages = [];
-			addNotification('已排队，将在本轮输出结束后发送', 'info', 2500);
-			return;
-		}
-		handleSubmit();
-	}
-
-	// Send any message queued while generating, once the agent's output turn
-	// completes (task paused / completed / errored).
-	function flushQueuedSend() {
-		if (!queuedSend) return;
-		const { text, images } = queuedSend;
-		queuedSend = null;
-		if (!text.trim() && images.length === 0) return;
-		autoFollow = true;
-		submitMessage(text, images);
-	}
-
-	// Dismiss a queued follow-up so it is neither shown nor sent.
-	function cancelQueuedSend() {
-		if (!queuedSend) return;
-		addNotification('已取消暂存的消息', 'info', 1500);
-		queuedSend = null;
-	}
-
 	function handleSubmit() {
 		const text = transcriptInput.trim();
 		const images = pendingImages;
@@ -1180,8 +1112,7 @@
 	function handleKeydown(e) {
 		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();
-			submitOrQueue();
-		}
+			handleSubmit();		}
 	}
 
 	// Auto-grow the input to fit its content. While the content is a single
@@ -1294,6 +1225,7 @@
 							attachments={msg.attachments}
 							options={msg.options ?? []}
 							awaiting={msg.awaiting ?? false}
+							received={msg.received ?? false}
 							onContextMenu={handleContextMenu}
 							onQuickReply={handleQuickReply}
 						/>
@@ -1306,33 +1238,6 @@
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
 						继续生成
 					</button>
-				</div>
-			{/if}
-			{#if queuedSend}
-				<div class="queued-followup" in:fly={{ y: 8, duration: 250 }}>
-					<div class="queued-followup-body">
-						<div class="queued-followup-tag">
-							<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 13.5" /></svg>
-							待发送
-						</div>
-						{#if queuedSend.text}
-							<p class="queued-followup-text">{queuedSend.text}</p>
-						{/if}
-						{#if queuedSend.images.length > 0}
-							<div class="queued-followup-images">
-								{#each queuedSend.images as img, i (img.data + i)}
-									<img src={imageDataUrl(img)} alt="暂存图片" />
-								{/each}
-							</div>
-						{/if}
-					</div>
-					<button
-						class="queued-followup-close"
-						onclick={cancelQueuedSend}
-						aria-label="取消暂存的消息"
-						title="取消暂存的消息"
-						type="button"
-					>&times;</button>
 				</div>
 			{/if}
 		</div>
@@ -1381,7 +1286,7 @@
 						type="button"
 					>
 						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-						新任务
+						新建
 						{#if showTaskMenu}
 							<svg class="task-switch-caret" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
 						{/if}
@@ -1390,6 +1295,7 @@
 						<div class="task-menu">
 							<div class="task-menu-title">正在执行的任务</div>
 							{#each parallelTasks as t}
+
 								<button
 									class="task-menu-item"
 									class:selected={t.id === activeTaskId}
@@ -1410,14 +1316,26 @@
 						</div>
 					{/if}
 				</div>
-				<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : '等待 LLM 调用统计'}>
+				{#if activeTaskId}
+					<button
+						class="md-btn md-btn--outlined end-task-btn"
+						onclick={endTask}
+						aria-label="结束任务"
+						title="结束当前任务"
+						type="button"
+					>
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+						结束
+					</button>
+				{/if}
+				<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}>
 					{#if tokenStats}
 						<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 							<path d="M4 6h16M4 12h10M4 18h16" />
 						</svg>
 						<div class="token-text">
-							<span class="token-cumulative">{formatTokenCount(tokenStats.cumulativeTotalTokens)}</span>
-							{#if tokenStats.cumulativeCostUsd != null}
+							<span class="token-cumulative">{tokenStats.estimated ? '约 ' : ''}{formatTokenCount(tokenStats.cumulativeTotalTokens)}</span>
+							{#if !tokenStats.estimated && tokenStats.cumulativeCostUsd != null}
 								<span class="token-cost">· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span>
 							{/if}
 						</div>
@@ -1517,7 +1435,7 @@
 				<button
 					class="md-icon-button send-btn"
 					class:stop-mode={stopMode}
-					onclick={isGenerating ? submitOrQueue : stopMode ? () => endTask() : handleSubmit}
+					onclick={stopMode ? () => endTask() : handleSubmit}
 					disabled={!hasInput && !isGenerating && !taskRunning}
 					aria-label={hasInput ? '发送' : stopMode ? '停止任务' : '发送'}
 					title={hasInput ? '发送' : stopMode ? '停止任务' : '发送'}
@@ -1558,7 +1476,7 @@
 		/* Chat content has its own narrower reading-friendly cap; the
 		 * layout shell handles the wider-page case so we only need to
 		 * keep messages from getting too narrow on small viewports. */
-		max-width: clamp(560px, 92vw, 760px);
+		max-width: clamp(600px, 92vw, 800px);
 		margin: 0 auto;
 		width: 100%;
 	}
@@ -1623,7 +1541,7 @@
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 		flex-shrink: 0;
-		max-width: clamp(560px, 92vw, 760px);
+		max-width: clamp(600px, 92vw, 800px);
 		margin: 0 auto;
 		width: 100%;
 	}
@@ -1750,6 +1668,19 @@
 	}
 	.task-switch-caret {
 		flex-shrink: 0;
+	}
+	.end-task-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		flex-shrink: 0;
+		color: var(--md-sys-color-error);
+		border-color: var(--md-sys-color-error);
+	}
+	.end-task-btn:hover {
+		background: var(--md-sys-color-error-container);
+		border-color: var(--md-sys-color-error);
+		color: var(--md-sys-color-on-error-container);
 	}
 	.task-menu {
 		position: absolute;
@@ -2014,83 +1945,12 @@
 		justify-content: flex-start;
 		gap: var(--md-sys-space-md);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		max-width: clamp(560px, 92vw, 760px);
+		max-width: clamp(600px, 92vw, 800px);
 		margin: 0 auto;
 		width: 100%;
 	}
 	.continue-btn {
 		gap: var(--md-sys-space-xs);
 		font-size: 13px;
-	}
-
-	.queued-followup {
-		display: flex;
-		align-items: flex-start;
-		gap: var(--md-sys-space-sm);
-		max-width: clamp(560px, 92vw, 760px);
-		margin: var(--md-sys-space-sm) auto 0;
-		width: 100%;
-	}
-	.queued-followup-body {
-		flex: 1;
-		min-width: 0;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-high);
-		border: 1px dashed var(--md-sys-color-outline-variant);
-		color: var(--md-sys-color-on-surface-variant);
-		align-self: flex-end;
-		max-width: 72%;
-	}
-	.queued-followup-tag {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 11px;
-		font-weight: 600;
-		letter-spacing: 0.3px;
-		text-transform: uppercase;
-		color: var(--md-sys-color-tertiary);
-		margin-bottom: var(--md-sys-space-xs);
-	}
-	.queued-followup-text {
-		margin: 0;
-		white-space: pre-wrap;
-		word-break: break-word;
-		font-size: 14px;
-		line-height: 1.45;
-		color: var(--md-sys-color-on-surface);
-	}
-	.queued-followup-images {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-xs);
-		margin-top: var(--md-sys-space-sm);
-	}
-	.queued-followup-images img {
-		width: 48px;
-		height: 48px;
-		object-fit: cover;
-		border-radius: var(--md-sys-shape-small);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		display: block;
-	}
-	.queued-followup-close {
-		flex-shrink: 0;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		border: none;
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 15px;
-		line-height: 1;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.queued-followup-close:hover {
-		background: var(--md-sys-color-surface-container-highest);
 	}
 </style>

@@ -513,9 +513,8 @@ impl InputPipeline {
         // silently vanish or be transcribed. The threshold is set above a
         // quiet room's noise floor (~-80 dBFS) so only true silence trips it.
         if result.duration_ms >= 200 {
-            let total_rms = (result.pcm.iter().map(|s| s * s).sum::<f32>()
-                / result.pcm.len() as f32)
-                .sqrt();
+            let total_rms =
+                (result.pcm.iter().map(|s| s * s).sum::<f32>() / result.pcm.len() as f32).sqrt();
             if total_rms < 1e-4 {
                 let msg = "麦克风没有检测到声音，请检查系统麦克风是否被静音或已禁用".to_string();
                 tracing::error!("captured audio is digital silence (RMS={total_rms:.6}): {msg}");
@@ -619,8 +618,7 @@ impl InputPipeline {
             let remaining = handle.stop_and_drain().await?;
             if !remaining.is_empty() {
                 result.pcm.extend_from_slice(&remaining);
-                result.duration_ms =
-                    (result.pcm.len() as u64 * 1000) / TARGET_SAMPLE_RATE as u64;
+                result.duration_ms = (result.pcm.len() as u64 * 1000) / TARGET_SAMPLE_RATE as u64;
             }
         }
 
@@ -719,7 +717,9 @@ mod tests {
             }
         }
         let pipeline = InputPipeline::new();
-        pipeline.set_stt_client(Some(Box::new(DummySttClient))).await;
+        pipeline
+            .set_stt_client(Some(Box::new(DummySttClient)))
+            .await;
         assert!(pipeline.stt_client.lock().await.is_some());
         pipeline.set_stt_client(None).await;
         assert!(pipeline.stt_client.lock().await.is_none());
@@ -824,7 +824,9 @@ mod tests {
             }
         }
         let pipeline = InputPipeline::new();
-        pipeline.set_stt_client(Some(Box::new(EmptySttClient))).await;
+        pipeline
+            .set_stt_client(Some(Box::new(EmptySttClient)))
+            .await;
         let mut result = RecordingResult {
             pcm: vec![0.0; 160],
             reason: RecordingReason::Manual,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use haven_common::config::ModelEndpoint;
+
 /// §2.7: Model registry for automatic model discovery
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -72,6 +74,48 @@ pub fn builtin_catalog() -> Vec<ModelInfo> {
     ]
 }
 
+/// Resolve the effective context window (tokens) for an endpoint.
+///
+/// Priority:
+/// 1. Explicit `context_window` set in the endpoint config.
+/// 2. Builtin catalog match on `model_name` (provider-prefixed ids like
+///    `openai/gpt-4.1-nano` are normalized, and date-suffixed ids like
+///    `gpt-4o-2024-08-06` match the base catalog entry).
+/// 3. A 128K default when the model is unknown.
+///
+/// This is the value that drives context compaction and the token-usage
+/// display, so it must reflect the model's real input budget — not the
+/// per-response output cap (`max_tokens`).
+pub fn context_window_for(endpoint: &ModelEndpoint) -> u32 {
+    if let Some(window) = endpoint.context_window.filter(|w| *w > 0) {
+        return window;
+    }
+    let model = endpoint.model_name.trim();
+    let model = model
+        .rsplit_once('/')
+        .map(|(_, id)| id)
+        .unwrap_or(model)
+        .trim()
+        .to_ascii_lowercase();
+    let catalog = builtin_catalog();
+    // 1. Exact id/name match.
+    if let Some(info) = catalog
+        .iter()
+        .find(|m| m.id.to_ascii_lowercase() == model || m.name.to_ascii_lowercase() == model)
+    {
+        return info.context_window;
+    }
+    // 2. The configured id starts with a catalog id (e.g. dated model
+    //    revisions like `gpt-4o-2024-08-06` or `claude-sonnet-4-20250514`).
+    if let Some(info) = catalog.iter().find(|m| {
+        let id = m.id.to_ascii_lowercase();
+        !model.is_empty() && id.len() < model.len() && model.starts_with(&id)
+    }) {
+        return info.context_window;
+    }
+    128_000
+}
+
 pub struct ModelRegistry {
     builtin: Vec<ModelInfo>,
     discovered: Vec<ModelInfo>,
@@ -136,11 +180,15 @@ impl ModelRegistry {
                     .filter_map(|m| {
                         let id = m["id"].as_str()?.to_string();
                         let owned_by = m["owned_by"].as_str().unwrap_or("unknown");
+                        let window = context_window_for(&ModelEndpoint {
+                            model_name: id.clone(),
+                            ..Default::default()
+                        });
                         Some(ModelInfo {
                             id,
                             provider: owned_by.to_string(),
                             name: m["id"].as_str().unwrap_or("").to_string(),
-                            context_window: 128_000,
+                            context_window: window,
                             supports_streaming: true,
                             supports_tools: true,
                             supports_vision: false,
@@ -195,5 +243,48 @@ mod tests {
         let reg = ModelRegistry::new();
         let results = reg.search("claude");
         assert!(results.iter().any(|m| m.id.contains("claude")));
+    }
+
+    fn ep(model_name: &str) -> ModelEndpoint {
+        ModelEndpoint {
+            model_name: model_name.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn context_window_prefers_explicit_config() {
+        let mut endpoint = ep("unknown-model");
+        endpoint.context_window = Some(1_000_000);
+        assert_eq!(context_window_for(&endpoint), 1_000_000);
+    }
+
+    #[test]
+    fn context_window_ignores_zero_explicit_config() {
+        let mut endpoint = ep("unknown-model");
+        endpoint.context_window = Some(0);
+        assert_eq!(context_window_for(&endpoint), 128_000);
+    }
+
+    #[test]
+    fn context_window_matches_builtin_by_id() {
+        assert_eq!(context_window_for(&ep("gemini-2.5-flash-001")), 1_000_000);
+        assert_eq!(context_window_for(&ep("deepseek-chat")), 64_000);
+    }
+
+    #[test]
+    fn context_window_matches_provider_prefixed_id() {
+        assert_eq!(context_window_for(&ep("openai/gpt-4.1-nano")), 1_000_000);
+    }
+
+    #[test]
+    fn context_window_matches_dated_revision_id() {
+        // gpt-4o-2024-08-06 starts with catalog id "gpt-4o" (128K).
+        assert_eq!(context_window_for(&ep("gpt-4o-2024-08-06")), 128_000);
+    }
+
+    #[test]
+    fn context_window_defaults_when_unknown() {
+        assert_eq!(context_window_for(&ep("my-custom-llm")), 128_000);
     }
 }

@@ -62,7 +62,7 @@
 	 * history / tools). Pages reference this token via var(...) and the
 	 * layout's .page-shell applies it automatically with clamp() so content
 	 * scales with viewport width but never grows past this cap. */
-	--md-sys-content-max-width: 880px;
+	--md-sys-content-max-width: 920px;
 
 	/* ---------- Motion (expressive spring-like) ---------- */
 	--md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);

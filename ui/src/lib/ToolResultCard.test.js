@@ -21,13 +21,19 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('clipboard', JSON.stringify({ content: 'hi' }))).toBe(true);
 		expect(canRenderToolResult('power', JSON.stringify({ battery_percent: 80 }))).toBe(true);
 	});
-	it('rejects invalid JSON', () => {
-		expect(canRenderToolResult('search', '{not json[... truncated')).toBe(false);
+	it('accepts shell text, notify text and any JSON observation', () => {
+		expect(canRenderToolResult('shell', 'plain stdout text')).toBe(true);
+		expect(canRenderToolResult('shell', JSON.stringify({ output: 'x' }))).toBe(true);
+		expect(canRenderToolResult('notify', 'Notification sent: Build: done')).toBe(true);
+		expect(canRenderToolResult('load_mcp', JSON.stringify({ server_name: 'fs', status: 'loaded' }))).toBe(true);
+		expect(canRenderToolResult('audio', JSON.stringify({ played: true }))).toBe(true);
+		expect(canRenderToolResult('search', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
-	it('rejects unknown tools and unknown shapes', () => {
-		expect(canRenderToolResult('shell', JSON.stringify({ output: 'x' }))).toBe(false);
-		expect(canRenderToolResult('search', JSON.stringify({ nope: 1 }))).toBe(false);
-		expect(canRenderToolResult('file', JSON.stringify({ ok: 1 }))).toBe(false);
+	it('rejects invalid JSON and non-JSON non-shell text', () => {
+		expect(canRenderToolResult('search', '{not json[... truncated')).toBe(false);
+		expect(canRenderToolResult('audio', 'plain text')).toBe(false);
+		expect(canRenderToolResult('notify', 'Some other text')).toBe(false);
+		expect(canRenderToolResult('', '')).toBe(false);
 	});
 	it('rejects empty content', () => {
 		expect(canRenderToolResult('search', '')).toBe(false);
@@ -82,6 +88,41 @@ describe('ToolResultCard ask', () => {
 		});
 		await fireEvent.click(screen.getByText('立即执行'));
 		expect(onQuickReply).toHaveBeenCalledWith('ask-42', '立即执行');
+	});
+});
+
+describe('ToolResultCard shell / notify / generic', () => {
+	it('renders plain shell output in a terminal card', () => {
+		render(ToolResultCard, { toolName: 'shell', content: 'Hello from cmd' });
+		expect(screen.getByText('终端输出')).toBeTruthy();
+		expect(screen.getByText('Hello from cmd')).toBeTruthy();
+	});
+
+	it('renders JSON shell output with the truncated note', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: JSON.stringify({ output: 'line1\nline2', truncated: true }),
+		});
+		expect(container.querySelector('.content-preview').textContent).toBe('line1\nline2');
+		expect(screen.getByText('输出过长已截断')).toBeTruthy();
+	});
+
+	it('renders a notification card with title and body', () => {
+		render(ToolResultCard, { toolName: 'notify', content: 'Notification sent: 构建完成: 全部测试通过' });
+		expect(screen.getByText('通知')).toBeTruthy();
+		expect(screen.getByText('构建完成')).toBeTruthy();
+		expect(screen.getByText('全部测试通过')).toBeTruthy();
+	});
+
+	it('renders a generic JSON tree card for tools without a custom shape', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'load_mcp',
+			content: JSON.stringify({ server_name: 'filesystem', status: 'loaded' }),
+		});
+		expect(screen.getByText('加载 MCP')).toBeTruthy();
+		expect(container.querySelector('.jv-view')).toBeTruthy();
+		expect(screen.getByText('"server_name"')).toBeTruthy();
+		expect(screen.getByText('"filesystem"')).toBeTruthy();
 	});
 });
 
@@ -159,6 +200,52 @@ describe('ToolResultCard process', () => {
 		expect(screen.getByText('explorer.exe')).toBeTruthy();
 		expect(screen.getByText('500 MB')).toBeTruthy();
 	});
+
+	it('renders a status badge column with mapped labels', () => {
+		render(ToolResultCard, {
+			toolName: 'process',
+			content: JSON.stringify({
+				processes: [
+					{ pid: 1, name: 'a.exe', status: 'Run' },
+					{ pid: 2, name: 'b.exe', status: 'Sleep' },
+					{ pid: 3, name: 'c.exe', status: 'Zombie' },
+				],
+			}),
+		});
+		expect(screen.getByText('运行中')).toBeTruthy();
+		expect(screen.getByText('休眠')).toBeTruthy();
+		expect(screen.getByText('僵尸')).toBeTruthy();
+	});
+
+	it('filters processes by name', async () => {
+		render(ToolResultCard, {
+			toolName: 'process',
+			content: JSON.stringify({
+				processes: [
+					{ pid: 1, name: 'chrome.exe' },
+					{ pid: 2, name: 'explorer.exe' },
+				],
+			}),
+		});
+		await fireEvent.input(screen.getByPlaceholderText('筛选进程...'), { target: { value: 'chrome' } });
+		expect(screen.getByText('1 / 2 个进程')).toBeTruthy();
+		expect(screen.getByText('chrome.exe')).toBeTruthy();
+		expect(screen.queryByText('explorer.exe')).toBeNull();
+	});
+
+	it('collapses beyond 50 processes with a show-all toggle', async () => {
+		const processes = Array.from({ length: 60 }, (_, i) => ({ pid: i + 1, name: `p${i}.exe` }));
+		render(ToolResultCard, {
+			toolName: 'process',
+			content: JSON.stringify({ processes }),
+		});
+		expect(screen.getByText('60 个进程')).toBeTruthy();
+		expect(screen.queryByText('p59.exe')).toBeNull();
+		await fireEvent.click(screen.getByText('显示全部 60 个进程'));
+		expect(screen.getByText('p59.exe')).toBeTruthy();
+		await fireEvent.click(screen.getByText('收起'));
+		expect(screen.queryByText('p59.exe')).toBeNull();
+	});
 });
 
 describe('ToolResultCard status', () => {
@@ -231,5 +318,36 @@ describe('ToolResultCard env', () => {
 		expect(screen.getByText('1 个变量')).toBeTruthy();
 		expect(screen.getByText('PATH')).toBeTruthy();
 		expect(screen.getByText('C:\\bin')).toBeTruthy();
+	});
+
+	it('filters variables by name and value', async () => {
+		render(ToolResultCard, {
+			toolName: 'env',
+			content: JSON.stringify({
+				variables: [
+					{ name: 'PATH', value: 'C:\\bin' },
+					{ name: 'HOME', value: 'C:\\Users\\me' },
+				],
+			}),
+		});
+		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), { target: { value: 'path' } });
+		expect(screen.getByText('1 / 2 个变量')).toBeTruthy();
+		expect(screen.getByText('PATH')).toBeTruthy();
+		expect(screen.queryByText('HOME')).toBeNull();
+		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), { target: { value: 'Users' } });
+		expect(screen.getByText('1 / 2 个变量')).toBeTruthy();
+		expect(screen.getByText('HOME')).toBeTruthy();
+		expect(screen.queryByText('PATH')).toBeNull();
+	});
+
+	it('copies an env value via the copy button', async () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+		render(ToolResultCard, {
+			toolName: 'env',
+			content: JSON.stringify({ variables: [{ name: 'API_KEY', value: 'secret-value' }] }),
+		});
+		await fireEvent.click(screen.getByTitle('复制值'));
+		expect(writeText).toHaveBeenCalledWith('secret-value');
 	});
 });

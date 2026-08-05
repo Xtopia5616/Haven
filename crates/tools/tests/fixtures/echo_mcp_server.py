@@ -5,6 +5,7 @@ Implements the MCP stdio protocol (JSON-RPC 2.0, NDJSON).
 Supports: initialize, tools/list, tools/call (echo).
 """
 
+import base64
 import json
 import sys
 
@@ -73,6 +74,25 @@ def main():
                                 "required": ["text"],
                             },
                         },
+                        {
+                            "name": "image",
+                            "description": "Return a tiny PNG image block",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                            },
+                        },
+                        {
+                            "name": "resource",
+                            "description": "Return an embedded text resource",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "text": {"type": "string"},
+                                },
+                                "required": ["text"],
+                            },
+                        },
                     ],
                 },
             })
@@ -95,6 +115,37 @@ def main():
                     "id": msg_id,
                     "result": {
                         "content": [{"type": "text", "text": text[::-1]}],
+                    },
+                })
+            elif tool_name == "image":
+                # 1x1 red PNG.
+                png = base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                )
+                send({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "content": [
+                            {"type": "image", "mimeType": "image/png", "data": base64.b64encode(png).decode()},
+                        ],
+                    },
+                })
+            elif tool_name == "resource":
+                send({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "resource",
+                                "resource": {
+                                    "uri": "memory://note",
+                                    "mimeType": "text/plain",
+                                    "text": text,
+                                },
+                            },
+                        ],
                     },
                 })
             else:

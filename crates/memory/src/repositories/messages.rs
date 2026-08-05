@@ -24,6 +24,10 @@ pub struct Message {
     pub parent_message_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
+    /// True for user messages that came from voice transcription (mic style
+    /// in the UI survives reloads). Assistant/tool messages are always false.
+    #[serde(default)]
+    pub voice: bool,
 }
 
 impl Database {
@@ -43,6 +47,7 @@ impl Database {
             tool_call_id,
             50,
             &[],
+            false,
         )
     }
 
@@ -63,6 +68,7 @@ impl Database {
             tool_call_id,
             50,
             attachments,
+            false,
         )
     }
 
@@ -83,6 +89,7 @@ impl Database {
             tool_call_id,
             window_size,
             &[],
+            false,
         )
     }
 
@@ -96,6 +103,7 @@ impl Database {
         tool_call_id: Option<&str>,
         window_size: usize,
         attachments: &[MessageAttachment],
+        voice: bool,
     ) -> anyhow::Result<Message> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -106,8 +114,8 @@ impl Database {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             conn.execute(
-                "INSERT INTO messages (id, task_id, role, content, message_type, created_at, tool_call_id, is_compacted, attachments)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+                "INSERT INTO messages (id, task_id, role, content, message_type, created_at, tool_call_id, is_compacted, attachments, voice)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)",
                 rusqlite::params![
                     id,
                     task_id,
@@ -117,6 +125,7 @@ impl Database {
                     now,
                     tool_call_id,
                     Self::serialize_attachments(attachments),
+                    voice,
                 ],
             )?;
             // Sliding window: keep only the last N messages per task.
@@ -151,6 +160,7 @@ impl Database {
             compaction_id: None,
             parent_message_id: None,
             attachments: attachments.to_vec(),
+            voice,
         })
     }
 
@@ -179,7 +189,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id, parent_message_id, attachments
+                    is_compacted, compaction_id, parent_message_id, attachments, voice
              FROM messages WHERE task_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![task_id], |row| {
@@ -195,6 +205,7 @@ impl Database {
                 compaction_id: row.get(8)?,
                 parent_message_id: row.get(9)?,
                 attachments: Self::parse_attachments(row.get(10)?),
+                voice: row.get::<_, i32>(11)? != 0,
             })
         })?;
         let mut msgs = Vec::new();
@@ -213,7 +224,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id, parent_message_id, attachments
+                    is_compacted, compaction_id, parent_message_id, attachments, voice
              FROM messages WHERE task_id = ?1 AND (message_type IS NULL OR message_type = 'text')
              ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
@@ -230,6 +241,7 @@ impl Database {
                 compaction_id: row.get(8)?,
                 parent_message_id: row.get(9)?,
                 attachments: Self::parse_attachments(row.get(10)?),
+                voice: row.get::<_, i32>(11)? != 0,
             })
         })?;
         let mut msgs = Vec::new();
@@ -285,6 +297,43 @@ impl Database {
             "DELETE FROM messages WHERE task_id = ?1 AND created_at >= ?2",
             rusqlite::params![task_id, created_at],
         )?;
+        self.cache_invalidate_messages(task_id);
+        Ok(())
+    }
+
+    /// `created_at` of the most recent user-role message for a task, or
+    /// `None` if the task has no user messages yet. Implemented in SQL so
+    /// rollback does not have to load the entire message list just to find
+    /// the trailing user-input timestamp.
+    pub fn last_user_message_ts(&self, task_id: &str) -> Option<String> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT created_at FROM messages
+             WHERE task_id = ?1 AND role = 'user'
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            rusqlite::params![task_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Drop every message **and** task-step whose `created_at` is strictly
+    /// after `ts`, or at-or-after `ts` when `inclusive`. Centralizes the
+    /// `delete_messages_after/from + delete_task_steps_after` pair that
+    /// rollback used to repeat at every branch-point cutoff, so a future
+    /// step-row source (e.g. per-task tool tables) only needs one edit.
+    pub fn truncate_task_after(
+        &self,
+        task_id: &str,
+        ts: &str,
+        inclusive: bool,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn();
+        let op = if inclusive { ">=" } else { ">" };
+        let msgs_sql = format!("DELETE FROM messages WHERE task_id = ?1 AND created_at {op} ?2");
+        let steps_sql = format!("DELETE FROM task_steps WHERE task_id = ?1 AND created_at {op} ?2");
+        conn.execute(&msgs_sql, rusqlite::params![task_id, ts])?;
+        conn.execute(&steps_sql, rusqlite::params![task_id, ts])?;
         self.cache_invalidate_messages(task_id);
         Ok(())
     }
@@ -411,11 +460,40 @@ mod tests {
                 media_type: "image/jpeg".into(),
                 data: "abc".into(),
             }],
+            voice: true,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.attachments.len(), 1);
         assert_eq!(decoded.attachments[0].media_type, "image/jpeg");
+        assert!(decoded.voice);
+    }
+
+    #[test]
+    fn voice_flag_persists_and_roundtrips() {
+        let db = test_db();
+        let tid = test_task(&db);
+        db.add_message_with_window_full(
+            &tid,
+            "user",
+            "voice hello",
+            Some("text"),
+            None,
+            50,
+            &[],
+            true,
+        )
+        .unwrap();
+        db.add_message(&tid, "user", "typed hello", Some("text"), None)
+            .unwrap();
+        let msgs = db.get_task_messages(&tid).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0].voice, "voice message must keep the flag");
+        assert!(!msgs[1].voice, "typed message stays non-voice");
+        // Serde default keeps old JSON payloads (pre-voice) decodable.
+        let legacy = r#"{"id":"x","task_id":"t","role":"user","content":"c","message_type":"text","created_at":"2026-01-01T00:00:00Z","tool_call_id":null,"is_compacted":false,"compaction_id":null,"parent_message_id":null,"attachments":[]}"#;
+        let decoded: Message = serde_json::from_str(legacy).unwrap();
+        assert!(!decoded.voice);
     }
 
     #[test]

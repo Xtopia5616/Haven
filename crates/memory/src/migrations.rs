@@ -22,7 +22,8 @@ pub const MIGRATIONS: &[&str] = &[
         attachments TEXT,
         is_compacted INTEGER NOT NULL DEFAULT 0,
         compaction_id TEXT,
-        parent_message_id TEXT REFERENCES messages(id)
+        parent_message_id TEXT REFERENCES messages(id),
+        voice INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS task_steps (
         id TEXT PRIMARY KEY,
@@ -94,6 +95,15 @@ pub const MIGRATIONS: &[&str] = &[
         prompt TEXT,
         fired INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
+    "CREATE TABLE IF NOT EXISTS task_usage (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        has_cost INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
 ];
 
@@ -234,7 +244,9 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         let result = (|| -> anyhow::Result<()> {
             // Very old databases may lack sessions.parent_id (added later).
             let has_parent_id: bool = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='parent_id'")?
+                .prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='parent_id'",
+                )?
                 .query_row([], |r| r.get::<_, i32>(0))
                 .map(|c| c > 0)
                 .unwrap_or(false);
@@ -344,6 +356,22 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         result?;
     }
 
+    // §M8: voice flag on the messages table — marks user messages that came
+    // from voice transcription so the UI can render the mic style after
+    // reload. Runs after the sessions-merge rebuild above, which recreates
+    // the messages table from scratch and would drop the column.
+    let has_voice: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='voice'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_voice {
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN voice INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+
     // Reminders: ensure the table exists BEFORE the per-column ALTERs below.
     // The CREATE lives in MIGRATIONS too, but the version-gated loop cannot
     // be relied on: some existing databases carry a user_version higher than
@@ -390,10 +418,19 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     // in task_id), and task_id/tool_name/tool_args carry the mode-specific
     // payload. Existing rows default to 'tool'.
     for (col, ddl) in [
-        ("mode", "ALTER TABLE reminders ADD COLUMN mode TEXT NOT NULL DEFAULT 'tool'"),
+        (
+            "mode",
+            "ALTER TABLE reminders ADD COLUMN mode TEXT NOT NULL DEFAULT 'tool'",
+        ),
         ("task_id", "ALTER TABLE reminders ADD COLUMN task_id TEXT"),
-        ("tool_name", "ALTER TABLE reminders ADD COLUMN tool_name TEXT"),
-        ("tool_args", "ALTER TABLE reminders ADD COLUMN tool_args TEXT"),
+        (
+            "tool_name",
+            "ALTER TABLE reminders ADD COLUMN tool_name TEXT",
+        ),
+        (
+            "tool_args",
+            "ALTER TABLE reminders ADD COLUMN tool_args TEXT",
+        ),
     ] {
         let has_col: bool = conn
             .prepare("SELECT COUNT(*) FROM pragma_table_info('reminders') WHERE name=?1")?
@@ -416,6 +453,31 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
          WHERE mode = 'notify'",
         [],
     )?;
+
+    // Task-usage counters: persist per-task cumulative token/cost totals so a
+    // resumed/reopened session can restore the token-stats display instead of
+    // resetting to zero. The CREATE lives in MIGRATIONS too, but the
+    // version-gated loop cannot be relied on for existing databases (they may
+    // carry a user_version higher than the array length), so ensure the table
+    // exists here as well — the ALTER-less CREATE then no-ops.
+    let has_task_usage_table: bool = conn
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_usage'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_task_usage_table {
+        conn.execute_batch(
+            "CREATE TABLE task_usage (
+                task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0,
+                has_cost INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )?;
+    }
 
     // Indexes for the merged schema (idempotent; also covers fresh databases).
     conn.execute_batch(
@@ -654,6 +716,7 @@ mod tests {
             "preferences",
             "reminders",
             "task_steps",
+            "task_usage",
             "tasks",
             "whitelist",
         ];
@@ -696,7 +759,9 @@ mod tests {
             );
         }
         assert!(
-            !indexes.iter().any(|n| n == "idx_messages_session" || n == "idx_tasks_session"),
+            !indexes
+                .iter()
+                .any(|n| n == "idx_messages_session" || n == "idx_tasks_session"),
             "legacy session indexes should be gone"
         );
         assert_eq!(indexes.len(), expected.len());
@@ -871,6 +936,19 @@ mod tests {
     }
 
     #[test]
+    fn test_task_usage_table_exists_after_migration() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        let exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_usage'")
+            .unwrap()
+            .query_row([], |r| r.get::<_, i32>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(exists, "task_usage table should exist");
+    }
+
+    #[test]
     fn test_legacy_schema_converted_to_tasks() {
         let conn = create_test_conn();
         create_legacy_schema(&conn);
@@ -893,7 +971,9 @@ mod tests {
 
         // Messages now belong to the task that owned the session.
         let task_id: String = conn
-            .query_row("SELECT task_id FROM messages WHERE id = 'm1'", [], |r| r.get(0))
+            .query_row("SELECT task_id FROM messages WHERE id = 'm1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(task_id, "t1");
         let count: i32 = conn
@@ -921,9 +1001,11 @@ mod tests {
             .unwrap();
         assert_eq!(has_session_col, 0);
         let parent: Option<String> = conn
-            .query_row("SELECT parent_task_id FROM tasks WHERE id = 't1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT parent_task_id FROM tasks WHERE id = 't1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(parent.is_none());
 
@@ -936,7 +1018,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx_created_at, 1, "idx_messages_created_at must survive conversion");
+        assert_eq!(
+            idx_created_at, 1,
+            "idx_messages_created_at must survive conversion"
+        );
     }
 
     #[test]
@@ -957,22 +1042,28 @@ mod tests {
 
         // t2's parent_task_id points at t1 (the owner of the parent session).
         let parent: String = conn
-            .query_row("SELECT parent_task_id FROM tasks WHERE id = 't2'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT parent_task_id FROM tasks WHERE id = 't2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(parent, "t1");
         // Messages routed to their own tasks.
         let t1_msgs: i32 = conn
-            .query_row("SELECT COUNT(*) FROM messages WHERE task_id = 't1'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE task_id = 't1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(t1_msgs, 1);
         let t2_msgs: i32 = conn
-            .query_row("SELECT COUNT(*) FROM messages WHERE task_id = 't2'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE task_id = 't2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(t2_msgs, 1);
     }
@@ -996,7 +1087,10 @@ mod tests {
         let status: String = conn
             .query_row("SELECT status FROM tasks WHERE id = 't1'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(status, "error", "cancelled rows must be normalized to error");
+        assert_eq!(
+            status, "error",
+            "cancelled rows must be normalized to error"
+        );
     }
 
     #[test]

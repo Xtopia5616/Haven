@@ -1,4 +1,4 @@
-﻿//! CPAL capture backend.
+//! CPAL capture backend.
 //!
 //! The recording path runs on a plain CPAL input stream (WASAPI shared mode
 //! on Windows). CPAL invokes the data callback on a dedicated high-priority
@@ -419,4 +419,3 @@ mod tests {
         assert!((diag.window_peak - 0.9).abs() < 1e-6);
     }
 }
-

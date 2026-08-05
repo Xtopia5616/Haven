@@ -35,6 +35,73 @@ impl ToolResult {
             truncated: true,
         }
     }
+
+    /// Plain-text summary of the result: the serialized output on success,
+    /// the error message (or a generic fallback) on failure. Callers that
+    /// need truncation apply it on top.
+    pub fn summary_text(&self) -> String {
+        if self.success {
+            serde_json::to_string(&self.output).unwrap_or_else(|_| "success".into())
+        } else {
+            self.error
+                .clone()
+                .unwrap_or_else(|| "unknown failure".into())
+        }
+    }
+}
+
+/// Extract the `ask` signal from a tool result's structured output: the
+/// question text and optional suggested answers. `(None, vec![])` when the
+/// output does not carry a question. The signal must be read BEFORE any
+/// truncation: parsing truncated text would yield invalid JSON when the
+/// output exceeds the observation budget, silently dropping the question
+/// and never pausing the task.
+pub fn extract_ask_signal(output: &Value) -> (Option<String>, Vec<String>) {
+    let question = output
+        .get("question")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let options = output
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| o.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    (question, options)
+}
+
+/// Extract the `notify` signal from a tool result's structured output: the
+/// notification title (default "Haven") and body. `(None, None)` when the
+/// output does not request a notification.
+pub fn extract_notify_signal(output: &Value) -> (Option<String>, Option<String>) {
+    if output.get("notify").and_then(|v| v.as_bool()) != Some(true) {
+        return (None, None);
+    }
+    let title = output
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Haven")
+        .to_string();
+    let body = output
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    (Some(title), Some(body))
+}
+
+/// Whether an action should be hidden from the chat UI. `ask` must never be
+/// silent: hiding the question while the task pauses for an answer would
+/// leave the user waiting on a question they can't see.
+pub fn is_silent_action(tool_name: &str, input: &Value) -> bool {
+    tool_name != "ask"
+        && input
+            .get("silent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
 }
 
 #[async_trait::async_trait]
@@ -283,6 +350,86 @@ mod tests {
         assert!(result.truncated);
         assert_eq!(result.output, json!({"content": "partial"}));
         assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_tool_result_summary_text_success() {
+        let result = ToolResult::ok(json!({"status": "done"}));
+        assert_eq!(result.summary_text(), r#"{"status":"done"}"#);
+    }
+
+    #[test]
+    fn test_tool_result_summary_text_error() {
+        let result = ToolResult {
+            success: false,
+            output: json!(null),
+            error: Some("boom".into()),
+            truncated: false,
+        };
+        assert_eq!(result.summary_text(), "boom");
+    }
+
+    #[test]
+    fn test_tool_result_summary_text_error_fallback() {
+        let result = ToolResult {
+            success: false,
+            output: json!(null),
+            error: None,
+            truncated: false,
+        };
+        assert_eq!(result.summary_text(), "unknown failure");
+    }
+
+    #[test]
+    fn test_extract_ask_signal() {
+        let (q, opts) = extract_ask_signal(&json!({
+            "ask": true,
+            "question": "which?",
+            "options": ["A", "B"],
+        }));
+        assert_eq!(q.as_deref(), Some("which?"));
+        assert_eq!(opts, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_ask_signal_missing() {
+        let (q, opts) = extract_ask_signal(&json!({"result": 42}));
+        assert!(q.is_none());
+        assert!(opts.is_empty());
+    }
+
+    #[test]
+    fn test_extract_notify_signal() {
+        let (title, body) = extract_notify_signal(&json!({
+            "notify": true,
+            "title": "Reminder",
+            "body": "Take a break",
+        }));
+        assert_eq!(title.as_deref(), Some("Reminder"));
+        assert_eq!(body.as_deref(), Some("Take a break"));
+    }
+
+    #[test]
+    fn test_extract_notify_signal_defaults() {
+        let (title, body) = extract_notify_signal(&json!({"notify": true}));
+        assert_eq!(title.as_deref(), Some("Haven"));
+        assert_eq!(body.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_extract_notify_signal_not_requested() {
+        let (title, body) = extract_notify_signal(&json!({"notify": false}));
+        assert!(title.is_none());
+        assert!(body.is_none());
+    }
+
+    #[test]
+    fn test_is_silent_action() {
+        assert!(is_silent_action("shell", &json!({"silent": true})));
+        assert!(!is_silent_action("shell", &json!({"silent": false})));
+        assert!(!is_silent_action("shell", &json!({})));
+        // `ask` must never be silent, even when the input asks for it.
+        assert!(!is_silent_action("ask", &json!({"silent": true})));
     }
 
     struct MockTool {

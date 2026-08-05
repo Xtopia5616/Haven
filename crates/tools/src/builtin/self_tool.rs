@@ -45,6 +45,10 @@ const OPERATIONS: &[&str] = &[
     "mcp_connect",
     "mcp_disconnect",
     "mcp_add",
+    "mcp_update",
+    "mcp_toggle",
+    "mcp_remove",
+    "mcp_reload",
     "logs_tail",
     "logs_level",
     "tasks",
@@ -63,7 +67,7 @@ const READ_ONLY_OPS: &[&str] = &[
 ];
 
 /// Operations that only affect the running session (no config persistence).
-const SESSION_MUTATING_OPS: &[&str] = &["mcp_connect", "mcp_disconnect"];
+const SESSION_MUTATING_OPS: &[&str] = &["mcp_connect", "mcp_disconnect", "mcp_reload"];
 
 /// Keys under `config_set` that are applied live (the rest need a restart).
 fn live_appliable(path: &str) -> bool {
@@ -156,26 +160,19 @@ impl SelfTool {
 
         // Model endpoint health.
         if let Some(router) = &self.context.router {
-            let roles = [
-                (EndpointRole::SmallModel, "small_model"),
-                (EndpointRole::DefaultModel, "default_model"),
-                (EndpointRole::BalancedModel, "balanced_model"),
-                (EndpointRole::ImageModel, "image_model"),
-                (EndpointRole::AudioModel, "audio_model"),
-            ];
             let mut health = serde_json::Map::new();
-            for (role, name) in roles {
-                let configured = router.is_role_configured(role).await;
+            for role in EndpointRole::ALL {
+                let configured = router.is_role_configured(*role).await;
                 let status = if !configured {
                     "not_configured".to_string()
                 } else {
-                    match router.health_check(role).await {
+                    match router.health_check(*role).await {
                         Ok(()) => "ok".to_string(),
                         Err(e) => format!("error: {e}"),
                     }
                 };
                 health.insert(
-                    name.to_string(),
+                    role.as_str().to_string(),
                     serde_json::json!({ "configured": configured, "status": status }),
                 );
             }
@@ -375,8 +372,12 @@ impl SelfTool {
             anyhow::bail!("instructions too large (max {MAX_INSTRUCTIONS_BYTES} bytes)");
         }
         let language = input["language"].as_str().unwrap_or("python");
-        if language.len() > 32 {
-            anyhow::bail!("language too long (max 32 characters)");
+        // Only Python skills are executable: `SkillRunner::run` rejects any
+        // other language at fire time (skills/runner.rs), so reject
+        // unsupported values here and let the agent learn immediately
+        // instead of creating a skill that can never run.
+        if language != "python" {
+            anyhow::bail!("unsupported language '{language}': only 'python' is supported");
         }
         let version = input["version"]
             .as_str()
@@ -397,18 +398,13 @@ impl SelfTool {
         let root = self.skills_engine.resolved_root().await;
         let skill_dir = root.join(name);
         if skill_dir.exists() {
-            anyhow::bail!(
-                "skill '{}' already exists at {}",
-                name,
-                skill_dir.display()
-            );
+            anyhow::bail!("skill '{}' already exists at {}", name, skill_dir.display());
         }
 
         tokio::fs::create_dir_all(&skill_dir).await?;
         let desc_line = description.replace(['\n', '\r'], " ");
-        let mut md = format!(
-            "# Skill: {name}\n\n## Metadata\n- name: {name}\n- description: {desc_line}\n"
-        );
+        let mut md =
+            format!("# Skill: {name}\n\n## Metadata\n- name: {name}\n- description: {desc_line}\n");
         if let Some(v) = &version {
             md.push_str(&format!("- version: {v}\n"));
         }
@@ -507,30 +503,58 @@ impl SelfTool {
             .as_str()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to add)"))?;
+        let transport = match input["transport"].as_str().unwrap_or("stdio") {
+            "stdio" => McpTransportType::Stdio,
+            "http" => McpTransportType::Http,
+            other => anyhow::bail!("unknown transport '{}' (expected 'stdio' or 'http')", other),
+        };
         let command = input["command"]
             .as_str()
             .filter(|c| !c.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("command is required (the binary to spawn)"))?;
+            .map(str::to_string);
+        let url = input["url"]
+            .as_str()
+            .filter(|u| !u.is_empty())
+            .map(str::to_string);
+        match transport {
+            McpTransportType::Stdio if command.is_none() => {
+                anyhow::bail!("command is required (the binary to spawn) for stdio servers");
+            }
+            McpTransportType::Http if url.is_none() => {
+                anyhow::bail!("url is required (the HTTP endpoint) for http servers");
+            }
+            _ => {}
+        }
         let args = string_array(input, "args");
         let env = string_array(input, "env");
         let enabled = input["enabled"].as_bool().unwrap_or(true);
         let auto_connect = input["auto_connect"].as_bool().unwrap_or(true);
 
-        {
-            let cfg = self.read_config()?;
-            if cfg.config().mcp_servers.iter().any(|s| s.name == name) {
-                anyhow::bail!("MCP server '{}' already exists in config", name);
-            }
-        }
-
         let config = McpServerConfig {
             name: name.to_string(),
-            transport: McpTransportType::Stdio,
-            command: command.to_string(),
+            transport,
+            command: command.unwrap_or_default(),
             args,
             env,
+            url: url.unwrap_or_default(),
             enabled,
         };
+
+        // Upsert semantics: registering an existing name updates it in place
+        // instead of erroring. Fresh names behave exactly as before.
+        if let Some(existing) = self
+            .read_config()?
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+        {
+            return self
+                .apply_mcp_config_update(&existing, &config, auto_connect)
+                .await;
+        }
+
         self.mutate_config(|loader| {
             loader.config_mut().mcp_servers.push(config.clone());
             Ok(())
@@ -558,6 +582,210 @@ impl SelfTool {
             result["connected"] = serde_json::json!(false);
         }
         Ok(result)
+    }
+
+    /// Update an existing MCP server's command/args/env/enabled by name.
+    async fn op_mcp_update(&self, input: &Value) -> anyhow::Result<Value> {
+        let name = input["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to update)"))?;
+        let existing = self
+            .read_config()?
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not found in config", name))?;
+
+        let mut updated = existing.clone();
+        if let Some(command) = input["command"].as_str().filter(|c| !c.is_empty()) {
+            updated.command = command.to_string();
+        }
+        if input.get("args").is_some() {
+            updated.args = string_array(input, "args");
+        }
+        if input.get("env").is_some() {
+            updated.env = string_array(input, "env");
+        }
+        if let Some(enabled) = input["enabled"].as_bool() {
+            updated.enabled = enabled;
+        }
+
+        self.apply_mcp_config_update(&existing, &updated, true)
+            .await
+    }
+
+    /// Toggle an existing MCP server's enabled flag (the UI toggle equivalent).
+    async fn op_mcp_toggle(&self, input: &Value) -> anyhow::Result<Value> {
+        let name = input["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to toggle)"))?;
+        let enabled = input["enabled"]
+            .as_bool()
+            .ok_or_else(|| anyhow::anyhow!("enabled (boolean) is required for mcp_toggle"))?;
+        let existing = self
+            .read_config()?
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not found in config", name))?;
+
+        let mut updated = existing.clone();
+        updated.enabled = enabled;
+        self.apply_mcp_config_update(&existing, &updated, true)
+            .await
+    }
+
+    /// Remove an MCP server from config, the in-memory index, and the live
+    /// client manager.
+    async fn op_mcp_remove(&self, input: &Value) -> anyhow::Result<Value> {
+        let name = input["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to remove)"))?;
+        self.mutate_config(|loader| {
+            let servers = &mut loader.config_mut().mcp_servers;
+            let before = servers.len();
+            servers.retain(|s| s.name != name);
+            if servers.len() == before {
+                anyhow::bail!("MCP server '{}' not found in config", name);
+            }
+            Ok(())
+        })?;
+        self.mcp_manager.remove_client(name).await;
+        self.server_configs.write().await.remove(name);
+        Ok(serde_json::json!({
+            "name": name,
+            "removed": true,
+            "connected": false,
+        }))
+    }
+
+    /// Re-read `mcp_servers` from disk into the in-memory index and reconnect
+    /// every enabled server, dropping clients that are disabled or gone.
+    async fn op_mcp_reload(&self) -> anyhow::Result<Value> {
+        let servers = self.read_config()?.config().mcp_servers.clone();
+
+        // Resync the in-memory index with disk.
+        let mut map = self.server_configs.write().await;
+        map.clear();
+        for s in &servers {
+            map.insert(s.name.clone(), s.clone());
+        }
+        drop(map);
+
+        // Drop every live client first so stale configs (command/args/env)
+        // cannot survive a reload, then reconnect enabled servers fresh.
+        for name in self.mcp_manager.list_clients().await {
+            self.mcp_manager.remove_client(&name).await;
+        }
+
+        let mut connected = Vec::new();
+        for s in &servers {
+            if !s.enabled {
+                continue;
+            }
+            match self.mcp_manager.connect_server(s).await {
+                Ok(()) => {
+                    connected.push(serde_json::json!({ "name": s.name, "connected": true }));
+                }
+                Err(e) => {
+                    connected.push(serde_json::json!({
+                        "name": s.name,
+                        "connected": false,
+                        "error": e.to_string(),
+                    }));
+                }
+            }
+        }
+        Ok(serde_json::json!({ "reloaded": true, "connected": connected }))
+    }
+
+    /// Shared core for `mcp_update` / `mcp_toggle` / `mcp_add` (upsert path):
+    /// replace the config entry for `new_config.name` with `new_config`,
+    /// keeping `config.toml`, the in-memory `server_configs` index, and the
+    /// live `McpManager` in sync.
+    ///
+    /// When the server ends up enabled with a changed connection profile (or
+    /// a disabled→enabled transition), the new connection is established
+    /// BEFORE the config is persisted: a failed connect leaves the config
+    /// unchanged, so the on-disk `enabled` flag can never diverge from the
+    /// runtime client state. Disabling shuts the live client down first.
+    async fn apply_mcp_config_update(
+        &self,
+        old_config: &McpServerConfig,
+        new_config: &McpServerConfig,
+        connect_if_enabled: bool,
+    ) -> anyhow::Result<Value> {
+        let name = new_config.name.clone();
+        let config_changed = old_config.transport != new_config.transport
+            || old_config.command != new_config.command
+            || old_config.args != new_config.args
+            || old_config.env != new_config.env
+            || old_config.url != new_config.url;
+        let will_enable = new_config.enabled && !old_config.enabled;
+
+        if new_config.enabled && connect_if_enabled && (will_enable || config_changed) {
+            // (Re)start the connection with the new settings before saving.
+            self.mcp_manager.remove_client(&name).await;
+            if let Err(e) = self.mcp_manager.connect_server(new_config).await {
+                // Roll back so runtime state matches the unchanged config.
+                if old_config.enabled {
+                    let _ = self.mcp_manager.connect_server(old_config).await;
+                }
+                anyhow::bail!(
+                    "MCP server '{}' not connected; config left unchanged: {}",
+                    name,
+                    e
+                );
+            }
+        } else if !new_config.enabled {
+            // Disabled: shut down the live client.
+            self.mcp_manager.remove_client(&name).await;
+        } else if config_changed {
+            // Settings changed but no (re)connect was requested (e.g. an
+            // `mcp_add` upsert with auto_connect=false): drop the stale live
+            // client so the runtime never keeps running the old command/
+            // args/env that no longer match config.
+            self.mcp_manager.remove_client(&name).await;
+        }
+
+        let persist_result = self.mutate_config(|loader| {
+            let servers = &mut loader.config_mut().mcp_servers;
+            let Some(existing) = servers.iter_mut().find(|s| s.name == name) else {
+                anyhow::bail!("MCP server '{}' not found in config", name);
+            };
+            *existing = new_config.clone();
+            Ok(())
+        });
+        if let Err(e) = persist_result {
+            // Save failed after a successful connect: roll the live client
+            // back so it keeps matching the unchanged config.
+            self.mcp_manager.remove_client(&name).await;
+            if old_config.enabled {
+                let _ = self.mcp_manager.connect_server(old_config).await;
+            }
+            return Err(e);
+        }
+
+        // Keep the in-memory index in sync so `mcp_list` / `load_mcp` /
+        // `mcp_connect` observe the updated settings.
+        self.server_configs
+            .write()
+            .await
+            .insert(name.clone(), new_config.clone());
+
+        Ok(serde_json::json!({
+            "name": name,
+            "enabled": new_config.enabled,
+            "saved": true,
+            "connected": self.mcp_manager.get_client(&name).await.is_some(),
+        }))
     }
 
     async fn op_logs_tail(&self, input: &Value) -> anyhow::Result<Value> {
@@ -788,8 +1016,7 @@ impl Tool for SelfTool {
     }
 
     fn description(&self) -> String {
-        "Inspect and manage Haven's own state."
-            .into()
+        "Inspect and manage Haven's own state.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -829,21 +1056,21 @@ impl Tool for SelfTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "MCP server command to spawn (mcp_add)"
+                    "description": "MCP server command to spawn (mcp_add / mcp_update)"
                 },
                 "args": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Command-line args for the MCP server (mcp_add)"
+                    "description": "Command-line args for the MCP server (mcp_add / mcp_update)"
                 },
                 "env": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "KEY=VALUE environment variables for the MCP server (mcp_add)"
+                    "description": "KEY=VALUE environment variables for the MCP server (mcp_add / mcp_update)"
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Whether the new MCP server is enabled (mcp_add, default true)"
+                    "description": "Enabled flag (mcp_add default true; mcp_update / mcp_toggle set it explicitly)"
                 },
                 "auto_connect": {
                     "type": "boolean",
@@ -859,7 +1086,7 @@ impl Tool for SelfTool {
                 },
                 "language": {
                     "type": "string",
-                    "description": "Skill language (skill_create, default python)"
+                    "description": "Skill language (skill_create, only 'python' is supported; default python)"
                 },
                 "version": {
                     "type": "string",
@@ -899,6 +1126,10 @@ impl Tool for SelfTool {
             "mcp_connect" => self.op_mcp_connect(&input).await?,
             "mcp_disconnect" => self.op_mcp_disconnect(&input).await?,
             "mcp_add" => self.op_mcp_add(&input).await?,
+            "mcp_update" => self.op_mcp_update(&input).await?,
+            "mcp_toggle" => self.op_mcp_toggle(&input).await?,
+            "mcp_remove" => self.op_mcp_remove(&input).await?,
+            "mcp_reload" => self.op_mcp_reload().await?,
             "logs_tail" => self.op_logs_tail(&input).await?,
             "logs_level" => self.op_logs_level(&input).await?,
             "tasks" => self.op_tasks(&input).await?,
@@ -967,6 +1198,18 @@ mod tests {
         assert_eq!(
             tool.risk_level(&json!({"operation": "mcp_connect"})),
             RiskLevel::Medium
+        );
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "mcp_reload"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "mcp_toggle"})),
+            RiskLevel::High
+        );
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "mcp_remove"})),
+            RiskLevel::High
         );
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::High);
     }
@@ -1207,26 +1450,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mcp_add_duplicate_rejected() {
+    async fn test_mcp_add_same_name_upserts() {
         let (tool, _dir) = make_tool();
         tool.mutate_config(|l| {
             l.config_mut().mcp_servers.push(McpServerConfig {
                 name: "dup".into(),
                 command: "python".into(),
+                args: vec!["old".into()],
                 ..Default::default()
             });
             Ok(())
         })
         .unwrap();
 
-        let err = tool
+        let result = tool
             .execute(
-                json!({"operation": "mcp_add", "name": "dup", "command": "node"}),
+                json!({
+                    "operation": "mcp_add",
+                    "name": "dup",
+                    "command": "node",
+                    "args": ["-m", "x"],
+                    "enabled": false,
+                }),
                 CancellationToken::new(),
             )
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("already exists"));
+            .unwrap();
+        assert_eq!(result.output["saved"], json!(true));
+
+        // Same-name add updates in place instead of erroring.
+        let loader = tool.read_config().unwrap();
+        let matches: Vec<_> = loader
+            .config()
+            .mcp_servers
+            .iter()
+            .filter(|s| s.name == "dup")
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].command, "node");
+        assert_eq!(matches[0].args, vec!["-m", "x"]);
+        assert!(!matches[0].enabled);
+
+        // In-memory index reflects the update too.
+        let index = tool.server_configs.read().await;
+        assert_eq!(index["dup"].command, "node");
+        assert_eq!(index["dup"].args, vec!["-m", "x"]);
+        assert!(!index["dup"].enabled);
     }
 
     #[tokio::test]
@@ -1240,6 +1509,461 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("command is required"));
+    }
+
+    /// Path to the fixture echo MCP server, whichever directory the test
+    /// binary happens to run from (workspace root or crate root).
+    fn fixture_path() -> String {
+        let p = std::env::current_dir().unwrap_or_default();
+        let candidates = [
+            p.join("crates/tools/tests/fixtures/echo_mcp_server.py"),
+            p.join("tests/fixtures/echo_mcp_server.py"),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                return c.to_string_lossy().to_string();
+            }
+        }
+        candidates[0].to_string_lossy().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_mcp_toggle_enable_connects_persists_and_disables() {
+        let (tool, _dir) = make_tool();
+
+        // Register a disabled server (acceptance criteria starting point).
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_add",
+                    "name": "echo-srv",
+                    "command": "python",
+                    "args": [fixture_path()],
+                    "enabled": false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["saved"], json!(true));
+        assert_eq!(result.output["connected"], json!(false));
+
+        // Toggle on: connects first, then persists enabled=true.
+        let result = tool
+            .execute(
+                json!({"operation": "mcp_toggle", "name": "echo-srv", "enabled": true}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(true));
+
+        let loader = tool.read_config().unwrap();
+        let server = loader
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "echo-srv")
+            .unwrap();
+        assert!(server.enabled);
+
+        let list = tool
+            .execute(json!({"operation": "mcp_list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        let srv = &list.output["servers"][0];
+        assert_eq!(srv["enabled"], json!(true));
+        assert_eq!(srv["connected"], json!(true));
+        assert!(srv["tools"].as_i64().unwrap() > 0);
+
+        // Toggle back off: disconnects and persists enabled=false.
+        let result = tool
+            .execute(
+                json!({"operation": "mcp_toggle", "name": "echo-srv", "enabled": false}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(false));
+
+        let loader = tool.read_config().unwrap();
+        let server = loader
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "echo-srv")
+            .unwrap();
+        assert!(!server.enabled);
+
+        let list = tool
+            .execute(json!({"operation": "mcp_list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        let srv = &list.output["servers"][0];
+        assert_eq!(srv["enabled"], json!(false));
+        assert_eq!(srv["connected"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_update_updates_fields_and_enables() {
+        let (tool, _dir) = make_tool();
+        tool.execute(
+            json!({
+                "operation": "mcp_add",
+                "name": "srv",
+                "command": "python",
+                "args": [fixture_path()],
+                "enabled": false,
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        // Update command/args/env while staying disabled (no connect).
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_update",
+                    "name": "srv",
+                    "command": "python",
+                    "args": [fixture_path()],
+                    "env": ["API_KEY=abc"],
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["saved"], json!(true));
+        assert_eq!(result.output["connected"], json!(false));
+
+        let loader = tool.read_config().unwrap();
+        let server = loader
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "srv")
+            .unwrap();
+        assert_eq!(server.env, vec!["API_KEY=abc"]);
+        assert!(!server.enabled);
+
+        // Enable via mcp_update: connects and persists.
+        let result = tool
+            .execute(
+                json!({"operation": "mcp_update", "name": "srv", "enabled": true}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(true));
+        let loader = tool.read_config().unwrap();
+        assert!(
+            loader
+                .config()
+                .mcp_servers
+                .iter()
+                .find(|s| s.name == "srv")
+                .unwrap()
+                .enabled
+        );
+
+        // Clean up the live client.
+        tool.mcp_manager.remove_client("srv").await;
+    }
+
+    #[tokio::test]
+    async fn test_mcp_update_unknown_rejected() {
+        let (tool, _dir) = make_tool();
+        let err = tool
+            .execute(
+                json!({"operation": "mcp_update", "name": "ghost", "command": "x"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_toggle_unknown_rejected() {
+        let (tool, _dir) = make_tool();
+        let err = tool
+            .execute(
+                json!({"operation": "mcp_toggle", "name": "ghost", "enabled": true}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_toggle_missing_enabled_rejected() {
+        let (tool, _dir) = make_tool();
+        tool.execute(
+            json!({
+                "operation": "mcp_add",
+                "name": "srv",
+                "command": "python",
+                "args": [fixture_path()],
+                "enabled": false,
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let err = tool
+            .execute(
+                json!({"operation": "mcp_toggle", "name": "srv"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("enabled"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_update_enable_connect_failure_keeps_disabled() {
+        let (tool, _dir) = make_tool();
+        tool.execute(
+            json!({
+                "operation": "mcp_add",
+                "name": "srv",
+                "command": "python",
+                "args": [fixture_path()],
+                "enabled": false,
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        // Pointing at a binary that cannot spawn must fail the enable without
+        // persisting enabled=true (config and runtime stay in sync).
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "mcp_update",
+                    "name": "srv",
+                    "command": "definitely-not-a-real-binary",
+                    "enabled": true,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not connected"));
+
+        let loader = tool.read_config().unwrap();
+        let server = loader
+            .config()
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "srv")
+            .unwrap();
+        assert!(!server.enabled, "failed enable must stay disabled");
+        assert_eq!(server.command, "python");
+        assert!(tool.mcp_manager.get_client("srv").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_remove_disconnects_and_persists() {
+        let (tool, _dir) = make_tool();
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_add",
+                    "name": "echo-srv",
+                    "command": "python",
+                    "args": [fixture_path()],
+                    "enabled": true,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(true));
+
+        let result = tool
+            .execute(
+                json!({"operation": "mcp_remove", "name": "echo-srv"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["removed"], json!(true));
+
+        let loader = tool.read_config().unwrap();
+        assert!(
+            !loader
+                .config()
+                .mcp_servers
+                .iter()
+                .any(|s| s.name == "echo-srv")
+        );
+        assert!(!tool.server_configs.read().await.contains_key("echo-srv"));
+        assert!(tool.mcp_manager.get_client("echo-srv").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_remove_unknown_rejected() {
+        let (tool, _dir) = make_tool();
+        let err = tool
+            .execute(
+                json!({"operation": "mcp_remove", "name": "ghost"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_reload_reconnects_enabled() {
+        let (tool, _dir) = make_tool();
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_add",
+                    "name": "echo-srv",
+                    "command": "python",
+                    "args": [fixture_path()],
+                    "enabled": true,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(true));
+
+        // Kill the live client but keep enabled=true in config.
+        tool.mcp_manager.remove_client("echo-srv").await;
+        assert!(tool.mcp_manager.get_client("echo-srv").await.is_none());
+
+        let result = tool
+            .execute(json!({"operation": "mcp_reload"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.output["reloaded"], json!(true));
+        let connected = result.output["connected"].as_array().unwrap();
+        assert_eq!(connected[0]["name"], "echo-srv");
+        assert_eq!(connected[0]["connected"], json!(true));
+
+        let list = tool
+            .execute(json!({"operation": "mcp_list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(list.output["servers"][0]["connected"], json!(true));
+
+        tool.mcp_manager.remove_client("echo-srv").await;
+    }
+
+    #[tokio::test]
+    async fn test_mcp_reload_reconnects_even_when_client_already_exists() {
+        let (tool, _dir) = make_tool();
+        tool.execute(
+            json!({
+                "operation": "mcp_add",
+                "name": "echo-srv",
+                "command": "python",
+                "args": [fixture_path()],
+                "enabled": true,
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(tool.mcp_manager.get_client("echo-srv").await.is_some());
+
+        // Reload restarts every enabled server, so the existing client is
+        // torn down and rebuilt from the disk config rather than kept stale.
+        let result = tool
+            .execute(json!({"operation": "mcp_reload"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"][0]["connected"], json!(true));
+        let list = tool
+            .execute(json!({"operation": "mcp_list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(list.output["servers"][0]["connected"], json!(true));
+
+        tool.mcp_manager.remove_client("echo-srv").await;
+    }
+
+    #[tokio::test]
+    async fn test_mcp_reload_skips_disabled() {
+        let (tool, _dir) = make_tool();
+        tool.execute(
+            json!({
+                "operation": "mcp_add",
+                "name": "off",
+                "command": "python",
+                "args": [fixture_path()],
+                "enabled": false,
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let result = tool
+            .execute(json!({"operation": "mcp_reload"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.output["connected"].as_array().unwrap().is_empty());
+        assert!(tool.mcp_manager.get_client("off").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_add_upsert_auto_connect_false_drops_stale_client() {
+        let (tool, _dir) = make_tool();
+        // Register a connected server.
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_add",
+                    "name": "echo-srv",
+                    "command": "python",
+                    "args": [fixture_path()],
+                    "enabled": true,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(true));
+
+        // Upsert with a changed connection profile and auto_connect=false:
+        // the stale client (old command) must be dropped even though no
+        // reconnect happens, so runtime cannot diverge from config.
+        let result = tool
+            .execute(
+                json!({
+                    "operation": "mcp_add",
+                    "name": "echo-srv",
+                    "command": "python",
+                    "args": ["-u", fixture_path()],
+                    "auto_connect": false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["connected"], json!(false));
+        assert!(tool.mcp_manager.get_client("echo-srv").await.is_none());
+
+        let loader = tool.read_config().unwrap();
+        assert!(
+            loader
+                .config()
+                .mcp_servers
+                .iter()
+                .find(|s| s.name == "echo-srv")
+                .unwrap()
+                .enabled
+        );
     }
 
     #[tokio::test]
@@ -1305,10 +2029,17 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["has_script"], json!(true));
 
-        let script = std::fs::read_to_string(dir.path().join("echo").join("scripts").join("main.py"))
-            .unwrap();
+        let script =
+            std::fs::read_to_string(dir.path().join("echo").join("scripts").join("main.py"))
+                .unwrap();
         assert!(script.contains("json.load"));
-        assert!(tool.skills_engine.get_skill("echo").await.unwrap().has_script());
+        assert!(
+            tool.skills_engine
+                .get_skill("echo")
+                .await
+                .unwrap()
+                .has_script()
+        );
     }
 
     #[tokio::test]
@@ -1337,6 +2068,37 @@ mod tests {
                 "'{bad}' should be rejected, got: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_skill_create_unsupported_language_rejected() {
+        let (tool, dir) = make_tool();
+        tool.skills_engine
+            .set_config(Some(dir.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "skill_create",
+                    "name": "sh-skill",
+                    "description": "d",
+                    "instructions": "i",
+                    "language": "bash",
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported language"),
+            "expected unsupported language error, got: {err}"
+        );
+        assert!(
+            !dir.path().join("sh-skill").exists(),
+            "no skill directory should be created for a rejected language"
+        );
     }
 
     #[tokio::test]
@@ -1394,8 +2156,17 @@ mod tests {
 
         // The new skill was added to the allowlist and persisted.
         let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().skills.enabled, Some(vec!["solo".to_string()]));
-        assert!(tool.skills_engine.get_skill("solo").await.unwrap().enabled());
+        assert_eq!(
+            loader.config().skills.enabled,
+            Some(vec!["solo".to_string()])
+        );
+        assert!(
+            tool.skills_engine
+                .get_skill("solo")
+                .await
+                .unwrap()
+                .enabled()
+        );
     }
 
     #[tokio::test]

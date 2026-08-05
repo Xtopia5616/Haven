@@ -6,4 +6,3 @@
     tc = "test -p"
     tf = "test --"
     cl = "clippy -- -D warnings"
-    fmt = "fmt --check"

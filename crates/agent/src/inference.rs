@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use haven_common::types::ContentPart;
-use haven_llm::types::{LlmMessage, LlmRole};
+use haven_common::prompts::FACT_EXTRACTION_SYSTEM_PROMPT;
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use tokio::sync::Semaphore;
@@ -126,35 +125,6 @@ impl InferenceEngine {
     ) -> anyhow::Result<Vec<LlmFact>> {
         let transcript = build_truncated_transcript(user_messages, MAX_TRANSCRIPT_CHARS);
 
-        let system_prompt = "\
-Extract factual information about the user from the conversation. \
-Return a JSON array where each element has: \
-\"subject\" (always \"user\"), \
-\"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, etc.), \
-\"object\" (the value), \
-\"tags\" (array of: identity, preference, workspace, project), \
-\"confidence\" (0.5-1.0). \
-Only extract clear, explicit facts the user stated. \
-If no facts found, return []. \
-Respond with ONLY the JSON array, no markdown, no explanation.";
-
-        let messages = vec![
-            LlmMessage {
-                role: LlmRole::System,
-                content: vec![ContentPart::text(system_prompt)],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-            },
-            LlmMessage {
-                role: LlmRole::User,
-                content: vec![ContentPart::text(&transcript)],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-            },
-        ];
-
         let _permit = self
             .inference_semaphore
             .acquire()
@@ -163,7 +133,11 @@ Respond with ONLY the JSON array, no markdown, no explanation.";
 
         let response = self
             .router
-            .chat(EndpointRole::BalancedModel, messages)
+            .chat_with_prompt(
+                EndpointRole::BalancedModel,
+                FACT_EXTRACTION_SYSTEM_PROMPT,
+                &transcript,
+            )
             .await
             .map_err(|e| anyhow::anyhow!("balanced model chat failed: {}", e))?;
 
@@ -256,6 +230,7 @@ mod tests {
             compaction_id: None,
             parent_message_id: None,
             attachments: vec![],
+            voice: false,
         }
     }
 

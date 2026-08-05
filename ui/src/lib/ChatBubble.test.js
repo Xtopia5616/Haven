@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import ChatBubble from './ChatBubble.svelte';
 
 describe('ChatBubble', () => {
@@ -9,6 +9,32 @@ describe('ChatBubble', () => {
 		render(ChatBubble, base({ role: 'user', content: 'hello there' }));
 		expect(screen.getByText('You')).toBeTruthy();
 		expect(screen.getByText('hello there')).toBeTruthy();
+	});
+
+	it('shows the mic icon on voice user messages', () => {
+		const { container } = render(
+			ChatBubble,
+			base({ role: 'user', content: 'hello', voice: true }),
+		);
+		expect(container.querySelector('.mic-icon')).toBeTruthy();
+	});
+
+	it('shows the received checkmark only on received user messages', () => {
+		const { container: recv } = render(
+			ChatBubble,
+			base({ role: 'user', content: 'hi', received: true }),
+		);
+		expect(recv.querySelector('.received-tag')).toBeTruthy();
+		const { container: plain } = render(
+			ChatBubble,
+			base({ role: 'user', content: 'hi', received: false }),
+		);
+		expect(plain.querySelector('.received-tag')).toBeNull();
+		const { container: assistant } = render(
+			ChatBubble,
+			base({ role: 'assistant', content: 'hi', received: true }),
+		);
+		expect(assistant.querySelector('.received-tag')).toBeNull();
 	});
 
 	it('renders image attachments on user messages', () => {
@@ -44,6 +70,21 @@ describe('ChatBubble', () => {
 	it('renders an assistant bubble with the Haven label', () => {
 		render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
 		expect(screen.getByText('Haven')).toBeTruthy();
+	});
+
+	it('does not apply a pending class to streaming assistant text bubbles', () => {
+		const { container } = render(
+			ChatBubble,
+			base({ role: 'assistant', content: 'hi', streaming: true }),
+		);
+		const bubble = container.querySelector('.bubble');
+		expect(bubble.classList.contains('pending')).toBe(false);
+		expect(bubble.classList.contains('assistant')).toBe(true);
+	});
+
+	it('does not apply any pending class to finalized assistant bubbles', () => {
+		const { container } = render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
+		expect(container.querySelector('.bubble').classList.contains('pending')).toBe(false);
 	});
 
 	it('shows the voice icon for voice input', () => {
@@ -135,7 +176,7 @@ describe('ChatBubble', () => {
 		expect(details.open).toBe(true);
 	});
 
-	it('renders a tool call with the tool name and expandable observation', () => {
+	it('renders a shell tool call with a terminal output card', () => {
 		render(
 			ChatBubble,
 			base({
@@ -146,9 +187,10 @@ describe('ChatBubble', () => {
 			}),
 		);
 		expect(screen.getByText('▶ Calling shell')).toBeTruthy();
-		const details = document.querySelector('details.observation-block');
-		expect(details).toBeTruthy();
-		expect(details.textContent).toContain('stdout output');
+		expect(document.querySelector('.tool-card')).toBeTruthy();
+		expect(screen.getByText('终端输出')).toBeTruthy();
+		expect(screen.getByText('stdout output')).toBeTruthy();
+		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
 	it('omits the observation block when a tool call has no content', () => {
@@ -182,18 +224,20 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
-	it('falls back to the raw observation block for unknown tool shapes', () => {
+	it('falls back to the raw observation block for non-JSON text', () => {
 		render(
 			ChatBubble,
 			base({
 				role: 'assistant',
-				content: JSON.stringify({ status: 200 }),
+				content: 'some plain error text',
 				type: 'tool',
-				toolName: 'shell',
+				toolName: 'audio',
 			}),
 		);
 		expect(document.querySelector('.tool-card')).toBeNull();
-		expect(document.querySelector('details.observation-block')).toBeTruthy();
+		const details = document.querySelector('details.observation-block');
+		expect(details).toBeTruthy();
+		expect(details.textContent).toContain('some plain error text');
 	});
 
 	it('renders supplement messages as a badge', () => {
@@ -288,5 +332,62 @@ describe('ChatBubble', () => {
 	it('does not call onContextMenu when no handler is given', async () => {
 		render(ChatBubble, base({ role: 'user', content: 'plain' }));
 		await fireEvent.contextMenu(document.querySelector('.bubble'));
+	});
+});
+
+describe('ChatBubble markdown code fences', () => {
+	let clipboardMock;
+	beforeEach(() => {
+		clipboardMock = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', { value: { writeText: clipboardMock }, configurable: true });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const renderMd = (content) => render(ChatBubble, { role: 'assistant', content, type: null, time: null });
+
+	it('wraps a fenced code block with a toolbar and language label', async () => {
+		const { container } = renderMd('```js\nconst a = 1;\n```');
+		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
+		expect(container.querySelector('.md-code-lang').textContent).toBe('js');
+		expect(container.querySelector('.md-code-copy')).toBeTruthy();
+		expect(container.querySelector('.md-code-wrap code').textContent).toContain('const a = 1;');
+	});
+
+	it('labels unknown languages as text and still wraps the block', async () => {
+		const { container } = renderMd('```\nplain lines\n```');
+		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
+		expect(container.querySelector('.md-code-lang').textContent).toBe('text');
+		expect(container.querySelector('.md-code-wrap code').textContent).toContain('plain lines');
+	});
+
+	it('copies the code text when the copy button is clicked', async () => {
+		const { container } = renderMd('```python\nprint("hi")\n```');
+		await waitFor(() => expect(container.querySelector('.md-code-copy')).toBeTruthy());
+		await fireEvent.click(container.querySelector('.md-code-copy'));
+		await waitFor(() => expect(clipboardMock).toHaveBeenCalled());
+		expect(clipboardMock.mock.calls[0][0]).toContain('print("hi")');
+	});
+
+	it('flashes 已复制 on the button after a successful copy', async () => {
+		const { container } = renderMd('```js\nx\n```');
+		await waitFor(() => expect(container.querySelector('.md-code-copy')).toBeTruthy());
+		const label = container.querySelector('.md-code-copy-text');
+		vi.useFakeTimers();
+		await fireEvent.click(container.querySelector('.md-code-copy'));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(label.textContent).toBe('已复制');
+		vi.runAllTimers();
+		expect(label.textContent).toBe('复制');
+	});
+
+	it('leaves inline code untouched (no code wrap)', async () => {
+		const { container } = renderMd('inline `code` here');
+		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy());
+		await new Promise((r) => setTimeout(r, 0));
+		expect(container.querySelector('.md-code-wrap')).toBeNull();
+		expect(container.querySelector('.md-content code').textContent).toBe('code');
 	});
 });

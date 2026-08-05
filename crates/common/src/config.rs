@@ -81,6 +81,12 @@ pub struct ModelEndpoint {
     // are zero, cost is reported as None.
     pub cost_per_1k_input_tokens: f64,
     pub cost_per_1k_output_tokens: f64,
+    /// True context window of the model in tokens. When unset (None), Haven
+    /// resolves it from the builtin model catalog (by `model_name`), falling
+    /// back to a 128K default. Used to drive context compaction and the
+    /// token-usage display.
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 fn default_auth_header_name() -> String {
@@ -132,6 +138,7 @@ impl Default for ModelEndpoint {
             reasoning_effort: None,
             cost_per_1k_input_tokens: 0.0,
             cost_per_1k_output_tokens: 0.0,
+            context_window: None,
         }
     }
 }
@@ -210,7 +217,11 @@ impl Default for TaskConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 3,
-            max_steps: 30,
+            // Per-run ReAct step budget (raised 30 → 200 so long multi-tool
+            // tasks don't hit the cap mid-run; see refactor-dedup.md A9
+            // review note). Resumes grant a fresh budget, so a task can run
+            // well past this total across pause/resume cycles.
+            max_steps: 200,
             max_observation_chars: 8_000,
         }
     }
@@ -525,6 +536,8 @@ pub struct McpServerConfig {
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<String>,
+    /// Endpoint URL for HTTP transports (e.g. `http://localhost:3001/mcp`).
+    pub url: String,
     pub enabled: bool,
 }
 
@@ -536,6 +549,7 @@ impl Default for McpServerConfig {
             command: String::new(),
             args: Vec::new(),
             env: Vec::new(),
+            url: String::new(),
             enabled: true,
         }
     }
@@ -873,9 +887,11 @@ mod tests {
 
     #[test]
     fn compute_cost_usd_calculates_input_and_output() {
-        let mut ep = ModelEndpoint::default();
-        ep.cost_per_1k_input_tokens = 3.0;
-        ep.cost_per_1k_output_tokens = 15.0;
+        let ep = ModelEndpoint {
+            cost_per_1k_input_tokens: 3.0,
+            cost_per_1k_output_tokens: 15.0,
+            ..Default::default()
+        };
         // 2k in + 1k out = 6.0 + 15.0
         let cost = compute_cost_usd(&ep, 2000, 1000).unwrap();
         assert!((cost - 21.0).abs() < 1e-9);
@@ -883,8 +899,10 @@ mod tests {
 
     #[test]
     fn compute_cost_usd_output_only_config() {
-        let mut ep = ModelEndpoint::default();
-        ep.cost_per_1k_output_tokens = 10.0;
+        let ep = ModelEndpoint {
+            cost_per_1k_output_tokens: 10.0,
+            ..Default::default()
+        };
         // input rate zero -> only output counted
         let cost = compute_cost_usd(&ep, 5000, 200).unwrap();
         assert!((cost - 2.0).abs() < 1e-9);
@@ -892,8 +910,10 @@ mod tests {
 
     #[test]
     fn compute_cost_usd_handles_fractional_tokens() {
-        let mut ep = ModelEndpoint::default();
-        ep.cost_per_1k_input_tokens = 1.0;
+        let ep = ModelEndpoint {
+            cost_per_1k_input_tokens: 1.0,
+            ..Default::default()
+        };
         // 500 tokens -> 0.5
         let cost = compute_cost_usd(&ep, 500, 0).unwrap();
         assert!((cost - 0.5).abs() < 1e-9);

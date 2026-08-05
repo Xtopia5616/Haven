@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReviewMessages, formatDate } from './reviewMessages.js';
+import { buildReviewMessages, formatDate, mergeLiveStreaming } from './reviewMessages.js';
 
 const sampleTask = {
 	id: 'task-1',
@@ -21,6 +21,19 @@ describe('buildReviewMessages', () => {
 		expect(items).toHaveLength(2);
 		expect(items[0]).toMatchObject({ id: 'm1', role: 'user', content: '打开记事本', streaming: false, voice: false });
 		expect(items[1]).toMatchObject({ id: 'm2', role: 'assistant', content: '已打开' });
+	});
+
+	it('preserves the voice flag from persisted messages', () => {
+		const items = buildReviewMessages({
+			task: sampleTask,
+			messages: [
+				{ id: 'mv', role: 'user', content: '打开计算器', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [], voice: true },
+				{ id: 'mt', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [],
+		});
+		expect(items[0]).toMatchObject({ id: 'mv', voice: true });
+		expect(items[1]).toMatchObject({ id: 'mt', voice: false });
 	});
 
 	it('adds tool badges from steps with action_tool', () => {
@@ -167,11 +180,78 @@ describe('buildReviewMessages', () => {
 		expect(items.filter((i) => i.type === 'ask')).toHaveLength(1);
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
 	});
+
+	it('matches an interrupted user message to its steering/supplement thought step', () => {
+		// A message sent mid-generation (steering) or as an answer to a paused
+		// task (supplement) is persisted as a thought step carrying the user's
+		// own words. After reload the input must resolve to that step even
+		// when nothing follows it (e.g. the task errored right after), so
+		// rollback stays available.
+		const items = buildReviewMessages({
+			task: sampleTask,
+			messages: [
+				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 's2', action_tool: null, thought: '网络不好就让我帮忙', step_index: 2, created_at: '2026-08-01T10:02:00Z' },
+			],
+		});
+		expect(items.find((i) => i.id === 'm3').stepNumber).toBe(2);
+	});
 });
 
 describe('formatDate', () => {
 	it('formats ISO timestamps as yyyy/mm/dd hh:mm:ss', () => {
 		// Local-time ISO (no Z): the formatter renders in local time.
 		expect(formatDate('2026-08-01T10:05:09')).toBe('2026/08/01 10:05:09');
+	});
+});
+
+describe('mergeLiveStreaming', () => {
+	const dbMessages = [
+		{ id: 'm1', role: 'user', content: 'hi' },
+		{ id: 'step-s1', type: 'tool', toolName: 'file', stepNumber: 1 },
+	];
+
+	it('merges DB messages with no streaming tail', () => {
+		const merged = mergeLiveStreaming(dbMessages, []);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1']);
+	});
+
+	it('appends streaming messages not already in the DB', () => {
+		const existing = [
+			{ id: 'tool-t-1-0-call1', type: 'tool', stepNumber: 2, streaming: true },
+		];
+		const merged = mergeLiveStreaming(dbMessages, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-1-0-call1']);
+	});
+
+	it('drops streaming messages whose id already exists in the DB', () => {
+		const existing = [
+			{ id: 'm1', streaming: true },
+			{ id: 'tool-t-1-0-call1', streaming: true },
+		];
+		const merged = mergeLiveStreaming(dbMessages, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-1-0-call1']);
+		// The DB copy wins; the duplicate streaming copy is not appended twice.
+		expect(merged.filter((m) => m.id === 'm1')).toHaveLength(1);
+	});
+
+	it('drops DB tool-step badges already represented by a live tool card when dropToolSteps', () => {
+		const existing = [
+			{ id: 'tool-t-1-0-call1', type: 'tool', stepNumber: 1, streaming: true },
+		];
+		const merged = mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true });
+		// step-s1 (stepNumber 1) is dropped because a live card covers step 1.
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'tool-t-1-0-call1']);
+	});
+
+	it('keeps DB tool badges for steps with no live card even with dropToolSteps', () => {
+		const existing = [
+			{ id: 'tool-t-2-0-call2', type: 'tool', stepNumber: 2, streaming: true },
+		];
+		const merged = mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true });
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-2-0-call2']);
 	});
 });

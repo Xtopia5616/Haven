@@ -120,7 +120,11 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_adapter_qualified_name() {
-        let client = McpClient::new("test-server", "echo", &[], &[], true);
+        let client = McpClient::new(&haven_common::McpServerConfig {
+            name: "test-server".into(),
+            command: "echo".into(),
+            ..Default::default()
+        });
         let info = McpToolInfo {
             name: "greet".into(),
             description: "Greets the user".into(),
@@ -156,7 +160,11 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_adapter_input_schema() {
-        let client = McpClient::new("test-server", "echo", &[], &[], true);
+        let client = McpClient::new(&haven_common::McpServerConfig {
+            name: "test-server".into(),
+            command: "echo".into(),
+            ..Default::default()
+        });
         let info = McpToolInfo {
             name: "greet".into(),
             description: "Greets the user".into(),

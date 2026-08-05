@@ -26,7 +26,10 @@ pub use mcp::{
 pub use skills::runner::SkillRunner;
 pub use skills::venv::VenvManager;
 pub use skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine};
-pub use tool::{ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry, ToolResult};
+pub use tool::{
+    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry, ToolResult, extract_ask_signal,
+    extract_notify_signal, is_silent_action,
+};
 
 pub struct ToolsManager {
     pub registry: ToolRegistry,

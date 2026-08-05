@@ -6,7 +6,7 @@
 	import { imageDataUrl } from '$lib/stores.js';
 	import ToolResultCard, { canRenderToolResult } from '$lib/ToolResultCard.svelte';
 
-	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, attachments = [], options = [], awaiting = false, onContextMenu = null, onQuickReply = null } = $props();
+	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, attachments = [], options = [], awaiting = false, received = false, onContextMenu = null, onQuickReply = null } = $props();
 
 	// Local open state for collapsible <details> blocks (reasoning +
 	// tool observations). The block expands while streaming so live output is
@@ -63,6 +63,39 @@
 		}
 	}
 
+	// Copy buttons inside rendered markdown code fences (md-code-copy). Click
+	// delegation survives re-renders of {@html} content and works during
+	// streaming. The whole text of the code block is copied, matching what is
+	// highlighted, without any trailing newline.
+	function handleMdContentClick(e) {
+		const btn = e.target.closest?.('.md-code-copy');
+		if (!btn) return;
+		const wrap = btn.closest('.md-code-wrap');
+		const codeEl = wrap?.querySelector('code');
+		if (!codeEl) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const text = codeEl.textContent ?? '';
+		navigator.clipboard?.writeText(text)
+			.then(() => {
+				const label = btn.querySelector('.md-code-copy-text');
+				if (!label) return;
+				const original = label.textContent;
+				label.textContent = '已复制';
+				setTimeout(() => { label.textContent = original; }, 1500);
+			})
+			.catch(() => {});
+	}
+
+	// `use:mdContentClick` attaches the delegation listener to the rendered
+	// markdown container. Wrapping it in an action (instead of `onclick` on the
+	// div) keeps the div non-interactive for a11y: only the real copy buttons
+	// inside are clickable.
+	function mdContentClick(node) {
+		node.addEventListener('click', handleMdContentClick);
+		return { destroy() { node.removeEventListener('click', handleMdContentClick); } };
+	}
+
 	onMount(async () => {
 		const [MarkdownIt, hljs, javascript, typescript, bash, json, css, xml, rust, yaml] = await Promise.all([
 			import('markdown-it'),
@@ -96,6 +129,32 @@
 				catch (e) { logger.warn('ChatBubble', 'highlight failed', e); return ''; }
 			},
 		});
+		// Wrap every code fence in the same container style as the JsonView
+		// tool cards: a toolbar with language label + copy button above the
+		// highlighted code. Copy clicks are delegated on the container.
+		md.renderer.rules.fence = (tokens, idx) => {
+			const token = tokens[idx];
+			const info = token.info ? md.utils.unescapeAll(token.info).trim() : '';
+			const lang = info.split(/\s+/g)[0];
+			const esc = md.utils.escapeHtml;
+			let code;
+			if (lang && highlighter.getLanguage(lang)) {
+				try { code = highlighter.highlight(token.content, { language: lang }).value; }
+				catch (e) { logger.warn('ChatBubble', 'highlight failed', e); code = esc(token.content); }
+			} else {
+				code = esc(token.content);
+			}
+			return `<div class="md-code-wrap">
+				<div class="md-code-bar">
+					<span class="md-code-lang">${lang ? esc(lang) : 'text'}</span>
+					<button type="button" class="md-code-copy" aria-label="复制代码">
+						<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+						<span class="md-code-copy-text">复制</span>
+					</button>
+				</div>
+				<pre><code class="hljs">${code}</code></pre>
+			</div>`;
+		};
 	});
 
 	// L11: guard the render effect against unmount mid-import. mdHtml stays ''
@@ -121,6 +180,7 @@
 		<span class="bubble-role">
 			{role === 'user' ? 'You' : 'Haven'}
 			{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
+			{#if role === 'user' && received}<span class="received-tag" title="Agent 已收到">✓</span>{/if}
 		</span>
 		{#if time}
 			<span class="bubble-time">{time}</span>
@@ -161,7 +221,7 @@
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if role === 'assistant'}
 			{#if mdHtml}
-				<div class="md-content" class:streaming>{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}</div>
+				<div class="md-content" class:streaming use:mdContentClick>{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}</div>
 			{:else}
 				<p>{content}{#if streaming && content}<span class="caret"></span>{/if}</p>
 			{/if}
@@ -183,7 +243,7 @@
 <style>
 	.bubble {
 		max-width: 85%;
-		min-width: 30%;
+		min-width: 35%;
 		width: fit-content;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-large);
@@ -219,6 +279,11 @@
 	.mic-icon {
 		font-size: 12px;
 		filter: grayscale(0.3);
+	}
+	.received-tag {
+		font-size: 11px;
+		line-height: 1;
+		color: color-mix(in srgb, var(--md-sys-color-on-primary) 80%, var(--md-sys-color-primary));
 	}
 	.bubble-time {
 		font-size: 10px;
@@ -331,6 +396,54 @@
 		background: none;
 		padding: 0;
 		font-size: 12px;
+	}
+	.md-content :global(.md-code-wrap) {
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		overflow: hidden;
+		margin: 0 0 0.75em;
+	}
+	.md-content :global(.md-code-wrap pre) {
+		background: none;
+		margin: 0;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border-radius: 0;
+	}
+	.md-content :global(.md-code-bar) {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 2px var(--md-sys-space-xs);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.md-content :global(.md-code-lang) {
+		font-size: 10px;
+		font-weight: 600;
+		font-family: var(--md-sys-typescale-mono);
+		color: var(--md-sys-color-on-surface-variant);
+		text-transform: uppercase;
+	}
+	.md-content :global(.md-code-copy) {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--md-sys-color-on-surface-variant);
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: var(--md-sys-shape-full);
+		padding: 1px 8px;
+		cursor: pointer;
+		transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+	}
+	.md-content :global(.md-code-copy:hover) {
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-on-surface);
+	}
+	.md-content :global(.md-code-copy svg) {
+		flex: none;
 	}
 	.md-content :global(.hljs-keyword) { color: var(--md-sys-color-primary); }
 	.md-content :global(.hljs-string) { color: var(--md-sys-color-success); }

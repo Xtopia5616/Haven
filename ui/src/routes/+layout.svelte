@@ -3,13 +3,15 @@
 	import { addNotification, recordingOverlay, activeTaskIdStore, modelStateStore, updateModelState, clearModelStateTimer } from '$lib/stores.js';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.js';
 	import { themeStore } from '$lib/themeStore.js';
-	import { listen, invoke } from '$lib/tauri.js';
+	import { invoke } from '$lib/tauri.js';
 	import logger from '$lib/logger.js';
+	import { registerListeners } from '$lib/events.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { fade } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { page } from '$app/stores';
+	import { syncStore } from '$lib/syncStore.js';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
 	import Logo from '$lib/Logo.svelte';
@@ -19,7 +21,7 @@
 	let { children } = $props();
 	let activeTab = $state('chat');
 	let theme = $state(themeStore.currentTheme);
-	themeStore.subscribe((v) => theme = v.theme);
+	$effect(() => syncStore(themeStore, (v) => theme = v.theme));
 
 	let overlay = $state({
 		visible: false,
@@ -48,7 +50,6 @@
 		modelState = v;
 		if (v === 'ready') probeLlmConnection();
 	});
-
 	async function probeLlmConnection() {
 		if (modelState !== 'ready' || llmProbeInFlight) return;
 		llmProbeInFlight = true;
@@ -93,7 +94,7 @@
 	// instead of a hardcoded string. Updated live on `hotkey:rebind`.
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
-	recordingOverlay.subscribe((v) => (overlay = v));
+	$effect(() => syncStore(recordingOverlay, (v) => (overlay = v)));
 
 	$effect(() => {
 		if (typeof window !== 'undefined') {
@@ -122,16 +123,17 @@
 		durationTimer = null;
 	}
 
+	// Reset the recording overlay to its "hidden" state. Use after the user
+	// finishes a session, errors out, or is force-stopped by mute/tray.
+	function resetOverlay(reason = null) {
+		setOverlay({ visible: false, isRecording: false, processing: false, reason });
+		stopTimer();
+	}
+
 	function closeOverlaySoon(ms = 1500) {
 		if (processingTimer) clearTimeout(processingTimer);
 		processingTimer = setTimeout(() => {
-			setOverlay({
-				visible: false,
-				isRecording: false,
-				processing: false,
-				reason: null,
-			});
-			stopTimer();
+			resetOverlay();
 		}, ms);
 	}
 
@@ -141,13 +143,7 @@
 		} catch (e) {
 			addNotification(`停止录音失败: ${e}`, 'error', 3000);
 		}
-		setOverlay({
-			visible: false,
-			isRecording: false,
-			processing: false,
-			reason: null,
-		});
-		stopTimer();
+		resetOverlay();
 	}
 
 	function toggleTheme() {
@@ -155,16 +151,7 @@
 		theme = themeStore.currentTheme;
 	}
 
-	let unlisteners = [];
-
-	async function safeListen(event, handler) {
-		try {
-			const unsub = await listen(event, handler);
-			unlisteners.push(unsub);
-		} catch (e) {
-			logger.error('+layout', `Failed to register listener for '${event}'`, e);
-		}
-	}
+	let eventRegistrations = null;
 
 	onMount(async () => {
 		// Load notify config + hotkey binding in background — don't block
@@ -180,219 +167,193 @@
 			logger.warn('+layout', 'get_settings error', e);
 		});
 
-		await safeListen('recording:started', (event) => {
-			const data = event.payload || {};
-			setOverlay({
-				visible: true,
-				isRecording: true,
-				processing: false,
-				sessionId: data.session_id || null,
-				startedAt: Date.now(),
-				reason: null,
-				vadState: 'silent',
-			});
-			startTimer();
-		});
-		await safeListen('recording:stopped', (event) => {
-			const data = event.payload || {};
-			if (processingTimer) clearTimeout(processingTimer);
-			const reason = data.reason || null;
-			const isAuto = reason === 'silence' || reason === 'max_duration';
-			setOverlay({
-				isRecording: false,
-				processing: isAuto,
-				reason,
-				vadState: 'silent',
-			});
-			stopTimer();
-			if (reason === 'cancel') {
-				setOverlay({ visible: false, processing: false });
-			}
-		});
-		await safeListen('recording:vad_status', (event) => {
-			const data = event.payload || {};
-			if (get(recordingOverlay).isRecording) {
-				setOverlay({ vadState: data.state || 'silent' });
-			}
-		});
-		await safeListen('recording:error', (event) => {
-			const data = event.payload || {};
-			addNotification(data.error || '录音错误，请检查麦克风/STT 配置', 'error', 5000);
-			setOverlay({
-				visible: false,
-				isRecording: false,
-				processing: false,
-				reason: null,
-			});
-			stopTimer();
-		});
-		await safeListen('transcription:result', (event) => {
-			const data = event.payload || {};
-			const text = (data.text || '').trim();
-			if (text) {
-				// Same path as a typed message (see `submitVoiceTranscript`):
-				// appends the voice message, submits with the current
-				// `activeTaskId`, and migrates the message into the task if
-				// the backend created a fresh one.
-				submitVoiceTranscript(text).catch((e) =>
-					addNotification(`语音提交失败: ${e}`, 'error', 5000)
-				);
-			} else {
-				// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
-				// 明确反馈，否则看起来像"点了没反应"。
-				const durationMs = data.duration_ms || 0;
-				if (durationMs > 0 && durationMs < 1000) {
-					addNotification('录音时间太短，请再试一次', 'warning', 3000);
-				} else {
-					addNotification('未检测到语音，请再试一次', 'error', 4000);
-				}
-			}
-			setOverlay({
-				visible: false,
-				isRecording: false,
-				processing: false,
-				reason: null,
-			});
-			stopTimer();
-		});
-		await safeListen('transcription:error', (event) => {
-			const data = event.payload || {};
-			addNotification(data.error || '转写失败，请检查 STT 服务配置', 'error', 5000);
-			setOverlay({
-				visible: false,
-				isRecording: false,
-				processing: false,
-				reason: null,
-			});
-			stopTimer();
-		});
-		await safeListen('mute:changed', (event) => {
-			const data = event.payload || {};
-			if (data.muted) {
-				addNotification('麦克风已静音', 'info');
-				if (get(recordingOverlay).isRecording) {
-					addNotification('录音被静音强制停止', 'warning', 4000);
-					setOverlay({
-						visible: false,
-						isRecording: false,
-						processing: false,
-						reason: 'muted',
-					});
-					stopTimer();
-				}
-			} else {
-				addNotification('麦克风已取消静音', 'info');
-			}
-		});
-		await safeListen('tray:status_changed', (event) => {
-			const data = event.payload || {};
-			if (data.status === 'muted' && get(recordingOverlay).isRecording) {
+		const registrations = registerListeners({
+			'recording:started': (event) => {
+				const data = event.payload || {};
 				setOverlay({
-					visible: false,
-					isRecording: false,
+					visible: true,
+					isRecording: true,
 					processing: false,
-					reason: 'muted',
+					sessionId: data.session_id || null,
+					startedAt: Date.now(),
+					reason: null,
+					vadState: 'silent',
+				});
+				startTimer();
+			},
+			'recording:stopped': (event) => {
+				const data = event.payload || {};
+				if (processingTimer) clearTimeout(processingTimer);
+				const reason = data.reason || null;
+				const isAuto = reason === 'silence' || reason === 'max_duration';
+				setOverlay({
+					isRecording: false,
+					processing: isAuto,
+					reason,
+					vadState: 'silent',
 				});
 				stopTimer();
-			}
-		});
-		await safeListen('hotkey:conflict', (event) => {
-			const data = event.payload || {};
-			addNotification(
-				`Hotkey conflict: ${data.binding} - ${data.error}`,
-				'error',
-				5000,
-			);
-		});
-		await safeListen('hotkey:rebind', (event) => {
-			const data = event.payload || {};
-			if (data.new_binding) {
-				hotkeyBinding = data.new_binding;
-			}
-		});
-		await safeListen('task:created', (event) => {
-			const data = event.payload;
-			const title = data.title || data.task_id;
-			if (notifyCfg?.task_created?.in_app !== false) {
-				addNotification(`新任务: ${title}`, 'info', 4000);
-			}
-			updateModelState('waiting', { idleTimeoutMs: 5000 });
-		});
-		await safeListen('task:completed', (event) => {
-			const data = event.payload;
-			const title = data.title || data.task_id;
-			if (notifyCfg?.task_completed?.in_app !== false) {
-				addNotification(`任务已完成: ${title}`, 'success');
-			}
-			updateModelState('ready');
-		});
-		await safeListen('task:error', (event) => {
-			const data = event.payload;
-			const errMsg = data.error || data.task_id;
-			if (notifyCfg?.task_error?.in_app !== false) {
-				addNotification(`任务出错: ${errMsg}`, 'error', 5000);
-			}
-			clearModelStateTimer();
-			updateModelState('ready');
-		});
-		await safeListen('task:updated', (event) => {
-			const data = event.payload;
-			const title = data.title || data.task_id;
-			if (data.status === 'paused') {
-				if (notifyCfg?.task_paused?.in_app !== false) {
-					addNotification(`任务已暂停: ${title || '未知'}`, 'warning', 3000);
+				if (reason === 'cancel') {
+					setOverlay({ visible: false, processing: false });
 				}
-				clearModelStateTimer();
-				updateModelState('ready');
-			}
-			if (data.status === 'pending') {
-				if (notifyCfg?.task_paused?.in_app !== false) {
-					addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
+			},
+			'recording:vad_status': (event) => {
+				const data = event.payload || {};
+				if (get(recordingOverlay).isRecording) {
+					setOverlay({ vadState: data.state || 'silent' });
+				}
+			},
+			'recording:error': (event) => {
+				const data = event.payload || {};
+				addNotification(data.error || '录音错误，请检查麦克风/STT 配置', 'error', 5000);
+				resetOverlay();
+			},
+			'transcription:result': (event) => {
+				const data = event.payload || {};
+				const text = (data.text || '').trim();
+				if (text) {
+					// Same path as a typed message (see `submitVoiceTranscript`):
+					// appends the voice message, submits with the current
+					// `activeTaskId`, and migrates the message into the task if
+					// the backend created a fresh one.
+					submitVoiceTranscript(text).catch((e) =>
+						addNotification(`语音提交失败: ${e}`, 'error', 5000)
+					);
+				} else {
+					// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
+					// 明确反馈，否则看起来像"点了没反应"。
+					const durationMs = data.duration_ms || 0;
+					if (durationMs > 0 && durationMs < 1000) {
+						addNotification('录音时间太短，请再试一次', 'warning', 3000);
+					} else {
+						addNotification('未检测到语音，请再试一次', 'error', 4000);
+					}
+				}
+				resetOverlay();
+			},
+			'transcription:error': (event) => {
+				const data = event.payload || {};
+				addNotification(data.error || '转写失败，请检查 STT 服务配置', 'error', 5000);
+				resetOverlay();
+			},
+			'mute:changed': (event) => {
+				const data = event.payload || {};
+				if (data.muted) {
+					addNotification('麦克风已静音', 'info');
+					if (get(recordingOverlay).isRecording) {
+						addNotification('录音被静音强制停止', 'warning', 4000);
+						resetOverlay('muted');
+					}
+				} else {
+					addNotification('麦克风已取消静音', 'info');
+				}
+			},
+			'tray:status_changed': (event) => {
+				const data = event.payload || {};
+				if (data.status === 'muted' && get(recordingOverlay).isRecording) {
+					resetOverlay('muted');
+				}
+			},
+			'hotkey:conflict': (event) => {
+				const data = event.payload || {};
+				addNotification(
+					`Hotkey conflict: ${data.binding} - ${data.error}`,
+					'error',
+					5000,
+				);
+			},
+			'hotkey:rebind': (event) => {
+				const data = event.payload || {};
+				if (data.new_binding) {
+					hotkeyBinding = data.new_binding;
+				}
+			},
+			'task:created': (event) => {
+				const data = event.payload;
+				const title = data.title || data.task_id;
+				if (notifyCfg?.task_created?.in_app !== false) {
+					addNotification(`新任务: ${title}`, 'info', 4000);
 				}
 				updateModelState('waiting', { idleTimeoutMs: 5000 });
-			}
-			if (data.status === 'completed') {
+			},
+			'task:completed': (event) => {
+				const data = event.payload;
+				const title = data.title || data.task_id;
+				if (notifyCfg?.task_completed?.in_app !== false) {
+					addNotification(`任务已完成: ${title}`, 'success');
+				}
+				updateModelState('ready');
+			},
+			'task:error': (event) => {
+				const data = event.payload;
+				const errMsg = data.error || data.task_id;
+				if (notifyCfg?.task_error?.in_app !== false) {
+					addNotification(`任务出错: ${errMsg}`, 'error', 5000);
+				}
 				clearModelStateTimer();
 				updateModelState('ready');
-			}
-			if (data.status === 'error') {
-				clearModelStateTimer();
-				updateModelState('ready');
-			}
-		});
-		await safeListen('mcp:status_change', (event) => {
-			const data = event.payload;
-			const name = data.name || '';
-			const status = data.status;
-			if (status === 'Connected') {
-				addNotification(`MCP 已连接: ${name}`, 'success', 3000);
-			} else if (status === 'Disconnected') {
-				addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
-			} else if (status && status.Offline) {
-				const err = status.Offline.error || '';
-				addNotification(`MCP 离线: ${name}${err ? ` - ${err}` : ''}`, 'error', 5000);
-			} else if (status === 'Connecting') {
-				addNotification(`MCP 连接中: ${name}`, 'info', 2000);
-			}
-		});
-		await safeListen('skills:status_change', () => {
-			// Skill list refresh is notified by the tools page refresh button.
-		});
-		await safeListen('agent:balanced_model', (event) => {
-			const data = event.payload;
-			const activeId = get(activeTaskIdStore);
-			if (data.task_id && activeId && data.task_id !== activeId) return;
-			updateModelState('balanced_model');
-			addNotification(`Balanced Model: ${data.reason}`, 'warning');
-		});
-		await safeListen('notification:show', (event) => {
-			const data = event.payload || {};
-			const title = data.title || 'Haven';
-			const body = data.body || '新通知';
-			// When the title is the default "Haven", showing "Haven: msg" is
-			// redundant — the toast itself already lives in the app.
-			addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
-		});
+			},
+			'task:updated': (event) => {
+				const data = event.payload;
+				const title = data.title || data.task_id;
+				if (data.status === 'paused') {
+					if (notifyCfg?.task_paused?.in_app !== false) {
+						addNotification(`任务已暂停: ${title || '未知'}`, 'warning', 3000);
+					}
+					clearModelStateTimer();
+					updateModelState('ready');
+				}
+				if (data.status === 'pending') {
+					if (notifyCfg?.task_paused?.in_app !== false) {
+						addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
+					}
+					updateModelState('waiting', { idleTimeoutMs: 5000 });
+				}
+				if (data.status === 'completed') {
+					clearModelStateTimer();
+					updateModelState('ready');
+				}
+				if (data.status === 'error') {
+					clearModelStateTimer();
+					updateModelState('ready');
+				}
+			},
+			'mcp:status_change': (event) => {
+				const data = event.payload;
+				const name = data.name || '';
+				const status = data.status;
+				if (status === 'Connected') {
+					addNotification(`MCP 已连接: ${name}`, 'success', 3000);
+				} else if (status === 'Disconnected') {
+					addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
+				} else if (status && status.Offline) {
+					const err = status.Offline.error || '';
+					addNotification(`MCP 离线: ${name}${err ? ` - ${err}` : ''}`, 'error', 5000);
+				} else if (status === 'Connecting') {
+					addNotification(`MCP 连接中: ${name}`, 'info', 2000);
+				}
+			},
+			'skills:status_change': () => {
+				// Skill list refresh is notified by the tools page refresh button.
+			},
+			'agent:balanced_model': (event) => {
+				const data = event.payload;
+				const activeId = get(activeTaskIdStore);
+				if (data.task_id && activeId && data.task_id !== activeId) return;
+				updateModelState('balanced_model');
+				addNotification(`Balanced Model: ${data.reason}`, 'warning');
+			},
+			'notification:show': (event) => {
+				const data = event.payload || {};
+				const title = data.title || 'Haven';
+				const body = data.body || '新通知';
+				// When the title is the default "Haven", showing "Haven: msg" is
+				// redundant — the toast itself already lives in the app.
+				addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
+			},
+		}, { tag: '+layout' });
+		eventRegistrations = registrations;
+		await registrations.ready;
 
 		probeLlmConnection();
 		scheduleLlmProbe();
@@ -403,7 +364,7 @@
 		if (processingTimer) clearTimeout(processingTimer);
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
 		clearModelStateTimer();
-		unlisteners.forEach((u) => u && u());
+		eventRegistrations?.dispose();
 	});
 
 	const tabs = [

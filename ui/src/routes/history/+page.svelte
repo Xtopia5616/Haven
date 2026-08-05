@@ -24,13 +24,14 @@
 	const todayISO = $derived(new Date().toISOString().slice(0, 10));
 
 	import logger from '$lib/logger.js';
-	import { buildReviewMessages, formatDate } from '$lib/reviewMessages.js';
+	import { buildReviewMessages, mergeLiveStreaming, formatDate } from '$lib/reviewMessages.js';
+	import { statusVariant } from '$lib/taskStatus.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.js';
-	import { taskMessagesStore, updateTaskMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, addNotification } from '$lib/stores.js';
-	import { listen } from '$lib/tauri.js';
+	import { taskMessagesStore, updateTaskMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, restoreTaskTokenStats, addNotification } from '$lib/stores.js';
+	import { registerOne } from '$lib/events.js';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -47,19 +48,16 @@
 
 	onMount(async () => {
 		await loadHistory();
-		try {
-			unlistenTitleUpdate = await listen('task:title-updated', (event) => {
-				const { task_id, title } = event.payload;
-				tasks = tasks.map(t => t.id === task_id ? { ...t, title } : t);
-			});
-		} catch (e) {
-			logger.warn('history', 'Failed to listen for title-updated', e);
-		}
+		const reg = await registerOne('task:title-updated', (event) => {
+			const { task_id, title } = event.payload;
+			tasks = tasks.map(t => t.id === task_id ? { ...t, title } : t);
+		}, { tag: 'history' });
+		unlistenTitleUpdate = reg;
 	});
 
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
-		if (unlistenTitleUpdate) unlistenTitleUpdate();
+		if (unlistenTitleUpdate) unlistenTitleUpdate.dispose();
 	});
 
 	function filterParams(extra) {
@@ -121,17 +119,6 @@
 		loadHistory();
 	}
 
-	function statusVariant(status) {
-		const map = {
-			completed: 'success',
-			failed: 'error',
-			error: 'error',
-			running: 'primary',
-			paused: 'warning',
-		};
-		return map[status] || 'default';
-	}
-
 	async function reviewTask(task) {
 		try {
 			await invoke('reopen_task', { taskId: task.id });
@@ -139,11 +126,10 @@
 			const dbMessages = buildReviewMessages(result);
 			// Atomically merge DB messages with any in-memory streaming messages
 			// that arrived concurrently (e.g. from background task streaming).
-			updateTaskMessages(task.id, (existing) => {
-				const dbIds = new Set(dbMessages.map((m) => m.id));
-				const streaming = existing.filter((m) => m.streaming);
-				return [...dbMessages, ...streaming.filter((m) => !dbIds.has(m.id))];
-			});
+			updateTaskMessages(task.id, (existing) =>
+				mergeLiveStreaming(dbMessages, existing)
+			);
+			restoreTaskTokenStats(task.id, result.usage, result.usage_estimated);
 			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title, wasError: task.status === 'error' });
 			await goto('/');
 		} catch (e) {

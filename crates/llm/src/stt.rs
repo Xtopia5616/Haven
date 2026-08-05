@@ -16,13 +16,14 @@ use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
 use haven_common::config::SttConfig;
+use haven_common::prompts::STT_SYSTEM_PROMPT;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::types::{ContentPart, LlmMessage, LlmRole};
 use crate::LlmRouter;
+use crate::types::{ContentPart, LlmMessage, LlmRole};
 
 /// Trait for speech-to-text conversion.
 /// Implementations receive WAV bytes and return transcribed text.
@@ -75,11 +76,7 @@ pub fn build_stt_client(
             Box::new(McpSttClient::new(caller, &server, cfg.timeout_secs))
         }
         "llm" => Box::new(LlmSttAdapter::new(router)),
-        "openai" => Box::new(OpenAiWhisperClient::new(
-            cfg,
-            cfg.base_url.clone(),
-            timeout,
-        )),
+        "openai" => Box::new(OpenAiWhisperClient::new(cfg, cfg.base_url.clone(), timeout)),
         "groq" => Box::new(OpenAiWhisperClient::new(
             cfg,
             "https://api.groq.com/openai/v1".into(),
@@ -172,9 +169,7 @@ impl SttClient for LlmSttAdapter {
         let messages = vec![
             LlmMessage {
                 role: LlmRole::System,
-                content: vec![ContentPart::text(
-                    "You are a speech-to-text engine. Transcribe the audio verbatim in the speaker's language. Output only the transcription text, no commentary.",
-                )],
+                content: vec![ContentPart::text(STT_SYSTEM_PROMPT)],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
@@ -315,11 +310,7 @@ impl SttClient for OpenAiWhisperClient {
             .map_err(|e| anyhow::anyhow!("Whisper STT request failed: {}", e))?;
 
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .replace('\n', " ");
+        let body = resp.text().await.unwrap_or_default().replace('\n', " ");
         if !status.is_success() {
             return Err(stt_error_body(status, &body));
         }
@@ -382,7 +373,10 @@ impl SttClient for DeepgramSttClient {
         let resp = self
             .client
             .post(&url)
-            .header(reqwest::header::AUTHORIZATION, format!("Token {}", self.api_key))
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Token {}", self.api_key),
+            )
             .header(reqwest::header::CONTENT_TYPE, "audio/wav")
             .body(wav_data.to_vec())
             .send()
@@ -390,11 +384,7 @@ impl SttClient for DeepgramSttClient {
             .map_err(|e| anyhow::anyhow!("Deepgram STT request failed: {}", e))?;
 
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .replace('\n', " ");
+        let body = resp.text().await.unwrap_or_default().replace('\n', " ");
         if !status.is_success() {
             return Err(stt_error_body(status, &body));
         }
@@ -528,11 +518,7 @@ impl SttClient for AssemblyAiSttClient {
             let status = job["status"].as_str().unwrap_or("");
             match status {
                 "completed" => {
-                    let text = job["text"]
-                        .as_str()
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
+                    let text = job["text"].as_str().unwrap_or("").trim().to_string();
                     return Ok(text);
                 }
                 "error" => {
@@ -584,7 +570,7 @@ impl SttClient for GeminiSttClient {
             "contents": [{
                 "parts": [
                     {
-                        "text": "You are a speech-to-text engine. Transcribe the audio verbatim in the speaker's language. Output only the transcription text, no commentary."
+                        "text": STT_SYSTEM_PROMPT
                     },
                     {
                         "inline_data": {
@@ -596,10 +582,7 @@ impl SttClient for GeminiSttClient {
             }]
         });
 
-        let url = format!(
-            "{}/models/{}:generateContent",
-            self.base_url, self.model
-        );
+        let url = format!("{}/models/{}:generateContent", self.base_url, self.model);
         let resp = self
             .client
             .post(&url)
@@ -611,11 +594,7 @@ impl SttClient for GeminiSttClient {
             .map_err(|e| anyhow::anyhow!("Gemini STT request failed: {}", e))?;
 
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .replace('\n', " ");
+        let body = resp.text().await.unwrap_or_default().replace('\n', " ");
         if !status.is_success() {
             return Err(stt_error_body(status, &body));
         }
@@ -641,9 +620,9 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use crate::EndpointRole;
     use crate::client::LlmClient;
     use crate::types::{LlmError, LlmResponse, StreamChunk};
-    use crate::EndpointRole;
 
     struct MockSttClient {
         response: String,
@@ -793,7 +772,11 @@ mod tests {
             .force_role_configured(EndpointRole::AudioModel, true)
             .await;
         let adapter = LlmSttAdapter::new(router);
-        let err = adapter.transcribe(&[0u8; 44]).await.unwrap_err().to_string();
+        let err = adapter
+            .transcribe(&[0u8; 44])
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("does not support audio input"),
             "expected rewritten hint, got: {err}"
@@ -865,7 +848,10 @@ mod tests {
         for provider in ["openai", "groq", "gemini", "deepgram", "assemblyai"] {
             let cfg = test_stt_cfg(provider);
             let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
-            assert!(client.is_some(), "provider {provider} should yield a client");
+            assert!(
+                client.is_some(),
+                "provider {provider} should yield a client"
+            );
         }
     }
 
@@ -904,7 +890,8 @@ mod tests {
         assert_eq!(c.model, "whisper-1");
 
         // An empty base URL falls back to the OpenAI host.
-        let c_empty = OpenAiWhisperClient::new(&cfg_no_model, String::new(), Duration::from_secs(30));
+        let c_empty =
+            OpenAiWhisperClient::new(&cfg_no_model, String::new(), Duration::from_secs(30));
         assert_eq!(c_empty.base_url, "https://api.openai.com/v1");
         assert_eq!(c_empty.model, "whisper-1");
     }
@@ -940,7 +927,10 @@ mod tests {
             ..Default::default()
         };
         let c = GeminiSttClient::new(&cfg, Duration::from_secs(30));
-        assert_eq!(c.base_url, "https://generativelanguage.googleapis.com/v1beta");
+        assert_eq!(
+            c.base_url,
+            "https://generativelanguage.googleapis.com/v1beta"
+        );
         assert_eq!(c.model, "gemini-2.5-flash");
 
         let cfg_override = SttConfig {

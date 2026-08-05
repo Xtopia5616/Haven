@@ -14,7 +14,19 @@ pub type SessionId = String;
 #[serde(rename_all = "snake_case")]
 pub enum McpTransportType {
     #[default]
+    #[serde(alias = "Stdio")]
     Stdio,
+    #[serde(alias = "Http")]
+    Http,
+}
+
+impl McpTransportType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            McpTransportType::Stdio => "stdio",
+            McpTransportType::Http => "http",
+        }
+    }
 }
 
 /// Hotkey activation mode.
@@ -116,6 +128,60 @@ pub struct CanonicalMessage {
     /// back to APIs that require it in multi-turn requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+}
+
+impl CanonicalMessage {
+    pub fn system(content: Vec<ContentPart>) -> Self {
+        Self {
+            role: CanonicalRole::System,
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            parent_message_id: None,
+            reasoning: None,
+        }
+    }
+
+    pub fn user(content: Vec<ContentPart>) -> Self {
+        Self {
+            role: CanonicalRole::User,
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            parent_message_id: None,
+            reasoning: None,
+        }
+    }
+
+    pub fn user_text(text: impl Into<String>) -> Self {
+        Self::user(vec![ContentPart::text(text)])
+    }
+
+    pub fn assistant(
+        content: Vec<ContentPart>,
+        tool_calls: Option<Vec<CanonicalToolCall>>,
+        reasoning: Option<String>,
+    ) -> Self {
+        Self {
+            role: CanonicalRole::Assistant,
+            content,
+            tool_calls,
+            tool_call_id: None,
+            parent_message_id: None,
+            reasoning,
+        }
+    }
+
+    pub fn tool(content: Vec<ContentPart>, tool_call_id: Option<String>) -> Self {
+        Self {
+            role: CanonicalRole::Tool,
+            content,
+            tool_calls: None,
+            tool_call_id,
+            parent_message_id: None,
+            reasoning: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +344,37 @@ mod tests {
         assert_eq!(call.id, "tc_123");
         assert_eq!(call.name, "search");
         assert_eq!(call.arguments["query"], "rust");
+    }
+
+    #[test]
+    fn canonical_message_constructors_set_role_and_content() {
+        assert_eq!(CanonicalMessage::user_text("u").role, CanonicalRole::User);
+    }
+
+    #[test]
+    fn canonical_message_constructors_leave_optional_fields_empty() {
+        let msg = CanonicalMessage::user_text("hello");
+        assert!(msg.tool_calls.is_none());
+        assert!(msg.tool_call_id.is_none());
+        assert!(msg.parent_message_id.is_none());
+        assert!(msg.reasoning.is_none());
+        let tool = CanonicalMessage::tool(vec![ContentPart::text("out")], Some("call_1".into()));
+        assert_eq!(tool.tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn canonical_message_assistant_constructor_keeps_tool_calls_and_reasoning() {
+        let msg = CanonicalMessage::assistant(
+            vec![ContentPart::text("thinking")],
+            Some(vec![CanonicalToolCall {
+                id: "tc1".into(),
+                name: "run".into(),
+                arguments: serde_json::json!({"cmd": "ls"}),
+            }]),
+            Some("chain of thought".into()),
+        );
+        assert_eq!(msg.tool_calls.unwrap().len(), 1);
+        assert_eq!(msg.reasoning.as_deref(), Some("chain of thought"));
     }
 
     #[test]

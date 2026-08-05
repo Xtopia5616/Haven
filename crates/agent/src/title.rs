@@ -1,4 +1,4 @@
-use haven_llm::types::{ContentPart, LlmMessage, LlmRole};
+use haven_common::prompts::TITLE_SYSTEM_PROMPT;
 use haven_llm::{EndpointRole, LlmRouter};
 use std::sync::Arc;
 
@@ -29,26 +29,12 @@ impl TitleGenerator {
             return None;
         }
         let conv_text = conversation.join("\n");
-        let messages = vec![
-            LlmMessage {
-                role: LlmRole::System,
-                content: vec![ContentPart::text(
-                    "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.",
-                )],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-            },
-            LlmMessage {
-                role: LlmRole::User,
-                content: vec![ContentPart::text(conv_text)],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-            },
-        ];
 
-        match self.router.chat(EndpointRole::SmallModel, messages).await {
+        match self
+            .router
+            .chat_with_prompt(EndpointRole::SmallModel, TITLE_SYSTEM_PROMPT, &conv_text)
+            .await
+        {
             Ok(response) => {
                 let title = response.text.trim().trim_matches('"').trim().to_string();
                 if title.is_empty() || title.len() > 100 {
@@ -72,7 +58,7 @@ mod tests {
     use futures_util::Stream;
     use haven_llm::OpenAiAdapter;
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{LlmError, LlmResponse};
+    use haven_llm::types::{LlmError, LlmMessage, LlmResponse, LlmRole};
     use std::pin::Pin;
     use std::sync::Mutex;
 
@@ -221,7 +207,10 @@ mod tests {
 
     #[tokio::test]
     async fn llm_error_returns_none() {
-        let tr = test_router(Err(LlmError::ServerError("boom".into()))).await;
+        // Use a non-retryable error: a retryable one (e.g. ServerError) would
+        // make the router sleep through the full retry backoff (~17s) before
+        // falling back, which is not what this unit test needs.
+        let tr = test_router(Err(LlmError::Auth("boom".into()))).await;
         let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&["hi".into()]).await.is_none());
     }

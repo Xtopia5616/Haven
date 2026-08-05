@@ -429,9 +429,7 @@ impl ReminderCenter {
             }
             _ => false,
         };
-        if cancelled
-            && let Some(db) = self.db.read().await.as_ref()
-        {
+        if cancelled && let Some(db) = self.db.read().await.as_ref() {
             let _ = db.delete_reminder(id);
         }
         cancelled
@@ -545,7 +543,9 @@ impl Tool for ReminderTool {
                 let mode = match input["mode"].as_str().unwrap_or("tool") {
                     "tool" => ReminderMode::Tool,
                     "continue" => ReminderMode::Continue,
-                    other => anyhow::bail!("unknown reminder mode: {other} (expected tool or continue)"),
+                    other => {
+                        anyhow::bail!("unknown reminder mode: {other} (expected tool or continue)")
+                    }
                 };
                 // `_task_id` is injected privately by ToolsManager::execute_tool
                 // (never part of the LLM-visible schema or step history) so the
@@ -557,10 +557,7 @@ impl Tool for ReminderTool {
                     );
                 }
                 let tool_name = input["tool_name"].as_str().map(str::to_string);
-                let tool_args = input
-                    .get("tool_args")
-                    .filter(|v| !v.is_null())
-                    .cloned();
+                let tool_args = input.get("tool_args").filter(|v| !v.is_null()).cloned();
                 let prompt = input["prompt"].as_str();
                 let id = self
                     .center
@@ -602,10 +599,7 @@ impl Tool for ReminderTool {
                 if self.center.cancel(id).await {
                     Ok(ToolResult::ok(serde_json::json!({ "cancelled": id })))
                 } else {
-                    anyhow::bail!(
-                        "reminder '{}' not found or already fired",
-                        id
-                    )
+                    anyhow::bail!("reminder '{}' not found or already fired", id)
                 }
             }
             _ => anyhow::bail!("unknown reminder operation: {}", op),
@@ -664,7 +658,10 @@ mod tests {
     #[test]
     fn test_reminder_mode_roundtrip() {
         assert_eq!(ReminderMode::parse("tool"), Some(ReminderMode::Tool));
-        assert_eq!(ReminderMode::parse("continue"), Some(ReminderMode::Continue));
+        assert_eq!(
+            ReminderMode::parse("continue"),
+            Some(ReminderMode::Continue)
+        );
         assert_eq!(ReminderMode::parse("notify"), None);
         assert_eq!(ReminderMode::parse("bogus"), None);
         assert_eq!(ReminderMode::default(), ReminderMode::Tool);
@@ -701,7 +698,10 @@ mod tests {
         assert!(err.is_err());
         // Neither delay nor due_at.
         let err = tool
-            .execute(json!({"operation": "set", "body": "x"}), CancellationToken::new())
+            .execute(
+                json!({"operation": "set", "body": "x"}),
+                CancellationToken::new(),
+            )
             .await;
         assert!(err.is_err());
         // Malformed due_at.
@@ -945,11 +945,10 @@ mod tests {
     async fn test_reminder_fires_and_delivers() {
         let center = Arc::new(ReminderCenter::new());
         let mut rx = center.take_fired_receiver().expect("receiver available");
-        let tool = ReminderTool { center: center.clone() };
-        let id = center
-            .set(tool_spec(1, "Test", "fire now"))
-            .await
-            .unwrap();
+        let tool = ReminderTool {
+            center: center.clone(),
+        };
+        let id = center.set(tool_spec(1, "Test", "fire now")).await.unwrap();
         let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("timed out waiting for reminder")
@@ -1032,10 +1031,7 @@ mod tests {
         let (db, _dir) = test_db();
         let center = Arc::new(ReminderCenter::new());
         center.set_db(Some(db.clone())).await;
-        let id = center
-            .set(tool_spec(3600, "Drink", "water"))
-            .await
-            .unwrap();
+        let id = center.set(tool_spec(3600, "Drink", "water")).await.unwrap();
         let pending = db.list_pending_reminders().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);

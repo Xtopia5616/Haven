@@ -1,7 +1,8 @@
 <script module>
 	// Structured renderers for tool observations whose output is JSON, plus the
 	// `ask` question card. Kept in one place so live chat and history review
-	// share the same cards with a unified look.
+	// share the same cards with a unified look. JSON without a dedicated
+	// renderer falls through to the generic JsonView tree below.
 
 	/** @type {Record<string, string>} */
 	const LABELS = {
@@ -16,6 +17,13 @@
 		clipboard: '剪贴板',
 		power: '电源状态',
 		system: '系统信息',
+		shell: '终端输出',
+		notify: '通知',
+		audio: '音频',
+		input: '输入操作',
+		self: '自身状态',
+		load_mcp: '加载 MCP',
+		load_skill: '加载技能',
 	};
 
 	/** @param {unknown} v */
@@ -68,13 +76,32 @@
 	}
 
 	/**
-	 * Parse + validate a tool observation into a renderable payload.
+	 * Parse + classify a tool observation into a renderable payload.
+	 * kind is one of:
+	 * - 'custom': a dedicated renderer below matches the JSON shape
+	 * - 'generic': JSON that has no dedicated renderer (pretty-printed)
+	 * - 'shell': terminal output (plain text or {"output": ...})
+	 * - 'notify': readable "Notification sent: ..." text
+	 * Returns null when the observation must stay in the raw fallback view.
 	 * @param {string} toolName
 	 * @param {string} content
-	 * @returns {object | null}
+	 * @returns {{ kind: string, data: object | null } | null}
 	 */
 	export function parseToolResult(toolName, content) {
 		if (!content) return null;
+		if (toolName === 'shell') {
+			let data = null;
+			try {
+				const j = JSON.parse(content);
+				if (isObj(j)) data = j;
+			} catch {
+				// Plain text output — still renderable in the terminal card.
+			}
+			return { kind: 'shell', data };
+		}
+		if (toolName === 'notify' && content.startsWith('Notification sent:')) {
+			return { kind: 'notify', data: null };
+		}
 		let data;
 		try {
 			data = JSON.parse(content);
@@ -82,33 +109,44 @@
 			return null;
 		}
 		if (!isObj(data)) return null;
+		const custom = customShape(toolName, data);
+		return custom ? { kind: 'custom', data } : { kind: 'generic', data };
+	}
+
+	/**
+	 * Match a JSON observation against a dedicated renderer shape.
+	 * @param {string} toolName
+	 * @param {object} data
+	 * @returns {object | null}
+	 */
+	function customShape(toolName, data) {
 		switch (toolName) {
 			case 'search':
-				return Array.isArray(data.results) ? { data } : null;
+				return Array.isArray(data.results) ? data : null;
 			case 'system':
-				return data.cpu || data.memory || data.os || data.disks ? { data } : null;
+				return data.cpu || data.memory || data.os || data.disks ? data : null;
 			case 'process':
-				return Array.isArray(data.processes) ? { data } : null;
+				return Array.isArray(data.processes) ? data : null;
 			case 'window':
-				return Array.isArray(data.windows) ? { data } : null;
+				return Array.isArray(data.windows) ? data : null;
 			case 'status':
-				return typeof data.status === 'string' ? { data } : null;
+				return typeof data.status === 'string' ? data : null;
 			case 'reminder':
-				return Array.isArray(data.reminders) || (data.id && data.mode) ? { data } : null;
+				return Array.isArray(data.reminders) || (data.id && data.mode) ? data : null;
 			case 'env':
-				return Array.isArray(data.variables) || data.name ? { data } : null;
+				return Array.isArray(data.variables) || data.name ? data : null;
 			case 'file':
 				return data.written || data.edited || data.copied || data.moved || data.deleted ||
 					Array.isArray(data.entries) || 'content' in data || 'size' in data
-					? { data }
+					? data
 					: null;
 			case 'network':
-				return typeof data.status === 'number' ? { data } : null;
+				return typeof data.status === 'number' ? data : null;
 			case 'clipboard':
-				return 'content' in data || data.written === true ? { data } : null;
+				return 'content' in data || data.written === true ? data : null;
 			case 'power':
 				return 'battery_percent' in data || data.locked || data.sleep || data.hibernate
-					? { data }
+					? data
 					: null;
 			default:
 				return null;
@@ -117,6 +155,8 @@
 </script>
 
 <script>
+	import JsonView from '$lib/JsonView.svelte';
+
 	let {
 		type = 'tool',
 		toolName = '',
@@ -127,7 +167,92 @@
 		onQuickReply = null,
 	} = $props();
 	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, content) : null);
+	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(parsed?.data ?? {});
+	let shellText = $derived(
+		kind === 'shell'
+			? typeof data.output === 'string'
+				? data.output
+				: Object.keys(data).length > 0
+					? JSON.stringify(data, null, 2)
+					: content
+			: '',
+	);
+	function notifyPartsOf() {
+		if (kind !== 'notify') return { title: '', body: '' };
+		const rest = content.slice('Notification sent:'.length).trim();
+		const idx = rest.indexOf(': ');
+		return idx > 0
+			? { title: rest.slice(0, idx).trim(), body: rest.slice(idx + 2).trim() }
+			: { title: rest, body: '' };
+	}
+	let notifyParts = $derived(notifyPartsOf());
+
+	// ── Process renderer state ─────────────────────────────────────────────
+	let processFilter = $state('');
+	let processShowAll = $state(false);
+	const PROC_VISIBLE_LIMIT = 50;
+	let processList = $derived(Array.isArray(data.processes) ? data.processes : []);
+	let filteredProcesses = $derived(
+		processFilter
+			? processList.filter((p) =>
+					String(p.name ?? '').toLowerCase().includes(processFilter.toLowerCase()),
+				)
+			: processList,
+	);
+	let visibleProcesses = $derived(
+		processFilter || processShowAll ? filteredProcesses : filteredProcesses.slice(0, PROC_VISIBLE_LIMIT),
+	);
+	let maxProcMem = $derived(
+		processList.reduce((m, p) => Math.max(m, Number(p.memory) || 0), 0),
+	);
+	function memPct(p) {
+		if (!maxProcMem) return 0;
+		return Math.min(100, ((Number(p.memory) || 0) / maxProcMem) * 100);
+	}
+	const PROC_STATUS_LABELS = {
+		Run: '运行中',
+		Sleep: '休眠',
+		Idle: '空闲',
+		Stop: '已停止',
+		Zombie: '僵尸',
+		Dead: '已结束',
+		Tracing: '跟踪',
+		Unknown: '未知',
+	};
+	function procStatusLabel(status) {
+		return PROC_STATUS_LABELS[String(status ?? '')] ?? String(status ?? '未知');
+	}
+	function procStatusClass(status) {
+		const s = String(status ?? '').toLowerCase();
+		if (s.includes('run')) return 'running';
+		if (s.includes('sleep') || s.includes('idle')) return 'idle';
+		if (s.includes('zombie') || s.includes('dead')) return 'failed';
+		if (s.includes('stop') || s.includes('tracing')) return 'cancelled';
+		return 'not_found';
+	}
+
+	// ── Environment renderer state ─────────────────────────────────────────
+	let envFilter = $state('');
+	let envList = $derived(Array.isArray(data.variables) ? data.variables : []);
+	let filteredEnv = $derived(
+		envFilter
+			? envList.filter((v) => {
+					const q = envFilter.toLowerCase();
+					return (
+						String(v.name ?? '').toLowerCase().includes(q) ||
+						String(v.value ?? '').toLowerCase().includes(q)
+					);
+				})
+			: envList,
+	);
+	async function copyEnvValue(text) {
+		try {
+			await navigator.clipboard.writeText(text);
+		} catch {
+			// Clipboard unavailable — ignore.
+		}
+	}
 </script>
 
 {#if type === 'ask'}
@@ -157,6 +282,48 @@
 			</div>
 		{/if}
 	</div>
+{:else if kind === 'shell'}
+	<div class="tool-card" role="status">
+		<div class="tool-card-header">
+			<span class="tool-card-icon" aria-hidden="true">
+				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg>
+			</span>
+			<span class="tool-card-label">{LABELS[toolName] ?? toolName}</span>
+		</div>
+		{#if data.truncated}
+			<div class="tool-card-count">输出过长已截断</div>
+		{/if}
+		{#if shellText}
+			<pre class="content-preview">{shellText}</pre>
+		{:else}
+			<p class="tool-card-empty">（无输出）</p>
+		{/if}
+	</div>
+{:else if kind === 'notify'}
+	<div class="tool-card" role="status">
+		<div class="tool-card-header">
+			<span class="tool-card-icon" aria-hidden="true">
+				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></svg>
+			</span>
+			<span class="tool-card-label">{LABELS[toolName] ?? toolName}</span>
+		</div>
+		{#if notifyParts.title}
+			<p class="notify-title">{notifyParts.title}</p>
+		{/if}
+		{#if notifyParts.body}
+			<p class="notify-body">{notifyParts.body}</p>
+		{/if}
+	</div>
+{:else if kind === 'generic'}
+		<div class="tool-card" role="status">
+			<div class="tool-card-header">
+				<span class="tool-card-icon" aria-hidden="true">
+					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
+				</span>
+				<span class="tool-card-label">{LABELS[toolName] ?? toolName}</span>
+			</div>
+			<JsonView value={data} />
+		</div>
 {:else if parsed}
 	<div class="tool-card" role="status">
 		<div class="tool-card-header">
@@ -242,24 +409,47 @@
 				<div class="tool-card-meta">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
 			{/if}
 		{:else if toolName === 'process'}
-			<div class="tool-card-count">{data.processes.length} 个进程</div>
+			<div class="tool-card-count">
+				{#if processFilter}
+					{filteredProcesses.length} / {processList.length} 个进程
+				{:else}
+					{processList.length} 个进程
+				{/if}
+			</div>
+			<input
+				class="tool-search"
+				type="search"
+				placeholder="筛选进程..."
+				bind:value={processFilter}
+				aria-label="筛选进程"
+			/>
 			<div class="tool-card-list">
 				<table class="proc-table">
 					<thead>
-						<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th></tr>
+						<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
 					</thead>
 					<tbody>
-						{#each data.processes as p (p.pid)}
+						{#each visibleProcesses as p (p.pid)}
 							<tr>
 								<td class="proc-name" title={p.name}>{p.name}</td>
 								<td class="proc-num">{p.pid}</td>
-								<td class="proc-num">{Number(p.cpu ?? 0).toFixed(1)}%</td>
-								<td class="proc-num">{fmtBytes(p.memory)}</td>
+								<td class="proc-num proc-meter-cell">
+									<span class="proc-meter"><span class="proc-meter-fill" style="width: {clampPct(p.cpu)}%"></span></span>{Number(p.cpu ?? 0).toFixed(1)}%
+								</td>
+								<td class="proc-num proc-meter-cell">
+									<span class="proc-meter"><span class="proc-meter-fill" style="width: {memPct(p)}%"></span></span>{fmtBytes(p.memory)}
+								</td>
+								<td class="proc-status"><span class="status-badge status-{procStatusClass(p.status)}">{procStatusLabel(p.status)}</span></td>
 							</tr>
 						{/each}
 					</tbody>
 				</table>
 			</div>
+			{#if !processFilter && processList.length > PROC_VISIBLE_LIMIT}
+				<button class="show-all-btn" type="button" onclick={() => (processShowAll = !processShowAll)}>
+					{processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
+				</button>
+			{/if}
 		{:else if toolName === 'window'}
 			<div class="tool-card-count">{data.count ?? data.windows.length} 个窗口</div>
 			{#if data.windows.length > 0}
@@ -313,23 +503,42 @@
 			{/if}
 		{:else if toolName === 'env'}
 			{#if Array.isArray(data.variables)}
-				<div class="tool-card-count">{data.variables.length} 个变量</div>
-				{#if data.variables.length > 0}
+				<div class="tool-card-count">
+					{#if envFilter}
+						{filteredEnv.length} / {envList.length} 个变量
+					{:else}
+						{envList.length} 个变量
+					{/if}
+				</div>
+				<input
+					class="tool-search"
+					type="search"
+					placeholder="筛选变量..."
+					bind:value={envFilter}
+					aria-label="筛选变量"
+				/>
+				{#if filteredEnv.length > 0}
 					<div class="tool-card-list">
-						{#each data.variables as v (v.name)}
+						{#each filteredEnv as v (v.name)}
 							<div class="env-row">
-								<span class="env-name">{v.name}</span>
+								<span class="env-name" title={v.name}>{v.name}</span>
 								<span class="env-value" title={v.value ?? ''}>{v.value ?? '(未设置)'}</span>
+								{#if typeof v.value === 'string' && v.value}
+									<button class="env-copy" type="button" aria-label="复制值" title="复制值" onclick={() => copyEnvValue(v.value)}>⧉</button>
+								{/if}
 							</div>
 						{/each}
 					</div>
 				{:else}
-					<p class="tool-card-empty">（空）</p>
+					<p class="tool-card-empty">没有匹配的变量</p>
 				{/if}
 			{:else}
 				<div class="env-row">
 					<span class="env-name">{data.name}</span>
 					<span class="env-value" title={data.value ?? ''}>{data.value ?? '(未设置)'}</span>
+					{#if typeof data.value === 'string' && data.value}
+						<button class="env-copy" type="button" aria-label="复制值" title="复制值" onclick={() => copyEnvValue(data.value)}>⧉</button>
+					{/if}
 				</div>
 			{/if}
 		{:else if toolName === 'file'}
@@ -470,6 +679,18 @@
 		border-radius: 50%;
 		background: var(--md-sys-color-secondary);
 		animation: ask-pulse 1.2s ease-in-out infinite;
+	}
+	.notify-title {
+		margin: 0 0 var(--md-sys-space-2xs);
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--md-sys-color-on-surface);
+	}
+	.notify-body {
+		margin: 0;
+		font-size: 12px;
+		line-height: 1.5;
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	@keyframes ask-pulse {
 		0%, 100% { opacity: 1; transform: scale(1); }
@@ -676,6 +897,89 @@
 	.status-not_found {
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	.status-idle {
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.tool-search {
+		width: 100%;
+		box-sizing: border-box;
+		background: var(--md-sys-color-surface-container-high);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		color: var(--md-sys-color-on-surface);
+		font-size: 11px;
+		padding: 4px var(--md-sys-space-sm);
+		margin-bottom: var(--md-sys-space-xs);
+		outline: none;
+	}
+	.tool-search:focus {
+		border-color: var(--md-sys-color-primary);
+	}
+	.proc-meter-cell {
+		white-space: nowrap;
+	}
+	.proc-meter {
+		display: inline-block;
+		width: 36px;
+		height: 4px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface-container-highest);
+		overflow: hidden;
+		vertical-align: middle;
+		margin-right: 4px;
+	}
+	.proc-meter-fill {
+		display: block;
+		height: 100%;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-secondary);
+	}
+	.proc-status {
+		padding-right: var(--md-sys-space-2xs) !important;
+	}
+	.proc-status .status-badge {
+		text-transform: none;
+		font-size: 9px;
+		padding: 1px 6px;
+	}
+	.show-all-btn {
+		width: 100%;
+		box-sizing: border-box;
+		margin-top: var(--md-sys-space-xs);
+		background: transparent;
+		border: 1px dashed var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		color: var(--md-sys-color-primary);
+		font-size: 11px;
+		font-weight: 600;
+		padding: 4px;
+		cursor: pointer;
+	}
+	.show-all-btn:hover {
+		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
+	}
+	.env-copy {
+		flex: none;
+		border: none;
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 12px;
+		line-height: 1;
+		padding: 2px 4px;
+		border-radius: 4px;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+	}
+	.env-row:hover .env-copy,
+	.env-copy:focus-visible {
+		opacity: 1;
+	}
+	.env-copy:hover {
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-on-surface);
 	}
 	.meter-row {
 		display: grid;

@@ -58,9 +58,7 @@ pub async fn register_builtin_tools(
         jobs: background_jobs,
     }));
     tools.push(Arc::new(input::InputTool));
-    tools.push(Arc::new(reminder::ReminderTool {
-        center: reminders,
-    }));
+    tools.push(Arc::new(reminder::ReminderTool { center: reminders }));
     tools.push(Arc::new(system::SystemInfoTool));
     tools.push(Arc::new(env_var::EnvTool));
     tools.push(Arc::new(window::WindowTool));

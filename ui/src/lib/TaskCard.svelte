@@ -1,18 +1,7 @@
 <script>
+	import { statusColor } from '$lib/taskStatus.js';
 	let { task, onCancel, onPause, onResume } = $props();
 	let expanded = $state(false);
-
-	function statusColor(status) {
-		const map = {
-			pending: '#666',
-			running: '#44cc44',
-			paused: '#ccaa44',
-			completed: '#4488ff',
-			failed: '#ff4444',
-			error: '#ff4444',
-		};
-		return map[status] || '#666';
-	}
 
 	function durationStr(createdAt, updatedAt, status) {
 		const start = new Date(createdAt).getTime();

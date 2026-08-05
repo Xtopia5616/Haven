@@ -249,11 +249,13 @@ mod imp {
     /// with the `image` crate — the capture itself never touches the file.
     pub fn capture_screen(path: Option<std::path::PathBuf>) -> anyhow::Result<Value> {
         use windows_sys::Win32::Graphics::Gdi::{
-            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDCW, DeleteDC,
-            DeleteObject, GetDIBits, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
-            BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
+            CreateCompatibleDC, CreateDCW, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDIBits,
+            HGDIOBJ, SRCCOPY, SelectObject,
         };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+        };
 
         unsafe {
             let width = GetSystemMetrics(SM_CXSCREEN);
@@ -262,7 +264,16 @@ mod imp {
                 anyhow::bail!("failed to query screen size ({width}x{height})");
             }
 
-            let screen_dc = CreateDCW(std::ptr::null(), "DISPLAY".encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>().as_ptr(), std::ptr::null(), std::ptr::null());
+            let screen_dc = CreateDCW(
+                std::ptr::null(),
+                "DISPLAY"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect::<Vec<u16>>()
+                    .as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+            );
             if screen_dc.is_null() {
                 anyhow::bail!("failed to create screen DC");
             }

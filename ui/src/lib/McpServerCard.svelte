@@ -1,11 +1,16 @@
 <script>
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
 	let expanded = $state(false);
 
 	function toggleExpand() {
 		expanded = !expanded;
+	}
+
+	function handleToggle(checked) {
+		onToggle?.(server.name, checked);
 	}
 
 	function statusLabel(status) {
@@ -36,11 +41,6 @@
 		const s = server.status;
 		return s === 'Connecting' || (typeof s === 'object' && 'Connecting' in s);
 	}
-
-	function handleToggle(e) {
-		e.stopPropagation();
-		onToggle?.(server.name, !server.enabled);
-	}
 </script>
 
 <div class="server-card" class:expanded>
@@ -49,6 +49,9 @@
 			<div class="card-name">{server.name}</div>
 			<div class="card-meta">
 				<span class="transport-badge">{server.transport || 'stdio'}</span>
+				{#if server.url}
+					<span class="endpoint">{server.url}</span>
+				{/if}
 				<span
 					class="enabled-badge"
 					class:enabled={server.enabled}
@@ -69,13 +72,7 @@
 			{/if}
 		</div>
 		<div class="card-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="presentation">
-			<MaterialIconButton
-				variant={server.enabled ? 'primary' : 'default'}
-				label={server.enabled ? 'Disable' : 'Enable'}
-				onclick={handleToggle}
-			>
-				{server.enabled ? '◐' : '○'}
-			</MaterialIconButton>
+			<MaterialSwitch checked={server.enabled} onChange={handleToggle} />
 			{#if isOffline()}
 				<MaterialIconButton variant="primary" label="Reconnect" onclick={() => onReconnect?.(server.name)}>↻</MaterialIconButton>
 			{/if}
@@ -157,6 +154,11 @@
 		border-radius: var(--md-sys-shape-small);
 		font-weight: 600;
 	}
+	.endpoint {
+		color: var(--md-sys-color-primary);
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 11px;
+	}
 	.status-badge {
 		padding: 2px var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
@@ -202,6 +204,7 @@
 	.card-actions {
 		display: flex;
 		gap: var(--md-sys-space-xs);
+		align-items: center;
 	}
 	.card-body {
 		padding: 0 var(--md-sys-space-xl) var(--md-sys-space-lg);

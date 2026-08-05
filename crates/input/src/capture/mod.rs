@@ -1,4 +1,4 @@
-﻿//! Capture engine: a single long-lived thread that owns the CPAL capture
+//! Capture engine: a single long-lived thread that owns the CPAL capture
 //! backend and the ring buffer, and serves the recording loop's commands.
 //!
 //! **Capture path** — a CPAL input stream (WASAPI shared mode on Windows) is
@@ -83,11 +83,7 @@ impl EngineHandle {
     /// Open the capture stream and clear the ring.
     pub async fn start(&self) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if self
-            .cmd_tx
-            .send(EngineCommand::Start(tx))
-            .is_err()
-        {
+        if self.cmd_tx.send(EngineCommand::Start(tx)).is_err() {
             return Err(anyhow!("capture engine is gone"));
         }
         match tokio::time::timeout(CMD_TIMEOUT, rx).await {

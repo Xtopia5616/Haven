@@ -7,9 +7,10 @@
 	let mcpEditServer = $state(null);
 
 	import { onMount, onDestroy } from 'svelte';
-	import { invoke, listen } from '$lib/tauri.js';
+	import { invoke } from '$lib/tauri.js';
 	import { addNotification } from '$lib/stores.js';
 	import logger from '$lib/logger.js';
+	import { registerOne } from '$lib/events.js';
 	import SkillCard from '$lib/SkillCard.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
@@ -36,36 +37,38 @@
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
-		try {
-			unlistenSkills = await listen('skills:status_change', async () => {
-				await refreshSkillList();
-			});
-			unlistenMcp = await listen('mcp:status_change', async () => {
-				await refreshMcpServers();
-			});
-		} catch (e) {
-			logger.warn('tools', 'listen registration error', e);
-		}
+		unlistenSkills = await registerOne('skills:status_change', async () => {
+			await refreshSkillList();
+		}, { tag: 'tools' });
+		unlistenMcp = await registerOne('mcp:status_change', async () => {
+			await refreshMcpServers();
+		}, { tag: 'tools' });
 	});
 
 	onDestroy(() => {
-		unlistenSkills?.();
-		unlistenMcp?.();
+		unlistenSkills?.dispose();
+		unlistenMcp?.dispose();
 	});
 
 	async function refreshMcpServers() {
 		try {
 			const result = await invoke('list_mcp_tools');
 			mcpServers = result || [];
+			return true;
 		} catch (e) {
 			mcpServers = [];
 			logger.warn('tools', 'list_mcp_tools error', e);
+			return false;
 		}
 	}
 
 	async function refreshMcpList() {
-		await refreshMcpServers();
-		addNotification('MCP 服务器已刷新', 'success', 2000);
+		const ok = await refreshMcpServers();
+		if (ok) {
+			addNotification('MCP 服务器已刷新', 'success', 2000);
+		} else {
+			addNotification('刷新 MCP 服务器失败', 'error', 3000);
+		}
 	}
 
 	async function refreshSkillList() {

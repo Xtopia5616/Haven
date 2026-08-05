@@ -52,7 +52,7 @@ export function addNotification(msg, type = 'info', duration = 3000) {
 // (e.g. transcribed text before the task is created).
 export const taskMessagesStore = writable({});
 
-const DRAFT_KEY = '_draft';
+export const DRAFT_KEY = '_draft';
 
 export function setTaskMessages(taskId, messages) {
 	taskMessagesStore.update((m) => ({ ...m, [taskId]: messages }));
@@ -66,10 +66,15 @@ export function addTaskMessage(taskId, msg) {
 }
 
 export function updateTaskMessages(taskId, fn) {
-	taskMessagesStore.update((m) => ({
-		...m,
-		[taskId]: fn(m[taskId] || []),
-	}));
+	taskMessagesStore.update((m) => {
+		const list = m[taskId] || [];
+		const nextList = fn(list);
+		// Skip the write when the updater returned the same array reference
+		// (a no-op): Svelte stores notify every subscriber on update, and the
+		// streaming path calls this once per chunk.
+		if (nextList === list) return m;
+		return { ...m, [taskId]: nextList };
+	});
 }
 
 // Track per-step streaming sequence numbers to detect and reject duplicates
@@ -104,6 +109,17 @@ export function clearTaskMessages(taskId) {
 	});
 }
 
+// Internal: find the index to cut at for truncate/branch. Skips user
+// messages (they carry no stepNumber in the live view; the review
+// builder assigns them the FOLLOWING assistant's stepNumber — cutting
+// ON a user message would drop user input from the view even though
+// the backend kept it).
+function cutIndexForStep(list, targetStep) {
+	return list.findIndex(
+		(x) => x.stepNumber != null && x.stepNumber >= targetStep && x.role !== 'user',
+	);
+}
+
 /**
  * Remove all messages at or after the given step number for a task.
  * Used by rollback: the ReAct loop will re-execute from `targetStep`, so
@@ -124,9 +140,7 @@ export function truncateTaskMessages(taskId, targetStep) {
 	taskMessagesStore.update((m) => {
 		const list = m[taskId];
 		if (!list || list.length === 0) return m;
-		const cutIdx = list.findIndex(
-			(x) => x.stepNumber != null && x.stepNumber >= targetStep && x.role !== 'user',
-		);
+		const cutIdx = cutIndexForStep(list, targetStep);
 		if (cutIdx === -1) return m;
 		const next = { ...m };
 		next[taskId] = list.slice(0, cutIdx);
@@ -149,9 +163,7 @@ export function branchTaskMessages(sourceTaskId, newTaskId, targetStep) {
 	taskMessagesStore.update((m) => {
 		const list = m[sourceTaskId];
 		if (!list || list.length === 0) return m;
-		const cutIdx = list.findIndex(
-			(x) => x.stepNumber != null && x.stepNumber >= targetStep && x.role !== 'user',
-		);
+		const cutIdx = cutIndexForStep(list, targetStep);
 		const kept = cutIdx === -1 ? [...list] : list.slice(0, cutIdx);
 		const next = { ...m };
 		next[newTaskId] = kept;
@@ -159,16 +171,21 @@ export function branchTaskMessages(sourceTaskId, newTaskId, targetStep) {
 	});
 }
 
+// Move all messages from `fromKey` to `toKey` in a single store update.
+// No-op when `fromKey` is missing, empty, or equal to `toKey`.
+function _moveMessages(m, fromKey, toKey) {
+	if (!fromKey || !toKey || fromKey === toKey) return m;
+	const list = m[fromKey];
+	if (!list || list.length === 0) return m;
+	const next = { ...m };
+	next[fromKey] = [];
+	next[toKey] = [...(next[toKey] || []), ...list];
+	return next;
+}
+
 // Move draft messages to a real task (called when task:created fires).
 export function adoptDraftMessages(taskId) {
-	taskMessagesStore.update((m) => {
-		const draft = m[DRAFT_KEY] || [];
-		if (draft.length === 0) return m;
-		const next = { ...m };
-		next[DRAFT_KEY] = [];
-		next[taskId] = [...(next[taskId] || []), ...draft];
-		return next;
-	});
+	taskMessagesStore.update((m) => _moveMessages(m, DRAFT_KEY, taskId));
 }
 
 /**
@@ -180,15 +197,7 @@ export function adoptDraftMessages(taskId) {
  * agent's reply.
  */
 export function moveTaskMessages(fromTaskId, toTaskId) {
-	if (!fromTaskId || !toTaskId || fromTaskId === toTaskId) return;
-	taskMessagesStore.update((m) => {
-		const list = m[fromTaskId] || [];
-		if (list.length === 0) return m;
-		const next = { ...m };
-		next[fromTaskId] = [];
-		next[toTaskId] = [...(next[toTaskId] || []), ...list];
-		return next;
-	});
+	taskMessagesStore.update((m) => _moveMessages(m, fromTaskId, toTaskId));
 }
 
 // Review target for navigating from history to chat with a task context.
@@ -235,6 +244,36 @@ export function clearTaskTokenStats(taskId) {
 		const next = { ...m };
 		delete next[taskId];
 		return next;
+	});
+}
+
+/**
+ * Restore token stats for a task from persisted backend usage counters
+ * (returned by get_task_for_review / get_last_conversation). Cumulative
+ * totals are the persisted running totals; per-step and budget fields stay
+ * empty until the next `agent:usage` event. When the task predates usage
+ * persistence, `estimated` marks the restored totals as a rough estimate
+ * derived from the persisted conversation text (no cost), which the widget
+ * renders with an "约" prefix.
+ * @param {string} taskId
+ * @param {object} usage - { prompt_tokens, completion_tokens, total_tokens, cost_usd, has_cost }
+ * @param {boolean} [estimated]
+ */
+export function restoreTaskTokenStats(taskId, usage, estimated = false) {
+	if (!taskId || !usage) return;
+	const hasCost = !!usage.has_cost && usage.cost_usd != null;
+	updateTaskTokenStats(taskId, {
+		promptTokens: 0,
+		completionTokens: 0,
+		totalTokens: 0,
+		cumulativePromptTokens: usage.prompt_tokens || 0,
+		cumulativeCompletionTokens: usage.completion_tokens || 0,
+		cumulativeTotalTokens: usage.total_tokens || 0,
+		costUsd: null,
+		cumulativeCostUsd: hasCost ? usage.cost_usd : null,
+		contextWindow: null,
+		model: null,
+		estimated: !!estimated,
 	});
 }
 
@@ -287,11 +326,11 @@ export function imageDataUrl(att) {
 }
 
 /**
- * @param {{ role: string, content: string, type?: string|null, voice?: boolean, time?: string, attachments?: Array<{media_type: string, data: string}> }} opts
+ * @param {{ role: string, content: string, type?: string|null, voice?: boolean, time?: string, attachments?: Array<{media_type: string, data: string}>, idPrefix?: string }} opts
  */
-export function newMessage({ role, content, type = null, voice = false, time, attachments = [] }) {
+export function newMessage({ role, content, type = null, voice = false, time, attachments = [], idPrefix = '' }) {
 	return {
-		id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+		id: `${Date.now()}${idPrefix ? `-${idPrefix}` : ''}-${Math.random().toString(36).slice(2, 6)}`,
 		role,
 		content,
 		type,

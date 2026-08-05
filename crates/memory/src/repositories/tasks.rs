@@ -1,4 +1,4 @@
-﻿use crate::db::Database;
+use crate::db::Database;
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -18,11 +18,7 @@ pub struct Task {
 }
 
 impl Database {
-    pub fn create_task(
-        &self,
-        input_text: &str,
-        transcript: &str,
-    ) -> anyhow::Result<Task> {
+    pub fn create_task(&self, input_text: &str, transcript: &str) -> anyhow::Result<Task> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
@@ -572,8 +568,7 @@ mod tests {
     #[test]
     fn test_search_tasks_in_transcript() {
         let db = create_db();
-        db.create_task("task", "transcript about rust")
-            .unwrap();
+        db.create_task("task", "transcript about rust").unwrap();
         let results = db.search_tasks("rust").unwrap();
         assert_eq!(results.len(), 1);
     }
@@ -582,8 +577,7 @@ mod tests {
     fn test_search_tasks_paginated() {
         let db = create_db();
         for i in 0..5 {
-            db.create_task(&format!("rust task {}", i), "")
-                .unwrap();
+            db.create_task(&format!("rust task {}", i), "").unwrap();
         }
 
         let page1 = db.search_tasks_paginated("rust", 2, 0).unwrap();

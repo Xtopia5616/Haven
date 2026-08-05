@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use base64::Engine;
+use haven_common::prompts::{FILE_SUMMARY_SYSTEM_PROMPT, IMAGE_ANALYSIS_SYSTEM_PROMPT};
 use haven_common::types::RiskLevel;
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
@@ -126,10 +127,7 @@ async fn understand_image(
     }
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
-    let mut sys = String::from(
-        "You are analyzing an image. Describe what it shows and transcribe any visible text. \
-         Respond concisely in the user's language.",
-    );
+    let mut sys = String::from(IMAGE_ANALYSIS_SYSTEM_PROMPT);
     if let Some(f) = focus {
         sys.push_str(" Pay special attention to: ");
         sys.push_str(f);
@@ -794,11 +792,7 @@ async fn summarize(
         anyhow::bail!("cancelled");
     }
 
-    let mut sys = String::from(
-        "You are a summarizer. Summarize the following file content concisely. \
-         Focus on the most important points, structure, and notable details. \
-         Respond in the same language as the content. Keep the summary under 250 words.",
-    );
+    let mut sys = String::from(FILE_SUMMARY_SYSTEM_PROMPT);
     if let Some(f) = focus {
         sys.push_str("\nPay special attention to this topic: ");
         sys.push_str(f);

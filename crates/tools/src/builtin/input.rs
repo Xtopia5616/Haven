@@ -78,9 +78,9 @@ impl Tool for InputTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let op = input["operation"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("operation is required (type, key, click, move, scroll)"))?;
+        let op = input["operation"].as_str().ok_or_else(|| {
+            anyhow::anyhow!("operation is required (type, key, click, move, scroll)")
+        })?;
         let result = match op {
             "type" => {
                 let text = input["text"]
@@ -141,9 +141,9 @@ mod imp {
         INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
         MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
         MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-        MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VK_RETURN, VK_TAB, VK_ESCAPE, VK_BACK,
-        VK_SPACE, VK_DELETE, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT, VK_UP,
-        VK_DOWN, VK_CAPITAL, VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_F1,
+        MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_DELETE,
+        VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR,
+        VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -177,10 +177,7 @@ mod imp {
             m.insert("lwin", VK_LWIN);
             // F1..F12
             for i in 1..=12u16 {
-                m.insert(
-                    Box::leak(format!("f{i}").into_boxed_str()),
-                    VK_F1 + i - 1,
-                );
+                m.insert(Box::leak(format!("f{i}").into_boxed_str()), VK_F1 + i - 1);
             }
             // 0..9, a..z (single chars)
             for c in '0'..='9' {
@@ -219,7 +216,13 @@ mod imp {
     }
 
     fn send_inputs(inputs: &[INPUT]) -> anyhow::Result<()> {
-        let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            )
+        };
         if sent as usize != inputs.len() {
             return Err(anyhow!(
                 "SendInput only delivered {}/{} events",

@@ -25,6 +25,44 @@ pub enum EndpointRole {
     AudioModel,
 }
 
+impl EndpointRole {
+    /// Canonical string identifier used in TOML, the frontend protocol, and the
+    /// model commands. Single source of truth for the role name mapping.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SmallModel => "small_model",
+            Self::DefaultModel => "default_model",
+            Self::BalancedModel => "balanced_model",
+            Self::ImageModel => "image_model",
+            Self::AudioModel => "audio_model",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]. Returns `None` for unknown role strings
+    /// so callers can validate input from the frontend/CLI.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "small_model" => Self::SmallModel,
+            "default_model" => Self::DefaultModel,
+            "balanced_model" => Self::BalancedModel,
+            "image_model" => Self::ImageModel,
+            "audio_model" => Self::AudioModel,
+            _ => return None,
+        })
+    }
+
+    /// All variants in their canonical order. Useful for iterating every
+    /// endpoint slot without duplicating the list at call sites.
+    pub const ALL: &'static [EndpointRole] = &[
+        Self::SmallModel,
+        Self::DefaultModel,
+        Self::BalancedModel,
+        Self::ImageModel,
+        Self::AudioModel,
+    ];
+}
+
 // ---------------------------------------------------------------------------
 // §2.6: Circuit Breaker state
 // ---------------------------------------------------------------------------
@@ -459,6 +497,36 @@ impl LlmRouter {
                 .await
         })
         .await
+    }
+
+    /// Convenience wrapper that builds a `System + User` message pair (or just
+    /// `User` when `system` is empty) and forwards to [`Self::chat`]. Used by
+    /// one-shot prompts that don't need a full conversation history (title
+    /// generation, fact extraction, conversation summarization).
+    pub async fn chat_with_prompt(
+        &self,
+        role: EndpointRole,
+        system: &str,
+        user: &str,
+    ) -> Result<LlmResponse, LlmError> {
+        let mut messages = Vec::with_capacity(if system.is_empty() { 1 } else { 2 });
+        if !system.is_empty() {
+            messages.push(LlmMessage {
+                role: LlmRole::System,
+                content: vec![ContentPart::text(system)],
+                tool_call_id: None,
+                tool_calls: None,
+                reasoning: None,
+            });
+        }
+        messages.push(LlmMessage {
+            role: LlmRole::User,
+            content: vec![ContentPart::text(user)],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+        });
+        self.chat(role, messages).await
     }
 
     pub async fn chat_with_tools(

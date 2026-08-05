@@ -1,5 +1,7 @@
+use crate::is_dangling_boundary;
+use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::{EndpointRole, LlmMessage, LlmRole, LlmRouter};
+use haven_llm::{EndpointRole, LlmRouter};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tiktoken_rs::o200k_base;
@@ -103,9 +105,7 @@ impl ContextCompactor {
 
     /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
     fn build_summary_prompt(prefix: &[CanonicalMessage]) -> String {
-        let mut text = String::from(
-            "Summarize this conversation. Keep key facts, decisions, and context:\n\n",
-        );
+        let mut text = String::from(CONVERSATION_SUMMARY_PROMPT);
         for msg in prefix {
             let role = match msg.role {
                 haven_common::types::CanonicalRole::System => "system",
@@ -121,6 +121,23 @@ impl ContextCompactor {
         }
         text.push_str("\n---\nSummary:");
         text
+    }
+
+    /// Compute a safe cutoff index that never splits a tool-call/tool-result
+    /// pair.
+    ///
+    /// Tool results (`role == Tool`) reference the assistant message that
+    /// declared them via `tool_call_id`. Cutting between that assistant
+    /// message and its `Tool` results leaves the suffix beginning with a
+    /// dangling tool message, which providers reject with a 400. This slides
+    /// `desired` forward past leading `Tool` messages AND past an assistant
+    /// message that declares `tool_calls` (its results immediately follow it),
+    /// so the suffix starts only at a clean boundary.
+    fn safe_end_idx(messages: &[CanonicalMessage], mut desired: usize) -> usize {
+        while desired < messages.len() && is_dangling_boundary(&messages[desired]) {
+            desired += 1;
+        }
+        desired
     }
 
     /// Compress the message list: take the oldest half (up to `max_summary_messages`)
@@ -150,22 +167,18 @@ impl ContextCompactor {
         }
 
         let summarize_count = (compactable / 2).max(2);
-        let end_idx = system_count + summarize_count;
+        let end_idx = Self::safe_end_idx(messages, system_count + summarize_count);
         let prefix = &messages[..end_idx];
         let suffix = &messages[end_idx..];
 
         let tokens_before = estimate_message_tokens(messages);
 
         let prompt = Self::build_summary_prompt(prefix);
-        let llm_messages = vec![LlmMessage {
-            role: LlmRole::User,
-            content: vec![ContentPart::text(prompt)],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-        }];
 
-        match router.chat(EndpointRole::DefaultModel, llm_messages).await {
+        match router
+            .chat_with_prompt(EndpointRole::DefaultModel, "", &prompt)
+            .await
+        {
             Ok(response) => {
                 let summary = response.text.trim().to_string();
                 if summary.is_empty() {
@@ -173,17 +186,14 @@ impl ContextCompactor {
                 }
 
                 let mut compacted: Vec<CanonicalMessage> = messages[..system_count].to_vec();
-                compacted.push(CanonicalMessage {
-                    role: haven_common::types::CanonicalRole::Assistant,
-                    content: vec![ContentPart::text(format!(
+                compacted.push(CanonicalMessage::assistant(
+                    vec![ContentPart::text(format!(
                         "[Compacted summary of previous messages]: {}",
                         summary
                     ))],
-                    tool_calls: None,
-                    tool_call_id: None,
-                    parent_message_id: None,
-                    reasoning: None,
-                });
+                    None,
+                    None,
+                ));
                 compacted.extend_from_slice(suffix);
 
                 let tokens_after = estimate_message_tokens(&compacted);
@@ -328,5 +338,76 @@ mod tests {
         ];
         let prompt = ContextCompactor::build_summary_prompt(&msgs);
         assert!(prompt.contains("Alice"));
+    }
+
+    fn make_tool_result(text: &str) -> CanonicalMessage {
+        CanonicalMessage {
+            role: CanonicalRole::Tool,
+            content: vec![ContentPart::text(text)],
+            tool_calls: None,
+            tool_call_id: Some("call_1".into()),
+            parent_message_id: None,
+            reasoning: None,
+        }
+    }
+
+    #[test]
+    fn safe_end_idx_keeps_suffix_from_starting_with_tool() {
+        // user, assistant(tool_calls), tool — a full pair. Any desired index
+        // between the assistant and its tool result must be pushed to the end
+        // of the tool-result block so the suffix never starts with a Tool msg.
+        let msgs = vec![
+            make_msg(CanonicalRole::User, "hello"),
+            make_msg(CanonicalRole::Assistant, "let me check"),
+            make_tool_result("result"),
+            make_msg(CanonicalRole::User, "thanks"),
+        ];
+        // Desired index 2 points at the Tool message -> must slide to 3.
+        assert_eq!(ContextCompactor::safe_end_idx(&msgs, 2), 3);
+        // Desired index 1 points at the assistant-with-calls message -> safe.
+        assert_eq!(ContextCompactor::safe_end_idx(&msgs, 1), 1);
+        // Desired index 3 points at a User message -> safe.
+        assert_eq!(ContextCompactor::safe_end_idx(&msgs, 3), 3);
+    }
+
+    #[test]
+    fn safe_end_idx_pushes_past_multiple_tool_results() {
+        let msgs = vec![
+            make_msg(CanonicalRole::User, "a"),
+            make_msg(CanonicalRole::Assistant, "call"),
+            make_tool_result("r1"),
+            make_tool_result("r2"),
+            make_msg(CanonicalRole::User, "b"),
+        ];
+        // Desired index 2 (at Tool r1) -> slides past both results to index 4.
+        assert_eq!(ContextCompactor::safe_end_idx(&msgs, 2), 4);
+        assert_eq!(ContextCompactor::safe_end_idx(&msgs, 4), 4);
+    }
+
+    #[test]
+    fn safe_end_idx_slides_past_assistant_with_tool_calls_plus_results() {
+        // Cutting right AFTER the assistant-with-calls message leaves its tool
+        // results dangling in the suffix (their assistant is summarized away),
+        // which providers reject with a 400. The index must slide past the
+        // assistant AND its tool-result block.
+        let msgs = vec![
+            make_msg(CanonicalRole::User, "a"),
+            make_msg(CanonicalRole::Assistant, "call"),
+            make_tool_result("r1"),
+            make_tool_result("r2"),
+            make_msg(CanonicalRole::User, "b"),
+        ];
+        let mut with_calls = msgs.clone();
+        with_calls[1].tool_calls = Some(vec![haven_common::types::CanonicalToolCall {
+            id: "call_1".into(),
+            name: "tool".into(),
+            arguments: serde_json::Value::Null,
+        }]);
+        // Desired index 1 points at the assistant-with-calls message -> the
+        // split must slide past it and both results to index 4.
+        assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 1), 4);
+        assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 2), 4);
+        // Desired index 4 (User) -> safe as-is.
+        assert_eq!(ContextCompactor::safe_end_idx(&with_calls, 4), 4);
     }
 }

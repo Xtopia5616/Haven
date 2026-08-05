@@ -364,6 +364,7 @@ mod tests {
             is_compacted: false,
             parent_message_id: None,
             attachments: vec![],
+            voice: false,
         }
     }
 

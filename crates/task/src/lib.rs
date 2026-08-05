@@ -1,6 +1,7 @@
-﻿use haven_common::types::RiskLevel;
+use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
+use haven_memory::repositories::tasks::Task as DbTask;
 use haven_tools::{ToolResult, ToolsManager};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -106,6 +107,27 @@ pub struct TaskInfo {
     pub updated_at: String,
 }
 
+impl TaskInfo {
+    /// Build an in-memory `TaskInfo` from a freshly-loaded DB record. Centralizes
+    /// the 10-field literal that used to be duplicated at every `load_*` site;
+    /// `status` is taken from the record so callers that need a forced override
+    /// (e.g. `load_pending_tasks`) can mutate it after construction.
+    pub fn from_db_record(record: &DbTask) -> Self {
+        Self {
+            id: record.id.clone(),
+            input: record.input_text.clone(),
+            summary: record.transcript.clone(),
+            title: record.title.clone(),
+            status: TaskStatus::from_status_str(&record.status),
+            steps: Vec::new(),
+            supplement_queue: Vec::new(),
+            steering_queue: Vec::new(),
+            created_at: record.created_at.clone(),
+            updated_at: record.updated_at.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepInfo {
     pub id: String,
@@ -181,20 +203,12 @@ impl TaskExecutor {
         input: &str,
         summary: &str,
     ) -> anyhow::Result<TaskInfo> {
-        let now = chrono::Utc::now().to_rfc3339();
         let record = self.db.create_task(input, input)?;
-        let task = TaskInfo {
-            id: record.id,
-            input: input.into(),
-            summary: summary.into(),
-            title: None,
-            status: TaskStatus::Pending,
-            steps: Vec::new(),
-            supplement_queue: Vec::new(),
-            steering_queue: Vec::new(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
+        let mut task = TaskInfo::from_db_record(&record);
+        // The DB record was created with `input` as its transcript, but the
+        // caller may have a distinct classifier-generated summary — overlay
+        // it after construction so we keep the constructor single-purpose.
+        task.summary = summary.into();
         let mut tasks = self.tasks.lock().await;
         tasks.push(task.clone());
 
@@ -330,9 +344,7 @@ impl TaskExecutor {
     /// tasks from the in-memory list so `try_claim_pending` only counts
     /// active (Pending / Running) tasks.
     async fn unmark_running(&self, task_id: &str) {
-        self.running_tasks.lock().await.remove(task_id);
-        self.task_permits.lock().await.remove(task_id);
-        self.task_cancellations.lock().await.remove(task_id);
+        self.cleanup_task_maps(task_id).await;
         let mut tasks = self.tasks.lock().await;
         if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
             let status = tasks[pos].status.clone();
@@ -500,6 +512,8 @@ impl TaskExecutor {
             self.db.update_task_status(task_id, new_status.as_str())?;
             tasks.remove(pos);
             drop(tasks);
+            // `task_notify` sits between the maps here — wake any ReAct-loop
+            // waiters before tearing down the rest of the per-task state.
             self.running_tasks.lock().await.remove(task_id);
             self.task_permits.lock().await.remove(task_id);
             if let Some(notify) = self.task_notify.lock().await.remove(task_id) {
@@ -523,9 +537,7 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         tasks.retain(|t| t.id != task_id);
         drop(tasks);
-        self.running_tasks.lock().await.remove(task_id);
-        self.task_permits.lock().await.remove(task_id);
-        self.task_cancellations.lock().await.remove(task_id);
+        self.cleanup_task_maps(task_id).await;
         self.awaiting_answer.lock().await.remove(task_id);
         self.job_completions.lock().await.remove(task_id);
     }
@@ -622,9 +634,7 @@ impl TaskExecutor {
         // ordering inversion with `unmark_running` (which takes
         // `running_tasks` before `tasks`).
         if needs_terminal_cleanup.is_some() {
-            self.running_tasks.lock().await.remove(task_id);
-            self.task_permits.lock().await.remove(task_id);
-            self.task_cancellations.lock().await.remove(task_id);
+            self.cleanup_task_maps(task_id).await;
             if let Some(notify) = self.task_notify.lock().await.remove(task_id) {
                 notify.notify_waiters();
             }
@@ -646,6 +656,32 @@ impl TaskExecutor {
             .unwrap_or_default()
     }
 
+    /// Remove `task_id` from the three per-task maps (`running_tasks`,
+    /// `task_permits`, `task_cancellations`). Centralizes the three-line
+    /// triplet that used to be copy-pasted at every cleanup site.
+    /// Does NOT touch `tasks` (working set) or `task_notify` — those have
+    /// ordering-sensitive callers (`update_task_status`, `unmark_running`)
+    /// that need to remain in the lock-order path.
+    pub async fn cleanup_task_maps(&self, task_id: &str) {
+        self.running_tasks.lock().await.remove(task_id);
+        self.task_permits.lock().await.remove(task_id);
+        self.task_cancellations.lock().await.remove(task_id);
+    }
+
+    /// Look up an in-memory `TaskInfo` by id. Equivalent to the
+    /// `list_tasks().await.into_iter().find(|t| t.id == task_id)` pattern
+    /// that was repeated at three call sites — using a method keeps the
+    /// scan colocated with the rest of the working-set code so any future
+    /// secondary index (e.g. HashMap-backed lookup) only needs one edit.
+    pub async fn get_task(&self, task_id: &str) -> Option<TaskInfo> {
+        self.tasks
+            .lock()
+            .await
+            .iter()
+            .find(|t| t.id == task_id)
+            .cloned()
+    }
+
     /// Load a task from the database into the in-memory list if it is not
     /// already there (e.g. after an app restart). Used by `process_input`
     /// so that follow-up messages can reach tasks that were paused before
@@ -661,18 +697,7 @@ impl TaskExecutor {
             .db
             .get_task(task_id)?
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found in database", task_id))?;
-        let task = TaskInfo {
-            id: record.id,
-            input: record.input_text,
-            summary: record.transcript,
-            title: record.title,
-            status: TaskStatus::from_status_str(&record.status),
-            steps: Vec::new(),
-            supplement_queue: Vec::new(),
-            steering_queue: Vec::new(),
-            created_at: record.created_at,
-            updated_at: record.updated_at,
-        };
+        let task = TaskInfo::from_db_record(&record);
         let mut tasks = self.tasks.lock().await;
         // Re-check: another thread may have inserted this task between the
         // check above and the DB query.
@@ -698,18 +723,13 @@ impl TaskExecutor {
                 if tasks.iter().any(|t| t.id == record.id) {
                     continue;
                 }
-                tasks.push(TaskInfo {
-                    id: record.id,
-                    input: record.input_text,
-                    summary: record.transcript,
-                    title: record.title,
-                    status: TaskStatus::Pending,
-                    steps: Vec::new(),
-                    supplement_queue: Vec::new(),
-                    steering_queue: Vec::new(),
-                    created_at: record.created_at,
-                    updated_at: record.updated_at,
-                });
+                // Force Pending: this loader only ever rehydrates tasks
+                // whose DB status is already "pending" (the SQL filter
+                // guarantees that), so the override is a no-op but keeps
+                // the invariant explicit at the call site.
+                let mut info = TaskInfo::from_db_record(&record);
+                info.status = TaskStatus::Pending;
+                tasks.push(info);
                 loaded += 1;
             }
         }
@@ -858,14 +878,7 @@ impl TaskExecutor {
             &input.to_string(),
             risk_level != RiskLevel::Safe,
         )?;
-        let obs = if result.success {
-            serde_json::to_string(&result.output).unwrap_or_else(|_| "success".into())
-        } else {
-            result
-                .error
-                .clone()
-                .unwrap_or_else(|| "unknown failure".into())
-        };
+        let obs = result.summary_text();
         self.db
             .complete_action_step(&step_record.id, &obs, result.success)?;
         Ok(result)
@@ -1273,10 +1286,7 @@ mod tests {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db.clone(), tools.clone(), 3);
-        let task = exec
-            .create_task("queued before restart")
-            .await
-            .unwrap();
+        let task = exec.create_task("queued before restart").await.unwrap();
 
         // Simulate a restart: fresh executor over the same DB with an empty
         // working set. The pending task must be reloaded and dispatchable.
@@ -1423,4 +1433,3 @@ mod tests {
         assert!(exec.drain_job_completions(&task.id).await.is_empty());
     }
 }
-

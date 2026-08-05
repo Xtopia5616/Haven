@@ -1,4 +1,5 @@
 use crate::ToolResult;
+use haven_common::McpTransportType;
 use haven_llm::stt::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -9,6 +10,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+
+mod sse;
+use futures_util::StreamExt;
+use sse::SseParser;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -44,6 +49,196 @@ fn jsonrpc_notification(method: &str, params: Option<Value>) -> Value {
     req
 }
 
+/// Per-block binary payload cap for `tools/call` content. Binary blocks that
+/// exceed this (in base64 characters) are reduced to metadata + a byte-length
+/// marker instead of being copied verbatim into the output, so `summary_text()`
+/// — which serializes the whole `output` into the DB action step and
+/// notifications — cannot grow without bound from untrusted MCP servers.
+const MAX_BINARY_PAYLOAD: usize = 2 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// MCP content block extraction
+// ---------------------------------------------------------------------------
+
+/// Approximate decoded length of a base64 payload, computed without allocating
+/// the buffer (base64 adds ~1/3 overhead and up to 2 padding `=` bytes for a
+/// block-aligned input). Only used for reporting sizes / caps.
+fn base64_decoded_len(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut out = len / 4 * 3;
+    if len > 0 && bytes[len - 1] == b'=' {
+        out -= 1;
+    }
+    if len > 1 && bytes[len - 2] == b'=' {
+        out -= 1;
+    }
+    out
+}
+
+/// Normalize the response of a `tools/call` into a structured `output` object
+/// and a plain-text `summary` for the agent loop.
+///
+/// MCP content blocks may be `text`, `image`, `audio`, or `resource`. Text and
+/// text-resources fold into the plain-text summary. Binary media (`image`,
+/// `audio`, embedded resource blobs) is surfaced once under `output.images` /
+/// `output.audio` / `output.resources` (base64 + mimeType, capped at
+/// [`MAX_BINARY_PAYLOAD`]) for downstream rendering, while `output.content`
+/// keeps a metadata-only list of every block (no raw payload) for UI fidelity.
+/// Unknown or malformed block types are preserved rather than silently dropped.
+fn extract_mcp_content(content: &[Value]) -> (Value, String) {
+    let mut text_parts: Vec<String> = Vec::new();
+    let mut images: Vec<Value> = Vec::new();
+    let mut audio: Vec<Value> = Vec::new();
+    let mut resources: Vec<Value> = Vec::new();
+    let mut normalized: Vec<Value> = Vec::new();
+
+    for item in content {
+        let kind = match item.get("type").and_then(|t| t.as_str()) {
+            Some(k) => k,
+            // A type-less block is malformed: preserve it like unknown types.
+            None => {
+                text_parts.push(serde_json::to_string(item).unwrap_or_default());
+                normalized.push(item.clone());
+                continue;
+            }
+        };
+        let mime_type = item["mimeType"]
+            .as_str()
+            .or_else(|| item["mime_type"].as_str())
+            .unwrap_or("application/octet-stream");
+
+        // Metadata-only alias of this block; the raw payload (if any) lives in
+        // the typed collection below, not here, so it is never duplicated.
+        let mut block = serde_json::Map::new();
+        block.insert("type".into(), Value::String(kind.to_string()));
+        block.insert("mimeType".into(), Value::String(mime_type.to_string()));
+
+        match kind {
+            "text" => {
+                if let Some(t) = item["text"].as_str() {
+                    text_parts.push(t.to_string());
+                }
+                block.insert(
+                    "text".into(),
+                    item.get("text")
+                        .cloned()
+                        .unwrap_or(Value::String(String::new())),
+                );
+            }
+            "image" | "audio" => {
+                let data = item["data"].as_str().unwrap_or("");
+                let entry = if data.len() <= MAX_BINARY_PAYLOAD {
+                    serde_json::json!({
+                        "type": kind,
+                        "mimeType": mime_type,
+                        "data": data,
+                    })
+                } else {
+                    // Oversized payload: keep only metadata so the observation
+                    // and DB record stay bounded.
+                    serde_json::json!({
+                        "type": kind,
+                        "mimeType": mime_type,
+                        "data": "",
+                        "oversized": true,
+                        "bytes": data.len(),
+                    })
+                };
+                if kind == "image" {
+                    images.push(entry);
+                } else {
+                    audio.push(entry);
+                }
+                block.insert("data_len".into(), Value::from(data.len()));
+                // Marker so the text-only agent loop knows binary content exists.
+                text_parts.push(format!(
+                    "[{} block returned: {} ({} base64 chars{})]",
+                    kind,
+                    mime_type,
+                    data.len(),
+                    if data.len() > MAX_BINARY_PAYLOAD {
+                        ", oversized"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            "resource" => {
+                let res = &item["resource"];
+                if let Some(t) = res["text"].as_str() {
+                    text_parts.push(t.to_string());
+                    block.insert("text".into(), Value::String(t.to_string()));
+                } else if let Some(blob) = res["blob"].as_str() {
+                    let uri = res["uri"].as_str().unwrap_or("");
+                    // Compute the decoded size without allocating the buffer.
+                    let decoded_len = base64_decoded_len(blob);
+                    let entry = if blob.len() <= MAX_BINARY_PAYLOAD {
+                        serde_json::json!({
+                            "uri": uri,
+                            "mimeType": res["mimeType"].as_str().unwrap_or(mime_type),
+                            "blob": blob,
+                            "bytes": decoded_len,
+                        })
+                    } else {
+                        serde_json::json!({
+                            "uri": uri,
+                            "mimeType": res["mimeType"].as_str().unwrap_or(mime_type),
+                            "blob": "",
+                            "oversized": true,
+                            "bytes": decoded_len,
+                        })
+                    };
+                    resources.push(entry);
+                    block.insert("bytes".into(), Value::from(decoded_len));
+                    text_parts.push(format!(
+                        "[resource block returned: {} ({} base64 chars, ~{} decoded bytes{})]",
+                        if uri.is_empty() { mime_type } else { uri },
+                        blob.len(),
+                        decoded_len,
+                        if blob.len() > MAX_BINARY_PAYLOAD {
+                            ", oversized"
+                        } else {
+                            ""
+                        }
+                    ));
+                } else {
+                    // Neither a readable text nor a blob: surface a marker so
+                    // the block is not silently dropped (mirrors image/audio).
+                    text_parts.push(format!(
+                        "[resource block returned: {} (no readable payload)]",
+                        res["uri"].as_str().unwrap_or(mime_type)
+                    ));
+                }
+            }
+            _ => {
+                // Unknown block type — preserve it but don't fail.
+                text_parts.push(serde_json::to_string(item).unwrap_or_default());
+                normalized.push(item.clone());
+                continue;
+            }
+        }
+
+        normalized.push(Value::Object(block));
+    }
+
+    let text = text_parts.join("\n");
+    let mut output = serde_json::Map::new();
+    output.insert("text".into(), Value::String(text.clone()));
+    output.insert("content".into(), Value::Array(normalized));
+    if !images.is_empty() {
+        output.insert("images".into(), Value::Array(images));
+    }
+    if !audio.is_empty() {
+        output.insert("audio".into(), Value::Array(audio));
+    }
+    if !resources.is_empty() {
+        output.insert("resources".into(), Value::Array(resources));
+    }
+
+    (Value::Object(output), text)
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -68,6 +263,10 @@ pub enum McpClientStatus {
 pub struct McpServerSnapshot {
     pub name: String,
     pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Vec<String>,
+    pub url: String,
     pub enabled: bool,
     pub status: McpClientStatus,
     pub tools: Vec<McpToolInfo>,
@@ -82,17 +281,19 @@ pub struct McpStatusChangeEvent {
 }
 
 // ---------------------------------------------------------------------------
-// McpClient — single MCP server connection via stdio
+// McpClient — single MCP server connection (stdio or Streamable HTTP)
 // ---------------------------------------------------------------------------
 
-struct McpClientInner {
+/// stdio transport: a spawned child process speaking JSON-RPC over its stdin
+/// and stdout pipes.
+struct StdioInner {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
 }
 
-impl McpClientInner {
+impl StdioInner {
     async fn request(
         &mut self,
         id: u64,
@@ -117,12 +318,9 @@ impl McpClientInner {
                 }
                 let parsed: Value = serde_json::from_str(&buf)?;
                 if parsed.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                    if let Some(err) = parsed.get("error") {
-                        let code = err["code"].as_i64().unwrap_or(-1);
-                        let msg = err["message"].as_str().unwrap_or("unknown error");
-                        anyhow::bail!("MCP error ({}): {}", code, msg);
-                    }
-                    return Ok(parsed["result"].clone());
+                    // Shared error extraction with the HTTP transport so the
+                    // two paths cannot drift.
+                    return unpack_jsonrpc(parsed);
                 }
                 // Route non-matching responses to notification handler (refine §4.6)
                 if parsed.get("id").is_none() {
@@ -147,17 +345,302 @@ impl McpClientInner {
     }
 }
 
+/// Shared state for the Streamable HTTP transport: the reqwest client, the
+/// endpoint URL, request headers (from the config `env` list), and the session
+/// id returned by the server (`Mcp-Session-Id`, per the MCP Streamable HTTP
+/// spec).
+struct HttpShared {
+    http: reqwest::Client,
+    url: String,
+    headers: Vec<(String, String)>,
+    session_id: Arc<tokio::sync::Mutex<String>>,
+    cancel: CancellationToken,
+}
+
+/// Streamable HTTP transport (MCP spec, transport 2025-03-26). Requests are
+/// POSTed to the endpoint; the server replies with JSON or an SSE stream.
+/// Server-to-client notifications arrive over a long-lived SSE stream opened
+/// with a GET request.
+struct HttpInner {
+    shared: Arc<HttpShared>,
+    notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+}
+
+impl HttpInner {
+    async fn request(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Option<Value>,
+    ) -> anyhow::Result<Value> {
+        let req = jsonrpc_request(id, method, params);
+        let builder = self
+            .shared
+            .http
+            .post(&self.shared.url)
+            .json(&req)
+            .header("Accept", "application/json, text/event-stream");
+        let builder = apply_http_session_headers(builder, &self.shared).await;
+
+        let resp = tokio::select! {
+            _ = self.shared.cancel.cancelled() => {
+                anyhow::bail!("MCP HTTP request '{}' cancelled", method)
+            }
+            r = tokio::time::timeout(
+                Duration::from_secs(REQUEST_TIMEOUT_SECS),
+                builder.send(),
+            ) => r.map_err(|_| anyhow::anyhow!("MCP HTTP request '{}' timed out", method))??,
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("MCP HTTP error (status {}): {}", status.as_u16(), body);
+        }
+        // Capture/refresh the session id so subsequent requests (and the SSE
+        // listener) can attach it.
+        if let Some(sid) = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
+            *self.shared.session_id.lock().await = sid.to_string();
+        }
+
+        let is_sse = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
+        if is_sse {
+            read_sse_response(resp, id, &self.notification_tx).await
+        } else {
+            let value: Value = resp.json().await?;
+            unpack_jsonrpc(value)
+        }
+    }
+
+    async fn notify(&mut self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
+        let notification = jsonrpc_notification(method, params);
+        let builder = self
+            .shared
+            .http
+            .post(&self.shared.url)
+            .json(&notification)
+            .header("Accept", "application/json");
+        let builder = apply_http_session_headers(builder, &self.shared).await;
+        let resp = tokio::select! {
+            _ = self.shared.cancel.cancelled() => {
+                anyhow::bail!("MCP HTTP notify '{}' cancelled", method)
+            }
+            r = tokio::time::timeout(
+                Duration::from_secs(REQUEST_TIMEOUT_SECS),
+                builder.send(),
+            ) => r.map_err(|_| anyhow::anyhow!("MCP HTTP notify '{}' timed out", method))??,
+        };
+        let status = resp.status();
+        if !status.is_success() {
+            anyhow::bail!(
+                "MCP HTTP notify error (status {}): {}",
+                status.as_u16(),
+                resp.text().await.unwrap_or_default()
+            );
+        }
+        // Drain the body to release the connection for reuse.
+        let _ = resp.bytes().await;
+        Ok(())
+    }
+}
+
+enum McpClientInner {
+    Stdio(Box<StdioInner>),
+    Http(HttpInner),
+}
+
+impl McpClientInner {
+    async fn request(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Option<Value>,
+    ) -> anyhow::Result<Value> {
+        match self {
+            McpClientInner::Stdio(s) => s.request(id, method, params).await,
+            McpClientInner::Http(h) => h.request(id, method, params).await,
+        }
+    }
+
+    async fn notify(&mut self, method: &str, params: Option<Value>) -> anyhow::Result<()> {
+        match self {
+            McpClientInner::Stdio(s) => s.notify(method, params).await,
+            McpClientInner::Http(h) => h.notify(method, params).await,
+        }
+    }
+}
+
 impl Drop for McpClientInner {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
+        if let McpClientInner::Stdio(s) = self {
+            let _ = s.child.start_kill();
+        }
     }
+}
+
+/// Read an SSE streamed response body until the JSON-RPC response matching
+/// `id` arrives; id-less messages in the stream are routed as notifications.
+fn unpack_jsonrpc(value: Value) -> anyhow::Result<Value> {
+    if let Some(err) = value.get("error") {
+        let code = err["code"].as_i64().unwrap_or(-1);
+        let msg = err["message"].as_str().unwrap_or("unknown error");
+        anyhow::bail!("MCP error ({}): {}", code, msg);
+    }
+    Ok(value["result"].clone())
+}
+
+/// Attach the current MCP session id (if any) and every user-configured
+/// header to a request builder. Shared by all HTTP transport call sites so
+/// the session/auth header handling cannot drift.
+async fn apply_http_session_headers(
+    mut builder: reqwest::RequestBuilder,
+    shared: &HttpShared,
+) -> reqwest::RequestBuilder {
+    let session = shared.session_id.lock().await;
+    if !session.is_empty() {
+        builder = builder.header("Mcp-Session-Id", session.as_str());
+    }
+    for (k, v) in &shared.headers {
+        builder = builder.header(k.as_str(), v);
+    }
+    builder
+}
+
+async fn read_sse_response(
+    resp: reqwest::Response,
+    id: u64,
+    tx: &tokio::sync::mpsc::UnboundedSender<Value>,
+) -> anyhow::Result<Value> {
+    let mut stream = resp.bytes_stream();
+    let mut parser = SseParser::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(REQUEST_TIMEOUT_SECS);
+    loop {
+        let chunk = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("MCP HTTP: timed out waiting for SSE response"))?;
+        match chunk {
+            Some(Ok(bytes)) => {
+                for ev in parser.feed(&bytes) {
+                    if ev.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                        return unpack_jsonrpc(ev);
+                    }
+                    let _ = tx.send(ev);
+                }
+            }
+            Some(Err(e)) => return Err(e.into()),
+            None => break,
+        }
+    }
+    anyhow::bail!(
+        "MCP HTTP: SSE stream ended before the response for request {} arrived",
+        id
+    )
+}
+
+/// Open a long-lived SSE stream (GET) and route every server-to-client message
+/// into the notification channel. Ends when the stream closes or the cancel
+/// token fires; the caller retries with backoff.
+async fn listen_sse(
+    shared: &Arc<HttpShared>,
+    tx: &tokio::sync::mpsc::UnboundedSender<Value>,
+    cancel: &CancellationToken,
+) -> anyhow::Result<()> {
+    let builder = shared
+        .http
+        .get(&shared.url)
+        .header("Accept", "text/event-stream");
+    let req = apply_http_session_headers(builder, shared).await;
+    let resp = req.send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("SSE stream open failed (status {})", status.as_u16());
+    }
+    let mut stream = resp.bytes_stream();
+    let mut parser = SseParser::new();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            chunk = stream.next() => {
+                match chunk {
+                    Some(Ok(bytes)) => {
+                        for ev in parser.feed(&bytes) {
+                            let _ = tx.send(ev);
+                        }
+                    }
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Ok(()), // stream closed by the server
+                }
+            }
+        }
+    }
+}
+
+/// Background task that keeps an SSE notification stream open for an HTTP
+/// client, reconnecting with a short backoff when the stream drops.
+fn spawn_sse_listener(
+    name: String,
+    cancel: CancellationToken,
+    shared: Arc<HttpShared>,
+    notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+) {
+    tokio::spawn(async move {
+        let shared = Arc::new(shared);
+        loop {
+            if cancel.is_cancelled() {
+                break;
+            }
+            match listen_sse(&shared, &notification_tx, &cancel).await {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::debug!(
+                        "MCP HTTP SSE stream for '{}' closed: {} (will retry)",
+                        name,
+                        e
+                    );
+                }
+            }
+            if cancel.is_cancelled() {
+                break;
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+        }
+    });
+}
+
+/// Liveness probe for the HTTP transport: any HTTP response (even an error
+/// status) means the endpoint is reachable; only a transport failure or
+/// timeout reports it dead.
+async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
+    let builder = shared
+        .http
+        .get(&shared.url)
+        .header("Accept", "text/event-stream");
+    let req = apply_http_session_headers(builder, shared).await;
+    matches!(
+        tokio::time::timeout(Duration::from_secs(5), req.send()).await,
+        Ok(Ok(_))
+    )
 }
 
 pub struct McpClient {
     name: String,
+    transport: McpTransportType,
     command: String,
     args: Vec<String>,
     env: Vec<String>,
+    url: String,
     enabled: Arc<AtomicBool>,
     inner: Arc<Mutex<Option<McpClientInner>>>,
     status: Arc<Mutex<McpClientStatus>>,
@@ -203,13 +686,15 @@ impl RateLimiter {
 }
 
 impl McpClient {
-    pub fn new(name: &str, command: &str, args: &[String], env: &[String], enabled: bool) -> Self {
+    pub fn new(config: &haven_common::McpServerConfig) -> Self {
         Self {
-            name: name.into(),
-            command: command.into(),
-            args: args.to_vec(),
-            env: env.to_vec(),
-            enabled: Arc::new(AtomicBool::new(enabled)),
+            name: config.name.clone(),
+            transport: config.transport.clone(),
+            command: config.command.clone(),
+            args: config.args.clone(),
+            env: config.env.clone(),
+            url: config.url.clone(),
+            enabled: Arc::new(AtomicBool::new(config.enabled)),
             inner: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new(McpClientStatus::Disconnected)),
             next_id: AtomicU64::new(1),
@@ -254,7 +739,11 @@ impl McpClient {
     pub async fn snapshot(&self) -> McpServerSnapshot {
         McpServerSnapshot {
             name: self.name.clone(),
-            transport: "stdio".into(),
+            transport: self.transport.as_str().into(),
+            command: self.command.clone(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+            url: self.url.clone(),
             enabled: self.enabled(),
             status: self.status.lock().await.clone(),
             tools: self.tools_cache.lock().await.clone().unwrap_or_default(),
@@ -263,9 +752,10 @@ impl McpClient {
         }
     }
 
-    pub async fn connect(&self) -> anyhow::Result<()> {
-        *self.status.lock().await = McpClientStatus::Connecting;
-
+    async fn spawn_stdio(
+        &self,
+        notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    ) -> anyhow::Result<StdioInner> {
         let mut cmd = Command::new(&self.command);
         cmd.args(&self.args);
         cmd.stdin(std::process::Stdio::piped());
@@ -292,14 +782,77 @@ impl McpClient {
             .take()
             .ok_or_else(|| anyhow::anyhow!("failed to capture stdout for '{}'", self.name))?;
 
-        let (notification_tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
-        *self.notification_rx.lock().await = Some(new_rx);
-
-        let mut inner = McpClientInner {
+        Ok(StdioInner {
             child,
             stdin,
             stdout: BufReader::new(stdout),
             notification_tx,
+        })
+    }
+
+    async fn spawn_http(
+        &self,
+        notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    ) -> anyhow::Result<(Arc<HttpShared>, HttpInner)> {
+        if self.url.trim().is_empty() {
+            anyhow::bail!(
+                "MCP server '{}': a URL is required for the HTTP transport",
+                self.name
+            );
+        }
+        let headers = self
+            .env
+            .iter()
+            .filter_map(|e| {
+                e.split_once('=')
+                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            })
+            .collect::<Vec<_>>();
+        // Disable redirects: user-configured credential headers (e.g.
+        // X-API-Key) and the MCP session id are attached to every request,
+        // and reqwest only strips the fixed auth-header list on cross-host
+        // redirects. Following a redirect would leak those to an unverified
+        // host, so refuse to follow any.
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))?;
+        let shared = Arc::new(HttpShared {
+            http,
+            url: self.url.clone(),
+            headers,
+            session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
+            cancel: self.cancel_token.lock().await.clone(),
+        });
+        let inner = HttpInner {
+            shared: shared.clone(),
+            notification_tx,
+        };
+        Ok((shared, inner))
+    }
+
+    pub async fn connect(&self) -> anyhow::Result<()> {
+        *self.status.lock().await = McpClientStatus::Connecting;
+
+        let (notification_tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
+        *self.notification_rx.lock().await = Some(new_rx);
+
+        // Refresh the cancel token: `shutdown()` (called before every
+        // reconnect) cancels it, and reusing the cancelled token would make
+        // the new transport's requests (and the SSE listener) abort
+        // immediately after a reconnect.
+        *self.cancel_token.lock().await = CancellationToken::new();
+
+        let mut http_shared: Option<Arc<HttpShared>> = None;
+        let mut inner = match self.transport {
+            McpTransportType::Stdio => {
+                McpClientInner::Stdio(Box::new(self.spawn_stdio(notification_tx.clone()).await?))
+            }
+            McpTransportType::Http => {
+                let (shared, inner) = self.spawn_http(notification_tx.clone()).await?;
+                http_shared = Some(shared);
+                McpClientInner::Http(inner)
+            }
         };
 
         // Initialize handshake
@@ -310,6 +863,7 @@ impl McpClient {
                 "initialize",
                 Some(serde_json::json!({
                     "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {},
                     "clientInfo": {
                         "name": "haven",
                         "version": "0.1.0",
@@ -333,8 +887,9 @@ impl McpClient {
             );
         }
         tracing::info!(
-            "MCP server '{}' connected: {} v{} (protocol {})",
+            "MCP server '{}' connected ({}): {} v{} (protocol {})",
             self.name,
+            self.transport.as_str(),
             server_name,
             server_version,
             server_protocol
@@ -344,6 +899,14 @@ impl McpClient {
         inner.notify("notifications/initialized", None).await?;
 
         *self.inner.lock().await = Some(inner);
+
+        // HTTP: keep an SSE stream open so server-to-client notifications
+        // (e.g. tools/list_changed) are received.
+        if let Some(shared) = http_shared {
+            let cancel = self.cancel_token.lock().await.clone();
+            spawn_sse_listener(self.name.clone(), cancel, shared, notification_tx);
+        }
+
         *self.status.lock().await = McpClientStatus::Connected;
 
         // Cache tools after successful connection
@@ -363,12 +926,14 @@ impl McpClient {
         self.cancel_token.lock().await.cancel();
 
         let mut guard = self.inner.lock().await;
-        if let Some(ref mut inner) = *guard {
+        if let Some(inner) = guard.as_mut() {
             let id = self.next_id.fetch_add(1, Ordering::SeqCst);
             let _ = inner.request(id, "shutdown", None).await;
-            let _ = inner.notify("exit", None).await;
-            let _ = inner.child.start_kill();
-            let _ = inner.child.wait().await;
+            if let McpClientInner::Stdio(s) = inner {
+                let _ = s.notify("exit", None).await;
+                let _ = s.child.start_kill();
+                let _ = s.child.wait().await;
+            }
         }
         *guard = None;
         *self.status.lock().await = McpClientStatus::Disconnected;
@@ -480,32 +1045,24 @@ impl McpClient {
         };
 
         let content = result["content"].as_array().cloned().unwrap_or_default();
-        let mut text_parts = Vec::new();
-        for item in &content {
-            if item["type"] == "text"
-                && let Some(t) = item["text"].as_str()
-            {
-                text_parts.push(t.to_string());
-            }
-        }
+        let (output, text) = extract_mcp_content(&content);
 
         let is_error = result
             .get("isError")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let text = text_parts.join("\n");
 
         if is_error {
             Ok(ToolResult {
                 success: false,
-                output: serde_json::json!({"text": text}),
+                output,
                 error: Some(text),
                 truncated: false,
             })
         } else {
             Ok(ToolResult {
                 success: true,
-                output: serde_json::json!({"text": text}),
+                output,
                 error: None,
                 truncated: false,
             })
@@ -513,10 +1070,29 @@ impl McpClient {
     }
 
     pub async fn is_alive(&self) -> bool {
-        let mut guard = self.inner.lock().await;
-        match guard.as_mut() {
-            Some(inner) => inner.child.try_wait().map(|s| s.is_none()).unwrap_or(false),
-            None => false,
+        match self.transport {
+            McpTransportType::Stdio => {
+                let mut guard = self.inner.lock().await;
+                match guard.as_mut() {
+                    Some(McpClientInner::Stdio(s)) => {
+                        s.child.try_wait().map(|st| st.is_none()).unwrap_or(false)
+                    }
+                    _ => false,
+                }
+            }
+            McpTransportType::Http => {
+                let shared = {
+                    let guard = self.inner.lock().await;
+                    match guard.as_ref() {
+                        Some(McpClientInner::Http(h)) => Some(h.shared.clone()),
+                        _ => None,
+                    }
+                };
+                match shared {
+                    Some(shared) => http_is_alive(&shared).await,
+                    None => false,
+                }
+            }
         }
     }
 
@@ -739,13 +1315,7 @@ impl McpManager {
             if !server.enabled {
                 continue;
             }
-            let client = Arc::new(McpClient::new(
-                &server.name,
-                &server.command,
-                &server.args,
-                &server.env,
-                server.enabled,
-            ));
+            let client = Arc::new(McpClient::new(server));
             let name = client.name().to_string();
             self.clients
                 .lock()
@@ -810,13 +1380,7 @@ impl McpManager {
             }
         }
 
-        let client = Arc::new(McpClient::new(
-            name,
-            &config.command,
-            &config.args,
-            &config.env,
-            config.enabled,
-        ));
+        let client = Arc::new(McpClient::new(config));
 
         let listener_client = client.clone();
         listener_client.start_notification_listener(move |server_name: &str| {
@@ -967,7 +1531,9 @@ impl McpToolCaller for McpManager {
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpToolOutcome> {
-        let result = self.call_tool(server_name, tool_name, input, cancel).await?;
+        let result = self
+            .call_tool(server_name, tool_name, input, cancel)
+            .await?;
         Ok(McpToolOutcome {
             success: result.success,
             error: result.error,
@@ -989,6 +1555,8 @@ impl Default for McpManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use haven_common::McpServerConfig;
     use serde_json::json;
 
     #[test]
@@ -1044,7 +1612,11 @@ mod tests {
     fn mcp_server_snapshot_roundtrip() {
         let snap = McpServerSnapshot {
             name: "test".into(),
-            transport: "stdio".into(),
+            transport: "http".into(),
+            command: "".into(),
+            args: vec![],
+            env: vec!["AUTHORIZATION=Bearer x".into()],
+            url: "http://localhost:3001/mcp".into(),
             enabled: true,
             status: McpClientStatus::Connected,
             tools: vec![],
@@ -1053,8 +1625,11 @@ mod tests {
         };
         let json = serde_json::to_value(&snap).unwrap();
         assert_eq!(json["name"], "test");
+        assert_eq!(json["transport"], "http");
         assert_eq!(json["status"], "Connected");
         assert_eq!(json["enabled"], true);
+        assert_eq!(json["url"], "http://localhost:3001/mcp");
+        assert_eq!(json["env"][0], "AUTHORIZATION=Bearer x");
         assert_eq!(json["last_seen_at"], 12345);
     }
 
@@ -1077,7 +1652,11 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_client_new_initial_state() {
-        let client = McpClient::new("test", "echo", &[], &[], true);
+        let client = McpClient::new(&McpServerConfig {
+            name: "test".into(),
+            command: "echo".into(),
+            ..Default::default()
+        });
         assert_eq!(client.name(), "test");
         assert!(client.enabled());
         let status = client.status().await;
@@ -1086,9 +1665,14 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_client_snapshot_initial() {
-        let client = McpClient::new("test", "echo", &[], &[], true);
+        let client = McpClient::new(&McpServerConfig {
+            name: "test".into(),
+            command: "echo".into(),
+            ..Default::default()
+        });
         let snap = client.snapshot().await;
         assert_eq!(snap.name, "test");
+        assert_eq!(snap.transport, "stdio");
         assert!(snap.enabled);
         assert!(matches!(snap.status, McpClientStatus::Disconnected));
         assert!(snap.tools.is_empty());
@@ -1117,5 +1701,163 @@ mod tests {
         let mgr = McpManager::default();
         let clients = mgr.clients.lock().await;
         assert!(clients.is_empty());
+    }
+
+    #[test]
+    fn extract_mcp_content_plain_text() {
+        let content = json!([
+            {"type": "text", "text": "hello"},
+            {"type": "text", "text": "world"},
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert_eq!(text, "hello\nworld");
+        assert_eq!(output["text"], "hello\nworld");
+        assert!(output.get("images").is_none());
+        assert!(output.get("audio").is_none());
+        assert!(output.get("resources").is_none());
+        assert_eq!(output["content"].as_array().unwrap().len(), 2);
+        assert_eq!(output["content"][0]["type"], "text");
+        assert_eq!(output["content"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn extract_mcp_content_image_and_audio() {
+        let content = json!([
+            {"type": "text", "text": "caption"},
+            {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="},
+            {"type": "audio", "mimeType": "audio/wav", "data": "d29ybGQ="},
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert!(text.contains("caption"));
+        assert!(text.contains("[image block returned: image/png"));
+        assert!(text.contains("[audio block returned: audio/wav"));
+
+        let images = output["images"].as_array().unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0]["type"], "image");
+        assert_eq!(images[0]["mimeType"], "image/png");
+        assert_eq!(images[0]["data"], "aGVsbG8=");
+
+        let audio_blocks = output["audio"].as_array().unwrap();
+        assert_eq!(audio_blocks.len(), 1);
+        assert_eq!(audio_blocks[0]["mimeType"], "audio/wav");
+        assert_eq!(audio_blocks[0]["data"], "d29ybGQ=");
+
+        assert_eq!(output["content"].as_array().unwrap().len(), 3);
+        assert_eq!(output["content"][1]["type"], "image");
+        assert_eq!(output["content"][1]["mimeType"], "image/png");
+    }
+
+    #[test]
+    fn extract_mcp_content_text_resource() {
+        let content = json!([
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///x.txt",
+                    "mimeType": "text/plain",
+                    "text": "file contents here",
+                },
+            },
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert_eq!(text, "file contents here");
+        assert_eq!(output["text"], "file contents here");
+        assert!(output.get("resources").is_none());
+    }
+
+    #[test]
+    fn extract_mcp_content_blob_resource() {
+        let blob = base64::engine::general_purpose::STANDARD.encode("abcd");
+        let content = json!([
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "result.bin",
+                    "mimeType": "application/octet-stream",
+                    "blob": blob,
+                },
+            },
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert!(text.contains("[resource block returned: result.bin"));
+        assert!(text.contains("~4 decoded bytes"));
+        let resources = output["resources"].as_array().unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0]["uri"], "result.bin");
+        assert_eq!(resources[0]["bytes"], 4);
+    }
+
+    #[test]
+    fn extract_mcp_content_resource_no_readable_payload() {
+        let content = json!([
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "memory://note",
+                    "mimeType": "application/octet-stream",
+                },
+            },
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert!(text.contains("[resource block returned: memory://note"));
+        assert!(text.contains("no readable payload"));
+        assert!(output.get("resources").is_none());
+    }
+
+    #[test]
+    fn extract_mcp_content_type_less_block_preserved() {
+        let content = json!([
+            {"data": "somedata"},
+            {"type": "weird", "foo": "bar"},
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (_, text) = extract_mcp_content(&content);
+        // Both malformed/unknown blocks must be preserved, not swallowed.
+        assert!(text.contains("somedata"));
+        assert!(text.contains("weird"));
+    }
+
+    #[test]
+    fn extract_mcp_content_oversized_image_capped() {
+        let big = "A".repeat(MAX_BINARY_PAYLOAD + 1);
+        let content = json!([
+            {"type": "image", "mimeType": "image/png", "data": big},
+        ])
+        .as_array()
+        .unwrap()
+        .clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert!(text.contains("oversized"));
+        let images = output["images"].as_array().unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0]["oversized"], true);
+        assert_eq!(images[0]["data"], "");
+        assert_eq!(images[0]["bytes"], MAX_BINARY_PAYLOAD + 1);
+    }
+
+    #[test]
+    fn extract_mcp_content_empty() {
+        let content = json!([]).as_array().unwrap().clone();
+        let (output, text) = extract_mcp_content(&content);
+        assert_eq!(text, "");
+        assert_eq!(output["text"], "");
     }
 }

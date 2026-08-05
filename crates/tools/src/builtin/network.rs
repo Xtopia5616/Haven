@@ -111,6 +111,20 @@ async fn execute_once(
         .user_agent("Haven/1.0")
         .build()?;
 
+    execute_once_with(&client, url, method, headers, body).await
+}
+
+/// Send one request with a caller-supplied client. Split out so tests can
+/// exercise the connection-error path with a proxy-free client: a system or
+/// environment proxy can answer loopback requests with its own error page
+/// (e.g. 502) instead of relaying the peer's reset, masking the failure.
+async fn execute_once_with(
+    client: &reqwest::Client,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> anyhow::Result<ToolResult> {
     let mut req = match method {
         "GET" => client.get(url),
         "POST" => client.post(url).body(body.unwrap_or("").to_string()),
@@ -240,6 +254,10 @@ mod tests {
 
     /// Serve a single canned HTTP/1.1 response on a local listener and return
     /// the URL to request. The connection is closed after one exchange.
+    /// The complete request (headers plus any Content-Length body) is read
+    /// before responding: reqwest can split a POST's headers and body across
+    /// separate TCP segments on loopback, and closing the socket while the
+    /// client is still writing would surface as a reset instead of a response.
     async fn serve_once(status_line: &str, body: &str) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -248,8 +266,30 @@ mod tests {
         let status = status_line.to_string();
         tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 8192];
-            let _ = sock.read(&mut buf).await;
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut tmp).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&buf[..header_end]);
+                    let content_length = head
+                        .lines()
+                        .find_map(|l| {
+                            let lower = l.to_lowercase();
+                            lower
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+            }
             let resp = format!(
                 "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 status,
@@ -261,12 +301,18 @@ mod tests {
         format!("http://{}/", addr)
     }
 
-    /// Bind a listener, note its port, then drop it so the port is guaranteed
-    /// to refuse connections.
-    async fn refused_url() -> String {
+    /// Accept one connection and drop it immediately so the client's request
+    /// fails with a connection error. The listener stays bound until the
+    /// connection arrives, so the outcome is deterministic — unlike binding a
+    /// port and closing it first, which races the OS (and other tests running
+    /// in parallel) reusing the freed port.
+    async fn connection_drop_url() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            drop(sock);
+        });
         format!("http://{}/", addr)
     }
 
@@ -319,16 +365,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_network_execute_connection_refused() {
-        // POST is not retried, so the failure is immediate.
-        let url = refused_url().await;
-        let result = NetworkTool
-            .execute(
-                json!({"method": "POST", "url": url, "timeout_secs": 5}),
-                CancellationToken::new(),
-            )
-            .await;
-        assert!(result.is_err());
+    async fn test_network_execute_connection_dropped_returns_error() {
+        // The peer accepts and immediately drops the connection. Use a
+        // proxy-free client: the system proxy answers loopback requests with
+        // its own 502 error page when the upstream resets, which would turn
+        // this failure into a "successful" HTTP response.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let url = connection_drop_url().await;
+        let result = execute_once_with(&client, &url, "POST", &[], Some("payload")).await;
+        assert!(
+            result.is_err(),
+            "connection failure must surface as an error"
+        );
     }
 
     #[tokio::test]

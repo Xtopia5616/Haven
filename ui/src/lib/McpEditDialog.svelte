@@ -1,28 +1,40 @@
 <script>
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialSelect from '$lib/MaterialSelect.svelte';
 
 	let { server = null, onClose, onSave, existingNames = [] } = $props();
 
 	let isEdit = $derived(server !== null);
 	let name = $state('');
+	let transport = $state('stdio');
 	let command = $state('');
 	let argsText = $state('');
 	let envText = $state('');
-	let enabled = $state(true);
-	let fieldErrors = $state({ name: '', command: '', env: '' });
+	let url = $state('');
+	let fieldErrors = $state({ name: '', command: '', url: '', env: '' });
 	let saving = $state(false);
+
+	const transportOptions = [
+		{ value: 'stdio', label: 'Stdio (local process)' },
+		{ value: 'http', label: 'Streamable HTTP' },
+	];
+
+	function isHttp() {
+		return transport === 'http';
+	}
 
 	$effect(() => {
 		name = server?.name || '';
+		transport = server?.transport || 'stdio';
 		command = server?.command || '';
 		argsText = (server?.args || []).join('\n');
 		envText = (server?.env || []).join('\n');
-		enabled = server?.enabled ?? true;
-		fieldErrors = { name: '', command: '', env: '' };
+		url = server?.url || '';
+		fieldErrors = { name: '', command: '', url: '', env: '' };
 	});
 
 	function validate() {
-		const errors = { name: '', command: '', env: '' };
+		const errors = { name: '', command: '', url: '', env: '' };
 		const trimmedName = name.trim();
 		if (!trimmedName) {
 			errors.name = 'Name is required';
@@ -32,7 +44,13 @@
 			errors.name = 'Name already exists';
 		}
 
-		if (!command.trim()) {
+		if (isHttp()) {
+			if (!url.trim()) {
+				errors.url = 'URL is required';
+			} else if (!/^https?:\/\/.+/i.test(url.trim())) {
+				errors.url = 'URL must start with http:// or https://';
+			}
+		} else if (!command.trim()) {
 			errors.command = 'Command is required';
 		}
 
@@ -51,11 +69,11 @@
 	async function handleSave() {
 		const errors = validate();
 		fieldErrors = errors;
-		if (errors.name || errors.command || errors.env) return;
+		if (errors.name || errors.command || errors.url || errors.env) return;
 		saving = true;
 		const config = {
 			name: name.trim(),
-			transport: 'Stdio',
+			transport,
 			command: command.trim(),
 			args: argsText
 				.split('\n')
@@ -65,7 +83,11 @@
 				.split('\n')
 				.map((l) => l.trim())
 				.filter(Boolean),
-			enabled,
+			url: url.trim(),
+			// No enable toggle in the dialog: new servers are added enabled,
+			// edits keep the current state — enable/disable happens from the
+			// server list (pill button) after the server is added.
+			enabled: isEdit ? (server?.enabled ?? true) : true,
 		};
 		await onSave(config);
 		saving = false;
@@ -108,50 +130,78 @@
 		</label>
 		<div class="field">
 			<span>Transport</span>
-			<div class="transport-static">Stdio (local process)</div>
+			<MaterialSelect value={transport} options={transportOptions} onChange={(v) => (transport = v)} />
 		</div>
-		<label>
-			<span>Command</span>
-			<input
-				type="text"
-				class="md-input"
-				bind:value={command}
-				placeholder="python"
-				autocomplete="off"
-				class:input-error={fieldErrors.command}
-			/>
-			{#if fieldErrors.command}
-				<span class="field-error">{fieldErrors.command}</span>
-			{/if}
-		</label>
-		<label>
-			<span>Args (one per line)</span>
-			<textarea
-				class="md-textarea"
-				bind:value={argsText}
-				rows="3"
-				placeholder="-m&#10;mcp_server"
-				autocomplete="off"
-			></textarea>
-		</label>
-		<label>
-			<span>Env (KEY=VALUE, one per line)</span>
-			<textarea
-				class="md-textarea"
-				bind:value={envText}
-				rows="3"
-				placeholder="API_KEY=abc123"
-				autocomplete="off"
-				class:input-error={fieldErrors.env}
-			></textarea>
-			{#if fieldErrors.env}
-				<span class="field-error">{fieldErrors.env}</span>
-			{/if}
-		</label>
-		<label class="checkbox-label">
-			<input type="checkbox" bind:checked={enabled} />
-			<span>Enabled</span>
-		</label>
+
+		{#if isHttp()}
+			<label>
+				<span>URL</span>
+				<input
+					type="text"
+					class="md-input"
+					bind:value={url}
+					placeholder="http://localhost:3001/mcp"
+					autocomplete="off"
+					class:input-error={fieldErrors.url}
+				/>
+				{#if fieldErrors.url}
+					<span class="field-error">{fieldErrors.url}</span>
+				{/if}
+			</label>
+			<label>
+				<span>Headers (KEY=VALUE, one per line)</span>
+				<textarea
+					class="md-textarea"
+					bind:value={envText}
+					rows="3"
+					placeholder="AUTHORIZATION=Bearer abc123"
+					autocomplete="off"
+					class:input-error={fieldErrors.env}
+				></textarea>
+				{#if fieldErrors.env}
+					<span class="field-error">{fieldErrors.env}</span>
+				{/if}
+			</label>
+		{:else}
+			<label>
+				<span>Command</span>
+				<input
+					type="text"
+					class="md-input"
+					bind:value={command}
+					placeholder="python"
+					autocomplete="off"
+					class:input-error={fieldErrors.command}
+				/>
+				{#if fieldErrors.command}
+					<span class="field-error">{fieldErrors.command}</span>
+				{/if}
+			</label>
+			<label>
+				<span>Args (one per line)</span>
+				<textarea
+					class="md-textarea"
+					bind:value={argsText}
+					rows="3"
+					placeholder="-m&#10;mcp_server"
+					autocomplete="off"
+				></textarea>
+			</label>
+			<label>
+				<span>Env (KEY=VALUE, one per line)</span>
+				<textarea
+					class="md-textarea"
+					bind:value={envText}
+					rows="3"
+					placeholder="API_KEY=abc123"
+					autocomplete="off"
+					class:input-error={fieldErrors.env}
+				></textarea>
+				{#if fieldErrors.env}
+					<span class="field-error">{fieldErrors.env}</span>
+				{/if}
+			</label>
+		{/if}
 	</div>
 </MaterialDialog>
 
@@ -201,24 +251,8 @@
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 12px;
 	}
-	.transport-static {
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 15px;
-	}
 	.field-error {
 		font-size: 12px;
 		color: var(--md-sys-color-error);
-	}
-	.checkbox-label {
-		flex-direction: row !important;
-		align-items: center;
-		gap: var(--md-sys-space-sm) !important;
-	}
-	.checkbox-label input[type="checkbox"] {
-		accent-color: var(--md-sys-color-primary);
 	}
 </style>

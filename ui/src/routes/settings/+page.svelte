@@ -13,11 +13,11 @@
 	import { addNotification } from '$lib/stores.js';
 
 	let llmConfig = $state({
-		small_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-mini', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
-		default_model: { provider: 'anthropic', api_style: '', model_name: 'claude-sonnet-4-20250514', temperature: 0.7, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
-		balanced_model: { provider: 'local', api_style: '', model_name: 'llama3', temperature: 0.7, base_url: 'http://localhost:11434', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
-		image_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o', temperature: 0.2, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
-		audio_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-audio-preview', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0 },
+		small_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-mini', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
+		default_model: { provider: 'anthropic', api_style: '', model_name: 'claude-sonnet-4-20250514', temperature: 0.7, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
+		balanced_model: { provider: 'local', api_style: '', model_name: 'llama3', temperature: 0.7, base_url: 'http://localhost:11434', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
+		image_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o', temperature: 0.2, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
+		audio_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-audio-preview', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
 		stt_use_audio_model: true,
 		vision_use_image_model: true,
 	});
@@ -641,7 +641,13 @@
 							options={(modelsByKey[card.key] || []).map((m) => ({ value: m.id, label: m.name || m.id }))}
 							placeholder="Type or pick from fetched models"
 							loading={modelFetching[card.key]}
-							onChange={(v) => { llmConfig[card.key].model_name = v; }}
+							onChange={(v) => {
+								llmConfig[card.key].model_name = v;
+								const info = (modelsByKey[card.key] || []).find((m) => m.id === v);
+								if (info?.context_window && !llmConfig[card.key].context_window) {
+									llmConfig[card.key].context_window = info.context_window;
+								}
+							}}
 							onFocus={() => scheduleFetch(card.key)}
 						/>
 					</div>
@@ -651,6 +657,11 @@
 			<label for="{card.prefix}-temp">Temperature</label>
 			<MaterialNumberField id="{card.prefix}-temp" value={llmConfig[card.key].temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig[card.key].temperature = v; }} />
 		</div>
+		<div class="form-row">
+			<label for="{card.prefix}-context-window">Context Window</label>
+			<MaterialNumberField id="{card.prefix}-context-window" value={llmConfig[card.key].context_window ?? 0} step={1024} min={0} onChange={(v) => { llmConfig[card.key].context_window = v > 0 ? Math.round(v) : null; }} />
+		</div>
+		<p class="cost-hint">Leave empty to auto-detect. Context compaction triggers when estimated history reaches 75% of this.</p>
 		<div class="form-row cost-row">
 			<label for="{card.prefix}-cost-in">Cost In ($/1K)</label>
 			<MaterialNumberField id="{card.prefix}-cost-in" value={llmConfig[card.key].cost_per_1k_input_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig[card.key].cost_per_1k_input_tokens = v; }} />

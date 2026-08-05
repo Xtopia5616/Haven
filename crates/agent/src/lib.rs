@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 mod compactor;
@@ -31,6 +31,7 @@ use crate::title::TitleGenerator;
 /// into a task's message stream with the sliding-window trim applied. Both
 /// user turns (AgentLayer) and assistant turns (ReActEngine) go through this
 /// one implementation so the two paths cannot drift apart.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_task_message(
     db: &Database,
     task_id: &str,
@@ -39,6 +40,7 @@ pub(crate) fn persist_task_message(
     message_type: Option<&str>,
     attachments: &[MessageAttachment],
     window_size: usize,
+    voice: bool,
 ) -> anyhow::Result<()> {
     db.add_message_with_window_full(
         task_id,
@@ -48,6 +50,7 @@ pub(crate) fn persist_task_message(
         None,
         window_size,
         attachments,
+        voice,
     )?;
     Ok(())
 }
@@ -66,6 +69,62 @@ fn truncate_notification(text: &str) -> String {
         &text[..cutoff],
         text.chars().count() - cutoff
     )
+}
+
+/// Repair a canonical message array so it is acceptable to tool-calling LLM
+/// APIs: every `tool` message must be the response to a preceding assistant
+/// message that declared `tool_calls`, and a trailing assistant message that
+/// declares `tool_calls` must be followed by its results. Both violations are
+/// rejected with a 400 by providers.
+///
+/// True when a single `CanonicalMessage` is part of a dangling boundary
+/// that must not start a suffix — either a `Tool` result or an `Assistant`
+/// message that declared `tool_calls`. Providers reject the former when its
+/// declaration is missing above it and the latter when its results are
+/// missing below it, so both forms need to slide past (in
+/// `ContextCompactor::safe_end_idx`) or get dropped (in
+/// `sanitize_canonical`).
+pub(crate) fn is_dangling_boundary(msg: &CanonicalMessage) -> bool {
+    msg.role == CanonicalRole::Tool
+        || (msg.role == CanonicalRole::Assistant && msg.tool_calls.is_some())
+}
+
+/// The ReAct loop only ever builds valid arrays, but snapshots/compaction
+/// output can be corrupted by an interruption: a compaction split between an
+/// assistant tool_call message and its tool results (the assistant is
+/// summarized away while the results survive), or an app exit right after the
+/// assistant message was appended. This drops the orphaned `tool` messages
+/// and trims the dangling trailing assistant message so the loop re-requests
+/// the tool call cleanly.
+pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) {
+    let mut preceded_by_calls = false;
+    canonical.retain(|m| match m.role {
+        CanonicalRole::Tool => {
+            let keep = preceded_by_calls;
+            if !keep {
+                tracing::warn!(
+                    "dropping orphaned tool message (tool_call_id={:?}) with no preceding assistant tool_calls",
+                    m.tool_call_id
+                );
+            }
+            keep
+        }
+        CanonicalRole::Assistant => {
+            preceded_by_calls = m.tool_calls.is_some();
+            true
+        }
+        _ => {
+            preceded_by_calls = false;
+            true
+        }
+    });
+    if canonical.last().is_some_and(is_dangling_boundary)
+        && canonical
+            .last()
+            .is_some_and(|m| m.role == CanonicalRole::Assistant)
+    {
+        canonical.pop();
+    }
 }
 
 pub struct AgentLayer {
@@ -127,6 +186,7 @@ impl AgentLayer {
         content: &str,
         message_type: Option<&str>,
         attachments: &[haven_memory::repositories::messages::MessageAttachment],
+        voice: bool,
     ) -> anyhow::Result<()> {
         persist_task_message(
             &self.db,
@@ -136,7 +196,18 @@ impl AgentLayer {
             message_type,
             attachments,
             self.conversation_window_size,
+            voice,
         )
+    }
+
+    /// Update a task's status in the executor and notify the frontend.
+    /// The status string always comes from `TaskStatus::as_str()` so the
+    /// persisted value and the emitted event cannot drift.
+    async fn set_task_status(&self, task_id: &str, status: TaskStatus) -> anyhow::Result<()> {
+        let status_str = status.as_str().to_string();
+        self.executor.update_task_status(task_id, status).await?;
+        self.events.emit_task_updated(task_id, &status_str).await;
+        Ok(())
     }
 
     /// Reopen a terminal task to Paused state.
@@ -150,10 +221,7 @@ impl AgentLayer {
         self.executor.ensure_task_loaded(task_id).await?;
         let state = self.executor.get_task_state(task_id).await;
         if state == TaskStatus::Completed || state == TaskStatus::Error {
-            self.executor
-                .update_task_status(task_id, TaskStatus::Paused)
-                .await?;
-            self.events.emit_task_updated(task_id, "paused").await;
+            self.set_task_status(task_id, TaskStatus::Paused).await?;
         }
         Ok(())
     }
@@ -298,13 +366,7 @@ impl AgentLayer {
                                 .await
                             {
                                 Ok(result) => {
-                                    let summary = if result.success {
-                                        serde_json::to_string(&result.output)
-                                            .unwrap_or_else(|_| "success".into())
-                                    } else {
-                                        result.error.unwrap_or_else(|| "unknown failure".into())
-                                    };
-                                    let summary = truncate_notification(&summary);
+                                    let summary = truncate_notification(&result.summary_text());
                                     agent
                                         .events
                                         .emit_notification(
@@ -333,7 +395,12 @@ impl AgentLayer {
                                 .filter(|s| !s.is_empty())
                                 .unwrap_or_else(|| "Reminder fired: continue the task.".into());
                             match agent
-                                .process_input_with_images(&message, fired.task_id.clone(), &[])
+                                .process_input_with_images(
+                                    &message,
+                                    fired.task_id.clone(),
+                                    &[],
+                                    false,
+                                )
                                 .await
                             {
                                 Ok(result) => tracing::info!(
@@ -366,10 +433,7 @@ impl AgentLayer {
         tokio::spawn(async move {
             let overdue = restore_tools.reminders.restore_pending().await;
             if overdue > 0 {
-                tracing::info!(
-                    "restored {} overdue reminder(s) from previous run",
-                    overdue
-                );
+                tracing::info!("restored {} overdue reminder(s) from previous run", overdue);
             }
         });
     }
@@ -427,11 +491,18 @@ impl AgentLayer {
     /// step are pruned. When `pause` is false the task is set to Pending for
     /// immediate re-execution; when true it is set to Paused so the user can
     /// edit and re-send the message before the dispatcher picks it up.
+    ///
+    /// `target_message_id` identifies the exact message being rolled back
+    /// (the frontend knows which bubble the user right-clicked). It is used
+    /// to detect an orphan rollback: a user message persisted after the
+    /// newest branch point was never processed into the ReAct canonical, so
+    /// rolling it back must discard ONLY that message.
     pub async fn rollback_task(
         &self,
         task_id: &str,
         target_step: u32,
         pause: bool,
+        target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
         // If the task is currently Running, cancel it first so the ReAct loop
         // exits cleanly. Otherwise the loop's in-memory canonical/history would
@@ -488,12 +559,7 @@ impl AgentLayer {
                     "rollback_task {}: no react_state 鈥?falling back to message-only truncation",
                     task_id
                 );
-                let msgs = self.db.get_task_messages(task_id).unwrap_or_default();
-                let cutoff = msgs
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == "user")
-                    .map(|m| m.created_at.clone());
+                let cutoff = self.db.last_user_message_ts(task_id);
                 if let Some(ref ts) = cutoff {
                     if pause {
                         let _ = self.db.delete_messages_from(task_id, ts);
@@ -503,17 +569,15 @@ impl AgentLayer {
                 }
                 // Reload into memory and set status.
                 self.executor.ensure_task_loaded(task_id).await?;
-                if pause {
-                    self.executor
-                        .update_task_status(task_id, TaskStatus::Paused)
-                        .await?;
-                    self.events.emit_task_updated(task_id, "paused").await;
-                } else {
-                    self.executor
-                        .update_task_status(task_id, TaskStatus::Pending)
-                        .await?;
-                    self.events.emit_task_updated(task_id, "pending").await;
-                }
+                self.set_task_status(
+                    task_id,
+                    if pause {
+                        TaskStatus::Paused
+                    } else {
+                        TaskStatus::Pending
+                    },
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -536,16 +600,7 @@ impl AgentLayer {
             // user message for user-rollback (pause=true), or the last user
             // message for agent-rollback too (delete the partial output after
             // it).
-            let cutoff_ts = self
-                .db
-                .get_task_messages(task_id)
-                .ok()
-                .and_then(|msgs| {
-                    msgs.iter()
-                        .rev()
-                        .find(|m| m.role == "user")
-                        .map(|m| m.created_at.clone())
-                });
+            let cutoff_ts = self.db.last_user_message_ts(task_id);
             BranchPoint {
                 canonical: snapshot.canonical.clone(),
                 history: snapshot.history.clone(),
@@ -565,18 +620,15 @@ impl AgentLayer {
         // matching tool-result messages. Sending this to the LLM triggers a
         // 400 error (dangling tool_call). Trim such a trailing assistant
         // message so the loop re-requests the tool call cleanly.
-        // Also drop the corresponding half-built history step (action: None).
-        if snapshot
-            .canonical
-            .last()
-            .is_some_and(|m| m.role == CanonicalRole::Assistant && m.tool_calls.is_some())
-        {
-            snapshot.canonical.pop();
-            // The history step for this step has thought set but action=None.
-            if snapshot.history.last().is_some_and(|s| s.action.is_none()) {
-                snapshot.history.pop();
-            }
-        }
+        Self::trim_dangling_tool_call(&mut snapshot.canonical, &mut snapshot.history);
+
+        // Newest branch-point cutoff (computed BEFORE pruning): used below to
+        // detect a user message persisted after every branch point.
+        let max_bp_ts = snapshot
+            .branch_points
+            .values()
+            .filter_map(|b| b.last_msg_at.clone())
+            .max();
 
         // Prune branch points that were created after the target step so the
         // session tree does not accumulate stale entries from the discarded
@@ -585,6 +637,23 @@ impl AgentLayer {
 
         // Truncate task messages persisted after the branch point so the
         // conversation context matches the restored snapshot.
+        //
+        // A user message may be persisted AFTER the newest branch point:
+        // an interjection sent while the task was erroring (its supplement
+        // was dropped as the task was terminal) or before the app closed
+        // mid-generation (the steering queue is in-memory only and is lost).
+        // Such a message was never added to the ReAct canonical, so rolling
+        // back to it must discard ONLY that message — deleting from the
+        // branch point's cutoff would wipe valid earlier history.
+        let task_msgs = self.db.get_task_messages(task_id).unwrap_or_default();
+        let target_msg = target_message_id.and_then(|id| task_msgs.iter().find(|m| m.id == id));
+        let is_orphan_rollback = target_msg.is_some_and(|m| {
+            m.role == "user"
+                && max_bp_ts
+                    .as_deref()
+                    .is_some_and(|max| m.created_at.as_str() > max)
+        });
+
         if let Some(ref ts) = bp.last_msg_at {
             if pause {
                 // User-message rollback: delete the user message itself too
@@ -597,14 +666,15 @@ impl AgentLayer {
                 // `ts` alone would leave the rolled-back user input in the
                 // task, so it would reappear on the next review rebuild.
                 // Delete from the user message's own timestamp instead.
-                let user_ts = self
-                    .db
-                    .get_task_messages(task_id)
-                    .unwrap_or_default()
-                    .iter()
-                    .filter(|m| m.role == "user" && m.created_at.as_str() <= ts.as_str())
-                    .map(|m| m.created_at.clone())
-                    .max();
+                let user_ts = if is_orphan_rollback {
+                    target_msg.map(|m| m.created_at.clone())
+                } else {
+                    task_msgs
+                        .iter()
+                        .filter(|m| m.role == "user" && m.created_at.as_str() <= ts.as_str())
+                        .map(|m| m.created_at.clone())
+                        .max()
+                };
                 match user_ts {
                     Some(u_ts) => {
                         self.db.delete_messages_from(task_id, &u_ts)?;
@@ -619,16 +689,22 @@ impl AgentLayer {
                     }
                 }
             } else {
-                self.db.delete_messages_after(task_id, ts)?;
-                self.db.delete_task_steps_after(task_id, ts)?;
+                // Strict `>` for both: the branch-point cutoff is the last
+                // message BEFORE the discarded step, so we keep the cutoff
+                // itself intact (truncate_task_after is non-inclusive).
+                self.db.truncate_task_after(task_id, ts, false)?;
             }
         }
 
         // For user-message rollback, also remove the user message from the
         // restored canonical so the LLM doesn't see it when the task resumes.
         // The user message is the last CanonicalRole::User entry; everything
-        // after the preceding message should be trimmed.
+        // after the preceding message should be trimmed. Skipped for orphan
+        // rollback: the orphaned message was never in the canonical, so the
+        // last User entry there is a legitimately processed message that must
+        // stay in the restored context.
         if pause
+            && !is_orphan_rollback
             && let Some(pos) = snapshot
                 .canonical
                 .iter()
@@ -652,24 +728,22 @@ impl AgentLayer {
         // marked a Running task as Error above, or was never loaded after restart).
         self.executor.ensure_task_loaded(task_id).await?;
 
+        self.set_task_status(
+            task_id,
+            if pause {
+                TaskStatus::Paused
+            } else {
+                TaskStatus::Pending
+            },
+        )
+        .await?;
         if pause {
-            // User-message rollback: set to Paused so the task does NOT
-            // auto-dispatch. The user edits the text and re-sends it as a
-            // supplement, which flips the status back to Pending.
-            self.executor
-                .update_task_status(task_id, TaskStatus::Paused)
-                .await?;
-            self.events.emit_task_updated(task_id, "paused").await;
             tracing::info!(
                 "rollback_task {} to step {}: task set to Paused (user-edit mode)",
                 task_id,
                 target_step
             );
         } else {
-            self.executor
-                .update_task_status(task_id, TaskStatus::Pending)
-                .await?;
-            self.events.emit_task_updated(task_id, "pending").await;
             tracing::info!(
                 "rollback_task {} to step {}: task set to Pending",
                 task_id,
@@ -732,12 +806,17 @@ impl AgentLayer {
                     m.tool_call_id.as_deref(),
                     usize::MAX,
                     &m.attachments,
+                    m.voice,
                 )?;
             }
 
-            // Build the new task's ReAct snapshot from the branch point.
+            // Build the new task's ReAct snapshot from the branch point. The
+            // branch point may carry a dangling tool_call/tool-result split
+            // (same corruption the resume path repairs), so sanitize it.
+            let mut canonical = bp.canonical.clone();
+            sanitize_canonical(&mut canonical);
             let new_snapshot = ReActSnapshot {
-                canonical: bp.canonical.clone(),
+                canonical,
                 history: bp.history.clone(),
                 step_number: bp.step_number,
                 branch_points: HashMap::new(),
@@ -760,10 +839,8 @@ impl AgentLayer {
         // Emit a task-created event so the frontend's task list refreshes.
         let task_info = self
             .executor
-            .list_tasks()
+            .get_task(&record.id)
             .await
-            .into_iter()
-            .find(|t| t.id == record.id)
             .ok_or_else(|| anyhow::anyhow!("branched task '{}' not in executor", record.id))?;
         self.events.emit_task_created(&task_info).await;
         self.events.emit_task_updated(&record.id, "paused").await;
@@ -810,33 +887,45 @@ impl AgentLayer {
                 .branch_points
                 .get(&snapshot.step_number)
                 .and_then(|bp| bp.last_msg_at.clone())
-                .or_else(|| {
-                    // Find the last user message's timestamp in the task.
-                    self.db.get_task_messages(task_id).ok().and_then(|msgs| {
-                        msgs.iter()
-                            .rev()
-                            .find(|m| m.role == "user")
-                            .map(|m| m.created_at.clone())
-                    })
-                });
+                .or_else(|| self.db.last_user_message_ts(task_id));
             if let Some(ts) = cutoff {
-                self.db.delete_messages_after(task_id, &ts)?;
-                // Retry OVERWRITES the previous attempt: drop the step rows
-                // (tool badges, thought entries) recorded after the branch
-                // point too, so the review history stays linear. Only
+                // Retry OVERWRITES the previous attempt: drop both messages
+                // and step rows (tool badges, thought entries) after the
+                // branch point so the review history stays linear. Only
                 // branching creates separate timelines.
-                self.db.delete_task_steps_after(task_id, &ts)?;
+                self.db.truncate_task_after(task_id, &ts, false)?;
             }
         }
 
         // Set to Pending for the dispatcher to pick up.
-        self.executor
-            .update_task_status(task_id, TaskStatus::Pending)
-            .await?;
-        self.events.emit_task_updated(task_id, "pending").await;
+        self.set_task_status(task_id, TaskStatus::Pending).await?;
 
         tracing::info!("continue_task: task {} set to Pending for retry", task_id);
         Ok(())
+    }
+
+    /// If the canonical array ends with an assistant message carrying
+    /// `tool_calls` but no matching tool-result messages, sending it to the
+    /// LLM triggers a 400 error ("assistant message with tool calls must be
+    /// followed by tool messages responding to each tool call"). This happens
+    /// when a snapshot/branch point was saved right after the assistant
+    /// message but before the tool results were appended (save_branch_point
+    /// runs before tool execution; the app may die or be cancelled mid-batch).
+    /// Trim such a trailing assistant message and the matching half-built
+    /// history step so the loop re-requests the tool call cleanly.
+    fn trim_dangling_tool_call(
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &mut Vec<ReActStep>,
+    ) {
+        sanitize_canonical(canonical);
+        // A snapshot can also end with a half-built step: the assistant
+        // message declared tool calls but the app died before the results
+        // were appended (sanitize_canonical popped that message). Drop its
+        // history step too (thought set, action=None) so the loop re-requests
+        // the tool call cleanly.
+        if history.last().is_some_and(|s| s.action.is_none()) {
+            history.pop();
+        }
     }
 
     /// Dispatcher entrypoint. Looks up the task by id, fills in the
@@ -846,10 +935,8 @@ impl AgentLayer {
         tracing::debug!("run_task_from_id: task_id={}", task_id);
         let task = self
             .executor
-            .list_tasks()
+            .get_task(task_id)
             .await
-            .into_iter()
-            .find(|t| t.id == task_id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found by dispatcher", task_id))?;
 
         let run_id = self.react_engine.next_run_id();
@@ -885,13 +972,17 @@ impl AgentLayer {
             .unwrap_or_default();
 
         let result = if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
-            && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
+            && let Ok(mut snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
         {
             tracing::info!(
                 "restoring ReAct state for task {} ({} steps)",
                 task_id,
                 snapshot.history.len()
             );
+            // The snapshot may end with a dangling assistant tool_call
+            // message (saved before tool results were appended). Sending it
+            // to the LLM on resume triggers a 400 error, so trim it first.
+            Self::trim_dangling_tool_call(&mut snapshot.canonical, &mut snapshot.history);
             // Re-register per-task tools (skills/MCP) from saved history,
             // since in-memory registrations are lost on app restart.
             self.restore_per_task_tools(task_id, &snapshot.history)
@@ -947,18 +1038,19 @@ impl AgentLayer {
         {
             return;
         }
-        // Build conversation context from the task's messages
-        let messages = db
-            .get_task_messages_limit(&task_id, 10)
-            .unwrap_or_default();
-        if messages.is_empty() {
+        // Build conversation context from user messages only. The agent's
+        // replies (assistant/tool) are excluded to keep the prompt small —
+        // a title only needs to reflect what the user asked for.
+        let messages = db.get_task_messages_limit(&task_id, 10).unwrap_or_default();
+        let user_lines: Vec<String> = messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        if user_lines.is_empty() {
             return;
         }
-        let conv_lines: Vec<String> = messages
-            .iter()
-            .map(|m| format!("{}: {}", m.role, m.content))
-            .collect();
-        let title = match generator.generate(&conv_lines).await {
+        let title = match generator.generate(&user_lines).await {
             Some(t) => t,
             None => return,
         };
@@ -994,14 +1086,7 @@ impl AgentLayer {
             for msg in conversation_history {
                 canonical.insert(
                     sys_end,
-                    CanonicalMessage {
-                        role: CanonicalRole::User,
-                        content: vec![ContentPart::text(format!("[conversation] {}", msg))],
-                        tool_calls: None,
-                        tool_call_id: None,
-                        parent_message_id: None,
-                        reasoning: None,
-                    },
+                    CanonicalMessage::user_text(format!("[conversation] {}", msg)),
                 );
             }
         }
@@ -1063,22 +1148,8 @@ impl AgentLayer {
         );
 
         let mut canonical: Vec<CanonicalMessage> = vec![
-            CanonicalMessage {
-                role: CanonicalRole::System,
-                content: vec![ContentPart::text(system_prompt)],
-                tool_calls: None,
-                tool_call_id: None,
-                parent_message_id: None,
-                reasoning: None,
-            },
-            CanonicalMessage {
-                role: CanonicalRole::User,
-                content: initial_content,
-                tool_calls: None,
-                tool_call_id: None,
-                parent_message_id: None,
-                reasoning: None,
-            },
+            CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),
+            CanonicalMessage::user(initial_content),
         ];
 
         let mut branch_points: HashMap<u32, BranchPoint> = HashMap::new();
@@ -1116,30 +1187,39 @@ impl AgentLayer {
         transcript: &str,
         active_task_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
-        self.process_input_with_images(transcript, active_task_id, &[])
+        self.process_input_with_images(transcript, active_task_id, &[], false)
             .await
     }
 
     /// Like `process_input`, but attaches binary payloads (e.g. images for
     /// multimodal requests) to the user message. Attachments are persisted
     /// with the message and injected into the ReAct context as image parts.
+    /// `voice` marks messages transcribed from audio so the UI can keep the
+    /// mic style across reloads.
     pub async fn process_input_with_images(
         &self,
         transcript: &str,
         active_task_id: Option<String>,
         images: &[haven_memory::repositories::messages::MessageAttachment],
+        voice: bool,
     ) -> anyhow::Result<ProcessResult> {
         tracing::debug!(
-            "process_input: text={:?} active_task_id={:?} images={}",
+            "process_input: text={:?} active_task_id={:?} images={} voice={}",
             transcript,
             active_task_id,
-            images.len()
+            images.len(),
+            voice
         );
 
         if let Some(task_id) = active_task_id {
-            if let Err(e) =
-                self.persist_message_parts(&task_id, "user", transcript, Some("text"), images)
-            {
+            if let Err(e) = self.persist_message_parts(
+                &task_id,
+                "user",
+                transcript,
+                Some("text"),
+                images,
+                voice,
+            ) {
                 tracing::warn!(
                     "process_input: failed to persist user message for task {}: {}",
                     task_id,
@@ -1149,11 +1229,31 @@ impl AgentLayer {
 
             let state = self.executor.get_task_state(&task_id).await;
 
-            if state == TaskStatus::Running {
-                self.executor
+            // Running tasks take the message as a steering interjection,
+            // injected into the ReAct loop in the gap between tool calls and
+            // the final content. If the steering queue is unavailable (task
+            // vanished from memory between the state read and the enqueue),
+            // fall through to the supplement path instead of failing: the
+            // user message is already persisted, and the supplement path
+            // reloads the task / handles the terminal guard / wakes it.
+            let steering_delivered = state == TaskStatus::Running
+                && match self
+                    .executor
                     .add_steering_with_attachments(&task_id, transcript, images)
-                    .await?;
-            } else {
+                    .await
+                {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!(
+                            "process_input: steering failed for task {} ({}); falling back to supplement path",
+                            task_id,
+                            e
+                        );
+                        false
+                    }
+                };
+
+            if !steering_delivered {
                 let was_in_memory = self
                     .executor
                     .add_supplement_with_attachments(&task_id, transcript, images)
@@ -1163,7 +1263,7 @@ impl AgentLayer {
                     // Task may be stale/deleted 鈥?fall back to creating a new task
                     if self.executor.ensure_task_loaded(&task_id).await.is_err() {
                         let task = self
-                            .create_task_with_first_message(transcript, images)
+                            .create_task_with_first_message(transcript, images, voice)
                             .await?;
                         self.events.emit_task_created(&task).await;
                         return Ok(ProcessResult::TaskCreated(task.id));
@@ -1197,25 +1297,19 @@ impl AgentLayer {
                             .add_supplement_with_attachments(&task_id, transcript, images)
                             .await?;
                         if fresh_state == TaskStatus::Paused {
-                            self.executor
-                                .update_task_status(&task_id, TaskStatus::Pending)
-                                .await?;
-                            self.events.emit_task_updated(&task_id, "pending").await;
+                            self.set_task_status(&task_id, TaskStatus::Pending).await?;
                         }
                     }
                     return Ok(ProcessResult::Supplemented);
                 }
                 if state == TaskStatus::Paused {
-                    self.executor
-                        .update_task_status(&task_id, TaskStatus::Pending)
-                        .await?;
-                    self.events.emit_task_updated(&task_id, "pending").await;
+                    self.set_task_status(&task_id, TaskStatus::Pending).await?;
                 }
             }
             Ok(ProcessResult::Supplemented)
         } else {
             let task = self
-                .create_task_with_first_message(transcript, images)
+                .create_task_with_first_message(transcript, images, voice)
                 .await?;
             tracing::info!("process_input created task: id={:?}", task.id);
             self.events.emit_task_created(&task).await;
@@ -1231,12 +1325,14 @@ impl AgentLayer {
         &self,
         input: &str,
         images: &[haven_memory::repositories::messages::MessageAttachment],
+        voice: bool,
     ) -> anyhow::Result<haven_task::TaskInfo> {
         let record = self.db.create_task(input, input)?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the task up; if persisting fails, remove
         // the task row again so no input-less task ever gets dispatched.
-        if let Err(e) = self.persist_message_parts(&record.id, "user", input, Some("text"), images)
+        if let Err(e) =
+            self.persist_message_parts(&record.id, "user", input, Some("text"), images, voice)
         {
             let _ = self.db.delete_task(&record.id);
             return Err(e);
@@ -1248,10 +1344,8 @@ impl AgentLayer {
             .await?;
         let task = self
             .executor
-            .list_tasks()
+            .get_task(&record.id)
             .await
-            .into_iter()
-            .find(|t| t.id == record.id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not registered", record.id))?;
         Ok(task)
     }
@@ -1262,9 +1356,9 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::stream;
-    use haven_common::types::RiskLevel;
+    use haven_common::types::{CanonicalToolCall, RiskLevel};
     use haven_llm::{
-        FinishReason, LlmClient, LlmError, LlmMessage, LlmResponse, StreamChunk, ToolCall,
+        FinishReason, LlmClient, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
         ToolDefinition, Usage,
     };
     use haven_tools::{Tool, ToolBox, ToolResult, ToolsManager};
@@ -1600,7 +1694,9 @@ mod tests {
     async fn persist_message_adds_to_db() {
         let (agent, _) = make_test_agent();
         let task = agent.db.create_task("input", "").unwrap();
-        agent.persist_message_parts(&task.id, "user", "test message", Some("text"), &[]).unwrap();
+        agent
+            .persist_message_parts(&task.id, "user", "test message", Some("text"), &[], false)
+            .unwrap();
         // Read back via db
         let agent_ref = agent.clone();
         let db = agent_ref.db.clone();
@@ -1628,6 +1724,7 @@ mod tests {
                 "鐪嬪浘",
                 Some("text"),
                 std::slice::from_ref(&att),
+                false,
             )
             .unwrap();
         let agent_ref = agent.clone();
@@ -1779,12 +1876,17 @@ mod tests {
     async fn run_task_from_id_attaches_first_user_message_images() {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task_with_summary("鐪嬪浘", "鐪嬪浘").await.unwrap();
+        let task = executor
+            .create_task_with_summary("鐪嬪浘", "鐪嬪浘")
+            .await
+            .unwrap();
         let att = haven_memory::repositories::messages::MessageAttachment {
             media_type: "image/png".into(),
             data: "aGVsbG8=".into(),
         };
-        agent.persist_message_parts(&task.id, "user", "鐪嬪浘", Some("text"), &[att]).unwrap();
+        agent
+            .persist_message_parts(&task.id, "user", "鐪嬪浘", Some("text"), &[att], false)
+            .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
         let snapshot: crate::types::ReActSnapshot =
             serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
@@ -1810,7 +1912,9 @@ mod tests {
             .create_task_with_summary("plain task", "plain task")
             .await
             .unwrap();
-        agent.persist_message_parts(&task.id, "user", "plain task", Some("text"), &[]).unwrap();
+        agent
+            .persist_message_parts(&task.id, "user", "plain task", Some("text"), &[], false)
+            .unwrap();
         // Image arrives AFTER the task input (a supplement) 鈥?it must not be
         // attached to the initial user turn.
         let att = haven_memory::repositories::messages::MessageAttachment {
@@ -1818,7 +1922,7 @@ mod tests {
             data: "aGVsbG8=".into(),
         };
         agent
-            .process_input_with_images("琛ュ厖鐪嬪浘", Some(task.id.clone()), &[att])
+            .process_input_with_images("琛ュ厖鐪嬪浘", Some(task.id.clone()), &[att], false)
             .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -1847,6 +1951,198 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_task_from_id_trims_dangling_tool_call_before_resume() {
+        // Simulate a snapshot saved by save_branch_point right after the
+        // assistant tool_call message but before tool results were appended
+        // (e.g. the app was closed mid-tool-execution). Resuming must trim
+        // the dangling assistant message instead of sending it to the LLM,
+        // which would reject it with a 400 error.
+        let tools = Arc::new(ToolsManager::new());
+        tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Done.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let task = executor.create_task("resume me").await.unwrap();
+
+        let canonical = vec![
+            CanonicalMessage {
+                role: CanonicalRole::System,
+                content: vec![ContentPart::text("system prompt")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+            CanonicalMessage {
+                role: CanonicalRole::User,
+                content: vec![ContentPart::text("resume me")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
+                content: vec![ContentPart::text("calling echo")],
+                tool_calls: Some(vec![CanonicalToolCall {
+                    id: "call_1".into(),
+                    name: "echo".into(),
+                    arguments: serde_json::json!({"text": "hi"}),
+                }]),
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+        ];
+        let history = vec![ReActStep {
+            step_number: 1,
+            thought: Some("calling echo".into()),
+            action: None,
+            observation: None,
+        }];
+        let snapshot = ReActSnapshot {
+            canonical,
+            history,
+            step_number: 2,
+            branch_points: HashMap::new(),
+        };
+        agent
+            .db
+            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+
+        let result = agent.run_task_from_id(&task.id).await.unwrap();
+
+        // No batch sent to the LLM may end with a dangling assistant tool_call.
+        {
+            let seen = mock.seen.lock().unwrap();
+            assert!(!seen.is_empty(), "LLM should have been called after resume");
+            for batch in seen.iter() {
+                let last = batch.last().expect("batch has messages");
+                assert!(
+                    !(matches!(last.role, LlmRole::Assistant) && last.tool_calls.is_some()),
+                    "batch must not end with a dangling assistant tool_call: {:?}",
+                    batch
+                );
+            }
+        }
+        assert!(!result.is_empty(), "resumed loop should produce history");
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "final_answer should complete the resumed task"
+        );
+    }
+
+    fn make_canonical(role: CanonicalRole, text: &str) -> CanonicalMessage {
+        CanonicalMessage {
+            role,
+            content: vec![ContentPart::text(text.to_string())],
+            tool_calls: None,
+            tool_call_id: None,
+            parent_message_id: None,
+            reasoning: None,
+        }
+    }
+
+    fn make_assistant_with_calls(ids: &[&str]) -> CanonicalMessage {
+        let mut m = make_canonical(CanonicalRole::Assistant, "");
+        m.tool_calls = Some(
+            ids.iter()
+                .map(|id| CanonicalToolCall {
+                    id: id.to_string(),
+                    name: "tool".into(),
+                    arguments: serde_json::Value::Null,
+                })
+                .collect(),
+        );
+        m
+    }
+
+    fn make_tool_result(call_id: &str, text: &str) -> CanonicalMessage {
+        let mut m = make_canonical(CanonicalRole::Tool, text);
+        m.tool_call_id = Some(call_id.to_string());
+        m
+    }
+
+    #[test]
+    fn sanitize_canonical_drops_orphaned_tool_messages_and_dangling_calls() {
+        // Mirrors the corruption found in a real interrupted task: a
+        // compaction split the assistant(tool_calls)/tool-results pair, so
+        // the summary assistant (no tool_calls) is followed by orphaned tool
+        // messages. A valid pair and a dangling trailing assistant follow.
+        let mut canonical = vec![
+            make_canonical(CanonicalRole::System, "sys"),
+            make_canonical(CanonicalRole::User, "hello"),
+            make_canonical(CanonicalRole::Assistant, "[Compacted summary]"),
+            make_tool_result("call_00_a", "result a"),
+            make_tool_result("call_01_b", "result b"),
+            make_assistant_with_calls(&["call_00_c", "call_01_d"]),
+            make_tool_result("call_00_c", "result c"),
+            make_tool_result("call_01_d", "result d"),
+            make_assistant_with_calls(&["call_00_e"]),
+        ];
+        sanitize_canonical(&mut canonical);
+
+        let roles: Vec<CanonicalRole> = canonical.iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            vec![
+                CanonicalRole::System,
+                CanonicalRole::User,
+                CanonicalRole::Assistant,
+                CanonicalRole::Assistant,
+                CanonicalRole::Tool,
+                CanonicalRole::Tool,
+            ],
+            "orphaned tools and the dangling trailing assistant must be removed"
+        );
+        // The surviving pair's tool results are intact.
+        assert_eq!(canonical[4].tool_call_id.as_deref(), Some("call_00_c"));
+        assert_eq!(canonical[5].tool_call_id.as_deref(), Some("call_01_d"));
+    }
+
+    #[test]
+    fn sanitize_canonical_keeps_user_reset_and_trailing_tool() {
+        // A tool message following a user message is orphaned; a trailing
+        // tool message after its assistant-with-calls is valid.
+        let mut canonical = vec![
+            make_canonical(CanonicalRole::User, "a"),
+            make_assistant_with_calls(&["call_1"]),
+            make_tool_result("call_1", "r"),
+            make_canonical(CanonicalRole::User, "b"),
+            make_tool_result("call_1", "orphan after user"),
+        ];
+        sanitize_canonical(&mut canonical);
+
+        let roles: Vec<CanonicalRole> = canonical.iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            vec![
+                CanonicalRole::User,
+                CanonicalRole::Assistant,
+                CanonicalRole::Tool,
+                CanonicalRole::User,
+            ],
+            "only the orphaned trailing tool must be removed"
+        );
+    }
+
+    #[tokio::test]
     async fn process_input_with_images_queues_and_persists_attachments() {
         let (agent, executor) = make_test_agent();
         let task = executor
@@ -1863,7 +2159,12 @@ mod tests {
             data: "aGVsbG8=".into(),
         };
         let result = agent
-            .process_input_with_images("鐪嬪浘", Some(task.id.clone()), std::slice::from_ref(&att))
+            .process_input_with_images(
+                "鐪嬪浘",
+                Some(task.id.clone()),
+                std::slice::from_ref(&att),
+                false,
+            )
             .await
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
@@ -1933,12 +2234,18 @@ mod tests {
     struct ScriptedMock {
         stream_responses: std::sync::Mutex<VecDeque<ScriptedResponse>>,
         chat_text: std::sync::Mutex<String>,
+        /// Every message batch sent to `chat_stream_with_tools`, for
+        /// assertions (e.g. that no dangling tool_call is sent).
+        seen: std::sync::Mutex<Vec<Vec<LlmMessage>>>,
     }
 
     enum ScriptedResponse {
         Err(LlmError),
         Chunk(StreamChunk),
         ChunkThenErr(StreamChunk, LlmError),
+        /// Yield the chunk only after `delay_ms`, so a test can deliver
+        /// steering/supplements while the LLM call is in flight.
+        ChunkDelayed(StreamChunk, u64),
     }
 
     impl ScriptedMock {
@@ -1946,6 +2253,7 @@ mod tests {
             Self {
                 stream_responses: std::sync::Mutex::new(VecDeque::from(responses)),
                 chat_text: std::sync::Mutex::new("Compacted summary.".into()),
+                seen: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
@@ -1987,12 +2295,13 @@ mod tests {
         }
         async fn chat_stream_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            messages: Vec<LlmMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
         > {
+            self.seen.lock().unwrap().push(messages);
             let resp =
                 self.stream_responses
                     .lock()
@@ -2006,6 +2315,12 @@ mod tests {
                 ScriptedResponse::Chunk(chunk) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
                 ScriptedResponse::ChunkThenErr(chunk, e) => {
                     Ok(Box::pin(stream::iter(vec![Ok(chunk), Err(e)])))
+                }
+                ScriptedResponse::ChunkDelayed(chunk, delay_ms) => {
+                    Ok(Box::pin(stream::once(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        Ok(chunk)
+                    })))
                 }
             }
         }
@@ -2175,6 +2490,173 @@ mod tests {
         assert!(history.len() >= 2, "should have at least 2 steps");
         assert!(collector.has_action("echo"));
         assert!(collector.has_observation("echo"));
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn run_task_injects_mid_turn_steering_before_final_content() {
+        // A user message sent while the agent is generating its final answer
+        // must be injected before the turn ends (between the tool calls and
+        // the final content) instead of being deferred until after
+        // completion. The final LLM response is delayed so the steering
+        // arrives while that call is still in flight; the agent must then
+        // re-run with the message in context.
+        let tools = Arc::new(ToolsManager::new());
+        tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("I'll echo that.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "tc1".into(),
+                    name: "echo".into(),
+                    arguments: r#"{"text":"hello"}"#.into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+            // Delayed final answer: the steering is added while this call is
+            // in flight, so the final-content branch must pick it up.
+            ScriptedResponse::ChunkDelayed(
+                StreamChunk {
+                    text: Some("Done.".into()),
+                    tool_calls: vec![ToolCall {
+                        id: "final".into(),
+                        name: "final_answer".into(),
+                        arguments: "{}".into(),
+                    }],
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: None,
+                    model: None,
+                    reasoning: None,
+                },
+                300,
+            ),
+            // The re-run after the steering was injected also answers finally.
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Understood, continuing in French.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final2".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let task = executor.create_task("echo hello").await.unwrap();
+
+        let run = tokio::spawn({
+            let agent = agent.clone();
+            let task_id = task.id.clone();
+            async move { agent.run_task_from_id(&task_id).await }
+        });
+        // Wait until the echo step completed and the delayed final LLM call
+        // is in flight, then deliver the user's mid-turn message.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        executor
+            .add_steering(&task.id, "stop and use French")
+            .await
+            .unwrap();
+        let history = run.await.unwrap().unwrap();
+
+        {
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3, "agent must re-run after mid-turn steering");
+            let last_call = seen.last().unwrap();
+            assert!(
+                last_call.iter().any(|m| matches!(m.role, LlmRole::User)
+                    && m.content.iter().any(|c| matches!(
+                        c,
+                        ContentPart::Text(t) if t.contains("Steering: stop and use French")
+                    ))),
+                "steering must be injected into the re-run LLM call"
+            );
+        }
+        assert!(
+            history.len() >= 3,
+            "should have re-run after steering injection"
+        );
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn run_task_injects_steering_between_tool_calls() {
+        // A user message sent while the agent is executing tools is drained
+        // at the next step boundary — between tool calls — so the final
+        // answer is generated with the new context.
+        let tools = Arc::new(ToolsManager::new());
+        let timing = Arc::new(TimingState::new());
+        tools
+            .registry
+            .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Running the tool.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "tc1".into(),
+                    name: "delay_a".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Done.".into()),
+                tool_calls: vec![ToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: "{}".into(),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let task = executor.create_task("run tool").await.unwrap();
+
+        let run = tokio::spawn({
+            let agent = agent.clone();
+            let task_id = task.id.clone();
+            async move { agent.run_task_from_id(&task_id).await }
+        });
+        // Deliver the message while delay_a (200ms) is still executing.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        executor
+            .add_steering(&task.id, "add more detail")
+            .await
+            .unwrap();
+        let _ = run.await.unwrap().unwrap();
+
+        {
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(
+                seen.len(),
+                2,
+                "no re-run needed: steering is drained at step boundary"
+            );
+            assert!(
+                seen[1].iter().any(|m| matches!(m.role, LlmRole::User)
+                    && m.content.iter().any(|c| matches!(
+                        c,
+                        ContentPart::Text(t) if t.contains("Steering: add more detail")
+                    ))),
+                "steering must be injected into the next LLM call after the tool step"
+            );
+        }
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
     }
 
@@ -2824,13 +3306,7 @@ mod tests {
             .unwrap();
         agent
             .db
-            .add_message(
-                &task.id,
-                "assistant",
-                "partial output",
-                Some("text"),
-                None,
-            )
+            .add_message(&task.id, "assistant", "partial output", Some("text"), None)
             .unwrap();
 
         agent.continue_task(&task.id).await.unwrap();
@@ -2871,7 +3347,7 @@ mod tests {
             .unwrap();
 
         // User-message rollback (pause=true) should truncate from the user msg.
-        agent.rollback_task(&task.id, 1, true).await.unwrap();
+        agent.rollback_task(&task.id, 1, true, None).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
         assert!(msgs.is_empty(), "messages should be empty after rollback");
@@ -2910,7 +3386,7 @@ mod tests {
             .unwrap();
 
         // Rollback to step 1 with pause=false (agent rollback).
-        agent.rollback_task(&task.id, 1, false).await.unwrap();
+        agent.rollback_task(&task.id, 1, false, None).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         // The partial assistant message should be deleted, user message kept.
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
@@ -2982,7 +3458,7 @@ mod tests {
         // User-message rollback: the user message itself must be removed from
         // the task (its text returns to the composer for editing) — not
         // left behind to reappear on the next review rebuild.
-        agent.rollback_task(&task.id, 1, true).await.unwrap();
+        agent.rollback_task(&task.id, 1, true, None).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
         assert!(
@@ -2991,6 +3467,197 @@ mod tests {
             msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
     }
+
+    #[tokio::test]
+    async fn rollback_orphan_user_message_deletes_only_that_message() {
+        let (agent, executor) = make_test_agent();
+        let task = executor.create_task("orphan rollback").await.unwrap();
+        agent
+            .db
+            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(&task.id, "assistant", "thinking", Some("text"), None)
+            .unwrap();
+        // The interrupted message: persisted AFTER the branch point because
+        // the task errored before it was ever drained into the ReAct context.
+        agent
+            .db
+            .add_message(&task.id, "user", "interrupt", Some("text"), None)
+            .unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let thinking_ts = msgs
+            .iter()
+            .find(|m| m.role == "assistant")
+            .unwrap()
+            .created_at
+            .clone();
+        let canonical = vec![
+            CanonicalMessage {
+                role: CanonicalRole::System,
+                content: vec![ContentPart::text("sys")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+            CanonicalMessage {
+                role: CanonicalRole::User,
+                content: vec![ContentPart::text("hello")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+        ];
+        let mut branch_points = HashMap::new();
+        branch_points.insert(
+            1,
+            BranchPoint {
+                canonical: canonical.clone(),
+                history: vec![],
+                step_number: 1,
+                last_msg_at: Some(thinking_ts),
+            },
+        );
+        let snapshot = ReActSnapshot {
+            canonical,
+            history: vec![],
+            step_number: 1,
+            branch_points,
+        };
+        agent
+            .db
+            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+
+        // Roll back the interrupted message: only it must be discarded; the
+        // earlier exchange ("hello" / "thinking") survives.
+        let interrupt_id = msgs
+            .iter()
+            .find(|m| m.content == "interrupt")
+            .unwrap()
+            .id
+            .clone();
+        agent
+            .rollback_task(&task.id, 1, true, Some(&interrupt_id))
+            .await
+            .unwrap();
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(
+            contents,
+            vec!["hello", "thinking"],
+            "orphan rollback must not wipe earlier history, got {:?}",
+            contents
+        );
+        // The canonical must NOT be truncated: "hello" is a legitimately
+        // processed message and stays in the restored context.
+        let restored: ReActSnapshot =
+            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+        assert!(
+            restored
+                .canonical
+                .iter()
+                .any(|m| m.role == CanonicalRole::User),
+            "orphan rollback must not truncate the processed user message from canonical"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline() {
+        // Same layout as the orphan test, but the user rolls back the
+        // PROCESSED message ("hello") rather than the orphan. The orphan's
+        // existence must not hijack the rollback: deleting from the target's
+        // own timestamp also discards the later orphan (it belongs to the
+        // discarded timeline), and the canonical IS truncated.
+        let (agent, executor) = make_test_agent();
+        let task = executor.create_task("processed rollback").await.unwrap();
+        agent
+            .db
+            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(&task.id, "assistant", "thinking", Some("text"), None)
+            .unwrap();
+        agent
+            .db
+            .add_message(&task.id, "user", "interrupt", Some("text"), None)
+            .unwrap();
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let thinking_ts = msgs
+            .iter()
+            .find(|m| m.role == "assistant")
+            .unwrap()
+            .created_at
+            .clone();
+        let canonical = vec![
+            CanonicalMessage {
+                role: CanonicalRole::System,
+                content: vec![ContentPart::text("sys")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+            CanonicalMessage {
+                role: CanonicalRole::User,
+                content: vec![ContentPart::text("hello")],
+                tool_calls: None,
+                tool_call_id: None,
+                parent_message_id: None,
+                reasoning: None,
+            },
+        ];
+        let mut branch_points = HashMap::new();
+        branch_points.insert(
+            1,
+            BranchPoint {
+                canonical: canonical.clone(),
+                history: vec![],
+                step_number: 1,
+                last_msg_at: Some(thinking_ts),
+            },
+        );
+        let snapshot = ReActSnapshot {
+            canonical,
+            history: vec![],
+            step_number: 1,
+            branch_points,
+        };
+        agent
+            .db
+            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+
+        let hello_id = msgs
+            .iter()
+            .find(|m| m.content == "hello")
+            .unwrap()
+            .id
+            .clone();
+        agent
+            .rollback_task(&task.id, 1, true, Some(&hello_id))
+            .await
+            .unwrap();
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        assert!(
+            msgs.is_empty(),
+            "rollback of the processed message must wipe the orphan too, got {:?}",
+            msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
+        );
+        let restored: ReActSnapshot =
+            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+        assert!(
+            !restored
+                .canonical
+                .iter()
+                .any(|m| m.role == CanonicalRole::User),
+            "rollback of a processed message must truncate the canonical"
+        );
+    }
 }
-
-

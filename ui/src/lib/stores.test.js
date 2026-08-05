@@ -22,6 +22,7 @@ import {
 	taskTokenStatsStore,
 	updateTaskTokenStats,
 	clearTaskTokenStats,
+	restoreTaskTokenStats,
 	formatTokenCount,
 	formatCostUsd,
 } from './stores.js';
@@ -116,6 +117,22 @@ describe('task message store', () => {
 	it('updateTaskMessages starts from empty list when absent', () => {
 		updateTaskMessages('t9', (list) => [...list, { id: 'x' }]);
 		expect(storeMap().t9.map((x) => x.id)).toEqual(['x']);
+	});
+
+	it('updateTaskMessages skips the write when the updater returns the same list', () => {
+		setTaskMessages('t1', [{ id: '1' }]);
+		const before = storeMap();
+		// No-op updater (same array reference) must not replace the store map,
+		// otherwise the reference-based skip would be invisible to subscribers.
+		updateTaskMessages('t1', (list) => list);
+		expect(storeMap()).toBe(before);
+		expect(storeMap().t1.map((x) => x.id)).toEqual(['1']);
+	});
+
+	it('updateTaskMessages still writes when the updater returns a new list', () => {
+		setTaskMessages('t1', [{ id: '1' }]);
+		updateTaskMessages('t1', (list) => [...list, { id: '2' }]);
+		expect(storeMap().t1.map((x) => x.id)).toEqual(['1', '2']);
 	});
 
 	it('clearTaskMessages removes the task and its seq tracking', () => {
@@ -332,6 +349,24 @@ describe('newMessage', () => {
 		const b = newMessage({ role: 'user', content: 'x' });
 		expect(a.id).not.toBe(b.id);
 	});
+
+	it('idPrefix slots into the id between timestamp and randomness', () => {
+		const msg = newMessage({ role: 'user', content: 'x', idPrefix: 'u' });
+		expect(msg.id).toMatch(/^\d+-u-[a-z0-9]+$/);
+	});
+
+	it('keeps attachments and overrides time and voice', () => {
+		const msg = newMessage({
+			role: 'user',
+			content: 'x',
+			voice: true,
+			time: '12:00:00',
+			attachments: [{ media_type: 'image/png', data: 'a' }],
+		});
+		expect(msg.voice).toBe(true);
+		expect(msg.time).toBe('12:00:00');
+		expect(msg.attachments).toEqual([{ media_type: 'image/png', data: 'a' }]);
+	});
 });
 
 describe('updateModelState', () => {
@@ -424,6 +459,30 @@ describe('taskTokenStatsStore', () => {
 	it('updateTaskTokenStats ignores a missing task id', () => {
 		updateTaskTokenStats('', { totalTokens: 10 });
 		expect(statsMap()).toEqual({});
+	});
+
+	it('restoreTaskTokenStats restores cumulative counters without cost', () => {
+		restoreTaskTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.25, has_cost: true });
+		const e = statsMap().t1;
+		expect(e.cumulativePromptTokens).toBe(100);
+		expect(e.cumulativeCompletionTokens).toBe(50);
+		expect(e.cumulativeTotalTokens).toBe(150);
+		expect(e.cumulativeCostUsd).toBe(0.25);
+		expect(e.costUsd).toBeNull();
+		expect(e.estimated).toBe(false);
+	});
+
+	it('restoreTaskTokenStats flags estimated totals and drops cost', () => {
+		restoreTaskTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.0, has_cost: false }, true);
+		const e = statsMap().t1;
+		expect(e.cumulativeTotalTokens).toBe(150);
+		expect(e.estimated).toBe(true);
+		expect(e.cumulativeCostUsd).toBeNull();
+	});
+
+	it('restoreTaskTokenStats no-ops without usage', () => {
+		restoreTaskTokenStats('t1', null);
+		expect(statsMap().t1).toBeUndefined();
 	});
 });
 

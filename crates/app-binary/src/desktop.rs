@@ -151,9 +151,7 @@ impl DesktopShell {
         if new_val {
             // Already recording via another source (UI button): keep the
             // toggle flag but do not double-start the pipeline.
-            if !was_recording
-                && let Some(h) = self.handler_snap().await
-            {
+            if !was_recording && let Some(h) = self.handler_snap().await {
                 h.on_recording_start().await;
             }
             self.set_tray(TrayStatus::Recording).await;
