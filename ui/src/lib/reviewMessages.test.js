@@ -50,6 +50,43 @@ describe('buildReviewMessages', () => {
 		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'file', content: '{"ok":true}' });
 	});
 
+	it('hides silent tool steps like the live chat does', () => {
+		// `"silent": true` on a tool input hides its card live; the review
+		// rebuild must not resurrect it as a tool badge.
+		const items = buildReviewMessages({
+			task: sampleTask,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 's1', action_tool: 'shell', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_index: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
+	it('still assigns a stepNumber to the thought before a silent action step', () => {
+		// The silent action itself has no badge, but its preceding thought
+		// must resolve to the step via the matching thought step row so
+		// rollback targeting keeps working.
+		const items = buildReviewMessages({
+			task: sampleTask,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 't1', action_tool: null, thought: '稍等，我检查一下', silent: false, step_index: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's1', action_tool: 'shell', observation: 'ok', thought: null, silent: true, step_index: 1, created_at: '2026-08-01T10:01:01Z' },
+			],
+		});
+		expect(items.find((i) => i.id === 'm2').stepNumber).toBe(1);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
 	it('falls back to the task input text when there are no messages', () => {
 		const items = buildReviewMessages({ task: sampleTask, messages: [], steps: [] });
 		expect(items).toHaveLength(1);

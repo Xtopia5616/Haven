@@ -29,7 +29,7 @@ impl McpToolAdapter {
     }
 
     fn qualified_name(&self) -> String {
-        format!("mcp::{}::{}", self.server_name, self.info.name)
+        crate::llm_tool_name(&format!("mcp::{}::{}", self.server_name, self.info.name))
     }
 }
 
@@ -71,7 +71,7 @@ impl SkillToolAdapter {
     }
 
     fn qualified_name(&self) -> String {
-        format!("skill::{}", self.skill.name())
+        crate::llm_tool_name(&format!("skill::{}", self.skill.name()))
     }
 }
 
@@ -131,7 +131,7 @@ mod tests {
             input_schema: serde_json::json!({}),
         };
         let adapter = McpToolAdapter::new(Arc::new(client), "test-server", info);
-        assert_eq!(adapter.name(), "mcp::test-server::greet");
+        assert_eq!(adapter.name(), "mcp__test-server__greet");
         assert_eq!(adapter.description(), "Greets the user");
         assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::Medium);
     }
@@ -153,7 +153,7 @@ mod tests {
         let config = SkillsExecConfig::default();
         let runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
         let adapter = SkillToolAdapter::new(skill, runner);
-        assert_eq!(adapter.name(), "skill::echo");
+        assert_eq!(adapter.name(), "skill__echo");
         assert_eq!(adapter.description(), "Echoes input");
         assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::Medium);
     }

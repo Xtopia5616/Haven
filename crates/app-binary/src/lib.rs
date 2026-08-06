@@ -1,4 +1,5 @@
 mod app_state;
+mod autostart;
 mod commands;
 mod desktop;
 mod events;
@@ -553,12 +554,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // 自启触发的重复实例不弹出窗口：保持后台驻留，等待快捷键唤起。
+            if args.iter().any(|a| a == autostart::AUTOSTART_ARG) {
+                return;
+            }
             let _ = app.get_webview_window("main").map(|w| {
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -573,6 +574,14 @@ pub fn run() {
         .manage(Arc::new(app_state))
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // 由任务计划程序（--autostart）启动时默认隐藏主窗口，驻留
+            // 系统托盘；使用录音快捷键即可唤起窗口并开始录音。
+            if autostart::is_autostart_launch()
+                && let Some(w) = app.get_webview_window("main")
+            {
+                let _ = w.hide();
+            }
 
             let state = app.state::<Arc<AppState>>();
             let shell = &state.shell;
@@ -738,6 +747,8 @@ pub fn run() {
             let result = handle.global_shortcut().on_shortcut(shortcut, move |app, _sc, event| {
                 let state = app.state::<Arc<AppState>>();
                 let shell = state.shell.clone();
+                let pipeline = state.pipeline.clone();
+                let app_h = app.clone();
                 let pressed = event.state == ShortcutState::Pressed;
                 // `spawn` (unlike `block_on`) is safe from any thread, so a
                 // shortcut callback firing on the async runtime's own thread
@@ -746,6 +757,19 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let shell_state = shell.get_state().await;
                     if shell_state.is_muted {
+                        return;
+                    }
+                    // 快捷键唤起：先显示并聚焦前端窗口（含自启隐藏后的
+                    // 后台场景），再开始/结束录音。
+                    if pressed
+                        && let Some(w) = app_h.get_webview_window("main")
+                    {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    // 未配置录音（STT 不可用）时，快捷键仅唤醒窗口，不尝试
+                    // 开始录音，避免无意义的录音错误提示。
+                    if !pipeline.recording_configured().await {
                         return;
                     }
                     if shell_state.hold_mode {

@@ -37,15 +37,26 @@ impl ToolResult {
     }
 
     /// Plain-text summary of the result: the serialized output on success,
-    /// the error message (or a generic fallback) on failure. Callers that
-    /// need truncation apply it on top.
+    /// the error message on failure. On failure with an empty/absent error
+    /// (e.g. a shell command that exited non-zero without stderr), fall back
+    /// to the serialized output so the result is never an empty string —
+    /// an empty observation looks to the model and the chat like the tool
+    /// never returned anything. Callers that need truncation apply it on top.
     pub fn summary_text(&self) -> String {
         if self.success {
             serde_json::to_string(&self.output).unwrap_or_else(|_| "success".into())
         } else {
-            self.error
-                .clone()
-                .unwrap_or_else(|| "unknown failure".into())
+            match self.error.as_deref() {
+                Some(e) if !e.trim().is_empty() => e.to_string(),
+                _ => {
+                    let out = serde_json::to_string(&self.output).unwrap_or_default();
+                    if out.is_empty() || out == "null" {
+                        "unknown failure".into()
+                    } else {
+                        out
+                    }
+                }
+            }
         }
     }
 }
@@ -375,6 +386,31 @@ mod tests {
             success: false,
             output: json!(null),
             error: None,
+            truncated: false,
+        };
+        assert_eq!(result.summary_text(), "unknown failure");
+    }
+
+    #[test]
+    fn test_tool_result_summary_text_empty_error_falls_back_to_output() {
+        // A failure with an empty error string (e.g. a shell command that
+        // exited non-zero without stderr) must still yield a non-empty
+        // summary — otherwise the tool appears to return no result at all.
+        let result = ToolResult {
+            success: false,
+            output: json!({"output": "some stdout"}),
+            error: Some(String::new()),
+            truncated: false,
+        };
+        assert_eq!(result.summary_text(), r#"{"output":"some stdout"}"#);
+    }
+
+    #[test]
+    fn test_tool_result_summary_text_whitespace_error_falls_back() {
+        let result = ToolResult {
+            success: false,
+            output: json!(null),
+            error: Some("   ".into()),
             truncated: false,
         };
         assert_eq!(result.summary_text(), "unknown failure");

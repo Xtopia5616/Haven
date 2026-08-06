@@ -31,6 +31,42 @@ pub use tool::{
     extract_notify_signal, is_silent_action,
 };
 
+/// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
+/// form accepted by tool-calling LLM APIs. OpenAI-compatible providers
+/// restrict tool names to `^[a-zA-Z0-9_-]+$` (DeepSeek rejects the `::`
+/// namespace separator with a 400, which permanently errors the task after a
+/// successful `load_mcp`); Anthropic additionally caps the length at 64.
+/// The transform is deterministic so the name advertised to the model in the
+/// tool definitions always equals the per-task registration key used for
+/// execution lookup — no reverse mapping is needed.
+pub fn llm_tool_name(qualified: &str) -> String {
+    let mut out: String = qualified
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.len() > 64 {
+        let idx = out.floor_char_boundary(64);
+        out.truncate(idx);
+    }
+    out
+}
+
+/// Lightweight sanitizer for strings interpolated into the system prompt:
+/// replaces control characters (newlines, tabs) that could inject prompt
+/// text, and caps the length.
+fn sanitize_index_field(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(256)
+        .collect()
+}
+
 pub struct ToolsManager {
     pub registry: ToolRegistry,
     pub mcp_manager: McpManager,
@@ -57,6 +93,9 @@ pub struct ToolsManager {
     /// router, log file). Wired in by the desktop shell; `None` in headless
     /// tests so the tool is simply not registered.
     self_context: RwLock<Option<builtin::SelfToolContext>>,
+    /// Shared clipboard history for the `clipboard` tool. Lives on the
+    /// manager (not the tool) so it survives catalog rebuilds.
+    pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
 }
 
 impl ToolsManager {
@@ -83,6 +122,7 @@ impl ToolsManager {
             background_jobs: Arc::new(bg::BackgroundJobs::new()),
             reminders: Arc::new(builtin::reminder::ReminderCenter::new()),
             self_context: RwLock::new(None),
+            clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
         }
     }
 
@@ -124,6 +164,17 @@ impl ToolsManager {
         servers: &[haven_common::McpServerConfig],
         config: &haven_common::McpDiscoveryConfig,
     ) {
+        // Populate the in-memory index so `self mcp_list` and
+        // `build_mcp_index` see the configured servers right after startup,
+        // before any config mutation (the index was previously only filled
+        // by `update_settings` → `load_mcp_from_config`).
+        {
+            let mut configs = self.mcp_server_configs.write().await;
+            configs.clear();
+            for server in servers {
+                configs.insert(server.name.clone(), server.clone());
+            }
+        }
         self.mcp_manager.discover_all(servers, config).await;
     }
 
@@ -152,6 +203,7 @@ impl ToolsManager {
             self.reminders.clone(),
             self_context,
             self.registry.clone(),
+            self.clipboard_history.clone(),
         )
         .await;
 
@@ -218,8 +270,11 @@ impl ToolsManager {
         self.registry.get(name).await
     }
 
-    /// Build a skill index (name + description only) for injection into the
-    /// system prompt (refine §4.7). The LLM uses `load_skill` to get full schemas.
+    /// Build a skill index (raw name + description) for injection into the
+    /// system prompt (refine §4.7). The LLM uses `load_skill` to get full
+    /// schemas. The raw skill name is shown so the value passed to
+    /// `load_skill(skill_name)` matches (the index previously advertised the
+    /// transformed `skill__<name>` tool name, which `load_skill` rejected).
     pub async fn build_skill_index(&self) -> Vec<Value> {
         let skills = self.skills_engine.list().await;
         skills
@@ -227,28 +282,61 @@ impl ToolsManager {
             .filter(|s| s.enabled)
             .map(|s| {
                 serde_json::json!({
-                    "name": format!("skill::{}", s.name),
+                    "name": s.name,
                     "description": s.description,
                 })
             })
             .collect()
     }
 
-    /// Build an MCP server index (name + description only) for injection into the
-    /// system prompt. The LLM uses `load_mcp` to get full schemas.
+    /// Build an MCP server index (name + available tool names) for injection
+    /// into the system prompt. The LLM uses `load_mcp` to get full schemas.
     /// Only enabled servers are listed — disabled ones cannot be loaded.
+    /// Tool names are included (when the server is connected and cached) so
+    /// the LLM can judge whether a server's tools fit the task instead of
+    /// defaulting to weaker built-ins.
     pub async fn build_mcp_index(&self) -> Vec<Value> {
         let configs = self.mcp_server_configs.read().await;
-        configs
-            .values()
-            .filter(|s| s.enabled)
-            .map(|s| {
-                serde_json::json!({
-                    "name": s.name.clone(),
-                    "description": format!("MCP server '{}' via {} ({})", s.name, s.command, s.args.join(" ")),
-                })
-            })
-            .collect()
+        let mut entries: Vec<Value> = Vec::new();
+        for s in configs.values().filter(|s| s.enabled) {
+            let tool_names: Vec<String> = match self.mcp_manager.get_client(&s.name).await {
+                Some(client) => client
+                    .tools_cache()
+                    .await
+                    .into_iter()
+                    .map(|t| sanitize_index_field(&t.name))
+                    .collect(),
+                None => Vec::new(),
+            };
+            let description = if tool_names.is_empty() {
+                format!(
+                    "MCP server '{}' via {} ({})",
+                    s.name,
+                    s.command,
+                    s.args.join(" ")
+                )
+            } else {
+                format!(
+                    "MCP server '{}' via {} ({}); tools: {}",
+                    s.name,
+                    s.command,
+                    s.args.join(" "),
+                    tool_names.join(", ")
+                )
+            };
+            entries.push(serde_json::json!({
+                "name": s.name.clone(),
+                "description": description,
+            }));
+        }
+        // Deterministic ordering for a stable prompt.
+        entries.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        });
+        entries
     }
 
     /// Return tool schemas for a task: global registry schemas merged with
@@ -607,12 +695,12 @@ mod tests {
             base_count + 1,
             "per-task skill tool should appear in schemas"
         );
-        assert!(schemas.iter().any(|s| s["name"] == "skill::demo"));
+        assert!(schemas.iter().any(|s| s["name"] == "skill__demo"));
 
         // Other tasks should NOT see this tool.
         let other = mgr.list_schemas_for_task("task-b").await;
         assert_eq!(other.len(), base_count);
-        assert!(!other.iter().any(|s| s["name"] == "skill::demo"));
+        assert!(!other.iter().any(|s| s["name"] == "skill__demo"));
     }
 
     #[tokio::test]
@@ -666,7 +754,7 @@ mod tests {
         assert!(
             !schemas
                 .iter()
-                .any(|s| { s["name"].as_str().unwrap_or("").starts_with("mcp::") }),
+                .any(|s| { s["name"].as_str().unwrap_or("").starts_with("mcp__") }),
             "MCP tools must not be pre-registered globally"
         );
     }

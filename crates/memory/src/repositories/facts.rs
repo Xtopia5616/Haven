@@ -1,6 +1,7 @@
 use crate::db::Database;
 use crate::repositories::messages::Message;
 use chrono::Utc;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -62,6 +63,43 @@ fn tags_for_predicate(predicate: &str) -> Vec<String> {
     }
 }
 
+/// Predicate names that must never be stored as (or shown from) user facts:
+/// API keys, tokens, passwords and other credentials.
+pub fn is_sensitive_predicate(predicate: &str) -> bool {
+    let p = predicate.to_ascii_lowercase();
+    const SENSITIVE_KEYWORDS: &[&str] = &[
+        "api_key",
+        "apikey",
+        "api-key",
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "credential",
+        "passphrase",
+        "access_key",
+        "private_key",
+        "authorization",
+    ];
+    SENSITIVE_KEYWORDS.iter().any(|k| p.contains(k))
+}
+
+/// Object values that look like credentials even when the predicate is not
+/// obviously sensitive (defense in depth: covers secrets the LLM happened to
+/// store under an innocent predicate).
+pub fn is_sensitive_object(object: &str) -> bool {
+    let o = object.trim().to_ascii_lowercase();
+    o.starts_with("sk-")
+        || o.starts_with("tvly-")
+        || o.starts_with("ghp_")
+        || o.starts_with("gho_")
+        || o.starts_with("xoxb-")
+        || o.starts_with("aiza")
+        || o.starts_with("bearer ")
+        || o.contains("api_key=")
+        || o.contains("apikey=")
+}
+
 impl Database {
     pub fn insert_fact(
         &self,
@@ -92,6 +130,34 @@ impl Database {
             tags: tags.iter().map(|s| s.to_string()).collect(),
             created_at: now,
         })
+    }
+
+    /// Insert a fact only if the same (subject, predicate, object) triple
+    /// does not already exist. Returns the existing fact when present, so
+    /// repeated startup seeding never accumulates duplicates.
+    pub fn ensure_fact(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        source: &str,
+        confidence: f64,
+        tags: &[&str],
+    ) -> anyhow::Result<Fact> {
+        let existing: Option<Fact> = {
+            let conn = self.conn();
+            conn.query_row(
+                "SELECT id, subject, predicate, object, source, confidence, tags, created_at
+                 FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                rusqlite::params![subject, predicate, object],
+                fact_from_row,
+            )
+            .ok()
+        };
+        if let Some(existing) = existing {
+            return Ok(existing);
+        }
+        self.insert_fact(subject, predicate, object, source, confidence, tags)
     }
 
     pub fn get_facts(&self, subject: &str) -> anyhow::Result<Vec<Fact>> {
@@ -196,34 +262,78 @@ impl Database {
 
     pub fn dedup_facts(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
-        // Find duplicates (same subject, predicate, object, tags) and keep
-        // the one with highest confidence.  The correlated subquery picks
-        // exactly the id of the max-confidence row per group, so all other
-        // rows in the group are selected for deletion.
+        // Group by (subject, predicate, object) regardless of tags: the same
+        // triple is the same fact even when older rows carry a different (or
+        // empty) tag set. The previous tag-sensitive grouping let repeated
+        // re-extraction pile up duplicates — e.g. 379 rows of `name=Xtopia`.
         let mut stmt = conn.prepare(
-            "SELECT id FROM facts
-             WHERE id NOT IN (
-                 SELECT f1.id FROM facts f1
-                 WHERE f1.confidence = (
-                     SELECT MAX(f2.confidence) FROM facts f2
-                     WHERE f2.subject = f1.subject
-                       AND f2.predicate = f1.predicate
-                       AND f2.object = f1.object
-                       AND f2.tags = f1.tags
-                 )
-             )",
+            "SELECT id, subject, predicate, object, source, confidence, tags, created_at
+             FROM facts",
         )?;
-        let mut ids_to_delete: Vec<String> = Vec::new();
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map([], fact_from_row)?;
+        let mut groups: HashMap<(String, String, String), Vec<Fact>> = HashMap::new();
         for row in rows {
-            ids_to_delete.push(row?);
+            let fact = row?;
+            groups
+                .entry((fact.subject.clone(), fact.predicate.clone(), fact.object.clone()))
+                .or_default()
+                .push(fact);
         }
-        let count = ids_to_delete.len() as u64;
-        for id in &ids_to_delete {
-            conn.execute("DELETE FROM facts WHERE id = ?1", rusqlite::params![id])?;
+
+        let mut deleted: u64 = 0;
+        for group in groups.values_mut() {
+            if group.len() <= 1 {
+                continue;
+            }
+            // Keeper: highest confidence, ties broken by newest created_at.
+            group.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.created_at.cmp(&a.created_at))
+            });
+            let keeper = group.remove(0);
+            // Merge tags from every duplicate into the keeper so no tag is
+            // lost when rows with different tag sets collapse into one.
+            let mut tags = keeper.tags.clone();
+            for fact in group.iter() {
+                for t in &fact.tags {
+                    if !tags.contains(t) {
+                        tags.push(t.clone());
+                    }
+                }
+            }
+            let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+            conn.execute(
+                "UPDATE facts SET tags = ?1 WHERE id = ?2",
+                rusqlite::params![serialize_tags(&tag_refs), keeper.id],
+            )?;
+            for fact in group.iter() {
+                conn.execute("DELETE FROM facts WHERE id = ?1", rusqlite::params![fact.id])?;
+            }
+            deleted += group.len() as u64;
         }
         self.cache_invalidate_facts("user");
-        Ok(count)
+        Ok(deleted)
+    }
+
+    /// Remove facts whose predicate or object looks like a credential. Called
+    /// during fact maintenance so secrets accidentally extracted in the past
+    /// are purged from the database rather than merely hidden from prompts.
+    pub fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
+        let facts = self.list_facts()?;
+        let mut deleted: u64 = 0;
+        for fact in &facts {
+            if is_sensitive_predicate(&fact.predicate) || is_sensitive_object(&fact.object) {
+                let conn = self.conn();
+                conn.execute("DELETE FROM facts WHERE id = ?1", rusqlite::params![fact.id])?;
+                deleted += 1;
+            }
+        }
+        if deleted > 0 {
+            self.cache_invalidate_facts("user");
+        }
+        Ok(deleted)
     }
 
     pub fn flush_low_confidence(&self, threshold: f64) -> anyhow::Result<u64> {
@@ -686,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dedup_facts_different_tags_not_merged() {
+    fn test_dedup_facts_merges_different_tags() {
         let db = create_db();
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
@@ -694,9 +804,47 @@ mod tests {
             .unwrap();
 
         let count = db.dedup_facts().unwrap();
-        assert_eq!(count, 0);
+        assert!(count > 0, "same triple with different tags must dedup");
+        let remaining = db.list_facts().unwrap();
+        assert_eq!(remaining.len(), 1);
+        // Tags are merged, not dropped.
+        assert!(remaining[0].tags.contains(&"preference".to_string()));
+        assert!(remaining[0].tags.contains(&"workspace".to_string()));
+        assert_eq!(remaining[0].confidence, 0.9, "keeper keeps highest confidence");
+    }
+
+    #[test]
+    fn test_ensure_fact_idempotent() {
+        let db = create_db();
+        db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"])
+            .unwrap();
+        db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"])
+            .unwrap();
+        db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"])
+            .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1, "ensure_fact must not accumulate duplicates");
+    }
+
+    #[test]
+    fn test_delete_sensitive_facts() {
+        let db = create_db();
+        db.insert_fact("user", "name", "Alice", "user", 1.0, &["identity"])
+            .unwrap();
+        db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "tavily_api_key", "tvly-dev-abc", "inferred", 1.0, &["workspace"])
+            .unwrap();
+        db.insert_fact("user", "secret_token", "ghp_xxxx", "inferred", 1.0, &["workspace"])
+            .unwrap();
+
+        let deleted = db.delete_sensitive_facts().unwrap();
+        assert_eq!(deleted, 2);
         let remaining = db.list_facts().unwrap();
         assert_eq!(remaining.len(), 2);
+        assert!(
+            remaining.iter().all(|f| f.predicate != "tavily_api_key" && f.predicate != "secret_token")
+        );
     }
 
     #[test]

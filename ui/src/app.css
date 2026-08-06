@@ -261,6 +261,15 @@ body {
 	color: var(--md-sys-color-on-primary-container);
 }
 
+/* Long-conversation optimization: off-screen chat bubbles skip layout/paint
+ * so scrolling and auto-follow don't force a reflow of every bubble.
+ * `contain-intrinsic-size: auto` remembers the last rendered size so the
+ * scrollbar height stays stable while the bubble is off-screen. */
+.bubble {
+	content-visibility: auto;
+	contain-intrinsic-size: auto 120px;
+}
+
 /* Scrollbars — hidden globally */
 * {
 	scrollbar-width: none;

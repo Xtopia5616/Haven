@@ -1,25 +1,43 @@
 <script>
-	import { onDestroy, onMount, untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import logger from '$lib/logger.js';
 	import { imageDataUrl } from '$lib/stores.js';
-	import ToolResultCard, { canRenderToolResult } from '$lib/ToolResultCard.svelte';
+	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.js';
+	import ToolResultCard from '$lib/ToolResultCard.svelte';
 
-	let { role, content, type: msgType, time, voice = false, streaming = false, toolName = '', messageId = '', stepNumber = null, attachments = [], options = [], awaiting = false, received = false, onContextMenu = null, onQuickReply = null } = $props();
+	let {
+		role,
+		content,
+		type: msgType,
+		time,
+		voice = false,
+		streaming = false,
+		toolName = '',
+		messageId = '',
+		stepNumber = null,
+		attachments = [],
+		options = [],
+		awaiting = false,
+		received = false,
+		onContextMenu = null,
+		onQuickReply = null,
+	} = $props();
 
-	// Local open state for collapsible <details> blocks (reasoning +
-	// tool observations). The block expands while streaming so live output is
-	// visible, and auto-collapses once streaming ends (constraint
+	// Local open state for the collapsible reasoning <details> block. The block
+	// expands while streaming so live output is visible, and auto-collapses
+	// once streaming ends (constraint
 	// tool_call_output_expand_during_collapse_after). Manual clicks after that
 	// persist: binding `open={streaming}` directly would re-apply the value on
 	// every content-driven re-render, overriding a manual toggle.
+	//
+	// Tool result cards handle their own open state the same way inside
+	// ToolResultCard, so every tool observation follows one rule.
 	//
 	// $effect.pre runs before the DOM updates, so the open/collapse happens
 	// in the same frame as the streaming transition — no flash where the
 	// block briefly renders open before snapping shut.
 	let reasoningOpen = $state(untrack(() => streaming));
-	let observationOpen = $state(untrack(() => streaming));
 	let lastStreaming = untrack(() => streaming);
 	$effect.pre(() => {
 		// Only react to streaming TRANSITIONS, not to every re-render, so a
@@ -28,23 +46,27 @@
 		if (streaming) {
 			// Streaming (re)started → expand so live output is visible.
 			reasoningOpen = true;
-			observationOpen = true;
 		} else {
 			// Streaming ended → auto-collapse once.
 			reasoningOpen = false;
-			observationOpen = false;
 		}
 		lastStreaming = streaming;
 	});
 
-	let md = $state(null);
 	let mdHtml = $state('');
 	// L11: the component may be destroyed while onMount's dynamic imports are
 	// still resolving; guard state writes against an unmounted component.
 	let mounted = true;
+	// Shared renderer resolution + per-frame streaming coalescing. Markdown is
+	// rendered live while streaming so headings/bold/lists appear as they are
+	// typed; code fences are deferred (plain <pre>) until streaming ends.
+	let rendererReady = false;
+	let rendererLoading = false;
+	let mdRafId = 0;
 
 	onDestroy(() => {
 		mounted = false;
+		if (mdRafId) cancelAnimationFrame(mdRafId);
 	});
 
 	function handleContextMenu(e) {
@@ -59,7 +81,16 @@
 					selectedContent = selection.toString().trim();
 				}
 			}
-			onContextMenu({ x: e.clientX, y: e.clientY, messageId, stepNumber, role, content, type: msgType, selectedContent });
+			onContextMenu({
+				x: e.clientX,
+				y: e.clientY,
+				messageId,
+				stepNumber,
+				role,
+				content,
+				type: msgType,
+				selectedContent,
+			});
 		}
 	}
 
@@ -76,13 +107,16 @@
 		e.preventDefault();
 		e.stopPropagation();
 		const text = codeEl.textContent ?? '';
-		navigator.clipboard?.writeText(text)
+		navigator.clipboard
+			?.writeText(text)
 			.then(() => {
 				const label = btn.querySelector('.md-code-copy-text');
 				if (!label) return;
 				const original = label.textContent;
 				label.textContent = '已复制';
-				setTimeout(() => { label.textContent = original; }, 1500);
+				setTimeout(() => {
+					label.textContent = original;
+				}, 1500);
 			})
 			.catch(() => {});
 	}
@@ -93,77 +127,59 @@
 	// inside are clickable.
 	function mdContentClick(node) {
 		node.addEventListener('click', handleMdContentClick);
-		return { destroy() { node.removeEventListener('click', handleMdContentClick); } };
+		return {
+			destroy() {
+				node.removeEventListener('click', handleMdContentClick);
+			},
+		};
 	}
 
-	onMount(async () => {
-		const [MarkdownIt, hljs, javascript, typescript, bash, json, css, xml, rust, yaml] = await Promise.all([
-			import('markdown-it'),
-			import('highlight.js/lib/core'),
-			import('highlight.js/lib/languages/javascript'),
-			import('highlight.js/lib/languages/typescript'),
-			import('highlight.js/lib/languages/bash'),
-			import('highlight.js/lib/languages/json'),
-			import('highlight.js/lib/languages/css'),
-			import('highlight.js/lib/languages/xml'),
-			import('highlight.js/lib/languages/rust'),
-			import('highlight.js/lib/languages/yaml'),
-		]);
-		if (!mounted) return;
-		const highlighter = hljs.default;
-		highlighter.registerLanguage('javascript', javascript.default);
-		highlighter.registerLanguage('typescript', typescript.default);
-		highlighter.registerLanguage('bash', bash.default);
-		highlighter.registerLanguage('json', json.default);
-		highlighter.registerLanguage('css', css.default);
-		highlighter.registerLanguage('xml', xml.default);
-		highlighter.registerLanguage('rust', rust.default);
-		highlighter.registerLanguage('yaml', yaml.default);
-		md = new MarkdownIt.default({
-			html: false,
-			linkify: true,
-			breaks: true,
-			highlight(str, lang) {
-				if (!lang || !highlighter.getLanguage(lang)) return '';
-				try { return highlighter.highlight(str, { language: lang }).value; }
-				catch (e) { logger.warn('ChatBubble', 'highlight failed', e); return ''; }
-			},
-		});
-		// Wrap every code fence in the same container style as the JsonView
-		// tool cards: a toolbar with language label + copy button above the
-		// highlighted code. Copy clicks are delegated on the container.
-		md.renderer.rules.fence = (tokens, idx) => {
-			const token = tokens[idx];
-			const info = token.info ? md.utils.unescapeAll(token.info).trim() : '';
-			const lang = info.split(/\s+/g)[0];
-			const esc = md.utils.escapeHtml;
-			let code;
-			if (lang && highlighter.getLanguage(lang)) {
-				try { code = highlighter.highlight(token.content, { language: lang }).value; }
-				catch (e) { logger.warn('ChatBubble', 'highlight failed', e); code = esc(token.content); }
-			} else {
-				code = esc(token.content);
+	// L11: guard the render effect against unmount mid-import. mdHtml stays ''
+	// until the shared renderer is loaded and this bubble is still mounted.
+	// Only assistant text bubbles render markdown; everything else (user,
+	// thought, reasoning, tool, ask, supplement) skips the shared instance
+	// entirely. While streaming, re-render on every content change (coalesced
+	// to one render per animation frame) so markdown appears live; the renderer
+	// defers code blocks to the final render.
+	$effect(() => {
+		if (!mounted || role !== 'assistant' || msgType) return;
+		if (!rendererReady) {
+			// Renderer still loading — show plain text with the caret, then
+			// render once the shared instance resolves.
+			if (!rendererLoading) {
+				rendererLoading = true;
+				getMarkdownRenderer().then(() => {
+					if (!mounted) return;
+					rendererReady = true;
+					renderNow();
+				});
 			}
-			return `<div class="md-code-wrap">
-				<div class="md-code-bar">
-					<span class="md-code-lang">${lang ? esc(lang) : 'text'}</span>
-					<button type="button" class="md-code-copy" aria-label="复制代码">
-						<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-						<span class="md-code-copy-text">复制</span>
-					</button>
-				</div>
-				<pre><code class="hljs">${code}</code></pre>
-			</div>`;
-		};
+			mdHtml = '';
+			return;
+		}
+		if (streaming) {
+			// Coalesce chunk updates: at most one markdown render per frame.
+			if (mdRafId) return;
+			mdRafId = requestAnimationFrame(() => {
+				mdRafId = 0;
+				if (!mounted) return;
+				renderNow();
+			});
+			return;
+		}
+		if (mdRafId) {
+			cancelAnimationFrame(mdRafId);
+			mdRafId = 0;
+		}
+		renderNow();
 	});
 
-	// L11: guard the render effect against unmount mid-import. mdHtml stays ''
-	// until both `md` is loaded and this bubble is still mounted.
-	$effect(() => {
-		if (!mounted || !md || role !== 'assistant' || msgType) return;
+	// Reads the current props, so it is safe to call from the rAF callback
+	// and from the renderer-load completion.
+	function renderNow() {
 		const text = content || '';
-		mdHtml = text ? md.render(text) : '';
-	});
+		mdHtml = text ? renderMarkdown(text, !!streaming) : '';
+	}
 </script>
 
 <div
@@ -180,7 +196,8 @@
 		<span class="bubble-role">
 			{role === 'user' ? 'You' : 'Haven'}
 			{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
-			{#if role === 'user' && received}<span class="received-tag" title="Agent 已收到">✓</span>{/if}
+			{#if role === 'user' && received}<span class="received-tag" title="Agent 已收到">✓</span
+				>{/if}
 		</span>
 		{#if time}
 			<span class="bubble-time">{time}</span>
@@ -194,42 +211,41 @@
 		{:else if msgType === 'reasoning'}
 			<details class="reasoning-block" bind:open={reasoningOpen}>
 				<summary class="reasoning-summary">Thinking...</summary>
-				<div class="reasoning-content"><em>{content}{#if streaming && content}<span class="caret"></span>{/if}</em></div>
+				<div class="reasoning-content">
+					<em
+						>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
+					>
+				</div>
 			</details>
 		{:else if msgType === 'tool'}
 			<div class="tool-call">&#9654; Calling {toolName}</div>
 			{#if content}
-				{#if canRenderToolResult(toolName, content)}
-					<ToolResultCard {toolName} {content} />
-				{:else}
-					<details class="observation-block" bind:open={observationOpen}>
-						<summary class="observation-summary">Result</summary>
-						<pre class="observation">{content}</pre>
-					</details>
-				{/if}
+				<ToolResultCard {toolName} {content} {streaming} />
 			{/if}
 		{:else if msgType === 'ask'}
-			<ToolResultCard
-				type="ask"
-				content={content}
-				options={options}
-				awaiting={awaiting}
-				messageId={messageId}
-				onQuickReply={onQuickReply}
-			/>
+			<ToolResultCard type="ask" {content} {options} {awaiting} {messageId} {onQuickReply} />
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if role === 'assistant'}
 			{#if mdHtml}
-				<div class="md-content" class:streaming use:mdContentClick>{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}</div>
+				<div class="md-content" class:streaming use:mdContentClick>
+					{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}
+				</div>
 			{:else}
-				<p>{content}{#if streaming && content}<span class="caret"></span>{/if}</p>
+				<p>
+					{content}{#if streaming && content}<span class="caret"></span>{/if}
+				</p>
 			{/if}
 		{:else}
 			{#if attachments && attachments.length > 0}
 				<div class="attachments">
 					{#each attachments as att}
-						<img class="attachment-img" src={imageDataUrl(att)} alt="用户发送的图片" loading="lazy" />
+						<img
+							class="attachment-img"
+							src={imageDataUrl(att)}
+							alt="用户发送的图片"
+							loading="lazy"
+						/>
 					{/each}
 				</div>
 			{/if}
@@ -252,17 +268,27 @@
 	}
 	.bubble.user {
 		margin-left: auto;
-		background: color-mix(in srgb, var(--md-sys-color-primary) 78%, var(--md-sys-color-surface));
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary) 78%,
+			var(--md-sys-color-surface)
+		);
 		color: var(--md-sys-color-on-primary);
 		border: none;
-		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
+		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large)
+			var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
 	}
 	.bubble.assistant {
 		margin-right: auto;
-		background: color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface));
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 20%,
+			var(--md-sys-color-surface)
+		);
 		color: var(--md-sys-color-on-primary-container);
 		border: none;
-		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-extra-small);
+		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large)
+			var(--md-sys-shape-extra-small);
 	}
 	.bubble-header {
 		display: flex;
@@ -351,32 +377,12 @@
 	.attachment-img:hover {
 		opacity: 0.9;
 	}
-	.observation-block {
-		margin-top: var(--md-sys-space-xs);
+	.md-content :global(p) {
+		margin: 0 0 0.75em;
 	}
-	.observation-summary {
-		color: var(--md-sys-color-on-surface-variant);
-		font-weight: 600;
-		cursor: pointer;
-		font-size: 11px;
-		user-select: none;
-		padding: 2px 0;
+	.md-content :global(p:last-child) {
+		margin-bottom: 0;
 	}
-	.observation-block[open] .observation-summary {
-		margin-bottom: var(--md-sys-space-xs);
-	}
-	.observation {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: var(--md-sys-space-md);
-		border-radius: var(--md-sys-shape-small);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: 11px;
-		white-space: pre-wrap;
-		overflow-x: auto;
-	}
-	.md-content :global(p) { margin: 0 0 0.75em; }
-	.md-content :global(p:last-child) { margin-bottom: 0; }
 	.md-content :global(pre) {
 		background: var(--md-sys-color-surface-container-high);
 		padding: var(--md-sys-space-md);
@@ -396,6 +402,10 @@
 		background: none;
 		padding: 0;
 		font-size: 12px;
+	}
+	.md-content :global(pre.md-code-streaming) {
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 	.md-content :global(.md-code-wrap) {
 		background: var(--md-sys-color-surface-container-high);
@@ -436,7 +446,10 @@
 		border-radius: var(--md-sys-shape-full);
 		padding: 1px 8px;
 		cursor: pointer;
-		transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+		transition:
+			background-color 0.15s ease,
+			color 0.15s ease,
+			border-color 0.15s ease;
 	}
 	.md-content :global(.md-code-copy:hover) {
 		background: var(--md-sys-color-surface-container-highest);
@@ -445,32 +458,77 @@
 	.md-content :global(.md-code-copy svg) {
 		flex: none;
 	}
-	.md-content :global(.hljs-keyword) { color: var(--md-sys-color-primary); }
-	.md-content :global(.hljs-string) { color: var(--md-sys-color-success); }
-	.md-content :global(.hljs-number) { color: var(--md-sys-color-tertiary); }
-	.md-content :global(.hljs-comment) { color: var(--md-sys-color-on-surface-variant); font-style: italic; opacity: 0.7; }
-	.md-content :global(.hljs-function) { color: var(--md-sys-color-primary); }
-	.md-content :global(.hljs-title) { color: var(--md-sys-color-primary); }
-	.md-content :global(.hljs-params) { color: var(--md-sys-color-on-surface); }
-	.md-content :global(.hljs-built_in) { color: var(--md-sys-color-tertiary); }
-	.md-content :global(.hljs-type) { color: color-mix(in srgb, var(--md-sys-color-tertiary) 80%, var(--md-sys-color-primary)); }
-	.md-content :global(.hljs-literal) { color: var(--md-sys-color-primary); }
-	.md-content :global(.hljs-selector-class) { color: var(--md-sys-color-tertiary); }
-	.md-content :global(.hljs-title.class_) { color: var(--md-sys-color-tertiary); }
-	.md-content :global(.hljs-selector-tag) { color: var(--md-sys-color-primary); }
-	.md-content :global(.hljs-attr) { color: var(--md-sys-color-tertiary); }
-	.md-content :global(.hljs-attribute) { color: var(--md-sys-color-tertiary); }
-	.md-content :global(.hljs-variable) { color: var(--md-sys-color-error); }
-	.md-content :global(.hljs-meta) { color: var(--md-sys-color-on-surface-variant); opacity: 0.7; }
-	.md-content :global(.hljs-property) { color: var(--md-sys-color-on-surface); }
-	.md-content :global(.hljs-punctuation) { color: var(--md-sys-color-on-surface-variant); }
-	.md-content :global(.hljs-operator) { color: var(--md-sys-color-on-surface-variant); }
+	.md-content :global(.hljs-keyword) {
+		color: var(--md-sys-color-primary);
+	}
+	.md-content :global(.hljs-string) {
+		color: var(--md-sys-color-success);
+	}
+	.md-content :global(.hljs-number) {
+		color: var(--md-sys-color-tertiary);
+	}
+	.md-content :global(.hljs-comment) {
+		color: var(--md-sys-color-on-surface-variant);
+		font-style: italic;
+		opacity: 0.7;
+	}
+	.md-content :global(.hljs-function) {
+		color: var(--md-sys-color-primary);
+	}
+	.md-content :global(.hljs-title) {
+		color: var(--md-sys-color-primary);
+	}
+	.md-content :global(.hljs-params) {
+		color: var(--md-sys-color-on-surface);
+	}
+	.md-content :global(.hljs-built_in) {
+		color: var(--md-sys-color-tertiary);
+	}
+	.md-content :global(.hljs-type) {
+		color: color-mix(in srgb, var(--md-sys-color-tertiary) 80%, var(--md-sys-color-primary));
+	}
+	.md-content :global(.hljs-literal) {
+		color: var(--md-sys-color-primary);
+	}
+	.md-content :global(.hljs-selector-class) {
+		color: var(--md-sys-color-tertiary);
+	}
+	.md-content :global(.hljs-title.class_) {
+		color: var(--md-sys-color-tertiary);
+	}
+	.md-content :global(.hljs-selector-tag) {
+		color: var(--md-sys-color-primary);
+	}
+	.md-content :global(.hljs-attr) {
+		color: var(--md-sys-color-tertiary);
+	}
+	.md-content :global(.hljs-attribute) {
+		color: var(--md-sys-color-tertiary);
+	}
+	.md-content :global(.hljs-variable) {
+		color: var(--md-sys-color-error);
+	}
+	.md-content :global(.hljs-meta) {
+		color: var(--md-sys-color-on-surface-variant);
+		opacity: 0.7;
+	}
+	.md-content :global(.hljs-property) {
+		color: var(--md-sys-color-on-surface);
+	}
+	.md-content :global(.hljs-punctuation) {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.md-content :global(.hljs-operator) {
+		color: var(--md-sys-color-on-surface-variant);
+	}
 	.md-content :global(ul),
 	.md-content :global(ol) {
 		padding-left: 1.5em;
 		margin: 0 0 0.75em;
 	}
-	.md-content :global(li) { margin-bottom: 0.25em; }
+	.md-content :global(li) {
+		margin-bottom: 0.25em;
+	}
 	.md-content :global(blockquote) {
 		border-left: 3px solid var(--md-sys-color-primary);
 		margin: 0 0 0.75em;
@@ -502,7 +560,9 @@
 		background: var(--md-sys-color-surface-container-high);
 		font-weight: 600;
 	}
-	.md-content :global(strong) { font-weight: 700; }
+	.md-content :global(strong) {
+		font-weight: 700;
+	}
 	.md-content :global(a) {
 		color: var(--md-sys-color-primary);
 		text-decoration: underline;
@@ -515,9 +575,15 @@
 		margin: 0 0 0.5em;
 		color: var(--md-sys-color-on-surface);
 	}
-	.md-content :global(h1) { font-size: 17px; }
-	.md-content :global(h2) { font-size: 15px; }
-	.md-content :global(h3) { font-size: 14px; }
+	.md-content :global(h1) {
+		font-size: 17px;
+	}
+	.md-content :global(h2) {
+		font-size: 15px;
+	}
+	.md-content :global(h3) {
+		font-size: 14px;
+	}
 	.reasoning-block {
 		background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
 		border-radius: var(--md-sys-shape-small);

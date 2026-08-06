@@ -2,7 +2,7 @@ use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
 use haven_memory::repositories::tasks::Task as DbTask;
-use haven_tools::{ToolResult, ToolsManager};
+use haven_tools::{is_silent_action, ToolResult, ToolsManager};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -330,7 +330,9 @@ impl TaskExecutor {
                 let task_id = task.id.clone();
                 task.status = TaskStatus::Running;
                 task.updated_at = chrono::Utc::now().to_rfc3339();
-                let _ = self.db.update_task_status(&task_id, "running");
+                let db = self.db.clone();
+                let tid = task_id.clone();
+                let _ = db.run_blocking(move |db| db.update_task_status(&tid, "running")).await;
                 running.insert(task_id.clone());
                 tracing::debug!("try_claim_pending: claimed task {}", task_id);
                 return Some(task_id);
@@ -509,7 +511,10 @@ impl TaskExecutor {
             let new_status = TaskStatus::Completed;
             tasks[pos].status = new_status.clone();
             tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-            self.db.update_task_status(task_id, new_status.as_str())?;
+            let db = self.db.clone();
+            let tid = task_id.to_string();
+            db.run_blocking(move |db| db.update_task_status(&tid, "completed"))
+                .await?;
             tasks.remove(pos);
             drop(tasks);
             // `task_notify` sits between the maps here — wake any ReAct-loop
@@ -524,7 +529,10 @@ impl TaskExecutor {
         } else {
             // Task not in memory (e.g. after restart) 鈥?end it regardless of
             // its DB state; the user asked to finish it.
-            self.db.update_task_status(task_id, "completed")?;
+            let db = self.db.clone();
+            let tid = task_id.to_string();
+            db.run_blocking(move |db| db.update_task_status(&tid, "completed"))
+                .await?;
             Ok(TaskStatus::Completed)
         }
     }
@@ -601,7 +609,11 @@ impl TaskExecutor {
                     status_str
                 );
                 tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-                self.db.update_task_status(task_id, &status_str)?;
+                let db = self.db.clone();
+                let tid = task_id.to_string();
+                let st = status_str.clone();
+                db.run_blocking(move |db| db.update_task_status(&tid, &st))
+                    .await?;
                 // Notify any waiter that status has changed. Lazily create the
                 // Notify so a transition that happens before the ReAct loop
                 // calls `status_notifier` is not lost (otherwise the later
@@ -809,7 +821,7 @@ impl TaskExecutor {
             && tool_name == "load_skill"
             && let Some(skill_name) = result.output["skill"]["name"].as_str()
         {
-            let clean_name = skill_name.strip_prefix("skill::").unwrap_or(skill_name);
+            let clean_name = skill_name.strip_prefix("skill__").unwrap_or(skill_name);
             self.tools
                 .register_skill_for_task(task_id, clean_name)
                 .await;
@@ -871,16 +883,31 @@ impl TaskExecutor {
             }
         }
 
-        let step_record = self.db.create_action_step(
-            task_id,
-            step_index,
-            tool_name,
-            &input.to_string(),
-            risk_level != RiskLevel::Safe,
-        )?;
+        let step_record = self
+            .db
+            .run_blocking({
+                let task_id = task_id.to_string();
+                let tool_name = tool_name.to_string();
+                let tool_input = input.to_string();
+                let silent = is_silent_action(&tool_name, &input);
+                move |db| {
+                    db.create_action_step(
+                        &task_id,
+                        step_index,
+                        &tool_name,
+                        &tool_input,
+                        risk_level != RiskLevel::Safe,
+                        silent,
+                    )
+                }
+            })
+            .await?;
         let obs = result.summary_text();
+        let step_id = step_record.id.clone();
+        let success = result.success;
         self.db
-            .complete_action_step(&step_record.id, &obs, result.success)?;
+            .run_blocking(move |db| db.complete_action_step(&step_id, &obs, success))
+            .await?;
         Ok(result)
     }
 
@@ -900,7 +927,10 @@ impl TaskExecutor {
         step_id: &str,
         confirmed: bool,
     ) -> anyhow::Result<Option<RiskLevel>> {
-        self.db.confirm_step(step_id, confirmed)?;
+        let db = self.db.clone();
+        let step_id_owned = step_id.to_string();
+        db.run_blocking(move |db| db.confirm_step(&step_id_owned, confirmed))
+            .await?;
         let risk = self
             .tasks
             .lock()

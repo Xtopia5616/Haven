@@ -15,7 +15,7 @@ use haven_tools::is_silent_action;
 
 use crate::compactor::ContextCompactor;
 use crate::event::{AgentEventEmitter, EventDispatcher, UsagePayload};
-use crate::types::{Action, BranchPoint, ReActSnapshot, ReActStep};
+use crate::types::{Action, BranchPoint, ReActStep};
 
 /// Convert a stored message attachment into an image content part for the LLM.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
@@ -63,6 +63,24 @@ pub struct ReActEngine {
     /// parallel tasks each track their own counters. Reset on task
     /// completion to avoid leaking finished-task entries.
     cumulative_usage: Mutex<HashMap<String, CumulativeUsage>>,
+    /// Reusable serialization buffer for ReAct snapshots (see
+    /// `save_snapshot_with_branches`): avoids a fresh allocation for every
+    /// per-step snapshot write.
+    snapshot_buf: Mutex<Vec<u8>>,
+}
+
+/// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
+/// of building an owned `ReActSnapshot` skips the per-step deep copies of
+/// canonical/history/branch_points (which accumulate to O(n²) over a long
+/// task). Field names/shape match `ReActSnapshot` exactly so the persisted
+/// JSON stays wire-compatible.
+#[derive(serde::Serialize)]
+struct SnapshotView<'a> {
+    canonical: &'a [CanonicalMessage],
+    history: &'a [ReActStep],
+    step_number: u32,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    branch_points: &'a HashMap<u32, BranchPoint>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -107,6 +125,7 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
             cumulative_usage: Mutex::new(HashMap::new()),
+            snapshot_buf: Mutex::new(Vec::new()),
         }
     }
 
@@ -261,7 +280,14 @@ impl ReActEngine {
                 run_id,
             })
             .await;
-        let _ = self.db.create_thought_step(task_id, step_num as i32, text);
+        let _ = self
+            .db
+            .run_blocking({
+                let task_id = task_id.to_string();
+                let text = text.to_string();
+                move |db| db.create_thought_step(&task_id, step_num as i32, &text)
+            })
+            .await;
         let mut content = vec![ContentPart::text(format!("{prefix}: {text}"))];
         content.extend(attachments.iter().map(attachment_to_content_part));
         canonical.push(CanonicalMessage::user(content));
@@ -335,7 +361,8 @@ impl ReActEngine {
                             history,
                             step_num,
                             branch_points,
-                        );
+                        )
+                        .await;
                     }
                     _ => break,
                 }
@@ -564,7 +591,8 @@ impl ReActEngine {
             );
 
             if let Some(ref reasoning) = response.reasoning {
-                self.persist_task_message(task_id, "assistant", reasoning, Some("reasoning"));
+                self.persist_task_message(task_id, "assistant", reasoning, Some("reasoning"))
+                    .await;
                 // Reconcile the frontend's streamed reasoning with the
                 // authoritative complete text. The frontend builds reasoning
                 // only from batched deltas, so a dropped/delayed final chunk
@@ -692,11 +720,13 @@ impl ReActEngine {
                     .inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
                     .await
                 {
-                    self.persist_task_message(task_id, "assistant", &msg, Some("text"));
+                    self.persist_task_message(task_id, "assistant", &msg, Some("text"))
+                        .await;
                     // Keep a rollback target for the interrupted final step:
                     // the normal pause_turn path saves one, so mirror it here
                     // or rollback to this step restores a stale snapshot.
-                    self.save_branch_point(task_id, canonical, history, step_num, branch_points);
+                    self.save_branch_point(task_id, canonical, history, step_num, branch_points)
+                        .await;
                     continue;
                 }
                 self.pause_turn(
@@ -731,10 +761,12 @@ impl ReActEngine {
                     .inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
                     .await
                 {
-                    self.persist_task_message(task_id, "assistant", &final_text, Some("text"));
+                    self.persist_task_message(task_id, "assistant", &final_text, Some("text"))
+                        .await;
                     // Same branch-point guarantee as the empty-actions branch:
                     // the interrupted final step must retain a rollback target.
-                    self.save_branch_point(task_id, canonical, history, step_num, branch_points);
+                    self.save_branch_point(task_id, canonical, history, step_num, branch_points)
+                        .await;
                     continue;
                 }
                 self.pause_turn(
@@ -757,7 +789,8 @@ impl ReActEngine {
             if let Some(ref t) = thought {
                 let text = t.trim();
                 if !text.is_empty() {
-                    self.persist_task_message(task_id, "assistant", text, Some("text"));
+                    self.persist_task_message(task_id, "assistant", text, Some("text"))
+                        .await;
                 }
             }
 
@@ -799,7 +832,8 @@ impl ReActEngine {
                 ));
             }
 
-            self.save_branch_point(task_id, canonical, history, step_num, branch_points);
+            self.save_branch_point(task_id, canonical, history, step_num, branch_points)
+                .await;
 
             use futures_util::StreamExt;
 
@@ -837,7 +871,15 @@ impl ReActEngine {
                                         .map(|s| s.len())
                                         .unwrap_or(0)
                                 );
-                                let _ = db.record_tool_usage(&tool_name, &tool_input, r.success);
+                                let _ = db
+                                    .run_blocking({
+                                        let tool_name = tool_name.clone();
+                                        let tool_input = tool_input.clone();
+                                        move |db| {
+                                            db.record_tool_usage(&tool_name, &tool_input, r.success)
+                                        }
+                                    })
+                                    .await;
                                 let text = r.summary_text();
                                 let text = if text.len() > max_obs {
                                     let cutoff = text.floor_char_boundary(max_obs);
@@ -1065,7 +1107,8 @@ impl ReActEngine {
                     history,
                     step_num,
                     branch_points,
-                );
+                )
+                .await;
                 return Ok(());
             }
             if state == TaskStatus::Error || state == TaskStatus::Completed {
@@ -1094,7 +1137,7 @@ impl ReActEngine {
     /// the configured sliding-window trim. Delegates to the shared
     /// `crate::persist_task_message` so this path cannot drift from the
     /// user-turn persistence path (same trim, same error policy).
-    fn persist_task_message(
+    async fn persist_task_message(
         &self,
         task_id: &str,
         role: &str,
@@ -1110,7 +1153,8 @@ impl ReActEngine {
             &[],
             self.message_window_size,
             false,
-        );
+        )
+        .await;
     }
 
     /// Finalize a turn: persist the assistant text, save the branch point
@@ -1134,11 +1178,14 @@ impl ReActEngine {
         awaiting_answer: bool,
         infer: &(dyn Fn() + Send + Sync),
     ) -> anyhow::Result<()> {
-        self.persist_task_message(task_id, "assistant", final_text, Some("text"));
+        self.persist_task_message(task_id, "assistant", final_text, Some("text"))
+            .await;
         if let Some(step) = branch_point_step {
-            self.save_branch_point(task_id, canonical, history, step, branch_points);
+            self.save_branch_point(task_id, canonical, history, step, branch_points)
+                .await;
         }
-        self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points);
+        self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
+            .await;
         // Mark the task as awaiting a human answer BEFORE setting the status,
         // so a background-job completion landing concurrently cannot auto-wake
         // it (the consumer checks this gate). The flag is cleared centrally by
@@ -1210,7 +1257,12 @@ impl ReActEngine {
     }
 
     /// Save snapshot including branch points for tree-structured rollback (搂2).
-    fn save_snapshot_with_branches(
+    ///
+    /// Serializes a borrowed view of the ReAct state (no per-step deep copies
+    /// of canonical/history/branch_points — those clones were O(n²) over a
+    /// long task) into a reusable buffer, then writes to SQLite on the
+    /// blocking thread pool so the WAL fsync never stalls the async runtime.
+    async fn save_snapshot_with_branches(
         &self,
         task_id: &str,
         canonical: &[CanonicalMessage],
@@ -1218,14 +1270,37 @@ impl ReActEngine {
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
     ) {
-        let snapshot = ReActSnapshot {
-            canonical: canonical.to_vec(),
-            history: history.to_vec(),
+        let view = SnapshotView {
+            canonical,
+            history,
             step_number,
-            branch_points: branch_points.clone(),
+            branch_points,
         };
-        if let Ok(json) = serde_json::to_string(&snapshot) {
-            let _ = self.db.save_react_state(task_id, &json);
+        // Serialize into the shared buffer inside a scoped block so the
+        // mutex guard is dropped before the await below (the guard is not
+        // Send, so it must not be live across the spawn_blocking boundary).
+        let bytes = {
+            let mut buf = self.snapshot_buf.lock().unwrap();
+            buf.clear();
+            if serde_json::to_writer(&mut *buf, &view).is_err() {
+                return;
+            }
+            std::mem::take(&mut *buf)
+        };
+        let json = String::from_utf8(bytes).unwrap_or_default();
+        let db = self.db.clone();
+        let task_id = task_id.to_string();
+        // Return ownership of the serialized bytes so the allocation is
+        // handed back to the shared buffer for reuse on the next snapshot.
+        let back: String = db
+            .run_blocking(move |db| {
+                let _ = db.save_react_state(&task_id, &json);
+                Ok(json)
+            })
+            .await
+            .unwrap_or_default();
+        if let Ok(mut buf) = self.snapshot_buf.lock() {
+            *buf = back.into_bytes();
         }
     }
 
@@ -1253,7 +1328,8 @@ impl ReActEngine {
         // The canonical/history here represent the state BEFORE the failed
         // LLM call (the response was never pushed to canonical), so resuming
         // will retry the step cleanly.
-        self.save_branch_point(task_id, canonical, history, step_num, branch_points);
+        self.save_branch_point(task_id, canonical, history, step_num, branch_points)
+            .await;
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
@@ -1263,18 +1339,20 @@ impl ReActEngine {
                 "assistant",
                 reasoning_text.trim(),
                 Some("reasoning"),
-            );
+            )
+            .await;
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            self.persist_task_message(task_id, "assistant", text, Some("text"));
+            self.persist_task_message(task_id, "assistant", text, Some("text"))
+                .await;
             EventDispatcher::emit_thought_from(emitter, task_id, text, step_num, run_id, &self.db)
                 .await;
         }
     }
 
     /// Save a branch point at the current step before tool execution (搂2).
-    fn save_branch_point(
+    async fn save_branch_point(
         &self,
         task_id: &str,
         canonical: &[CanonicalMessage],
@@ -1282,7 +1360,15 @@ impl ReActEngine {
         step_number: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
     ) {
-        let last_msg_at = self.db.get_last_message_created_at(task_id);
+        // `get_last_message_created_at` is a blocking SQLite read; run it on
+        // the blocking thread pool instead of the async runtime.
+        let db = self.db.clone();
+        let task_id_owned = task_id.to_string();
+        let last_msg_at = db
+            .run_blocking(move |db| Ok(db.get_last_message_created_at(&task_id_owned)))
+            .await
+            .ok()
+            .flatten();
         branch_points.insert(
             step_number,
             BranchPoint {
@@ -1292,7 +1378,8 @@ impl ReActEngine {
                 last_msg_at,
             },
         );
-        self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points);
+        self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points)
+            .await;
     }
 
     /// Run one streamed LLM call for an agent step: spawn the chunk consumer,

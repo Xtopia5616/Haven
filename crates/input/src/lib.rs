@@ -114,6 +114,13 @@ impl InputPipeline {
         *self.stt_client.lock().await = client;
     }
 
+    /// Whether speech-to-text is configured (an STT client is installed).
+    /// Used by callers that should only record when transcription can
+    /// actually produce a transcript (e.g. the wake hotkey).
+    pub async fn recording_configured(&self) -> bool {
+        self.stt_client.lock().await.is_some()
+    }
+
     /// Start the capture engine at app startup so the first recording pays no
     /// engine-spawn latency. No capture stream is opened here (the microphone
     /// is only claimed while recording); `start_recording` opens the stream

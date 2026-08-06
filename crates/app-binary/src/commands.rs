@@ -1597,7 +1597,7 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
-pub async fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn enable_autostart() -> Result<(), String> {
     // Debug builds load from devUrl (localhost:4721) — autostart would
     // launch the binary without the Vite dev server, showing a blank/
     // connection-error page.  Only release builds embed the frontend
@@ -1605,28 +1605,17 @@ pub async fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
     if cfg!(debug_assertions) {
         return Err("自动启动仅支持生产版本（cargo tauri build）。开发模式下请手动运行。".into());
     }
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch()
-        .enable()
-        .map_err(|e| log_err("enable_autostart", e))?;
-    Ok(())
+    crate::autostart::enable()
 }
 
 #[tauri::command]
-pub async fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch()
-        .disable()
-        .map_err(|e| log_err("disable_autostart", e))?;
-    Ok(())
+pub async fn disable_autostart() -> Result<(), String> {
+    crate::autostart::disable()
 }
 
 #[tauri::command]
-pub async fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|e| log_err("is_autostart_enabled", e))
+pub async fn is_autostart_enabled() -> Result<bool, String> {
+    crate::autostart::is_enabled()
 }
 
 #[derive(Serialize)]
@@ -1935,6 +1924,7 @@ mod tests {
             status: "completed".into(),
             is_high_risk: false,
             confirmed: Some(true),
+            silent: false,
             started_at: None,
             completed_at: None,
             created_at: String::new(),

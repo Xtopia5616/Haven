@@ -45,12 +45,13 @@ pub async fn register_builtin_tools(
     reminders: Arc<ReminderCenter>,
     self_context: Option<SelfToolContext>,
     registry: ToolRegistry,
+    clipboard_history: Arc<clipboard::ClipboardHistory>,
 ) {
     tools.push(Arc::new(audio::AudioTool));
     tools.push(Arc::new(ask::AskTool));
     tools.push(Arc::new(file::FileOpTool::new(router)));
     tools.push(Arc::new(process::ProcessTool));
-    tools.push(Arc::new(clipboard::ClipboardTool));
+    tools.push(Arc::new(clipboard::ClipboardTool::new(clipboard_history)));
     tools.push(Arc::new(shell::ShellTool {
         jobs: background_jobs.clone(),
     }));

@@ -143,11 +143,19 @@ impl Tool for ShellTool {
         if status.success() {
             Ok(ToolResult::ok(output))
         } else {
+            // Non-zero exit: report the failure. When the command produced no
+            // stderr, fall back to the combined output so the result is never
+            // an empty observation (the model would see a silent tool call).
+            let err_text = if stderr.trim().is_empty() {
+                text.clone()
+            } else {
+                stderr
+            };
             Ok(ToolResult {
                 success: false,
                 output,
-                error: Some(stderr.to_string()),
-                truncated: false,
+                error: Some(err_text),
+                truncated,
             })
         }
     }
@@ -286,6 +294,33 @@ mod tests {
             .unwrap();
         assert!(!result.success, "non-zero exit must report failure");
         assert!(result.error.is_some());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_nonzero_exit_without_stderr_has_nonempty_error() {
+        // A failing command with no stderr must not produce an empty error:
+        // the result text flows straight into the model's observation, and an
+        // empty string looks like the tool never returned anything.
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "echo out && exit 42", "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        let err = result.error.unwrap();
+        assert!(
+            !err.trim().is_empty(),
+            "error must not be empty, got: {:?}",
+            err
+        );
+        assert!(
+            err.contains("out"),
+            "error should carry the stdout content when stderr is empty, got: {:?}",
+            err
+        );
     }
 
     #[cfg(windows)]

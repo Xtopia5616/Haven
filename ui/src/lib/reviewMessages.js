@@ -70,6 +70,9 @@ export function buildReviewMessages(data) {
 		const stepId = `step-${step.id}`;
 		if (msgIds.has(stepId)) continue;
 		if (!step.action_tool) continue;
+		// Silent tool steps (input `"silent": true`) are hidden in the live
+		// chat; keep them hidden here so review matches the live view.
+		if (step.silent) continue;
 		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card.
 		// Its question text is ALSO persisted as an assistant session message,

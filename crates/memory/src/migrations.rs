@@ -38,7 +38,8 @@ pub const MIGRATIONS: &[&str] = &[
         confirmed INTEGER,
         started_at TEXT,
         completed_at TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        silent INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS preferences (
         key TEXT PRIMARY KEY,
@@ -163,6 +164,22 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         )?;
         conn.execute(
             "UPDATE task_steps SET action_tool = tool_name, action_input = input WHERE tool_name NOT IN ('thought', 'supplement')",
+            [],
+        )?;
+    }
+
+    // §3.7: persist the `silent` flag on action steps so the history review
+    // can hide the same tool badges the live chat hides (the LLM can request
+    // `"silent": true` on e.g. shell to suppress output from the user while
+    // the agent still sees it).
+    let has_silent: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('task_steps') WHERE name='silent'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_silent {
+        conn.execute(
+            "ALTER TABLE task_steps ADD COLUMN silent INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
     }
@@ -863,7 +880,7 @@ mod tests {
     fn test_task_steps_columns_exist_after_migration() {
         let conn = create_test_conn();
         run_migrations(&conn).unwrap();
-        for col in &["thought", "action_tool", "action_input", "observation"] {
+        for col in &["thought", "action_tool", "action_input", "observation", "silent"] {
             let has: bool = conn
                 .prepare(&format!(
                     "SELECT COUNT(*) FROM pragma_table_info('task_steps') WHERE name='{}'",

@@ -212,7 +212,11 @@ describe('ChatBubble', () => {
 			ChatBubble,
 			base({
 				role: 'assistant',
-				content: JSON.stringify({ results: [{ path: 'C:\\a.rs' }], count: 1, mode: 'filename' }),
+				content: JSON.stringify({
+					results: [{ path: 'C:\\a.rs' }],
+					count: 1,
+					mode: 'filename',
+				}),
 				type: 'tool',
 				toolName: 'search',
 			}),
@@ -224,7 +228,57 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
-	it('falls back to the raw observation block for non-JSON text', () => {
+	it('renders a tool result card collapsed once the observation is final', () => {
+		const { container } = render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: 'stdout output',
+				type: 'tool',
+				toolName: 'shell',
+			}),
+		);
+		expect(screen.getByText('▶ Calling shell')).toBeTruthy();
+		const details = /** @type {HTMLDetailsElement} */ (container.querySelector('.tool-card'));
+		expect(details).toBeTruthy();
+		expect(details.open).toBe(false);
+	});
+
+	it('expands a tool result card while streaming and auto-collapses after', async () => {
+		const { container, rerender } = render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: 'live output',
+				type: 'tool',
+				toolName: 'shell',
+				streaming: true,
+			}),
+		);
+		const details = /** @type {HTMLDetailsElement} */ (container.querySelector('.tool-card'));
+		expect(details.open).toBe(true);
+		await rerender({ streaming: false });
+		expect(details.open).toBe(false);
+	});
+
+	it('keeps a manual tool card expand across content-only re-renders', async () => {
+		const { container, rerender } = render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: 'first output',
+				type: 'tool',
+				toolName: 'shell',
+			}),
+		);
+		const details = /** @type {HTMLDetailsElement} */ (container.querySelector('.tool-card'));
+		expect(details.open).toBe(false);
+		details.open = true;
+		await rerender({ content: 'second output' });
+		expect(details.open).toBe(true);
+	});
+
+	it('renders a raw card for non-JSON text observations', () => {
 		render(
 			ChatBubble,
 			base({
@@ -234,14 +288,17 @@ describe('ChatBubble', () => {
 				toolName: 'audio',
 			}),
 		);
-		expect(document.querySelector('.tool-card')).toBeNull();
-		const details = document.querySelector('details.observation-block');
-		expect(details).toBeTruthy();
-		expect(details.textContent).toContain('some plain error text');
+		const card = document.querySelector('.tool-card');
+		expect(card).toBeTruthy();
+		expect(card.textContent).toContain('some plain error text');
+		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
 	it('renders supplement messages as a badge', () => {
-		render(ChatBubble, base({ role: 'assistant', content: 'extra context', type: 'supplement' }));
+		render(
+			ChatBubble,
+			base({ role: 'assistant', content: 'extra context', type: 'supplement' }),
+		);
 		expect(document.querySelector('.supplement-badge')).toBeTruthy();
 		expect(document.querySelector('.supplement-badge').textContent).toContain('extra context');
 	});
@@ -339,13 +396,17 @@ describe('ChatBubble markdown code fences', () => {
 	let clipboardMock;
 	beforeEach(() => {
 		clipboardMock = vi.fn().mockResolvedValue(undefined);
-		Object.defineProperty(navigator, 'clipboard', { value: { writeText: clipboardMock }, configurable: true });
+		Object.defineProperty(navigator, 'clipboard', {
+			value: { writeText: clipboardMock },
+			configurable: true,
+		});
 	});
 	afterEach(() => {
 		vi.useRealTimers();
 	});
 
-	const renderMd = (content) => render(ChatBubble, { role: 'assistant', content, type: null, time: null });
+	const renderMd = (content) =>
+		render(ChatBubble, { role: 'assistant', content, type: null, time: null });
 
 	it('wraps a fenced code block with a toolbar and language label', async () => {
 		const { container } = renderMd('```js\nconst a = 1;\n```');

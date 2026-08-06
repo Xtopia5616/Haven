@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::llm_tool_name;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 use crate::{Tool, ToolResult};
@@ -20,7 +21,7 @@ impl Tool for LoadSkillTool {
         "load_skill".into()
     }
     fn description(&self) -> String {
-        "Load a skill's tools by skill name".into()
+        "Load a skill's tools by skill name, activating them for this task. Use the raw skill name shown in the skills list, not a `skill__`-prefixed tool name. Prefer this over weaker built-in tools when the skill fits the task.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -54,7 +55,7 @@ impl Tool for LoadSkillTool {
             anyhow::bail!("skill '{}' is disabled", skill_name);
         }
         let schema = serde_json::json!({
-            "name": format!("skill::{}", skill.name()),
+            "name": llm_tool_name(&format!("skill::{}", skill.name())),
             "description": skill.description(),
             "input_schema": {
                 "type": "object",
@@ -166,7 +167,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["skill"]["name"], "skill::echo");
+        assert_eq!(result.output["skill"]["name"], "skill__echo");
     }
 
     #[tokio::test]

@@ -157,21 +157,28 @@ describe('applyThoughtSnap', () => {
 		expect(out[0]).toMatchObject({ id: STEP_ID, content: '完整的回答。', streaming: false });
 	});
 
-	it('finalizes existing segments and clears segmented', () => {
+	it('collapses all segments into a single message on snap', () => {
 		let m = chunk([], '好的。');
 		m = chunk(m, '今天20度');
 		const out = snap(m, '好的。今天20度');
-		expect(out).toHaveLength(2);
-		expect(out[0]).toMatchObject({ streaming: false, segmented: false });
-		expect(out[1]).toMatchObject({ content: '今天20度', streaming: false, segmented: false });
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度',
+			streaming: false,
+		});
 	});
 
-	it('appends the missing tail to the last segment when deltas were dropped', () => {
+	it('uses the authoritative snap text when deltas were dropped', () => {
 		let m = chunk([], '好的。');
 		m = chunk(m, '今天20度'); // "，适合出门" was dropped
 		const out = snap(m, '好的。今天20度，适合出门');
-		expect(out).toHaveLength(2);
-		expect(out[1].content).toBe('今天20度，适合出门');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度，适合出门',
+			streaming: false,
+		});
 	});
 
 	it('replaces all segments when the stream diverged (retry/fallback)', () => {
@@ -180,6 +187,15 @@ describe('applyThoughtSnap', () => {
 		const out = snap(m, '重试的完整回答。');
 		expect(out).toHaveLength(1);
 		expect(out[0]).toMatchObject({ id: STEP_ID, content: '重试的完整回答。', streaming: false });
+	});
+
+	it('drops straggler chunks after a snap finalization', () => {
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度');
+		m = snap(m, '好的。今天20度');
+		const before = m;
+		const out = chunk(m, '残留');
+		expect(out).toBe(before);
 	});
 
 	it('finalizes a streaming reasoning block of the same step', () => {

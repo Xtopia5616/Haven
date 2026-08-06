@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::mcp::McpManager;
+use crate::mcp::{McpClientStatus, McpManager};
 use crate::skills::SkillsEngine;
 use crate::{Tool, ToolRegistry, ToolResult};
 
@@ -236,12 +236,17 @@ impl SelfTool {
             return Ok(serde_json::to_value(loader.settings()).unwrap_or_default());
         };
         let root = serde_json::to_value(loader.config())?;
-        let value = value_at(&root, path)
-            .ok_or_else(|| anyhow::anyhow!("config key '{}' not found", path))?;
+        let mut value = value_at(&root, path)
+            .ok_or_else(|| anyhow::anyhow!("config key '{}' not found", path))?
+            .clone();
+        // Mask every api_key inside the result: an exact api_key path returns
+        // a scalar, but a parent path (e.g. `llm.default_model` or `llm`)
+        // would otherwise leak the secret embedded in the object.
+        mask_api_keys(&mut value);
         if path.ends_with("api_key") {
             return Ok(serde_json::json!("[masked]"));
         }
-        Ok(value.clone())
+        Ok(value)
     }
 
     async fn op_config_set(&self, input: &Value) -> anyhow::Result<Value> {
@@ -440,27 +445,48 @@ impl SelfTool {
     }
 
     async fn mcp_status(&self) -> Value {
-        let configs = self.server_configs.read().await;
-        let mut servers = Vec::with_capacity(configs.len());
-        for (name, cfg) in configs.iter() {
-            let client = self.mcp_manager.get_client(name).await;
+        let servers: Vec<McpServerConfig> = {
+            let configs = self.server_configs.read().await;
+            if !configs.is_empty() {
+                configs.values().cloned().collect()
+            } else {
+                // Cold in-memory index (e.g. right after startup, before the
+                // first config load): fall back to the persisted config so
+                // `mcp_list` / `status` never report an empty server list
+                // while servers exist in config.toml.
+                self.read_config()
+                    .map(|loader| loader.config().mcp_servers.clone())
+                    .unwrap_or_default()
+            }
+        };
+
+        let mut out = Vec::with_capacity(servers.len());
+        for cfg in &servers {
+            let client = self.mcp_manager.get_client(&cfg.name).await;
             let (connected, tool_count, last_error) = match &client {
-                Some(c) => (
-                    true,
-                    c.tools_cache().await.len(),
-                    c.last_error().await.unwrap_or_default(),
-                ),
+                Some(c) => {
+                    let status = c.status().await;
+                    let is_connected = matches!(status, McpClientStatus::Connected);
+                    // A client object exists even when its connection failed
+                    // (load_from_config inserts clients before connecting), so
+                    // the connected flag must come from the real status.
+                    let error = match status {
+                        McpClientStatus::Offline { error } => error,
+                        _ => c.last_error().await.unwrap_or_default(),
+                    };
+                    (is_connected, c.tools_cache().await.len(), error)
+                }
                 None => (false, 0, String::new()),
             };
-            servers.push(serde_json::json!({
-                "name": name,
+            out.push(serde_json::json!({
+                "name": cfg.name,
                 "enabled": cfg.enabled,
                 "connected": connected,
                 "tools": tool_count,
                 "last_error": last_error,
             }));
         }
-        Value::Array(servers)
+        Value::Array(out)
     }
 
     async fn op_mcp_list(&self) -> anyhow::Result<Value> {
@@ -482,6 +508,12 @@ impl SelfTool {
         if !config.enabled {
             anyhow::bail!("MCP server '{}' is disabled", name);
         }
+        // Ensure-connected semantics: drop any existing live client and
+        // reconnect from the current config. Enabled servers are
+        // auto-connected at startup, so a plain `mcp_connect` would otherwise
+        // fail with "already loaded"; reconnecting also picks up config
+        // changes made via `config_set mcp_servers.*`.
+        self.mcp_manager.remove_client(name).await;
         self.mcp_manager.connect_server(&config).await?;
         Ok(serde_json::json!({ "name": name, "connected": true }))
     }
@@ -913,10 +945,31 @@ impl LogConfigDefaultPath {
     }
 }
 
+/// Recursively replace every `*_api_key` string with `[masked]`, so parent
+/// config paths never leak secrets embedded in nested objects.
+fn mask_api_keys(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k.ends_with("api_key") && v.is_string() {
+                    *v = Value::String("[masked]".into());
+                } else {
+                    mask_api_keys(v);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                mask_api_keys(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Resolve a dotted path inside a JSON tree, descending through object keys
 /// and numeric array indices (e.g. `mcp_servers.0.name`).
-fn value_at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut cur = root;
+fn value_at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {    let mut cur = root;
     for seg in path.split('.') {
         match (cur, seg.parse::<usize>()) {
             (Value::Array(arr), Ok(idx)) => cur = arr.get(idx)?,
@@ -993,7 +1046,7 @@ fn string_array(input: &Value, key: &str) -> Vec<String> {
 }
 
 /// Validate a skill name for safe use as a directory and as the
-/// `skill::<name>` tool identifier.
+/// `skill__<name>` tool identifier (after sanitization).
 fn validate_skill_name(name: &str) -> anyhow::Result<()> {
     let ok = !name.is_empty()
         && name.len() <= 128
@@ -1271,6 +1324,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_config_get_parent_paths_mask_nested_api_keys() {
+        let (tool, _dir) = make_tool();
+        tool.mutate_config(|l| {
+            l.config_mut().llm.default_model.api_key = "super-secret".into();
+            Ok(())
+        })
+        .unwrap();
+
+        // Parent paths must not leak the embedded api_key.
+        let result = tool
+            .execute(
+                json!({"operation": "config_get", "path": "llm.default_model"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["api_key"], "[masked]");
+        assert_eq!(result.output["model_name"].as_str().is_some(), true);
+
+        let result = tool
+            .execute(
+                json!({"operation": "config_get", "path": "llm"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["default_model"]["api_key"], "[masked]");
+    }
+
+    #[tokio::test]
     async fn test_config_set_persists_and_restart_flag() {
         let (tool, _dir) = make_tool();
         let result = tool
@@ -1407,6 +1490,53 @@ mod tests {
             )
             .await;
         assert!(err.is_ok(), "disconnecting an unknown server is a no-op");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_list_falls_back_to_config_when_index_empty() {
+        let (tool, _dir) = make_tool();
+        // Persisted config has servers, but the in-memory index is empty
+        // (simulates cold startup before any config mutation).
+        tool.mutate_config(|l| {
+            l.config_mut().mcp_servers.push(McpServerConfig {
+                name: "cold-srv".into(),
+                command: "python".into(),
+                args: vec!["-m".to_string(), "demo".into()],
+                enabled: false,
+                ..Default::default()
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        let list = tool
+            .execute(json!({"operation": "mcp_list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(list.output["servers"][0]["name"], "cold-srv");
+        assert_eq!(list.output["servers"][0]["connected"], json!(false));
+        assert_eq!(
+            list.output["servers"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
+            1
+        );
+
+        // Once the index is populated it takes precedence (fresh source of truth).
+        tool.server_configs.write().await.insert(
+            "warm-srv".into(),
+            McpServerConfig {
+                name: "warm-srv".into(),
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let list = tool
+            .execute(json!({"operation": "mcp_list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(list.output["servers"][0]["name"], "warm-srv");
     }
 
     #[tokio::test]

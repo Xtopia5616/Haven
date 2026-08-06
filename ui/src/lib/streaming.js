@@ -6,8 +6,9 @@
 // sentence (ends with 。！？…!?; and not inside an unclosed code fence), the
 // current message is finalized (streaming:false, segmented:true) and the next
 // chunk opens a fresh segment (id `${baseId}-${N}`). The authoritative
-// `agent:thought` snap then finalizes every segment and reconciles any
-// dropped/divergent deltas.
+// `agent:thought` snap then collapses every segment into a single message
+// containing the full step text, so the final answer renders as one bubble no
+// matter where the chunk boundaries happened to land.
 
 // ── Step / tool id factories ──────────────────────────────────────────────
 // Single source of truth for the streaming ids. Every event handler builds
@@ -199,8 +200,11 @@ export function accumulateStreamChunk(messages, opts) {
 
 /**
  * Reconcile the authoritative full step text (`agent:thought`) with the
- * streamed segments: finalize them all, append any tail lost to dropped
- * chunks, or replace everything when the stream diverged (retry/fallback).
+ * streamed segments: finalize the reasoning block and collapse every
+ * sentence-segment into a single message with the full thought text. The
+ * merged message carries no `segmented` flag, so any straggler chunk that
+ * flushes out of the batcher after the snap is dropped instead of opening a
+ * fresh bubble.
  * @param {Array<object>} messages
  * @param {{ stepId: string, reasoningId: string, thought: string, stepNumber: number, time: string }} opts
  * @returns {Array<object>}
@@ -211,52 +215,16 @@ export function applyThoughtSnap(messages, opts) {
 		x.id === reasoningId ? { ...x, streaming: false } : x
 	);
 	const segIds = thoughtSegmentIds(reasoningFixed, stepId);
-	if (segIds.length === 0) {
-		return [
-			...reasoningFixed,
-			newStreamMessage({
-				id: stepId,
-				content: thought,
-				streaming: false,
-				stepNumber,
-				time,
-			}),
-		];
-	}
-	const byId = new Map(messages.map((x) => [x.id, x]));
-	const joined = segIds
-		.map((id) => byId.get(id)?.content ?? '')
-		.join('');
-	// Clearing `segmented` makes any straggler chunk that flushes out of the
-	// batcher after this event get dropped instead of opening a new segment.
-	const fixed = reasoningFixed.map((x) =>
-		segIds.includes(x.id) ? { ...x, streaming: false, segmented: false } : x
-	);
-	if (joined !== thought && thought.startsWith(joined)) {
-		// Deltas were dropped: append the missing tail to the last segment.
-		const tail = thought.slice(joined.length);
-		if (tail) {
-			const lastIdx = fixed.findIndex((x) => x.id === segIds[segIds.length - 1]);
-			if (lastIdx >= 0) {
-				fixed[lastIdx] = { ...fixed[lastIdx], content: fixed[lastIdx].content + tail };
-			}
-		}
-		return fixed;
-	}
-	if (joined !== thought) {
-		// The stream diverged from the authoritative text (retry/fallback
-		// emitted both attempts): replace all segments with one full message.
-		const others = fixed.filter((x) => !segIds.includes(x.id));
-		return [
-			...others,
-			newStreamMessage({
-				id: stepId,
-				content: thought,
-				streaming: false,
-				stepNumber,
-				time,
-			}),
-		];
-	}
-	return fixed;
+	const firstSegIdx = reasoningFixed.findIndex((x) => segIds.includes(x.id));
+	const rest = reasoningFixed.filter((x) => !segIds.includes(x.id));
+	const merged = newStreamMessage({
+		id: stepId,
+		content: thought,
+		streaming: false,
+		stepNumber,
+		time,
+	});
+	if (firstSegIdx < 0) return [...rest, merged];
+	rest.splice(firstSegIdx, 0, merged);
+	return rest;
 }

@@ -46,7 +46,10 @@
 <div class="server-card" class:expanded>
 	<div class="card-header" onclick={toggleExpand} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && toggleExpand()}>
 		<div class="card-info">
-			<div class="card-name">{server.name}</div>
+			<div class="card-name">
+				<span class="card-name-text">{server.name}</span>
+				<span class="tool-count">{server.tools?.length || 0} tools</span>
+			</div>
 			<div class="card-meta">
 				<span class="transport-badge">{server.transport || 'stdio'}</span>
 				{#if server.url}
@@ -62,7 +65,6 @@
 				<span class="status-badge" class:connected={isConnected()} class:offline={isOffline()} class:connecting={isConnecting()}>
 					{statusLabel(server.status)}
 				</span>
-				<span class="tool-count">{server.tools?.length || 0} tools</span>
 				{#if server.last_seen_at}
 					<span class="last-seen">Last seen: {new Date(server.last_seen_at * 1000).toLocaleTimeString()}</span>
 				{/if}
@@ -135,10 +137,18 @@
 		min-width: 0;
 	}
 	.card-name {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
 		font-size: 15px;
 		font-weight: 700;
 		color: var(--md-sys-color-on-surface);
 		margin-bottom: var(--md-sys-space-xs);
+	}
+	.card-name-text {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.card-meta {
 		display: flex;
@@ -191,7 +201,15 @@
 		background: var(--md-sys-color-warning-container);
 		color: var(--md-sys-color-on-warning-container);
 	}
-	.tool-count,
+	.tool-count {
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+		padding: 1px var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		font-size: 11px;
+		font-weight: 600;
+		white-space: nowrap;
+	}
 	.last-seen {
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.7;

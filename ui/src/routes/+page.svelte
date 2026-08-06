@@ -567,6 +567,10 @@
 			currentMessages.slice(trailingIdx).map((m) => m.id),
 		);
 		try {
+			// First unblock the errored task: continue_task truncates the
+			// partial output and sets the task to Pending so the "继续" user
+			// message below is accepted instead of being dropped as a
+			// terminal-state supplement.
 			await invoke('continue_task', { taskId: tid });
 			taskErrorId = null;
 			activeTaskError = false;
@@ -579,7 +583,11 @@
 				});
 			}
 			clearSeqMap(tid);
-			addNotification('正在继续生成…', 'info', 2000);
+			// Continue by sending a real user message, so "继续" appears in
+			// the conversation and is delivered to the agent as an
+			// interjection, just like a typed or quick-reply message.
+			autoFollow = true;
+			submitMessage('继续', []);
 			await loadTasks();
 		} catch (e) {
 			addNotification(`继续失败: ${e}`, 'error', 5000);
@@ -1286,7 +1294,6 @@
 						type="button"
 					>
 						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-						新建
 						{#if showTaskMenu}
 							<svg class="task-switch-caret" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
 						{/if}
@@ -1325,7 +1332,6 @@
 						type="button"
 					>
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
-						结束
 					</button>
 				{/if}
 				<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}>

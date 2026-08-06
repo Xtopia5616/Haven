@@ -1,0 +1,253 @@
+//! Windows 开机自启：通过任务计划程序（schtasks）在登录时以
+//! `--autostart` 参数启动 Haven，替代原先的注册表 Run 键方案。
+//! 任务计划程序允许携带启动参数，使应用启动后默认隐藏窗口驻留系统
+//! 托盘，通过录音快捷键即可唤起窗口并开始录音。
+//!
+//! 权限说明：`/SC ONLOGON`（登录触发器、仅当前用户、交互式运行）
+//! 的创建**不需要管理员权限**，普通用户即可注册自己的登录触发任务。
+//! 仅当系统通过组策略 / 企业环境禁止普通用户创建任务时才需要管理员，
+//! 此时 `enable` 会返回带权限提示的错误信息。
+
+use std::path::Path;
+
+/// 计划任务名称（根文件夹下）。
+const TASK_NAME: &str = "Haven";
+/// 随任务启动参数，用于告知应用本次为开机自启，应隐藏主窗口。
+pub const AUTOSTART_ARG: &str = "--autostart";
+/// 旧版 tauri-plugin-autostart 写入的注册表 Run 键名，迁移时清理。
+const LEGACY_RUN_KEY_VALUES: [&str; 2] = ["Haven", "haven_app_binary"];
+
+/// 当前进程是否由计划任务以 `--autostart` 参数启动。
+pub fn is_autostart_launch() -> bool {
+    std::env::args().any(|a| a == AUTOSTART_ARG)
+}
+
+/// 构造 schtasks `/TR` 参数值：带引号的可执行文件路径 + 自启参数。
+fn build_tr_arg(exe: &Path) -> String {
+    format!("\"{}\" {}", exe.display(), AUTOSTART_ARG)
+}
+
+#[cfg(target_os = "windows")]
+fn run_schtasks(args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new("schtasks")
+        .args(args)
+        .output()
+        .map_err(|e| format!("schtasks 执行失败: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn schtasks_error(out: &std::process::Output, action: &str) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit code {}", out.status.code().unwrap_or(-1))
+    };
+    format!("{action}失败: {detail}")
+}
+
+/// 清理旧版注册表 Run 键（tauri-plugin-autostart 写入），避免新旧方案并存。
+#[cfg(target_os = "windows")]
+fn remove_legacy_run_keys() {
+    for name in LEGACY_RUN_KEY_VALUES {
+        let _ = std::process::Command::new("reg")
+            .args([
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                name,
+                "/f",
+            ])
+            .output();
+    }
+}
+
+/// schtasks 重定向输出在中文系统上是 ANSI(GBK) 代码页（声明却写
+/// UTF-16）。先按 UTF-8 严格解码；失败时 lossy 解码，非 ASCII 路径会
+/// 变成替换字符（U+FFFD），此时路径比对自动退化为「任务存在」判断。
+#[cfg(target_os = "windows")]
+fn decode_output(bytes: &[u8]) -> String {
+    String::from_utf8(bytes.to_vec())
+        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// 提取任务 XML 中 `<tag>...</tag>` 的首段内容。
+#[cfg(target_os = "windows")]
+fn xml_section<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    xml.split(&open).nth(1)?.split(&close).next()
+}
+
+/// 反转义任务 XML 中的实体（路径可能含 `&` 等字符）。
+#[cfg(target_os = "windows")]
+fn xml_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+
+/// 任务 XML 的 `<Arguments>` 是否包含 `--autostart`。
+#[cfg(target_os = "windows")]
+fn xml_has_autostart_arg(xml: &str) -> bool {
+    xml_section(xml, "Arguments")
+        .map(|a| a.split_whitespace().any(|w| w == AUTOSTART_ARG))
+        .unwrap_or(false)
+}
+
+/// 任务 XML 的 `<Command>` 是否与当前 exe 一致（Windows 大小写不敏感）。
+/// 非 ASCII 路径在 ANSI→UTF-8 转换失败时含替换字符，无法可靠比对，
+/// 返回 `None` 由调用方回退为「任务存在」判断。
+#[cfg(target_os = "windows")]
+fn xml_command_matches(xml: &str, exe: &Path) -> Option<bool> {
+    let cmd = xml_section(xml, "Command")?;
+    let cmd = xml_unescape(cmd).trim().to_string();
+    if cmd.is_empty() || cmd.contains('\u{FFFD}') {
+        return None;
+    }
+    Some(cmd.eq_ignore_ascii_case(&exe.to_string_lossy()))
+}
+
+/// 创建开机自启计划任务：登录时运行 `<exe> --autostart`。
+/// 无需管理员权限；如被组策略禁止，返回带排查提示的错误。
+#[cfg(target_os = "windows")]
+pub fn enable() -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
+    let tr = build_tr_arg(&exe);
+    let out = run_schtasks(&["/Create", "/F", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON"])?;
+    if !out.status.success() {
+        return Err(format!(
+            "{}（如为权限不足，请以管理员身份运行 Haven 后重试，或检查组策略对任务计划程序的限制）",
+            schtasks_error(&out, "创建计划任务")
+        ));
+    }
+    remove_legacy_run_keys();
+    Ok(())
+}
+
+/// 删除开机自启计划任务，并清理旧版注册表 Run 键。
+#[cfg(target_os = "windows")]
+pub fn disable() -> Result<(), String> {
+    if is_enabled()? {
+        let out = run_schtasks(&["/Delete", "/F", "/TN", TASK_NAME])?;
+        if !out.status.success() {
+            return Err(format!(
+                "{}（如为权限不足，请以管理员身份运行 Haven 后重试）",
+                schtasks_error(&out, "删除计划任务")
+            ));
+        }
+    }
+    remove_legacy_run_keys();
+    Ok(())
+}
+
+/// 开机自启是否有效：任务存在，且 `<Command>` 指向当前 exe、
+/// `<Arguments>` 携带 `--autostart`。应用移动/更新后残留的旧路径任务
+/// 会返回 false，用户重新开启即可用 `/F` 覆盖修复。
+#[cfg(target_os = "windows")]
+pub fn is_enabled() -> Result<bool, String> {
+    let out = run_schtasks(&["/Query", "/TN", TASK_NAME, "/XML"])?;
+    if !out.status.success() {
+        return Ok(false);
+    }
+    let xml = decode_output(&out.stdout);
+    if !xml_has_autostart_arg(&xml) {
+        return Ok(false);
+    }
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
+    Ok(xml_command_matches(&xml, &exe).unwrap_or(true))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enable() -> Result<(), String> {
+    Err("开机自启仅支持 Windows".into())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn disable() -> Result<(), String> {
+    Err("开机自启仅支持 Windows".into())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_enabled() -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_tr_arg_quotes_exe_path_with_spaces() {
+        let arg = build_tr_arg(Path::new(r"C:\Program Files\Haven\Haven.exe"));
+        assert_eq!(arg, r#""C:\Program Files\Haven\Haven.exe" --autostart"#);
+    }
+
+    #[test]
+    fn test_build_tr_arg_simple_path() {
+        let arg = build_tr_arg(Path::new(r"C:\Haven.exe"));
+        assert_eq!(arg, r#""C:\Haven.exe" --autostart"#);
+    }
+
+    #[test]
+    fn test_autostart_launch_flag_constant() {
+        assert_eq!(AUTOSTART_ARG, "--autostart");
+    }
+
+    #[test]
+    fn test_xml_section_extracts_command_and_arguments() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task><Actions Context="Author"><Exec><Command>C:\Program Files\Haven\Haven.exe</Command><Arguments>--autostart</Arguments></Exec></Actions></Task>"#;
+        assert_eq!(
+            xml_section(xml, "Command").unwrap(),
+            r"C:\Program Files\Haven\Haven.exe"
+        );
+        assert_eq!(xml_section(xml, "Arguments").unwrap(), "--autostart");
+        assert!(xml_has_autostart_arg(xml));
+    }
+
+    #[test]
+    fn test_xml_has_autostart_arg_false_when_missing() {
+        let xml = r#"<Exec><Command>C:\Haven.exe</Command><Arguments></Arguments></Exec>"#;
+        assert!(!xml_has_autostart_arg(xml));
+        let xml = r#"<Exec><Command>C:\Haven.exe</Command></Exec>"#;
+        assert!(!xml_has_autostart_arg(xml));
+    }
+
+    #[test]
+    fn test_xml_command_matches_ignores_case() {
+        let xml = r#"<Exec><Command>C:\Program Files\Haven\Haven.exe</Command></Exec>"#;
+        assert_eq!(
+            xml_command_matches(xml, Path::new(r"c:\program files\haven\haven.exe")),
+            Some(true)
+        );
+        assert_eq!(
+            xml_command_matches(xml, Path::new(r"C:\Other\App.exe")),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_xml_command_matches_none_on_replacement_char() {
+        let xml = "<Exec><Command>C:\\\u{FFFD}ers\\Haven.exe</Command></Exec>";
+        assert_eq!(
+            xml_command_matches(xml, Path::new(r"C:\Users\Haven.exe")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_xml_unescape_entities() {
+        assert_eq!(
+            xml_unescape("a&amp;b&lt;c&gt;d&quot;e&apos;f"),
+            "a&b<c>d\"e'f"
+        );
+    }
+}

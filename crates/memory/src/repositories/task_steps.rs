@@ -18,6 +18,10 @@ pub struct TaskStep {
     pub status: String,
     pub is_high_risk: bool,
     pub confirmed: Option<bool>,
+    /// Whether the tool output was hidden from the user in the live chat
+    /// (`"silent": true` in the tool input). Persisted so the history review
+    /// renders the same as the live conversation.
+    pub silent: bool,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub created_at: String,
@@ -50,6 +54,7 @@ impl Database {
             status: "completed".into(),
             is_high_risk: false,
             confirmed: None,
+            silent: false,
             started_at: None,
             completed_at: None,
             created_at: now,
@@ -64,14 +69,15 @@ impl Database {
         tool_name: &str,
         tool_input: &str,
         is_high_risk: bool,
+        silent: bool,
     ) -> anyhow::Result<TaskStep> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO task_steps (id, task_id, step_index, tool_name, input, action_tool, action_input, status, is_high_risk, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7)",
-            rusqlite::params![id, task_id, step_index, tool_name, tool_input, is_high_risk as i32, now],
+            "INSERT INTO task_steps (id, task_id, step_index, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8)",
+            rusqlite::params![id, task_id, step_index, tool_name, tool_input, is_high_risk as i32, now, silent as i32],
         )?;
         Ok(TaskStep {
             id,
@@ -84,6 +90,7 @@ impl Database {
             status: "pending".into(),
             is_high_risk,
             confirmed: None,
+            silent,
             started_at: None,
             completed_at: None,
             created_at: now,
@@ -120,7 +127,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, step_index, tool_name, input, output, thought, action_tool, action_input, observation,
-                    status, is_high_risk, confirmed, started_at, completed_at, created_at
+                    status, is_high_risk, confirmed, started_at, completed_at, created_at, silent
              FROM task_steps WHERE task_id = ?1 ORDER BY step_index ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![task_id], |row| {
@@ -140,6 +147,7 @@ impl Database {
                 started_at: row.get(13)?,
                 completed_at: row.get(14)?,
                 created_at: row.get(15)?,
+                silent: row.get::<_, i32>(16)? != 0,
             })
         })?;
         let mut steps = Vec::new();
@@ -200,7 +208,7 @@ mod tests {
         let db = test_db();
         seed_task(&db, "task-1");
         let step = db
-            .create_action_step("task-1", 0, "read_file", r#"{"path": "test.txt"}"#, false)
+            .create_action_step("task-1", 0, "read_file", r#"{"path": "test.txt"}"#, false, false)
             .unwrap();
         assert_eq!(step.action_tool.as_deref(), Some("read_file"));
         assert_eq!(
@@ -217,7 +225,7 @@ mod tests {
         let db = test_db();
         seed_task(&db, "task-1");
         let step = db
-            .create_action_step("task-1", 0, "read_file", "{}", false)
+            .create_action_step("task-1", 0, "read_file", "{}", false, false)
             .unwrap();
         db.complete_action_step(&step.id, "file content here", true)
             .unwrap();
@@ -227,11 +235,29 @@ mod tests {
     }
 
     #[test]
+    fn create_action_step_persists_silent_flag() {
+        let db = test_db();
+        seed_task(&db, "task-1");
+        let visible = db
+            .create_action_step("task-1", 0, "shell", "{}", false, false)
+            .unwrap();
+        assert!(!visible.silent);
+        let silent = db
+            .create_action_step("task-1", 1, "shell", r#"{"silent": true}"#, false, true)
+            .unwrap();
+        assert!(silent.silent);
+        let steps = db.get_task_steps("task-1").unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].silent, false);
+        assert_eq!(steps[1].silent, true);
+    }
+
+    #[test]
     fn confirm_step_sets_confirmed_flag() {
         let db = test_db();
         seed_task(&db, "task-1");
         let step = db
-            .create_action_step("task-1", 0, "rm_file", "{}", true)
+            .create_action_step("task-1", 0, "rm_file", "{}", true, false)
             .unwrap();
         // initially unconfirmed
         let steps = db.get_task_steps("task-1").unwrap();
@@ -269,11 +295,11 @@ mod tests {
     fn get_task_steps_preserves_order_by_index() {
         let db = test_db();
         seed_task(&db, "task-1");
-        db.create_action_step("task-1", 2, "c", "{}", false)
+        db.create_action_step("task-1", 2, "c", "{}", false, false)
             .unwrap();
-        db.create_action_step("task-1", 0, "a", "{}", false)
+        db.create_action_step("task-1", 0, "a", "{}", false, false)
             .unwrap();
-        db.create_action_step("task-1", 1, "b", "{}", false)
+        db.create_action_step("task-1", 1, "b", "{}", false, false)
             .unwrap();
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps.len(), 3);

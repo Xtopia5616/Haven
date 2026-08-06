@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[derive(Clone)]
@@ -52,6 +52,20 @@ impl Database {
 
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().expect("database lock poisoned")
+    }
+
+    /// Run a blocking DB closure on the tokio blocking thread pool. Keeps
+    /// synchronous SQLite work (including WAL fsyncs) off the async runtime
+    /// so a slow write cannot stall unrelated async tasks that don't touch
+    /// the DB. The closure borrows `&Database`; owned arguments must be
+    /// cloned into the closure by the caller (it is `'static`).
+    pub async fn run_blocking<T, F>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
+    {
+        let db = self.clone();
+        tokio::task::spawn_blocking(move || f(&db)).await?
     }
 
     pub fn cache_get_messages(

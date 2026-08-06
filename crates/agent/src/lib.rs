@@ -32,8 +32,8 @@ use crate::title::TitleGenerator;
 /// user turns (AgentLayer) and assistant turns (ReActEngine) go through this
 /// one implementation so the two paths cannot drift apart.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn persist_task_message(
-    db: &Database,
+pub(crate) async fn persist_task_message(
+    db: &Arc<Database>,
     task_id: &str,
     role: &str,
     content: &str,
@@ -42,16 +42,24 @@ pub(crate) fn persist_task_message(
     window_size: usize,
     voice: bool,
 ) -> anyhow::Result<()> {
-    db.add_message_with_window_full(
-        task_id,
-        role,
-        content,
-        message_type,
-        None,
-        window_size,
-        attachments,
-        voice,
-    )?;
+    let task_id = task_id.to_string();
+    let role = role.to_string();
+    let content = content.to_string();
+    let message_type = message_type.map(String::from);
+    let attachments = attachments.to_vec();
+    db.run_blocking(move |db| {
+        db.add_message_with_window_full(
+            &task_id,
+            &role,
+            &content,
+            message_type.as_deref(),
+            None,
+            window_size,
+            &attachments,
+            voice,
+        )
+    })
+    .await?;
     Ok(())
 }
 
@@ -159,7 +167,9 @@ impl AgentLayer {
         ));
         let inference = Arc::new(InferenceEngine::new(db.clone(), router.clone()));
         let _ = db.set_preference("name", "Xtopia");
-        let _ = db.insert_fact("user", "name", "Xtopia", "user", 1.0, &["identity"]);
+        // Idempotent: repeated startup seeding must not pile up duplicates
+        // (historically one `name=Xtopia` fact was inserted per launch).
+        let _ = db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"]);
         // Title generator is always available: it routes through the shared
         // LlmRouter, which uses EndpointRole::SmallModel. If the small_model
         // endpoint isn't configured the router will simply surface the error
@@ -179,7 +189,7 @@ impl AgentLayer {
     }
 
     /// Persist a message into the task's message stream (conversation history).
-    fn persist_message_parts(
+    async fn persist_message_parts(
         &self,
         task_id: &str,
         role: &str,
@@ -198,6 +208,7 @@ impl AgentLayer {
             self.conversation_window_size,
             voice,
         )
+        .await
     }
 
     /// Update a task's status in the executor and notify the frontend.
@@ -1212,14 +1223,17 @@ impl AgentLayer {
         );
 
         if let Some(task_id) = active_task_id {
-            if let Err(e) = self.persist_message_parts(
-                &task_id,
-                "user",
-                transcript,
-                Some("text"),
-                images,
-                voice,
-            ) {
+            if let Err(e) = self
+                .persist_message_parts(
+                    &task_id,
+                    "user",
+                    transcript,
+                    Some("text"),
+                    images,
+                    voice,
+                )
+                .await
+            {
                 tracing::warn!(
                     "process_input: failed to persist user message for task {}: {}",
                     task_id,
@@ -1331,8 +1345,9 @@ impl AgentLayer {
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the task up; if persisting fails, remove
         // the task row again so no input-less task ever gets dispatched.
-        if let Err(e) =
-            self.persist_message_parts(&record.id, "user", input, Some("text"), images, voice)
+        if let Err(e) = self
+            .persist_message_parts(&record.id, "user", input, Some("text"), images, voice)
+            .await
         {
             let _ = self.db.delete_task(&record.id);
             return Err(e);
@@ -1622,6 +1637,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_system_prompt_excludes_sensitive_and_duplicate_facts() {
+        let dir =
+            std::env::temp_dir().join(format!("haven_prompt_facts_{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        // Duplicate triple (same tags, same everything).
+        db.insert_fact("user", "name", "Xtopia", "user", 1.0, &["identity"])
+            .unwrap();
+        db.insert_fact("user", "name", "Xtopia", "user", 1.0, &["identity"])
+            .unwrap();
+        // A legitimate preference.
+        db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
+            .unwrap();
+        // Secrets that must never reach the prompt.
+        db.insert_fact("user", "tavily_api_key", "tvly-dev-secret", "inferred", 1.0, &["workspace"])
+            .unwrap();
+        db.insert_fact("user", "secret_token", "ghp_abc", "inferred", 1.0, &["workspace"])
+            .unwrap();
+
+        let tools = Arc::new(ToolsManager::new());
+        let builder = SystemPromptBuilder::new(tools, db);
+        let prompt = builder.build("test task", &[], &[]).await;
+
+        assert!(prompt.contains("name=Xtopia"));
+        assert!(prompt.contains("likes=Rust"));
+        assert!(!prompt.contains("tavily_api_key"));
+        assert!(!prompt.contains("tvly-dev-secret"));
+        assert!(!prompt.contains("secret_token"));
+        assert!(!prompt.contains("ghp_abc"));
+        // Duplicates are collapsed: the name fact is rendered exactly once.
+        assert_eq!(prompt.matches("name=Xtopia").count(), 1);
+    }
+
+    #[tokio::test]
     async fn restore_per_task_tools_rebuilds_from_history() {
         // Create a skill on disk so SkillsEngine can discover it.
         let dir = std::env::temp_dir().join(format!("haven_restore_test_{}", uuid::Uuid::new_v4()));
@@ -1667,25 +1715,25 @@ mod tests {
                 is_final: false,
                 tool_call_id: Some("tc1".into()),
             }),
-            observation: Some(r#"{"skill":{"name":"skill::echo"}}"#.into()),
+            observation: Some(r#"{"skill":{"name":"skill__echo"}}"#.into()),
         }];
 
         // Before restore, no per-task tools.
         let before = tools.list_schemas_for_task("task-x").await;
-        assert!(!before.iter().any(|s| s["name"] == "skill::echo"));
+        assert!(!before.iter().any(|s| s["name"] == "skill__echo"));
 
         agent.restore_per_task_tools("task-x", &history).await;
 
         // After restore, the skill tool should be visible per-task.
         let after = tools.list_schemas_for_task("task-x").await;
         assert!(
-            after.iter().any(|s| s["name"] == "skill::echo"),
+            after.iter().any(|s| s["name"] == "skill__echo"),
             "restored skill should appear in per-task schemas"
         );
 
         // Other tasks should NOT see it.
         let other = tools.list_schemas_for_task("task-y").await;
-        assert!(!other.iter().any(|s| s["name"] == "skill::echo"));
+        assert!(!other.iter().any(|s| s["name"] == "skill__echo"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1696,6 +1744,7 @@ mod tests {
         let task = agent.db.create_task("input", "").unwrap();
         agent
             .persist_message_parts(&task.id, "user", "test message", Some("text"), &[], false)
+            .await
             .unwrap();
         // Read back via db
         let agent_ref = agent.clone();
@@ -1726,6 +1775,7 @@ mod tests {
                 std::slice::from_ref(&att),
                 false,
             )
+            .await
             .unwrap();
         let agent_ref = agent.clone();
         let db = agent_ref.db.clone();
@@ -1886,6 +1936,7 @@ mod tests {
         };
         agent
             .persist_message_parts(&task.id, "user", "鐪嬪浘", Some("text"), &[att], false)
+            .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
         let snapshot: crate::types::ReActSnapshot =
@@ -1914,6 +1965,7 @@ mod tests {
             .unwrap();
         agent
             .persist_message_parts(&task.id, "user", "plain task", Some("text"), &[], false)
+            .await
             .unwrap();
         // Image arrives AFTER the task input (a supplement) 鈥?it must not be
         // attached to the initial user turn.
@@ -2204,7 +2256,7 @@ mod tests {
         let task = executor.create_task("test").await.unwrap();
         executor.end_task(&task.id).await.unwrap();
         agent.inference.infer_facts(&task.id).await;
-        agent.inference.infer_preferences(&task.id);
+        agent.inference.infer_preferences(&task.id).await;
     }
 
     // 鈹€鈹€鈹€ Integration tests for the ReAct core loop (refine 搂11) 鈹€鈹€鈹€

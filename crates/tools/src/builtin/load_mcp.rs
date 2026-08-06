@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::llm_tool_name;
 use crate::mcp::McpManager;
 use crate::{Tool, ToolResult};
 
@@ -21,7 +22,7 @@ impl Tool for LoadMcpTool {
         "load_mcp".into()
     }
     fn description(&self) -> String {
-        "Load an MCP server's tools by server name".into()
+        "Load an MCP server's tools by server name, activating them for this task. Prefer this over weaker built-in tools when the server's tools fit the task.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -83,7 +84,7 @@ impl Tool for LoadMcpTool {
             .into_iter()
             .map(|t| {
                 serde_json::json!({
-                    "name": format!("mcp::{}::{}", server_name, t.name),
+                    "name": llm_tool_name(&format!("mcp::{}::{}", server_name, t.name)),
                     "description": t.description,
                     "input_schema": t.input_schema,
                 })

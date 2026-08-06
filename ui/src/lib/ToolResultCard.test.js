@@ -2,21 +2,32 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import ToolResultCard, { canRenderToolResult, parseToolResult } from './ToolResultCard.svelte';
 
-const searchJson = (results, extra = {}) => JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
+const searchJson = (results, extra = {}) =>
+	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
 
 describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
 		expect(canRenderToolResult('search', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
 	it('accepts system, process, window, status, reminder, env, file, network, clipboard, power', () => {
-		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(true);
-		expect(canRenderToolResult('process', JSON.stringify({ processes: [{ pid: 1 }] }))).toBe(true);
-		expect(canRenderToolResult('window', JSON.stringify({ windows: [{ title: 'x' }] }))).toBe(true);
+		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
+			true,
+		);
+		expect(canRenderToolResult('process', JSON.stringify({ processes: [{ pid: 1 }] }))).toBe(
+			true,
+		);
+		expect(canRenderToolResult('window', JSON.stringify({ windows: [{ title: 'x' }] }))).toBe(
+			true,
+		);
 		expect(canRenderToolResult('status', JSON.stringify({ status: 'running' }))).toBe(true);
 		expect(canRenderToolResult('reminder', JSON.stringify({ reminders: [] }))).toBe(true);
-		expect(canRenderToolResult('reminder', JSON.stringify({ id: 'r1', mode: 'notify' }))).toBe(true);
+		expect(canRenderToolResult('reminder', JSON.stringify({ id: 'r1', mode: 'notify' }))).toBe(
+			true,
+		);
 		expect(canRenderToolResult('env', JSON.stringify({ variables: [] }))).toBe(true);
-		expect(canRenderToolResult('file', JSON.stringify({ written: true, path: 'x' }))).toBe(true);
+		expect(canRenderToolResult('file', JSON.stringify({ written: true, path: 'x' }))).toBe(
+			true,
+		);
 		expect(canRenderToolResult('network', JSON.stringify({ status: 200 }))).toBe(true);
 		expect(canRenderToolResult('clipboard', JSON.stringify({ content: 'hi' }))).toBe(true);
 		expect(canRenderToolResult('power', JSON.stringify({ battery_percent: 80 }))).toBe(true);
@@ -25,25 +36,37 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('shell', 'plain stdout text')).toBe(true);
 		expect(canRenderToolResult('shell', JSON.stringify({ output: 'x' }))).toBe(true);
 		expect(canRenderToolResult('notify', 'Notification sent: Build: done')).toBe(true);
-		expect(canRenderToolResult('load_mcp', JSON.stringify({ server_name: 'fs', status: 'loaded' }))).toBe(true);
+		expect(
+			canRenderToolResult(
+				'load_mcp',
+				JSON.stringify({ server_name: 'fs', status: 'loaded' }),
+			),
+		).toBe(true);
 		expect(canRenderToolResult('audio', JSON.stringify({ played: true }))).toBe(true);
 		expect(canRenderToolResult('search', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
-	it('rejects invalid JSON and non-JSON non-shell text', () => {
-		expect(canRenderToolResult('search', '{not json[... truncated')).toBe(false);
-		expect(canRenderToolResult('audio', 'plain text')).toBe(false);
-		expect(canRenderToolResult('notify', 'Some other text')).toBe(false);
-		expect(canRenderToolResult('', '')).toBe(false);
+	it('accepts any non-empty text as a raw card', () => {
+		expect(canRenderToolResult('search', '{not json[... truncated')).toBe(true);
+		expect(canRenderToolResult('audio', 'plain text')).toBe(true);
+		expect(canRenderToolResult('notify', 'Some other text')).toBe(true);
 	});
 	it('rejects empty content', () => {
+		expect(canRenderToolResult('', '')).toBe(false);
 		expect(canRenderToolResult('search', '')).toBe(false);
 	});
 });
 
 describe('parseToolResult', () => {
-	it('returns null for unsupported input', () => {
-		expect(parseToolResult('search', 'plain text')).toBeNull();
-		expect(parseToolResult('status', JSON.stringify([1, 2]))).toBeNull();
+	it('returns null for empty content', () => {
+		expect(parseToolResult('search', '')).toBeNull();
+	});
+	it('classifies non-JSON text, arrays and primitives as raw', () => {
+		expect(parseToolResult('search', 'plain text')).toEqual({ kind: 'raw', data: null });
+		expect(parseToolResult('status', JSON.stringify([1, 2]))).toEqual({
+			kind: 'raw',
+			data: [1, 2],
+		});
+		expect(parseToolResult('status', '42')).toEqual({ kind: 'raw', data: 42 });
 	});
 });
 
@@ -108,7 +131,10 @@ describe('ToolResultCard shell / notify / generic', () => {
 	});
 
 	it('renders a notification card with title and body', () => {
-		render(ToolResultCard, { toolName: 'notify', content: 'Notification sent: 构建完成: 全部测试通过' });
+		render(ToolResultCard, {
+			toolName: 'notify',
+			content: 'Notification sent: 构建完成: 全部测试通过',
+		});
 		expect(screen.getByText('通知')).toBeTruthy();
 		expect(screen.getByText('构建完成')).toBeTruthy();
 		expect(screen.getByText('全部测试通过')).toBeTruthy();
@@ -126,14 +152,76 @@ describe('ToolResultCard shell / notify / generic', () => {
 	});
 });
 
+describe('ToolResultCard raw', () => {
+	it('renders plain text output in a raw card with the tool label', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'audio',
+			content: 'some plain text',
+		});
+		expect(screen.getByText('音频')).toBeTruthy();
+		expect(container.querySelector('.content-preview').textContent).toContain(
+			'some plain text',
+		);
+	});
+
+	it('pretty-prints JSON array observations', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'status',
+			content: JSON.stringify([1, 2, { a: 'b' }]),
+		});
+		expect(container.querySelector('.content-preview').textContent).toContain('"a"');
+		expect(container.querySelector('.content-preview').textContent).toContain('"b"');
+	});
+});
+
+describe('ToolResultCard collapsible', () => {
+	it('renders collapsed once the observation is final', () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'search',
+			content: searchJson([{ path: 'a.rs' }]),
+		});
+		const details = /** @type {HTMLDetailsElement} */ (
+			container.querySelector('details.tool-card')
+		);
+		expect(details).toBeTruthy();
+		expect(details.open).toBe(false);
+	});
+
+	it('expands while streaming and auto-collapses when streaming ends', async () => {
+		const { container, rerender } = render(ToolResultCard, {
+			toolName: 'search',
+			content: searchJson([{ path: 'a.rs' }]),
+			streaming: true,
+		});
+		const details = /** @type {HTMLDetailsElement} */ (
+			container.querySelector('details.tool-card')
+		);
+		expect(details.open).toBe(true);
+		await rerender({ streaming: false });
+		expect(details.open).toBe(false);
+	});
+
+	it('toggles open when the header is clicked and keeps a manual expand', async () => {
+		const { container, rerender } = render(ToolResultCard, {
+			toolName: 'search',
+			content: searchJson([{ path: 'a.rs' }]),
+		});
+		const details = /** @type {HTMLDetailsElement} */ (
+			container.querySelector('details.tool-card')
+		);
+		expect(details.open).toBe(false);
+		await fireEvent.click(details.querySelector('summary'));
+		expect(details.open).toBe(true);
+		await rerender({ content: searchJson([{ path: 'b.rs' }]) });
+		expect(details.open).toBe(true);
+	});
+});
+
 describe('ToolResultCard search', () => {
 	it('renders a filename-mode search card with paths and count', () => {
 		render(ToolResultCard, {
 			toolName: 'search',
-			content: searchJson([
-				{ path: 'D:\\workspace\\a.rs' },
-				{ path: 'D:\\workspace\\b.rs' },
-			]),
+			content: searchJson([{ path: 'D:\\workspace\\a.rs' }, { path: 'D:\\workspace\\b.rs' }]),
 		});
 		expect(screen.getByText('文件搜索')).toBeTruthy();
 		expect(screen.getByText('2 个结果 · 文件名')).toBeTruthy();
@@ -227,7 +315,9 @@ describe('ToolResultCard process', () => {
 				],
 			}),
 		});
-		await fireEvent.input(screen.getByPlaceholderText('筛选进程...'), { target: { value: 'chrome' } });
+		await fireEvent.input(screen.getByPlaceholderText('筛选进程...'), {
+			target: { value: 'chrome' },
+		});
 		expect(screen.getByText('1 / 2 个进程')).toBeTruthy();
 		expect(screen.getByText('chrome.exe')).toBeTruthy();
 		expect(screen.queryByText('explorer.exe')).toBeNull();
@@ -301,7 +391,12 @@ describe('ToolResultCard network', () => {
 	it('renders a single reminder set result with id, mode and fires_at', () => {
 		render(ToolResultCard, {
 			toolName: 'reminder',
-			content: JSON.stringify({ id: 'r42', mode: 'tool', fires_at: '2026-08-05T09:00:00+08:00', wakes_task: true }),
+			content: JSON.stringify({
+				id: 'r42',
+				mode: 'tool',
+				fires_at: '2026-08-05T09:00:00+08:00',
+				wakes_task: true,
+			}),
 		});
 		expect(screen.getByText('#r42')).toBeTruthy();
 		expect(screen.getByText('tool')).toBeTruthy();
@@ -330,11 +425,15 @@ describe('ToolResultCard env', () => {
 				],
 			}),
 		});
-		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), { target: { value: 'path' } });
+		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), {
+			target: { value: 'path' },
+		});
 		expect(screen.getByText('1 / 2 个变量')).toBeTruthy();
 		expect(screen.getByText('PATH')).toBeTruthy();
 		expect(screen.queryByText('HOME')).toBeNull();
-		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), { target: { value: 'Users' } });
+		await fireEvent.input(screen.getByPlaceholderText('筛选变量...'), {
+			target: { value: 'Users' },
+		});
 		expect(screen.getByText('1 / 2 个变量')).toBeTruthy();
 		expect(screen.getByText('HOME')).toBeTruthy();
 		expect(screen.queryByText('PATH')).toBeNull();

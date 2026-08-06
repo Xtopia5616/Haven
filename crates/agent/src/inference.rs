@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use haven_common::prompts::FACT_EXTRACTION_SYSTEM_PROMPT;
 use haven_llm::{EndpointRole, LlmRouter};
+use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
 use haven_memory::Database;
 use tokio::sync::Semaphore;
 
@@ -10,7 +11,7 @@ use tokio::sync::Semaphore;
 const MAX_TRANSCRIPT_CHARS: usize = 4000;
 
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 struct LlmFact {
     #[serde(default = "default_subject")]
     subject: String,
@@ -58,11 +59,15 @@ impl InferenceEngine {
     /// An empty `Ok([])` from the LLM is treated as a valid "no facts found"
     /// response and does NOT trigger the fallback.
     pub async fn infer_facts(&self, task_id: &str) {
-        let messages = match self.db.get_task_messages(task_id) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("fact inference: failed to load messages: {}", e);
-                return;
+        let messages = {
+            let db = self.db.clone();
+            let task_id = task_id.to_string();
+            match db.run_blocking(move |db| db.get_task_messages(&task_id)).await {
+                Ok(m) => m,
+                _ => {
+                    tracing::warn!("fact inference: failed to load messages");
+                    return;
+                }
             }
         };
         if messages.is_empty() {
@@ -80,9 +85,58 @@ impl InferenceEngine {
 
         match self.infer_facts_with_llm(&user_messages).await {
             Ok(facts) if !facts.is_empty() => {
-                for f in &facts {
+                self.persist_facts(&facts).await;
+            }
+            Ok(_) => {
+                tracing::debug!("LLM found no facts in task {}", task_id);
+            }
+            Err(e) => {
+                tracing::warn!("LLM fact extraction failed ({}), falling back to rules", e);
+                let inferred = self.db.infer_facts_from_messages(&user_messages);
+                let db = self.db.clone();
+                let _ = db
+                    .run_blocking(move |db| {
+                        for f in &inferred {
+                            if is_sensitive_predicate(&f.predicate) || is_sensitive_object(&f.object) {
+                                continue;
+                            }
+                            let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
+                            let _ = db.insert_fact(
+                                &f.subject,
+                                &f.predicate,
+                                &f.object,
+                                "inferred",
+                                f.confidence,
+                                &tags,
+                            );
+                        }
+                        let _ = db.dedup_facts();
+                        let _ = db.delete_sensitive_facts();
+                        let _ = db.flush_low_confidence(0.3);
+                        Ok::<(), anyhow::Error>(())
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// Persist a batch of LLM-extracted facts plus the dedup/confidence
+    /// maintenance pass in a single blocking DB round-trip.
+    async fn persist_facts(&self, facts: &[LlmFact]) {
+        let db = self.db.clone();
+        let owned: Vec<LlmFact> = facts.to_vec();
+        let _ = db
+            .run_blocking(move |db| {
+                for f in &owned {
+                    if is_sensitive_predicate(&f.predicate) || is_sensitive_object(&f.object) {
+                        tracing::debug!(
+                            "fact inference: dropping sensitive fact '{}'",
+                            f.predicate
+                        );
+                        continue;
+                    }
                     let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
-                    let _ = self.db.insert_fact(
+                    let _ = db.insert_fact(
                         &sanitize_fact_field(&f.subject),
                         &sanitize_fact_field(&f.predicate),
                         &sanitize_fact_field(&f.object),
@@ -91,30 +145,12 @@ impl InferenceEngine {
                         &tags,
                     );
                 }
-                let _ = self.db.dedup_facts();
-                let _ = self.db.flush_low_confidence(0.3);
-            }
-            Ok(_) => {
-                tracing::debug!("LLM found no facts in task {}", task_id);
-            }
-            Err(e) => {
-                tracing::warn!("LLM fact extraction failed ({}), falling back to rules", e);
-                let inferred = self.db.infer_facts_from_messages(&user_messages);
-                for f in &inferred {
-                    let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
-                    let _ = self.db.insert_fact(
-                        &f.subject,
-                        &f.predicate,
-                        &f.object,
-                        "inferred",
-                        f.confidence,
-                        &tags,
-                    );
-                }
-                let _ = self.db.dedup_facts();
-                let _ = self.db.flush_low_confidence(0.3);
-            }
-        }
+                let _ = db.dedup_facts();
+                let _ = db.delete_sensitive_facts();
+                let _ = db.flush_low_confidence(0.3);
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
     }
 
     /// Send the conversation transcript to the BalancedModel and ask it to
@@ -152,17 +188,24 @@ impl InferenceEngine {
     }
 
     /// Run preference inference over a task's messages.
-    pub fn infer_preferences(&self, task_id: &str) {
-        if let Ok(messages) = self.db.get_task_messages(task_id) {
-            let inferred = self.db.infer_preferences_from_messages(&messages);
-            let _ = self.db.save_inferred_preferences(&inferred);
-        }
+    pub async fn infer_preferences(&self, task_id: &str) {
+        let db = self.db.clone();
+        let task_id = task_id.to_string();
+        let _ = db
+            .run_blocking(move |db| {
+                if let Ok(messages) = db.get_task_messages(&task_id) {
+                    let inferred = db.infer_preferences_from_messages(&messages);
+                    let _ = db.save_inferred_preferences(&inferred);
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
     }
 
     /// Run both fact and preference inference (common exit point in the ReAct loop).
     pub async fn infer_all(&self, task_id: &str) {
         self.infer_facts(task_id).await;
-        self.infer_preferences(task_id);
+        self.infer_preferences(task_id).await;
     }
 }
 

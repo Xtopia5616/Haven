@@ -51,7 +51,7 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{context}` — additional conversation context block, or empty
 /// - `{history}` — "Steps so far" block, or empty
 pub const MAIN_SYSTEM_PROMPT: &str = "\
-You are Haven, a PC voice assistant. You help users accomplish tasks using available tools. \
+You are Haven, a PC agent. You help users accomplish tasks using available tools. \
 Stay interactive: when the goal is unclear, a decision matters, or you keep trying on your own, \
 use `ask` to consult the user instead of guessing.\n\
 \n\
@@ -69,6 +69,8 @@ Guidelines:\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
 8. Calling ask pauses the task until the user replies; their answer is injected as context for the next step.\n\
 9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the task. Use it to alert them about background progress or something they should check.\n\
+10. Prefer MCP servers over built-in tools when the server's tools are more capable for the task. The 'Available MCP servers' list below shows each server's tools — if a task matches one of them, call `load_mcp` with that server name to activate its tools, then use them. Built-in tools are basic; MCP servers typically provide the powerful, specialized functionality.\n\
+11. Skills installed via `load_skill` work the same way: when a skill in the list below fits the task, activate it with `load_skill` before using its tools.\n\
 \n\
 Current task: {task}\n\
 \n\
@@ -79,7 +81,7 @@ What is your next step?\n";
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";
 
 /// User fact extraction (balanced_model). Expects a JSON array in response.
-pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0). Only extract clear, explicit facts the user stated. If no facts found, return []. Respond with ONLY the JSON array, no markdown, no explanation.";
+pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0). Only extract clear, explicit facts the user stated. If no facts found, return []. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
 
 /// Conversation compaction summary prefix (default_model). The transcript
 /// is appended after this text.
