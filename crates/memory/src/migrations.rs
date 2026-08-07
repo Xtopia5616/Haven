@@ -108,6 +108,34 @@ pub const MIGRATIONS: &[&str] = &[
     )",
 ];
 
+/// Vector index for semantic memory. `entity_type` selects the memory domain
+/// ('fact' = facts rows, 'episode' = conversation events / compaction
+/// summaries); `entity_id` references the owning row. `vector` is a
+/// little-endian f32 blob; `text` keeps the embedded surface text so keyword
+/// fallback and display don't need to re-derive it.
+///
+/// Deliberately NOT part of `MIGRATIONS`: the array is gated by
+/// `PRAGMA user_version`, and a table appended at index N is silently skipped
+/// on databases whose user_version already exceeds N (e.g. after a build with
+/// one more entry ran once) — while any later entry referencing the table
+/// (its own index!) still executes, bricking startup with
+/// "no such table". This exact failure happened to `reminders` historically
+/// and to `memory_embeddings` in the wild. Ensured idempotently on every open
+/// instead, independent of user_version.
+const MEMORY_EMBEDDINGS_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (entity_type, entity_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_type ON memory_embeddings(entity_type);
+";
+
 pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -124,6 +152,10 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     if ran_any {
         conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len()))?;
     }
+
+    // Ensure the vector index table exists on every open, independent of
+    // `user_version` (see MEMORY_EMBEDDINGS_SCHEMA doc). Idempotent.
+    conn.execute_batch(MEMORY_EMBEDDINGS_SCHEMA)?;
 
     // Ensure attachments column exists on the messages table (multimodal §M7).
     // Stores a JSON array of image attachments: [{"media_type": "...", "data": "<base64>"}].
@@ -229,6 +261,111 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             "ALTER TABLE facts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'",
             [],
         )?;
+    }
+
+    // §P1: facts lifecycle columns — `mention_count` tracks how often a fact
+    // is re-confirmed (reinforcement) and `last_seen_at` records when it was
+    // last observed, so stale facts can decay instead of living forever at
+    // full confidence. Guarded per-column like the tags migration above.
+    let has_mention_count: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='mention_count'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_mention_count {
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN mention_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    let has_last_seen_at: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='last_seen_at'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_last_seen_at {
+        conn.execute("ALTER TABLE facts ADD COLUMN last_seen_at TEXT", [])?;
+        // Backfill: existing rows have no observation history, so stamp them
+        // as seen NOW rather than at creation. Using the upgrade time as the
+        // grace point keeps recency decay from retroactively pruning every
+        // old fact on the first inference pass after the upgrade — a fact
+        // created months ago would otherwise decay below the flush threshold
+        // (e.g. 0.9 confidence at a 90-day half-life is ~0.23 after 6
+        // months) and be silently deleted before the user ever re-confirms.
+        conn.execute(
+            "UPDATE facts SET last_seen_at = ?1 WHERE last_seen_at IS NULL",
+            rusqlite::params![chrono::Utc::now().to_rfc3339()],
+        )?;
+    }
+
+    // §P2: source_ref — JSON `{message_id, snippet}` pointing at the
+    // conversation message a fact was extracted from, for traceability and
+    // contradiction checks. Existing rows simply have no reference.
+    let has_source_ref: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='source_ref'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_source_ref {
+        conn.execute("ALTER TABLE facts ADD COLUMN source_ref TEXT", [])?;
+    }
+
+    // §P0: FTS5 full-text index over facts so search_facts can rank by
+    // relevance (BM25) instead of doing LIKE scans. Uses an external-content
+    // table synced by triggers. Best-effort: bundled SQLite ships FTS5, but
+    // if it is ever unavailable the setup fails gracefully and search_facts
+    // falls back to the LIKE path. The whole block runs inside one
+    // transaction and the idempotency guard checks that the sync triggers
+    // exist too, so a crash partway through (table created but triggers
+    // missing) is repaired on the next startup instead of leaving the index
+    // silently unmaintained.
+    let has_fts: bool = conn
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='facts_fts'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    let triggers_missing = ["facts_ai", "facts_ad", "facts_au"].iter().any(|name| {
+        conn.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
+            .and_then(|mut stmt| stmt.query_row(rusqlite::params![name], |r| r.get::<_, i32>(0)))
+            .map(|c| c == 0)
+            .unwrap_or(true)
+    });
+    if !has_fts || triggers_missing {
+        // DROP first so a partially-applied previous attempt (table present
+        // but triggers missing) is rebuilt cleanly; external-content tables
+        // re-index from the facts table via the 'rebuild' command.
+        let fts_sql = "BEGIN;
+            DROP TABLE IF EXISTS facts_fts;
+            DROP TRIGGER IF EXISTS facts_ai;
+            DROP TRIGGER IF EXISTS facts_ad;
+            DROP TRIGGER IF EXISTS facts_au;
+            CREATE VIRTUAL TABLE facts_fts USING fts5(
+                subject, predicate, object, tags,
+                content='facts', content_rowid='rowid'
+            );
+            CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
+                INSERT INTO facts_fts(rowid, subject, predicate, object, tags)
+                VALUES (new.rowid, new.subject, new.predicate, new.object, new.tags);
+            END;
+            CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
+                INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, tags)
+                VALUES ('delete', old.rowid, old.subject, old.predicate, old.object, old.tags);
+            END;
+            CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN
+                INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, tags)
+                VALUES ('delete', old.rowid, old.subject, old.predicate, old.object, old.tags);
+                INSERT INTO facts_fts(rowid, subject, predicate, object, tags)
+                VALUES (new.rowid, new.subject, new.predicate, new.object, new.tags);
+            END;
+            INSERT INTO facts_fts(facts_fts) VALUES ('rebuild');
+            COMMIT;";
+        if let Err(e) = conn.execute_batch(fts_sql) {
+            tracing::warn!("FTS5 unavailable, facts search falls back to LIKE: {}", e);
+            // execute_batch auto-commits each statement, but the explicit
+            // BEGIN above means a mid-batch failure leaves the transaction
+            // open — roll it back so the connection is left in a clean state.
+            let _ = conn.execute_batch("ROLLBACK");
+        }
     }
 
     // Merge sessions into tasks: the `sessions` table was a thin wrapper
@@ -729,6 +866,7 @@ mod tests {
         let expected = &[
             "compaction_entries",
             "facts",
+            "memory_embeddings",
             "messages",
             "preferences",
             "reminders",
@@ -745,11 +883,20 @@ mod tests {
                 tables
             );
         }
+        // FTS5 external-content index (plus its shadow tables) is expected.
+        assert!(
+            tables.iter().any(|n| n == "facts_fts"),
+            "facts_fts table should exist"
+        );
         assert!(
             !tables.iter().any(|n| n == "sessions"),
             "sessions table should be gone"
         );
-        assert_eq!(tables.len(), expected.len());
+        let core: Vec<_> = tables
+            .iter()
+            .filter(|t| !t.starts_with("facts_fts"))
+            .collect();
+        assert_eq!(core.len(), expected.len());
     }
 
     #[test]
@@ -761,6 +908,7 @@ mod tests {
         let expected = &[
             "idx_facts_confidence",
             "idx_facts_subject",
+            "idx_memory_embeddings_type",
             "idx_messages_created_at",
             "idx_messages_task",
             "idx_task_steps_task",
@@ -781,7 +929,49 @@ mod tests {
                 .any(|n| n == "idx_messages_session" || n == "idx_tasks_session"),
             "legacy session indexes should be gone"
         );
-        assert_eq!(indexes.len(), expected.len());
+        let core: Vec<_> = indexes
+            .iter()
+            .filter(|n| !n.starts_with("facts_fts"))
+            .collect();
+
+        assert_eq!(core.len(), expected.len());
+    }
+
+    /// Reproduces the production startup crash: a database whose
+    /// `user_version` is already past the array index where a table used to
+    /// live (e.g. after a build with one more migration entry ran once) skips
+    /// the CREATE TABLE via the version gate — while any later entry
+    /// referencing the table still executes. The idempotent ensure block must
+    /// repair it on every open, independent of user_version.
+    #[test]
+    fn run_migrations_repairs_memory_embeddings_when_version_ahead() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        assert!(get_tables(&conn).contains(&"memory_embeddings".to_string()));
+
+        // Simulate the stale state seen in production: table gone, but
+        // user_version left ahead of its former array index.
+        conn.execute_batch("DROP TABLE memory_embeddings; PRAGMA user_version = 17;")
+            .unwrap();
+        assert!(!get_tables(&conn).contains(&"memory_embeddings".to_string()));
+
+        // A fresh open must recreate the table instead of dying with
+        // "no such table: main.memory_embeddings".
+        run_migrations(&conn).unwrap();
+        assert!(get_tables(&conn).contains(&"memory_embeddings".to_string()));
+        assert!(get_indexes(&conn).contains(&"idx_memory_embeddings_type".to_string()));
+    }
+
+    /// Memory embeddings must not be re-created by the version-gated array
+    /// (which would re-run them with a bogus user_version), but the ensure
+    /// block must leave an existing index intact.
+    #[test]
+    fn run_migrations_idempotent_on_existing_memory_embeddings() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        // Second open: nothing should break and the table stays.
+        run_migrations(&conn).unwrap();
+        assert!(get_tables(&conn).contains(&"memory_embeddings".to_string()));
     }
 
     #[test]
@@ -880,7 +1070,13 @@ mod tests {
     fn test_task_steps_columns_exist_after_migration() {
         let conn = create_test_conn();
         run_migrations(&conn).unwrap();
-        for col in &["thought", "action_tool", "action_input", "observation", "silent"] {
+        for col in &[
+            "thought",
+            "action_tool",
+            "action_input",
+            "observation",
+            "silent",
+        ] {
             let has: bool = conn
                 .prepare(&format!(
                     "SELECT COUNT(*) FROM pragma_table_info('task_steps') WHERE name='{}'",
@@ -933,6 +1129,24 @@ mod tests {
             .map(|c| c > 0)
             .unwrap_or(false);
         assert!(has, "facts.tags column should exist");
+    }
+
+    #[test]
+    fn test_facts_lifecycle_columns_exist() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        for col in &["mention_count", "last_seen_at", "source_ref"] {
+            let has: bool = conn
+                .prepare(&format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='{}'",
+                    col
+                ))
+                .unwrap()
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            assert!(has, "facts.{} column should exist", col);
+        }
     }
 
     #[test]

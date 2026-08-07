@@ -60,6 +60,15 @@ pub enum AgentEvent {
         step_number: u32,
         run_id: u64,
     },
+    /// Live status of the provider's built-in web search tool. Forwarded from
+    /// the stream events (`in_progress` → `searching` → `completed`) so the
+    /// UI can render the "正在联网搜索…" indicator.
+    WebSearch {
+        task_id: String,
+        phase: String,
+        step_number: u32,
+        run_id: u64,
+    },
     Supplement {
         task_id: String,
         additional_context: String,

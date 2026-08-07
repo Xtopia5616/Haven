@@ -3,7 +3,7 @@ use futures_util::Stream;
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::types::{LlmError, LlmMessage, LlmResponse, StreamChunk, ToolDefinition};
+use crate::types::{Embedding, LlmError, LlmMessage, LlmResponse, StreamChunk, ToolDefinition};
 
 /// Unified interface implemented by every provider adapter. Adapters convert
 /// the provider's native wire protocol to/from the provider-neutral
@@ -45,6 +45,8 @@ pub trait LlmClient: Send + Sync {
             usage: Some(resp.usage.clone()),
             model: resp.model.clone(),
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
         let final_chunk = StreamChunk {
             text: None,
@@ -53,11 +55,23 @@ pub trait LlmClient: Send + Sync {
             usage: None,
             model: None,
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
         Ok(Box::pin(futures_util::stream::iter(vec![
             Ok(chunk),
             Ok(final_chunk),
         ])))
+    }
+
+    /// Embed a batch of texts into vectors via the provider's embeddings API.
+    /// Only adapters that speak an embeddings wire protocol implement this;
+    /// the default reports an unsupported error so chat-only endpoints
+    /// (anthropic, gemini) degrade gracefully when routed to this slot.
+    async fn embed(&self, _input: Vec<String>) -> Result<Embedding, LlmError> {
+        Err(LlmError::RequestFailed(
+            "embeddings not supported by this adapter".into(),
+        ))
     }
 
     async fn health_check(&self) -> Result<(), LlmError>;
@@ -138,7 +152,7 @@ pub(crate) fn http_status_to_error(
 // Retry wrapper (§2.3, §5.1)
 // ---------------------------------------------------------------------------
 
-pub async fn with_retry<F, Fut>(
+pub async fn with_retry<F, Fut, T>(
     max_retries: u32,
     base_secs: u64,
     factor: u32,
@@ -146,10 +160,10 @@ pub async fn with_retry<F, Fut>(
     jitter: f32,
     cancel: Option<&tokio_util::sync::CancellationToken>,
     mut f: F,
-) -> Result<LlmResponse, LlmError>
+) -> Result<T, LlmError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<LlmResponse, LlmError>>,
+    Fut: std::future::Future<Output = Result<T, LlmError>>,
 {
     let mut last_err = None;
     for attempt in 0..=max_retries {
@@ -313,6 +327,7 @@ mod tests {
                 usage: Usage::default(),
                 model: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             })
         })
         .await;
@@ -346,6 +361,7 @@ mod tests {
                         usage: Usage::default(),
                         model: None,
                         reasoning: None,
+                        web_search_calls: Vec::new(),
                     })
                 }
             }

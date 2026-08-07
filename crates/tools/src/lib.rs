@@ -17,6 +17,14 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// Whether a tool is enabled per `tool_settings`. Tools without a settings
+/// entry are enabled by default. Single source of truth shared by the
+/// registry filter, the execution gate, and the UI listing, so the three
+/// cannot drift apart.
+fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bool {
+    settings.get(name).map(|c| c.enabled).unwrap_or(true)
+}
+
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use builtin::{ReminderMode, SelfTool, SelfToolContext};
 pub use circuit::ToolCircuitRegistry;
@@ -75,6 +83,10 @@ pub struct ToolsManager {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub safety_gateway: SafetyGateway,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
+    /// Full builtin tool list (enabled and disabled) so the UI can list and
+    /// re-enable disabled tools even though they are excluded from the
+    /// registry snapshot used by the agent.
+    all_builtin_tools: RwLock<Vec<ToolBox>>,
     task_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
     tool_circuits: ToolCircuitRegistry,
     /// Shared LlmRouter. Tools that need a model (currently the file `summary`
@@ -116,6 +128,7 @@ impl ToolsManager {
             ))),
             safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
+            all_builtin_tools: RwLock::new(Vec::new()),
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
@@ -145,6 +158,7 @@ impl ToolsManager {
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
         *self.tool_settings.write().await = settings;
+        self.rebuild_catalog().await;
     }
 
     pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
@@ -207,7 +221,18 @@ impl ToolsManager {
         )
         .await;
 
-        self.registry.rebuild(all_tools).await;
+        // Keep the full list (enabled + disabled) for the UI, and exclude
+        // disabled tools from the registry the agent sees.
+        let settings = self.tool_settings.read().await;
+        let enabled_tools: Vec<ToolBox> = all_tools
+            .iter()
+            .filter(|t| tool_config_enabled(&settings, &t.name()))
+            .cloned()
+            .collect();
+        drop(settings);
+
+        *self.all_builtin_tools.write().await = all_tools;
+        self.registry.rebuild(enabled_tools).await;
     }
 
     /// Register a tool for a specific task (per-task skill overlay).
@@ -383,6 +408,33 @@ impl ToolsManager {
             .cloned()
             .collect()
     }
+
+    /// Whether a tool is enabled per `tool_settings`. Tools without a
+    /// settings entry are enabled by default.
+    pub async fn tool_enabled(&self, name: &str) -> bool {
+        tool_config_enabled(&*self.tool_settings.read().await, name)
+    }
+
+    /// Schemas for ALL builtin tools (enabled and disabled) plus their
+    /// `enabled` state, so the UI can list every tool and re-enable disabled
+    /// ones. The registry itself only holds enabled tools (see
+    /// `rebuild_catalog`).
+    pub async fn list_builtin_tools(&self) -> Vec<Value> {
+        let tools = self.all_builtin_tools.read().await;
+        let settings = self.tool_settings.read().await;
+        tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name(),
+                    "description": t.description(),
+                    "risk_level": t.risk_level(&serde_json::json!({})),
+                    "input_schema": t.input_schema(),
+                    "enabled": tool_config_enabled(&settings, &t.name()),
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for ToolsManager {
@@ -405,6 +457,11 @@ impl ToolsManager {
                 "tool '{}' is temporarily unavailable (circuit breaker open)",
                 tool_name
             );
+        }
+
+        if !self.tool_enabled(tool_name).await {
+            tracing::warn!("tool '{}' is disabled", tool_name);
+            anyhow::bail!("tool '{}' is disabled", tool_name);
         }
 
         let tool = self
@@ -560,6 +617,43 @@ mod tests {
 
         let load_skill_tool = mgr.get_tool("load_skill").await;
         assert!(load_skill_tool.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tools_manager_disabled_tool_excluded_and_blocked() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        // Disable the `file` tool.
+        let mut settings = HashMap::new();
+        settings.insert(
+            "file".into(),
+            ToolConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        mgr.set_tool_settings(settings).await;
+
+        // Excluded from the agent-facing registry...
+        assert!(mgr.get_tool("file").await.is_none());
+        let schemas = mgr.registry.list_schemas().await;
+        assert!(!schemas.iter().any(|s| s["name"].as_str() == Some("file")));
+
+        // ...still listed for the UI with enabled = false...
+        let all = mgr.list_builtin_tools().await;
+        let file = all
+            .iter()
+            .find(|s| s["name"].as_str() == Some("file"))
+            .unwrap();
+        assert_eq!(file["enabled"].as_bool(), Some(false));
+
+        // ...and execution is blocked.
+        let result = mgr
+            .execute_tool(None, "file", json!({}), CancellationToken::new())
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("disabled"));
     }
 
     #[tokio::test]

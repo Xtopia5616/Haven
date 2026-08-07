@@ -18,6 +18,7 @@
 		balanced_model: { provider: 'local', api_style: '', model_name: 'llama3', temperature: 0.7, base_url: 'http://localhost:11434', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
 		image_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o', temperature: 0.2, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
 		audio_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-audio-preview', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
+		embedding_model: { provider: 'openai', api_style: '', model_name: 'text-embedding-3-small', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
 		stt_use_audio_model: true,
 		vision_use_image_model: true,
 	});
@@ -28,6 +29,7 @@
 		balanced_model: false,
 		image_model: false,
 		audio_model: false,
+		embedding_model: false,
 		stt: false,
 	});
 
@@ -40,6 +42,7 @@
 		{ key: 'small_model', label: 'Small Model', hint: 'Title generation & lightweight reasoning', prefix: 'sm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
 		{ key: 'image_model', label: 'Image Model', hint: 'Image understanding (vision-capable)', prefix: 'im', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 		{ key: 'audio_model', label: 'Audio Model', hint: 'Audio transcription (speech-to-text)', prefix: 'au', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
+		{ key: 'embedding_model', label: 'Embedding Model', hint: 'Semantic memory: vectors for facts & past conversations. Local (Ollama / LM Studio) or cloud', prefix: 'em', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 	];
 	const coreModelCards = modelCards.filter((c) => c.group === 'core');
 	const specializedModelCards = modelCards.filter((c) => c.group === 'specialized');
@@ -279,6 +282,8 @@
 
 	let task = $state({ max_concurrent: 3, max_steps: 30 });
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
+	let memoryRecall = $state({ query: '', kind: 'fact', results: [], loading: false });
+	let memoryMaintenance = $state({ running: false, lastCount: null });
 	let security = $state({ confirmation_mode: 'always', min_risk_level: 'low' });
 
 	let stt = $state({
@@ -412,6 +417,36 @@
 			preferences = preferences.filter(([k]) => k !== key);
 		} catch (e) {
 			addNotification(`删除偏好失败: ${e}`, 'error', 3000);
+		}
+	}
+
+	async function runRecall() {
+		const q = memoryRecall.query.trim();
+		if (!q) return;
+		memoryRecall.loading = true;
+		try {
+			memoryRecall.results = (await invoke('recall_memory', {
+				query: q,
+				kind: memoryRecall.kind,
+				limit: 10,
+			})) || [];
+		} catch (e) {
+			memoryRecall.results = [];
+			addNotification(`记忆检索失败: ${e}`, 'error', 4000);
+		} finally {
+			memoryRecall.loading = false;
+		}
+	}
+
+	async function runMaintenance() {
+		memoryMaintenance.running = true;
+		try {
+			memoryMaintenance.lastCount = await invoke('run_memory_maintenance');
+			addNotification(`记忆维护完成（清理 ${memoryMaintenance.lastCount} 项）`, 'success', 3000);
+		} catch (e) {
+			addNotification(`记忆维护失败: ${e}`, 'error', 4000);
+		} finally {
+			memoryMaintenance.running = false;
 		}
 	}
 
@@ -550,7 +585,17 @@
 							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
 							...STT_STYLE_OPTIONS,
 						]
-						: [
+						: card.key === 'embedding_model'
+							? [
+								// Embeddings only speak the OpenAI-compatible
+								// wire protocol (OpenAI, Ollama, LM Studio,
+								// vLLM, llama.cpp server — all expose
+								// `/embeddings`); chat-only styles are omitted.
+								{ value: 'auto', label: 'Auto (from provider)' },
+								{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+								{ value: 'llama.cpp', label: 'llama.cpp server (local)' },
+							]
+							: [
 							{ value: 'auto', label: 'Auto (from provider)' },
 							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
 							{ value: 'llama.cpp', label: 'llama.cpp server' },
@@ -769,6 +814,50 @@
 		<div class="form-row">
 			<label for="memory-retention">Retention (days)</label>
 			<MaterialNumberField id="memory-retention" value={memory.history_retention_days} min={1} max={365} onChange={(v) => { memory.history_retention_days = v; }} />
+		</div>
+		<h3 class="model-group-heading">Recall &amp; Maintenance</h3>
+		<p class="model-hint">检索已存储的记忆（事实 / 历史对话）。配置了 Embedding Model 时使用语义检索，否则回退到关键词匹配。维护会清理重复、敏感、过期的事实与残留向量。</p>
+		<div class="form-row recall-row">
+			<label for="memory-recall-query">Query</label>
+			<input
+				id="memory-recall-query"
+				type="text"
+				class="md-input"
+				bind:value={memoryRecall.query}
+				placeholder="e.g. dark theme"
+				onkeydown={(e) => { if (e.key === 'Enter') runRecall(); }}
+				autocomplete="off"
+			/>
+			<MaterialSelect
+				id="memory-recall-kind"
+				value={memoryRecall.kind}
+				options={[
+					{ value: 'fact', label: 'Facts' },
+					{ value: 'episode', label: 'Conversations' },
+				]}
+				onChange={(v) => { memoryRecall.kind = v; }}
+			/>
+			<button class="md-btn" onclick={runRecall} disabled={memoryRecall.loading}>
+				{memoryRecall.loading ? 'Searching…' : 'Search'}
+			</button>
+		</div>
+		{#if memoryRecall.results.length > 0}
+			<ul class="recall-results">
+				{#each memoryRecall.results as r (r.entity_id + r.text)}
+					<li>
+						<span class="recall-score">{(r.score ?? 0).toFixed(2)}</span>
+						<span class="recall-text">{r.text}</span>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		<div class="form-row">
+			<button class="md-btn" onclick={runMaintenance} disabled={memoryMaintenance.running}>
+				{memoryMaintenance.running ? 'Running…' : 'Run Memory Maintenance'}
+			</button>
+			{#if memoryMaintenance.lastCount !== null}
+				<span class="recall-hint">上次清理 {memoryMaintenance.lastCount} 项</span>
+			{/if}
 		</div>
 	</div>
 
@@ -1187,6 +1276,49 @@
 	}
 	.key-status-row.key-not-configured .key-configured-label {
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	.recall-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		flex-wrap: wrap;
+	}
+	.recall-row .md-input {
+		flex: 1;
+		min-width: 200px;
+	}
+	.recall-results {
+		list-style: none;
+		margin: var(--md-sys-space-sm) 0 var(--md-sys-space-md);
+		padding: 0;
+		max-height: 220px;
+		overflow-y: auto;
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-radius-md);
+	}
+	.recall-results li {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		font-size: 13px;
+	}
+	.recall-results li:last-child {
+		border-bottom: none;
+	}
+	.recall-score {
+		font-variant-numeric: tabular-nums;
+		color: var(--md-sys-color-primary);
+		min-width: 42px;
+	}
+	.recall-text {
+		color: var(--md-sys-color-on-surface);
+		overflow-wrap: anywhere;
+	}
+	.recall-hint {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 13px;
 	}
 	.dialog-hint {
 		color: var(--md-sys-color-on-surface-variant);

@@ -11,7 +11,7 @@ use crate::adapters::{LineMode, spawn_line_reader};
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
-    ToolDefinition, Usage,
+    ToolDefinition, Usage, WebSearchPhase,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -19,13 +19,62 @@ use haven_common::config::ModelEndpoint;
 // OpenAI Responses API request / response types
 // ---------------------------------------------------------------------------
 
+/// Web search mode for the provider's built-in search tool. Selected via the
+/// endpoint's `web_search` config field or the `HAVEN_WEB_SEARCH` environment
+/// variable (`off` | `auto` | `always`). Unconfigured defaults to `off`:
+/// web search is opt-in and never changes the request shape on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSearchMode {
+    /// Never expose the web_search tool: request shape identical to before.
+    Off,
+    /// Expose `{"type": "web_search"}` with `tool_choice: "auto"` — the model
+    /// decides whether the question needs real-time information.
+    Auto,
+    /// Force a search on every request via
+    /// `tool_choice: {"type": "web_search"}`.
+    Always,
+}
+
+/// Parse a web search mode value (`off` | `auto` | `always`, case-insensitive).
+/// Unset/empty/unrecognized values fall back to `Off` — web search only
+/// activates through an explicit `off`/`auto`/`always` choice.
+pub fn parse_web_search_mode(value: Option<&str>) -> WebSearchMode {
+    match value
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "auto" => WebSearchMode::Auto,
+        "always" | "required" | "on" | "1" | "true" => WebSearchMode::Always,
+        _ => WebSearchMode::Off,
+    }
+}
+
+fn web_search_mode_from_env() -> WebSearchMode {
+    parse_web_search_mode(std::env::var("HAVEN_WEB_SEARCH").ok().as_deref())
+}
+
+/// Resolve the effective web search mode for an endpoint: the endpoint's
+/// `web_search` config field wins, then an explicitly set `HAVEN_WEB_SEARCH`
+/// environment variable, then the default (`off`).
+fn resolve_web_search_mode(endpoint: &ModelEndpoint) -> WebSearchMode {
+    match endpoint.web_search.as_deref() {
+        Some(v) if !v.trim().is_empty() => parse_web_search_mode(Some(v)),
+        _ => web_search_mode_from_env(),
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ResponsesTool {
     #[serde(rename = "type")]
     tool_type: String,
-    name: String,
-    description: String,
-    parameters: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,30 +89,35 @@ struct ResponsesRequest {
     temperature: Option<f32>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<ResponsesTool>>,
+    tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<String>,
+    tool_choice: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ResponsesItem {
     #[serde(rename = "type")]
     item_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     content: Vec<ResponsesContentPart>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     call_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     arguments: Option<String>,
+    /// Fields not covered by the named members (e.g. a `web_search_call`
+    /// item's `status`). Kept so output items can be round-tripped back into
+    /// the next request's input verbatim.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ResponsesContentPart {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     text: Option<String>,
 }
 
@@ -102,6 +156,12 @@ enum ResponsesStreamEvent {
     },
     #[serde(rename = "response.output_item.added")]
     OutputItemAdded { item: Option<ResponsesItem> },
+    #[serde(rename = "response.web_search_call.in_progress")]
+    WebSearchInProgress,
+    #[serde(rename = "response.web_search_call.searching")]
+    WebSearchSearching,
+    #[serde(rename = "response.web_search_call.completed")]
+    WebSearchCompleted { item: Option<ResponsesItem> },
     #[serde(rename = "response.completed")]
     Completed {
         response: Option<ResponsesStreamResponse>,
@@ -133,6 +193,7 @@ struct ResponsesStreamResponse {
 pub struct OpenAiResponsesAdapter {
     endpoint: ModelEndpoint,
     client: reqwest::Client,
+    web_search_mode: WebSearchMode,
 }
 
 impl OpenAiResponsesAdapter {
@@ -157,7 +218,12 @@ impl OpenAiResponsesAdapter {
             .pool_idle_timeout(Duration::from_secs(90));
 
         let client = builder.build().unwrap_or_default();
-        Self { endpoint, client }
+        let web_search_mode = resolve_web_search_mode(&endpoint);
+        Self {
+            endpoint,
+            client,
+            web_search_mode,
+        }
     }
 
     fn build_headers(&self) -> HeaderMap {
@@ -255,6 +321,12 @@ impl OpenAiResponsesAdapter {
                             "content": [{"type": "output_text", "text": text}]
                         }));
                     }
+                    // `web_search_call` items are passed back verbatim: the
+                    // server restores the search context from them. Never
+                    // parsed or rewritten (deepseek docs: 原样回传).
+                    for ws in &m.web_search_calls {
+                        items.push(ws.clone());
+                    }
                     if let Some(calls) = m.tool_calls {
                         for tc in calls {
                             items.push(json!({
@@ -283,14 +355,17 @@ impl OpenAiResponsesAdapter {
         (items, instructions)
     }
 
-    fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<ResponsesTool> {
+    fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<Value> {
         tools
             .into_iter()
-            .map(|t| ResponsesTool {
-                tool_type: t.tool_type,
-                name: t.function.name,
-                description: t.function.description,
-                parameters: t.function.parameters,
+            .map(|t| {
+                serde_json::to_value(ResponsesTool {
+                    tool_type: t.tool_type,
+                    name: Some(t.function.name),
+                    description: Some(t.function.description),
+                    parameters: Some(t.function.parameters),
+                })
+                .unwrap_or_default()
             })
             .collect()
     }
@@ -301,8 +376,41 @@ impl OpenAiResponsesAdapter {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> ResponsesRequest {
+        self.build_request_body_with_mode(messages, tools, stream, self.web_search_mode)
+    }
+
+    /// Request-body construction with an explicit web search mode. The mode
+    /// is a parameter so tests can pin it without touching process-global
+    /// environment variables.
+    fn build_request_body_with_mode(
+        &self,
+        messages: Vec<LlmMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        web_search_mode: WebSearchMode,
+    ) -> ResponsesRequest {
         let (input, instructions) = Self::convert_input(messages);
-        let has_tools = !tools.is_empty();
+        let mut tools_json = Self::convert_tools(tools);
+        // `tool_choice` semantics: `None` (no tools at all), string
+        // `"auto"`, or a specific tool object like
+        // `{"type": "web_search"}` for forced search.
+        let tool_choice: Option<Value> = match web_search_mode {
+            WebSearchMode::Off => {
+                if tools_json.is_empty() {
+                    None
+                } else {
+                    Some(json!("auto"))
+                }
+            }
+            WebSearchMode::Auto => {
+                tools_json.push(json!({"type": "web_search"}));
+                Some(json!("auto"))
+            }
+            WebSearchMode::Always => {
+                tools_json.push(json!({"type": "web_search"}));
+                Some(json!({"type": "web_search"}))
+            }
+        };
         ResponsesRequest {
             model: self.endpoint.model_name.clone(),
             instructions,
@@ -311,12 +419,12 @@ impl OpenAiResponsesAdapter {
             // o-series models reject temperature != 1; skip it when unset-ish.
             temperature: (self.endpoint.temperature != 1.0).then_some(self.endpoint.temperature),
             stream,
-            tools: if has_tools {
-                Some(Self::convert_tools(tools))
-            } else {
+            tools: if tools_json.is_empty() {
                 None
+            } else {
+                Some(tools_json)
             },
-            tool_choice: if has_tools { Some("auto".into()) } else { None },
+            tool_choice,
         }
     }
 
@@ -337,6 +445,7 @@ impl OpenAiResponsesAdapter {
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
+        let mut web_search_calls = Vec::new();
         for item in json.output {
             match item.item_type.as_deref() {
                 Some("message") => {
@@ -361,6 +470,12 @@ impl OpenAiResponsesAdapter {
                             reasoning.push_str(&t);
                         }
                     }
+                }
+                // Server-side web search (DeepSeek built-in): not a local
+                // tool. Keep the raw item so it can be passed back verbatim
+                // in the next request's input.
+                Some("web_search_call") => {
+                    web_search_calls.push(serde_json::to_value(&item).unwrap_or_default());
                 }
                 _ => {}
             }
@@ -393,6 +508,7 @@ impl OpenAiResponsesAdapter {
             } else {
                 Some(reasoning)
             },
+            web_search_calls,
         })
     }
 
@@ -489,6 +605,9 @@ impl OpenAiResponsesAdapter {
             finish_reason: Option<FinishReason>,
             usage: Option<Usage>,
             saw_completed: bool,
+            /// Raw `web_search_call` items seen while streaming; flushed in
+            /// the final chunk for round-tripping into the next request.
+            web_search_calls: Vec<Value>,
         }
 
         let empty_chunk = || StreamChunk {
@@ -498,6 +617,8 @@ impl OpenAiResponsesAdapter {
             usage: None,
             model: None,
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
 
         let mapped = futures_util::stream::unfold(
@@ -510,6 +631,7 @@ impl OpenAiResponsesAdapter {
                 finish_reason: None,
                 usage: None,
                 saw_completed: false,
+                web_search_calls: Vec::new(),
             },
             move |mut state| async move {
                 if state.done {
@@ -528,6 +650,8 @@ impl OpenAiResponsesAdapter {
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
                                 reasoning: None,
+                                web_search: None,
+                                web_search_calls: state.web_search_calls.drain(..).collect(),
                             })
                         };
                         state.done = true;
@@ -558,20 +682,56 @@ impl OpenAiResponsesAdapter {
                     }
                     Ok(ResponsesStreamEvent::OutputItemAdded { item }) => {
                         if let Some(item) = item
-                            && item.item_type.as_deref() == Some("function_call")
-                            && let Some(id) = item.id.clone()
+                            && let Some(item_type) = item.item_type.as_deref()
                         {
-                            state.tool_calls.push((
-                                id,
-                                ToolCall {
-                                    id: item.call_id.or(item.id).unwrap_or_default(),
-                                    name: item.name.unwrap_or_default(),
-                                    arguments: item.arguments.unwrap_or_default(),
-                                },
-                            ));
+                            match item_type {
+                                "function_call" => {
+                                    if let Some(id) = item.id.clone() {
+                                        state.tool_calls.push((
+                                            id,
+                                            ToolCall {
+                                                id: item.call_id.or(item.id).unwrap_or_default(),
+                                                name: item.name.unwrap_or_default(),
+                                                arguments: item.arguments.unwrap_or_default(),
+                                            },
+                                        ));
+                                    }
+                                }
+                                "web_search_call" => {
+                                    state
+                                        .web_search_calls
+                                        .push(serde_json::to_value(&item).unwrap_or_default());
+                                }
+                                _ => {}
+                            }
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
+                        Some((Ok(chunk), state))
+                    }
+                    Ok(ResponsesStreamEvent::WebSearchInProgress) => {
+                        let mut chunk = empty_chunk();
+                        chunk.model = state.last_model.clone();
+                        chunk.web_search = Some(WebSearchPhase::InProgress);
+                        Some((Ok(chunk), state))
+                    }
+                    Ok(ResponsesStreamEvent::WebSearchSearching) => {
+                        let mut chunk = empty_chunk();
+                        chunk.model = state.last_model.clone();
+                        chunk.web_search = Some(WebSearchPhase::Searching);
+                        Some((Ok(chunk), state))
+                    }
+                    Ok(ResponsesStreamEvent::WebSearchCompleted { item }) => {
+                        if let Some(item) = item
+                            && item.item_type.as_deref() == Some("web_search_call")
+                        {
+                            state
+                                .web_search_calls
+                                .push(serde_json::to_value(&item).unwrap_or_default());
+                        }
+                        let mut chunk = empty_chunk();
+                        chunk.model = state.last_model.clone();
+                        chunk.web_search = Some(WebSearchPhase::Completed);
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::Completed { response }) => {
@@ -602,6 +762,8 @@ impl OpenAiResponsesAdapter {
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
                                 reasoning: None,
+                                web_search: None,
+                                web_search_calls: state.web_search_calls.drain(..).collect(),
                             }),
                             state,
                         ))
@@ -736,6 +898,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::User,
@@ -743,6 +906,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let (items, instructions) = OpenAiResponsesAdapter::convert_input(msgs);
@@ -766,6 +930,7 @@ mod tests {
                     arguments: r#"{"operation":"read"}"#.into(),
                 }]),
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::Tool,
@@ -773,6 +938,7 @@ mod tests {
                 tool_call_id: Some("call_1".into()),
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
@@ -806,6 +972,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
         assert_eq!(items[0]["content"][0]["type"], "input_image");
@@ -828,22 +995,25 @@ mod tests {
             ..Default::default()
         };
         let client = OpenAiResponsesAdapter::new(ep);
-        let body = client.build_request_body(
+        let body = client.build_request_body_with_mode(
             vec![LlmMessage {
                 role: LlmRole::User,
                 content: vec![ContentPart::text("hi")],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             }],
             Vec::new(),
             true,
+            WebSearchMode::Off,
         );
         assert_eq!(body.model, "gpt-5");
         assert_eq!(body.max_output_tokens, Some(2048));
         assert_eq!(body.temperature, Some(0.4));
         assert!(body.stream);
         assert!(body.tools.is_none());
+        assert!(body.tool_choice.is_none());
     }
 
     #[test]
@@ -869,11 +1039,145 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
         }];
-        let body = client.build_request_body(vec![], tools, false);
+        let body = client.build_request_body_with_mode(vec![], tools, false, WebSearchMode::Off);
         let tools = body.tools.unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "search");
-        assert_eq!(body.tool_choice.as_deref(), Some("auto"));
+        assert_eq!(tools[0]["name"], "search");
+        assert_eq!(body.tool_choice, Some(serde_json::json!("auto")));
+    }
+
+    #[test]
+    fn web_search_mode_shapes_the_request() {
+        let ep = ModelEndpoint::default();
+        let client = OpenAiResponsesAdapter::new(ep);
+        let defs = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "file".into(),
+                description: "files".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }];
+
+        // auto: web_search tool appended, model decides via tool_choice auto.
+        let body =
+            client.build_request_body_with_mode(vec![], defs.clone(), false, WebSearchMode::Auto);
+        let tools = body.tools.unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[1], serde_json::json!({"type": "web_search"}));
+        assert_eq!(body.tool_choice, Some(serde_json::json!("auto")));
+
+        // always: search forced via a specific tool choice.
+        let body =
+            client.build_request_body_with_mode(vec![], defs.clone(), false, WebSearchMode::Always);
+        let tools = body.tools.unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(
+            body.tool_choice,
+            Some(serde_json::json!({"type": "web_search"}))
+        );
+
+        // auto with no function tools still exposes the search tool.
+        let body =
+            client.build_request_body_with_mode(vec![], Vec::new(), false, WebSearchMode::Auto);
+        let tools = body.tools.unwrap();
+        assert_eq!(tools, vec![serde_json::json!({"type": "web_search"})]);
+
+        // off with no function tools: request identical to pre-feature shape.
+        let body =
+            client.build_request_body_with_mode(vec![], Vec::new(), false, WebSearchMode::Off);
+        assert!(body.tools.is_none());
+        assert!(body.tool_choice.is_none());
+    }
+
+    #[test]
+    fn parse_web_search_mode_maps_env_values() {
+        // Unset / unrecognized values default to Off (web search is opt-in).
+        assert_eq!(parse_web_search_mode(None), WebSearchMode::Off);
+        assert_eq!(parse_web_search_mode(Some("")), WebSearchMode::Off);
+        assert_eq!(parse_web_search_mode(Some("bogus")), WebSearchMode::Off);
+        assert_eq!(parse_web_search_mode(Some("off")), WebSearchMode::Off);
+        assert_eq!(parse_web_search_mode(Some("OFF")), WebSearchMode::Off);
+        assert_eq!(parse_web_search_mode(Some("auto")), WebSearchMode::Auto);
+        assert_eq!(parse_web_search_mode(Some("Auto")), WebSearchMode::Auto);
+        assert_eq!(parse_web_search_mode(Some("always")), WebSearchMode::Always);
+        assert_eq!(parse_web_search_mode(Some("Always")), WebSearchMode::Always);
+    }
+
+    #[test]
+    fn convert_input_round_trips_web_search_calls_verbatim() {
+        let msgs = vec![LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![ContentPart::text("let me search")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: vec![serde_json::json!({
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed"
+            })],
+        }];
+        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["role"], "assistant");
+        // The raw item is passed back as-is (never parsed/rewritten).
+        assert_eq!(
+            items[1],
+            serde_json::json!({
+                "type": "web_search_call",
+                "id": "ws_1",
+                "status": "completed"
+            })
+        );
+    }
+
+    #[test]
+    fn parse_response_collects_web_search_calls() {
+        let json = ResponsesResponse {
+            status: Some("completed".into()),
+            output: vec![
+                ResponsesItem {
+                    item_type: Some("web_search_call".into()),
+                    content: vec![],
+                    call_id: None,
+                    id: Some("ws_1".into()),
+                    name: None,
+                    arguments: None,
+                    extra: serde_json::json!({"status": "completed"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                },
+                ResponsesItem {
+                    item_type: Some("message".into()),
+                    content: vec![ResponsesContentPart {
+                        text: Some("found it".into()),
+                    }],
+                    call_id: None,
+                    id: Some("msg_1".into()),
+                    name: None,
+                    arguments: None,
+                    extra: Default::default(),
+                },
+            ],
+            usage: None,
+            model: Some("deepseek-v4-flash".into()),
+            error: None,
+        };
+        let ep = ModelEndpoint::default();
+        let client = OpenAiResponsesAdapter::new(ep);
+        let resp = client
+            .parse_response(json, Some("deepseek-v4-flash".into()))
+            .unwrap();
+        assert_eq!(resp.text, "found it");
+        assert!(resp.tool_calls.is_empty());
+        assert_eq!(resp.web_search_calls.len(), 1);
+        let item = &resp.web_search_calls[0];
+        assert_eq!(item["type"], "web_search_call");
+        assert_eq!(item["id"], "ws_1");
+        assert_eq!(item["status"], "completed");
     }
 
     #[test]
@@ -890,6 +1194,7 @@ mod tests {
                     id: Some("msg_1".into()),
                     name: None,
                     arguments: None,
+                    extra: Default::default(),
                 },
                 ResponsesItem {
                     item_type: Some("function_call".into()),
@@ -898,6 +1203,7 @@ mod tests {
                     id: Some("fc_1".into()),
                     name: Some("file".into()),
                     arguments: Some(r#"{"operation":"read"}"#.into()),
+                    extra: Default::default(),
                 },
             ],
             usage: Some(ResponsesUsage {
@@ -974,6 +1280,63 @@ mod tests {
         let other: ResponsesStreamEvent =
             serde_json::from_str(r#"{"type":"response.in_progress"}"#).unwrap();
         assert!(matches!(other, ResponsesStreamEvent::Other));
+    }
+
+    #[test]
+    fn stream_web_search_events_parse() {
+        let in_progress: ResponsesStreamEvent = serde_json::from_str(
+            r#"{"type":"response.web_search_call.in_progress","item_id":"ws_1"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            in_progress,
+            ResponsesStreamEvent::WebSearchInProgress
+        ));
+
+        let searching: ResponsesStreamEvent = serde_json::from_str(
+            r#"{"type":"response.web_search_call.searching","item_id":"ws_1"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            searching,
+            ResponsesStreamEvent::WebSearchSearching
+        ));
+
+        let completed: ResponsesStreamEvent = serde_json::from_str(
+            r#"{"type":"response.web_search_call.completed","item_id":"ws_1","item":{"type":"web_search_call","id":"ws_1","status":"completed"}}"#,
+        )
+        .unwrap();
+        if let ResponsesStreamEvent::WebSearchCompleted { item: Some(item) } = completed {
+            assert_eq!(item.item_type.as_deref(), Some("web_search_call"));
+            assert_eq!(item.id.as_deref(), Some("ws_1"));
+            assert_eq!(
+                item.extra.get("status").and_then(|v| v.as_str()),
+                Some("completed")
+            );
+        } else {
+            panic!("expected web_search_call.completed with item");
+        }
+
+        // The raw item serializes back verbatim (round-trip input fidelity).
+        let raw = serde_json::to_value(item_of(&completed_parse())).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::json!({"type": "web_search_call", "id": "ws_1", "status": "completed"})
+        );
+    }
+
+    fn completed_parse() -> ResponsesStreamEvent {
+        serde_json::from_str(
+            r#"{"type":"response.web_search_call.completed","item":{"type":"web_search_call","id":"ws_1","status":"completed"}}"#,
+        )
+        .unwrap()
+    }
+
+    fn item_of(event: &ResponsesStreamEvent) -> &ResponsesItem {
+        match event {
+            ResponsesStreamEvent::WebSearchCompleted { item } => item.as_ref().unwrap(),
+            _ => panic!("expected WebSearchCompleted"),
+        }
     }
 
     #[test]

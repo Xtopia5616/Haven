@@ -1,14 +1,60 @@
+<script module>
+	// Per-session cache for the toolbar model switcher's model discovery.
+	// Dev-mode page reloads (Vite HMR reconnect, window re-show, single-
+	// instance re-entry) remount the chat view and would otherwise fire a
+	// duplicate discover_models request against the same default endpoint.
+	// Cache the result per base URL and share in-flight requests so reloads
+	// reuse the list instead of re-hitting the provider's /models endpoint.
+	const defaultModelsCache = {
+		baseUrl: null,
+		list: null,
+		inflight: null,
+	};
+</script>
+
 <script>
 	import logger from '$lib/logger.js';
 	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.js';
-	import { accumulateStreamChunk, applyThoughtSnap, stepId, toolId, finalizeStreamBlocks, newToolMessage } from '$lib/streaming.js';
+	import {
+		accumulateStreamChunk,
+		applyThoughtSnap,
+		stepId,
+		toolId,
+		finalizeStreamBlocks,
+		newToolMessage,
+	} from '$lib/streaming.js';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.js';
 	import { registerListeners } from '$lib/events.js';
-	import { taskMessagesStore, taskStore, addNotification, updateTaskMessages, adoptDraftMessages, clearTaskMessages, clearSeqMap, truncateTaskMessages, branchTaskMessages, reviewTargetStore, activeTaskIdStore, taskTokenStatsStore, updateTaskTokenStats, clearTaskTokenStats, restoreTaskTokenStats, formatTokenCount, formatCostUsd, seqLastSeen, pruneSeq, updateModelState, modelStateStore, imageDataUrl, recordingOverlay, DRAFT_KEY } from '$lib/stores.js';
+	import {
+		taskMessagesStore,
+		taskStore,
+		addNotification,
+		updateTaskMessages,
+		adoptDraftMessages,
+		clearTaskMessages,
+		clearSeqMap,
+		truncateTaskMessages,
+		branchTaskMessages,
+		reviewTargetStore,
+		activeTaskIdStore,
+		taskTokenStatsStore,
+		updateTaskTokenStats,
+		clearTaskTokenStats,
+		restoreTaskTokenStats,
+		formatTokenCount,
+		formatCostUsd,
+		seqLastSeen,
+		pruneSeq,
+		updateModelState,
+		modelStateStore,
+		imageDataUrl,
+		recordingOverlay,
+		DRAFT_KEY,
+	} from '$lib/stores.js';
 	import { submitTranscript } from '$lib/submit.js';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.js';
 	import ChatBubble from '$lib/ChatBubble.svelte';
@@ -28,12 +74,23 @@
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
 	let pendingImages = $state([]);
-	let imageFileInput = $state(null);
+
+	// Pending non-image file attachments: [{ media_type, data, filename, size }].
+	// Read as base64 when picked, persisted by the backend to disk and handed
+	// to the agent as a path the file tool can read.
+	let pendingFiles = $state([]);
+	// Single hidden picker for both images and files; the picked items are
+	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
+	let attachFileInput = $state(null);
 
 	// Recording state (mirror of the global recordingOverlay store) so the
 	// toolbar mic button can toggle start/stop inline.
 	let recordingState = $state({ isRecording: false });
-	$effect(() => syncStore(recordingOverlay, (v) => { recordingState = v; }));
+	$effect(() =>
+		syncStore(recordingOverlay, (v) => {
+			recordingState = v;
+		}),
+	);
 
 	// Model switcher state: the registry catalog plus the current default
 	// model name, displayed on the toolbar button and filtered in the menu.
@@ -43,6 +100,9 @@
 	let currentModelName = $state('');
 	let currentModelId = $state('');
 	let currentEffort = $state('');
+	// Provider built-in web search mode ("off" | "auto" | "always").
+	// Defaults to off (opt-in); "auto" lets the model decide when to search.
+	let currentWebSearch = $state('off');
 	let transcriptTextarea = $state(null);
 	// The configured recording hotkey binding, loaded from settings and kept
 	// in sync via `hotkey:rebind` so placeholders show the real value.
@@ -69,9 +129,13 @@
 
 	/** @type {TaskTokenStats | null} */
 	let tokenStats = $state(null);
-	$effect(() => syncStore(taskTokenStatsStore, (m) => {
-		tokenStats = activeTaskId ? (/** @type {TaskTokenStats | undefined} */ (m[activeTaskId]) || null) : null;
-	}));
+	$effect(() =>
+		syncStore(taskTokenStatsStore, (m) => {
+			tokenStats = activeTaskId
+				? /** @type {TaskTokenStats | undefined} */ (m[activeTaskId]) || null
+				: null;
+		}),
+	);
 	// Clear per-task stats when the active task changes so a stale entry
 	// from a previous task doesn't bleed into the new task's display.
 	$effect(() => {
@@ -102,12 +166,20 @@
 	// "stop task". Also mirrors the agent's model state so the button can
 	// distinguish "generating right now" from an idle running task.
 	let modelState = $state('ready');
-	$effect(() => syncStore(modelStateStore, (v) => { modelState = v; }));
-	const hasInput = $derived(transcriptInput.trim().length > 0 || pendingImages.length > 0);
+	$effect(() =>
+		syncStore(modelStateStore, (v) => {
+			modelState = v;
+		}),
+	);
+	const hasInput = $derived(
+		transcriptInput.trim().length > 0 || pendingImages.length > 0 || pendingFiles.length > 0,
+	);
 	const isGenerating = $derived(modelState === 'streaming' || modelState === 'tool');
 	const taskRunning = $derived(
 		!!activeTaskId &&
-		tasks.some((t) => t.id === activeTaskId && (t.status === 'running' || t.status === 'pending'))
+			tasks.some(
+				(t) => t.id === activeTaskId && (t.status === 'running' || t.status === 'pending'),
+			),
 	);
 	// While the agent is generating, a sent message is delivered immediately
 	// to the backend: the agent injects it in the gap between tool calls and
@@ -116,21 +188,19 @@
 	// The merged send button becomes "stop task" only when there is no input
 	// and the agent is actively working (generating output, a running/pending
 	// task). With fresh input present, it always stays a send button.
-	const stopMode = $derived(
-		!hasInput && (isGenerating || taskRunning)
-	);
+	const stopMode = $derived(!hasInput && (isGenerating || taskRunning));
 	// Tooltip for the idle token widget. While the active task is still
 	// running (streaming, tool-calling, or queued) more `agent:usage`
 	// events are expected, so "waiting" is accurate. A finished or
 	// history-opened conversation with no persisted usage will never
 	// receive events — show a neutral hint instead of waiting forever.
-	const tokenStatsHint = $derived(
-		isGenerating || taskRunning ? '等待 LLM 统计' : '暂无统计'
-	);
+	const tokenStatsHint = $derived(isGenerating || taskRunning ? '等待 LLM 统计' : '暂无统计');
 	// Tasks executing in parallel (running or waiting). When 2+ exist, the
 	// new-task button turns into a switcher menu: switch to a parallel task
 	// or start a new one. Otherwise the button keeps its default behavior.
-	const parallelTasks = $derived(tasks.filter((t) => t.status === 'running' || t.status === 'pending'));
+	const parallelTasks = $derived(
+		tasks.filter((t) => t.status === 'running' || t.status === 'pending'),
+	);
 	const showTaskMenu = $derived(parallelTasks.length >= 2);
 
 	function buildTokenTooltip(/** @type {TaskTokenStats} */ s) {
@@ -139,9 +209,10 @@
 		parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
 		if (s.model) parts.push(`模型 ${s.model}`);
 		if (s.contextWindow) {
-			const pct = s.promptTokens && s.contextWindow
-				? `${((s.promptTokens / s.contextWindow) * 100).toFixed(0)}%`
-				: '?';
+			const pct =
+				s.promptTokens && s.contextWindow
+					? `${((s.promptTokens / s.contextWindow) * 100).toFixed(0)}%`
+					: '?';
 			parts.push(`上下文 ${pct} / ${formatTokenCount(s.contextWindow)}`);
 		}
 		if (s.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(s.cumulativeCostUsd)}`);
@@ -155,6 +226,23 @@
 		{ value: 'medium', label: '中' },
 		{ value: 'high', label: '高' },
 	];
+
+	const webSearchOptions = [
+		{ value: 'off', label: '关闭' },
+		{ value: 'auto', label: '自动' },
+		{ value: 'always', label: '总是' },
+	];
+
+	async function handleWebSearchSelect(value) {
+		const label = webSearchOptions.find((o) => o.value === value)?.label || '关闭';
+		try {
+			await invoke('set_web_search', { role: 'default_model', mode: value });
+			currentWebSearch = value;
+			addNotification(`联网搜索: ${label}`, 'success', 2500);
+		} catch (e) {
+			addNotification(`设置联网搜索失败: ${e}`, 'error', 4000);
+		}
+	}
 
 	async function handleRecordClick() {
 		try {
@@ -213,6 +301,8 @@
 
 	const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MiB per image
 	const MAX_IMAGES = 4;
+	const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MiB per file
+	const MAX_FILES = 5;
 	// Downscale images so the longest edge does not exceed this. OpenAI vision
 	// guidance recommends ≤1568px; smaller payloads cut DB storage, snapshot
 	// serialization, IPC transfer, and LLM token cost.
@@ -227,9 +317,9 @@
 				const dataUrl = String(reader.result || '');
 				const comma = dataUrl.indexOf(',');
 				const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-				resolve({ media_type: file.type || 'image/png', data: base64 });
+				resolve({ media_type: file.type || 'application/octet-stream', data: base64 });
 			};
-			reader.onerror = () => reject(new Error('图片读取失败'));
+			reader.onerror = () => reject(new Error('文件读取失败'));
 			reader.readAsDataURL(file);
 		});
 	}
@@ -258,7 +348,10 @@
 			bitmap.close?.();
 			const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
 			const comma = dataUrl.indexOf(',');
-			return { media_type: 'image/jpeg', data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl };
+			return {
+				media_type: 'image/jpeg',
+				data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl,
+			};
 		} catch (e) {
 			logger.warn('+page', 'image compression failed, using original', e);
 			return null;
@@ -282,6 +375,29 @@
 		return original;
 	}
 
+	const IMAGE_EXTENSIONS = new Set([
+		'png',
+		'jpg',
+		'jpeg',
+		'gif',
+		'webp',
+		'bmp',
+		'svg',
+		'avif',
+		'ico',
+	]);
+
+	/**
+	 * Decide whether a picked file counts as an image (vision path) or a
+	 * generic file (disk path) by MIME type first, then extension — so a
+	 * `.png` with a missing/odd MIME still routes to the image logic.
+	 */
+	function isImageFile(file) {
+		if (file.type && file.type.startsWith('image/')) return true;
+		const ext = (file.name.split('.').pop() || '').toLowerCase();
+		return IMAGE_EXTENSIONS.has(ext);
+	}
+
 	async function addPendingImages(files) {
 		if (!files || files.length === 0) return;
 		const room = MAX_IMAGES - pendingImages.length;
@@ -291,7 +407,7 @@
 		}
 		const list = Array.from(files).slice(0, room);
 		for (const f of list) {
-			if (!f.type.startsWith('image/')) {
+			if (!isImageFile(f)) {
 				addNotification(`不支持的文件类型: ${f.name}`, 'error', 3000);
 				continue;
 			}
@@ -319,20 +435,82 @@
 		}
 	}
 
-	function handleFileSelect(e) {
-		addPendingImages(e.target.files);
-		e.target.value = '';
-	}
-
 	function removePendingImage(index) {
 		pendingImages = pendingImages.filter((_, i) => i !== index);
 	}
 
+	function formatFileSize(bytes) {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+	}
+
+	// Read non-image files as base64 attachments (with the original name) so
+	// the backend can persist them to disk and hand the agent a path. Files
+	// are capped at MAX_FILES / MAX_FILE_BYTES, mirroring server validation.
+	async function addPendingFiles(files) {
+		if (!files || files.length === 0) return;
+		const room = MAX_FILES - pendingFiles.length;
+		if (room <= 0) {
+			addNotification(`最多支持 ${MAX_FILES} 个文件`, 'error', 3000);
+			return;
+		}
+		const list = Array.from(files).slice(0, room);
+		for (const f of list) {
+			if (f.size > MAX_FILE_BYTES) {
+				addNotification(`文件超过 20MB 上限: ${f.name}`, 'error', 3000);
+				continue;
+			}
+			try {
+				const { media_type, data } = await readAsAttachment(f);
+				pendingFiles = [
+					...pendingFiles,
+					{ media_type, data, filename: f.name, size: f.size },
+				];
+			} catch (e) {
+				addNotification(e.message || '文件读取失败', 'error', 3000);
+			}
+		}
+	}
+
+	// Single entry point for the attachment picker: images (by MIME/extension)
+	// go to the vision preview row, everything else to the file chips.
+	function handleAttachSelect(e) {
+		const files = Array.from(e.target.files || []);
+		const images = files.filter(isImageFile);
+		const others = files.filter((f) => !isImageFile(f));
+		if (images.length > 0) addPendingImages(images);
+		if (others.length > 0) addPendingFiles(others);
+		e.target.value = '';
+	}
+
+	function removePendingFile(index) {
+		pendingFiles = pendingFiles.filter((_, i) => i !== index);
+	}
+
 	// Right-click context menu state
-	let ctxMenu = $state({ open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '', selectedContent: '' });
+	let ctxMenu = $state({
+		open: false,
+		x: 0,
+		y: 0,
+		stepNumber: null,
+		content: '',
+		role: '',
+		msgId: '',
+		selectedContent: '',
+	});
 
 	function handleContextMenu(ev) {
-		ctxMenu = { open: true, x: ev.x, y: ev.y, stepNumber: ev.stepNumber, content: ev.content, role: ev.role, msgId: ev.messageId, selectedContent: ev.selectedContent || '' };
+		ctxMenu = {
+			open: true,
+			x: ev.x,
+			y: ev.y,
+			stepNumber: ev.stepNumber,
+			content: ev.content,
+			role: ev.role,
+			msgId: ev.messageId,
+			selectedContent: ev.selectedContent || '',
+		};
 	}
 
 	// Rollback: find step number from click context or parse from message id
@@ -341,9 +519,9 @@
 		// For user messages, look forward in the message list to the next
 		// assistant message that carries a stepNumber.
 		if (ctxMenu.role === 'user' && ctxMenu.msgId) {
-			const idx = messages.findIndex(m => m.id === ctxMenu.msgId);
+			const idx = messages.findIndex((m) => m.id === ctxMenu.msgId);
 			if (idx >= 0) {
-				const next = messages.slice(idx + 1).find(m => m.stepNumber != null);
+				const next = messages.slice(idx + 1).find((m) => m.stepNumber != null);
 				if (next) return next.stepNumber;
 			}
 			// Fallback for an interrupted message that was never processed
@@ -353,7 +531,7 @@
 			// discards just this message when no branch point covers it.
 			const maxStep = messages.reduce(
 				(acc, m) => (m.stepNumber != null ? Math.max(acc, m.stepNumber) : acc),
-				0
+				0,
 			);
 			return maxStep + 1;
 		}
@@ -362,15 +540,33 @@
 
 	function handleCtxRollback() {
 		const step = getStepForCtxMenu();
-		if (step == null) { addNotification('无法确定此消息对应的步骤', 'error', 3000); closeCtxMenu(); return; }
-		branchDialog = { open: true, stepNumber: step, role: ctxMenu.role, content: ctxMenu.content, msgId: ctxMenu.msgId };
+		if (step == null) {
+			addNotification('无法确定此消息对应的步骤', 'error', 3000);
+			closeCtxMenu();
+			return;
+		}
+		branchDialog = {
+			open: true,
+			stepNumber: step,
+			role: ctxMenu.role,
+			content: ctxMenu.content,
+			msgId: ctxMenu.msgId,
+		};
 		closeCtxMenu();
 	}
 
 	async function handleCtxBranch() {
 		const step = getStepForCtxMenu();
-		if (step == null) { addNotification('无法确定此消息对应的步骤', 'error', 3000); closeCtxMenu(); return; }
-		if (!activeTaskId) { addNotification('没有活跃任务，无法创建分支', 'error', 3000); closeCtxMenu(); return; }
+		if (step == null) {
+			addNotification('无法确定此消息对应的步骤', 'error', 3000);
+			closeCtxMenu();
+			return;
+		}
+		if (!activeTaskId) {
+			addNotification('没有活跃任务，无法创建分支', 'error', 3000);
+			closeCtxMenu();
+			return;
+		}
 		const sourceTaskId = activeTaskId;
 		const targetStep = step;
 		closeCtxMenu();
@@ -389,14 +585,27 @@
 	async function handleCtxCopy() {
 		const text = ctxMenu.selectedContent || ctxMenu.content;
 		if (text) {
-			try { await navigator.clipboard.writeText(text); addNotification('已复制', 'info', 1500); }
-			catch { addNotification('复制失败', 'error', 2000); }
+			try {
+				await navigator.clipboard.writeText(text);
+				addNotification('已复制', 'info', 1500);
+			} catch {
+				addNotification('复制失败', 'error', 2000);
+			}
 		}
 		closeCtxMenu();
 	}
 
 	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0, stepNumber: null, content: '', role: '', msgId: '', selectedContent: '' };
+		ctxMenu = {
+			open: false,
+			x: 0,
+			y: 0,
+			stepNumber: null,
+			content: '',
+			role: '',
+			msgId: '',
+			selectedContent: '',
+		};
 	}
 
 	$effect(() => {
@@ -454,7 +663,12 @@
 			if (role === 'user') {
 				// User-message rollback: pause the task and put the message
 				// text back in the input box so the user can edit and re-send.
-				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: true, targetMessageId: msgId });
+				await invoke('rollback_task', {
+					taskId: activeTaskId,
+					targetStep: stepNumber,
+					pause: true,
+					targetMessageId: msgId,
+				});
 				// Remove the user message and everything after it, keeping
 				// messages before it. This avoids truncateTaskMessages, which
 				// would match the user message itself if it has an inferred
@@ -468,7 +682,12 @@
 				transcriptInput = content;
 				addNotification('已回退，请编辑后重新发送', 'info', 3000);
 			} else {
-				await invoke('rollback_task', { taskId: activeTaskId, targetStep: stepNumber, pause: false, targetMessageId: msgId });
+				await invoke('rollback_task', {
+					taskId: activeTaskId,
+					targetStep: stepNumber,
+					pause: false,
+					targetMessageId: msgId,
+				});
 				truncateTaskMessages(activeTaskId, stepNumber);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
@@ -497,7 +716,9 @@
 			// Nothing running that could hijack the draft: allow loadTasks
 			// auto-assign after the current call stack unwinds (e.g. a task
 			// created by a voice transcript).
-			setTimeout(() => { suppressAutoTask = false; }, 0);
+			setTimeout(() => {
+				suppressAutoTask = false;
+			}, 0);
 		} else {
 			// A task is still running in the background: stay on the fresh
 			// draft until a new task is actually created, otherwise a task
@@ -520,7 +741,7 @@
 			// keeps streaming its observation. Their ids differ, so plain
 			// id dedup would leave both visible.
 			updateTaskMessages(taskId, (existing) =>
-				mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true })
+				mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true }),
 			);
 			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
 			suppressAutoTask = false;
@@ -563,9 +784,7 @@
 		while (trailingIdx > 0 && currentMessages[trailingIdx - 1].role === 'assistant') {
 			trailingIdx--;
 		}
-		const partialIds = new Set(
-			currentMessages.slice(trailingIdx).map((m) => m.id),
-		);
+		const partialIds = new Set(currentMessages.slice(trailingIdx).map((m) => m.id));
 		try {
 			// First unblock the errored task: continue_task truncates the
 			// partial output and sets the task to Pending so the "继续" user
@@ -614,7 +833,15 @@
 	// Also read the current value once on mount via get(), otherwise values
 	// set before subscription (e.g. by history review) are never received.
 	let taskMessagesDict = $state({});
-	$effect(() => syncStoreImmediate(taskMessagesStore, (v) => { taskMessagesDict = v; }, get));
+	$effect(() =>
+		syncStoreImmediate(
+			taskMessagesStore,
+			(v) => {
+				taskMessagesDict = v;
+			},
+			get,
+		),
+	);
 
 	// Derive visible messages for the current view.
 	$effect(() => {
@@ -671,6 +898,33 @@
 		});
 	}
 
+	// Cold-mount scroll for conversations opened as a bulk snapshot (history
+	// review, app-start auto-restore): at that moment every bubble is
+	// content-visibility-skipped and reports only its contain-intrinsic-size
+	// estimate (~120px), so the first scrollToBottom lands above the real
+	// bottom. Force one full render pass — the real sizes are then remembered
+	// by `contain-intrinsic-size: auto` — scroll, and restore lazy rendering.
+	function scrollToBottomAfterOpen() {
+		if (dead || !messagesEl) return;
+		const list = messagesEl.querySelector('.message-list');
+		if (!list) return;
+		const bubbles = list.querySelectorAll('.bubble');
+		bubbles.forEach((b) => b.style.setProperty('content-visibility', 'visible'));
+		messagesEl.scrollTop = messagesEl.scrollHeight;
+		let frames = 2;
+		const finish = () => {
+			frames -= 1;
+			if (frames > 0) {
+				requestAnimationFrame(finish);
+				return;
+			}
+			if (dead || !messagesEl) return;
+			if (autoFollow) messagesEl.scrollTop = messagesEl.scrollHeight;
+			bubbles.forEach((b) => b.style.removeProperty('content-visibility'));
+		};
+		requestAnimationFrame(finish);
+	}
+
 	function onScroll() {
 		if (!messagesEl) return;
 		const threshold = 100;
@@ -708,9 +962,7 @@
 					const rIdx = m.findIndex((x) => x.id === reasoningId && x.streaming);
 					if (rIdx < 0) return m;
 					reasoningFinalized = true;
-					return m.map((x) =>
-						x.id === reasoningId ? { ...x, streaming: false } : x
-					);
+					return m.map((x) => (x.id === reasoningId ? { ...x, streaming: false } : x));
 				});
 				if (reasoningFinalized) pruneSeq(reasoningId);
 			}
@@ -724,9 +976,54 @@
 					msgType,
 					stepNumber: data.step_number,
 					time: new Date().toLocaleTimeString(),
-				})
+				}),
 			);
 		};
+	}
+
+	// Populate the toolbar model switcher from a per-session cache so page
+	// reloads (dev HMR reconnect, window re-show, single-instance re-entry)
+	// don't re-request the same model list. Concurrent mounts share the
+	// in-flight request, so the duplicate discover_models calls seen on
+	// reload disappear without losing the fresh-on-first-load behavior.
+	function ensureDefaultModelOptions(baseUrl) {
+		if (defaultModelsCache.baseUrl === baseUrl && defaultModelsCache.list) {
+			modelOptions = defaultModelsCache.list;
+			return;
+		}
+		if (defaultModelsCache.inflight) {
+			defaultModelsCache.inflight
+				.then((list) => {
+					if (!dead) modelOptions = list;
+				})
+				.catch(() => {
+					if (!dead) modelOptions = [];
+				});
+			return;
+		}
+		defaultModelsCache.baseUrl = baseUrl;
+		defaultModelsCache.inflight = invoke('discover_models', {
+			baseUrl,
+			apiKey: '',
+			role: 'default_model',
+		})
+			.then((list) => {
+				const next = list || [];
+				defaultModelsCache.list = next;
+				if (!dead) modelOptions = next;
+				return next;
+			})
+			.catch((e) => {
+				logger.warn('+page', 'discover_models error', e);
+				if (!dead) modelOptions = [];
+				throw e;
+			})
+			.finally(() => {
+				defaultModelsCache.inflight = null;
+			});
+		// Swallow the rethrown rejection for the shared in-flight promise;
+		// the branch above already surfaces the failure to the UI.
+		defaultModelsCache.inflight.catch(() => {});
 	}
 
 	onMount(async () => {
@@ -747,273 +1044,314 @@
 			setTimeout(() => reviewTargetStore.set(null), 0);
 		}
 
-		await loadTasks();
+		// Register listeners BEFORE any async data load so task/streaming
+		// events arriving while the page initializes are never missed.
+		const registrations = registerListeners(
+			{
+				'task:created': (event) => {
+					const tid = event.payload?.task_id;
+					if (tid) {
+						// Voice input appends the transcript to `_draft` before the
+						// backend task exists; once it is created, migrate those
+						// draft messages into the task and focus it. Without this,
+						// the agent's response (ask card / answer) lands in a task
+						// stream the chat view is not showing — visible only after
+						// re-entering the page (e.g. via history).
+						adoptDraftMessages(tid);
+						if (!suppressAutoTask) {
+							activeTaskId = tid;
+							activeTaskIdStore.set(tid);
+						}
+					}
+					if (browser) localStorage.removeItem('haven.no_auto_restore');
+					loadTasks();
+				},
+				'task:updated': (event) => {
+					const data = event.payload || {};
+					const isActive = data.task_id && activeTaskId && data.task_id === activeTaskId;
+					// A resume (pending) means the user's answer was received:
+					// stop showing the awaiting indicator on ask cards. Note the
+					// ask pause itself arrives as 'paused' right after the card is
+					// created, so that status must NOT clear the indicator.
+					if (isActive && data.status === 'pending') {
+						clearAskAwaiting(data.task_id);
+					}
+					loadTasks();
+				},
+				'task:completed': (event) => {
+					const data = event.payload || {};
+					if (data.task_id && activeTaskId && data.task_id === activeTaskId) {
+						clearAskAwaiting(data.task_id);
+					}
+					loadTasks();
+				},
+				'task:error': (event) => {
+					const { task_id } = event.payload;
+					if (task_id && task_id === activeTaskId) {
+						taskErrorId = task_id;
+						activeTaskError = true;
+						clearAskAwaiting(task_id);
+					}
+					loadTasks();
+				},
+				'task:title-updated': (event) => {
+					const { task_id, title } = event.payload;
+					const idx = tasks.findIndex((t) => t.id === task_id);
+					if (idx >= 0) tasks[idx] = { ...tasks[idx], title };
+				},
+				'hotkey:rebind': (event) => {
+					const data = event.payload || {};
+					if (data.new_binding) {
+						hotkeyBinding = data.new_binding;
+					}
+				},
+				'agent:thought': (event) => {
+					const data = event.payload;
+					const tid = data.task_id;
+					const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
+					const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+					pruneSeq(thoughtId);
+					pruneSeq(reasoningId);
+					updateModelState('ready');
+					updateTaskMessages(tid, (m) =>
+						applyThoughtSnap(m, {
+							stepId: thoughtId,
+							reasoningId,
+							thought: data.thought,
+							stepNumber: data.step_number,
+							time: new Date().toLocaleTimeString(),
+						}),
+					);
+				},
+				'agent:thought_chunk': chunkHandler('thought', undefined),
+				'agent:reasoning_chunk': chunkHandler('reasoning', 'reasoning'),
+				'agent:web_search': (event) => {
+					const data = event.payload || {};
+					const tid = data.task_id;
+					if (!tid || (activeTaskId && tid !== activeTaskId)) return;
+					const wsId = toolId(tid, data.step_number, data.run_id, 'web_search');
+					updateTaskMessages(tid, (m) => {
+						const existing = m.find((x) => x.id === wsId);
+						if (data.phase === 'completed') {
+							if (!existing) return m;
+							return m.map((x) =>
+								x.id === wsId
+									? { ...x, streaming: false, content: '已联网搜索' }
+									: x,
+							);
+						}
+						// in_progress / searching: keep the indicator alive.
+						const content = data.phase === 'searching' ? '正在搜索…' : '正在联网搜索…';
+						if (existing) {
+							return m.map((x) => (x.id === wsId ? { ...x, content } : x));
+						}
+						return [
+							...m,
+							newToolMessage({
+								id: wsId,
+								stepNumber: data.step_number,
+								toolName: 'web_search',
+								time: new Date().toLocaleTimeString(),
+								content,
+								streaming: true,
+							}),
+						];
+					});
+				},
+				'agent:supplement': (event) => {
+					// The agent injected a user message (mid-turn steering or a
+					// resumed-task supplement) into its context. Mark the matching
+					// user bubble as received so the user knows their input was
+					// picked up mid-turn rather than deferred.
+					const data = event.payload || {};
+					const tid = data.task_id;
+					const ctx = (data.additional_context || '').trim();
+					if (!tid || !ctx) return;
+					updateTaskMessages(tid, (m) => {
+						let marked = false;
+						const next = [...m];
+						for (let i = next.length - 1; i >= 0; i--) {
+							const x = next[i];
+							if (
+								x.role === 'user' &&
+								!x.received &&
+								(x.content || '').trim() === ctx
+							) {
+								next[i] = { ...x, received: true };
+								marked = true;
+								break;
+							}
+						}
+						return marked ? next : m;
+					});
+				},
+				'agent:action': (event) => {
+					const data = event.payload;
+					const tid = data.task_id;
+					updateModelState('tool');
+					const toolMsgId = toolId(
+						tid,
+						data.step_number,
+						data.run_id,
+						data.tool_call_id || data.tool_name,
+					);
+					const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+					const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
+					pruneSeq(reasoningId);
+					pruneSeq(thoughtId);
+					if (data.silent) {
+						// Silent tool: no card is shown, but the preceding text
+						// must still be finalized so it is inserted immediately.
+						updateTaskMessages(tid, (m) =>
+							finalizeStreamBlocks(m, reasoningId, thoughtId),
+						);
+						return;
+					}
+					updateTaskMessages(tid, (m) => {
+						// Finalize any streaming reasoning and thought blocks —
+						// a tool action means the text/reasoning phase is over.
+						// Clearing `segmented` drops straggler chunks that flush
+						// out of the batcher after this event.
+						const fixed = finalizeStreamBlocks(m, reasoningId, thoughtId);
+						const existing = fixed.find((x) => x.id === toolMsgId);
+						if (existing) return fixed;
+						return [
+							...fixed,
+							newToolMessage({
+								id: toolMsgId,
+								stepNumber: data.step_number,
+								toolName: data.tool_name,
+								time: new Date().toLocaleTimeString(),
+								streaming: true,
+							}),
+						];
+					});
+				},
+				'agent:observation': (event) => {
+					const data = event.payload;
+					if (data.silent) return;
+					const tid = data.task_id;
+					updateModelState('streaming');
+					const toolMsgId = toolId(
+						tid,
+						data.step_number,
+						data.run_id,
+						data.tool_call_id || data.tool_name,
+					);
+					updateTaskMessages(tid, (m) => {
+						const idx = m.findIndex((x) => x.id === toolMsgId);
+						const msg = newToolMessage({
+							id: toolMsgId,
+							stepNumber: data.step_number,
+							toolName: data.tool_name,
+							content: data.observation,
+							askOptions: data.ask_options || [],
+						});
+						if (idx >= 0) {
+							// Preserve the fields set by the action handler (e.g. the
+							// bubble's timestamp) — only overwrite the observation
+							// content and related fields.
+							const next = [...m];
+							next[idx] = { ...next[idx], ...msg, streaming: false };
+							return next;
+						}
+						return [...m, msg];
+					});
+				},
+				'confirm:requested': (event) => {
+					const data = event.payload;
+					if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
+					// If a confirmation is already pending, auto-reject the previous
+					// one so the backend doesn't wait forever for a resolve_confirmation
+					// that the user will never see.
+					if (confirmDialog.stepId) {
+						invoke('resolve_confirmation', {
+							stepId: confirmDialog.stepId,
+							confirmed: false,
+							trustSession: false,
+						}).catch(() => {});
+					}
+					confirmDialog = {
+						stepId: data.step_id,
+						toolName: data.tool_name,
+						taskId: data.task_id,
+						riskLevel: data.risk_level || 'medium',
+					};
+				},
+				// Token usage / cost stats — emitted after every LLM step.
+				'agent:usage': (event) => {
+					const d = event.payload || {};
+					if (!d.task_id) return;
+					updateTaskTokenStats(d.task_id, {
+						promptTokens: d.prompt_tokens || 0,
+						completionTokens: d.completion_tokens || 0,
+						totalTokens: d.total_tokens || 0,
+						cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
+						cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
+						cumulativeTotalTokens: d.cumulative_total_tokens || 0,
+						costUsd: d.cost_usd ?? null,
+						cumulativeCostUsd: d.cumulative_cost_usd ?? null,
+						contextWindow: d.context_window ?? null,
+						model: d.model ?? null,
+						// A real usage event supersedes any restored estimate.
+						estimated: false,
+					});
+				},
+				// Context compaction notice — summarize a portion of the history.
+				'agent:compaction': (event) => {
+					const d = event.payload || {};
+					const before = formatTokenCount(d.tokens_before || 0);
+					const after = formatTokenCount(d.tokens_after || 0);
+					addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
+				},
+			},
+			{ tag: '+page' },
+		);
+		eventRegistrations = registrations;
+		const readyP = registrations.ready;
 
 		// Load the current default model for the toolbar model switcher and
 		// populate the menu with models discovered from the default provider's
 		// `/models` endpoint, mirroring the settings page behavior. Empty
 		// api_key falls back to the stored key via the role name, and
-		// discovery is skipped when no base URL is set.
-		invoke('get_settings').then((s) => {
-			const dm = s?.llm?.default_model;
-			if (dm?.model_name) {
-				currentModelId = dm.model_name;
-				currentModelName = dm.model_name;
-			}
-			currentEffort = dm?.reasoning_effort || '';
-			if (s?.hotkey?.key_binding) {
-				hotkeyBinding = s.hotkey.key_binding;
-			}
-			if (dm?.base_url) {
-				invoke('discover_models', { baseUrl: dm.base_url, apiKey: '', role: 'default_model' })
-					.then((list) => {
-						modelOptions = list || [];
-					})
-					.catch((e) => {
-						logger.warn('+page', 'discover_models error', e);
-						modelOptions = [];
-					});
-			}
-		}).catch((e) => {
-			logger.warn('+page', 'get_settings error', e);
-		});
+		// discovery is skipped when no base URL is set. Fire-and-forget so it
+		// never delays the conversation render.
+		invoke('get_settings')
+			.then((s) => {
+				const dm = s?.llm?.default_model;
+				if (dm?.model_name) {
+					currentModelId = dm.model_name;
+					currentModelName = dm.model_name;
+				}
+				currentEffort = dm?.reasoning_effort || '';
+				currentWebSearch = dm?.web_search || 'off';
+				if (s?.hotkey?.key_binding) {
+					hotkeyBinding = s.hotkey.key_binding;
+				}
+				if (dm?.base_url) {
+					ensureDefaultModelOptions(dm.base_url);
+				}
+			})
+			.catch((e) => {
+				logger.warn('+page', 'get_settings error', e);
+			});
 
-		if (!reviewTarget && activeTaskId && !tasks.some(t => t.id === activeTaskId)) {
-			activeTaskId = null;
-			activeTaskIdStore.set(null);
+		// Load the task list and auto-restore the last conversation in
+		// parallel; the conversation renders as soon as its data arrives,
+		// without waiting for `reopen_task` (a second IPC round-trip that
+		// only makes the task resumable for follow-up messages).
+		const tasksP = loadTasks();
+		const restoreP = restoreLastConversation(reviewTarget);
+
+		await Promise.all([tasksP, restoreP, readyP]);
+
+		// Conversation just opened (history review or auto-restore): scroll to
+		// the real bottom, forcing the estimated content-visibility heights to
+		// render first (see scrollToBottomAfterOpen).
+		if (activeTaskId) {
+			await tick();
+			scrollToBottomAfterOpen();
 		}
-
-		// Auto-restore the last conversation from a previous run so reopening
-		// the app shows where you left off. Skipped when a review target is
-		// pending, a task is already active, or the user explicitly started a
-		// fresh conversation (新对话) and no new task has been created since.
-		if (!reviewTarget && !activeTaskId && browser && !localStorage.getItem('haven.no_auto_restore')) {
-			try {
-				const last = await invoke('get_last_conversation');
-				if (last?.task) {
-					const wasError = last.task.status === 'error';
-					// Reopen so follow-up messages continue this task instead
-					// of being dropped as a terminal-task supplement.
-					await invoke('reopen_task', { taskId: last.task.id });
-					updateTaskMessages(last.task.id, () => buildReviewMessages(last));
-					restoreTaskTokenStats(last.task.id, last.usage, last.usage_estimated);
-					activeTaskId = last.task.id;
-					activeTaskIdStore.set(activeTaskId);
-					if (wasError) {
-						taskErrorId = last.task.id;
-						activeTaskError = true;
-					}
-					await loadTasks();
-				}
-			} catch (e) {
-				logger.warn('+page', 'auto-restore conversation error', e);
-			}
-		}
-
-		const registrations = registerListeners({
-			'task:created': (event) => {
-				const tid = event.payload?.task_id;
-				if (tid) {
-					// Voice input appends the transcript to `_draft` before the
-					// backend task exists; once it is created, migrate those
-					// draft messages into the task and focus it. Without this,
-					// the agent's response (ask card / answer) lands in a task
-					// stream the chat view is not showing — visible only after
-					// re-entering the page (e.g. via history).
-					adoptDraftMessages(tid);
-					if (!suppressAutoTask) {
-						activeTaskId = tid;
-						activeTaskIdStore.set(tid);
-					}
-				}
-				if (browser) localStorage.removeItem('haven.no_auto_restore');
-				loadTasks();
-			},
-			'task:updated': (event) => {
-				const data = event.payload || {};
-				const isActive = data.task_id && activeTaskId && data.task_id === activeTaskId;
-				// A resume (pending) means the user's answer was received:
-				// stop showing the awaiting indicator on ask cards. Note the
-				// ask pause itself arrives as 'paused' right after the card is
-				// created, so that status must NOT clear the indicator.
-				if (isActive && data.status === 'pending') {
-					clearAskAwaiting(data.task_id);
-				}
-				loadTasks();
-			},
-			'task:completed': (event) => {
-				const data = event.payload || {};
-				if (data.task_id && activeTaskId && data.task_id === activeTaskId) {
-					clearAskAwaiting(data.task_id);
-				}
-				loadTasks();
-			},
-			'task:error': (event) => {
-				const { task_id } = event.payload;
-				if (task_id && task_id === activeTaskId) {
-					taskErrorId = task_id;
-					activeTaskError = true;
-					clearAskAwaiting(task_id);
-				}
-				loadTasks();
-			},
-			'task:title-updated': (event) => {
-				const { task_id, title } = event.payload;
-				const idx = tasks.findIndex(t => t.id === task_id);
-				if (idx >= 0) tasks[idx] = { ...tasks[idx], title };
-			},
-			'hotkey:rebind': (event) => {
-				const data = event.payload || {};
-				if (data.new_binding) {
-					hotkeyBinding = data.new_binding;
-				}
-			},
-			'agent:thought': (event) => {
-				const data = event.payload;
-				const tid = data.task_id;
-				const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
-				const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
-				pruneSeq(thoughtId);
-				pruneSeq(reasoningId);
-				updateModelState('ready');
-				updateTaskMessages(tid, (m) =>
-					applyThoughtSnap(m, {
-						stepId: thoughtId,
-						reasoningId,
-						thought: data.thought,
-						stepNumber: data.step_number,
-						time: new Date().toLocaleTimeString(),
-					})
-				);
-			},
-			'agent:thought_chunk': chunkHandler('thought', undefined),
-			'agent:reasoning_chunk': chunkHandler('reasoning', 'reasoning'),
-			'agent:supplement': (event) => {
-				// The agent injected a user message (mid-turn steering or a
-				// resumed-task supplement) into its context. Mark the matching
-				// user bubble as received so the user knows their input was
-				// picked up mid-turn rather than deferred.
-				const data = event.payload || {};
-				const tid = data.task_id;
-				const ctx = (data.additional_context || '').trim();
-				if (!tid || !ctx) return;
-				updateTaskMessages(tid, (m) => {
-					let marked = false;
-					const next = [...m];
-					for (let i = next.length - 1; i >= 0; i--) {
-						const x = next[i];
-						if (x.role === 'user' && !x.received && (x.content || '').trim() === ctx) {
-							next[i] = { ...x, received: true };
-							marked = true;
-							break;
-						}
-					}
-					return marked ? next : m;
-				});
-			},
-			'agent:action': (event) => {
-				const data = event.payload;
-				const tid = data.task_id;
-				updateModelState('tool');
-				const toolMsgId = toolId(tid, data.step_number, data.run_id, data.tool_call_id || data.tool_name);
-				const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
-				const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
-				pruneSeq(reasoningId);
-				pruneSeq(thoughtId);
-				if (data.silent) {
-					// Silent tool: no card is shown, but the preceding text
-					// must still be finalized so it is inserted immediately.
-					updateTaskMessages(tid, (m) => finalizeStreamBlocks(m, reasoningId, thoughtId));
-					return;
-				}
-				updateTaskMessages(tid, (m) => {
-					// Finalize any streaming reasoning and thought blocks —
-					// a tool action means the text/reasoning phase is over.
-					// Clearing `segmented` drops straggler chunks that flush
-					// out of the batcher after this event.
-					const fixed = finalizeStreamBlocks(m, reasoningId, thoughtId);
-					const existing = fixed.find((x) => x.id === toolMsgId);
-					if (existing) return fixed;
-					return [...fixed, newToolMessage({
-						id: toolMsgId,
-						stepNumber: data.step_number,
-						toolName: data.tool_name,
-						time: new Date().toLocaleTimeString(),
-						streaming: true,
-					})];
-				});
-			},
-			'agent:observation': (event) => {
-				const data = event.payload;
-				if (data.silent) return;
-				const tid = data.task_id;
-				updateModelState('streaming');
-				const toolMsgId = toolId(tid, data.step_number, data.run_id, data.tool_call_id || data.tool_name);
-				updateTaskMessages(tid, (m) => {
-					const idx = m.findIndex((x) => x.id === toolMsgId);
-					const msg = newToolMessage({
-						id: toolMsgId,
-						stepNumber: data.step_number,
-						toolName: data.tool_name,
-						content: data.observation,
-						askOptions: data.ask_options || [],
-					});
-					if (idx >= 0) {
-						// Preserve the fields set by the action handler (e.g. the
-						// bubble's timestamp) — only overwrite the observation
-						// content and related fields.
-						const next = [...m];
-						next[idx] = { ...next[idx], ...msg, streaming: false };
-						return next;
-					}
-					return [...m, msg];
-				});
-			},
-			'confirm:requested': (event) => {
-				const data = event.payload;
-				if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
-				// If a confirmation is already pending, auto-reject the previous
-				// one so the backend doesn't wait forever for a resolve_confirmation
-				// that the user will never see.
-				if (confirmDialog.stepId) {
-					invoke('resolve_confirmation', { stepId: confirmDialog.stepId, confirmed: false, trustSession: false }).catch(() => {});
-				}
-				confirmDialog = {
-					stepId: data.step_id,
-					toolName: data.tool_name,
-					taskId: data.task_id,
-					riskLevel: data.risk_level || 'medium',
-				};
-			},
-			// Token usage / cost stats — emitted after every LLM step.
-			'agent:usage': (event) => {
-				const d = event.payload || {};
-				if (!d.task_id) return;
-				updateTaskTokenStats(d.task_id, {
-					promptTokens: d.prompt_tokens || 0,
-					completionTokens: d.completion_tokens || 0,
-					totalTokens: d.total_tokens || 0,
-					cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
-					cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
-					cumulativeTotalTokens: d.cumulative_total_tokens || 0,
-					costUsd: d.cost_usd ?? null,
-					cumulativeCostUsd: d.cumulative_cost_usd ?? null,
-					contextWindow: d.context_window ?? null,
-					model: d.model ?? null,
-					// A real usage event supersedes any restored estimate.
-					estimated: false,
-				});
-			},
-			// Context compaction notice — summarize a portion of the history.
-			'agent:compaction': (event) => {
-				const d = event.payload || {};
-				const before = formatTokenCount(d.tokens_before || 0);
-				const after = formatTokenCount(d.tokens_after || 0);
-				addNotification(`上下文压缩：${before} → ${after} tokens`, 'info', 2500);
-			},
-		}, { tag: '+page' });
-		eventRegistrations = registrations;
-		await registrations.ready;
 
 		if (browser) {
 			window.addEventListener('click', handleWindowClick);
@@ -1030,9 +1368,14 @@
 		}
 	});
 
+	// Tracks the most recent loadTasks() invocation so the auto-restore can
+	// order its decision after the task list without duplicating the
+	// stale-pointer cleanup. Never rejects (errors are handled in loadTasks).
+	let loadTasksSettled = Promise.resolve();
+
 	async function loadTasks() {
 		const seq = ++loadTasksSeq;
-		try {
+		const run = (async () => {
 			const result = await invoke('get_tasks');
 			// Stale response guard: a newer loadTasks call superseded this one.
 			if (seq !== loadTasksSeq) return;
@@ -1050,16 +1393,67 @@
 				}
 				if (!activeTaskId && !suppressAutoTask) {
 					const firstActive = tasks.find(
-						(t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused'
+						(t) =>
+							t.status === 'running' ||
+							t.status === 'pending' ||
+							t.status === 'paused',
 					);
 					if (firstActive) {
 						activeTaskId = firstActive.id;
 					}
 				}
 			}
-		} catch (e) {
+		})().catch((e) => {
 			addNotification(`加载任务列表失败: ${e}`, 'error', 3000);
+		});
+		loadTasksSettled = run;
+		return run;
+	}
+
+	// Auto-restore the last conversation from a previous run so reopening
+	// the app shows where you left off. Skipped when a review target is
+	// pending, a task is already active, or the user explicitly started a
+	// fresh conversation (新对话) and no new task has been created since.
+	// Messages render as soon as `get_last_conversation` returns; the
+	// follow-up `reopen_task` (which only lets follow-up messages continue
+	// this task instead of being dropped as a terminal-task supplement) runs
+	// afterwards without blocking the UI.
+	async function restoreLastConversation(reviewTarget) {
+		if (reviewTarget || (browser && localStorage.getItem('haven.no_auto_restore'))) return;
+		// Wait for the task list first so the stale-activeTaskId check below
+		// sees the real list (matches the previous sequential ordering) and a
+		// running/paused task auto-assigned by loadTasks wins over the restore.
+		await loadTasksSettled;
+		if (activeTaskId && !tasks.some((t) => t.id === activeTaskId)) {
+			activeTaskId = null;
+			activeTaskIdStore.set(null);
 		}
+		if (activeTaskId) return;
+		let last;
+		try {
+			last = await invoke('get_last_conversation');
+		} catch (e) {
+			logger.warn('+page', 'auto-restore conversation error', e);
+			return;
+		}
+		// A task event or a later loadTasks auto-assigned one meanwhile —
+		// don't clobber the live task with the restored conversation.
+		if (!last?.task || activeTaskId) return;
+		const wasError = last.task.status === 'error' || last.task.status === 'failed';
+		updateTaskMessages(last.task.id, () => buildReviewMessages(last));
+		restoreTaskTokenStats(last.task.id, last.usage, last.usage_estimated);
+		activeTaskId = last.task.id;
+		activeTaskIdStore.set(activeTaskId);
+		if (wasError) {
+			taskErrorId = last.task.id;
+			activeTaskError = true;
+		}
+		try {
+			await invoke('reopen_task', { taskId: last.task.id });
+		} catch (e) {
+			logger.warn('+page', 'reopen_task error', e);
+		}
+		await loadTasks();
 	}
 
 	// Deliver a user message to the backend. Shared by the normal send
@@ -1069,16 +1463,23 @@
 	// for the user's reply. Clear that state whenever the task resumes (the
 	// user answered — by quick reply, typing, or voice) or its turn ends
 	// (completed/error), so the "等待你的回答" indicator doesn't linger on
-	// answered or abandoned questions.
+	// answered or abandoned questions. The `resolved` label is cleared too:
+	// once the task resumes, any locally-chosen quick-reply answer that was
+	// NOT part of the submitted message (e.g. the user typed their own reply
+	// instead) must not keep displaying as "已选择/已忽略" — the submitted
+	// user bubble is the record of what was actually sent.
 	function clearAskAwaiting(taskId) {
 		updateTaskMessages(taskId, (m) =>
-			m.map((x) => (x.type === 'ask' && x.awaiting ? { ...x, awaiting: false } : x))
+			m.map((x) => (x.type === 'ask' ? { ...x, awaiting: false, resolved: null } : x)),
 		);
+		// A resume/end also invalidates any locally-chosen quick-reply answers
+		// for the pending batch, so a later batch never inherits stale ones.
+		resolvedAskIds.delete(taskId);
 	}
 
-	async function submitMessage(text, images) {
+	async function submitMessage(text, images, files) {
 		try {
-			const result = await submitTranscript(text, { images });
+			const result = await submitTranscript(text, { images, files });
 			if (result && result.TaskCreated) {
 				activeTaskId = result.TaskCreated;
 				activeTaskIdStore.set(activeTaskId);
@@ -1090,37 +1491,94 @@
 		}
 	}
 
-	// The agent asked a question and offered quick-reply buttons. Sending an
-	// option is just delivering a normal user message (which resumes the
-	// paused task as the answer), so reuse submitMessage. Clear the awaiting
-	// state on the specific ask card answered so the "等待你的回答" indicator
-	// goes away without affecting any other pending question in the same task.
+	// Quick-reply answers / ignores chosen for the CURRENT batch of pending
+	// ask questions, per task. When the agent asks several questions in one
+	// batch (multiple `ask` calls in a single step), the task must stay
+	// paused until every question is resolved — answering only one would
+	// resume the task and silently discard the others. Once all are answered
+	// or ignored, a single composed reply is submitted. Typing a message in
+	// the input box bypasses this and resumes immediately.
+	let resolvedAskIds = new Map(); // taskId -> Set<msgId>
+
+	// Mark one pending ask card as resolved (answered via quick reply or
+	// ignored) and submit the composed answers once the batch is complete.
+	function resolveAsk(msgId, resolved) {
+		if (!activeTaskId || !msgId) return;
+		updateTaskMessages(activeTaskId, (m) =>
+			m.map((x) =>
+				x.id === msgId && x.type === 'ask' && x.awaiting
+					? { ...x, awaiting: false, resolved }
+					: x,
+			),
+		);
+		const ids = resolvedAskIds.get(activeTaskId) || new Set();
+		ids.add(msgId);
+		resolvedAskIds.set(activeTaskId, ids);
+		const remaining = (get(taskMessagesStore)[activeTaskId] || []).filter(
+			(x) => x.type === 'ask' && x.awaiting,
+		);
+		if (remaining.length === 0) {
+			const submitted = resolvedAskIds.get(activeTaskId);
+			resolvedAskIds.delete(activeTaskId);
+			submitAskAnswers(activeTaskId, submitted);
+		}
+	}
+
+	// Compose all answers chosen for the resolved batch into a single user
+	// message and deliver it, which resumes the paused task. A single
+	// question keeps the raw answer; multiple questions quote each one so the
+	// model can map answers back to its questions. Ignored questions are
+	// marked as 忽略.
+	function submitAskAnswers(taskId, resolvedIds) {
+		if (!resolvedIds || resolvedIds.size === 0) return;
+		const asks = (get(taskMessagesStore)[taskId] || []).filter(
+			(x) => x.type === 'ask' && x.resolved && resolvedIds.has(x.id),
+		);
+		if (asks.length === 0) return;
+		const single = asks.length === 1;
+		const text = asks
+			.map((x, i) => {
+				const answer = x.resolved.ignored ? '忽略' : x.resolved.answer;
+				return single ? answer : `关于「${x.content || `问题 ${i + 1}`}」：${answer}`;
+			})
+			.join('\n');
+		autoFollow = true;
+		submitMessage(text, []);
+	}
+
+	// The agent asked a question and offered quick-reply buttons. The answer
+	// marks that question as resolved; the task resumes only when every
+	// pending question in the batch is answered or ignored (see resolveAsk).
 	function handleQuickReply(msgId, answer) {
 		if (!activeTaskId || !answer) return;
-		if (msgId) {
-			updateTaskMessages(activeTaskId, (m) =>
-				m.map((x) => (x.id === msgId && x.awaiting ? { ...x, awaiting: false } : x))
-			);
-		}
-		autoFollow = true;
-		submitMessage(answer, []);
+		resolveAsk(msgId, { answer });
+	}
+
+	// The user chooses not to answer a pending question; counting as a
+	// resolution so the batch can resume once all questions are handled.
+	function handleIgnoreAsk(msgId) {
+		if (!activeTaskId) return;
+		resolveAsk(msgId, { ignored: true });
 	}
 
 	function handleSubmit() {
 		const text = transcriptInput.trim();
 		const images = pendingImages;
-		if (!text && images.length === 0) return;
+		const files = pendingFiles;
+		if (!text && images.length === 0 && files.length === 0) return;
 		transcriptInput = '';
 		pendingImages = [];
+		pendingFiles = [];
 		autoFollow = true;
 
-		submitMessage(text, images);
+		submitMessage(text, images, files);
 	}
 
 	function handleKeydown(e) {
 		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();
-			handleSubmit();		}
+			handleSubmit();
+		}
 	}
 
 	// Auto-grow the input to fit its content. While the content is a single
@@ -1186,7 +1644,10 @@
 		isUserMessage={branchDialog.role === 'user'}
 		loading={branchLoading}
 		onConfirm={confirmBranchAction}
-		onClose={() => { if (!branchLoading) branchDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' }; }}
+		onClose={() => {
+			if (!branchLoading)
+				branchDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
+		}}
 	/>
 
 	<!-- Right-click context menu -->
@@ -1194,15 +1655,45 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="ctx-menu" style="left: {ctxMenu.x}px; top: {ctxMenu.y}px;">
 			<button class="ctx-item" onclick={handleCtxRollback}>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					><polyline points="1 4 1 10 7 10" /><path
+						d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"
+					/></svg
+				>
 				回退到此消息
 			</button>
 			<button class="ctx-item" onclick={handleCtxBranch}>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M6 9v6" /><path d="M18 9h-6a4 4 0 0 0-4 4v4" /><circle cx="18" cy="6" r="3" /></svg>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path
+						d="M6 9v6"
+					/><path d="M18 9h-6a4 4 0 0 0-4 4v4" /><circle cx="18" cy="6" r="3" /></svg
+				>
 				创建分支
 			</button>
 			<button class="ctx-item" onclick={handleCtxCopy}>
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+				<svg
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					><rect x="9" y="9" width="13" height="13" rx="2" /><path
+						d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+					/></svg
+				>
 				复制
 			</button>
 		</div>
@@ -1234,29 +1725,92 @@
 							options={msg.options ?? []}
 							awaiting={msg.awaiting ?? false}
 							received={msg.received ?? false}
+							resolved={msg.resolved ?? null}
 							onContextMenu={handleContextMenu}
 							onQuickReply={handleQuickReply}
+							onIgnore={handleIgnoreAsk}
 						/>
 					{/each}
 				</div>
 			{/if}
 			{#if activeTaskError}
 				<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
-					<button class="md-btn md-btn--filled continue-btn" onclick={handleContinue} type="button">
-						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+					<button
+						class="md-btn md-btn--filled continue-btn"
+						onclick={handleContinue}
+						type="button"
+					>
+						<svg
+							width="16"
+							height="16"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"><polygon points="5 3 19 12 5 21 5 3" /></svg
+						>
 						继续生成
 					</button>
 				</div>
 			{/if}
 		</div>
 		{#if !autoFollow && messages.length > 0}
-			<button class="jump-bottom" onclick={jumpToBottom} aria-label="返回底部" title="返回底部" type="button">
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg>
+			<button
+				class="jump-bottom"
+				onclick={jumpToBottom}
+				aria-label="返回底部"
+				title="返回底部"
+				type="button"
+			>
+				<svg
+					width="18"
+					height="18"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					><path d="M12 5v14" /><polyline points="19 12 12 19 5 12" /></svg
+				>
 			</button>
 		{/if}
 	</div>
 
 	<div class="input-area">
+		{#if pendingFiles.length > 0}
+			<div class="file-preview-row">
+				{#each pendingFiles as file, i (file.filename + i)}
+					<div class="file-preview">
+						<svg
+							class="file-preview-icon"
+							width="18"
+							height="18"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							aria-hidden="true"
+						>
+							<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+							<polyline points="14 2 14 8 20 8" />
+						</svg>
+						<div class="file-preview-info">
+							<span class="file-preview-name">{file.filename}</span>
+							<span class="file-preview-size">{formatFileSize(file.size)}</span>
+						</div>
+						<button
+							class="file-preview-remove"
+							onclick={() => removePendingFile(i)}
+							aria-label="移除文件"
+							title="移除文件"
+							type="button">&times;</button
+						>
+					</div>
+				{/each}
+			</div>
+		{/if}
 		{#if pendingImages.length > 0}
 			<div class="image-preview-row">
 				{#each pendingImages as img, i (img.data + i)}
@@ -1266,8 +1820,8 @@
 							class="image-preview-remove"
 							onclick={() => removePendingImage(i)}
 							aria-label="移除图片"
-							type="button"
-						>&times;</button>
+							type="button">&times;</button
+						>
 					</div>
 				{/each}
 			</div>
@@ -1276,7 +1830,9 @@
 			<textarea
 				bind:this={transcriptTextarea}
 				rows="1"
-				placeholder={activeTaskId ? '追加指令，Enter 发送，Shift+Enter 换行' : `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`}
+				placeholder={activeTaskId
+					? '追加指令，Enter 发送，Shift+Enter 换行'
+					: `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`}
 				bind:value={transcriptInput}
 				onkeydown={handleKeydown}
 				onpaste={handlePaste}
@@ -1289,35 +1845,89 @@
 				<div class="task-switch">
 					<button
 						class="md-btn md-btn--outlined task-switch-btn"
-						onclick={() => { if (showTaskMenu) { taskMenuOpen = !taskMenuOpen; } else { newTask(); } }}
+						onclick={() => {
+							if (showTaskMenu) {
+								taskMenuOpen = !taskMenuOpen;
+							} else {
+								newTask();
+							}
+						}}
 						title={showTaskMenu ? '切换并行任务或开始新任务' : '开始一个新任务'}
 						type="button"
 					>
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><line x1="12" y1="5" x2="12" y2="19" /><line
+								x1="5"
+								y1="12"
+								x2="19"
+								y2="12"
+							/></svg
+						>
 						{#if showTaskMenu}
-							<svg class="task-switch-caret" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+							<svg
+								class="task-switch-caret"
+								width="16"
+								height="16"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
+							>
 						{/if}
 					</button>
 					{#if taskMenuOpen}
 						<div class="task-menu">
 							<div class="task-menu-title">正在执行的任务</div>
 							{#each parallelTasks as t}
-
 								<button
 									class="task-menu-item"
 									class:selected={t.id === activeTaskId}
 									onclick={() => switchToTask(t.id)}
 									type="button"
 								>
-									<span class="task-menu-item-title">{t.title || t.id.slice(0, 8)}</span>
-									<span class="task-menu-item-status" class:running={t.status === 'running'}>
+									<span class="task-menu-item-title"
+										>{t.title || t.id.slice(0, 8)}</span
+									>
+									<span
+										class="task-menu-item-status"
+										class:running={t.status === 'running'}
+									>
 										{t.status === 'running' ? '运行中' : '等待中'}
 									</span>
 								</button>
 							{/each}
 							<div class="task-menu-divider"></div>
-							<button class="task-menu-item task-menu-new" onclick={() => newTask()} type="button">
-								<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+							<button
+								class="task-menu-item task-menu-new"
+								onclick={() => newTask()}
+								type="button"
+							>
+								<svg
+									width="16"
+									height="16"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									><line x1="12" y1="5" x2="12" y2="19" /><line
+										x1="5"
+										y1="12"
+										x2="19"
+										y2="12"
+									/></svg
+								>
 								新建任务
 							</button>
 						</div>
@@ -1331,18 +1941,49 @@
 						title="结束当前任务"
 						type="button"
 					>
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+						<svg
+							width="18"
+							height="18"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="6" y="6" width="12" height="12" rx="2" /></svg
+						>
 					</button>
 				{/if}
-				<div class="token-stats" class:active={!!tokenStats} title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}>
+				<div
+					class="token-stats"
+					class:active={!!tokenStats}
+					title={tokenStats ? buildTokenTooltip(tokenStats) : tokenStatsHint}
+				>
 					{#if tokenStats}
-						<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<svg
+							class="token-icon"
+							width="16"
+							height="16"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							aria-hidden="true"
+						>
 							<path d="M4 6h16M4 12h10M4 18h16" />
 						</svg>
 						<div class="token-text">
-							<span class="token-cumulative">{tokenStats.estimated ? '约 ' : ''}{formatTokenCount(tokenStats.cumulativeTotalTokens)}</span>
+							<span class="token-cumulative"
+								>{tokenStats.estimated ? '约 ' : ''}{formatTokenCount(
+									tokenStats.cumulativeTotalTokens,
+								)}</span
+							>
 							{#if !tokenStats.estimated && tokenStats.cumulativeCostUsd != null}
-								<span class="token-cost">· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span>
+								<span class="token-cost"
+									>· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span
+								>
 							{/if}
 						</div>
 						{#if contextBudget}
@@ -1352,11 +1993,25 @@
 								class:danger={contextBudget.ratio >= 0.9}
 								aria-label={`上下文使用 ${(contextBudget.ratio * 100).toFixed(0)}%`}
 							>
-								<div class="token-budget-fill" style="width: {(contextBudget.ratio * 100).toFixed(1)}%"></div>
+								<div
+									class="token-budget-fill"
+									style="width: {(contextBudget.ratio * 100).toFixed(1)}%"
+								></div>
 							</div>
 						{/if}
 					{:else}
-						<svg class="token-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<svg
+							class="token-icon"
+							width="16"
+							height="16"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							aria-hidden="true"
+						>
 							<path d="M4 6h16M4 12h10M4 18h16" />
 						</svg>
 						<span class="token-text token-idle">—</span>
@@ -1365,25 +2020,33 @@
 			</div>
 			<div class="toolbar-right">
 				<button
-					class="md-icon-button image-btn"
-					onclick={() => imageFileInput?.click()}
-					aria-label="添加图片"
-					title="添加图片（支持粘贴截图）"
+					class="md-icon-button file-btn"
+					onclick={() => attachFileInput?.click()}
+					aria-label="添加附件"
+					title="添加图片或文件"
 					type="button"
 				>
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-						<circle cx="8.5" cy="8.5" r="1.5" />
-						<polyline points="21 15 16 10 5 21" />
+					<svg
+						width="20"
+						height="20"
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					>
+						<path
+							d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+						/>
 					</svg>
 				</button>
 				<input
 					hidden
 					type="file"
-					accept="image/*"
 					multiple
-					bind:this={imageFileInput}
-					onchange={handleFileSelect}
+					bind:this={attachFileInput}
+					onchange={handleAttachSelect}
 				/>
 				<button
 					class="md-icon-button record-btn"
@@ -1394,9 +2057,31 @@
 					type="button"
 				>
 					{#if recordingState.isRecording}
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="6" y="6" width="12" height="12" rx="2" /></svg
+						>
 					{:else}
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path d="M19 10v1a7 7 0 0 1-14 0v-1" /><line x1="12" y1="19" x2="12" y2="22" /></svg>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" /><path
+								d="M19 10v1a7 7 0 0 1-14 0v-1"
+							/><line x1="12" y1="19" x2="12" y2="22" /></svg
+						>
 					{/if}
 				</button>
 				<div class="model-switch">
@@ -1407,7 +2092,22 @@
 						aria-label="切换默认模型"
 						type="button"
 					>
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2" /><rect x="9.5" y="9.5" width="5" height="5" /></svg>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="5" y="5" width="14" height="14" rx="2" /><rect
+								x="9.5"
+								y="9.5"
+								width="5"
+								height="5"
+							/></svg
+						>
 					</button>
 					{#if modelMenuOpen}
 						<div class="model-menu">
@@ -1431,8 +2131,20 @@
 										class="effort-item"
 										class:selected={currentEffort === opt.value}
 										onclick={() => handleEffortSelect(opt.value)}
-										type="button"
-									>{opt.label}</button>
+										type="button">{opt.label}</button
+									>
+								{/each}
+							</div>
+							<div class="model-menu-divider"></div>
+							<div class="model-menu-title">联网搜索</div>
+							<div class="effort-row">
+								{#each webSearchOptions as opt}
+									<button
+										class="effort-item"
+										class:selected={currentWebSearch === opt.value}
+										onclick={() => handleWebSearchSelect(opt.value)}
+										type="button">{opt.label}</button
+									>
 								{/each}
 							</div>
 						</div>
@@ -1448,14 +2160,42 @@
 					type="button"
 				>
 					{#if hasInput}
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
 							<line x1="12" y1="19" x2="12" y2="5" />
 							<polyline points="5 12 12 5 19 12" />
 						</svg>
 					{:else if stopMode}
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							><rect x="6" y="6" width="12" height="12" rx="2" /></svg
+						>
 					{:else}
-						<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
 							<line x1="12" y1="19" x2="12" y2="5" />
 							<polyline points="5 12 12 5 19 12" />
 						</svg>
@@ -1507,7 +2247,8 @@
 		color: var(--md-sys-color-on-primary-container);
 		cursor: pointer;
 		box-shadow: var(--md-sys-elevation-2);
-		transition: background var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: background var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
 		z-index: 5;
 	}
 	.jump-bottom:hover {
@@ -1588,7 +2329,64 @@
 		align-items: center;
 		justify-content: center;
 	}
-	.image-btn {
+
+	.file-preview-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm);
+	}
+	.file-preview {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		max-width: 260px;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		background: var(--md-sys-color-surface-container-high);
+	}
+	.file-preview-icon {
+		flex-shrink: 0;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.file-preview-info {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.file-preview-name {
+		font-size: 12px;
+		color: var(--md-sys-color-on-surface);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 170px;
+	}
+	.file-preview-size {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.file-preview-remove {
+		width: 20px;
+		height: 20px;
+		margin-left: auto;
+		border-radius: 50%;
+		border: none;
+		flex-shrink: 0;
+		background: var(--md-sys-color-surface-container-highest);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 13px;
+		line-height: 1;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.file-preview-remove:hover {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
+	}
+	.file-btn {
 		flex-shrink: 0;
 	}
 
@@ -1725,7 +2523,8 @@
 		font-family: inherit;
 		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
-		transition: background var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: background var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 	}
 	.task-menu-item:hover {
 		background: var(--md-sys-color-surface-container-highest);
@@ -1772,7 +2571,8 @@
 		font-size: 12px;
 		line-height: 1;
 		flex-shrink: 0;
-		transition: border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+		transition: border-color var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard);
 	}
 	.token-stats.active {
 		border-color: var(--md-sys-color-primary);
@@ -1811,7 +2611,8 @@
 		position: absolute;
 		inset: 0 auto 0 0;
 		background: var(--md-sys-color-primary);
-		transition: width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard),
+		transition:
+			width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard),
 			background var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
 	}
 	.token-budget.warn .token-budget-fill {
@@ -1860,7 +2661,8 @@
 		font-family: inherit;
 		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
-		transition: background var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: background var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 	}
 	.model-item:hover {
 		background: var(--md-sys-color-surface-container-highest);
@@ -1894,8 +2696,8 @@
 		font-weight: 600;
 		font-family: inherit;
 		cursor: pointer;
-		transition: background-color var(--md-sys-motion-duration-fast)
-				var(--md-sys-motion-easing-standard),
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
 			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
@@ -1922,7 +2724,8 @@
 		--_ib-state: var(--md-sys-color-on-error);
 	}
 	.ctx-menu {
-		position: fixed; z-index: 1000;
+		position: fixed;
+		z-index: 1000;
 		background: var(--md-sys-color-surface-container-high);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
@@ -1931,12 +2734,20 @@
 		min-width: 160px;
 	}
 	.ctx-item {
-		display: flex; align-items: center; gap: var(--md-sys-space-sm);
-		width: 100%; padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border: none; background: transparent; color: var(--md-sys-color-on-surface);
-		font-size: 13px; font-family: inherit; cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		width: 100%;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: none;
+		background: transparent;
+		color: var(--md-sys-color-on-surface);
+		font-size: 13px;
+		font-family: inherit;
+		cursor: pointer;
 		border-radius: var(--md-sys-shape-small);
-		transition: background var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: background var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 	}
 	.ctx-item:hover {
 		background: var(--md-sys-color-surface-container-highest);

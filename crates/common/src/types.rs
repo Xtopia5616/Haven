@@ -128,6 +128,12 @@ pub struct CanonicalMessage {
     /// back to APIs that require it in multi-turn requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Raw `web_search_call` output items produced by the provider's built-in
+    /// web search tool. Carried on assistant messages so they are passed back
+    /// verbatim in the next request's input (the server restores the search
+    /// context from them). Never parsed or rewritten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_search_calls: Vec<serde_json::Value>,
 }
 
 impl CanonicalMessage {
@@ -139,6 +145,7 @@ impl CanonicalMessage {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -150,6 +157,7 @@ impl CanonicalMessage {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -161,6 +169,7 @@ impl CanonicalMessage {
         content: Vec<ContentPart>,
         tool_calls: Option<Vec<CanonicalToolCall>>,
         reasoning: Option<String>,
+        web_search_calls: Vec<serde_json::Value>,
     ) -> Self {
         Self {
             role: CanonicalRole::Assistant,
@@ -169,6 +178,7 @@ impl CanonicalMessage {
             tool_call_id: None,
             parent_message_id: None,
             reasoning,
+            web_search_calls,
         }
     }
 
@@ -180,6 +190,7 @@ impl CanonicalMessage {
             tool_call_id,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 }
@@ -281,6 +292,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
 
         assert_eq!(msg.role, CanonicalRole::System);
@@ -298,6 +310,7 @@ mod tests {
             tool_call_id: Some("call_abc".into()),
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -315,6 +328,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
 
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -329,6 +343,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
 
         assert_eq!(msg.role, CanonicalRole::Tool);
@@ -372,6 +387,7 @@ mod tests {
                 arguments: serde_json::json!({"cmd": "ls"}),
             }]),
             Some("chain of thought".into()),
+            Vec::new(),
         );
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
         assert_eq!(msg.reasoning.as_deref(), Some("chain of thought"));
@@ -452,6 +468,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -473,6 +490,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();

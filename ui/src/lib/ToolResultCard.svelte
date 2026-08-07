@@ -24,6 +24,7 @@
 		self: '自身状态',
 		load_mcp: '加载 MCP',
 		load_skill: '加载技能',
+		web_search: '联网搜索',
 	};
 
 	/** @param {unknown} v */
@@ -181,6 +182,8 @@
 		awaiting = false,
 		messageId = '',
 		onQuickReply = null,
+		onIgnore = null,
+		resolved = null,
 		streaming = false,
 	} = $props();
 	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, content) : null);
@@ -310,7 +313,7 @@
 		{#if content}
 			<p class="ask-question">{content}</p>
 		{/if}
-		{#if options && options.length > 0 && awaiting}
+		{#if awaiting && options && options.length > 0}
 			<div class="ask-options">
 				{#each options as opt (opt)}
 					<button
@@ -322,9 +325,23 @@
 			</div>
 		{/if}
 		{#if awaiting}
-			<div class="ask-waiting">
-				<span class="ask-waiting-dot"></span>
-				等待你的回答...
+			<div class="ask-actions">
+				<button class="ask-ignore" onclick={() => onIgnore?.(messageId)} type="button"
+					>忽略</button
+				>
+				<span class="ask-waiting">
+					<span class="ask-waiting-dot"></span>
+					等待你的回答...
+				</span>
+			</div>
+		{/if}
+		{#if resolved}
+			<div class="ask-resolved">
+				{#if resolved.ignored}
+					已忽略
+				{:else}
+					已选择：{resolved.answer}
+				{/if}
 			</div>
 		{/if}
 	</div>
@@ -1038,6 +1055,29 @@
 	}
 	.ask-option:hover {
 		filter: brightness(0.95);
+	}
+	.ask-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.ask-ignore {
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		border: 1px solid var(--md-sys-color-outline);
+		border-radius: var(--md-sys-shape-full);
+		padding: var(--md-sys-space-2xs) var(--md-sys-space-sm);
+		font-size: 12px;
+		cursor: pointer;
+		transition: filter 0.15s ease;
+	}
+	.ask-ignore:hover {
+		filter: brightness(0.9);
+	}
+	.ask-resolved {
+		font-size: 12px;
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.ask-waiting {
 		display: flex;

@@ -969,7 +969,8 @@ fn mask_api_keys(value: &mut Value) {
 
 /// Resolve a dotted path inside a JSON tree, descending through object keys
 /// and numeric array indices (e.g. `mcp_servers.0.name`).
-fn value_at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {    let mut cur = root;
+fn value_at<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cur = root;
     for seg in path.split('.') {
         match (cur, seg.parse::<usize>()) {
             (Value::Array(arr), Ok(idx)) => cur = arr.get(idx)?,

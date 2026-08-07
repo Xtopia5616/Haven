@@ -67,6 +67,29 @@ describe('ChatBubble', () => {
 		expect(container.querySelectorAll('.attachment-img').length).toBe(2);
 	});
 
+	it('renders file attachments as name chips, not images', () => {
+		const { container } = render(
+			ChatBubble,
+			base({
+				role: 'user',
+				content: '看看这个',
+				attachments: [
+					{
+						media_type: 'application/pdf',
+						data: '',
+						filename: '报告.pdf',
+						path: 'C:\\Temp\\haven\\uploads\\x\\报告.pdf',
+					},
+				],
+			}),
+		);
+		expect(container.querySelectorAll('.attachment-img').length).toBe(0);
+		const chip = container.querySelector('.attachment-file');
+		expect(chip).toBeTruthy();
+		expect(chip.textContent).toContain('报告.pdf');
+		expect(screen.getByText('看看这个')).toBeTruthy();
+	});
+
 	it('renders an assistant bubble with the Haven label', () => {
 		render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
 		expect(screen.getByText('Haven')).toBeTruthy();
@@ -353,6 +376,40 @@ describe('ChatBubble', () => {
 		);
 		await fireEvent.click(screen.getByText('立即执行'));
 		expect(onQuickReply).toHaveBeenCalledWith('ask-42', '立即执行');
+	});
+
+	it('triggers onIgnore with the message id', async () => {
+		const onIgnore = vi.fn();
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '选择？',
+				type: 'ask',
+				messageId: 'ask-7',
+				awaiting: true,
+				options: ['方案 A'],
+				onIgnore,
+			}),
+		);
+		await fireEvent.click(screen.getByText('忽略'));
+		expect(onIgnore).toHaveBeenCalledWith('ask-7');
+	});
+
+	it('renders the resolved label once a question is answered', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '选哪个？',
+				type: 'ask',
+				awaiting: false,
+				options: ['方案 A'],
+				resolved: { answer: '方案 A' },
+			}),
+		);
+		expect(screen.getByText('已选择：方案 A')).toBeTruthy();
+		expect(screen.queryByText('等待你的回答...')).toBeNull();
 	});
 
 	it('calls onContextMenu with bubble metadata', async () => {

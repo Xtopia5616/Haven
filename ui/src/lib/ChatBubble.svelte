@@ -20,8 +20,10 @@
 		options = [],
 		awaiting = false,
 		received = false,
+		resolved = null,
 		onContextMenu = null,
 		onQuickReply = null,
+		onIgnore = null,
 	} = $props();
 
 	// Local open state for the collapsible reasoning <details> block. The block
@@ -121,15 +123,68 @@
 			.catch(() => {});
 	}
 
-	// `use:mdContentClick` attaches the delegation listener to the rendered
-	// markdown container. Wrapping it in an action (instead of `onclick` on the
-	// div) keeps the div non-interactive for a11y: only the real copy buttons
-	// inside are clickable.
-	function mdContentClick(node) {
+	// `use:mdContent` attaches the delegation listeners to the rendered
+	// markdown container. Wrapping them in an action (instead of `onclick` /
+	// `onwheel` on the div) keeps the div non-interactive for a11y: only the
+	// real copy buttons inside are clickable.
+	//
+	// Wide tables and code blocks get three affordances:
+	//   1. Edge fade hints (--sh-l / --sh-r) that appear while the block is
+	//      scrollable, refreshed on scroll, resize and content mutation.
+	//   2. Mouse wheel over a horizontally-scrollable block is translated to
+	//      horizontal scrolling (when the block itself cannot scroll
+	//      vertically), so mouse users don't need shift+wheel.
+	//   3. A thin visible scrollbar, because scrollbars are hidden globally.
+	function refreshScrollHint(el) {
+		const atLeft = el.scrollLeft <= 0;
+		const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+		el.style.setProperty('--sh-l', atLeft ? 0 : 1);
+		el.style.setProperty('--sh-r', atRight ? 0 : 1);
+	}
+
+	function handleMdScrollCapture(e) {
+		const el = e.target;
+		if (el instanceof HTMLElement && (el.tagName === 'PRE' || el.tagName === 'TABLE')) {
+			refreshScrollHint(el);
+		}
+	}
+
+	function handleMdWheel(e) {
+		const el = e.target.closest?.('pre, table');
+		if (!el) return;
+		if (el.scrollWidth <= el.clientWidth + 1) return;
+		if (el.scrollHeight > el.clientHeight + 1) return;
+		if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+		e.preventDefault();
+		el.scrollLeft += e.deltaY;
+	}
+
+	function mdContent(node) {
+		let hintRaf = 0;
+		function scheduleRefresh() {
+			if (hintRaf) return;
+			hintRaf = requestAnimationFrame(() => {
+				hintRaf = 0;
+				if (!mounted) return;
+				node.querySelectorAll('pre, table').forEach(refreshScrollHint);
+			});
+		}
 		node.addEventListener('click', handleMdContentClick);
+		node.addEventListener('wheel', handleMdWheel, { passive: false });
+		node.addEventListener('scroll', handleMdScrollCapture, true);
+		const mo = new MutationObserver(scheduleRefresh);
+		mo.observe(node, { childList: true, subtree: true });
+		const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleRefresh) : null;
+		ro?.observe(node);
+		scheduleRefresh();
 		return {
 			destroy() {
 				node.removeEventListener('click', handleMdContentClick);
+				node.removeEventListener('wheel', handleMdWheel);
+				node.removeEventListener('scroll', handleMdScrollCapture, true);
+				mo.disconnect();
+				ro?.disconnect();
+				if (hintRaf) cancelAnimationFrame(hintRaf);
 			},
 		};
 	}
@@ -223,12 +278,21 @@
 				<ToolResultCard {toolName} {content} {streaming} />
 			{/if}
 		{:else if msgType === 'ask'}
-			<ToolResultCard type="ask" {content} {options} {awaiting} {messageId} {onQuickReply} />
+			<ToolResultCard
+				type="ask"
+				{content}
+				{options}
+				{awaiting}
+				{messageId}
+				{resolved}
+				{onQuickReply}
+				{onIgnore}
+			/>
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if role === 'assistant'}
 			{#if mdHtml}
-				<div class="md-content" class:streaming use:mdContentClick>
+				<div class="md-content" class:streaming use:mdContent>
 					{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}
 				</div>
 			{:else}
@@ -240,12 +304,22 @@
 			{#if attachments && attachments.length > 0}
 				<div class="attachments">
 					{#each attachments as att}
-						<img
-							class="attachment-img"
-							src={imageDataUrl(att)}
-							alt="用户发送的图片"
-							loading="lazy"
-						/>
+						{#if (att.media_type || '').startsWith('image/') && att.data}
+							<img
+								class="attachment-img"
+								src={imageDataUrl(att)}
+								alt="用户发送的图片"
+								loading="lazy"
+							/>
+						{:else}
+							<div class="attachment-file" title={att.path || att.filename || '附件'}>
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+									<polyline points="14 2 14 8 20 8" />
+								</svg>
+								<span class="attachment-file-name">{att.filename || att.path || '附件'}</span>
+							</div>
+						{/if}
 					{/each}
 				</div>
 			{/if}
@@ -377,6 +451,23 @@
 	.attachment-img:hover {
 		opacity: 0.9;
 	}
+	.attachment-file {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		max-width: 220px;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-small);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
+		background: color-mix(in srgb, var(--md-sys-color-on-primary) 8%, transparent);
+		font-size: 12px;
+		color: var(--md-sys-color-on-surface);
+	}
+	.attachment-file-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	.md-content :global(p) {
 		margin: 0 0 0.75em;
 	}
@@ -384,12 +475,15 @@
 		margin-bottom: 0;
 	}
 	.md-content :global(pre) {
+		position: relative;
 		background: var(--md-sys-color-surface-container-high);
 		padding: var(--md-sys-space-md);
 		border-radius: var(--md-sys-shape-small);
 		font-size: 12px;
 		overflow-x: auto;
 		margin: 0 0 0.75em;
+		scrollbar-width: thin;
+		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 	}
 	.md-content :global(code) {
 		font-family: var(--md-sys-typescale-mono);
@@ -543,12 +637,15 @@
 		margin: 0.75em 0;
 	}
 	.md-content :global(table) {
+		position: relative;
 		border-collapse: collapse;
 		display: block;
 		overflow-x: auto;
 		width: 100%;
 		margin: 0 0 0.75em;
 		font-size: 12px;
+		scrollbar-width: thin;
+		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 	}
 	.md-content :global(th),
 	.md-content :global(td) {
@@ -559,6 +656,71 @@
 	.md-content :global(th) {
 		background: var(--md-sys-color-surface-container-high);
 		font-weight: 600;
+	}
+	/* Wide content affordances (scrollbars are hidden globally, so pre/table
+	 * re-enable a slim one and get edge fade hints driven by JS: --sh-l and
+	 * --sh-r are 1 while content is clipped on that side). */
+	.md-content :global(pre)::-webkit-scrollbar,
+	.md-content :global(table)::-webkit-scrollbar {
+		display: block;
+		height: 4px;
+	}
+	.md-content :global(pre)::-webkit-scrollbar-track,
+	.md-content :global(table)::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	.md-content :global(pre)::-webkit-scrollbar-thumb,
+	.md-content :global(table)::-webkit-scrollbar-thumb {
+		background: var(--md-sys-color-outline-variant);
+		border-radius: 2px;
+	}
+	.md-content :global(pre)::before,
+	.md-content :global(pre)::after,
+	.md-content :global(table)::before,
+	.md-content :global(table)::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 14px;
+		z-index: 1;
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 0.15s ease;
+	}
+	.md-content :global(pre)::before,
+	.md-content :global(table)::before {
+		left: 0;
+		opacity: var(--sh-l, 0);
+		background: linear-gradient(to right, var(--md-sys-color-surface-container-high), transparent);
+		border-radius: var(--md-sys-shape-small) 0 var(--md-sys-shape-small) 0;
+	}
+	.md-content :global(pre)::after,
+	.md-content :global(table)::after {
+		right: 0;
+		opacity: var(--sh-r, 0);
+		background: linear-gradient(to left, var(--md-sys-color-surface-container-high), transparent);
+		border-radius: 0 var(--md-sys-shape-small) 0 var(--md-sys-shape-small);
+	}
+	.md-content :global(table)::before {
+		background: linear-gradient(
+			to right,
+			color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface)),
+			transparent
+		);
+		border-radius: 0;
+	}
+	.md-content :global(table)::after {
+		background: linear-gradient(
+			to left,
+			color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface)),
+			transparent
+		);
+		border-radius: 0;
+	}
+	.md-content :global(.md-code-wrap pre)::before,
+	.md-content :global(.md-code-wrap pre)::after {
+		border-radius: 0;
 	}
 	.md-content :global(strong) {
 		font-weight: 700;

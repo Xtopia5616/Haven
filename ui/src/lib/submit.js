@@ -28,11 +28,20 @@ import { invoke } from './tauri.js';
  * @param {string} text
  * @param {object} [opts]
  * @param {Array<{media_type: string, data: string}>} [opts.images=null] - image attachments; null/empty for voice
+ * @param {Array<{media_type: string, data: string, filename: string}>} [opts.files=null] - non-image file attachments
  * @param {boolean} [opts.voice=false] - true when forwarded from a voice transcript
  * @returns {Promise<any>} the `process_transcript` result
  */
-export async function submitTranscript(text, { images = null, voice = false } = {}) {
+export async function submitTranscript(text, { images = null, files = null, voice = false } = {}) {
 	const hasImages = Array.isArray(images) && images.length > 0;
+	const hasFiles = Array.isArray(files) && files.length > 0;
+	const hasAttachments = hasImages || hasFiles;
+	// Images and files travel together as one attachment list; the backend
+	// splits them again (images go to the vision model, files to disk).
+	const attachments = [
+		...(hasImages ? images : []),
+		...(hasFiles ? files : []),
+	];
 	const activeId = get(activeTaskIdStore);
 	const taskId = activeId || DRAFT_KEY;
 	const msg = newMessage({
@@ -40,14 +49,14 @@ export async function submitTranscript(text, { images = null, voice = false } = 
 		content: text,
 		voice,
 		time: new Date().toLocaleTimeString(),
-		...(hasImages ? { attachments: images, idPrefix: 'u' } : {}),
+		...(hasAttachments ? { attachments, idPrefix: 'u' } : {}),
 	});
 	addTaskMessage(taskId, msg);
 	try {
 		const result = await invoke('process_transcript', {
 			transcript: text,
 			activeTaskId: activeId || null,
-			images: hasImages ? images : null,
+			attachments: hasAttachments ? attachments : null,
 			voice,
 		});
 		if (result && result.TaskCreated && result.TaskCreated !== taskId) {

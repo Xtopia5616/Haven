@@ -295,16 +295,61 @@ impl Database {
     /// Persist inferred preferences to the `preferences` table, but only when
     /// no user-set (`inferred.`-free) key exists for the same logical domain.
     /// For example `inferred.language` is skipped when `language` already exists.
+    ///
+    /// Facts are the single source of truth for the overlapping domains:
+    /// `inferred.working_dir` is skipped once a `project_path` fact exists,
+    /// and `inferred.editor` / `inferred.tool_pref` are skipped once a `uses`
+    /// fact exists — the same signals would otherwise be extracted twice by
+    /// the fact engine and the preference engine.
     pub fn save_inferred_preferences(&self, prefs: &[InferredPreference]) -> anyhow::Result<()> {
+        let user_facts = self.get_facts("user").unwrap_or_default();
+        let has_project_path = user_facts.iter().any(|f| f.predicate == "project_path");
+        let has_uses = user_facts.iter().any(|f| f.predicate == "uses");
         for p in prefs {
             let user_key = p.key.trim_start_matches("inferred.");
             if self.get_preference(user_key)?.is_some() {
+                continue;
+            }
+            let overlapped_with_facts = match p.key.as_str() {
+                "inferred.working_dir" => has_project_path,
+                "inferred.editor" | "inferred.tool_pref" => has_uses,
+                _ => false,
+            };
+            if overlapped_with_facts {
                 continue;
             }
             let val = format!("{}|{}", p.confidence, p.value);
             self.set_preference(&p.key, &val)?;
         }
         Ok(())
+    }
+
+    /// Remove `inferred.*` preferences that have been superseded by the facts
+    /// channel (historical residue from before the convergence). Called during
+    /// memory maintenance so old databases converge to the single source of
+    /// truth without dropping user-set (`inferred.`-free) keys.
+    pub fn prune_overlapping_inferred_preferences(&self) -> anyhow::Result<u64> {
+        let user_facts = self.get_facts("user").unwrap_or_default();
+        let has_project_path = user_facts.iter().any(|f| f.predicate == "project_path");
+        let has_uses = user_facts.iter().any(|f| f.predicate == "uses");
+        let candidates: &[&str] = match (has_project_path, has_uses) {
+            (true, true) => &[
+                "inferred.working_dir",
+                "inferred.editor",
+                "inferred.tool_pref",
+            ],
+            (true, false) => &["inferred.working_dir"],
+            (false, true) => &["inferred.editor", "inferred.tool_pref"],
+            (false, false) => &[],
+        };
+        let mut removed: u64 = 0;
+        for key in candidates {
+            if self.get_preference(key)?.is_some() {
+                self.delete_preference(key)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// Build a human-readable summary of all preferences.
@@ -580,6 +625,74 @@ mod tests {
         db.save_inferred_preferences(&prefs).unwrap();
         assert!(db.get_preference("inferred.language").unwrap().is_none());
         assert_eq!(db.get_preference("language").unwrap(), Some("en".into()));
+    }
+
+    #[test]
+    fn save_inferred_preferences_skips_overlap_with_facts() {
+        let db = test_db();
+        db.insert_fact(
+            "user",
+            "project_path",
+            "/home/app",
+            "inferred",
+            0.7,
+            &["workspace"],
+        )
+        .unwrap();
+        db.insert_fact("user", "uses", "vscode", "inferred", 0.7, &["preference"])
+            .unwrap();
+        let prefs = vec![
+            InferredPreference {
+                key: "inferred.working_dir".into(),
+                value: "/home/app".into(),
+                confidence: 0.7,
+            },
+            InferredPreference {
+                key: "inferred.editor".into(),
+                value: "vscode".into(),
+                confidence: 0.65,
+            },
+            // Language has no facts counterpart and is still stored.
+            InferredPreference {
+                key: "inferred.language".into(),
+                value: "zh".into(),
+                confidence: 0.75,
+            },
+        ];
+        db.save_inferred_preferences(&prefs).unwrap();
+        assert!(
+            db.get_preference("inferred.working_dir").unwrap().is_none(),
+            "working_dir overlaps project_path fact"
+        );
+        assert!(
+            db.get_preference("inferred.editor").unwrap().is_none(),
+            "editor overlaps uses fact"
+        );
+        assert!(db.get_preference("inferred.language").unwrap().is_some());
+    }
+
+    #[test]
+    fn prune_overlapping_inferred_preferences_removes_residue() {
+        let db = test_db();
+        db.set_preference("inferred.working_dir", "0.7|/old/path")
+            .unwrap();
+        db.set_preference("inferred.editor", "0.65|vim").unwrap();
+        db.set_preference("inferred.language", "0.75|zh").unwrap();
+        db.insert_fact(
+            "user",
+            "project_path",
+            "/new/path",
+            "inferred",
+            0.8,
+            &["workspace"],
+        )
+        .unwrap();
+        let removed = db.prune_overlapping_inferred_preferences().unwrap();
+        assert_eq!(removed, 1, "only working_dir overlaps project_path");
+        assert!(db.get_preference("inferred.working_dir").unwrap().is_none());
+        // Editor has no uses fact yet, so it stays.
+        assert!(db.get_preference("inferred.editor").unwrap().is_some());
+        assert!(db.get_preference("inferred.language").unwrap().is_some());
     }
 
     #[test]

@@ -63,14 +63,13 @@ fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
 /// and `toggle_mcp_server`.
 async fn connect_and_monitor(
     state: &AppState,
-    loader: &haven_common::config::ConfigLoader,
+    discovery: &haven_common::config::McpDiscoveryConfig,
     config: &McpServerConfig,
     ctx: &str,
 ) -> Result<Arc<haven_tools::McpClient>, String> {
     let client = Arc::new(haven_tools::McpClient::new(config));
     if config.enabled {
         client.connect().await.map_err(|e| log_err(ctx, e))?;
-        let discovery = loader.config().mcp_discovery.clone();
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
         let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
         let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
@@ -169,6 +168,7 @@ fn role_endpoint<'a>(cfg: &'a mut LlmConfig, role: &str) -> Option<&'a mut Model
         EndpointRole::BalancedModel => &mut cfg.balanced_model,
         EndpointRole::ImageModel => &mut cfg.image_model,
         EndpointRole::AudioModel => &mut cfg.audio_model,
+        EndpointRole::EmbeddingModel => &mut cfg.embedding_model,
     };
     Some(endpoint)
 }
@@ -209,7 +209,10 @@ async fn hot_swap_router(state: &AppState, new_router: Arc<LlmRouter>) -> Result
     let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.tools.mcp_manager.clone());
     match build_stt_client(new_router, Some(mcp_caller), &stt_config) {
         Ok(client) => {
-            state.pipeline.set_stt_client(client).await;
+            state
+                .pipeline
+                .set_stt_client(client.map(std::sync::Arc::from))
+                .await;
         }
         Err(e) => {
             tracing::warn!("STT client rebuild failed, transcription disabled: {e}");
@@ -376,55 +379,191 @@ pub async fn process_transcript(
     state: State<'_, Arc<AppState>>,
     transcript: String,
     active_task_id: Option<String>,
-    images: Option<Vec<haven_memory::repositories::messages::MessageAttachment>>,
+    attachments: Option<Vec<haven_memory::repositories::messages::MessageAttachment>>,
     voice: Option<bool>,
 ) -> Result<Value, String> {
-    let images = validate_images(images.unwrap_or_default())?;
+    let attachments = validate_attachments(attachments.unwrap_or_default())?;
+    let attachments = persist_file_attachments(attachments).await?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
-        "process_transcript called: text={:?} active_task_id={:?} images={} voice={}",
+        "process_transcript called: text={:?} active_task_id={:?} attachments={} voice={}",
         transcript,
         active_task_id,
-        images.len(),
+        attachments.len(),
         voice
     );
     let result = state
         .agent
-        .process_input_with_images(&transcript, active_task_id.clone(), &images, voice)
+        .process_input_with_attachments(&transcript, active_task_id.clone(), &attachments, voice)
         .await
         .map_err(|e| log_err("process_transcript", e))?;
     tracing::debug!("process_transcript result: {:?}", result);
     Ok(serde_json::to_value(result).unwrap_or_default())
 }
 
-/// Server-side validation for image attachments, mirroring the frontend
-/// limits (≤4 images, ≤10 MiB each, image/* MIME, decodable base64). The
-/// webview must not be the sole enforcement point for persisted payloads.
-fn validate_images(
-    images: Vec<haven_memory::repositories::messages::MessageAttachment>,
-) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
-    const MAX_IMAGES: usize = 4;
-    const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
-    use base64::Engine as _;
-    if images.len() > MAX_IMAGES {
-        return Err(format!("最多支持 {MAX_IMAGES} 张图片"));
+/// Root folder for user-uploaded files. Lives under the agent's default Temp
+/// working directory so the file tool can read uploads with the same access
+/// the agent already has for its own scripts.
+fn uploads_root() -> std::path::PathBuf {
+    haven_common::default_work_dir().join("uploads")
+}
+
+/// Replace characters that are illegal in Windows file names (and path
+/// traversal hazards) so an uploaded name cannot escape its batch directory.
+/// Falls back to a random name for empty / "." / ".." / reserved device names
+/// (CON, PRN, AUX, NUL, COM1–9, LPT1–9, incl. `NUL.txt` forms — writing to
+/// those opens the device and silently discards the bytes) and caps the
+/// length on a char boundary so full paths stay short without panicking.
+fn sanitize_filename(name: &str) -> String {
+    let mut clean: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0' | '\n' | '\r' => '_',
+            c => c,
+        })
+        .collect();
+    // Windows strips trailing dots/spaces at the filesystem layer; drop them
+    // here so `foo.` and `foo` can't silently collide (and overwrite) on disk.
+    while clean.ends_with(['.', ' ']) {
+        clean.pop();
     }
-    for img in &images {
-        if !img.media_type.starts_with("image/") {
-            return Err(format!("不支持的图片类型: {}", img.media_type));
+    let stem = clean
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = match stem.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" => true,
+        s if (s.starts_with("COM") || s.starts_with("LPT")) && s.len() == 4 => {
+            s.as_bytes()[3].is_ascii_digit()
         }
-        let decoded_len = img.data.len().saturating_mul(3) / 4;
-        if decoded_len > MAX_IMAGE_BYTES {
-            return Err("图片超过 10MB 上限".to_string());
+        _ => false,
+    };
+    if clean.trim().is_empty() || clean == "." || clean == ".." || reserved {
+        clean = format!("file_{}", uuid::Uuid::new_v4());
+    }
+    // `String::truncate` panics when the index is not a char boundary; pop
+    // whole chars instead (CJK/emoji names are common).
+    while clean.len() > 120 {
+        clean.pop();
+    }
+    clean
+}
+
+/// Write non-image attachments to disk under `uploads/<batch>/` and return
+/// them with `path` set. `data` is cleared afterwards — the bytes live on
+/// disk, keeping the persisted message and DB storage slim. Images pass
+/// through untouched (their base64 payload is needed by the vision model).
+async fn persist_file_attachments(
+    attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
+) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+    persist_file_attachments_to(uploads_root(), attachments).await
+}
+
+async fn persist_file_attachments_to(
+    root: std::path::PathBuf,
+    attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
+) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+    use base64::Engine as _;
+
+    let mut images = Vec::new();
+    let mut files = Vec::new();
+    for att in attachments {
+        if att.is_image() {
+            images.push(att);
+        } else {
+            files.push(att);
         }
-        if base64::engine::general_purpose::STANDARD
-            .decode(&img.data)
-            .is_err()
-        {
-            return Err("图片数据不是有效的 base64".to_string());
+    }
+    if files.is_empty() {
+        return Ok(images);
+    }
+
+    let batch_dir = root.join(uuid::Uuid::new_v4().to_string());
+    tokio::fs::create_dir_all(&batch_dir)
+        .await
+        .map_err(|e| format!("创建上传目录失败: {e}"))?;
+
+    let mut used_names = std::collections::HashSet::new();
+    for mut att in files {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&att.data)
+            .map_err(|_| "附件数据不是有效的 base64".to_string())?;
+        let base_name = att
+            .filename
+            .as_deref()
+            .map(sanitize_filename)
+            .unwrap_or_else(|| format!("file_{}", uuid::Uuid::new_v4()));
+        // Keep the extension for readability but dedupe collisions so two
+        // same-named uploads in one batch never overwrite each other.
+        let mut name = base_name.clone();
+        let mut n = 2;
+        while !used_names.insert(name.clone()) {
+            let stem = std::path::Path::new(&base_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&base_name)
+                .to_string();
+            let ext = std::path::Path::new(&base_name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|e| format!(".{e}"))
+                .unwrap_or_default();
+            name = format!("{stem}_{n}{ext}");
+            n += 1;
         }
+        let file_path = batch_dir.join(&name);
+        tokio::fs::write(&file_path, bytes)
+            .await
+            .map_err(|e| format!("保存附件失败: {e}"))?;
+        att.path = Some(file_path.to_string_lossy().into_owned());
+        att.data = String::new();
+        images.push(att);
     }
     Ok(images)
+}
+
+/// Server-side validation for user attachments, mirroring the frontend
+/// limits (≤4 images ≤10 MiB each, ≤5 files ≤20 MiB each, decodable base64,
+/// files must carry a name). The webview must not be the sole enforcement
+/// point for persisted payloads.
+fn validate_attachments(
+    attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
+) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+    const MAX_IMAGES: usize = 4;
+    const MAX_FILES: usize = 5;
+    const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+    const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
+    use base64::Engine as _;
+    let images = attachments.iter().filter(|a| a.is_image()).count();
+    let files = attachments.len().saturating_sub(images);
+    if images > MAX_IMAGES {
+        return Err(format!("最多支持 {MAX_IMAGES} 张图片"));
+    }
+    if files > MAX_FILES {
+        return Err(format!("最多支持 {MAX_FILES} 个文件"));
+    }
+    for att in &attachments {
+        let (cap, label) = if att.is_image() {
+            (MAX_IMAGE_BYTES, "图片")
+        } else {
+            if att.filename.as_deref().unwrap_or("").trim().is_empty() {
+                return Err("文件附件缺少文件名".to_string());
+            }
+            (MAX_FILE_BYTES, "文件")
+        };
+        let decoded_len = att.data.len().saturating_mul(3) / 4;
+        if decoded_len > cap {
+            return Err(format!("{label}超过 {}MB 上限", cap / 1024 / 1024));
+        }
+        if base64::engine::general_purpose::STANDARD
+            .decode(&att.data)
+            .is_err()
+        {
+            return Err("附件数据不是有效的 base64".to_string());
+        }
+    }
+    Ok(attachments)
 }
 
 #[tauri::command]
@@ -507,7 +646,10 @@ pub async fn resolve_confirmation(
 
 #[tauri::command]
 pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListResponse, String> {
-    let tools = state.tools.registry.list_schemas().await;
+    // List ALL builtin tools (enabled and disabled) with their enabled state
+    // so the UI can toggle them. Disabled tools are excluded from the
+    // registry the agent sees (see ToolsManager::rebuild_catalog).
+    let tools = state.tools.list_builtin_tools().await;
     Ok(ToolListResponse { tools })
 }
 
@@ -688,14 +830,21 @@ pub async fn add_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Persist to config
-    let mut loader =
-        haven_common::config::ConfigLoader::load().map_err(|e| log_err("add_mcp_server", e))?;
-    loader.config_mut().mcp_servers.push(config.clone());
-    loader.save().map_err(|e| log_err("add_mcp_server", e))?;
+    // Persist to the shared config loader (single source of truth) so the
+    // in-memory copy stays in sync with disk and later `self` tool writes
+    // can never resurrect stale values.
+    let discovery = {
+        let mut loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("add_mcp_server", e))?;
+        loader.config_mut().mcp_servers.push(config.clone());
+        loader.save().map_err(|e| log_err("add_mcp_server", e))?;
+        loader.config().mcp_discovery.clone()
+    };
 
     // Create client and connect
-    let client = connect_and_monitor(&state, &loader, &config, "add_mcp_server").await?;
+    let client = connect_and_monitor(&state, &discovery, &config, "add_mcp_server").await?;
     state.tools.mcp_manager.add_client(client).await;
     // Keep the in-memory server_configs map in sync so `load_mcp` and the
     // MCP server index reflect the newly added server.
@@ -720,10 +869,15 @@ pub async fn update_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut loader =
-        haven_common::config::ConfigLoader::load().map_err(|e| log_err("update_mcp_server", e))?;
-    let servers = &mut loader.config_mut().mcp_servers;
-    if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
+    let (config_changed, discovery) = {
+        let mut loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("update_mcp_server", e))?;
+        let servers = &mut loader.config_mut().mcp_servers;
+        let Some(existing) = servers.iter_mut().find(|s| s.name == name) else {
+            return Err(format!("MCP server '{}' not found", name));
+        };
         let config_changed = existing.transport != config.transport
             || existing.command != config.command
             || existing.args != config.args
@@ -731,24 +885,23 @@ pub async fn update_mcp_server(
             || existing.url != config.url;
         *existing = config.clone();
         loader.save().map_err(|e| log_err("update_mcp_server", e))?;
-        // If command/args/env changed, reconnect; if only enabled, toggle
-        if config_changed {
-            state.tools.mcp_manager.remove_client(&name).await;
-            if config.enabled {
-                let client =
-                    connect_and_monitor(&state, &loader, &config, "update_mcp_server").await?;
-                state.tools.mcp_manager.add_client(client).await;
-            }
-        } else if config.enabled {
-            // Toggle from disabled to enabled
-            let client = connect_and_monitor(&state, &loader, &config, "update_mcp_server").await?;
+        (config_changed, loader.config().mcp_discovery.clone())
+    };
+    // If command/args/env changed, reconnect; if only enabled, toggle
+    if config_changed {
+        state.tools.mcp_manager.remove_client(&name).await;
+        if config.enabled {
+            let client =
+                connect_and_monitor(&state, &discovery, &config, "update_mcp_server").await?;
             state.tools.mcp_manager.add_client(client).await;
-        } else {
-            // Disabled: shutdown
-            state.tools.mcp_manager.remove_client(&name).await;
         }
+    } else if config.enabled {
+        // Toggle from disabled to enabled
+        let client = connect_and_monitor(&state, &discovery, &config, "update_mcp_server").await?;
+        state.tools.mcp_manager.add_client(client).await;
     } else {
-        return Err(format!("MCP server '{}' not found", name));
+        // Disabled: shutdown
+        state.tools.mcp_manager.remove_client(&name).await;
     }
 
     // Keep server_configs in sync with the updated config.
@@ -777,11 +930,15 @@ pub async fn remove_mcp_server(
     name: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Remove from config
-    let mut loader =
-        haven_common::config::ConfigLoader::load().map_err(|e| log_err("remove_mcp_server", e))?;
-    loader.config_mut().mcp_servers.retain(|s| s.name != name);
-    loader.save().map_err(|e| log_err("remove_mcp_server", e))?;
+    // Remove from config via the shared loader (single source of truth).
+    {
+        let mut loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("remove_mcp_server", e))?;
+        loader.config_mut().mcp_servers.retain(|s| s.name != name);
+        loader.save().map_err(|e| log_err("remove_mcp_server", e))?;
+    }
 
     // Shutdown and remove from manager
     state.tools.mcp_manager.remove_client(&name).await;
@@ -807,26 +964,59 @@ pub async fn toggle_mcp_server(
     enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let mut loader =
-        haven_common::config::ConfigLoader::load().map_err(|e| log_err("toggle_mcp_server", e))?;
-    let servers = &mut loader.config_mut().mcp_servers;
-    let config = if let Some(existing) = servers.iter_mut().find(|s| s.name == name) {
-        existing.enabled = enabled;
-        existing.clone()
-    } else {
-        return Err(format!("MCP server '{}' not found", name));
+    let (existing_config, discovery) = {
+        let loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("toggle_mcp_server", e))?;
+        let Some(existing) = loader.config().mcp_servers.iter().find(|s| s.name == name) else {
+            return Err(format!("MCP server '{}' not found", name));
+        };
+        (existing.clone(), loader.config().mcp_discovery.clone())
     };
+    let mut config = existing_config;
+    config.enabled = enabled;
 
+    // Persist via the shared loader (single source of truth) so the in-memory
+    // copy never diverges from disk.
     if enabled {
         // Reconnect. Connect BEFORE persisting the enabled flag: if the
         // server is unreachable, config must stay disabled so it never
         // diverges from the (absent) live client and monitor.
-        let client = connect_and_monitor(&state, &loader, &config, "toggle_mcp_server").await?;
-        loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
+        let client = connect_and_monitor(&state, &discovery, &config, "toggle_mcp_server").await?;
+        {
+            let mut loader = state
+                .config_loader
+                .lock()
+                .map_err(|e| log_err("toggle_mcp_server", e))?;
+            if let Some(existing) = loader
+                .config_mut()
+                .mcp_servers
+                .iter_mut()
+                .find(|s| s.name == name)
+            {
+                existing.enabled = enabled;
+            }
+            loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
+        }
         state.tools.mcp_manager.add_client(client).await;
     } else {
         // Disable: no connect to validate, persist the flag now.
-        loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
+        {
+            let mut loader = state
+                .config_loader
+                .lock()
+                .map_err(|e| log_err("toggle_mcp_server", e))?;
+            if let Some(existing) = loader
+                .config_mut()
+                .mcp_servers
+                .iter_mut()
+                .find(|s| s.name == name)
+            {
+                existing.enabled = enabled;
+            }
+            loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
+        }
         state.tools.mcp_manager.remove_client(&name).await;
     }
 
@@ -891,15 +1081,57 @@ pub async fn set_skill_enabled(
         .map_err(|e| log_err("set_skill_enabled", e))?;
     // The engine's `set_enabled` already syncs its internal filter so the
     // toggle survives `refresh_from_disk`. Persist the filter to config.toml
-    // so it also survives app restart.
+    // via the shared loader (single source of truth) so it also survives app
+    // restart and never diverges from the in-memory copy.
     let filter = state.tools.skills_engine.enabled_filter().await;
-    let mut loader =
-        haven_common::config::ConfigLoader::load().map_err(|e| log_err("set_skill_enabled", e))?;
-    loader.config_mut().skills.enabled = filter;
-    loader.save().map_err(|e| log_err("set_skill_enabled", e))?;
+    {
+        let mut loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("set_skill_enabled", e))?;
+        loader.config_mut().skills.enabled = filter;
+        loader.save().map_err(|e| log_err("set_skill_enabled", e))?;
+    }
 
     // Rebuild tool catalog so the enable/disable takes effect in the Reasoner.
     state.tools.rebuild_catalog().await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_tool_enabled(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    enabled: bool,
+) -> Result<(), String> {
+    // Persist via the shared loader (single source of truth) so the in-memory
+    // copy never diverges from disk and later settings saves can't resurrect
+    // stale values.
+    {
+        let mut loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("set_tool_enabled", e))?;
+        let entry = loader
+            .config_mut()
+            .tool_settings
+            .entry(name.clone())
+            .or_insert_with(haven_common::config::ToolConfig::default);
+        entry.enabled = enabled;
+        loader.save().map_err(|e| log_err("set_tool_enabled", e))?;
+    }
+
+    // Push the updated settings into the runtime manager. `set_tool_settings`
+    // rebuilds the catalog so the toggle takes effect in the Reasoner.
+    let tool_settings = {
+        let loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("set_tool_enabled", e))?;
+        loader.config().tool_settings.clone()
+    };
+    state.tools.set_tool_settings(tool_settings).await;
 
     Ok(())
 }
@@ -1101,6 +1333,7 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
             EndpointRole::BalancedModel => &cfg.llm.balanced_model,
             EndpointRole::ImageModel => &cfg.llm.image_model,
             EndpointRole::AudioModel => &cfg.llm.audio_model,
+            EndpointRole::EmbeddingModel => &cfg.llm.embedding_model,
         };
         status.insert(
             role.as_str().to_string(),
@@ -1112,6 +1345,39 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
         serde_json::json!(!cfg.stt.api_key.is_empty()),
     );
     Ok(serde_json::Value::Object(status))
+}
+
+/// Run the memory maintenance pass (fact dedup, sensitive purge, stale-fact
+/// flush, embedding pruning). The agent already runs it after each inference;
+/// this exposes the same pass for periodic app-level scheduling.
+#[tauri::command]
+pub async fn run_memory_maintenance(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    let db = state.db.clone();
+    let result = db
+        .run_blocking(move |db| {
+            let deduped = db.dedup_facts()?;
+            let purged = db.delete_sensitive_facts()?;
+            let flushed = db.flush_low_confidence(0.3)?;
+            let pruned = db.prune_orphaned_embeddings()?;
+            Ok::<u64, anyhow::Error>(deduped + purged + flushed + pruned)
+        })
+        .await
+        .map_err(|e| log_err("run_memory_maintenance", e))?;
+    Ok(result)
+}
+
+/// Recall memory items (facts or episodes) most relevant to a query. Uses
+/// the `embedding_model` slot when configured, keyword search otherwise.
+#[tauri::command]
+pub async fn recall_memory(
+    query: String,
+    kind: Option<String>,
+    limit: Option<usize>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let kind = kind.as_deref().unwrap_or("fact");
+    let limit = limit.unwrap_or(5);
+    Ok(state.agent.recall_memory(&query, kind, limit).await)
 }
 
 /// Probe the configured default-model endpoint for live connectivity
@@ -1270,42 +1536,40 @@ pub async fn discover_models(
 /// §2.7: Switch a model endpoint role to a different model.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
+/// Apply a mutation to a model endpoint via the shared config loader and
+/// hot-swap the LlmRouter at runtime. Holds the loader lock across
+/// mutate + save so concurrent config writes (settings saves, MCP/skill
+/// toggles) can never clobber each other with a stale copy.
+async fn update_endpoint_field(
+    state: &AppState,
+    ctx: &str,
+    role: &str,
+    mutate: impl FnOnce(&mut ModelEndpoint) -> Result<(), String>,
+) -> Result<(), String> {
+    {
+        let mut loader = state.config_loader.lock().map_err(|e| log_err(ctx, e))?;
+        let ep = role_endpoint(&mut loader.config_mut().llm, role)
+            .ok_or_else(|| format!("unknown role: {}", role))?;
+        mutate(ep)?;
+        loader.save().map_err(|e| log_err(ctx, e))?;
+    }
+    rebuild_router(state, ctx).await
+}
+
+/// Switch a model endpoint role to another model id. Updates config.toml and
+/// hot-swaps the LlmRouter at runtime.
+#[tauri::command]
 pub async fn switch_model(
     role: String,
     model_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
-
-    // Lock and update config
-    let mut loader = {
-        let guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("switch_model", e))?;
-        guard.clone()
-    };
-    {
-        let cfg = loader.config_mut();
-        let ep = role_endpoint(&mut cfg.llm, role.as_str())
-            .ok_or_else(|| format!("unknown role: {}", role))?;
+    update_endpoint_field(&state, "switch_model", &role, |ep| {
         ep.model_name = model_id;
-    }
-    loader.save().map_err(|e| log_err("switch_model", e))?;
-
-    // Replace the in-memory config_loader
-    {
-        let mut guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("switch_model", e))?;
-        *guard = loader;
-    }
-
-    // Hot-swap the LlmRouter and all router-dependent runtime state
-    rebuild_router(&state, "switch_model").await?;
-
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 /// Set the reasoning effort of a model endpoint role (e.g. "low"/"medium"/"high").
@@ -1324,37 +1588,44 @@ pub async fn set_reasoning_effort(
         None => None,
     };
 
-    // Lock and update config
-    let mut loader = {
-        let guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("set_reasoning_effort", e))?;
-        guard.clone()
-    };
-    {
-        let cfg = loader.config_mut();
-        let ep = role_endpoint(&mut cfg.llm, role.as_str())
-            .ok_or_else(|| format!("unknown role: {}", role))?;
+    update_endpoint_field(&state, "set_reasoning_effort", &role, |ep| {
         ep.reasoning_effort = normalized;
+        Ok(())
+    })
+    .await
+}
+
+/// Set the provider built-in web search mode of a model endpoint role
+/// ("off" | "auto" | "always"). "auto" lets the model decide when to search;
+/// any other value (including empty) is rejected. Updates config.toml and
+/// hot-swaps the LlmRouter at runtime.
+#[tauri::command]
+pub async fn set_web_search(
+    role: String,
+    mode: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<Arc<AppState>>();
+
+    let normalized = match mode.as_deref() {
+        Some(m) => Some(m.trim().to_ascii_lowercase()),
+        None => None,
+    };
+    match normalized.as_deref() {
+        Some("off") | Some("auto") | Some("always") | None => {}
+        _ => {
+            return Err(format!(
+                "invalid web search mode: {:?} (expected off|auto|always)",
+                mode
+            ));
+        }
     }
-    loader
-        .save()
-        .map_err(|e| log_err("set_reasoning_effort", e))?;
 
-    // Replace the in-memory config_loader
-    {
-        let mut guard = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("set_reasoning_effort", e))?;
-        *guard = loader;
-    }
-
-    // Hot-swap the LlmRouter and all router-dependent runtime state
-    rebuild_router(&state, "set_reasoning_effort").await?;
-
-    Ok(())
+    update_endpoint_field(&state, "set_web_search", &role, |ep| {
+        ep.web_search = normalized;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1487,6 +1758,20 @@ pub async fn update_settings(
             .lock()
             .map_err(|e| log_err("update_settings", e))?;
         loader.apply_settings(&settings);
+        // The settings form does not manage MCP servers / skills / tool
+        // settings: those are mutated by dedicated commands (add/update/
+        // remove/toggle MCP, skill ops) that write config.toml directly via a
+        // fresh `ConfigLoader::load()`, leaving the shared in-memory loader
+        // stale. Restore the authoritative on-disk copies before saving so a
+        // settings save can never wipe configured servers/skills.
+        let disk = haven_common::config::ConfigLoader::load()
+            .map_err(|e| log_err("update_settings", e))?;
+        let cfg = loader.config_mut();
+        cfg.mcp_servers = disk.config().mcp_servers.clone();
+        cfg.mcp_discovery = disk.config().mcp_discovery.clone();
+        cfg.skills = disk.config().skills.clone();
+        cfg.skills_exec = disk.config().skills_exec.clone();
+        cfg.tool_settings = disk.config().tool_settings.clone();
         loader.save().map_err(|e| log_err("update_settings", e))?;
     }
 
@@ -1641,7 +1926,10 @@ pub struct TaskReviewResponse {
 /// Cost is unknown, so `has_cost` stays false. Estimates are computed on
 /// read and never written to `task_usage`, so a resumed conversation's
 /// real counters can never be contaminated by them.
-fn estimate_task_usage(messages: &[Message], steps: &[TaskStep]) -> haven_memory::repositories::usage::TaskUsage {
+fn estimate_task_usage(
+    messages: &[Message],
+    steps: &[TaskStep],
+) -> haven_memory::repositories::usage::TaskUsage {
     use haven_memory::repositories::usage::TaskUsage;
 
     fn estimate_text(text: &str) -> u32 {
@@ -1855,46 +2143,145 @@ mod tests {
         media_type: &str,
         data: &str,
     ) -> haven_memory::repositories::messages::MessageAttachment {
-        haven_memory::repositories::messages::MessageAttachment {
-            media_type: media_type.into(),
-            data: data.into(),
-        }
+        haven_memory::repositories::messages::MessageAttachment::new(media_type, data)
     }
 
     #[test]
-    fn test_validate_images_accepts_valid() {
+    fn test_validate_attachments_accepts_valid() {
         let imgs = vec![att("image/png", "aGVsbG8="), att("image/jpeg", "YWJj")];
-        let out = validate_images(imgs.clone()).unwrap();
+        let out = validate_attachments(imgs.clone()).unwrap();
         assert_eq!(out.len(), 2);
+        // Files need a name; with one attached they pass through fine.
+        let mut file = att("application/pdf", "aGVsbG8=");
+        file.filename = Some("report.pdf".into());
+        let out = validate_attachments(vec![file]).unwrap();
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
-    fn test_validate_images_rejects_over_count() {
+    fn test_validate_attachments_rejects_images_over_count() {
         let imgs: Vec<_> = (0..5).map(|_| att("image/png", "aGVsbG8=")).collect();
-        let err = validate_images(imgs).unwrap_err();
+        let err = validate_attachments(imgs).unwrap_err();
         assert!(err.contains("最多支持"));
     }
 
     #[test]
-    fn test_validate_images_rejects_non_image_mime() {
-        let imgs = vec![att("application/x-msdownload", "aGVsbG8=")];
-        let err = validate_images(imgs).unwrap_err();
-        assert!(err.contains("不支持的图片类型"));
+    fn test_validate_attachments_rejects_files_over_count() {
+        let mut files: Vec<_> = (0..6)
+            .map(|i| {
+                let mut a = att("application/octet-stream", "aGVsbG8=");
+                a.filename = Some(format!("f{i}.bin"));
+                a
+            })
+            .collect();
+        files.push(att("image/png", "aGVsbG8="));
+        let err = validate_attachments(files).unwrap_err();
+        assert!(err.contains("最多支持 5 个文件"));
     }
 
     #[test]
-    fn test_validate_images_rejects_oversized() {
+    fn test_validate_attachments_requires_filename_for_files() {
+        let imgs = vec![att("application/x-msdownload", "aGVsbG8=")];
+        let err = validate_attachments(imgs).unwrap_err();
+        assert!(err.contains("文件名"));
+    }
+
+    #[test]
+    fn test_validate_attachments_rejects_oversized_image() {
         let big = "A".repeat(15 * 1024 * 1024);
         let imgs = vec![att("image/png", &big)];
-        let err = validate_images(imgs).unwrap_err();
+        let err = validate_attachments(imgs).unwrap_err();
         assert!(err.contains("10MB"));
     }
 
     #[test]
-    fn test_validate_images_rejects_invalid_base64() {
+    fn test_validate_attachments_rejects_oversized_file() {
+        let mut file = att("application/zip", &"A".repeat(28 * 1024 * 1024));
+        file.filename = Some("big.zip".into());
+        let err = validate_attachments(vec![file]).unwrap_err();
+        assert!(err.contains("20MB"));
+    }
+
+    #[test]
+    fn test_validate_attachments_rejects_invalid_base64() {
         let imgs = vec![att("image/png", "not-base64!!!")];
-        let err = validate_images(imgs).unwrap_err();
+        let err = validate_attachments(imgs).unwrap_err();
         assert!(err.contains("base64"));
+    }
+
+    #[tokio::test]
+    async fn test_persist_file_attachments_writes_disk_and_clears_data() {
+        use base64::Engine as _;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut file = att(
+            "application/pdf",
+            &base64::engine::general_purpose::STANDARD.encode(b"hello pdf"),
+        );
+        file.filename = Some("报告.pdf".into());
+        let img = att("image/png", "aGVsbG8=");
+
+        let out = persist_file_attachments_to(tmp.path().to_path_buf(), vec![file, img])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 2);
+
+        let saved = out.iter().find(|a| !a.is_image()).unwrap();
+        assert!(
+            saved.data.is_empty(),
+            "file bytes must not be kept in the message"
+        );
+        let path = saved.path.as_ref().unwrap();
+        assert!(
+            path.ends_with("报告.pdf") || path.contains("报告"),
+            "keeps the original name"
+        );
+        let on_disk = std::fs::read(path).unwrap();
+        assert_eq!(on_disk, b"hello pdf");
+
+        let image = out.iter().find(|a| a.is_image()).unwrap();
+        assert_eq!(image.data, "aGVsbG8=", "images keep their base64 payload");
+        assert!(image.path.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_persist_file_attachments_dedupes_collisions() {
+        use base64::Engine as _;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut a = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"one"),
+        );
+        a.filename = Some("same.txt".into());
+        let mut b = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"two"),
+        );
+        b.filename = Some("same.txt".into());
+
+        let out = persist_file_attachments_to(tmp.path().to_path_buf(), vec![a, b])
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 2);
+        let paths: Vec<_> = out.iter().map(|f| f.path.as_deref().unwrap()).collect();
+        assert_ne!(paths[0], paths[1], "colliding names must not overwrite");
+        assert!(
+            paths[0].ends_with("same.txt") && paths[1].ends_with("same_2.txt")
+                || paths[1].ends_with("same.txt") && paths[0].ends_with("same_2.txt")
+        );
+    }
+
+    #[test]
+    fn test_sanitize_filename_blocks_path_traversal() {
+        assert_eq!(sanitize_filename("a/b\\c:d"), "a_b_c_d");
+        let traversal = sanitize_filename("..");
+        assert_ne!(traversal, "..");
+        assert!(!traversal.contains('/') && !traversal.contains('\\'));
+        let named = sanitize_filename("a");
+        assert_eq!(named, "a");
     }
 
     #[test]

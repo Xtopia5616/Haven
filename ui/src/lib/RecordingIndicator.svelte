@@ -65,22 +65,24 @@
 				<span class="spinner-ring"></span>
 			{/if}
 		</div>
-		<div class="info">
-			<span class="state-label">
-				{#if processing}
-					处理中…转写
-				{:else}
-					{speaking ? '正在聆听…' : '请说…'}
+		<div class="content">
+			<div class="top-row">
+				<span class="state-label">
+					{#if processing}
+						处理中…转写
+					{:else}
+						{speaking ? '正在聆听…' : '请说…'}
+					{/if}
+				</span>
+				{#if onCancel && isRecording && !processing}
+					<span class="hint">Esc 取消</span>
 				{/if}
-			</span>
-			<span class="timer">{display}</span>
+				<span class="timer">{display}</span>
+			</div>
+			{#if isRecording && !processing && reason}
+				<span class="reason" title={reason}>结束原因: {reason}</span>
+			{/if}
 		</div>
-		{#if onCancel && isRecording && !processing}
-			<span class="hint">Esc 取消</span>
-		{/if}
-		{#if isRecording && !processing && reason}
-			<span class="reason">结束原因: {reason}</span>
-		{/if}
 	</div>
 {/if}
 
@@ -94,9 +96,11 @@
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-md);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-3xl) var(--md-sys-space-sm) var(--md-sys-space-sm);
-		background: var(--md-sys-color-surface);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		min-width: clamp(280px, 55vw, 400px);
+		max-width: min(92vw, 560px);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-lg) var(--md-sys-space-sm)
+			var(--md-sys-space-sm);
+		background: var(--md-sys-color-surface-container-high);
 		border-radius: var(--md-sys-shape-full);
 		box-shadow: var(--md-sys-elevation-3);
 	}
@@ -156,20 +160,32 @@
 			transform: rotate(360deg);
 		}
 	}
-	.info {
+	.content {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 1px;
+		gap: 2px;
+	}
+	.top-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-md);
+		min-width: 0;
 	}
 	.state-label {
-		font-size: 13px;
-		font-weight: 700;
+		flex-shrink: 0;
+		white-space: nowrap;
+		font-size: 14px;
+		font-weight: 500;
 		color: var(--md-sys-color-on-surface);
 	}
 	.overlay.processing .state-label {
 		color: var(--md-sys-color-primary);
 	}
 	.timer {
+		flex-shrink: 0;
+		white-space: nowrap;
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 13px;
 		font-weight: 700;
@@ -179,12 +195,18 @@
 		color: var(--md-sys-color-primary);
 	}
 	.hint {
+		flex-shrink: 0;
+		margin-left: auto;
+		white-space: nowrap;
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
 	}
 	.reason {
-		font-size: 10px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
-		opacity: 0.6;
+		opacity: 0.7;
 	}
 </style>

@@ -72,11 +72,15 @@ pub struct InputPipeline {
     state: Mutex<RecordingState>,
     engine: Arc<StdMutex<Option<EngineHandle>>>,
     vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
+    /// In-flight VAD preload task from `prewarm`. When the first recording
+    /// arrives before preload finishes, `start_recording` awaits this handle
+    /// instead of paying ONNX graph compilation a second time.
+    vad_preload: Arc<StdMutex<Option<tokio::task::JoinHandle<()>>>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
     handler: Arc<StdMutex<Option<Arc<dyn InputHandler>>>>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
-    stt_client: Arc<Mutex<Option<Box<dyn SttClient>>>>,
+    stt_client: Arc<Mutex<Option<Arc<dyn SttClient>>>>,
 }
 
 impl InputPipeline {
@@ -87,6 +91,7 @@ impl InputPipeline {
             state: Mutex::new(RecordingState::Pending),
             engine: Arc::new(StdMutex::new(None)),
             vad_engine: Arc::new(StdMutex::new(None)),
+            vad_preload: Arc::new(StdMutex::new(None)),
             vad_detector: Arc::new(Mutex::new(vad_detector)),
             handler: Arc::new(StdMutex::new(None)),
             cancel_token: StdMutex::new(None),
@@ -110,7 +115,7 @@ impl InputPipeline {
 
     /// Install or clear the STT client. `None` disables transcription
     /// (e.g. when the provider is set to `none` at runtime).
-    pub async fn set_stt_client(&self, client: Option<Box<dyn SttClient>>) {
+    pub async fn set_stt_client(&self, client: Option<Arc<dyn SttClient>>) {
         *self.stt_client.lock().await = client;
     }
 
@@ -143,8 +148,21 @@ impl InputPipeline {
         }
         drop(guard);
 
+        // Preload the VAD model off the async runtime thread. The handle is
+        // retained so the first recording can await this task instead of
+        // blocking on a duplicate ONNX graph compile.
+        let mut preload_guard = self.vad_preload.lock().expect("vad_preload lock poisoned");
+        if preload_guard.is_some()
+            || self
+                .vad_engine
+                .lock()
+                .expect("vad_engine lock poisoned")
+                .is_some()
+        {
+            return;
+        }
         let vad_engine = self.vad_engine.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let loaded = tokio::task::spawn_blocking(vad::VadEngine::new).await;
             match loaded {
                 Ok(Ok(e)) => {
@@ -155,6 +173,7 @@ impl InputPipeline {
                 Err(_) => tracing::warn!("VAD engine preload task panicked"),
             }
         });
+        *preload_guard = Some(handle);
     }
 
     pub async fn get_vad_state(&self) -> vad::VadState {
@@ -196,15 +215,33 @@ impl InputPipeline {
 
         {
             self.vad_detector.lock().await.reset();
-            // Reuse the prewarmed VAD engine; only load on demand (first
-            // recording after a failed prewarm). The model stays resident
-            // across recordings — graph compilation is the slow part, and a
-            // fresh recording only needs the recurrent state reset.
+            // Reuse the prewarmed VAD engine; the model stays resident across
+            // recordings — graph compilation is the slow part, and a fresh
+            // recording only needs the recurrent state reset. If a preload
+            // task is still running, await it (it stores the engine itself)
+            // rather than compiling a second time.
             let needs_load = {
                 let guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
                 guard.is_none()
             };
             if needs_load {
+                let pending = self
+                    .vad_preload
+                    .lock()
+                    .expect("vad_preload lock poisoned")
+                    .take();
+                if let Some(handle) = pending {
+                    let _ = handle.await;
+                }
+            }
+            // After the preload await, the engine is stored when prewarm
+            // succeeded; only load on demand when there was no prewarm (or it
+            // failed). No mutex is held across an await here.
+            let still_missing = {
+                let guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
+                guard.is_none()
+            };
+            if still_missing {
                 let loaded = tokio::task::spawn_blocking(vad::VadEngine::new).await;
                 let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
                 match loaded {
@@ -725,7 +762,7 @@ mod tests {
         }
         let pipeline = InputPipeline::new();
         pipeline
-            .set_stt_client(Some(Box::new(DummySttClient)))
+            .set_stt_client(Some(Arc::new(DummySttClient)))
             .await;
         assert!(pipeline.stt_client.lock().await.is_some());
         pipeline.set_stt_client(None).await;
@@ -832,7 +869,7 @@ mod tests {
         }
         let pipeline = InputPipeline::new();
         pipeline
-            .set_stt_client(Some(Box::new(EmptySttClient)))
+            .set_stt_client(Some(Arc::new(EmptySttClient)))
             .await;
         let mut result = RecordingResult {
             pcm: vec![0.0; 160],

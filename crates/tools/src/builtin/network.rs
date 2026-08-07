@@ -19,7 +19,7 @@ impl Tool for NetworkTool {
         "network".into()
     }
     fn description(&self) -> String {
-        "Fetch web pages or API data via HTTP GET/POST".into()
+        "Fetch web pages or API data via HTTP GET/POST. HTML pages are converted to plain text by default; pass as_html to get the raw HTML instead.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -34,6 +34,7 @@ impl Tool for NetworkTool {
                 "url": { "type": "string", "description": "The URL to request" },
                 "headers": { "type": "object", "description": "Optional HTTP headers as key-value pairs" },
                 "body": { "type": "string", "description": "Request body for POST" },
+                "as_html": { "type": "boolean", "description": "Return the raw HTML instead of converting HTML pages to plain text (default false)" },
                 "timeout_secs": { "type": "integer", "description": "Request timeout in seconds", "default": 15 }
             },
             "required": ["url"]
@@ -53,6 +54,7 @@ impl Tool for NetworkTool {
         let timeout_secs = input["timeout_secs"].as_i64().unwrap_or(15) as u64;
 
         let body = input["body"].as_str().map(|s| s.to_string());
+        let as_html = input["as_html"].as_bool().unwrap_or(false);
         let headers = input["headers"]
             .as_object()
             .map(|obj| {
@@ -81,7 +83,16 @@ impl Tool for NetworkTool {
                 anyhow::bail!("cancelled");
             }
 
-            match execute_once(&url, &method, &headers, body.as_deref(), timeout_secs).await {
+            match execute_once(
+                &url,
+                &method,
+                &headers,
+                body.as_deref(),
+                as_html,
+                timeout_secs,
+            )
+            .await
+            {
                 Ok(result) => return Ok(result),
                 Err(e) if attempt + 1 < max_attempts && is_retryable_error(&e) => {
                     tracing::debug!(
@@ -104,6 +115,7 @@ async fn execute_once(
     method: &str,
     headers: &[(String, String)],
     body: Option<&str>,
+    as_html: bool,
     timeout_secs: u64,
 ) -> anyhow::Result<ToolResult> {
     let client = reqwest::Client::builder()
@@ -111,7 +123,7 @@ async fn execute_once(
         .user_agent("Haven/1.0")
         .build()?;
 
-    execute_once_with(&client, url, method, headers, body).await
+    execute_once_with(&client, url, method, headers, body, as_html).await
 }
 
 /// Send one request with a caller-supplied client. Split out so tests can
@@ -124,6 +136,7 @@ async fn execute_once_with(
     method: &str,
     headers: &[(String, String)],
     body: Option<&str>,
+    as_html: bool,
 ) -> anyhow::Result<ToolResult> {
     let mut req = match method {
         "GET" => client.get(url),
@@ -145,29 +158,52 @@ async fn execute_once_with(
         .collect();
 
     let max_chars = 20_000;
-    let response_bytes = read_body_capped(response, max_chars).await?;
+    let content_type = resp_headers
+        .iter()
+        .find(|h| {
+            h["name"]
+                .as_str()
+                .unwrap_or("")
+                .eq_ignore_ascii_case("content-type")
+        })
+        .and_then(|h| h["value"].as_str());
+    let html_by_header = content_type.is_some_and(|ct| ct.to_ascii_lowercase().contains("html"));
+    // HTML loses bulk when extracted to text, so read more raw bytes for it;
+    // the final body is still truncated to `max_chars`.
+    let byte_cap = if html_by_header {
+        MAX_BODY_BYTES
+    } else {
+        max_chars * 4
+    };
+    let response_bytes = read_body_capped(response, byte_cap).await?;
     let response_body = haven_common::encoding::decode_lossy(&response_bytes);
 
-    let (body_truncated, truncated) =
-        haven_common::encoding::truncate_output(&response_body, max_chars);
+    let is_html = html_by_header || looks_like_html(&response_body);
+
+    let (body_truncated, truncated, format) = if is_html && !as_html {
+        let (t, tr) =
+            haven_common::encoding::truncate_output(&html_to_text(&response_body), max_chars);
+        (t, tr, "text")
+    } else {
+        let (t, tr) = haven_common::encoding::truncate_output(&response_body, max_chars);
+        (t, tr, if is_html { "html" } else { "raw" })
+    };
 
     Ok(ToolResult::ok(serde_json::json!({
         "status": status,
         "headers": resp_headers,
         "body": body_truncated,
         "truncated": truncated,
+        "format": format,
     })))
 }
 
-/// Read at most `display_chars * 4` bytes (bounded by `MAX_BODY_BYTES`) of the
-/// response body, streaming, so huge responses never get fully buffered and
-/// we never read far more than what will be shown.
-async fn read_body_capped(
-    response: reqwest::Response,
-    display_chars: usize,
-) -> anyhow::Result<Vec<u8>> {
+/// Read at most `byte_cap` bytes (bounded by `MAX_BODY_BYTES`) of the response
+/// body, streaming, so huge responses never get fully buffered and we never
+/// read far more than what will be shown.
+async fn read_body_capped(response: reqwest::Response, byte_cap: usize) -> anyhow::Result<Vec<u8>> {
     use futures_util::StreamExt;
-    let cap = (display_chars * 4).min(MAX_BODY_BYTES);
+    let cap = byte_cap.min(MAX_BODY_BYTES);
     let mut stream = response.bytes_stream();
     let mut out = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -183,6 +219,94 @@ async fn read_body_capped(
         }
     }
     Ok(out)
+}
+
+/// Cheap sniff for an HTML document when the server omitted (or mislabeled)
+/// the Content-Type. Only matches the very start of the body.
+fn looks_like_html(body: &str) -> bool {
+    let head = &body[..body.floor_char_boundary(body.len().min(512))];
+    let head = head.trim_start().to_ascii_lowercase();
+    head.starts_with("<!doctype html")
+        || head.starts_with("<html")
+        || head.starts_with("<head")
+        || head.starts_with("<body")
+}
+
+/// Extract readable plain text from an HTML document. Script/style/noscript
+/// content and whitespace noise are dropped, and block-level elements start a
+/// new line so the output reads like a document instead of a run-on blob.
+fn html_to_text(html: &str) -> String {
+    use scraper::node::Node;
+    use scraper::{Html, Selector};
+
+    const BLOCK_TAGS: &[&str] = &[
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "br",
+        "div",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "td",
+        "th",
+        "tr",
+        "ul",
+    ];
+    const HIDDEN_TAGS: &[&str] = &["head", "script", "style", "noscript", "template"];
+
+    let doc = Html::parse_document(html);
+    let root = Selector::parse("body")
+        .ok()
+        .and_then(|sel| doc.select(&sel).next())
+        .unwrap_or_else(|| doc.root_element());
+
+    let mut out = String::new();
+    // DFS over the tree, dropping hidden subtrees. Children are pushed in
+    // reverse so they are visited in document order.
+    let mut stack: Vec<_> = Vec::new();
+    for child in root.children().rev() {
+        stack.push(child);
+    }
+    while let Some(node) = stack.pop() {
+        match node.value() {
+            Node::Element(el) => {
+                let name = el.name();
+                if HIDDEN_TAGS.contains(&name) {
+                    continue;
+                }
+                if BLOCK_TAGS.contains(&name) {
+                    out.push('\n');
+                }
+                for child in node.children().rev() {
+                    stack.push(child);
+                }
+            }
+            Node::Text(text) => out.push_str(&text.text),
+            _ => {}
+        }
+    }
+
+    out.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn is_retryable_error(err: &anyhow::Error) -> bool {
@@ -258,12 +382,13 @@ mod tests {
     /// before responding: reqwest can split a POST's headers and body across
     /// separate TCP segments on loopback, and closing the socket while the
     /// client is still writing would surface as a reset instead of a response.
-    async fn serve_once(status_line: &str, body: &str) -> String {
+    async fn serve_once(status_line: &str, content_type: &str, body: &str) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let body = body.to_string();
         let status = status_line.to_string();
+        let content_type = content_type.to_string();
         tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
             let mut buf = Vec::new();
@@ -291,8 +416,9 @@ mod tests {
                 }
             }
             let resp = format!(
-                "HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 status,
+                content_type,
                 body.len(),
                 body
             );
@@ -318,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_execute_get_success() {
-        let url = serve_once("200 OK", "hello from mock server").await;
+        let url = serve_once("200 OK", "text/plain", "hello from mock server").await;
         let result = NetworkTool
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
@@ -334,9 +460,88 @@ mod tests {
         assert!(headers.iter().any(|h| h["name"] == "content-type"));
     }
 
+    #[test]
+    fn test_html_to_text_strips_tags_and_scripts() {
+        let html = concat!(
+            "<html><head><title>ignored</title>",
+            "<style>a{color:red}</style>",
+            "</head><body><h1>  Title  </h1>",
+            "<p>Hello <b>Haven</b>!</p>",
+            "<script>evil()</script>",
+            "<ul><li>one</li><li>two</li></ul></body></html>",
+        );
+        let text = html_to_text(html);
+        assert!(text.contains("Title"), "got: {}", text);
+        assert!(text.contains("Hello Haven!"), "got: {}", text);
+        assert!(text.contains("one"), "got: {}", text);
+        assert!(text.contains("two"), "got: {}", text);
+        assert!(!text.contains("ignored"), "got: {}", text);
+        assert!(!text.contains("evil()"), "got: {}", text);
+        assert!(!text.contains("color:red"), "got: {}", text);
+        assert!(!text.contains('<'), "got: {}", text);
+    }
+
+    #[test]
+    fn test_looks_like_html_detects_doctype_and_tag() {
+        assert!(looks_like_html("<!DOCTYPE html>\n<html>..."));
+        assert!(looks_like_html("  <html lang=\"en\">..."));
+        assert!(looks_like_html("<body>x</body>"));
+        assert!(!looks_like_html("{\"ok\": true}"));
+        assert!(!looks_like_html("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_html_converted_to_text() {
+        let html = "<html><head><title>x</title></head><body><h1>Welcome</h1><p>Hello Haven</p><script>bad()</script></body></html>";
+        let url = serve_once("200 OK", "text/html; charset=utf-8", html).await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "GET", "url": url, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["format"], "text");
+        let body = result.output["body"].as_str().unwrap();
+        assert!(body.contains("Welcome"), "got: {}", body);
+        assert!(body.contains("Hello Haven"), "got: {}", body);
+        assert!(!body.contains("bad()"), "got: {}", body);
+        assert!(!body.contains("<h1>"), "got: {}", body);
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_as_html_returns_raw() {
+        let html = "<html><body><p>hi</p></body></html>";
+        let url = serve_once("200 OK", "text/html", html).await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "GET", "url": url, "as_html": true, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["format"], "html");
+        assert_eq!(result.output["body"], html);
+    }
+
+    #[tokio::test]
+    async fn test_network_execute_plain_body_format_raw() {
+        let url = serve_once("200 OK", "application/json", "{\"ok\":true}").await;
+        let result = NetworkTool
+            .execute(
+                json!({"method": "GET", "url": url, "timeout_secs": 5}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["format"], "raw");
+        assert_eq!(result.output["body"], "{\"ok\":true}");
+    }
+
     #[tokio::test]
     async fn test_network_execute_get_not_found_no_retry() {
-        let url = serve_once("404 Not Found", "nope").await;
+        let url = serve_once("404 Not Found", "text/plain", "nope").await;
         let result = NetworkTool
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
@@ -351,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_execute_post_with_body() {
-        let url = serve_once("201 Created", "created").await;
+        let url = serve_once("201 Created", "text/plain", "created").await;
         let result = NetworkTool
             .execute(
                 json!({"method": "POST", "url": url, "body": "payload", "timeout_secs": 5}),
@@ -376,7 +581,7 @@ mod tests {
             .build()
             .unwrap();
         let url = connection_drop_url().await;
-        let result = execute_once_with(&client, &url, "POST", &[], Some("payload")).await;
+        let result = execute_once_with(&client, &url, "POST", &[], Some("payload"), false).await;
         assert!(
             result.is_err(),
             "connection failure must surface as an error"

@@ -21,7 +21,10 @@
 	let editingTitle = $state(null); // { taskId, value }
 	let renameValue = $state('');
 
-	const todayISO = $derived(new Date().toISOString().slice(0, 10));
+	const todayISO = $derived.by(() => {
+		const n = new Date();
+		return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+	});
 
 	import logger from '$lib/logger.js';
 	import { buildReviewMessages, mergeLiveStreaming, formatDate } from '$lib/reviewMessages.js';
@@ -42,6 +45,7 @@
 		{ value: 'completed', label: 'Completed' },
 		{ value: 'paused', label: 'Paused' },
 		{ value: 'error', label: 'Error' },
+		{ value: 'failed', label: 'Failed' },
 	];
 
 	let unlistenTitleUpdate = null;
@@ -93,21 +97,26 @@
 
 	async function loadMore() {
 		if (loading || !hasMore) return;
+		const seq = loadHistorySeq;
 		loading = true;
 		try {
 			const more = await invoke('search_history_filtered', filterParams({ limit: PAGE_SIZE, offset }));
+			// Stale guard: a filter/search change superseded this page fetch.
+			if (seq !== loadHistorySeq) return;
 			if (more && more.length > 0) {
 				tasks = [...tasks, ...more];
 				offset += more.length;
 				hasMore = more.length >= PAGE_SIZE;
+				totalCount = tasks.length;
 			} else {
 				hasMore = false;
 			}
 		} catch {
+			if (seq !== loadHistorySeq) return;
 			hasMore = false;
 			addNotification('加载更多历史记录失败', 'error', 3000);
 		}
-		loading = false;
+		if (seq === loadHistorySeq) loading = false;
 	}
 
 	async function handleSearchInput() {
@@ -130,7 +139,7 @@
 				mergeLiveStreaming(dbMessages, existing)
 			);
 			restoreTaskTokenStats(task.id, result.usage, result.usage_estimated);
-			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title, wasError: task.status === 'error' });
+			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title, wasError: task.status === 'error' || task.status === 'failed' });
 			await goto('/');
 		} catch (e) {
 			addNotification(`加载任务详情失败: ${e}`, 'error', 4000);

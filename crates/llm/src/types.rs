@@ -31,6 +31,7 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
                         .collect()
                 }),
                 reasoning: m.reasoning,
+                web_search_calls: m.web_search_calls,
             }
         })
         .collect()
@@ -51,6 +52,12 @@ pub struct LlmMessage {
     /// multi-turn requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Raw `web_search_call` output items from the provider's built-in web
+    /// search tool. Must be passed back verbatim in the next request's input
+    /// so the server can restore the search context (stateless Responses
+    /// API). Never parsed or rewritten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_search_calls: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -130,6 +137,28 @@ impl FinishReason {
     }
 }
 
+/// Live status of the provider's built-in web search tool (DeepSeek /
+/// OpenAI Responses API). Forwarded to the UI so the user sees
+/// "正在联网搜索…" while the search runs server-side.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchPhase {
+    #[default]
+    InProgress,
+    Searching,
+    Completed,
+}
+
+impl WebSearchPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WebSearchPhase::InProgress => "in_progress",
+            WebSearchPhase::Searching => "searching",
+            WebSearchPhase::Completed => "completed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmResponse {
     pub text: String,
@@ -141,6 +170,18 @@ pub struct LlmResponse {
     /// Internal reasoning/chain-of-thought produced by the model (e.g.
     /// DeepSeek-R1's reasoning_content, Claude's extended thinking).
     pub reasoning: Option<String>,
+    /// Raw `web_search_call` output items (see [`LlmMessage::web_search_calls`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_search_calls: Vec<serde_json::Value>,
+}
+
+/// A batch of text embeddings produced by the dedicated `embedding_model`
+/// endpoint. `vectors[i]` corresponds to `input[i]` of the request.
+#[derive(Debug, Clone)]
+pub struct Embedding {
+    pub vectors: Vec<Vec<f32>>,
+    pub model: Option<String>,
+    pub usage: Usage,
 }
 
 /// OpenAI-compatible tool definition for function calling.
@@ -259,6 +300,13 @@ pub struct StreamChunk {
     /// Internal reasoning/chain-of-thought delta (e.g. DeepSeek-R1's
     /// reasoning_content, Claude's extended thinking).
     pub reasoning: Option<String>,
+    /// Live web search status (in_progress → searching → completed). Set on
+    /// the chunk matching the provider's stream event; the UI renders the
+    /// "正在联网搜索…" indicator from it.
+    pub web_search: Option<WebSearchPhase>,
+    /// Raw `web_search_call` items accumulated while streaming (see
+    /// [`LlmMessage::web_search_calls`]).
+    pub web_search_calls: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -339,6 +387,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         assert_eq!(msg.role.to_string(), "system");
         assert_eq!(msg.content.len(), 1);
@@ -352,6 +401,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         assert_eq!(msg.role.to_string(), "user");
         assert_eq!(msg.content.len(), 1);
@@ -365,6 +415,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         assert_eq!(msg.role.to_string(), "assistant");
         assert!(msg.content.is_empty());
@@ -483,6 +534,8 @@ mod tests {
             usage: None,
             model: None,
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
         assert_eq!(chunk.text, Some("delta".into()));
         assert!(chunk.tool_calls.is_empty());
@@ -507,6 +560,8 @@ mod tests {
             }),
             model: Some("gpt-4o".into()),
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
         assert_eq!(chunk.tool_calls.len(), 1);
         assert_eq!(chunk.tool_calls[0].name, "shell");
@@ -550,6 +605,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs.len(), 1);
@@ -565,6 +621,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "user");
@@ -579,6 +636,7 @@ mod tests {
             tool_call_id: Some("tid".into()),
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "tool");
@@ -594,6 +652,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].role.to_string(), "assistant");
@@ -611,6 +670,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let msgs = convert_to_llm(vec![cm]);
         assert_eq!(msgs[0].content.len(), 2);
@@ -626,6 +686,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -634,6 +695,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let msgs = convert_to_llm(cms);

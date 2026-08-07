@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart};
-use haven_llm::types::LlmMessage;
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_llm::types::{LlmMessage, LlmRole};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
@@ -17,12 +17,24 @@ use crate::compactor::ContextCompactor;
 use crate::event::{AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, ReActStep};
 
-/// Convert a stored message attachment into an image content part for the LLM.
+/// Convert a stored message attachment into a content part for the LLM.
+/// Images become vision content parts (base64 payload); non-image file
+/// attachments (persisted on disk with a `path`) become a short text
+/// reference so the agent knows the file exists and where to read it with
+/// the file tool — the raw bytes are never shipped to the model.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
-    ContentPart::Image {
-        content_type: "image_url".into(),
-        media_type: att.media_type.clone(),
-        data: att.data.clone(),
+    if att.is_image() {
+        ContentPart::Image {
+            content_type: "image_url".into(),
+            media_type: att.media_type.clone(),
+            data: att.data.clone(),
+        }
+    } else {
+        let name = att.filename.as_deref().unwrap_or("attachment");
+        match &att.path {
+            Some(path) => ContentPart::text(format!("[附件: {name}，路径: {path}]")),
+            None => ContentPart::text(format!("[附件: {name}]")),
+        }
     }
 }
 
@@ -48,6 +60,26 @@ async fn choose_agent_role(router: &LlmRouter, messages: &[LlmMessage]) -> Endpo
 /// check and the wait registration would otherwise be lost and hang the
 /// handler forever. Bounded polling converts that into an extra latency.
 const PAUSE_POLL_MS: u64 = 500;
+
+/// Interval (in ReAct steps) at which long-running tasks re-run fact and
+/// preference inference mid-task, so memory is refreshed before the task
+/// ever pauses or completes.
+const FACT_INFER_INTERVAL_STEPS: u32 = 25;
+
+/// Message persisted when a run exhausts its step budget (`max_steps`). The
+/// task is intentionally paused as a checkpoint — the task is NOT finished,
+/// and the next user message resumes it with a fresh budget. System notices
+/// like this must NOT land in the chat as an assistant bubble; they are
+/// surfaced as a notification (in-app toast + Windows) instead.
+const BUDGET_EXHAUSTED_TITLE: &str = "任务步骤上限已用尽";
+const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任务已暂停。发一条消息即可继续。";
+
+/// Nudge appended to the retry call when a text-only response looks cut off
+/// (truncated generation or text ending mid-sentence). The retry is private
+/// to the loop — the nudge is never persisted into the canonical, so the
+/// conversation stream stays clean if the retry succeeds or falls back.
+const CUT_OFF_RETRY_NUDGE: &str =
+    "Your previous response was cut off before you finished. Please continue and complete it.";
 
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
@@ -211,13 +243,21 @@ impl ReActEngine {
 
         let supplements = self.executor.get_supplements(task_id).await;
         for supplement in &supplements {
+            // A reply to a pending `ask` is injected as a paired answer so
+            // the model sees the old question as resolved instead of treating
+            // it as a second open question to answer again.
+            let prefix = if supplement.is_answer {
+                "Answer to your previous question"
+            } else {
+                "Additional context from user"
+            };
             self.push_user_context(
                 task_id,
                 step_num,
                 run_id,
                 emitter,
                 canonical,
-                "Additional context from user",
+                prefix,
                 &supplement.text,
                 &supplement.attachments,
             )
@@ -316,14 +356,14 @@ impl ReActEngine {
         // When resuming past the configured cap (e.g. a task that used all
         // `max_steps` then paused for the user's next turn), give the loop
         // another full budget so the resume doesn't degenerate into an
-        // immediate `pause_turn("Task completed.")` below. This intentionally
+        // immediate budget-exhaustion pause below. This intentionally
         // re-budgets on every resume — a task can run `max_steps` per run,
         // not once per task lifetime (documented in refactor-dedup.md A9).
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
-        // Guard so an empty model response is retried at most once per task.
-        // Initialized outside the step loop so the assignment below is read by
-        // later iterations (keeps the lint clean).
+        // Guard so an empty or cut-off model response is retried at most once
+        // per run. Initialized outside the step loop so the assignment below
+        // is read by later iterations (keeps the lint clean).
         let mut retried_empty = false;
 
         for step_num in start_step..=effective_max {
@@ -387,6 +427,15 @@ impl ReActEngine {
                 .await;
 
             self.maybe_compact(task_id, canonical, &emitter).await;
+
+            // Incremental fact/preference inference on long-running tasks:
+            // turns that never pause would otherwise only trigger extraction
+            // at the very end. Every FACT_INFER_INTERVAL_STEPS steps we
+            // re-run inference; the upsert/known-facts machinery makes this
+            // idempotent (re-confirmed facts are reinforced, not duplicated).
+            if step_num % FACT_INFER_INTERVAL_STEPS == 0 {
+                infer();
+            }
 
             // No canonical may be sent to the LLM containing a tool message
             // without a preceding assistant tool_calls (providers reject it
@@ -618,9 +667,15 @@ impl ReActEngine {
             // A completely empty model response (no text, no reasoning, no
             // tool calls) is almost always a transient upstream glitch. Retry
             // the same context once before concluding the model decided
-            // nothing 鈥?otherwise the task would instantly "complete" with a
+            // nothing — otherwise the task would instantly "complete" with a
             // "No action decided." message and pause without answering.
-            if thought.is_none() && actions.is_empty() && !retried_empty {
+            // A response carrying `web_search_call` items is NOT empty: it is
+            // a server-side search round that must round-trip instead.
+            if thought.is_none()
+                && actions.is_empty()
+                && response.web_search_calls.is_empty()
+                && !retried_empty
+            {
                 retried_empty = true;
                 tracing::warn!(
                     "ReAct step {} task {} model returned an empty response; retrying once",
@@ -658,6 +713,86 @@ impl ReActEngine {
                 }
             }
 
+            // A text-only response that ends without an explicit tool call is
+            // only trusted as a deliberate final answer when it looks
+            // complete: the provider reported Stop AND the text does not end
+            // mid-sentence. Anything else — a truncated generation (Length /
+            // ContentFilter / unknown finish) or text cut off mid-thought —
+            // must not end the turn presenting a partial answer as final.
+            // Retry once with a continuation nudge (never persisted into the
+            // canonical); if the retry is also unusable, fall back to the
+            // original text below.
+            let pending_ask = Self::canonical_has_pending_ask(canonical);
+            // Responses that carried a web search call must never be re-asked:
+            // the search round itself is a legitimate (non-cut-off) outcome,
+            // and retrying would trigger a duplicate server-side search.
+            if !retried_empty
+                && !pending_ask
+                && response.web_search_calls.is_empty()
+                && Self::is_suspect_final(&thought, &actions, &response)
+            {
+                retried_empty = true;
+                tracing::warn!(
+                    "ReAct step {} task {} response looks cut off (finish={:?}); retrying once",
+                    step_num,
+                    task_id,
+                    response.finish_reason
+                );
+                let mut retry_messages = haven_llm::types::convert_to_llm(canonical.clone());
+                retry_messages.push(LlmMessage {
+                    role: LlmRole::User,
+                    content: vec![ContentPart::text(CUT_OFF_RETRY_NUDGE)],
+                    tool_call_id: None,
+                    tool_calls: None,
+                    reasoning: None,
+                    web_search_calls: Vec::new(),
+                });
+                match router
+                    .chat_stream_with_tools_aggregated(role, retry_messages, tools.to_vec(), |_| {})
+                    .await
+                {
+                    Ok(retry_resp) => {
+                        let (t2, a2) = Self::parse_default_model_response(&retry_resp, step_num);
+                        if t2.is_some() || !a2.is_empty() {
+                            thought = t2;
+                            actions = a2;
+                        } else {
+                            tracing::warn!(
+                                "ReAct step {} cut-off retry also returned an empty response",
+                                step_num
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("ReAct step {} cut-off retry failed: {}", step_num, e);
+                    }
+                }
+            }
+
+            // An unanswered `ask` still pending in the canonical (a reply was
+            // lost to compaction/sanitization, or the model never resolved
+            // the question): the text-only-Stop heuristic must not end the
+            // turn. Drop the synthesized final so the empty-actions path
+            // below re-surfaces the question and pauses for the user's
+            // answer instead of "completing" with the question unanswered.
+            // Applied after the retries so a retry that produced a
+            // synthesized final is covered too; explicit final tool calls
+            // (the model decided to answer despite the pending question) are
+            // respected.
+            if pending_ask
+                && !actions.is_empty()
+                && actions
+                    .iter()
+                    .all(|a| a.is_final && a.tool_call_id.is_none())
+            {
+                tracing::warn!(
+                    "ReAct step {} task {} stopped while an ask is pending; keeping the turn open",
+                    step_num,
+                    task_id
+                );
+                actions.clear();
+            }
+
             tracing::trace!(
                 "ReAct step {} parsed: thought={}, actions={}",
                 step_num,
@@ -685,7 +820,73 @@ impl ReActEngine {
                 });
             }
 
+            // ── Web search round-trip ─────────────────────────────────────
+            // `web_search_call` output items come from the provider's
+            // server-side search tool (DeepSeek built-in). The search itself
+            // runs on the provider; the items must be passed back verbatim in
+            // the next request's input so the server restores the search
+            // context. Push an assistant message carrying them into the
+            // canonical so every subsequent path round-trips them.
+            let has_web_search = !response.web_search_calls.is_empty();
+            let synthesized_final = !actions.is_empty()
+                && actions
+                    .iter()
+                    .all(|a| a.is_final && a.tool_call_id.is_none());
+            if has_web_search && (actions.is_empty() || synthesized_final) {
+                canonical.push(CanonicalMessage::assistant(
+                    vec![ContentPart::text(response.text.clone())],
+                    None,
+                    response.reasoning.clone(),
+                    response.web_search_calls.clone(),
+                ));
+                if actions.is_empty() {
+                    // Search round: no answer yet, the follow-up request
+                    // carries the search context and produces the answer.
+                    // Keep the turn open and let the loop re-request.
+                    if let Some(ref t) = thought {
+                        self.persist_task_message(task_id, "assistant", t, Some("text"))
+                            .await;
+                    }
+                    self.save_branch_point(task_id, canonical, history, step_num, branch_points)
+                        .await;
+                    tracing::debug!(
+                        "ReAct step {} task {} server-side web search round ({} item(s)); continuing",
+                        step_num,
+                        task_id,
+                        response.web_search_calls.len()
+                    );
+                    continue;
+                }
+                // synthesized_final: the answer arrived in the same response
+                // as the search call — fall through to the final-answer path,
+                // which ends the turn. The canonical push above keeps the
+                // search context alive for follow-up turns.
+            }
+
             if actions.is_empty() {
+                // An `ask` is still pending unanswered (the model stopped
+                // without resolving it, and no user reply arrived to pair
+                // with it): the turn must not end on a heuristic final.
+                // Re-surface the question and pause so the user's next
+                // message is treated as the answer.
+                if pending_ask {
+                    let question = Self::extract_pending_ask_question(canonical);
+                    self.pause_turn(
+                        task_id,
+                        canonical,
+                        history,
+                        step_num + 1,
+                        branch_points,
+                        &emitter,
+                        TaskStatus::Paused,
+                        &question,
+                        None,
+                        true,
+                        infer,
+                    )
+                    .await?;
+                    return Ok(());
+                }
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
                 if let Some(last) = history.last_mut() {
                     last.action = Some(Action {
@@ -825,10 +1026,15 @@ impl ReActEngine {
                             .collect(),
                     )
                 };
+                // A response mixing real tool calls with a web search round
+                // carries both: the `web_search_call` items round-trip in the
+                // same assistant message so the next request restores the
+                // search context alongside the function tool results.
                 canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(response.text.clone())],
                     tool_calls,
                     response.reasoning.clone(),
+                    response.web_search_calls.clone(),
                 ));
             }
 
@@ -1072,9 +1278,12 @@ impl ReActEngine {
                 let steering = self.executor.get_steering(task_id).await;
                 let has_answer = !steering.is_empty();
                 for s in &steering {
+                    // The interjection is the user's reply to the pending
+                    // question: queue it as a paired answer so the model does
+                    // not re-answer the old question on resume.
                     let _ = self
                         .executor
-                        .add_supplement_with_attachments(task_id, &s.text, &s.attachments)
+                        .add_answer_with_attachments(task_id, &s.text, &s.attachments)
                         .await;
                 }
                 let status = if has_answer {
@@ -1116,17 +1325,13 @@ impl ReActEngine {
             }
         }
 
-        self.pause_turn(
+        self.pause_turn_budget(
             task_id,
             canonical,
             history,
             last_step + 1,
             branch_points,
             &emitter,
-            TaskStatus::Paused,
-            "Task completed.",
-            None,
-            false,
             infer,
         )
         .await?;
@@ -1163,6 +1368,8 @@ impl ReActEngine {
     /// pause/complete paths so the persist → branch-point → snapshot →
     /// status → event ordering cannot drift between them. The snapshot is
     /// taken after the branch point so it includes the newly added entry.
+    /// The step-budget checkpoint uses `pause_turn_budget` instead, which
+    /// skips the assistant-message persist (the notice is a notification).
     #[allow(clippy::too_many_arguments)]
     async fn pause_turn(
         &self,
@@ -1203,6 +1410,134 @@ impl ReActEngine {
             .await;
         infer();
         Ok(())
+    }
+
+    /// Pause the task because the run exhausted its step budget. Mirrors
+    /// `pause_turn`'s checkpoint side effects (snapshot, Paused status,
+    /// infer) but does NOT persist an assistant chat message: system notices
+    /// of this kind must not pollute the conversation stream as fake agent
+    /// replies — they are surfaced as a notification (in-app toast +
+    /// Windows) instead, so the user sees them without the chat pretending
+    /// the turn produced an answer.
+    #[allow(clippy::too_many_arguments)]
+    async fn pause_turn_budget(
+        &self,
+        task_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        snapshot_step: u32,
+        branch_points: &mut HashMap<u32, BranchPoint>,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        infer: &(dyn Fn() + Send + Sync),
+    ) -> anyhow::Result<()> {
+        self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
+            .await;
+        let status_str = TaskStatus::Paused.as_str().to_string();
+        self.executor
+            .update_task_status(task_id, TaskStatus::Paused)
+            .await?;
+        emitter
+            .emit(crate::event::AgentEvent::TaskUpdated {
+                task_id: task_id.into(),
+                status: status_str,
+            })
+            .await;
+        emitter
+            .emit(crate::event::AgentEvent::Notification {
+                task_id: task_id.into(),
+                title: BUDGET_EXHAUSTED_TITLE.into(),
+                body: BUDGET_EXHAUSTED_BODY.into(),
+            })
+            .await;
+        infer();
+        Ok(())
+    }
+
+    /// True when the canonical ends with an unanswered `ask`: an `ask` tool
+    /// result is present and no user message follows it. The ask pause path
+    /// normally prevents this state from reaching an LLM call, but a reply
+    /// lost to compaction/sanitization or a dropped answer can leave the
+    /// question dangling — and a model Stop response must then not be judged
+    /// final (it would end the turn with the question still unanswered).
+    fn canonical_has_pending_ask(canonical: &[CanonicalMessage]) -> bool {
+        let mut last_ask = None;
+        for (i, m) in canonical.iter().enumerate() {
+            if m.role == CanonicalRole::Tool
+                && m.content.iter().any(|p| match p {
+                    ContentPart::Text(t) => {
+                        t.contains("\"ask\":true") || t.contains("\"ask\": true")
+                    }
+                    _ => false,
+                })
+            {
+                last_ask = Some(i);
+            }
+        }
+        last_ask.is_some_and(|idx| {
+            canonical[idx + 1..]
+                .iter()
+                .all(|m| m.role != CanonicalRole::User)
+        })
+    }
+
+    /// Extract the question text of the last unanswered `ask` tool result in
+    /// the canonical. Falls back to a generic prompt when the tool output is
+    /// truncated or unparseable.
+    fn extract_pending_ask_question(canonical: &[CanonicalMessage]) -> String {
+        for m in canonical.iter().rev() {
+            if m.role != CanonicalRole::Tool {
+                continue;
+            }
+            for p in &m.content {
+                let ContentPart::Text(t) = p else { continue };
+                if !(t.contains("\"ask\":true") || t.contains("\"ask\": true")) {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(t)
+                    && let Some(q) = v.get("question").and_then(|q| q.as_str())
+                {
+                    return q.to_string();
+                }
+            }
+        }
+        "I have a pending question for you.".into()
+    }
+
+    /// True when a text-only response should not be trusted as a deliberate
+    /// final answer: either the provider did not report Stop (truncated /
+    /// filtered / unknown finish) or the text itself ends mid-sentence
+    /// (trailing comma/connector/ellipsis — the generation was interrupted
+    /// rather than concluded).
+    fn looks_cut_off(text: &str) -> bool {
+        text.ends_with("...")
+            || text.ends_with("···")
+            || matches!(
+                text.chars().last(),
+                Some('，' | '、' | '；' | '：' | ',' | ';' | ':' | '…')
+            )
+    }
+
+    /// True when the parsed response is a text-only "final" that must be
+    /// retried before ending the turn. Trusts explicit tool calls (final or
+    /// not) and empty responses (handled by the empty-response retry); only
+    /// a thought without actions is examined, and it must pass both the
+    /// finish-reason and the mid-sentence checks.
+    fn is_suspect_final(
+        thought: &Option<String>,
+        actions: &[Action],
+        response: &LlmResponse,
+    ) -> bool {
+        if !actions.is_empty()
+            && !actions
+                .iter()
+                .all(|a| a.is_final && a.tool_call_id.is_none())
+        {
+            return false;
+        }
+        match thought {
+            Some(t) => response.finish_reason != Some(FinishReason::Stop) || Self::looks_cut_off(t),
+            None => false,
+        }
     }
 
     /// Parse LLM response into thought text and actions.
@@ -1410,6 +1745,17 @@ impl ReActEngine {
         let task_id_c = task_id.to_string();
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
+        // Web search phases are emitted as discrete events (not deltas), so
+        // they bypass the chunk batcher through their own channel: the
+        // on_chunk callback is synchronous and cannot await the emitter.
+        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+        let ws_tx_c = ws_tx.clone();
+        let em_ws = emitter.clone();
+        let ws_task = tokio::spawn(async move {
+            while let Some(event) = ws_rx.recv().await {
+                em_ws.emit(event).await;
+            }
+        });
         let result = router
             .chat_stream_with_tools_aggregated_cancellable(
                 role,
@@ -1435,6 +1781,14 @@ impl ReActEngine {
                             tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                         }
                     }
+                    if let Some(phase) = c.web_search {
+                        let _ = ws_tx_c.send(crate::event::AgentEvent::WebSearch {
+                            task_id: task_id_c.clone(),
+                            phase: phase.as_str().to_string(),
+                            step_number: step_num,
+                            run_id,
+                        });
+                    }
                 },
                 cancel,
             )
@@ -1443,9 +1797,11 @@ impl ReActEngine {
         // reach the frontend before the caller continues (e.g. records usage).
         drop(chunk_tx);
         drop(reasoning_tx);
+        drop(ws_tx);
         if let Some(handle) = consumer_handle {
             let _ = handle.await;
         }
+        let _ = ws_task.await;
         result
     }
 
@@ -1575,6 +1931,7 @@ impl ReActEngine {
             EndpointRole::BalancedModel => &cfg.balanced_model,
             EndpointRole::ImageModel => &cfg.image_model,
             EndpointRole::AudioModel => &cfg.audio_model,
+            EndpointRole::EmbeddingModel => &cfg.embedding_model,
         };
         Some(haven_llm::registry::context_window_for(ep))
     }
@@ -1737,6 +2094,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -1751,6 +2109,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -1812,6 +2171,7 @@ mod tests {
             usage: haven_llm::types::Usage::default(),
             model: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -1951,5 +2311,139 @@ mod tests {
         let r = resp("  spaced thought  ", vec![], Some(FinishReason::Stop));
         let (thought, _) = ReActEngine::parse_default_model_response(&r, 1);
         assert_eq!(thought.as_deref(), Some("spaced thought"));
+    }
+
+    fn ask_tool_msg(question: &str) -> CanonicalMessage {
+        CanonicalMessage::tool(
+            vec![ContentPart::text(format!(
+                r#"{{"ask":true,"question":"{question}","awaiting_answer":true,"options":[]}}"#
+            ))],
+            Some("call_ask".into()),
+        )
+    }
+    #[test]
+    fn pending_ask_true_when_ask_result_unanswered() {
+        let canonical = vec![
+            CanonicalMessage::user_text("help me"),
+            ask_tool_msg("which file?"),
+        ];
+        assert!(ReActEngine::canonical_has_pending_ask(&canonical));
+    }
+
+    #[test]
+    fn pending_ask_false_when_user_message_follows_ask() {
+        let canonical = vec![
+            CanonicalMessage::user_text("help me"),
+            ask_tool_msg("which file?"),
+            CanonicalMessage::user_text("Answer to your previous question: the first one"),
+        ];
+        assert!(!ReActEngine::canonical_has_pending_ask(&canonical));
+    }
+
+    #[test]
+    fn pending_ask_false_when_no_ask_tool_result() {
+        let canonical = vec![
+            CanonicalMessage::user_text("help me"),
+            CanonicalMessage::tool(
+                vec![ContentPart::text(r#"{"success":true,"output":"ok"}"#)],
+                Some("call_x".into()),
+            ),
+        ];
+        assert!(!ReActEngine::canonical_has_pending_ask(&canonical));
+    }
+
+    #[test]
+    fn pending_ask_false_when_user_message_before_ask() {
+        let canonical = vec![
+            CanonicalMessage::user_text("first question"),
+            ask_tool_msg("second question?"),
+        ];
+        // The user message precedes the ask result: still pending.
+        assert!(ReActEngine::canonical_has_pending_ask(&canonical));
+    }
+
+    #[test]
+    fn extract_pending_ask_question_reads_last_ask() {
+        let canonical = vec![ask_tool_msg("first?"), ask_tool_msg("second?")];
+        assert_eq!(
+            ReActEngine::extract_pending_ask_question(&canonical),
+            "second?"
+        );
+    }
+
+    #[test]
+    fn extract_pending_ask_question_falls_back_on_unparseable_output() {
+        let canonical = vec![CanonicalMessage::tool(
+            vec![ContentPart::text("truncated {\"ask\":true,\"quest")],
+            Some("call_ask".into()),
+        )];
+        assert_eq!(
+            ReActEngine::extract_pending_ask_question(&canonical),
+            "I have a pending question for you."
+        );
+    }
+
+    #[test]
+    fn looks_cut_off_detects_mid_sentence_endings() {
+        assert!(ReActEngine::looks_cut_off("让我先查一下，")); // trailing comma
+        assert!(ReActEngine::looks_cut_off("checking the file,"));
+        assert!(ReActEngine::looks_cut_off("waiting for result...")); // ellipsis
+        assert!(ReActEngine::looks_cut_off("然后需要："));
+        assert!(!ReActEngine::looks_cut_off("好的，已经完成了。"));
+        assert!(!ReActEngine::looks_cut_off("The answer is 42."));
+        assert!(!ReActEngine::looks_cut_off("完成"));
+    }
+
+    #[test]
+    fn is_suspect_final_trusts_explicit_tool_calls() {
+        let explicit = Action {
+            tool_name: "final_answer".into(),
+            tool_input: serde_json::Value::Null,
+            is_final: true,
+            tool_call_id: Some("c1".into()),
+        };
+        let r = resp("done", vec![], Some(FinishReason::ToolCalls));
+        assert!(!ReActEngine::is_suspect_final(
+            &Some("done".into()),
+            &[explicit],
+            &r
+        ));
+    }
+
+    #[test]
+    fn is_suspect_final_flags_truncated_finish() {
+        for finish in [
+            Some(FinishReason::Length),
+            Some(FinishReason::ContentFilter),
+            None,
+        ] {
+            let r = resp("partial text", vec![], finish);
+            assert!(
+                ReActEngine::is_suspect_final(&Some("partial text".into()), &[], &r),
+                "finish={finish:?} must be suspect"
+            );
+        }
+    }
+
+    #[test]
+    fn is_suspect_final_flags_stop_with_cut_off_text_but_accepts_complete() {
+        let r = resp("让我先查一下，", vec![], Some(FinishReason::Stop));
+        assert!(ReActEngine::is_suspect_final(
+            &Some("让我先查一下，".into()),
+            &[],
+            &r
+        ));
+        let r2 = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
+        assert!(!ReActEngine::is_suspect_final(
+            &Some("好的，已经完成了。".into()),
+            &[],
+            &r2
+        ));
+    }
+
+    #[test]
+    fn is_suspect_final_ignores_empty_thought() {
+        let r = resp("", vec![], Some(FinishReason::Length));
+        assert!(!ReActEngine::is_suspect_final(&None, &[], &r));
     }
 }

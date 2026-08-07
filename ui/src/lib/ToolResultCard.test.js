@@ -112,6 +112,46 @@ describe('ToolResultCard ask', () => {
 		await fireEvent.click(screen.getByText('立即执行'));
 		expect(onQuickReply).toHaveBeenCalledWith('ask-42', '立即执行');
 	});
+
+	it('fires onIgnore with the message id', async () => {
+		const onIgnore = vi.fn();
+		render(ToolResultCard, {
+			type: 'ask',
+			content: '选择？',
+			options: ['方案 A'],
+			awaiting: true,
+			messageId: 'ask-7',
+			onIgnore,
+		});
+		await fireEvent.click(screen.getByText('忽略'));
+		expect(onIgnore).toHaveBeenCalledWith('ask-7');
+	});
+
+	it('shows the chosen answer and hides buttons once resolved', () => {
+		const { container } = render(ToolResultCard, {
+			type: 'ask',
+			content: '选哪个？',
+			options: ['方案 A'],
+			awaiting: false,
+			resolved: { answer: '方案 A' },
+		});
+		expect(screen.getByText('已选择：方案 A')).toBeTruthy();
+		expect(container.querySelector('.ask-option')).toBeNull();
+		expect(container.querySelector('.ask-ignore')).toBeNull();
+		expect(container.querySelector('.ask-waiting')).toBeNull();
+	});
+
+	it('shows 已忽略 once the question is ignored', () => {
+		const { container } = render(ToolResultCard, {
+			type: 'ask',
+			content: '选哪个？',
+			options: ['方案 A'],
+			awaiting: false,
+			resolved: { ignored: true },
+		});
+		expect(screen.getByText('已忽略')).toBeTruthy();
+		expect(container.querySelector('.ask-ignore')).toBeNull();
+	});
 });
 
 describe('ToolResultCard shell / notify / generic', () => {

@@ -17,6 +17,7 @@ export const settingsStore = writable({
 		balanced_model: { provider: 'local', model: 'llama3', temperature: 0.7 },
 		image_model: { provider: 'openai', model: 'gpt-4o', temperature: 0.2 },
 		audio_model: { provider: 'openai', model: 'gpt-4o-audio-preview', temperature: 0 },
+		embedding_model: { provider: 'openai', model: 'text-embedding-3-small', temperature: 0 },
 	},
 	hotkey: { key_binding: 'Ctrl+Shift+Space', mode: 'toggle', mute_hotkey: null },
 	autostart: false,

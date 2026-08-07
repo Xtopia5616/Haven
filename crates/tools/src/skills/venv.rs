@@ -67,6 +67,7 @@ impl VenvManager {
                 .arg("-m")
                 .arg("venv")
                 .arg(&venv)
+                .current_dir(haven_common::default_work_dir())
                 .output()
                 .await
                 .map_err(|e| {
@@ -98,6 +99,7 @@ impl VenvManager {
                     .arg("install")
                     .arg("-r")
                     .arg(&req_path)
+                    .current_dir(haven_common::default_work_dir())
                     .output()
                     .await
                     .map_err(|e| {

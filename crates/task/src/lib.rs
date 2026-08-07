@@ -2,7 +2,7 @@ use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
 use haven_memory::repositories::tasks::Task as DbTask;
-use haven_tools::{is_silent_action, ToolResult, ToolsManager};
+use haven_tools::{ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -19,6 +19,13 @@ pub struct Supplement {
     pub text: String,
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
+    /// True when this message is the user's reply to a pending `ask`
+    /// question. The ReAct loop injects it as a paired answer ("Answer to
+    /// your previous question") instead of generic additional context, so
+    /// the model does not treat the old question as still open and answer
+    /// stale questions again.
+    #[serde(default)]
+    pub is_answer: bool,
 }
 
 impl Supplement {
@@ -26,6 +33,15 @@ impl Supplement {
         Self {
             text: text.into(),
             attachments,
+            is_answer: false,
+        }
+    }
+
+    pub fn answer(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
+        Self {
+            text: text.into(),
+            attachments,
+            is_answer: true,
         }
     }
 }
@@ -332,7 +348,9 @@ impl TaskExecutor {
                 task.updated_at = chrono::Utc::now().to_rfc3339();
                 let db = self.db.clone();
                 let tid = task_id.clone();
-                let _ = db.run_blocking(move |db| db.update_task_status(&tid, "running")).await;
+                let _ = db
+                    .run_blocking(move |db| db.update_task_status(&tid, "running"))
+                    .await;
                 running.insert(task_id.clone());
                 tracing::debug!("try_claim_pending: claimed task {}", task_id);
                 return Some(task_id);
@@ -388,13 +406,41 @@ impl TaskExecutor {
         text: &str,
         attachments: &[MessageAttachment],
     ) -> anyhow::Result<()> {
+        self.push_supplement(task_id, text, attachments, false)
+            .await
+    }
+
+    /// Queue a supplement that is the user's reply to a pending `ask`
+    /// question. Injected as a paired answer on resume so the model no
+    /// longer sees the old question as open.
+    pub async fn add_answer_with_attachments(
+        &self,
+        task_id: &str,
+        text: &str,
+        attachments: &[MessageAttachment],
+    ) -> anyhow::Result<()> {
+        self.push_supplement(task_id, text, attachments, true).await
+    }
+
+    async fn push_supplement(
+        &self,
+        task_id: &str,
+        text: &str,
+        attachments: &[MessageAttachment],
+        is_answer: bool,
+    ) -> anyhow::Result<()> {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.supplement_queue
-                .push(Supplement::new(text, attachments.to_vec()));
+            let supplement = if is_answer {
+                Supplement::answer(text, attachments.to_vec())
+            } else {
+                Supplement::new(text, attachments.to_vec())
+            };
+            task.supplement_queue.push(supplement);
             tracing::debug!(
-                "task {} supplement added ({} chars, {} attachments)",
+                "task {} {} added ({} chars, {} attachments)",
                 task_id,
+                if is_answer { "answer" } else { "supplement" },
                 text.len(),
                 attachments.len()
             );
@@ -1227,15 +1273,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn answer_supplement_carries_is_answer_flag() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = TaskExecutor::new(db, tools, 3);
+        let task = exec.create_task("test").await.unwrap();
+        exec.add_answer_with_attachments(&task.id, "the answer", &[])
+            .await
+            .unwrap();
+        exec.add_supplement(&task.id, "plain context")
+            .await
+            .unwrap();
+        let drained = exec.get_supplements(&task.id).await;
+        assert_eq!(drained.len(), 2);
+        assert!(drained[0].is_answer, "first message is an ask reply");
+        assert_eq!(drained[0].text, "the answer");
+        assert!(!drained[1].is_answer, "plain supplement is not an answer");
+    }
+
+    #[tokio::test]
     async fn add_and_get_supplements_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec.create_task("test").await.unwrap();
-        let att = MessageAttachment {
-            media_type: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        };
+        let att = MessageAttachment::new("image/png", "aGVsbG8=");
         exec.add_supplement_with_attachments(&task.id, "鐪嬪浘", std::slice::from_ref(&att))
             .await
             .unwrap();

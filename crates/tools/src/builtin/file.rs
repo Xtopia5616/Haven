@@ -140,6 +140,7 @@ async fn understand_image(
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         },
         LlmMessage {
             role: LlmRole::User,
@@ -151,6 +152,7 @@ async fn understand_image(
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         },
     ];
 
@@ -805,6 +807,7 @@ async fn summarize(
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         },
         LlmMessage {
             role: LlmRole::User,
@@ -812,6 +815,7 @@ async fn summarize(
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         },
     ];
 

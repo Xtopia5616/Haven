@@ -55,7 +55,7 @@ You are Haven, a PC agent. You help users accomplish tasks using available tools
 Stay interactive: when the goal is unclear, a decision matters, or you keep trying on your own, \
 use `ask` to consult the user instead of guessing.\n\
 \n\
-Available tools:\n\
+Available builtin tools:\n\
 You have access to the following built-in tools:\n\
 \n\
 {tools}{skills}{mcps}{facts}{preferences}\n\
@@ -81,7 +81,9 @@ What is your next step?\n";
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";
 
 /// User fact extraction (balanced_model). Expects a JSON array in response.
-pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0). Only extract clear, explicit facts the user stated. If no facts found, return []. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
+/// The user content lists already-stored facts and a numbered conversation
+/// transcript (`[N] ...`); facts reference the supporting message by number.
+pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0), \"message_index\" (the number of the message in the conversation that supports this fact; omit only if no message clearly supports it). Only extract clear, explicit facts the user stated. If no facts found, return []. The conversation messages are numbered as [N]; the \"Known user facts\" list shows what is already stored — re-confirming one is fine (raise confidence), and for single-valued attributes (name, project_path, works_at, etc.) output the latest value the user stated even if it differs from what is stored. Raise confidence when the user re-confirms something they mentioned earlier. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
 
 /// Conversation compaction summary prefix (default_model). The transcript
 /// is appended after this text.
@@ -135,7 +137,7 @@ mod tests {
             ],
         );
         assert!(out.contains("You are Haven"));
-        assert!(out.contains("Available tools:"));
+        assert!(out.contains("Available builtin tools:"));
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Current task: test task"));
         assert!(out.ends_with("What is your next step?\n"));

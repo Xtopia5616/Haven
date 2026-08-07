@@ -30,7 +30,8 @@ impl Tool for ProcessTool {
             "properties": {
                 "operation": { "type": "string", "enum": ["list", "launch", "kill"] },
                 "command": { "type": "string" },
-                "pid": { "type": "integer" }
+                "pid": { "type": "integer" },
+                "cwd": { "type": "string", "description": "Working directory for the launched command. Defaults to the shared Temp working directory.", "default": null }
             },
             "required": ["operation"]
         })
@@ -95,6 +96,12 @@ impl Tool for ProcessTool {
                 // terminate the launched process).
                 let mut child = tokio::process::Command::new("cmd");
                 child.args(["/c", cmd]);
+                // Default to the shared Temp working directory so launched
+                // commands do not execute in the app's own working directory.
+                child.current_dir(haven_common::default_work_dir());
+                if let Some(cwd) = input["cwd"].as_str().filter(|s| !s.is_empty()) {
+                    child.current_dir(cwd);
+                }
                 // Hide the console window when spawning GUI-less commands.
                 #[cfg(windows)]
                 {

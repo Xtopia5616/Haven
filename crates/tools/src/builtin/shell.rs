@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -44,7 +45,8 @@ impl Tool for ShellTool {
                 "command": { "type": "string", "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in" },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately", "default": false }
+                "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately", "default": false },
+                "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
             },
             "required": ["command"]
         })
@@ -61,6 +63,10 @@ impl Tool for ShellTool {
         #[cfg(not(windows))]
         let shell = input["shell"].as_str().unwrap_or("sh");
         let max_chars = self.max_output_chars();
+        let cwd = input["cwd"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -69,7 +75,7 @@ impl Tool for ShellTool {
         // Background mode: hand the command to the job registry and return
         // immediately. The agent polls status with the returned job_id.
         if input["background"].as_bool().unwrap_or(false) {
-            let job_id = self.jobs.spawn_shell(cmd, shell, max_chars).await?;
+            let job_id = self.jobs.spawn_shell(cmd, shell, max_chars, cwd).await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
                 "job_id": job_id,
@@ -79,6 +85,9 @@ impl Tool for ShellTool {
         }
 
         let mut std_cmd = bg::build_shell_command_silent(shell, cmd);
+        if let Some(cwd) = cwd {
+            std_cmd.current_dir(cwd);
+        }
 
         // Suppress console window in silent mode
         if silent {

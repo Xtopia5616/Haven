@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod compactor;
@@ -86,7 +86,7 @@ fn truncate_notification(text: &str) -> String {
 /// rejected with a 400 by providers.
 ///
 /// True when a single `CanonicalMessage` is part of a dangling boundary
-/// that must not start a suffix — either a `Tool` result or an `Assistant`
+/// that must not start a suffix ??either a `Tool` result or an `Assistant`
 /// message that declared `tool_calls`. Providers reject the former when its
 /// declaration is missing above it and the latter when its results are
 /// missing below it, so both forms need to slide past (in
@@ -144,6 +144,15 @@ pub struct AgentLayer {
     react_engine: Arc<ReActEngine>,
     inference: Arc<InferenceEngine>,
     title: Option<TitleGenerator>,
+}
+
+/// A recent conversation message used to re-seed context when resuming a
+/// task. Kept as (role, content) pairs so the resume path can deduplicate
+/// against the restored canonical instead of blindly duplicating every turn.
+#[derive(Debug, Clone)]
+struct ConversationMessage {
+    role: String,
+    content: String,
 }
 
 impl AgentLayer {
@@ -222,9 +231,9 @@ impl AgentLayer {
     }
 
     /// Reopen a terminal task to Paused state.
-    /// Used by the history review flow 鈥?shows the task as active on the chat
+    /// Used by the history review flow ??shows the task as active on the chat
     /// page.  The dispatcher won't pick it up until the user sends a
-    /// follow-up message (which calls supplement_task 鈫?Paused鈫扨ending).
+    /// follow-up message (which calls supplement_task ??Paused→Pending).
     pub async fn reopen_task(&self, task_id: &str) -> anyhow::Result<()> {
         // Terminal tasks (Error/Completed) are removed from the in-memory
         // list by unmark_running, so ensure_task_loaded is needed to bring
@@ -261,6 +270,23 @@ impl AgentLayer {
             }
         });
         self.react_engine.replace_router(new_router);
+    }
+
+    /// Run the full memory maintenance pass (fact dedup, sensitive purge,
+    /// low-confidence flush, embedding pruning). Exposed for the app-level
+    /// scheduler so decay/cleanup runs on a timer, not only post-inference.
+    pub async fn run_memory_maintenance(&self) {
+        self.inference.run_memory_maintenance().await;
+    }
+
+    /// Retrieve memory items (facts or episodes) most relevant to `query`.
+    pub async fn recall_memory(
+        &self,
+        query: &str,
+        kind: &str,
+        limit: usize,
+    ) -> Vec<serde_json::Value> {
+        self.inference.recall_memory(query, kind, limit).await
     }
 
     pub fn set_max_steps(&self, max_steps: u32) {
@@ -346,7 +372,7 @@ impl AgentLayer {
         //   Windows notification), exactly like the `notify` tool's signal.
         // - `tool`: execute the scheduled tool with its stored arguments
         //   (no LLM round-trip), then notify the user of the outcome.
-        // - `continue`: resume the task that scheduled the reminder — the
+        // - `continue`: resume the task that scheduled the reminder ??the
         //   reminder text is injected into that task's conversation and the
         //   task is woken, so a scheduled "keep going at 3pm" continues the
         //   same ReAct loop without anyone speaking. Legacy rows without a
@@ -406,7 +432,7 @@ impl AgentLayer {
                                 .filter(|s| !s.is_empty())
                                 .unwrap_or_else(|| "Reminder fired: continue the task.".into());
                             match agent
-                                .process_input_with_images(
+                                .process_input_with_attachments(
                                     &message,
                                     fired.task_id.clone(),
                                     &[],
@@ -449,15 +475,20 @@ impl AgentLayer {
         });
     }
 
-    /// Load the most recent conversation messages for a task as text lines
-    /// that get fed into the ReAct system prompt as Conversation History.
-    fn load_conversation_history(&self, task_id: &str) -> Vec<String> {
+    /// Load the most recent conversation messages for a task as (role,
+    /// content) pairs. The resume path deduplicates them against the
+    /// restored canonical before injecting, so the fresh-run system-prompt
+    /// path (`prompt_builder.build`) and the resume path share one source.
+    fn load_conversation_history(&self, task_id: &str) -> Vec<ConversationMessage> {
         self.db
             .get_task_messages_limit(task_id, self.conversation_window_size)
             .ok()
             .unwrap_or_default()
             .into_iter()
-            .map(|m| format!("[{}] {}", m.role, m.content))
+            .map(|m| ConversationMessage {
+                role: m.role,
+                content: m.content,
+            })
             .collect()
     }
 
@@ -520,7 +551,7 @@ impl AgentLayer {
         // diverge from the restored snapshot and overwrite it on the next save.
         // The loop observes the token at every wait point (step top, LLM call,
         // tool batch drain) and exits without touching status, so no Error
-        // marking is needed 鈥?setting Error here would only emit a spurious
+        // marking is needed ??setting Error here would only emit a spurious
         // "task interrupted" error event and trigger terminal cleanup.
         let state = self.executor.get_task_state(task_id).await;
         if state == TaskStatus::Running {
@@ -561,13 +592,13 @@ impl AgentLayer {
         let state_json = match self.db.get_react_state(task_id)? {
             Some(s) => s,
             None => {
-                // No saved state at all 鈥?this happens when a task errored
+                // No saved state at all ??this happens when a task errored
                 // before any snapshot was saved (e.g. first LLM call failed
                 // in an older version without Fix 1). We can't restore
                 // canonical, but we can still truncate session messages so
                 // the user can edit and re-send their input.
                 tracing::warn!(
-                    "rollback_task {}: no react_state 鈥?falling back to message-only truncation",
+                    "rollback_task {}: no react_state ??falling back to message-only truncation",
                     task_id
                 );
                 let cutoff = self.db.last_user_message_ts(task_id);
@@ -597,7 +628,7 @@ impl AgentLayer {
         // If no branch_point exists at the target step, the step likely
         // failed before save_branch_point was called (e.g. LLM error
         // mid-stream). In that case the snapshot's current canonical/history
-        // IS the pre-step state 鈥?use it directly.
+        // IS the pre-step state ??use it directly.
         let bp = if let Some(bp) = snapshot.branch_points.get(&target_step).cloned() {
             bp
         } else {
@@ -654,7 +685,7 @@ impl AgentLayer {
         // was dropped as the task was terminal) or before the app closed
         // mid-generation (the steering queue is in-memory only and is lost).
         // Such a message was never added to the ReAct canonical, so rolling
-        // back to it must discard ONLY that message — deleting from the
+        // back to it must discard ONLY that message ??deleting from the
         // branch point's cutoff would wipe valid earlier history.
         let task_msgs = self.db.get_task_messages(task_id).unwrap_or_default();
         let target_msg = target_message_id.and_then(|id| task_msgs.iter().find(|m| m.id == id));
@@ -672,7 +703,7 @@ impl AgentLayer {
                 // an edited version.
                 //
                 // `ts` (bp.last_msg_at) is the timestamp of the last message
-                // persisted BEFORE the target step ran 鈥?usually the step's
+                // persisted BEFORE the target step ran ??usually the step's
                 // thought, which is AFTER the user message. Deleting from
                 // `ts` alone would leave the rolled-back user input in the
                 // task, so it would reappear on the next review rebuild.
@@ -790,7 +821,7 @@ impl AgentLayer {
         // Create the new task in the DB (status pending), then overwrite its
         // status to paused and save the seeded react_state. The branch task
         // row must exist before messages can reference it (FK), so on any
-        // failure below the half-created record is deleted again — otherwise
+        // failure below the half-created record is deleted again ??otherwise
         // a ghost Paused task without react_state would linger forever.
         let record = self
             .db
@@ -885,7 +916,7 @@ impl AgentLayer {
         }
 
         // Load the snapshot saved on error to find the branch point's
-        // last_msg_at 鈥?the timestamp of the last message BEFORE the partial
+        // last_msg_at ??the timestamp of the last message BEFORE the partial
         // output. We delete everything after it so the retry starts clean.
         if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
             && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
@@ -960,12 +991,12 @@ impl AgentLayer {
         let context = task.input.clone();
 
         // Conversation history and message persistence are keyed by the task
-        // itself 鈥?there is no separate session indirection anymore.
+        // itself ??there is no separate session indirection anymore.
         let conv_history = self.load_conversation_history(task_id);
 
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
-        // first turn (they were persisted by process_input_with_images).
+        // first turn (they were persisted by process_input_with_attachments).
         // The FIRST user message is always the task's own input; later image
         // follow-ups are supplements (injected by the ReAct loop at step
         // start) and must NOT be attached to the initial turn or they would
@@ -1050,8 +1081,7 @@ impl AgentLayer {
             return;
         }
         // Build conversation context from user messages only. The agent's
-        // replies (assistant/tool) are excluded to keep the prompt small —
-        // a title only needs to reflect what the user asked for.
+        // replies (assistant/tool) are excluded to keep the prompt small ??        // a title only needs to reflect what the user asked for.
         let messages = db.get_task_messages_limit(&task_id, 10).unwrap_or_default();
         let user_lines: Vec<String> = messages
             .iter()
@@ -1081,7 +1111,7 @@ impl AgentLayer {
         &self,
         task_id: &str,
         snapshot: ReActSnapshot,
-        conversation_history: &[String],
+        conversation_history: &[ConversationMessage],
         run_id: u64,
     ) -> anyhow::Result<Vec<ReActStep>> {
         let mut history = snapshot.history;
@@ -1090,14 +1120,51 @@ impl AgentLayer {
         let mut branch_points = snapshot.branch_points;
 
         if !conversation_history.is_empty() {
+            // The restored canonical already contains the full transcript in
+            // the common (non-compacted) case, and may itself carry
+            // `[conversation]` lines left by a previous resume ??blindly
+            // re-inserting the recent window would duplicate every turn and
+            // make the model treat stale questions as newly pending (it then
+            // answers questions from long ago instead of the current one).
+            // Strip stale `[conversation]` lines, then re-seed only messages
+            // whose content is not already present in the canonical.
+            canonical.retain(|m| {
+                !(m.role == CanonicalRole::User
+                    && m.content.iter().any(
+                        |p| matches!(p, ContentPart::Text(t) if t.starts_with("[conversation] ")),
+                    ))
+            });
+            let mut present: HashSet<String> = canonical
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter_map(|p| match p {
+                    ContentPart::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect();
             let sys_end = canonical
                 .iter()
                 .position(|m| m.role != CanonicalRole::System)
-                .unwrap_or(1);
+                .unwrap_or(canonical.len());
+            let mut inserted = 0usize;
             for msg in conversation_history {
+                if present.contains(&msg.content) {
+                    continue;
+                }
                 canonical.insert(
-                    sys_end,
-                    CanonicalMessage::user_text(format!("[conversation] {}", msg)),
+                    sys_end + inserted,
+                    CanonicalMessage::user_text(format!(
+                        "[conversation] [{}] {}",
+                        msg.role, msg.content
+                    )),
+                );
+                inserted += 1;
+                present.insert(msg.content.clone());
+            }
+            if inserted > 0 {
+                tracing::debug!(
+                    "run_task_resumed: seeded {} conversation message(s) missing from canonical",
+                    inserted
                 );
             }
         }
@@ -1130,12 +1197,12 @@ impl AgentLayer {
         Ok(history)
     }
 
-    pub async fn run_task(
+    pub(crate) async fn run_task(
         &self,
         task_id: &str,
         description: &str,
         context: &str,
-        conversation_history: &[String],
+        conversation_history: &[ConversationMessage],
         initial_attachments: &[haven_memory::repositories::messages::MessageAttachment],
     ) -> anyhow::Result<Vec<ReActStep>> {
         tracing::debug!(
@@ -1145,9 +1212,13 @@ impl AgentLayer {
             initial_attachments.len()
         );
         let mut history: Vec<ReActStep> = Vec::new();
+        let history_lines: Vec<String> = conversation_history
+            .iter()
+            .map(|m| format!("[{}] {}", m.role, m.content))
+            .collect();
         let system_prompt = self
             .prompt_builder
-            .build(description, &[], conversation_history)
+            .build(description, &[], &history_lines)
             .await;
         tracing::debug!("run_task: system_prompt {} chars", system_prompt.len());
 
@@ -1198,27 +1269,28 @@ impl AgentLayer {
         transcript: &str,
         active_task_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
-        self.process_input_with_images(transcript, active_task_id, &[], false)
+        self.process_input_with_attachments(transcript, active_task_id, &[], false)
             .await
     }
 
-    /// Like `process_input`, but attaches binary payloads (e.g. images for
-    /// multimodal requests) to the user message. Attachments are persisted
-    /// with the message and injected into the ReAct context as image parts.
-    /// `voice` marks messages transcribed from audio so the UI can keep the
-    /// mic style across reloads.
-    pub async fn process_input_with_images(
+    /// Like `process_input`, but attaches binary payloads (images and
+    /// user-uploaded files) to the user message. Attachments are persisted
+    /// with the message; images are injected into the ReAct context as image
+    /// parts, while file attachments (which carry a `path`) surface as a text
+    /// reference the agent resolves with the file tool. `voice` marks messages
+    /// transcribed from audio so the UI can keep the mic style across reloads.
+    pub async fn process_input_with_attachments(
         &self,
         transcript: &str,
         active_task_id: Option<String>,
-        images: &[haven_memory::repositories::messages::MessageAttachment],
+        attachments: &[haven_memory::repositories::messages::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
         tracing::debug!(
-            "process_input: text={:?} active_task_id={:?} images={} voice={}",
+            "process_input: text={:?} active_task_id={:?} attachments={} voice={}",
             transcript,
             active_task_id,
-            images.len(),
+            attachments.len(),
             voice
         );
 
@@ -1229,7 +1301,7 @@ impl AgentLayer {
                     "user",
                     transcript,
                     Some("text"),
-                    images,
+                    attachments,
                     voice,
                 )
                 .await
@@ -1253,7 +1325,7 @@ impl AgentLayer {
             let steering_delivered = state == TaskStatus::Running
                 && match self
                     .executor
-                    .add_steering_with_attachments(&task_id, transcript, images)
+                    .add_steering_with_attachments(&task_id, transcript, attachments)
                     .await
                 {
                     Ok(()) => true,
@@ -1268,16 +1340,31 @@ impl AgentLayer {
                 };
 
             if !steering_delivered {
-                let was_in_memory = self
-                    .executor
-                    .add_supplement_with_attachments(&task_id, transcript, images)
-                    .await
-                    .is_ok();
+                // A Paused task that is awaiting an `ask` answer: this
+                // message IS the reply to the pending question. Queue it as
+                // an answer so the loop injects a paired "Answer to your
+                // previous question" instead of generic context ??otherwise
+                // the model sees the old question as still open and answers
+                // questions from long ago. The flag must be read BEFORE
+                // set_task_status(Pending) below, which clears it.
+                let is_answer =
+                    state == TaskStatus::Paused && self.executor.is_awaiting_answer(&task_id).await;
+                let was_in_memory = if is_answer {
+                    self.executor
+                        .add_answer_with_attachments(&task_id, transcript, attachments)
+                        .await
+                        .is_ok()
+                } else {
+                    self.executor
+                        .add_supplement_with_attachments(&task_id, transcript, attachments)
+                        .await
+                        .is_ok()
+                };
                 if !was_in_memory {
-                    // Task may be stale/deleted 鈥?fall back to creating a new task
+                    // Task may be stale/deleted ??fall back to creating a new task
                     if self.executor.ensure_task_loaded(&task_id).await.is_err() {
                         let task = self
-                            .create_task_with_first_message(transcript, images, voice)
+                            .create_task_with_first_message(transcript, attachments, voice)
                             .await?;
                         self.events.emit_task_created(&task).await;
                         return Ok(ProcessResult::TaskCreated(task.id));
@@ -1288,7 +1375,7 @@ impl AgentLayer {
                     // add_supplement). Only non-terminal tasks may be
                     // reactivated by a follow-up message; Completed/Error tasks
                     // were ended on purpose and must be reopened explicitly via
-                    // the review flow 鈥?auto-converting them would resurrect a
+                    // the review flow ??auto-converting them would resurrect a
                     // ghost task.
                     let fresh_state = self.executor.get_task_state(&task_id).await;
                     if fresh_state == TaskStatus::Completed || fresh_state == TaskStatus::Error {
@@ -1304,12 +1391,18 @@ impl AgentLayer {
                             .emit_task_updated(&task_id, fresh_state.as_str())
                             .await;
                         // Do not keep the reloaded terminal task in the working
-                        // set 鈥?it was ended and should not be dispatchable.
+                        // set ??it was ended and should not be dispatchable.
                         self.executor.remove_task(&task_id).await;
                     } else {
-                        self.executor
-                            .add_supplement_with_attachments(&task_id, transcript, images)
-                            .await?;
+                        if is_answer {
+                            self.executor
+                                .add_answer_with_attachments(&task_id, transcript, attachments)
+                                .await?;
+                        } else {
+                            self.executor
+                                .add_supplement_with_attachments(&task_id, transcript, attachments)
+                                .await?;
+                        }
                         if fresh_state == TaskStatus::Paused {
                             self.set_task_status(&task_id, TaskStatus::Pending).await?;
                         }
@@ -1323,7 +1416,7 @@ impl AgentLayer {
             Ok(ProcessResult::Supplemented)
         } else {
             let task = self
-                .create_task_with_first_message(transcript, images, voice)
+                .create_task_with_first_message(transcript, attachments, voice)
                 .await?;
             tracing::info!("process_input created task: id={:?}", task.id);
             self.events.emit_task_created(&task).await;
@@ -1332,13 +1425,13 @@ impl AgentLayer {
     }
 
     /// Create a new task and persist the triggering user message into it,
-    /// in that order 鈥?the message (and its attachments) must be on disk
+    /// in that order ??the message (and its attachments) must be on disk
     /// BEFORE the task is registered with the executor, otherwise the
     /// dispatcher could start the ReAct loop and miss the first user turn.
     async fn create_task_with_first_message(
         &self,
         input: &str,
-        images: &[haven_memory::repositories::messages::MessageAttachment],
+        attachments: &[haven_memory::repositories::messages::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<haven_task::TaskInfo> {
         let record = self.db.create_task(input, input)?;
@@ -1346,7 +1439,7 @@ impl AgentLayer {
         // the dispatcher can pick the task up; if persisting fails, remove
         // the task row again so no input-less task ever gets dispatched.
         if let Err(e) = self
-            .persist_message_parts(&record.id, "user", input, Some("text"), images, voice)
+            .persist_message_parts(&record.id, "user", input, Some("text"), attachments, voice)
             .await
         {
             let _ = self.db.delete_task(&record.id);
@@ -1437,6 +1530,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             };
             Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
         }
@@ -1448,6 +1543,7 @@ mod tests {
     struct RecordingEmitter {
         thoughts: std::sync::Mutex<Vec<String>>,
         supplements: std::sync::Mutex<Vec<String>>,
+        notifications: std::sync::Mutex<Vec<(String, String)>>,
         completed: std::sync::Mutex<bool>,
     }
 
@@ -1468,6 +1564,9 @@ mod tests {
                     additional_context, ..
                 } => {
                     self.supplements.lock().unwrap().push(additional_context);
+                }
+                AgentEvent::Notification { title, body, .. } => {
+                    self.notifications.lock().unwrap().push((title, body));
                 }
                 _ => {}
             }
@@ -1492,6 +1591,7 @@ mod tests {
         let recorder = Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
             supplements: std::sync::Mutex::new(Vec::new()),
+            notifications: std::sync::Mutex::new(Vec::new()),
             completed: std::sync::Mutex::new(false),
         });
         agent.set_emitter(recorder.clone());
@@ -1520,7 +1620,7 @@ mod tests {
         );
     }
 
-    // 鈹€鈹€鈹€ Pure-logic and data-layer tests (no LLM required) 鈹€鈹€鈹€
+    // ─── Pure-logic and data-layer tests (no LLM required) ───
 
     fn make_test_agent() -> (Arc<AgentLayer>, Arc<TaskExecutor>) {
         let mut p = std::env::temp_dir();
@@ -1566,7 +1666,7 @@ mod tests {
         let (agent, _) = make_test_agent();
         let task = agent.db.create_task("input", "").unwrap();
         assert!(!task.id.is_empty());
-        // Two tasks never share message keys 鈥?each owns its own stream.
+        // Two tasks never share message keys ??each owns its own stream.
         let other = agent.db.create_task("input2", "").unwrap();
         assert_ne!(task.id, other.id);
     }
@@ -1577,6 +1677,7 @@ mod tests {
         let recorder = Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
             supplements: std::sync::Mutex::new(Vec::new()),
+            notifications: std::sync::Mutex::new(Vec::new()),
             completed: std::sync::Mutex::new(false),
         });
         agent.set_emitter(recorder.clone());
@@ -1620,6 +1721,7 @@ mod tests {
         let recorder = Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
             supplements: std::sync::Mutex::new(Vec::new()),
+            notifications: std::sync::Mutex::new(Vec::new()),
             completed: std::sync::Mutex::new(false),
         });
         agent.set_emitter(recorder.clone());
@@ -1633,7 +1735,7 @@ mod tests {
     async fn build_system_prompt_succeeds() {
         let (agent, _) = make_test_agent();
         let prompt = agent.prompt_builder.build("test task", &[], &[]).await;
-        assert!(prompt.contains("Available tools"));
+        assert!(prompt.contains("Available builtin tools"));
     }
 
     #[tokio::test]
@@ -1650,10 +1752,24 @@ mod tests {
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &["preference"])
             .unwrap();
         // Secrets that must never reach the prompt.
-        db.insert_fact("user", "tavily_api_key", "tvly-dev-secret", "inferred", 1.0, &["workspace"])
-            .unwrap();
-        db.insert_fact("user", "secret_token", "ghp_abc", "inferred", 1.0, &["workspace"])
-            .unwrap();
+        db.insert_fact(
+            "user",
+            "tavily_api_key",
+            "tvly-dev-secret",
+            "inferred",
+            1.0,
+            &["workspace"],
+        )
+        .unwrap();
+        db.insert_fact(
+            "user",
+            "secret_token",
+            "ghp_abc",
+            "inferred",
+            1.0,
+            &["workspace"],
+        )
+        .unwrap();
 
         let tools = Arc::new(ToolsManager::new());
         let builder = SystemPromptBuilder::new(tools, db);
@@ -1751,7 +1867,7 @@ mod tests {
         let db = agent_ref.db.clone();
         let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
         // Messages may or may not be immediately flushed depending on cache
-        // 鈥?verify at minimum the message is retrievable
+        // ??verify at minimum the message is retrievable
         let found = msgs
             .iter()
             .find(|m| m.role == "user" && m.content == "test message");
@@ -1762,15 +1878,13 @@ mod tests {
     async fn persist_message_with_attachments_roundtrips() {
         let (agent, _) = make_test_agent();
         let task = agent.db.create_task("input", "").unwrap();
-        let att = haven_memory::repositories::messages::MessageAttachment {
-            media_type: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        };
+        let att =
+            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
             .persist_message_parts(
                 &task.id,
                 "user",
-                "鐪嬪浘",
+                "看看",
                 Some("text"),
                 std::slice::from_ref(&att),
                 false,
@@ -1782,7 +1896,7 @@ mod tests {
         let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
         let found = msgs
             .iter()
-            .find(|m| m.role == "user" && m.content == "鐪嬪浘");
+            .find(|m| m.role == "user" && m.content == "看看");
         assert!(found.is_some(), "persisted message not found in db");
         let msg = found.unwrap();
         assert_eq!(msg.attachments.len(), 1);
@@ -1805,6 +1919,7 @@ mod tests {
             },
             model: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
         assert_eq!(thought, Some("Task done.".into()));
@@ -1832,6 +1947,7 @@ mod tests {
             },
             model: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 2);
         assert_eq!(thought, Some("Opening file.".into()));
@@ -1863,6 +1979,7 @@ mod tests {
             },
             model: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
         assert_eq!(thought, Some("All done.".into()));
@@ -1872,7 +1989,7 @@ mod tests {
 
     /// M3/H10: a follow-up message must NOT resurrect a task that was ended.
     /// Terminal tasks are only reactivated explicitly via `reopen_task`
-    /// (Completed/Error 鈫?Paused) in the review flow.
+    /// (Completed/Error ??Paused) in the review flow.
     #[tokio::test]
     async fn process_input_does_not_resurrect_ended_task() {
         let (agent, executor) = make_test_agent();
@@ -1914,10 +2031,294 @@ mod tests {
         assert_eq!(supps, vec!["more context"]);
     }
 
+    #[tokio::test]
+    async fn process_input_marks_reply_as_answer_when_awaiting() {
+        let (agent, executor) = make_test_agent();
+        let task = executor.create_task("original").await.unwrap();
+        executor
+            .update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+        executor.set_awaiting_answer(&task.id, true).await;
+
+        let result = agent
+            .process_input("the answer", Some(task.id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, ProcessResult::Supplemented);
+        assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
+        let supps = executor.get_supplements(&task.id).await;
+        assert_eq!(supps.len(), 1);
+        assert!(
+            supps[0].is_answer,
+            "reply to an ask must be marked as answer"
+        );
+        assert_eq!(supps[0].text, "the answer");
+        assert!(
+            !executor.is_awaiting_answer(&task.id).await,
+            "reactivation must clear the awaiting-answer gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_input_paused_without_ask_is_plain_supplement() {
+        let (agent, executor) = make_test_agent();
+        let task = executor.create_task("original").await.unwrap();
+        executor
+            .update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+
+        let result = agent
+            .process_input("follow up", Some(task.id.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, ProcessResult::Supplemented);
+        let supps = executor.get_supplements(&task.id).await;
+        assert_eq!(supps.len(), 1);
+        assert!(
+            !supps[0].is_answer,
+            "a follow-up to a normal pause is not an ask reply"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_dedups_conversation_prefix_against_canonical() {
+        let (agent, executor) = make_test_agent();
+        agent.set_emitter(make_recording_emitter());
+        let task = executor.create_task("hello").await.unwrap();
+        agent
+            .persist_message_parts(&task.id, "user", "hello", Some("text"), &[], false)
+            .await
+            .unwrap();
+        agent
+            .persist_message_parts(&task.id, "assistant", "hi there", Some("text"), &[], false)
+            .await
+            .unwrap();
+        // Snapshot whose canonical already carries the full transcript PLUS
+        // a stale `[conversation]` prefix left by a previous resume ??the
+        // exact duplication that made the model re-answer old questions.
+        let canonical = vec![
+            CanonicalMessage::system(vec![ContentPart::text("sys")]),
+            CanonicalMessage::user_text("hello"),
+            CanonicalMessage::assistant(
+                vec![ContentPart::text("hi there")],
+                None,
+                None,
+                Vec::new(),
+            ),
+            CanonicalMessage::user_text("[conversation] [user] hello"),
+            CanonicalMessage::user_text("[conversation] [assistant] hi there"),
+        ];
+        let snapshot = ReActSnapshot {
+            canonical,
+            history: vec![],
+            step_number: 1,
+            branch_points: HashMap::new(),
+        };
+        agent
+            .db
+            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+
+        agent.run_task_from_id(&task.id).await.unwrap();
+
+        let saved: ReActSnapshot =
+            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+        let user_texts: Vec<String> = saved
+            .canonical
+            .iter()
+            .filter(|m| m.role == CanonicalRole::User)
+            .filter_map(|m| {
+                m.content.iter().find_map(|p| match p {
+                    ContentPart::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert!(
+            user_texts.iter().all(|t| !t.starts_with("[conversation] ")),
+            "stale [conversation] lines must be stripped: {:?}",
+            user_texts
+        );
+        assert_eq!(
+            user_texts.iter().filter(|t| t.as_str() == "hello").count(),
+            1,
+            "already-present messages must not be duplicated"
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
+        // The model responds with text + Stop and no tool calls while an
+        // unanswered `ask` is pending: the turn must not end on the
+        // synthesized heuristic final ??the loop must pause and wait for
+        // the user's answer instead.
+        let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("I'll stop here.".into()),
+                tool_calls: vec![],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
+        agent.set_emitter(make_recording_emitter());
+        let task = executor.create_task("task").await.unwrap();
+        let canonical = vec![
+            CanonicalMessage::system(vec![ContentPart::text("sys")]),
+            CanonicalMessage::user_text("help me"),
+            CanonicalMessage::assistant(
+                vec![ContentPart::text("let me ask")],
+                Some(vec![CanonicalToolCall {
+                    id: "call_ask".into(),
+                    name: "ask".into(),
+                    arguments: serde_json::json!({"question": "which file?"}),
+                }]),
+                None,
+                Vec::new(),
+            ),
+            CanonicalMessage::tool(
+                vec![ContentPart::text(
+                    r#"{"ask":true,"question":"which file?","awaiting_answer":true,"options":[]}"#,
+                )],
+                Some("call_ask".into()),
+            ),
+        ];
+        let snapshot = ReActSnapshot {
+            canonical,
+            history: vec![],
+            step_number: 1,
+            branch_points: HashMap::new(),
+        };
+        agent
+            .db
+            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+
+        agent.run_task_from_id(&task.id).await.unwrap();
+
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "task must pause for the pending question instead of completing"
+        );
+        assert!(
+            executor.is_awaiting_answer(&task.id).await,
+            "pause must be flagged as awaiting the user's answer"
+        );
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        assert_eq!(
+            msgs.last().unwrap().content,
+            "which file?",
+            "the pending question must be surfaced as the pause message"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
+        // The scripted LLM always returns a non-final tool call, so the run
+        // consumes its 1-step budget without ever producing a final answer.
+        let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("keep working".into()),
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"x"}"#.into(),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
+        agent.set_max_steps(1);
+        let recorder = make_recording_emitter();
+        agent.set_emitter(recorder.clone());
+        let task = executor.create_task("task").await.unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "budget exhaustion must pause the task as a checkpoint"
+        );
+        // The notice must NOT be persisted as an assistant chat message.
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        assert!(
+            msgs.iter()
+                .all(|m| !m.content.contains("任务步骤上限已用尽")),
+            "budget notice must not appear as a chat message: {:?}",
+            msgs.iter().map(|m| m.content.as_str()).collect::<Vec<_>>()
+        );
+        // It must be surfaced as a Notification event instead.
+        let notifications = recorder.notifications.lock().unwrap().clone();
+        assert!(
+            notifications
+                .iter()
+                .any(|(title, _)| title == "任务步骤上限已用尽"),
+            "budget notice must be emitted as a notification: {:?}",
+            notifications
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_text_only_response_retried_before_final() {
+        // First response: text with a Length finish (generation cut off) ??        // must NOT end the turn as if it were the final answer. Second
+        // response: a complete Stop answer, which ends the turn.
+        let client = Arc::new(ScriptedMock::new(vec![
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Here is the partial answer".into()),
+                tool_calls: vec![],
+                finish_reason: Some(FinishReason::Length),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            }),
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Here is the complete answer.".into()),
+                tool_calls: vec![],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
+        agent.set_emitter(make_recording_emitter());
+        let task = executor.create_task("task").await.unwrap();
+        agent.run_task_from_id(&task.id).await.unwrap();
+
+        assert_eq!(
+            executor.get_task_state(&task.id).await,
+            TaskStatus::Paused,
+            "turn must end paused after the retried final"
+        );
+        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        assert_eq!(
+            msgs.last().unwrap().content,
+            "Here is the complete answer.",
+            "the retried (complete) response must be the final message, not the truncated one"
+        );
+    }
+
     fn make_recording_emitter() -> Arc<RecordingEmitter> {
         Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
             supplements: std::sync::Mutex::new(Vec::new()),
+            notifications: std::sync::Mutex::new(Vec::new()),
             completed: std::sync::Mutex::new(false),
         })
     }
@@ -1927,15 +2328,13 @@ mod tests {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
         let task = executor
-            .create_task_with_summary("鐪嬪浘", "鐪嬪浘")
+            .create_task_with_summary("看看", "看看")
             .await
             .unwrap();
-        let att = haven_memory::repositories::messages::MessageAttachment {
-            media_type: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        };
+        let att =
+            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
-            .persist_message_parts(&task.id, "user", "鐪嬪浘", Some("text"), &[att], false)
+            .persist_message_parts(&task.id, "user", "看看", Some("text"), &[att], false)
             .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -1967,14 +2366,12 @@ mod tests {
             .persist_message_parts(&task.id, "user", "plain task", Some("text"), &[], false)
             .await
             .unwrap();
-        // Image arrives AFTER the task input (a supplement) 鈥?it must not be
+        // Image arrives AFTER the task input (a supplement) ??it must not be
         // attached to the initial user turn.
-        let att = haven_memory::repositories::messages::MessageAttachment {
-            media_type: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        };
+        let att =
+            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
-            .process_input_with_images("琛ュ厖鐪嬪浘", Some(task.id.clone()), &[att], false)
+            .process_input_with_attachments("补充看图", Some(task.id.clone()), &[att], false)
             .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -2023,6 +2420,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -2038,6 +2437,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -2046,6 +2446,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Assistant,
@@ -2058,6 +2459,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let history = vec![ReActStep {
@@ -2108,6 +2510,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -2195,7 +2598,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_input_with_images_queues_and_persists_attachments() {
+    async fn process_input_with_attachments_queues_and_persists_attachments() {
         let (agent, executor) = make_test_agent();
         let task = executor
             .create_task_with_summary("original", "original")
@@ -2206,13 +2609,11 @@ mod tests {
             .await
             .unwrap();
 
-        let att = haven_memory::repositories::messages::MessageAttachment {
-            media_type: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        };
+        let att =
+            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         let result = agent
-            .process_input_with_images(
-                "鐪嬪浘",
+            .process_input_with_attachments(
+                "看看",
                 Some(task.id.clone()),
                 std::slice::from_ref(&att),
                 false,
@@ -2223,14 +2624,14 @@ mod tests {
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         let supps = executor.get_supplements(&task.id).await;
         assert_eq!(supps.len(), 1);
-        assert_eq!(supps[0].text, "鐪嬪浘");
+        assert_eq!(supps[0].text, "看看");
         assert_eq!(supps[0].attachments, vec![att]);
 
         // Persisted with attachments in the task's message stream.
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let user_msg = msgs
             .iter()
-            .find(|m| m.role == "user" && m.content == "鐪嬪浘")
+            .find(|m| m.role == "user" && m.content == "看看")
             .expect("user message persisted");
         assert_eq!(user_msg.attachments.len(), 1);
         assert_eq!(user_msg.attachments[0].media_type, "image/png");
@@ -2259,7 +2660,7 @@ mod tests {
         agent.inference.infer_preferences(&task.id).await;
     }
 
-    // 鈹€鈹€鈹€ Integration tests for the ReAct core loop (refine 搂11) 鈹€鈹€鈹€
+    // ─── Integration tests for the ReAct core loop (refine ??1) ───
 
     fn make_test_agent_with(
         client: Arc<dyn LlmClient>,
@@ -2327,6 +2728,7 @@ mod tests {
                 },
                 model: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             })
         }
         async fn chat_with_tools(
@@ -2520,6 +2922,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -2532,6 +2936,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -2567,6 +2973,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             // Delayed final answer: the steering is added while this call is
             // in flight, so the final-content branch must pick it up.
@@ -2582,6 +2990,8 @@ mod tests {
                     usage: None,
                     model: None,
                     reasoning: None,
+                    web_search: None,
+                    web_search_calls: Vec::new(),
                 },
                 300,
             ),
@@ -2597,6 +3007,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -2641,7 +3053,7 @@ mod tests {
     #[tokio::test]
     async fn run_task_injects_steering_between_tool_calls() {
         // A user message sent while the agent is executing tools is drained
-        // at the next step boundary — between tool calls — so the final
+        // at the next step boundary ??between tool calls ??so the final
         // answer is generated with the new context.
         let tools = Arc::new(ToolsManager::new());
         let timing = Arc::new(TimingState::new());
@@ -2661,6 +3073,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -2673,6 +3087,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -2734,6 +3150,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             // The loop pauses after `ask`, so a second response is never
             // consumed; include a final_answer anyway to catch regressions
@@ -2749,6 +3167,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -2796,6 +3216,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             // Step 2 (after resume): final answer.
             ScriptedResponse::Chunk(StreamChunk {
@@ -2809,6 +3231,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -2850,7 +3274,7 @@ mod tests {
     async fn retry_after_ask_answer_error_keeps_single_history() {
         // Reproduce the reported issue: the agent asks a question, the user
         // answers, the resumed step fails, and the user retries. Every retry
-        // must OVERWRITE the previous attempt's persisted output 鈥?the review
+        // must OVERWRITE the previous attempt's persisted output ??the review
         // history should show exactly one question, one answer, one response.
         let tools = Arc::new(ToolsManager::new());
         tools
@@ -2870,6 +3294,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             // Step 2 (after the answer): streams a partial thought, then fails.
             ScriptedResponse::ChunkThenErr(
@@ -2880,6 +3306,8 @@ mod tests {
                     usage: None,
                     model: None,
                     reasoning: None,
+                    web_search: None,
+                    web_search_calls: Vec::new(),
                 },
                 LlmError::Unknown("mock mid-stream failure".into()),
             ),
@@ -2895,6 +3323,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -2914,7 +3344,7 @@ mod tests {
         let _ = agent.run_task_from_id(&task.id).await;
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
 
-        // Turn 3: retry via continue_task 鈫?Pending 鈫?re-run.
+        // Turn 3: retry via continue_task ??Pending ??re-run.
         agent.continue_task(&task.id).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -2945,7 +3375,7 @@ mod tests {
         assert_eq!(questions, 1, "ask question must appear exactly once");
         assert_eq!(finals, 1, "final answer must appear exactly once");
 
-        // Step rows from the failed attempt must be overwritten too 鈥?the
+        // Step rows from the failed attempt must be overwritten too ??the
         // review history stays linear (only branching splits timelines).
         let stale_steps = steps
             .iter()
@@ -2993,6 +3423,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -3005,6 +3437,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3058,6 +3492,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3120,6 +3556,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -3132,6 +3570,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3169,6 +3609,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             ScriptedResponse::Err(LlmError::ContextLengthExceeded),
             ScriptedResponse::Chunk(StreamChunk {
@@ -3182,6 +3624,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3227,10 +3671,8 @@ mod tests {
 
         // Persist some messages into the source task. The first carries an
         // image attachment, which must survive the branch copy.
-        let att = haven_memory::repositories::messages::MessageAttachment {
-            media_type: "image/png".into(),
-            data: "aGVsbG8=".into(),
-        };
+        let att =
+            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
             .db
             .add_message_with_attachments(
@@ -3256,6 +3698,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let mut branch_points = HashMap::new();
         branch_points.insert(
@@ -3342,6 +3785,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             }],
             history: vec![],
             step_number: 1,
@@ -3373,7 +3817,7 @@ mod tests {
     async fn continue_task_non_error_fails() {
         let (agent, executor) = make_test_agent();
         let task = executor.create_task("not error").await.unwrap();
-        // Task is Pending, not Error — should refuse.
+        // Task is Pending, not Error ??should refuse.
         let result = agent.continue_task(&task.id).await;
         assert!(result.is_err());
     }
@@ -3382,7 +3826,7 @@ mod tests {
     async fn rollback_without_react_state_truncates_messages() {
         let (agent, executor) = make_test_agent();
         let task = executor.create_task("no state").await.unwrap();
-        // No react_state saved — simulate an old task that errored before
+        // No react_state saved ??simulate an old task that errored before
         // snapshots were persisted.
         agent.db.update_task_status(&task.id, "error").unwrap();
         executor
@@ -3417,6 +3861,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let snapshot = ReActSnapshot {
             canonical: canonical.clone(),
@@ -3476,6 +3921,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -3484,6 +3930,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();
@@ -3508,7 +3955,7 @@ mod tests {
             .unwrap();
 
         // User-message rollback: the user message itself must be removed from
-        // the task (its text returns to the composer for editing) — not
+        // the task (its text returns to the composer for editing) ??not
         // left behind to reappear on the next review rebuild.
         agent.rollback_task(&task.id, 1, true, None).await.unwrap();
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Paused);
@@ -3553,6 +4000,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -3561,6 +4009,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();
@@ -3654,6 +4103,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -3662,6 +4112,7 @@ mod tests {
                 tool_call_id: None,
                 parent_message_id: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();

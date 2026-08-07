@@ -762,6 +762,10 @@ impl McpClient {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.kill_on_drop(true);
+        // MCP servers are user-configured external programs: their command and
+        // args may legitimately use relative paths, so they keep spawning from
+        // the app's working directory instead of the Temp default used for
+        // agent-executed commands.
 
         for e in &self.env {
             if let Some((key, val)) = e.split_once('=') {

@@ -14,6 +14,7 @@
 	import SkillCard from '$lib/SkillCard.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
+	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 
 	let unlistenSkills;
 	let unlistenMcp;
@@ -28,6 +29,7 @@
 						desc: t.description || '',
 						risk: t.risk_level || 'unknown',
 						schema: t.input_schema || {},
+						enabled: t.enabled !== false,
 					}))
 					.sort((a, b) => a.name.localeCompare(b.name));
 			}
@@ -63,6 +65,17 @@
 	}
 
 	async function refreshMcpList() {
+		// Refresh re-establishes every enabled server connection (like the
+		// per-card reconnect) so a server that went down or changed comes back
+		// without restarting the app. Disabled servers have no live client.
+		const enabled = mcpServers.filter((s) => s.enabled);
+		for (const s of enabled) {
+			try {
+				await invoke('reconnect_mcp', { name: s.name });
+			} catch (e) {
+				logger.warn('tools', `reconnect ${s.name} error`, e);
+			}
+		}
 		const ok = await refreshMcpServers();
 		if (ok) {
 			addNotification('MCP 服务器已刷新', 'success', 2000);
@@ -81,20 +94,29 @@
 		}
 	}
 
-	async function handleToggle(name, enabled) {
-		const prev = skills.map((s) => ({ ...s }));
-		skills = skills.map((s) => (s.name === name ? { ...s, enabled } : s));
+	// Shared optimistic toggle for skills / MCP servers / builtin tools:
+	// flip the item locally, invoke the backend command, and roll back on
+	// failure. `refresh` runs after a successful toggle. One implementation
+	// so the three handlers cannot drift (e.g. one forgetting the refresh).
+	async function toggleItem(list, name, enabled, setList, invokeCmd, refresh) {
+		const prev = list.map((x) => ({ ...x }));
+		setList(list.map((x) => (x.name === name ? { ...x, enabled } : x)));
 		try {
-			await invoke('set_skill_enabled', { name, enabled });
+			await invoke(invokeCmd, { name, enabled });
 			addNotification(
 				`${name} 已${enabled ? '启用' : '禁用'}`,
 				'success',
 				2000,
 			);
+			if (refresh) await refresh();
 		} catch (e) {
-			skills = prev;
+			setList(prev);
 			addNotification(`切换 ${name} 失败: ${e}`, 'error', 3000);
 		}
+	}
+
+	async function handleToggle(name, enabled) {
+		await toggleItem(skills, name, enabled, (v) => (skills = v), 'set_skill_enabled', null);
 	}
 
 	async function refreshSkills() {
@@ -168,20 +190,25 @@
 	}
 
 	async function handleMcpToggle(name, enabled) {
-		const prev = mcpServers.map((s) => ({ ...s }));
-		mcpServers = mcpServers.map((s) => (s.name === name ? { ...s, enabled } : s));
-		try {
-			await invoke('toggle_mcp_server', { name, enabled });
-			addNotification(
-				`${name} 已${enabled ? '启用' : '禁用'}`,
-				'success',
-				2000,
-			);
-			await refreshMcpServers();
-		} catch (e) {
-			mcpServers = prev;
-			addNotification(`切换 ${name} 失败: ${e}`, 'error', 3000);
-		}
+		await toggleItem(
+			mcpServers,
+			name,
+			enabled,
+			(v) => (mcpServers = v),
+			'toggle_mcp_server',
+			refreshMcpServers,
+		);
+	}
+
+	async function handleToolToggle(name, enabled) {
+		await toggleItem(
+			builtinTools,
+			name,
+			enabled,
+			(v) => (builtinTools = v),
+			'set_tool_enabled',
+			null,
+		);
 	}
 
 	const tabs = [
@@ -210,16 +237,20 @@
 
 	{#if activeTab === 'builtin'}
 		<div class="section">
-			<h2>Built-in Tools</h2>
-			<div class="tool-grid">
-				{#each builtinTools as tool}
-					<div class="tool-card">
-						<div class="tool-name">{tool.name}</div>
-						<div class="tool-desc">{tool.desc}</div>
-						<div class="tool-risk risk-{tool.risk}">Risk: {tool.risk}</div>
-					</div>
-				{/each}
+			<div class="toolbar">
+				<h2>Built-in Tools</h2>
 			</div>
+			{#if builtinTools.length === 0}
+				<div class="empty-state">
+					<p>No built-in tools available</p>
+				</div>
+			{:else}
+				<div class="server-list">
+					{#each builtinTools as tool (tool.name)}
+						<BuiltinToolCard {tool} onToggle={handleToolToggle} />
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{:else if activeTab === 'mcp'}
 		<div class="section">
@@ -322,67 +353,6 @@
 		text-transform: uppercase;
 		letter-spacing: 1px;
 		margin-bottom: var(--md-sys-space-lg);
-	}
-	.tool-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: var(--md-sys-space-md);
-	}
-	.tool-card {
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-md);
-		transition: box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-	}
-	.tool-card:hover {
-		border-color: var(--md-sys-color-outline);
-		box-shadow: var(--md-sys-elevation-1);
-	}
-	.tool-name {
-		font-size: 15px;
-		font-weight: 700;
-		color: var(--md-sys-color-primary);
-		margin-bottom: var(--md-sys-space-xs);
-	}
-	.tool-desc {
-		font-size: 13px;
-		color: var(--md-sys-color-on-surface-variant);
-		margin-bottom: var(--md-sys-space-sm);
-		line-height: 1.45;
-	}
-	.tool-risk {
-		display: inline-flex;
-		align-items: center;
-		font-size: 11px;
-		font-weight: 600;
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-	}
-	.risk-safe {
-		background: var(--md-sys-color-primary-container, #d2e3fc);
-		color: var(--md-sys-color-on-primary-container, #001d36);
-	}
-	.risk-low {
-		background: var(--md-sys-color-tertiary-container, #cbe9f0);
-		color: var(--md-sys-color-on-tertiary-container, #001f25);
-	}
-	.risk-medium {
-		background: var(--md-sys-color-secondary-container, #d9e3f3);
-		color: var(--md-sys-color-on-secondary-container, #0e1d31);
-	}
-	.risk-high {
-		background: #ffd9d4;
-		color: #410002;
-	}
-	.risk-critical {
-		background: #93000a;
-		color: #ffffff;
-	}
-	.risk-unknown {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.empty-state {
 		text-align: center;

@@ -27,7 +27,7 @@ describe('submitTranscript', () => {
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'hello',
 			activeTaskId: 'task-a',
-			images: null,
+			attachments: null,
 			voice: false,
 		});
 		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-a']);
@@ -44,7 +44,7 @@ describe('submitTranscript', () => {
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'orphan',
 			activeTaskId: null,
-			images: null,
+			attachments: null,
 			voice: true,
 		});
 		const draft = /** @type {any[]} */ (get(taskMessagesStore)['_draft']);
@@ -61,12 +61,29 @@ describe('submitTranscript', () => {
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'see pic',
 			activeTaskId: 'task-img',
-			images,
+			attachments: images,
 			voice: false,
 		});
 		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-img']);
 		expect(list[0].attachments).toEqual(images);
 		expect(list[0].id).toMatch(/-u-[a-z0-9]+$/);
+	});
+
+	it('combines images and files into one attachments payload', async () => {
+		invokeMock.mockResolvedValue({});
+		activeTaskIdStore.set('task-mix');
+		const images = [{ media_type: 'image/png', data: 'abc' }];
+		const files = [{ media_type: 'application/pdf', data: 'cGVvcGxl', filename: 'doc.pdf' }];
+		await submitTranscript('read these', { images, files });
+
+		expect(invoke).toHaveBeenCalledWith('process_transcript', {
+			transcript: 'read these',
+			activeTaskId: 'task-mix',
+			attachments: [...images, ...files],
+			voice: false,
+		});
+		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-mix']);
+		expect(list[0].attachments).toEqual([...images, ...files]);
 	});
 
 	it('coerces an empty image array to null on the wire', async () => {
@@ -76,7 +93,7 @@ describe('submitTranscript', () => {
 
 		expect(invoke).toHaveBeenCalledWith(
 			'process_transcript',
-			expect.objectContaining({ images: null })
+			expect.objectContaining({ attachments: null })
 		);
 		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-empty']);
 		expect(list[0].attachments).toEqual([]);

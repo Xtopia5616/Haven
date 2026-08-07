@@ -471,6 +471,7 @@ impl AnthropicAdapter {
             } else {
                 Some(reasoning)
             },
+            web_search_calls: Vec::new(),
         })
     }
 
@@ -590,6 +591,8 @@ impl AnthropicAdapter {
             usage: None,
             model: None,
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
 
         let mapped = futures_util::stream::unfold(
@@ -621,6 +624,8 @@ impl AnthropicAdapter {
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
                                 reasoning: None,
+                                web_search: None,
+                                web_search_calls: Vec::new(),
                             })
                         };
                         state.done = true;
@@ -740,6 +745,8 @@ impl AnthropicAdapter {
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
                                 reasoning: None,
+                                web_search: None,
+                                web_search_calls: Vec::new(),
                             }),
                             state,
                         ))
@@ -922,6 +929,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::User,
@@ -929,6 +937,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let (out, system) = AnthropicAdapter::convert_messages(msgs);
@@ -948,6 +957,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::System,
@@ -955,6 +965,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::User,
@@ -962,6 +973,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let (_, system) = AnthropicAdapter::convert_messages(msgs);
@@ -976,6 +988,7 @@ mod tests {
             tool_call_id: Some("toolu_1".into()),
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -997,6 +1010,7 @@ mod tests {
                 arguments: r#"{"operation":"read"}"#.into(),
             }]),
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -1021,6 +1035,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         let content = out[0].content.as_array().unwrap();
@@ -1038,6 +1053,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert!(out.is_empty());
@@ -1059,6 +1075,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             }],
             Vec::new(),
             true,

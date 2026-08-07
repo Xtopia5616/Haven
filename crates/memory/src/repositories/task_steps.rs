@@ -208,7 +208,14 @@ mod tests {
         let db = test_db();
         seed_task(&db, "task-1");
         let step = db
-            .create_action_step("task-1", 0, "read_file", r#"{"path": "test.txt"}"#, false, false)
+            .create_action_step(
+                "task-1",
+                0,
+                "read_file",
+                r#"{"path": "test.txt"}"#,
+                false,
+                false,
+            )
             .unwrap();
         assert_eq!(step.action_tool.as_deref(), Some("read_file"));
         assert_eq!(

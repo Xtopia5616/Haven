@@ -77,6 +77,12 @@ pub struct ModelEndpoint {
     // §2.8: reasoning effort for reasoning models ("low" | "medium" | "high"),
     // forwarded to OpenAI-compatible APIs as `reasoning_effort`.
     pub reasoning_effort: Option<String>,
+    /// Provider built-in web search mode for Responses-API endpoints
+    /// (DeepSeek etc.): `"off"` | `"auto"` | `"always"`. `None` defers to the
+    /// `HAVEN_WEB_SEARCH` environment variable, then defaults to `off`
+    /// (web search is opt-in).
+    #[serde(default)]
+    pub web_search: Option<String>,
     // §3.16: cost tracking. USD per 1K tokens (input and output). When both
     // are zero, cost is reported as None.
     pub cost_per_1k_input_tokens: f64,
@@ -136,6 +142,7 @@ impl Default for ModelEndpoint {
             auth_header_prefix: default_auth_header_prefix(),
             timeout_streaming_secs: None,
             reasoning_effort: None,
+            web_search: None,
             cost_per_1k_input_tokens: 0.0,
             cost_per_1k_output_tokens: 0.0,
             context_window: None,
@@ -151,6 +158,7 @@ pub struct LlmConfig {
     pub balanced_model: ModelEndpoint,
     pub image_model: ModelEndpoint,
     pub audio_model: ModelEndpoint,
+    pub embedding_model: ModelEndpoint,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
     // §2.3/5.1: retry backoff parameters
@@ -176,6 +184,7 @@ impl Default for LlmConfig {
             balanced_model: ModelEndpoint::default(),
             image_model: ModelEndpoint::default(),
             audio_model: ModelEndpoint::default(),
+            embedding_model: ModelEndpoint::default(),
             max_total_duration_secs: 180,
             retry_base_secs: 2,
             retry_factor: 2,
@@ -221,7 +230,7 @@ impl Default for TaskConfig {
             // tasks don't hit the cap mid-run; see refactor-dedup.md A9
             // review note). Resumes grant a fresh budget, so a task can run
             // well past this total across pause/resume cycles.
-            max_steps: 200,
+            max_steps: 500,
             max_observation_chars: 8_000,
         }
     }
@@ -331,6 +340,8 @@ pub struct SkillsExecConfig {
     /// Root directory for per-skill virtual environments.
     pub venv_root: PathBuf,
     /// Working directory for script execution (isolated from skill source).
+    /// Defaults to a subfolder of the system Temp directory (see
+    /// [`default_work_dir`]).
     pub work_dir: PathBuf,
     /// Maximum wall-clock seconds before a script is killed.
     pub timeout_secs: u64,
@@ -347,7 +358,7 @@ impl Default for SkillsExecConfig {
         let data_dir = ConfigLoader::data_dir();
         Self {
             venv_root: data_dir.join("venvs"),
-            work_dir: data_dir.join("skills_work"),
+            work_dir: default_work_dir().join("skills_work"),
             timeout_secs: 30,
             max_output_lines: 5000,
             cpu_time_secs: None,
@@ -356,10 +367,30 @@ impl Default for SkillsExecConfig {
     }
 }
 
+/// Default working directory for agent-executed commands. A dedicated
+/// subfolder of the system Temp directory so the agent never runs in the
+/// app's own working directory. Single source of truth for shell, process,
+/// venv and skill execution; tools that want a different directory can
+/// override with `.current_dir(...)` before spawning.
+///
+/// The directory is created on first use so spawned commands never fail with
+/// "current directory does not exist".
+pub fn default_work_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("haven");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Per-tool settings (refine §4.8).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ToolConfig {
+    /// Whether the tool is available to the agent. Disabled tools are
+    /// excluded from the tool catalog (and thus the model's schema list) and
+    /// rejected at execution. Tools without an entry in `tool_settings` are
+    /// enabled by default.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub timeout_secs: u64,
     pub max_output_chars: usize,
     pub max_retries: u32,
@@ -369,9 +400,14 @@ pub struct ToolConfig {
     pub risk_override: Option<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             timeout_secs: 30,
             max_output_chars: 20_000,
             max_retries: 0,
@@ -607,6 +643,7 @@ impl From<&AppConfig> for Settings {
         llm.balanced_model.api_key = String::new();
         llm.image_model.api_key = String::new();
         llm.audio_model.api_key = String::new();
+        llm.embedding_model.api_key = String::new();
         let mut stt = c.stt.clone();
         stt.api_key = String::new();
         Self {
@@ -676,7 +713,30 @@ impl ConfigLoader {
         }
         tracing::info!("loading config from {}", path.display());
         let content = std::fs::read_to_string(path)?;
-        let config: AppConfig = toml::from_str(&content).unwrap_or_default();
+        let config: AppConfig = match toml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                // Never silently start with defaults: the next save() would
+                // overwrite the user's config (MCP servers, API keys, skills)
+                // with defaults, destroying it. Back up the unparsable file
+                // so it can be recovered, then continue with defaults.
+                let backup = path.with_extension("toml.bak");
+                match std::fs::copy(path, &backup) {
+                    Ok(_) => tracing::error!(
+                        "config parse error at {}; original backed up to {}: {e}",
+                        path.display(),
+                        backup.display()
+                    ),
+                    Err(be) => tracing::error!(
+                        "config parse error at {} (backup to {} failed: {}): {e}",
+                        path.display(),
+                        backup.display(),
+                        be
+                    ),
+                }
+                AppConfig::default()
+            }
+        };
         Ok(Self {
             path: path.to_path_buf(),
             config,
@@ -720,6 +780,7 @@ impl ConfigLoader {
         let prev_balanced_key = self.config.llm.balanced_model.api_key.clone();
         let prev_image_key = self.config.llm.image_model.api_key.clone();
         let prev_audio_key = self.config.llm.audio_model.api_key.clone();
+        let prev_embedding_key = self.config.llm.embedding_model.api_key.clone();
 
         let incoming = settings.llm.clone();
         self.config.llm.small_model = incoming.small_model.clone();
@@ -727,6 +788,7 @@ impl ConfigLoader {
         self.config.llm.balanced_model = incoming.balanced_model.clone();
         self.config.llm.image_model = incoming.image_model.clone();
         self.config.llm.audio_model = incoming.audio_model.clone();
+        self.config.llm.embedding_model = incoming.embedding_model.clone();
         self.config.llm.max_total_duration_secs = incoming.max_total_duration_secs;
         self.config.llm.retry_base_secs = incoming.retry_base_secs;
         self.config.llm.retry_factor = incoming.retry_factor;
@@ -750,6 +812,9 @@ impl ConfigLoader {
         if settings.llm.audio_model.api_key.is_empty() {
             self.config.llm.audio_model.api_key = prev_audio_key;
         }
+        if settings.llm.embedding_model.api_key.is_empty() {
+            self.config.llm.embedding_model.api_key = prev_embedding_key;
+        }
 
         self.config.audio = settings.audio.clone();
         self.config.hotkey = settings.hotkey.clone();
@@ -765,11 +830,14 @@ impl ConfigLoader {
             }
             s
         };
-        self.config.skills = settings.skills.clone();
-        self.config.skills_exec = settings.skills_exec.clone();
-        self.config.mcp_servers = settings.mcp_servers.clone();
-        self.config.mcp_discovery = settings.mcp_discovery.clone();
-        self.config.tool_settings = settings.tool_settings.clone();
+        // The settings form does not manage these sections — MCP servers are
+        // mutated by their own bridge commands and the `self` tool, skills and
+        // tool settings likewise. The frontend payload omits them, so with
+        // `#[serde(default)]` they deserialize to empty/default values here;
+        // overwriting the live config with them would wipe every configured
+        // MCP server / skill / tool setting on each settings save. Keep the
+        // current values; `update_settings` restores the authoritative on-disk
+        // copies (written directly by those commands) before saving.
         self.config.log = settings.log.clone();
         self.config.notification = settings.notification.clone();
         self.config.appearance = settings.appearance.clone();
@@ -813,6 +881,22 @@ mod tests {
         let s = toml::to_string_pretty(&cfg).unwrap();
         let parsed: AppConfig = toml::from_str(&s).unwrap();
         assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn tool_config_missing_enabled_defaults_to_true() {
+        // Existing config.toml files written before the `enabled` field
+        // existed have `[tool_settings.*]` sections without `enabled`. It
+        // must deserialize to `true` (tool stays enabled), never to the
+        // `bool::default()` of false.
+        let toml_str = r#"
+            [tool_settings.file]
+            timeout_secs = 60
+        "#;
+        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
+        let file = cfg.tool_settings.get("file").unwrap();
+        assert!(file.enabled);
+        assert_eq!(file.timeout_secs, 60);
     }
 
     #[test]
@@ -867,6 +951,57 @@ mod tests {
         cfg.stt.api_key = "top-secret".to_string();
         let settings = Settings::from(&cfg);
         assert!(settings.stt.api_key.is_empty());
+    }
+
+    #[test]
+    fn apply_settings_preserves_mcp_skills_and_tool_settings() {
+        let mut cfg = AppConfig::default();
+        cfg.mcp_servers.push(McpServerConfig {
+            name: "tavily".into(),
+            enabled: true,
+            ..Default::default()
+        });
+        cfg.skills.enabled = Some(vec!["echo".into()]);
+        cfg.skills_exec.work_dir = "C:\\skills_work".into();
+        cfg.tool_settings.insert(
+            "file".into(),
+            ToolConfig {
+                timeout_secs: 60,
+                ..Default::default()
+            },
+        );
+        cfg.mcp_discovery.health_interval_secs = 99;
+
+        let mut settings = Settings::from(&cfg);
+        // The settings form payload omits these sections → they deserialize
+        // to empty/defaults (Settings derives #[serde(default)]).
+        settings.mcp_servers = Vec::new();
+        settings.skills = SkillsConfig::default();
+        settings.skills_exec = SkillsExecConfig::default();
+        settings.tool_settings = HashMap::new();
+        settings.mcp_discovery = McpDiscoveryConfig::default();
+        // A real edit still applies.
+        settings.task.max_concurrent = 5;
+
+        let mut loader = ConfigLoader {
+            path: PathBuf::from("unused"),
+            config: cfg,
+        };
+        loader.apply_settings(&settings);
+
+        assert_eq!(loader.config().mcp_servers.len(), 1);
+        assert_eq!(loader.config().mcp_servers[0].name, "tavily");
+        assert_eq!(
+            loader.config().skills.enabled,
+            Some(vec!["echo".to_string()])
+        );
+        assert_eq!(
+            loader.config().skills_exec.work_dir,
+            PathBuf::from("C:\\skills_work")
+        );
+        assert_eq!(loader.config().tool_settings.len(), 1);
+        assert_eq!(loader.config().mcp_discovery.health_interval_secs, 99);
+        assert_eq!(loader.config().task.max_concurrent, 5);
     }
 
     #[test]
@@ -929,6 +1064,27 @@ mod tests {
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().audio.sample_rate, 44100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_backs_up_unparsable_config_instead_of_destroying_it() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // Genuinely unparsable TOML (unterminated array).
+        let original = "audio = { sample_rate = [1, 2\n";
+        std::fs::write(&path, original).unwrap();
+
+        // The corrupt file must NOT be silently discarded: it is backed up
+        // (same name + ".bak") and the loader starts with defaults so a later
+        // save() can never overwrite the user's config unnoticed.
+        let _loader = ConfigLoader::load_from(&path).unwrap();
+        let backup = path.with_extension("toml.bak");
+        assert!(backup.exists());
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+        // Sanity: the file itself is untouched until a save happens.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

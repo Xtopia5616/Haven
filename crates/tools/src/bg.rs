@@ -58,6 +58,10 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
     };
     std_cmd.stdout(std::process::Stdio::piped());
     std_cmd.stderr(std::process::Stdio::piped());
+    // Default to the shared Temp working directory so the agent never executes
+    // commands in the app's own working directory. Callers may override with
+    // `.current_dir(...)` before spawning.
+    std_cmd.current_dir(haven_common::default_work_dir());
     std_cmd
 }
 
@@ -180,12 +184,14 @@ impl BackgroundJobs {
     }
 
     /// Spawn a shell command as a background job. Returns the job id; the
-    /// command keeps running after this function returns.
+    /// command keeps running after this function returns. `cwd` overrides the
+    /// default Temp working directory when provided.
     pub async fn spawn_shell(
         self: &Arc<Self>,
         command: &str,
         shell: &str,
         max_chars: usize,
+        cwd: Option<std::path::PathBuf>,
     ) -> anyhow::Result<String> {
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
@@ -222,7 +228,10 @@ impl BackgroundJobs {
             );
         }
 
-        let std_cmd = build_shell_command(shell, command);
+        let mut std_cmd = build_shell_command(shell, command);
+        if let Some(cwd) = cwd {
+            std_cmd.current_dir(cwd);
+        }
 
         let mut child = match tokio::process::Command::from(std_cmd)
             .kill_on_drop(true)
@@ -526,7 +535,10 @@ mod tests {
         let mut rx = jobs.take_completion_receiver().expect("receiver available");
         // Attach the task BEFORE the job finishes (normal path): the
         // completion must carry the task_id.
-        let id = jobs.spawn_shell("echo done", "cmd", 20_000).await.unwrap();
+        let id = jobs
+            .spawn_shell("echo done", "cmd", 20_000, None)
+            .await
+            .unwrap();
         jobs.attach_task(&id, "task-A").await;
         let v = wait_terminal(&jobs, &id, 10).await;
         assert_eq!(v["status"], "completed");
@@ -553,7 +565,10 @@ mod tests {
         // with the task_id so the owning task still gets notified.
         let jobs = Arc::new(BackgroundJobs::new());
         let mut rx = jobs.take_completion_receiver().expect("receiver available");
-        let id = jobs.spawn_shell("echo fast", "cmd", 20_000).await.unwrap();
+        let id = jobs
+            .spawn_shell("echo fast", "cmd", 20_000, None)
+            .await
+            .unwrap();
         // Wait for the job to finish BEFORE attaching (simulate the race).
         let v = wait_terminal(&jobs, &id, 10).await;
         assert_eq!(v["status"], "completed");
@@ -584,7 +599,7 @@ mod tests {
     async fn test_spawn_shell_completes_with_output() {
         let jobs = Arc::new(BackgroundJobs::new());
         let id = jobs
-            .spawn_shell("echo bg-hello", "cmd", 20_000)
+            .spawn_shell("echo bg-hello", "cmd", 20_000, None)
             .await
             .unwrap();
         let v = wait_terminal(&jobs, &id, 10).await;
@@ -597,7 +612,10 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_shell_failure_reported() {
         let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs.spawn_shell("exit 7", "cmd", 20_000).await.unwrap();
+        let id = jobs
+            .spawn_shell("exit 7", "cmd", 20_000, None)
+            .await
+            .unwrap();
         let v = wait_terminal(&jobs, &id, 10).await;
         assert_eq!(v["status"], "failed", "got: {}", v);
     }
@@ -607,7 +625,7 @@ mod tests {
     async fn test_spawn_shell_stderr_captured() {
         let jobs = Arc::new(BackgroundJobs::new());
         let id = jobs
-            .spawn_shell("echo err-msg 1>&2", "cmd", 20_000)
+            .spawn_shell("echo err-msg 1>&2", "cmd", 20_000, None)
             .await
             .unwrap();
         let v = wait_terminal(&jobs, &id, 10).await;
@@ -620,7 +638,7 @@ mod tests {
     async fn test_spawn_shell_cancelled() {
         let jobs = Arc::new(BackgroundJobs::new());
         let id = jobs
-            .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000)
+            .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
             .unwrap();
         assert_eq!(jobs.status(&id).await["status"], "running");
@@ -634,7 +652,7 @@ mod tests {
     async fn test_cancel_for_task_cleans_up() {
         let jobs = Arc::new(BackgroundJobs::new());
         let id = jobs
-            .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000)
+            .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
             .unwrap();
         jobs.attach_task(&id, "task-1").await;
@@ -658,7 +676,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_empty_command_rejected() {
         let jobs = Arc::new(BackgroundJobs::new());
-        assert!(jobs.spawn_shell("  ", "cmd", 20_000).await.is_err());
+        assert!(jobs.spawn_shell("  ", "cmd", 20_000, None).await.is_err());
     }
 
     #[tokio::test]

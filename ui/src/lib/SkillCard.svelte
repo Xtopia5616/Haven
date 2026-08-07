@@ -1,5 +1,5 @@
 <script>
-	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 
 	let { skill, onToggle } = $props();
 	let expanded = $state(false);
@@ -8,9 +8,8 @@
 		expanded = !expanded;
 	}
 
-	function handleToggle(e) {
-		e.stopPropagation();
-		onToggle?.(skill.name, !skill.enabled);
+	function handleToggle(checked) {
+		onToggle?.(skill.name, checked);
 	}
 
 	let previewParams = $state('{}');
@@ -74,13 +73,7 @@
 			onkeydown={() => {}}
 			role="presentation"
 		>
-			<MaterialIconButton
-				variant={skill.enabled ? 'primary' : 'default'}
-				label={skill.enabled ? 'Disable' : 'Enable'}
-				onclick={handleToggle}
-			>
-				{skill.enabled ? '◐' : '○'}
-			</MaterialIconButton>
+			<MaterialSwitch checked={skill.enabled} onChange={handleToggle} />
 		</div>
 	</div>
 	{#if expanded}

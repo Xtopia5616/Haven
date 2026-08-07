@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{
-    ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
-    ToolDefinition, Usage,
+    ContentPart, Embedding, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
+    ToolCall, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -146,6 +146,24 @@ struct OpenAiUsage {
     completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiEmbedRequest {
+    model: String,
+    input: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbedItem {
+    embedding: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbedResponse {
+    data: Vec<OpenAiEmbedItem>,
+    usage: Option<OpenAiUsage>,
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -423,6 +441,7 @@ impl OpenAiAdapter {
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning,
+            web_search_calls: Vec::new(),
         };
         tracing::trace!(
             "parse_openai_response: text={} chars, tool_calls={}, reasoning={}, usage p/c/t={}/{}/{}",
@@ -683,6 +702,8 @@ impl OpenAiAdapter {
                                     usage: state.usage.take(),
                                     model: state.last_model.clone(),
                                     reasoning: None,
+                                    web_search: None,
+                                    web_search_calls: Vec::new(),
                                 })
                             };
                         state.done = true;
@@ -740,6 +761,8 @@ impl OpenAiAdapter {
                                     finish_reason,
                                     usage: None,
                                     model: state.last_model.clone(),
+                                    web_search: None,
+                                    web_search_calls: Vec::new(),
                                 }),
                                 state,
                             ))
@@ -752,6 +775,8 @@ impl OpenAiAdapter {
                                     finish_reason: None,
                                     usage: state.usage.take(),
                                     model: state.last_model.clone(),
+                                    web_search: None,
+                                    web_search_calls: Vec::new(),
                                 }),
                                 state,
                             ))
@@ -803,6 +828,81 @@ impl LlmClient for OpenAiAdapter {
         self.chat_stream_inner(messages, tools).await
     }
 
+    async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+        if input.is_empty() {
+            return Ok(Embedding {
+                vectors: Vec::new(),
+                model: Some(self.endpoint.model_name.clone()),
+                usage: Usage::default(),
+            });
+        }
+        let url = format!(
+            "{}/embeddings",
+            self.endpoint.base_url.trim_end_matches('/')
+        );
+        let body = OpenAiEmbedRequest {
+            model: self.endpoint.model_name.clone(),
+            input,
+        };
+        tracing::debug!("POST {} (model: {})", url, body.model);
+        let mut req = self
+            .client
+            .post(&url)
+            .headers(self.build_headers())
+            .json(&body);
+        // §2.9: per-request timeout for non-streaming
+        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        let resp = req.send().await.map_err(LlmError::from)?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok().map(Duration::from_secs));
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(http_status_to_error(status, &txt, retry_after));
+        }
+
+        let json: OpenAiEmbedResponse = resp
+            .json()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let requested = body.input.len();
+        let vectors: Vec<Vec<f32>> = json.data.into_iter().map(|item| item.embedding).collect();
+        if vectors.is_empty() {
+            return Err(LlmError::InvalidResponse(
+                "embeddings response missing data".into(),
+            ));
+        }
+        if vectors.len() != requested {
+            return Err(LlmError::InvalidResponse(format!(
+                "embeddings count mismatch: requested {requested}, got {}",
+                vectors.len()
+            )));
+        }
+        let model = json
+            .model
+            .clone()
+            .or(Some(self.endpoint.model_name.clone()));
+        let usage = json
+            .usage
+            .map(|u| Usage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                model_name: model.clone(),
+                cost: None,
+            })
+            .unwrap_or_default();
+        Ok(Embedding {
+            vectors,
+            model,
+            usage,
+        })
+    }
+
     async fn health_check(&self) -> Result<(), LlmError> {
         let url = format!("{}/models", self.endpoint.base_url.trim_end_matches('/'));
         let resp = self
@@ -847,6 +947,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             }])
             .await
             .unwrap_err();
@@ -1069,6 +1170,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         assert_eq!(openai_msgs.len(), 1);
@@ -1091,6 +1193,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         assert_eq!(openai_msgs.len(), 1);
@@ -1105,6 +1208,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         assert_eq!(openai_msgs[0].role, "system");
@@ -1118,6 +1222,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         assert_eq!(openai_msgs[0].role, "assistant");
@@ -1131,6 +1236,7 @@ mod tests {
             tool_call_id: Some("call_1".into()),
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         assert_eq!(openai_msgs[0].role, "tool");
@@ -1145,6 +1251,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         let content = openai_msgs[0].content.as_ref().unwrap();
@@ -1164,6 +1271,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         let content = openai_msgs[0].content.as_ref().unwrap();
@@ -1186,6 +1294,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         };
         let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
         let content = openai_msgs[0].content.as_ref().unwrap();

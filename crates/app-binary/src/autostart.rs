@@ -117,10 +117,11 @@ fn xml_command_matches(xml: &str, exe: &Path) -> Option<bool> {
 /// 无需管理员权限；如被组策略禁止，返回带排查提示的错误。
 #[cfg(target_os = "windows")]
 pub fn enable() -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
     let tr = build_tr_arg(&exe);
-    let out = run_schtasks(&["/Create", "/F", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON"])?;
+    let out = run_schtasks(&[
+        "/Create", "/F", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON",
+    ])?;
     if !out.status.success() {
         return Err(format!(
             "{}（如为权限不足，请以管理员身份运行 Haven 后重试，或检查组策略对任务计划程序的限制）",
@@ -160,8 +161,7 @@ pub fn is_enabled() -> Result<bool, String> {
     if !xml_has_autostart_arg(&xml) {
         return Ok(false);
     }
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
     Ok(xml_command_matches(&xml, &exe).unwrap_or(true))
 }
 

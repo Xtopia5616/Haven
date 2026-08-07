@@ -2,6 +2,7 @@ pub mod ask;
 pub mod audio;
 pub mod clipboard;
 pub mod env_var;
+pub mod facts;
 pub mod file;
 pub mod input;
 pub mod job_status;
@@ -30,6 +31,7 @@ use crate::mcp::McpManager;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 
+pub use facts::FactsSearchTool;
 pub use reminder::{ReminderCenter, ReminderFired, ReminderMode, ReminderTool};
 pub use self_tool::{SelfTool, SelfToolContext};
 
@@ -77,6 +79,9 @@ pub async fn register_builtin_tools(
         server_configs: server_configs.clone(),
     }));
     if let Some(ctx) = self_context {
+        // Facts memory needs the DB; like SelfTool it only registers once the
+        // desktop shell wires the app context (headless builds skip it).
+        tools.push(Arc::new(facts::FactsSearchTool::new(ctx.db.clone())));
         tools.push(Arc::new(self_tool::SelfTool::new(
             ctx,
             skills_engine.clone(),

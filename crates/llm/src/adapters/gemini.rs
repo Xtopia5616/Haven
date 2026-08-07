@@ -445,6 +445,7 @@ impl GeminiAdapter {
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning: None,
+            web_search_calls: Vec::new(),
         })
     }
 
@@ -552,6 +553,8 @@ impl GeminiAdapter {
             usage: None,
             model: None,
             reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
         };
 
         let mapped = futures_util::stream::unfold(
@@ -586,6 +589,8 @@ impl GeminiAdapter {
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
                                 reasoning: None,
+                                web_search: None,
+                                web_search_calls: Vec::new(),
                             })
                         };
                         state.done = true;
@@ -809,6 +814,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::User,
@@ -816,6 +822,7 @@ mod tests {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
         let (contents, system) = GeminiAdapter::convert_contents(msgs);
@@ -834,6 +841,7 @@ mod tests {
             tool_call_id: Some("call_1".into()),
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         assert_eq!(contents.len(), 1);
@@ -855,6 +863,7 @@ mod tests {
                 arguments: r#"{"operation":"read"}"#.into(),
             }]),
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         assert_eq!(contents.len(), 1);
@@ -883,6 +892,7 @@ mod tests {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         let inline = contents[0].parts[0].inline_data.as_ref().unwrap();

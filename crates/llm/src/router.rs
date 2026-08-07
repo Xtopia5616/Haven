@@ -9,11 +9,12 @@ use crate::adapters::adapter_for;
 use crate::client::{LlmClient, with_retry};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
 use crate::types::{
-    ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
-    ToolDefinition,
+    ContentPart, Embedding, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
+    ToolDefinition, Usage,
 };
 use futures_util::StreamExt;
-use haven_common::config::{LlmConfig, compute_cost_usd};
+use futures_util::future::join_all;
+use haven_common::config::{LlmConfig, ModelEndpoint, compute_cost_usd};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum EndpointRole {
     BalancedModel,
     ImageModel,
     AudioModel,
+    EmbeddingModel,
 }
 
 impl EndpointRole {
@@ -35,6 +37,7 @@ impl EndpointRole {
             Self::BalancedModel => "balanced_model",
             Self::ImageModel => "image_model",
             Self::AudioModel => "audio_model",
+            Self::EmbeddingModel => "embedding_model",
         }
     }
 
@@ -48,6 +51,7 @@ impl EndpointRole {
             "balanced_model" => Self::BalancedModel,
             "image_model" => Self::ImageModel,
             "audio_model" => Self::AudioModel,
+            "embedding_model" => Self::EmbeddingModel,
             _ => return None,
         })
     }
@@ -60,6 +64,7 @@ impl EndpointRole {
         Self::BalancedModel,
         Self::ImageModel,
         Self::AudioModel,
+        Self::EmbeddingModel,
     ];
 }
 
@@ -202,9 +207,10 @@ pub struct LlmRouter {
     pub balanced_model: Arc<dyn LlmClient>,
     pub image_model: Arc<dyn LlmClient>,
     pub audio_model: Arc<dyn LlmClient>,
+    pub embedding_model: Arc<dyn LlmClient>,
     balanced_model_active: AtomicBool,
-    // §5.3: per-endpoint health (index: 0=SmallModel, 1=DefaultModel, 2=BalancedModel, 3=ImageModel, 4=AudioModel)
-    health: RwLock<[EndpointHealth; 5]>,
+    // §5.3: per-endpoint health (index: 0=SmallModel, 1=DefaultModel, 2=BalancedModel, 3=ImageModel, 4=AudioModel, 5=EmbeddingModel)
+    health: RwLock<[EndpointHealth; 6]>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
 }
@@ -216,6 +222,7 @@ impl LlmRouter {
         let balanced_model = Arc::from(adapter_for(&config.balanced_model));
         let image_model = Arc::from(adapter_for(&config.image_model));
         let audio_model = Arc::from(adapter_for(&config.audio_model));
+        let embedding_model = Arc::from(adapter_for(&config.embedding_model));
         Self {
             config: Arc::new(RwLock::new(config)),
             small_model,
@@ -223,8 +230,10 @@ impl LlmRouter {
             balanced_model,
             image_model,
             audio_model,
+            embedding_model,
             balanced_model_active: AtomicBool::new(false),
             health: RwLock::new([
+                EndpointHealth::new(),
                 EndpointHealth::new(),
                 EndpointHealth::new(),
                 EndpointHealth::new(),
@@ -242,6 +251,26 @@ impl LlmRouter {
         image_model: Arc<dyn LlmClient>,
         audio_model: Arc<dyn LlmClient>,
     ) -> Self {
+        Self::new_with_clients_full(
+            small_model,
+            default_model,
+            balanced_model,
+            image_model,
+            audio_model,
+            Arc::from(adapter_for(&ModelEndpoint::default())),
+        )
+    }
+
+    /// Like [`Self::new_with_clients`] but with an explicit embedding endpoint
+    /// (tests that exercise the embeddings path pass a mock here).
+    pub fn new_with_clients_full(
+        small_model: Arc<dyn LlmClient>,
+        default_model: Arc<dyn LlmClient>,
+        balanced_model: Arc<dyn LlmClient>,
+        image_model: Arc<dyn LlmClient>,
+        audio_model: Arc<dyn LlmClient>,
+        embedding_model: Arc<dyn LlmClient>,
+    ) -> Self {
         Self {
             config: Arc::new(RwLock::new(LlmConfig::default())),
             small_model,
@@ -249,8 +278,10 @@ impl LlmRouter {
             balanced_model,
             image_model,
             audio_model,
+            embedding_model,
             balanced_model_active: AtomicBool::new(false),
             health: RwLock::new([
+                EndpointHealth::new(),
                 EndpointHealth::new(),
                 EndpointHealth::new(),
                 EndpointHealth::new(),
@@ -268,6 +299,7 @@ impl LlmRouter {
             EndpointRole::BalancedModel => self.balanced_model.clone(),
             EndpointRole::ImageModel => self.image_model.clone(),
             EndpointRole::AudioModel => self.audio_model.clone(),
+            EndpointRole::EmbeddingModel => self.embedding_model.clone(),
         }
     }
 
@@ -278,6 +310,7 @@ impl LlmRouter {
             EndpointRole::BalancedModel => 2,
             EndpointRole::ImageModel => 3,
             EndpointRole::AudioModel => 4,
+            EndpointRole::EmbeddingModel => 5,
         }
     }
 
@@ -291,6 +324,7 @@ impl LlmRouter {
             EndpointRole::BalancedModel => !cfg.balanced_model.api_key.is_empty(),
             EndpointRole::ImageModel => !cfg.image_model.api_key.is_empty(),
             EndpointRole::AudioModel => !cfg.audio_model.api_key.is_empty(),
+            EndpointRole::EmbeddingModel => !cfg.embedding_model.api_key.is_empty(),
         }
     }
 
@@ -316,6 +350,7 @@ impl LlmRouter {
             EndpointRole::BalancedModel => cfg.balanced_model.api_key = key,
             EndpointRole::ImageModel => cfg.image_model.api_key = key,
             EndpointRole::AudioModel => cfg.audio_model.api_key = key,
+            EndpointRole::EmbeddingModel => cfg.embedding_model.api_key = key,
         }
     }
 
@@ -517,6 +552,7 @@ impl LlmRouter {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             });
         }
         messages.push(LlmMessage {
@@ -525,8 +561,65 @@ impl LlmRouter {
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         });
         self.chat(role, messages).await
+    }
+
+    /// Embed a batch of texts into vectors via the dedicated `embedding_model`
+    /// endpoint. No balanced-model fallback: the fallback slot is a chat
+    /// endpoint and cannot produce embeddings. Applies the circuit breaker,
+    /// retry, and the router-level total timeout like other calls.
+    pub async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+        if input.is_empty() {
+            return Ok(Embedding {
+                vectors: Vec::new(),
+                model: None,
+                usage: Usage::default(),
+            });
+        }
+        let role = EndpointRole::EmbeddingModel;
+        self.check_circuit(&role).await?;
+        let primary = self.select_endpoint(role);
+        let cfg = self.config.read().await;
+        let base = cfg.retry_base_secs;
+        let factor = cfg.retry_factor;
+        let max_secs = cfg.retry_max_secs;
+        let jitter = cfg.retry_jitter;
+        let max_dur = cfg.max_total_duration_secs;
+        drop(cfg);
+
+        let result = tokio::time::timeout(Duration::from_secs(max_dur), async {
+            with_retry(3, base, factor, max_secs, jitter, None, || {
+                primary.embed(input.clone())
+            })
+            .await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(v)) => {
+                self.record_success(&role).await;
+                Ok(v)
+            }
+            Ok(Err(e)) => {
+                self.record_failure(&role).await;
+                Err(e)
+            }
+            Err(_) => {
+                self.record_failure(&role).await;
+                Err(LlmError::Timeout(format!(
+                    "embedding total timeout after {}s",
+                    max_dur
+                )))
+            }
+        }
+    }
+
+    /// Convenience wrapper for single-text embedding.
+    pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>, LlmError> {
+        let emb = self.embed(vec![text.to_string()]).await?;
+        Ok(emb.vectors.into_iter().next().unwrap_or_default())
     }
 
     pub async fn chat_with_tools(
@@ -651,6 +744,7 @@ impl LlmRouter {
                         tool_call_id: None,
                         tool_calls: None,
                         reasoning: None,
+                        web_search_calls: Vec::new(),
                     });
                     Self::aggregate_stream_cancellable(
                         primary,
@@ -750,6 +844,7 @@ impl LlmRouter {
         let mut usage: Option<crate::types::Usage> = None;
         let mut model: Option<String> = None;
         let mut reasoning = String::new();
+        let mut web_search_calls = Vec::new();
 
         loop {
             tokio::select! {
@@ -767,6 +862,9 @@ impl LlmRouter {
                             }
                             if !chunk.tool_calls.is_empty() {
                                 tool_calls.extend(chunk.tool_calls.clone());
+                            }
+                            if !chunk.web_search_calls.is_empty() {
+                                web_search_calls.extend(chunk.web_search_calls.clone());
                             }
                             if chunk.finish_reason.is_some() {
                                 finish_reason = chunk.finish_reason;
@@ -829,6 +927,7 @@ impl LlmRouter {
             } else {
                 Some(reasoning)
             },
+            web_search_calls,
         })
     }
 
@@ -847,6 +946,64 @@ impl LlmRouter {
     pub async fn health_check(&self, role: EndpointRole) -> Result<(), LlmError> {
         let endpoint = self.select_endpoint(role);
         endpoint.health_check().await
+    }
+
+    /// Pre-warm HTTP connections for every configured endpoint so the first
+    /// request to any model slot skips TCP+TLS handshake (~50-200ms).
+    /// Unconfigured roles (empty `api_key`) are skipped. Each endpoint is
+    /// checked concurrently and retried once on transient failure.
+    pub async fn prewarm_all(&self) {
+        let cfg = self.config.read().await;
+        let configured: Vec<EndpointRole> = [
+            (EndpointRole::SmallModel, &cfg.small_model),
+            (EndpointRole::DefaultModel, &cfg.default_model),
+            (EndpointRole::BalancedModel, &cfg.balanced_model),
+            (EndpointRole::ImageModel, &cfg.image_model),
+            (EndpointRole::AudioModel, &cfg.audio_model),
+            (EndpointRole::EmbeddingModel, &cfg.embedding_model),
+        ]
+        .into_iter()
+        .filter(|(_, endpoint)| !endpoint.api_key.is_empty())
+        .map(|(role, _)| role)
+        .collect();
+        drop(cfg);
+
+        if configured.is_empty() {
+            tracing::info!("LLM pre-warm skipped: no configured endpoints");
+            return;
+        }
+
+        let roles = configured.clone();
+        let checks = roles.into_iter().map(|role| async move {
+            let first = self.health_check(role).await;
+            if first.is_err() {
+                // One retry: transient failures (conn reset, 5xx) should not
+                // leave the pool cold for the first user message.
+                self.health_check(role).await
+            } else {
+                first
+            }
+        });
+        let results = join_all(checks).await;
+
+        let mut ok = 0;
+        for (role, result) in configured.iter().zip(results.iter()) {
+            match result {
+                Ok(()) => {
+                    ok += 1;
+                    tracing::debug!("LLM endpoint {} pre-warmed", role.as_str());
+                }
+                Err(e) => tracing::warn!(
+                    "LLM pre-warm failed for {} (will retry on first request): {}",
+                    role.as_str(),
+                    e
+                ),
+            }
+        }
+        tracing::info!(
+            "LLM pre-warm finished: {ok}/{} endpoints warmed",
+            results.len()
+        );
     }
 
     pub async fn config(&self) -> tokio::sync::RwLockReadGuard<'_, LlmConfig> {
@@ -869,6 +1026,7 @@ impl LlmRouter {
             EndpointRole::BalancedModel => &cfg.balanced_model,
             EndpointRole::ImageModel => &cfg.image_model,
             EndpointRole::AudioModel => &cfg.audio_model,
+            EndpointRole::EmbeddingModel => &cfg.embedding_model,
         };
         compute_cost_usd(endpoint, prompt_tokens, completion_tokens)
     }
@@ -917,6 +1075,7 @@ mod tests {
                     usage: Usage::default(),
                     model: None,
                     reasoning: None,
+                    web_search_calls: Vec::new(),
                 })
             }
         }
@@ -935,6 +1094,7 @@ mod tests {
                     usage: Usage::default(),
                     model: None,
                     reasoning: None,
+                    web_search_calls: Vec::new(),
                 })
             }
         }
@@ -979,6 +1139,7 @@ mod tests {
         let _fa = router.select_endpoint(EndpointRole::BalancedModel);
         let _mm = router.select_endpoint(EndpointRole::ImageModel);
         let _au = router.select_endpoint(EndpointRole::AudioModel);
+        let _em = router.select_endpoint(EndpointRole::EmbeddingModel);
     }
 
     #[tokio::test]
@@ -989,6 +1150,7 @@ mod tests {
         cfg.balanced_model.api_key = "sk-bal".into();
         cfg.image_model.api_key = "sk-mm".into();
         cfg.audio_model.api_key = "sk-au".into();
+        cfg.embedding_model.api_key = "sk-emb".into();
         let router = LlmRouter::new(cfg);
         assert!(
             router.is_role_configured(EndpointRole::SmallModel).await,
@@ -1010,6 +1172,96 @@ mod tests {
             router.is_role_configured(EndpointRole::AudioModel).await,
             "audio_model api_key is set"
         );
+        assert!(
+            router
+                .is_role_configured(EndpointRole::EmbeddingModel)
+                .await,
+            "embedding_model api_key is set"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_routes_to_embedding_endpoint_and_tracks_health() {
+        struct MockEmbedClient;
+        #[async_trait]
+        impl LlmClient for MockEmbedClient {
+            async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+                Err(LlmError::Unknown("mock: no chat".into()))
+            }
+            async fn chat_stream(
+                &self,
+                _: Vec<LlmMessage>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                Err(LlmError::Unknown("mock: no stream".into()))
+            }
+            async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+                Ok(Embedding {
+                    vectors: input.iter().map(|_| vec![1.0f32, 0.0]).collect(),
+                    model: Some("test-emb".into()),
+                    usage: Usage::default(),
+                })
+            }
+            async fn health_check(&self) -> Result<(), LlmError> {
+                Ok(())
+            }
+        }
+        let chat: Arc<dyn LlmClient> = Arc::new(MockStreamClient {
+            chunks: Vec::new(),
+            fail_chat: false,
+        });
+        let emb: Arc<dyn LlmClient> = Arc::new(MockEmbedClient);
+        let router = LlmRouter::new_with_clients_full(
+            chat.clone(),
+            chat.clone(),
+            chat.clone(),
+            chat.clone(),
+            chat,
+            emb,
+        );
+        let result = router.embed(vec!["a".into(), "b".into()]).await.unwrap();
+        assert_eq!(result.vectors.len(), 2);
+        assert_eq!(result.vectors[0], vec![1.0f32, 0.0]);
+        assert_eq!(result.model.as_deref(), Some("test-emb"));
+
+        // Embedding failures trip the embedding endpoint's circuit breaker.
+        struct FailingEmbed;
+        #[async_trait]
+        impl LlmClient for FailingEmbed {
+            async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+                Err(LlmError::Unknown("mock: no chat".into()))
+            }
+            async fn chat_stream(
+                &self,
+                _: Vec<LlmMessage>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                Err(LlmError::Unknown("mock: no stream".into()))
+            }
+            async fn embed(&self, _: Vec<String>) -> Result<Embedding, LlmError> {
+                Err(LlmError::ServerError("boom".into()))
+            }
+            async fn health_check(&self) -> Result<(), LlmError> {
+                Ok(())
+            }
+        }
+        let chat: Arc<dyn LlmClient> = Arc::new(MockStreamClient {
+            chunks: Vec::new(),
+            fail_chat: false,
+        });
+        let router = LlmRouter::new_with_clients_full(
+            chat.clone(),
+            chat.clone(),
+            chat.clone(),
+            chat.clone(),
+            chat,
+            Arc::new(FailingEmbed),
+        );
+        assert!(router.embed(vec!["x".into()]).await.is_err());
     }
 
     #[tokio::test]
@@ -1022,6 +1274,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: Some("world!".into()),
@@ -1030,6 +1284,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: None,
@@ -1042,6 +1298,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: None,
@@ -1056,6 +1314,8 @@ mod tests {
                 }),
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             }),
         ];
 
@@ -1106,6 +1366,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn aggregate_stream_forwards_web_search_phases_and_collects_calls() {
+        use crate::types::WebSearchPhase;
+        let chunks: Vec<Result<StreamChunk, LlmError>> = vec![
+            Ok(StreamChunk {
+                text: None,
+                tool_calls: Vec::new(),
+                finish_reason: None,
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: Some(WebSearchPhase::InProgress),
+                web_search_calls: Vec::new(),
+            }),
+            Ok(StreamChunk {
+                text: None,
+                tool_calls: Vec::new(),
+                finish_reason: None,
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: Some(WebSearchPhase::Searching),
+                web_search_calls: Vec::new(),
+            }),
+            Ok(StreamChunk {
+                text: None,
+                tool_calls: Vec::new(),
+                finish_reason: None,
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: Some(WebSearchPhase::Completed),
+                web_search_calls: vec![serde_json::json!({
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed"
+                })],
+            }),
+            Ok(StreamChunk {
+                text: Some("answer with citations".into()),
+                tool_calls: Vec::new(),
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            }),
+        ];
+
+        let client = Arc::new(MockStreamClient {
+            chunks,
+            fail_chat: false,
+        }) as Arc<dyn LlmClient>;
+        let router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
+
+        use std::sync::Arc as StdArc;
+        use std::sync::Mutex as StdMutex;
+        let phases = StdArc::new(StdMutex::new(Vec::new()));
+        let phases_clone = phases.clone();
+        let resp = router
+            .chat_stream_with_tools_aggregated(
+                EndpointRole::DefaultModel,
+                Vec::new(),
+                Vec::new(),
+                move |c| {
+                    if let Some(p) = c.web_search {
+                        phases_clone.lock().unwrap().push(p.as_str().to_string());
+                    }
+                },
+            )
+            .await
+            .expect("aggregation succeeds");
+
+        assert_eq!(
+            *phases.lock().unwrap(),
+            vec!["in_progress", "searching", "completed"],
+            "on_chunk must observe every web search phase in order"
+        );
+        assert_eq!(resp.text, "answer with citations");
+        assert_eq!(resp.web_search_calls.len(), 1);
+        assert_eq!(resp.web_search_calls[0]["id"], "ws_1");
+    }
+
+    #[tokio::test]
     async fn chat_balanced_model_on_primary_failure() {
         let failing = Arc::new(MockStreamClient {
             chunks: Vec::new(),
@@ -1119,6 +1469,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -1189,6 +1541,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -1418,6 +1772,7 @@ mod tests {
         assert_eq!(LlmRouter::health_index(&EndpointRole::BalancedModel), 2);
         assert_eq!(LlmRouter::health_index(&EndpointRole::ImageModel), 3);
         assert_eq!(LlmRouter::health_index(&EndpointRole::AudioModel), 4);
+        assert_eq!(LlmRouter::health_index(&EndpointRole::EmbeddingModel), 5);
     }
 
     #[tokio::test]
@@ -1455,6 +1810,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -1480,6 +1837,8 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;

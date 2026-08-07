@@ -193,6 +193,9 @@ impl ContextCompactor {
                     ))],
                     None,
                     None,
+                    // Compaction summarizes away the old turns; any search
+                    // context they carried is intentionally not carried over.
+                    Vec::new(),
                 ));
                 compacted.extend_from_slice(suffix);
 
@@ -227,6 +230,7 @@ mod tests {
             tool_call_id: None,
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 
@@ -348,6 +352,7 @@ mod tests {
             tool_call_id: Some("call_1".into()),
             parent_message_id: None,
             reasoning: None,
+            web_search_calls: Vec::new(),
         }
     }
 

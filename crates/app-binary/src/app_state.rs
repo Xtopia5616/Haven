@@ -29,7 +29,12 @@ impl AppState {
         filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
     ) -> anyhow::Result<Self> {
+        let t0 = std::time::Instant::now();
         let db = Arc::new(Database::open(db_path)?);
+        tracing::debug!(
+            "AppState::new phase=db elapsed={}ms",
+            t0.elapsed().as_millis()
+        );
 
         let db_finalize = db.clone();
         tokio::spawn(async move {
@@ -53,6 +58,11 @@ impl AppState {
 
         let tools = Arc::new(ToolsManager::new());
 
+        // Load per-tool settings (timeouts, disabled tools) into the manager
+        // so `rebuild_catalog` can apply them from the first rebuild.
+        let tool_settings = cfg.tool_settings.clone();
+        tools.set_tool_settings(tool_settings).await;
+
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 3));
 
         let agent = Arc::new(AgentLayer::new(
@@ -66,10 +76,30 @@ impl AppState {
 
         let pipeline = Arc::new(InputPipeline::new());
 
+        // Periodic memory maintenance: fact decay, dedup, sensitive purge and
+        // embedding pruning run on a timer so stale memory is flushed even
+        // when no inference has happened recently. The first tick fires
+        // immediately (startup cleanup), then every 6 hours.
+        {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    agent.run_memory_maintenance().await;
+                }
+            });
+        }
+
         // Start the long-lived audio capture thread now so the microphone
         // stream is already playing when the user first records — the first
         // words after a click are never lost to device-init latency.
         pipeline.prewarm().await;
+        tracing::debug!(
+            "AppState::new phase=prewarm elapsed={}ms",
+            t0.elapsed().as_millis()
+        );
 
         let stt_config = &cfg.stt;
 
@@ -80,7 +110,9 @@ impl AppState {
             std::sync::Arc::new(tools.mcp_manager.clone());
         match build_stt_client(router.clone(), Some(mcp_caller), stt_config) {
             Ok(client) => {
-                pipeline.set_stt_client(client).await;
+                pipeline
+                    .set_stt_client(client.map(std::sync::Arc::from))
+                    .await;
             }
             Err(e) => {
                 tracing::warn!("STT client build failed, transcription disabled: {e}");
@@ -147,20 +179,17 @@ impl AppState {
 
         // Start the task dispatcher
         agent.clone().start();
+        tracing::debug!(
+            "AppState::new phase=agent elapsed={}ms",
+            t0.elapsed().as_millis()
+        );
 
-        // Pre-warm the LLM HTTP connection pool so the first user message
-        // doesn't pay TCP+TLS handshake latency (~50-200ms).
+        // Pre-warm LLM HTTP connection pools for all configured endpoints so
+        // the first user message doesn't pay TCP+TLS handshake latency
+        // (~50-200ms) on whichever model slot it hits.
         let router_warm = router.clone();
         tokio::spawn(async move {
-            match router_warm
-                .health_check(haven_llm::EndpointRole::DefaultModel)
-                .await
-            {
-                Ok(()) => tracing::info!("LLM connection pre-warmed"),
-                Err(e) => {
-                    tracing::warn!("LLM pre-warm failed (will retry on first request): {}", e)
-                }
-            }
+            router_warm.prewarm_all().await;
         });
 
         let config_loader_arc = Arc::new(std::sync::Mutex::new(config_loader));
@@ -190,6 +219,11 @@ impl AppState {
             set_log_level,
         };
         tools.set_self_context(self_ctx).await;
+
+        tracing::debug!(
+            "AppState::new phase=done elapsed={}ms",
+            t0.elapsed().as_millis()
+        );
 
         Ok(Self {
             db,

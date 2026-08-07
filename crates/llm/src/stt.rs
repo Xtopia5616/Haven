@@ -173,6 +173,7 @@ impl SttClient for LlmSttAdapter {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
             LlmMessage {
                 role: LlmRole::User,
@@ -184,6 +185,7 @@ impl SttClient for LlmSttAdapter {
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
+                web_search_calls: Vec::new(),
             },
         ];
 

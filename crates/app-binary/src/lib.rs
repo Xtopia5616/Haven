@@ -116,6 +116,7 @@ impl TauriEmitter {
             AgentEvent::BalancedModelActivated { .. } => "agent:balanced_model",
             AgentEvent::ThoughtChunk { .. } => "agent:thought_chunk",
             AgentEvent::ReasoningChunk { .. } => "agent:reasoning_chunk",
+            AgentEvent::WebSearch { .. } => "agent:web_search",
             AgentEvent::Supplement { .. } => "agent:supplement",
             AgentEvent::Compaction { .. } => "agent:compaction",
             AgentEvent::Usage { .. } => "agent:usage",
@@ -546,7 +547,8 @@ pub fn run() {
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "?".to_string());
-        tracing::error!("PANIC at {}: {}", location, msg);
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!("PANIC at {}: {}\n{}", location, msg, backtrace);
         prev_hook(panic_info);
     }));
 
@@ -826,6 +828,9 @@ pub fn run() {
             commands::discover_models,
             commands::switch_model,
             commands::set_reasoning_effort,
+            commands::set_web_search,
+            commands::run_memory_maintenance,
+            commands::recall_memory,
             commands::list_mcp_tools,
             commands::reconnect_mcp,
             commands::mcp_tool_call,
@@ -836,6 +841,7 @@ pub fn run() {
             commands::list_skills,
             commands::refresh_skills,
             commands::set_skill_enabled,
+            commands::set_tool_enabled,
             commands::open_skills_dir,
             commands::execute_skill,
             commands::list_facts,
@@ -969,46 +975,55 @@ fn init_app_state(
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(AppState::new(&db_path, fh, config_loader))
     })
-    .unwrap_or_else(|e| {
-        tracing::error!("failed to initialize application state: {}", e);
-        let db = Arc::new(haven_memory::Database::open(&db_path).unwrap_or_else(|_| {
-            std::process::exit(1);
-        }));
-        let tools = Arc::new(haven_tools::ToolsManager::new());
-        let executor = Arc::new(haven_task::TaskExecutor::new(db.clone(), tools.clone(), 3));
-        let router = Arc::new(haven_llm::LlmRouter::new(
-            haven_common::config::LlmConfig::default(),
-        ));
-        let agent = Arc::new(haven_agent::AgentLayer::new(
-            db.clone(),
-            executor.clone(),
-            router.clone(),
-            30,
-            50,
-            8000,
-        ));
-        let pipeline = Arc::new(haven_input::InputPipeline::new());
-        let shell = Arc::new(crate::desktop::DesktopShell::new());
-        agent.clone().start();
-        let config_loader_arc = Arc::new(std::sync::Mutex::new(
-            haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
-                haven_common::config::ConfigLoader::load_from(
-                    &haven_common::config::ConfigLoader::default_path(),
-                )
-                .unwrap()
-            }),
-        ));
-        AppState {
-            db,
-            tools,
-            executor,
-            agent,
-            pipeline,
-            shell,
-            log_filter_handles: filter_handles,
-            config_loader: config_loader_arc,
-        }
-    })
+    .unwrap_or_else(|e| degraded_app_state(e, &db_path, filter_handles))
+}
+
+/// Fallback state when `AppState::new` fails: a degraded but functional
+/// backend (empty DB, default config) so the app still opens instead of
+/// exiting.
+fn degraded_app_state(
+    error: anyhow::Error,
+    db_path: &std::path::Path,
+    filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
+) -> AppState {
+    tracing::error!("failed to initialize application state: {}", error);
+    let db = Arc::new(haven_memory::Database::open(db_path).unwrap_or_else(|_| {
+        std::process::exit(1);
+    }));
+    let tools = Arc::new(haven_tools::ToolsManager::new());
+    let executor = Arc::new(haven_task::TaskExecutor::new(db.clone(), tools.clone(), 3));
+    let router = Arc::new(haven_llm::LlmRouter::new(
+        haven_common::config::LlmConfig::default(),
+    ));
+    let agent = Arc::new(haven_agent::AgentLayer::new(
+        db.clone(),
+        executor.clone(),
+        router.clone(),
+        30,
+        50,
+        8000,
+    ));
+    let pipeline = Arc::new(haven_input::InputPipeline::new());
+    let shell = Arc::new(crate::desktop::DesktopShell::new());
+    agent.clone().start();
+    let config_loader_arc = Arc::new(std::sync::Mutex::new(
+        haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
+            haven_common::config::ConfigLoader::load_from(
+                &haven_common::config::ConfigLoader::default_path(),
+            )
+            .unwrap()
+        }),
+    ));
+    AppState {
+        db,
+        tools,
+        executor,
+        agent,
+        pipeline,
+        shell,
+        log_filter_handles: filter_handles,
+        config_loader: config_loader_arc,
+    }
 }
 
 fn app_data_dir() -> std::path::PathBuf {
@@ -1145,6 +1160,15 @@ mod tests {
                     run_id: 1,
                 },
                 "agent:reasoning_chunk",
+            ),
+            (
+                AgentEvent::WebSearch {
+                    task_id: "t".into(),
+                    phase: "searching".into(),
+                    step_number: 1,
+                    run_id: 1,
+                },
+                "agent:web_search",
             ),
             (
                 AgentEvent::Supplement {

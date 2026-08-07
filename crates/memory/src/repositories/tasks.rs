@@ -1,6 +1,46 @@
 use crate::db::Database;
-use chrono::Utc;
+use chrono::{Local, NaiveDate, TimeZone, Utc};
 use uuid::Uuid;
+
+/// Map a row produced by a history-list query (8 columns, no react_state).
+fn map_task_list_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        input_text: row.get(1)?,
+        title: row.get(2)?,
+        status: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+        transcript: row.get(6)?,
+        react_state: None,
+        parent_task_id: row.get(7)?,
+    })
+}
+
+/// Convert a local `YYYY-MM-DD` date into the UTC RFC3339 instant of local
+/// midnight. Used to translate the UI's local-date filters into UTC bounds so
+/// filtering by "today" matches what the user sees (the stored created_at is
+/// UTC). Returns None when the date is malformed.
+fn local_date_to_utc(date: &str) -> Option<String> {
+    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let local_midnight = Local
+        .from_local_datetime(&day.and_hms_opt(0, 0, 0)?)
+        .earliest()?;
+    Some(local_midnight.with_timezone(&Utc).to_rfc3339())
+}
+
+/// Convert a local `YYYY-MM-DD` date into the UTC instant of the *next* local
+/// midnight. Used as an exclusive upper bound so filtering by "through date X"
+/// includes the whole of day X (the plain `YYYY-MM-DD <= created_at` string
+/// comparison would exclude every task created during the end day itself).
+fn local_date_to_utc_exclusive_end(date: &str) -> Option<String> {
+    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let next = day.succ_opt()?;
+    let local_midnight = Local
+        .from_local_datetime(&next.and_hms_opt(0, 0, 0)?)
+        .earliest()?;
+    Some(local_midnight.with_timezone(&Utc).to_rfc3339())
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Task {
@@ -74,23 +114,17 @@ impl Database {
 
     pub fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>> {
         let conn = self.conn();
+        // react_state is excluded here too: it is a full ReAct snapshot that
+        // can be tens of KB, and consumers of the Task row (review payload,
+        // last-conversation restore) never read it. The agent reads it via
+        // `get_react_state`, which selects only that column.
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
              FROM tasks WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
         match rows.next()? {
-            Some(row) => Ok(Some(Task {
-                id: row.get(0)?,
-                input_text: row.get(1)?,
-                title: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                transcript: row.get(6)?,
-                react_state: row.get(7)?,
-                parent_task_id: row.get(8)?,
-            })),
+            Some(row) => Ok(Some(map_task_list_row(row)?)),
             None => Ok(None),
         }
     }
@@ -131,22 +165,10 @@ impl Database {
         };
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
              FROM tasks ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![limit, offset], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                input_text: row.get(1)?,
-                title: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                transcript: row.get(6)?,
-                react_state: row.get(7)?,
-                parent_task_id: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![limit, offset], map_task_list_row)?;
         let mut tasks = Vec::new();
         for row in rows {
             tasks.push(row?);
@@ -161,23 +183,11 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
              ORDER BY created_at DESC LIMIT 50",
         )?;
-        let rows = stmt.query_map(rusqlite::params![pattern], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                input_text: row.get(1)?,
-                title: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                transcript: row.get(6)?,
-                react_state: row.get(7)?,
-                parent_task_id: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![pattern], map_task_list_row)?;
         let mut tasks = Vec::new();
         for row in rows {
             tasks.push(row?);
@@ -210,23 +220,11 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         )?;
-        let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                input_text: row.get(1)?,
-                title: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                transcript: row.get(6)?,
-                react_state: row.get(7)?,
-                parent_task_id: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], map_task_list_row)?;
         let mut tasks = Vec::new();
         for row in rows {
             tasks.push(row?);
@@ -338,27 +336,57 @@ impl Database {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<Task>> {
+        let query = query.and_then(|s| if s.is_empty() { None } else { Some(s) });
+        let status = status.and_then(|s| if s.is_empty() { None } else { Some(s) });
+        let start_date = start_date.and_then(|s| if s.is_empty() { None } else { Some(s) });
+        let end_date = end_date.and_then(|s| if s.is_empty() { None } else { Some(s) });
+
+        // Unfiltered first page reuses the same short-TTL cache as list_tasks
+        // so repeated visits to the history page skip the DB round-trip.
+        let cacheable = query.is_none()
+            && status.is_none()
+            && start_date.is_none()
+            && end_date.is_none()
+            && offset == 0
+            && limit == 50;
+        if cacheable && let Some(cached) = self.cache_get_tasks() {
+            return Ok(cached);
+        }
+        let cache_gen = if cacheable {
+            self.cache_generation("_tasks")
+        } else {
+            0
+        };
+
         let mut wheres: Vec<String> = Vec::new();
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if let Some(q) = query.and_then(|s| if s.is_empty() { None } else { Some(s) }) {
+        if let Some(q) = query {
             let p = format!("%{q}%");
             wheres.push("(input_text LIKE ? OR transcript LIKE ? OR title LIKE ?)".into());
             params.push(Box::new(p.clone()));
             params.push(Box::new(p.clone()));
             params.push(Box::new(p));
         }
-        if let Some(s) = status.and_then(|s| if s.is_empty() { None } else { Some(s) }) {
+        if let Some(s) = status {
             wheres.push("status = ?".into());
             params.push(Box::new(s.to_owned()));
         }
-        if let Some(d) = start_date.and_then(|s| if s.is_empty() { None } else { Some(s) }) {
+        // The UI filters by local calendar days ("2026-08-01"), but created_at
+        // is stored as UTC RFC3339. Convert the local day to its UTC midnight
+        // boundary so the whole local day is included/excluded as expected.
+        // The end date is inclusive: `created_at < next-day-UTC-midnight`.
+        if let Some(d) = start_date
+            && let Some(bound) = local_date_to_utc(d)
+        {
             wheres.push("created_at >= ?".into());
-            params.push(Box::new(d.to_owned()));
+            params.push(Box::new(bound));
         }
-        if let Some(d) = end_date.and_then(|s| if s.is_empty() { None } else { Some(s) }) {
-            wheres.push("created_at <= ?".into());
-            params.push(Box::new(d.to_owned()));
+        if let Some(d) = end_date
+            && let Some(bound) = local_date_to_utc_exclusive_end(d)
+        {
+            wheres.push("created_at < ?".into());
+            params.push(Box::new(bound));
         }
 
         let where_clause = if wheres.is_empty() {
@@ -368,7 +396,7 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state, parent_task_id \
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id \
              FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -384,23 +412,14 @@ impl Database {
         param_refs.push(&limit_param);
         param_refs.push(&offset_param);
 
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                input_text: row.get(1)?,
-                title: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-                transcript: row.get(6)?,
-                react_state: row.get(7)?,
-                parent_task_id: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map(param_refs.as_slice(), map_task_list_row)?;
 
         let mut tasks = Vec::new();
         for row in rows {
             tasks.push(row?);
+        }
+        if cacheable {
+            self.cache_put_tasks(tasks.clone(), 10, cache_gen);
         }
         Ok(tasks)
     }
@@ -431,6 +450,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::Database;
+    use chrono::{Local, Utc};
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
@@ -768,6 +788,80 @@ mod tests {
             .search_tasks_filtered(Some(""), None, None, None, 50, 0)
             .unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_tasks_filtered_end_date_includes_end_day() {
+        let db = create_db();
+        let task = db.create_task("a", "").unwrap();
+
+        // created_at is stored as UTC RFC3339; its local calendar date must
+        // be included when filtering with that same date as the end bound.
+        let local_today = Utc::now()
+            .with_timezone(&Local)
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let results = db
+            .search_tasks_filtered(None, None, Some(&local_today), Some(&local_today), 50, 0)
+            .unwrap();
+        assert!(
+            results.iter().any(|t| t.id == task.id),
+            "task created today must match a same-day end-date filter"
+        );
+    }
+
+    #[test]
+    fn test_search_tasks_filtered_list_rows_have_no_react_state() {
+        let db = create_db();
+        let task = db.create_task("a", "").unwrap();
+        db.save_react_state(&task.id, r#"{"v":1}"#).unwrap();
+
+        let results = db
+            .search_tasks_filtered(None, None, None, None, 50, 0)
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].react_state.is_none());
+
+        let listed = db.list_tasks(50, 0).unwrap();
+        assert!(listed[0].react_state.is_none());
+    }
+
+    #[test]
+    fn test_search_tasks_filtered_no_filters_uses_cache() {
+        let db = create_db();
+        db.create_task("a", "").unwrap();
+        db.create_task("b", "").unwrap();
+
+        let first = db
+            .search_tasks_filtered(None, None, None, None, 50, 0)
+            .unwrap();
+        assert_eq!(first.len(), 2);
+
+        // The unfiltered first page is cached; a second call must return
+        // immediately from the cache (and stay consistent after invalidation).
+        let second = db
+            .search_tasks_filtered(None, None, None, None, 50, 0)
+            .unwrap();
+        assert_eq!(second.len(), 2);
+
+        db.create_task("c", "").unwrap();
+        let third = db
+            .search_tasks_filtered(None, None, None, None, 50, 0)
+            .unwrap();
+        assert_eq!(third.len(), 3);
+    }
+
+    #[test]
+    fn test_get_task_excludes_react_state() {
+        let db = create_db();
+        let task = db.create_task("a", "").unwrap();
+        db.save_react_state(&task.id, r#"{"v":1}"#).unwrap();
+
+        let loaded = db.get_task(&task.id).unwrap().unwrap();
+        assert!(loaded.react_state.is_none());
+        // The full state is still retrievable through the dedicated accessor.
+        assert_eq!(db.get_react_state(&task.id).unwrap().unwrap(), r#"{"v":1}"#);
     }
 
     #[test]
