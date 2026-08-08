@@ -13,7 +13,6 @@ fn map_task_list_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         updated_at: row.get(5)?,
         transcript: row.get(6)?,
         react_state: None,
-        parent_task_id: row.get(7)?,
     })
 }
 
@@ -52,9 +51,6 @@ pub struct Task {
     pub updated_at: String,
     pub transcript: String,
     pub react_state: Option<String>,
-    /// Parent task ID for branching: a branch is a new task whose messages
-    /// were copied from the source task, linked via this column.
-    pub parent_task_id: Option<String>,
 }
 
 impl Database {
@@ -77,7 +73,6 @@ impl Database {
             updated_at: now,
             transcript: transcript.into(),
             react_state: None,
-            parent_task_id: None,
         })
     }
 
@@ -88,7 +83,7 @@ impl Database {
         // last-conversation restore) never read it. The agent reads it via
         // `get_react_state`, which selects only that column.
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
              FROM tasks WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -134,7 +129,7 @@ impl Database {
         };
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
              FROM tasks ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_task_list_row)?;
@@ -152,7 +147,7 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
                 OR EXISTS (SELECT 1 FROM messages
                            WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)
@@ -193,7 +188,7 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
                 OR EXISTS (SELECT 1 FROM messages
                            WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)
@@ -215,6 +210,12 @@ impl Database {
         if affected == 0 {
             anyhow::bail!("task '{}' not found in database", id);
         }
+        // Drop the fact-extraction cursor for this task; otherwise every
+        // deleted task leaves a permanent kv_store row behind.
+        conn.execute(
+            "DELETE FROM kv_store WHERE key = ?1",
+            rusqlite::params![format!("fact_extraction.{}", id)],
+        )?;
         drop(conn);
         self.cache_invalidate_tasks();
         self.cache_invalidate_messages(id);
@@ -405,7 +406,7 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id \
+            "SELECT id, input_text, title, status, created_at, updated_at, transcript \
              FROM tasks {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -477,14 +478,13 @@ mod tests {
         assert!(!task.updated_at.is_empty());
         assert_eq!(task.transcript, "transcript");
         assert!(task.react_state.is_none());
-        assert!(task.parent_task_id.is_none());
     }
 
     #[test]
     fn test_create_task_without_session_works() {
         let db = create_db();
         let task = db.create_task("input", "").unwrap();
-        assert!(task.parent_task_id.is_none());
+        assert!(!task.id.is_empty());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 /// Unified shell hook surface, replacing the former 10 separate
@@ -66,39 +66,55 @@ impl Default for ShellState {
 
 pub struct DesktopShell {
     state: Arc<Mutex<ShellState>>,
-    handler: Arc<Mutex<Option<Arc<dyn ShellHandler>>>>,
+    handler: OnceLock<Arc<dyn ShellHandler>>,
 }
 
 impl DesktopShell {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(ShellState::default())),
-            handler: Arc::new(Mutex::new(None)),
+            handler: OnceLock::new(),
         }
     }
 
-    /// Atomically install (or replace) the single shell hook implementation.
-    pub async fn set_handler(&self, handler: Arc<dyn ShellHandler>) {
-        *self.handler.lock().await = Some(handler);
+    /// Install the single shell hook implementation. May only be installed
+    /// once; a second install panics (the handler never changes at runtime).
+    pub fn set_handler(&self, handler: Arc<dyn ShellHandler>) {
+        if self.handler.set(handler).is_err() {
+            panic!("shell handler already installed");
+        }
     }
 
-    /// Snapshot the current handler so callers never hold the lock across an await.
-    async fn handler_snap(&self) -> Option<Arc<dyn ShellHandler>> {
-        self.handler.lock().await.clone()
+    /// Snapshot the current handler (installation is one-time, so this is
+    /// lock-free) so callers never hold a lock across an await.
+    fn handler_snap(&self) -> Option<Arc<dyn ShellHandler>> {
+        self.handler.get().cloned()
     }
 
+    /// Persist the tray status and notify the handler. Skips the notification
+    /// when the status did not change: the handler rebuilds the tray icon and
+    /// emits an IPC event, so unchanged updates are pure waste.
     async fn set_tray(&self, status: TrayStatus) {
-        if let Some(h) = self.handler_snap().await {
+        let handler = self.handler_snap();
+        {
+            let mut state = self.state.lock().await;
+            if state.tray_status == status {
+                return;
+            }
+            state.tray_status = status;
+        }
+        if let Some(h) = &handler {
             h.on_tray_status(status);
         }
     }
 
     pub async fn stop_recording(&self) {
-        let mut state = self.state.lock().await;
-        state.is_recording = false;
-        state.tray_status = TrayStatus::Normal;
-        drop(state);
-        if let Some(h) = self.handler_snap().await {
+        let handler = self.handler_snap();
+        {
+            let mut state = self.state.lock().await;
+            state.is_recording = false;
+        }
+        if let Some(h) = &handler {
             h.on_recording_stop().await;
         }
         self.set_tray(TrayStatus::Normal).await;
@@ -115,11 +131,6 @@ impl DesktopShell {
         {
             let mut state = self.state.lock().await;
             state.is_recording = recording;
-            state.tray_status = if recording {
-                TrayStatus::Recording
-            } else {
-                TrayStatus::Normal
-            };
         }
         self.set_tray(if recording {
             TrayStatus::Recording
@@ -130,6 +141,7 @@ impl DesktopShell {
     }
 
     pub async fn toggle_recording(&self) {
+        let handler = self.handler_snap();
         let mut state = self.state.lock().await;
         if state.is_muted {
             return;
@@ -139,31 +151,34 @@ impl DesktopShell {
         let new_val = state.is_recording_toggle;
         if new_val {
             state.is_recording = true;
-            state.tray_status = TrayStatus::Recording;
         } else {
             state.is_recording = false;
-            state.tray_status = TrayStatus::Normal;
         }
         drop(state);
-        if let Some(h) = self.handler_snap().await {
+        if let Some(h) = &handler {
             h.on_toggle_change(new_val);
         }
         if new_val {
             // Already recording via another source (UI button): keep the
             // toggle flag but do not double-start the pipeline.
-            if !was_recording && let Some(h) = self.handler_snap().await {
-                h.on_recording_start().await;
+            if !was_recording {
+                if let Some(h) = &handler {
+                    h.on_recording_start().await;
+                }
             }
-            self.set_tray(TrayStatus::Recording).await;
-        } else {
-            if let Some(h) = self.handler_snap().await {
-                h.on_recording_stop().await;
-            }
-            self.set_tray(TrayStatus::Normal).await;
+        } else if let Some(h) = &handler {
+            h.on_recording_stop().await;
         }
+        self.set_tray(if new_val {
+            TrayStatus::Recording
+        } else {
+            TrayStatus::Normal
+        })
+        .await;
     }
 
     pub async fn hold_press(&self) {
+        let handler = self.handler_snap();
         let mut state = self.state.lock().await;
         if state.is_muted {
             return;
@@ -172,42 +187,39 @@ impl DesktopShell {
             return;
         }
         state.is_recording = true;
-        state.tray_status = TrayStatus::Recording;
         drop(state);
-        if let Some(h) = self.handler_snap().await {
+        if let Some(h) = &handler {
             h.on_recording_start().await;
         }
         self.set_tray(TrayStatus::Recording).await;
     }
 
     pub async fn hold_release(&self) {
+        let handler = self.handler_snap();
         let mut state = self.state.lock().await;
         if !state.is_recording && !state.is_recording_toggle {
             return;
         }
         state.is_recording = false;
-        state.tray_status = TrayStatus::Normal;
         drop(state);
-        if let Some(h) = self.handler_snap().await {
+        if let Some(h) = &handler {
             h.on_recording_stop().await;
         }
         self.set_tray(TrayStatus::Normal).await;
     }
 
     pub async fn set_muted(&self, muted: bool) {
+        let handler = self.handler_snap();
         let was_recording;
         {
             let mut state = self.state.lock().await;
             state.is_muted = muted;
             was_recording = state.is_recording;
             if muted {
-                state.tray_status = TrayStatus::Muted;
                 state.is_recording = false;
-            } else {
-                state.tray_status = TrayStatus::Normal;
             }
         }
-        if let Some(h) = self.handler_snap().await {
+        if let Some(h) = &handler {
             h.on_mute_change(muted);
         }
         if muted && was_recording {
@@ -215,7 +227,7 @@ impl DesktopShell {
             // microphone is released instead of keeping the stream hot while
             // the user believes the mic is off. The handler finalizes the
             // recording (STT + transcript) as a normal stop.
-            if let Some(h) = self.handler_snap().await {
+            if let Some(h) = &handler {
                 h.on_recording_stop().await;
             }
         }

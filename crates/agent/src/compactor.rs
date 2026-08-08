@@ -91,6 +91,19 @@ impl ContextCompactor {
         }
     }
 
+    /// The token threshold at which compaction triggers: the *lower* of
+    /// `context_window * trigger_ratio` (proactive cap) and
+    /// `context_window - reserve_tokens` (response headroom floor).
+    ///
+    /// Split out of `needs_compaction` so callers that already hold an
+    /// external estimate (e.g. the incremental per-task cache in
+    /// `ReActEngine`) can compare without re-estimating the whole list.
+    pub fn threshold_tokens(&self) -> u32 {
+        let ratio_threshold = (self.context_window as f64 * self.trigger_ratio as f64) as u32;
+        let headroom_threshold = self.context_window.saturating_sub(self.reserve_tokens);
+        ratio_threshold.min(headroom_threshold.max(1))
+    }
+
     /// Returns true when the message list exceeds the compact threshold.
     ///
     /// We use the *lower* of:
@@ -101,16 +114,16 @@ impl ContextCompactor {
     /// original "leave room for response" guarantee while compacting
     /// earlier when the model has plenty of headroom.
     pub fn needs_compaction(&self, messages: &[CanonicalMessage]) -> bool {
-        let estimated = estimate_message_tokens(messages);
-        let ratio_threshold = (self.context_window as f64 * self.trigger_ratio as f64) as u32;
-        let headroom_threshold = self.context_window.saturating_sub(self.reserve_tokens);
-        let threshold = ratio_threshold.min(headroom_threshold.max(1));
-        estimated > threshold
+        estimate_message_tokens(messages) > self.threshold_tokens()
     }
 
     /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
     fn build_summary_prompt(prefix: &[CanonicalMessage]) -> String {
-        let mut text = String::from(CONVERSATION_SUMMARY_PROMPT);
+        use std::fmt::Write as _;
+        let mut text = String::with_capacity(
+            prefix.len() * 64 + CONVERSATION_SUMMARY_PROMPT.len(),
+        );
+        text.push_str(CONVERSATION_SUMMARY_PROMPT);
         for msg in prefix {
             let role = match msg.role {
                 haven_common::types::CanonicalRole::System => "system",
@@ -120,7 +133,7 @@ impl ContextCompactor {
             };
             for part in &msg.content {
                 if let ContentPart::Text(t) = part {
-                    text.push_str(&format!("[{}] {}\n", role, t));
+                    let _ = write!(text, "[{}] {}\n", role, t);
                 }
             }
         }
@@ -190,7 +203,9 @@ impl ContextCompactor {
                     return None;
                 }
 
-                let mut compacted: Vec<CanonicalMessage> = messages[..system_count].to_vec();
+                let mut compacted: Vec<CanonicalMessage> =
+                    Vec::with_capacity(system_count + 1 + suffix.len());
+                compacted.extend_from_slice(&messages[..system_count]);
                 compacted.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(format!(
                         "[Compacted summary of previous messages]: {}",
@@ -233,7 +248,6 @@ mod tests {
             content: vec![ContentPart::text(text)],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         }
@@ -355,7 +369,6 @@ mod tests {
             content: vec![ContentPart::text(text)],
             tool_calls: None,
             tool_call_id: Some("call_1".into()),
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         }

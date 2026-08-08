@@ -46,7 +46,6 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{skills}` — installable skills index, or empty
 /// - `{mcps}` — available MCP servers index, or empty
 /// - `{facts}` — user facts block, or empty
-/// - `{preferences}` — preference summary line, or empty
 /// - `{task}` — current task description
 /// - `{context}` — additional conversation context block, or empty
 /// - `{history}` — "Steps so far" block, or empty
@@ -58,19 +57,20 @@ use `ask` to consult the user instead of guessing.\n\
 Available builtin tools:\n\
 You have access to the following built-in tools:\n\
 \n\
-{tools}{skills}{mcps}{facts}{preferences}\n\
+{tools}{skills}{mcps}{facts}\n\
 Guidelines:\n\
 1. Think step by step. Decide what to do, then call the right tool.\n\
 2. After each tool call you will receive the result. Use it to decide next.\n\
 3. When the task is complete, respond with a summary of what was done.\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
-6. shell(background: true) returns a job_id immediately; the job's final output is delivered back to you automatically as context when it finishes — do not poll it.\n\
+6. shell(background: true) returns a job_id immediately; the job's final output is delivered back to you automatically as context when it finishes — do not poll it with `status`. Use `jobs` to see all background jobs at once. The user also gets a push notification when a background job finishes.\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
 8. Calling ask pauses the task until the user replies; their answer is injected as context for the next step.\n\
 9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the task. Use it to alert them about background progress or something they should check.\n\
 10. Prefer MCP servers over built-in tools when the server's tools are more capable for the task. The 'Available MCP servers' list below shows each server's tools — if a task matches one of them, call `load_mcp` with that server name to activate its tools, then use them. Built-in tools are basic; MCP servers typically provide the powerful, specialized functionality.\n\
 11. Skills installed via `load_skill` work the same way: when a skill in the list below fits the task, activate it with `load_skill` before using its tools.\n\
+12. When a tool call fails, first diagnose the cause: is it an environment problem (missing command, wrong shell syntax — `&&` only works in cmd, PowerShell uses `;` — network/proxy, wrong path) or a logic problem? Fix the cause and retry the same approach, switching tools (e.g. curl -> aria2) if the environment requires it. Only switch to a completely different approach when the method itself is wrong.\n\
 \n\
 Current task: {task}\n\
 \n\
@@ -83,7 +83,7 @@ pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a con
 /// User fact extraction (balanced_model). Expects a JSON array in response.
 /// The user content lists already-stored facts and a numbered conversation
 /// transcript (`[N] ...`); facts reference the supporting message by number.
-pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0), \"message_index\" (the number of the message in the conversation that supports this fact; omit only if no message clearly supports it). Only extract clear, explicit facts the user stated. If no facts found, return []. The conversation messages are numbered as [N]; the \"Known user facts\" list shows what is already stored — re-confirming one is fine (raise confidence), and for single-valued attributes (name, project_path, works_at, etc.) output the latest value the user stated even if it differs from what is stored. Raise confidence when the user re-confirms something they mentioned earlier. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
+pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, language, verbosity, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0), \"message_index\" (the number of the message in the conversation that supports this fact; omit only if no message clearly supports it). Only extract clear, explicit facts the user stated. If no facts found, return []. The conversation messages are numbered as [N]; the \"Known user facts\" list shows what is already stored — re-confirming one is fine (raise confidence), and for single-valued attributes (name, project_path, works_at, language, verbosity, etc.) output the latest value the user stated even if it differs from what is stored. Raise confidence when the user re-confirms something they mentioned earlier. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
 
 /// Conversation compaction summary prefix (default_model). The transcript
 /// is appended after this text.
@@ -131,7 +131,6 @@ mod tests {
                 ("skills", ""),
                 ("mcps", ""),
                 ("facts", ""),
-                ("preferences", ""),
                 ("context", ""),
                 ("history", ""),
             ],

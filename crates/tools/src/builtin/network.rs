@@ -136,10 +136,21 @@ async fn execute_once(
     timeout_secs: u64,
     max_body_bytes: usize,
 ) -> anyhow::Result<ToolResult> {
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .user_agent("Haven/1.0")
-        .build()?;
+        .user_agent("Haven/1.0");
+    // Route through a locally detected proxy so international requests work
+    // when the user runs one (e.g. 127.0.0.1:10808) — same detection as the
+    // shell tool's spawned commands. User-set env vars already short-circuit
+    // the probe (reqwest also honors them natively).
+    for (key, val) in crate::bg::proxy_env_vars() {
+        if key == "HTTP_PROXY" || key == "http_proxy" {
+            builder = builder.proxy(reqwest::Proxy::http(&val)?);
+        } else if key == "HTTPS_PROXY" || key == "https_proxy" {
+            builder = builder.proxy(reqwest::Proxy::https(&val)?);
+        }
+    }
+    let client = builder.build()?;
 
     execute_once_with(&client, url, method, headers, body, as_html, max_body_bytes).await
 }

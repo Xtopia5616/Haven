@@ -694,18 +694,16 @@ pub fn run() {
                     shell_arc: shell_arc.clone(),
                     tray: tray_ref,
                 });
-                rt.block_on(shell_arc.set_handler(handler));
+                shell_arc.set_handler(handler);
 
                 // Wire up unified input handler (VAD status + auto-stop)
                 {
                     let app_h = handle.clone();
                     let shell_arc = state.shell.clone();
-                    rt.block_on(async {
-                        state.pipeline.set_handler(Arc::new(HavenInputHandler {
-                            app_h,
-                            shell_arc,
-                        }));
-                    });
+                    state.pipeline.set_handler(Arc::new(HavenInputHandler {
+                        app_h,
+                        shell_arc,
+                    }));
                 }
 
                 rt.block_on(shell.set_hold_mode(is_hold));
@@ -847,10 +845,6 @@ pub fn run() {
             commands::list_facts,
             commands::add_fact,
             commands::delete_fact,
-            commands::get_preference,
-            commands::list_preferences,
-            commands::update_preference,
-            commands::delete_preference,
             commands::get_settings,
             commands::update_settings,
             commands::export_history,

@@ -237,6 +237,55 @@ describe('buildReviewMessages', () => {
 		});
 		expect(items.find((i) => i.id === 'm3').stepNumber).toBe(2);
 	});
+
+	it('restores ask options and awaiting from a paused task', () => {
+		// A task paused on an ask question must rebuild the card with its
+		// quick-reply options and awaiting state, otherwise the user cannot
+		// answer from the chat view after a switch/reload.
+		const items = buildReviewMessages({
+			task: { ...sampleTask, status: 'Paused' },
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 's1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
+					thought: null,
+					step_index: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			content: '继续吗？',
+			options: ['A', 'B'],
+			awaiting: true,
+		});
+	});
+
+	it('keeps ask cards non-awaiting for non-paused tasks', () => {
+		const items = buildReviewMessages({
+			task: { ...sampleTask, status: 'Completed' },
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 's1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
+					thought: null,
+					step_index: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items[1]).toMatchObject({ type: 'ask', options: ['A', 'B'], awaiting: false });
+	});
 });
 
 describe('formatMessageTime', () => {
@@ -299,5 +348,56 @@ describe('mergeLiveStreaming', () => {
 		];
 		const merged = mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true });
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-2-0-call2']);
+	});
+
+	it('dedups finalized live reasoning against the DB copy', () => {
+		// DB reasoning (id `msg.*`) and live reasoning (id `reasoning-*`)
+		// carry different ids for the same step; after the live block is
+		// finalized it must not double-render as two "Thinking…" bubbles.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+		];
+		const existing = [
+			{ id: 'reasoning-t-1-0', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		const reasoning = merged.filter((m) => m.type === 'reasoning');
+		expect(reasoning).toHaveLength(1);
+		expect(reasoning[0].id).toBe('msg-9');
+	});
+
+	it('keeps finalized live reasoning when the DB has no equivalent', () => {
+		// The snap may arrive before the DB write; dropping it would lose
+		// the block entirely.
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'reasoning-t-1-0', role: 'assistant', type: 'reasoning', content: '新鲜推理', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toContain('reasoning-t-1-0');
+	});
+
+	it('keeps finalized live thought text missing from the DB', () => {
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'thought-t-1-0', role: 'assistant', content: '已定稿但未持久化', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toContain('thought-t-1-0');
+	});
+
+	it('prefers a live awaiting ask card over the DB ask card', () => {
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-7', role: 'assistant', type: 'ask', content: '继续吗？', options: [], awaiting: false, streaming: false },
+		];
+		const existing = [
+			{ id: 'tool-t-1-0-call9', type: 'ask', toolName: 'ask', content: '继续吗？', options: ['A', 'B'], awaiting: true, streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		const asks = merged.filter((m) => m.type === 'ask');
+		expect(asks).toHaveLength(1);
+		expect(asks[0]).toMatchObject({ id: 'tool-t-1-0-call9', options: ['A', 'B'], awaiting: true });
 	});
 });

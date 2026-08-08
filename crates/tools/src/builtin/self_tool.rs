@@ -471,7 +471,7 @@ impl SelfTool {
         let mut out = Vec::with_capacity(servers.len());
         for cfg in &servers {
             let client = self.mcp_manager.get_client(&cfg.name).await;
-            let (connected, tool_count, last_error) = match &client {
+            let (connected, tool_count, last_error, diagnostic) = match &client {
                 Some(c) => {
                     let status = c.status().await;
                     let is_connected = matches!(status, McpClientStatus::Connected);
@@ -482,9 +482,14 @@ impl SelfTool {
                         McpClientStatus::Offline { error } => error,
                         _ => c.last_error().await.unwrap_or_default(),
                     };
-                    (is_connected, c.tools_cache().await.len(), error)
+                    (
+                        is_connected,
+                        c.tools_cache().await.len(),
+                        error,
+                        c.diagnostic().await,
+                    )
                 }
-                None => (false, 0, String::new()),
+                None => (false, 0, String::new(), None),
             };
             out.push(serde_json::json!({
                 "name": cfg.name,
@@ -492,6 +497,7 @@ impl SelfTool {
                 "connected": connected,
                 "tools": tool_count,
                 "last_error": last_error,
+                "diagnostic": diagnostic,
             }));
         }
         Value::Array(out)
@@ -567,6 +573,10 @@ impl SelfTool {
         }
         let args = string_array(input, "args");
         let env = string_array(input, "env");
+        let cwd = input["cwd"]
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .map(str::to_string);
         let enabled = input["enabled"].as_bool().unwrap_or(true);
         let auto_connect = input["auto_connect"].as_bool().unwrap_or(true);
 
@@ -576,6 +586,7 @@ impl SelfTool {
             command: command.unwrap_or_default(),
             args,
             env,
+            cwd,
             url: url.unwrap_or_default(),
             enabled,
         };
@@ -648,6 +659,9 @@ impl SelfTool {
         }
         if input.get("env").is_some() {
             updated.env = string_array(input, "env");
+        }
+        if input.get("cwd").is_some() {
+            updated.cwd = input["cwd"].as_str().map(str::to_string);
         }
         if let Some(enabled) = input["enabled"].as_bool() {
             updated.enabled = enabled;
@@ -1129,6 +1143,10 @@ impl Tool for SelfTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "KEY=VALUE environment variables for the MCP server (mcp_add / mcp_update)"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory to spawn the MCP server from (mcp_add / mcp_update). Use it when command/args use relative paths; pass an empty string to clear (mcp_update)."
                 },
                 "enabled": {
                     "type": "boolean",

@@ -229,7 +229,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![],
             voice: false,
         }
@@ -245,7 +244,6 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".into(),
             transcript: "".into(),
             react_state: None,
-            parent_task_id: None,
         }
     }
 

@@ -91,14 +91,24 @@ impl Tool for LoadMcpTool {
             })
             .collect();
 
-        Ok(ToolResult::ok(serde_json::json!({
+        let mut result = serde_json::json!({
             "server": {
                 "name": server_name,
                 "tools": tool_schemas,
             },
             "status": "loaded",
             "server_name": server_name,
-        })))
+        });
+        // Zero tools after a successful handshake is usually a client/server
+        // incompatibility, not an empty server: surface the handshake
+        // diagnostic so the model can distinguish the two.
+        if tool_schemas.is_empty()
+            && let Some(diagnostic) = client.diagnostic().await
+        {
+            result["diagnostic"] = serde_json::json!(diagnostic);
+        }
+
+        Ok(ToolResult::ok(result))
     }
 }
 

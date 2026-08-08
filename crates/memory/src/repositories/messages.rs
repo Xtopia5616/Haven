@@ -48,7 +48,6 @@ pub struct Message {
     pub message_type: Option<String>,
     pub created_at: String,
     pub tool_call_id: Option<String>,
-    pub parent_message_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
     /// True for user messages that came from voice transcription (mic style
@@ -136,7 +135,6 @@ impl Database {
             message_type: message_type.map(String::from),
             created_at: now,
             tool_call_id: tool_call_id.map(String::from),
-            parent_message_id: None,
             attachments: attachments.to_vec(),
             voice,
         })
@@ -167,7 +165,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, role, content, message_type, created_at, tool_call_id,
-                    parent_message_id, attachments, voice
+                    attachments, voice
              FROM messages WHERE task_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![task_id], |row| {
@@ -179,9 +177,8 @@ impl Database {
                 message_type: row.get(4)?,
                 created_at: row.get(5)?,
                 tool_call_id: row.get(6)?,
-                parent_message_id: row.get(7)?,
-                attachments: Self::parse_attachments(row.get(8)?),
-                voice: row.get::<_, i32>(9)? != 0,
+                attachments: Self::parse_attachments(row.get(7)?),
+                voice: row.get::<_, i32>(8)? != 0,
             })
         })?;
         let mut msgs = Vec::new();
@@ -200,7 +197,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, role, content, message_type, created_at, tool_call_id,
-                    parent_message_id, attachments, voice
+                    attachments, voice
              FROM messages WHERE task_id = ?1 AND (message_type IS NULL OR message_type = 'text')
              ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
@@ -213,9 +210,8 @@ impl Database {
                 message_type: row.get(4)?,
                 created_at: row.get(5)?,
                 tool_call_id: row.get(6)?,
-                parent_message_id: row.get(7)?,
-                attachments: Self::parse_attachments(row.get(8)?),
-                voice: row.get::<_, i32>(9)? != 0,
+                attachments: Self::parse_attachments(row.get(7)?),
+                voice: row.get::<_, i32>(8)? != 0,
             })
         })?;
         let mut msgs = Vec::new();
@@ -437,7 +433,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![MessageAttachment::new("image/jpeg", "abc")],
             voice: true,
         };
@@ -461,7 +456,7 @@ mod tests {
         assert!(msgs[0].voice, "voice message must keep the flag");
         assert!(!msgs[1].voice, "typed message stays non-voice");
         // Serde default keeps old JSON payloads (pre-voice) decodable.
-        let legacy = r#"{"id":"x","task_id":"t","role":"user","content":"c","message_type":"text","created_at":"2026-01-01T00:00:00Z","tool_call_id":null,"is_compacted":false,"compaction_id":null,"parent_message_id":null,"attachments":[]}"#;
+        let legacy = r#"{"id":"x","task_id":"t","role":"user","content":"c","message_type":"text","created_at":"2026-01-01T00:00:00Z","tool_call_id":null,"attachments":[]}"#;
         let decoded: Message = serde_json::from_str(legacy).unwrap();
         assert!(!decoded.voice);
     }

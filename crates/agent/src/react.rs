@@ -14,7 +14,7 @@ use haven_memory::repositories::messages::MessageAttachment;
 use haven_task::{TaskExecutor, TaskStatus};
 use haven_tools::is_silent_action;
 
-use crate::compactor::ContextCompactor;
+use crate::compactor::{ContextCompactor, estimate_message_tokens};
 use crate::event::{AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, ReActStep};
 
@@ -39,16 +39,23 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
     }
 }
 
-/// Pick the endpoint role for an agent step. Conversations that carry image
-/// content parts route through the router's vision role 閳?the dedicated
-/// `image_model` (vision-capable) endpoint when configured, otherwise the
-/// default model. Everything else uses the default model.
-async fn choose_agent_role(router: &LlmRouter, messages: &[LlmMessage]) -> EndpointRole {
-    let has_image = messages.iter().any(|m| {
+/// True when the canonical carries at least one image content part. Scanned
+/// once per step (after `inject_pending_context`) and shared by the compactor
+/// window selection and `choose_agent_role`, so the image check is not
+/// repeated across every content part on each step.
+pub(crate) fn canonical_has_image(messages: &[CanonicalMessage]) -> bool {
+    messages.iter().any(|m| {
         m.content
             .iter()
             .any(|p| matches!(p, ContentPart::Image { .. }))
-    });
+    })
+}
+
+/// Pick the endpoint role for an agent step. Conversations that carry image
+/// content parts route through the router's vision role — the dedicated
+/// `image_model` (vision-capable) endpoint when configured, otherwise the
+/// default model. Everything else uses the default model.
+async fn choose_agent_role(router: &LlmRouter, has_image: bool) -> EndpointRole {
     if has_image {
         router.vision_role().await
     } else {
@@ -56,14 +63,8 @@ async fn choose_agent_role(router: &LlmRouter, messages: &[LlmMessage]) -> Endpo
     }
 }
 
-/// Upper bound for the pause-wait before re-checking task state. The status
-/// notifier is edge-triggered, so a transition that fires between the state
-/// check and the wait registration would otherwise be lost and hang the
-/// handler forever. Bounded polling converts that into an extra latency.
-const PAUSE_POLL_MS: u64 = 500;
-
-/// Interval (in ReAct steps) at which long-running tasks re-run fact and
-/// preference inference mid-task, so memory is refreshed before the task
+/// Interval (in ReAct steps) at which long-running tasks re-run fact
+/// inference mid-task, so memory is refreshed before the task
 /// ever pauses or completes.
 /// Message persisted when a run exhausts its step budget (`max_steps`). The
 /// task is intentionally paused as a checkpoint 鈥?the task is NOT finished,
@@ -97,6 +98,15 @@ pub struct ReActEngine {
     /// `save_snapshot_with_branches`): avoids a fresh allocation for every
     /// per-step snapshot write.
     snapshot_buf: Mutex<Vec<u8>>,
+    /// Per-task incremental token-estimate cache (see
+    /// `estimate_canonical_tokens`): avoids re-tokenizing the whole canonical
+    /// on every step.
+    token_estimate_cache: Mutex<HashMap<String, TokenEstimate>>,
+    /// Per-role context-window cache keyed by the router instance pointer,
+    /// so per-step compactor construction and usage display do not clone the
+    /// full LlmConfig on every step (the router only changes via
+    /// `replace_router`).
+    context_window_cache: Mutex<(usize, HashMap<EndpointRole, u32>)>,
 }
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
@@ -120,6 +130,31 @@ struct CumulativeUsage {
     total_tokens: u32,
     cost_usd: f64,
     has_cost: bool,
+}
+
+/// Incremental token estimate for a task's canonical message list (see
+/// `ReActEngine::estimate_canonical_tokens`). `tokens` is the estimate at the
+/// last full tokenization pass, when the canonical had `msgs_len` messages.
+#[derive(Debug, Clone, Default)]
+struct TokenEstimate {
+    /// canonical length at the last full tokenization pass
+    msgs_len: usize,
+    /// estimated tokens at that pass
+    tokens: u32,
+    /// number of estimation calls so far (drives the periodic full pass)
+    passes: u32,
+}
+
+/// Failure classification used to shape the post-failure retry nudge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureKind {
+    /// The environment cannot run the approach: missing command, wrong shell,
+    /// network/proxy trouble, bad paths. The approach itself may be sound.
+    Environmental,
+    /// The approach/usage itself is flawed (bad params, parse failures).
+    Logic,
+    /// Cannot tell from the error text.
+    Unknown,
 }
 
 impl From<haven_memory::repositories::usage::TaskUsage> for CumulativeUsage {
@@ -154,6 +189,8 @@ impl ReActEngine {
             current_run_id: AtomicU64::new(0),
             cumulative_usage: Mutex::new(HashMap::new()),
             snapshot_buf: Mutex::new(Vec::new()),
+            token_estimate_cache: Mutex::new(HashMap::new()),
+            context_window_cache: Mutex::new((0, HashMap::new())),
         }
     }
 
@@ -364,6 +401,13 @@ impl ReActEngine {
 
         for step_num in start_step..=effective_max {
             last_step = step_num;
+            let cancel = self.executor.cancellation_token(task_id).await;
+            // Level-triggered status subscription, taken BEFORE the state
+            // check: unlike the edge-triggered Notify it replaces, a
+            // transition that lands between a state read and the `changed()`
+            // wait is never lost — the receiver's stored value moves and
+            // `changed()` resolves immediately. No polling timeout is needed.
+            let mut status_rx = self.executor.subscribe_status(task_id).await;
             loop {
                 // Check cancellation first: end_task / rollback cancel the
                 // token, so the loop must exit silently without touching
@@ -371,26 +415,24 @@ impl ReActEngine {
                 // otherwise observe the Error sentinel of a task that
                 // end_task already removed from memory and announce a
                 // spurious "task interrupted" error.
-                let cancel = self.executor.cancellation_token(task_id).await;
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
                 let state = self.executor.get_task_state(task_id).await;
                 match state {
-                    TaskStatus::Error | TaskStatus::Completed => {
-                        if state != TaskStatus::Completed
-                            && self
-                                .executor
-                                .list_tasks()
-                                .await
-                                .iter()
-                                .any(|t| t.id == task_id)
-                        {
-                            self.emit_error(&emitter, task_id, "task interrupted").await;
-                        }
+                    // Task vanished from the working set (end_task / terminal
+                    // cleanup): exit silently.
+                    None => return Ok(()),
+                    Some(TaskStatus::Completed) => return Ok(()),
+                    Some(TaskStatus::Error) => {
+                        // An external path marked the task Error while the
+                        // loop was alive: announce the interruption so the
+                        // user sees why it stopped.
+                        self.emit_error(&emitter, task_id, "task interrupted")
+                            .await;
                         return Ok(());
                     }
-                    TaskStatus::Paused => {
+                    Some(s) if s.is_paused() => {
                         self.save_snapshot_with_branches(
                             task_id,
                             canonical,
@@ -402,17 +444,17 @@ impl ReActEngine {
                     }
                     _ => break,
                 }
-                if self.executor.get_task_state(task_id).await == TaskStatus::Paused {
-                    // notify_waiters only wakes waiters registered at the
-                    // moment of the notify: a transition between the state
-                    // check above and the wait below would be lost and block
-                    // forever. Bound the wait and re-evaluate state on timeout.
-                    let notifier = self.executor.status_notifier(task_id).await;
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_millis(PAUSE_POLL_MS),
-                        notifier.notified(),
-                    )
-                    .await;
+                // Wait for the next status change or cancellation, then
+                // re-evaluate at the loop head. A resume that landed during
+                // the snapshot save above resolves `changed()` immediately.
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Ok(()),
+                    r = status_rx.changed() => {
+                        // `Err` means the sender was dropped (task cleaned
+                        // up): the state re-check at the loop head handles it.
+                        let _ = r;
+                    }
                 }
             }
 
@@ -422,9 +464,19 @@ impl ReActEngine {
             self.inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
                 .await;
 
-            self.maybe_compact(task_id, canonical, &emitter).await;
+            // Scan for image content once per step; the flag is shared by the
+            // compactor window selection and the endpoint role below, so the
+            // image check is not repeated over every content part. Compaction
+            // may summarize away the last image, so re-scan only when one ran.
+            let mut has_image = canonical_has_image(canonical);
+            if self
+                .maybe_compact(task_id, canonical, has_image, &emitter)
+                .await
+            {
+                has_image = canonical_has_image(canonical);
+            }
 
-            // Incremental fact/preference inference on long-running tasks:
+            // Incremental fact inference on long-running tasks:
             // turns that never pause would otherwise only trigger extraction
             // at the very end. Every `context_limits.fact_infer_interval_steps`
             // steps we re-run inference; the upsert/known-facts machinery makes
@@ -445,8 +497,12 @@ impl ReActEngine {
 
             let router = self.router();
             let cancel_res = self.executor.cancellation_token(task_id).await;
-            let llm_messages = haven_llm::types::convert_to_llm(canonical.clone());
-            let role = choose_agent_role(&router, &llm_messages).await;
+            // Convert once per step; retries below reuse the converted
+            // messages (the canonical is only replaced by the compaction
+            // path, which re-converts) instead of cloning the whole
+            // canonical and re-serializing every tool-call argument again.
+            let mut llm_messages = haven_llm::types::convert_to_llm(canonical);
+            let role = choose_agent_role(&router, has_image).await;
             // Accumulate streamed text locally so that if the LLM call fails
             // mid-stream, we can persist whatever was already received instead
             // of losing it entirely.
@@ -472,8 +528,8 @@ impl ReActEngine {
                 .stream_llm_step(
                     router.clone(),
                     role,
-                    llm_messages,
-                    tools.to_vec(),
+                    &llm_messages,
+                    &tools,
                     cancel_res.clone(),
                     &emitter,
                     task_id,
@@ -503,11 +559,21 @@ impl ReActEngine {
                         compactor.compact(canonical, &self.router()).await
                     } {
                         tracing::debug!(
-                            "compacted {} 閳?{} tokens",
+                            "compacted {} -> {} tokens",
                             result.tokens_before,
                             result.tokens_after
                         );
                         *canonical = result.compacted;
+                        // The retry must convert the *compacted* canonical
+                        // (the old messages are stale), and the role must be
+                        // re-resolved: summarizing away the last image-bearing
+                        // turn changes the routing for the retry.
+                        llm_messages = haven_llm::types::convert_to_llm(canonical);
+                        let retry_role = if canonical_has_image(canonical) {
+                            router.vision_role().await
+                        } else {
+                            EndpointRole::DefaultModel
+                        };
                         EventDispatcher::emit_compaction_from(
                             &emitter,
                             task_id,
@@ -516,7 +582,6 @@ impl ReActEngine {
                             result.tokens_after,
                         )
                         .await;
-                        let llm_messages2 = haven_llm::types::convert_to_llm(canonical.clone());
                         // Reset the accumulators: the first attempt's partial
                         // text was based on pre-compaction context and should
                         // not be mixed with the retry's output.
@@ -525,9 +590,9 @@ impl ReActEngine {
                         match self
                             .stream_llm_step(
                                 router.clone(),
-                                role,
-                                llm_messages2,
-                                tools.to_vec(),
+                                retry_role,
+                                &llm_messages,
+                                &tools,
                                 cancel_res.clone(),
                                 &emitter,
                                 task_id,
@@ -539,8 +604,10 @@ impl ReActEngine {
                             .await
                         {
                             Ok(retry_resp) => {
-                                self.record_usage_and_emit(task_id, role, &retry_resp, &emitter)
-                                    .await;
+                                self.record_usage_and_emit(
+                                    task_id, retry_role, &retry_resp, &emitter,
+                                )
+                                .await;
                                 retry_resp
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
@@ -679,12 +746,7 @@ impl ReActEngine {
                     task_id
                 );
                 match router
-                    .chat_stream_with_tools_aggregated(
-                        role,
-                        haven_llm::types::convert_to_llm(canonical.clone()),
-                        tools.to_vec(),
-                        |_| {},
-                    )
+                    .chat_stream_with_tools_aggregated(role, &llm_messages, &tools, |_| {})
                     .await
                 {
                     Ok(retry_resp) => {
@@ -733,7 +795,7 @@ impl ReActEngine {
                     task_id,
                     response.finish_reason
                 );
-                let mut retry_messages = haven_llm::types::convert_to_llm(canonical.clone());
+                let mut retry_messages = llm_messages.clone();
                 retry_messages.push(LlmMessage {
                     role: LlmRole::User,
                     content: vec![ContentPart::text(CUT_OFF_RETRY_NUDGE)],
@@ -743,7 +805,7 @@ impl ReActEngine {
                     web_search_calls: Vec::new(),
                 });
                 match router
-                    .chat_stream_with_tools_aggregated(role, retry_messages, tools.to_vec(), |_| {})
+                    .chat_stream_with_tools_aggregated(role, &retry_messages, &tools, |_| {})
                     .await
                 {
                     Ok(retry_resp) => {
@@ -828,8 +890,12 @@ impl ReActEngine {
                     .iter()
                     .all(|a| a.is_final && a.tool_call_id.is_none());
             if has_web_search && (actions.is_empty() || synthesized_final) {
+                // The text must match what `persist_task_message` stores
+                // (trimmed thought) or the resume dedup fails on the leading
+                // whitespace and re-seeds the message as a [conversation] line.
+                let push_text = thought.as_deref().unwrap_or(&response.text);
                 canonical.push(CanonicalMessage::assistant(
-                    vec![ContentPart::text(response.text.clone())],
+                    vec![ContentPart::text(push_text.to_string())],
                     None,
                     response.reasoning.clone(),
                     response.web_search_calls.clone(),
@@ -873,17 +939,21 @@ impl ReActEngine {
                         step_num + 1,
                         branch_points,
                         &emitter,
-                        TaskStatus::Paused,
+                        TaskStatus::PausedAwaitingAnswer,
                         &question,
                         None,
-                        true,
                         infer,
                     )
                     .await?;
                     return Ok(());
                 }
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
-                if let Some(last) = history.last_mut() {
+                // Guard against clobbering: when the response carried no text
+                // (thought is None after failed retries), `history.last()`
+                // points at a PREVIOUS step; only attach the synthesized final
+                // to this step's own entry, otherwise the previous step's
+                // action/observation is silently overwritten.
+                if let Some(last) = history.last_mut().filter(|s| s.step_number == step_num) {
                     last.action = Some(Action {
                         tool_name: "final_answer".into(),
                         tool_input: serde_json::Value::Null,
@@ -912,12 +982,32 @@ impl ReActEngine {
                 // deferring it until after the turn completes. The finished
                 // answer is persisted so the conversation stays consistent,
                 // then the loop re-runs with the new context.
+                let before_inject_len = canonical.len();
                 if self
                     .inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
                     .await
                 {
                     self.persist_task_message(task_id, "assistant", &msg, Some("text"))
                         .await;
+                    // The injected messages were appended after
+                    // `before_inject_len`; the finished answer must sit BEFORE
+                    // them so the re-run's LLM call sees the agent's own
+                    // completed answer followed by the interjection. Without
+                    // this the canonical jumps from the tool results straight
+                    // to the steering/user message and the model re-answers
+                    // blind, producing a duplicate or context-free follow-up
+                    // bubble. This branch is only reachable without
+                    // web_search_calls (the search-round path continues above),
+                    // so no duplicate assistant push is possible here.
+                    canonical.insert(
+                        before_inject_len,
+                        CanonicalMessage::assistant(
+                            vec![ContentPart::text(msg.clone())],
+                            None,
+                            response.reasoning.clone(),
+                            Vec::new(),
+                        ),
+                    );
                     // Keep a rollback target for the interrupted final step:
                     // the normal pause_turn path saves one, so mirror it here
                     // or rollback to this step restores a stale snapshot.
@@ -925,6 +1015,18 @@ impl ReActEngine {
                         .await;
                     continue;
                 }
+                // Mirror the finished answer into the canonical before the
+                // pause: the snapshot then carries the complete conversation
+                // in the right order. Without this, the pause snapshot ends
+                // right after the tool results and the resume re-seed has to
+                // re-insert the answer at the transcript head (sys_end),
+                // placing it BEFORE the tool results that preceded it.
+                canonical.push(CanonicalMessage::assistant(
+                    vec![ContentPart::text(msg.clone())],
+                    None,
+                    response.reasoning.clone(),
+                    Vec::new(),
+                ));
                 self.pause_turn(
                     task_id,
                     canonical,
@@ -935,7 +1037,6 @@ impl ReActEngine {
                     TaskStatus::Paused,
                     &msg,
                     Some(step_num),
-                    false,
                     infer,
                 )
                 .await?;
@@ -944,26 +1045,58 @@ impl ReActEngine {
 
             if let Some(final_action) = actions.iter().find(|a| a.is_final) {
                 let final_text = thought.unwrap_or_else(|| "Task completed.".into());
-                if let Some(s) = history.last_mut() {
+                // Same clobber guard as the empty-actions branch above.
+                if let Some(s) = history.last_mut().filter(|s| s.step_number == step_num) {
                     s.action = Some(final_action.clone());
                     if s.observation.is_none() {
                         s.observation = Some(final_text.clone());
                     }
                 }
+                // The response may already have pushed its own assistant
+                // message: a web-search round (pushed above with the search
+                // context) or a response mixing real tool calls with the final
+                // action (pushed with tool_calls below). In those cases the
+                // final text is already in the canonical and must not be
+                // duplicated.
+                let already_pushed = has_web_search || actions.iter().any(|a| !a.is_final);
                 // Same mid-turn delivery as the empty-actions branch: a
                 // message that arrived during this final LLM call is injected
                 // before the turn ends so it influences the answer.
+                let before_inject_len = canonical.len();
                 if self
                     .inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
                     .await
                 {
                     self.persist_task_message(task_id, "assistant", &final_text, Some("text"))
                         .await;
-                    // Same branch-point guarantee as the empty-actions branch:
-                    // the interrupted final step must retain a rollback target.
+                    // Same rollback target guarantee as the empty-actions
+                    // branch: the interrupted final step must retain a branch
+                    // point. Insert the finished answer BEFORE the injected
+                    // messages (see the empty-actions branch for why).
+                    if !already_pushed {
+                        canonical.insert(
+                            before_inject_len,
+                            CanonicalMessage::assistant(
+                                vec![ContentPart::text(final_text.clone())],
+                                None,
+                                response.reasoning.clone(),
+                                Vec::new(),
+                            ),
+                        );
+                    }
                     self.save_branch_point(task_id, canonical, history, step_num, branch_points)
                         .await;
                     continue;
+                }
+                // Mirror the finished answer into the canonical before the
+                // pause (same ordering rationale as the empty-actions branch).
+                if !already_pushed {
+                    canonical.push(CanonicalMessage::assistant(
+                        vec![ContentPart::text(final_text.clone())],
+                        None,
+                        response.reasoning.clone(),
+                        Vec::new(),
+                    ));
                 }
                 self.pause_turn(
                     task_id,
@@ -975,7 +1108,6 @@ impl ReActEngine {
                     TaskStatus::Paused,
                     &final_text,
                     Some(step_num),
-                    false,
                     infer,
                 )
                 .await?;
@@ -1005,28 +1137,39 @@ impl ReActEngine {
             }
 
             if !non_final.is_empty() {
-                let tool_calls: Option<Vec<CanonicalToolCall>> = if response.tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(
-                        response
-                            .tool_calls
-                            .iter()
-                            .map(|tc| CanonicalToolCall {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                arguments: serde_json::from_str(&tc.arguments)
-                                    .unwrap_or(serde_json::Value::Null),
-                            })
-                            .collect(),
-                    )
-                };
+                // The tool_calls echoed into the canonical assistant message
+                // must exactly match the tool results pushed below, or
+                // providers reject the request with a 400. They are built
+                // from the ACTIONS (not `response.tool_calls`) so that a
+                // retry-replaced response stays consistent: when the empty /
+                // cut-off retry produced the tool calls, the original
+                // `response.tool_calls` is empty and zipping it with the
+                // retried actions would emit an assistant message WITHOUT
+                // tool_calls followed by orphaned tool results (silently
+                // dropped by sanitize_canonical, losing the observations).
+                // The Action side already carries the synthesized UUID for
+                // empty provider ids, matching the tool-result side below.
+                let tool_calls: Option<Vec<CanonicalToolCall>> = Some(
+                    non_final
+                        .iter()
+                        .map(|a| CanonicalToolCall {
+                            id: a.tool_call_id.clone().unwrap_or_default(),
+                            name: a.tool_name.clone(),
+                            arguments: a.tool_input.clone(),
+                        })
+                        .collect(),
+                );
+                // The text must match what `persist_task_message` stores
+                // (trimmed thought) so resume dedup cannot fail; a
+                // retry-replaced response also must not echo the cut-off
+                // original text.
+                let push_text = thought.as_deref().unwrap_or(&response.text);
                 // A response mixing real tool calls with a web search round
                 // carries both: the `web_search_call` items round-trip in the
                 // same assistant message so the next request restores the
                 // search context alongside the function tool results.
                 canonical.push(CanonicalMessage::assistant(
-                    vec![ContentPart::text(response.text.clone())],
+                    vec![ContentPart::text(push_text.to_string())],
                     tool_calls,
                     response.reasoning.clone(),
                     response.web_search_calls.clone(),
@@ -1045,7 +1188,6 @@ impl ReActEngine {
                 let tool_input = action.tool_input.clone();
                 let action = (*action).clone();
                 let max_obs = self.context_limits.max_observation_chars;
-                let db = self.db.clone();
                 let executor = self.executor.clone();
                 tool_futures.push(async move {
                     tracing::debug!(
@@ -1072,15 +1214,6 @@ impl ReActEngine {
                                         .map(|s| s.len())
                                         .unwrap_or(0)
                                 );
-                                let _ = db
-                                    .run_blocking({
-                                        let tool_name = tool_name.clone();
-                                        let tool_input = tool_input.clone();
-                                        move |db| {
-                                            db.record_tool_usage(&tool_name, &tool_input, r.success)
-                                        }
-                                    })
-                                    .await;
                                 let text = r.summary_text();
                                 let text = if text.len() > max_obs {
                                     let cutoff = text.floor_char_boundary(max_obs);
@@ -1145,6 +1278,11 @@ impl ReActEngine {
             }
 
             let mut any_tool_failure = false;
+            // Bounded per-step failure evidence (tool name + error tail) used
+            // to classify failures as environmental vs logic when composing
+            // the retry nudge — a broken proxy or a missing command must not
+            // push the model to abandon a sound approach.
+            let mut failure_signals: Vec<(String, String)> = Vec::new();
             // If the agent invoked the `ask` tool, the task must pause and
             // wait for the user's reply (delivered as a supplement). Collect
             // every question in the batch so all are surfaced.
@@ -1175,6 +1313,10 @@ impl ReActEngine {
                         };
                         if is_error {
                             any_tool_failure = true;
+                            if failure_signals.len() < 3 {
+                                let cap: String = step_result.chars().take(600).collect();
+                                failure_signals.push((tool_name.clone(), cap));
+                            }
                         }
                         // The `notify` tool requests a user-facing notification:
                         // emit it (in-app toast + Windows) without pausing the
@@ -1228,15 +1370,30 @@ impl ReActEngine {
                             })
                             .await;
 
-                        if let Some(last) = history.last_mut() {
+                        if let Some(last) = history
+                            .last_mut()
+                            .filter(|s| s.step_number == step_num && s.action.is_none())
+                        {
+                            // First tool result of this step: fill the thought
+                            // entry pushed at step start.
                             last.action = Some(action.clone());
-                            last.observation = Some(display_observation);
+                            last.observation = Some(display_observation.clone());
                         } else {
+                            // A later tool of a multi-tool step, or a tool-only
+                            // step (thought was None, so no entry was pushed at
+                            // step start): append a fresh entry instead of
+                            // overwriting the previous entry. The old behavior
+                            // kept only the LAST completed tool per step (and
+                            // could clobber the PREVIOUS step's entry when the
+                            // response carried no thought), silently dropping
+                            // every other tool from the step history — which
+                            // also made restore_per_task_tools miss parallel
+                            // load_skill/load_mcp registrations on restart.
                             history.push(ReActStep {
                                 step_number: step_num,
                                 thought: None,
                                 action: Some(action.clone()),
-                                observation: Some(step_result.clone()),
+                                observation: Some(display_observation),
                             });
                         }
 
@@ -1248,13 +1405,13 @@ impl ReActEngine {
                 }
             }
 
-            // Skip the "try a different approach" nudge when the batch asked
-            // the user: it would be baked into the paused snapshot ahead of the
-            // user's real answer, contradicting the pending question.
+            // Skip the retry nudge when the batch asked the user: it would be
+            // baked into the paused snapshot ahead of the user's real answer,
+            // contradicting the pending question.
             if any_tool_failure && asked_questions.is_empty() && step_num < max_steps - 1 {
-                canonical.push(CanonicalMessage::user_text(
-                    "The previous approach encountered errors. Please try a completely different approach this time.",
-                ));
+                canonical.push(CanonicalMessage::user_text(Self::build_failure_nudge(
+                    &failure_signals,
+                )));
             }
 
             // The agent asked the human a question: pause so the user can
@@ -1284,7 +1441,10 @@ impl ReActEngine {
                 let status = if has_answer {
                     TaskStatus::Pending
                 } else {
-                    TaskStatus::Paused
+                    // No reply arrived: the task pauses awaiting the user's
+                    // answer (PausedAwaitingAnswer blocks auto-wake by
+                    // background-job completions).
+                    TaskStatus::PausedAwaitingAnswer
                 };
                 self.pause_turn(
                     task_id,
@@ -1296,7 +1456,6 @@ impl ReActEngine {
                     status,
                     &question,
                     None,
-                    true,
                     infer,
                 )
                 .await?;
@@ -1304,19 +1463,21 @@ impl ReActEngine {
             }
 
             let state = self.executor.get_task_state(task_id).await;
-            if state == TaskStatus::Paused {
-                self.save_snapshot_with_branches(
-                    task_id,
-                    canonical,
-                    history,
-                    step_num,
-                    branch_points,
-                )
-                .await;
-                return Ok(());
-            }
-            if state == TaskStatus::Error || state == TaskStatus::Completed {
-                return Ok(());
+            match state {
+                Some(s) if s.is_paused() => {
+                    self.save_snapshot_with_branches(
+                        task_id,
+                        canonical,
+                        history,
+                        step_num,
+                        branch_points,
+                    )
+                    .await;
+                    return Ok(());
+                }
+                // Task gone (end_task/terminal cleanup) or terminal: exit.
+                None | Some(TaskStatus::Error) | Some(TaskStatus::Completed) => return Ok(()),
+                _ => {}
             }
         }
 
@@ -1363,8 +1524,12 @@ impl ReActEngine {
     /// Finalize a turn: persist the assistant text, save the branch point
     /// (when requested), snapshot the ReAct state, then mark the task with
     /// the given status and notify the frontend + inference. Shared by all
-    /// pause/complete paths so the persist 鈫?branch-point 鈫?snapshot 鈫?    /// status 鈫?event ordering cannot drift between them. The snapshot is
+    /// pause/complete paths so the persist 鈫?branch-point 鈫?snapshot 鈫?
+    /// status 鈫?event ordering cannot drift between them. The snapshot is
     /// taken after the branch point so it includes the newly added entry.
+    /// Callers pause with `TaskStatus::Paused` (scheduling) or
+    /// `TaskStatus::PausedAwaitingAnswer` (the `ask` tool is blocked on a
+    /// human reply — that flavor also blocks background-job auto-wake).
     /// The step-budget checkpoint uses `pause_turn_budget` instead, which
     /// skips the assistant-message persist (the notice is a notification).
     #[allow(clippy::too_many_arguments)]
@@ -1379,7 +1544,6 @@ impl ReActEngine {
         status: TaskStatus,
         final_text: &str,
         branch_point_step: Option<u32>,
-        awaiting_answer: bool,
         infer: &(dyn Fn() + Send + Sync),
     ) -> anyhow::Result<()> {
         self.persist_task_message(task_id, "assistant", final_text, Some("text"))
@@ -1390,13 +1554,10 @@ impl ReActEngine {
         }
         self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
             .await;
-        // Mark the task as awaiting a human answer BEFORE setting the status,
-        // so a background-job completion landing concurrently cannot auto-wake
-        // it (the consumer checks this gate). The flag is cleared centrally by
-        // `update_task_status` on reactivation.
-        if awaiting_answer {
-            self.executor.set_awaiting_answer(task_id, true).await;
-        }
+        // The status itself carries the awaiting-answer flavor
+        // (`PausedAwaitingAnswer`), so the transition is atomic: a
+        // background-job completion landing concurrently reads the final
+        // state and cannot auto-wake an answer-blocked task.
         let status_str = status.as_str().to_string();
         self.executor.update_task_status(task_id, status).await?;
         emitter
@@ -1454,27 +1615,31 @@ impl ReActEngine {
     /// result is present and no user message follows it. The ask pause path
     /// normally prevents this state from reaching an LLM call, but a reply
     /// lost to compaction/sanitization or a dropped answer can leave the
-    /// question dangling 鈥?and a model Stop response must then not be judged
+    /// question dangling — and a model Stop response must then not be judged
     /// final (it would end the turn with the question still unanswered).
+    ///
+    /// Scans backward from the tail: the first user message OR ask result
+    /// encountered decides. This is equivalent to the old forward scan (the
+    /// last ask must be followed only by non-User messages) but resolves in
+    /// O(recent window) instead of O(whole canonical) per step.
     fn canonical_has_pending_ask(canonical: &[CanonicalMessage]) -> bool {
-        let mut last_ask = None;
-        for (i, m) in canonical.iter().enumerate() {
-            if m.role == CanonicalRole::Tool
-                && m.content.iter().any(|p| match p {
-                    ContentPart::Text(t) => {
-                        t.contains("\"ask\":true") || t.contains("\"ask\": true")
+        for m in canonical.iter().rev() {
+            match m.role {
+                CanonicalRole::User => return false,
+                CanonicalRole::Tool => {
+                    if m.content.iter().any(|p| match p {
+                        ContentPart::Text(t) => {
+                            t.contains("\"ask\":true") || t.contains("\"ask\": true")
+                        }
+                        _ => false,
+                    }) {
+                        return true;
                     }
-                    _ => false,
-                })
-            {
-                last_ask = Some(i);
+                }
+                _ => {}
             }
         }
-        last_ask.is_some_and(|idx| {
-            canonical[idx + 1..]
-                .iter()
-                .all(|m| m.role != CanonicalRole::User)
-        })
+        false
     }
 
     /// Extract the question text of the last unanswered `ask` tool result in
@@ -1541,6 +1706,109 @@ impl ReActEngine {
             Some(t) => response.finish_reason != Some(FinishReason::Stop) || Self::looks_cut_off(t),
             None => false,
         }
+    }
+
+    /// Compose the retry nudge after a step where tool calls failed. The
+    /// failure evidence is classified first: environment-type failures
+    /// (missing command, wrong shell syntax, network/proxy, paths) must NOT
+    /// push the model to abandon its approach — the correct move is to
+    /// diagnose and fix the environment (different shell, different tool,
+    /// corrected path) and retry. Logic failures get a fix-and-retry nudge
+    /// with an explicit threshold before switching approach. This replaces
+    /// the old unconditional "try a completely different approach" nudge,
+    /// which repeatedly sent users down wrong paths when the real cause was
+    /// environmental (Get-FileHash missing in the chosen shell, a broken
+    /// proxy, a different 7z path).
+    fn build_failure_nudge(failures: &[(String, String)]) -> String {
+        let has_env = failures
+            .iter()
+            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Environmental);
+        let has_logic = failures
+            .iter()
+            .any(|(t, e)| Self::classify_tool_failure(t, e) == FailureKind::Logic);
+        if has_env {
+            "The tool failures look ENVIRONMENTAL (missing command / wrong shell syntax / network / path), not logic errors. Do NOT abandon your approach. Diagnose the environment first: verify the command exists in the shell you chose (cmd vs PowerShell syntax differs; `&&` only works in cmd), check network/proxy/endpoints, fix paths and prerequisites. Switching tools (e.g. curl -> aria2) or shells is an environment fix, not a change of approach — keep the same approach and retry."
+                .into()
+        } else if has_logic {
+            "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
+                .into()
+        } else {
+            "The previous approach encountered errors. Diagnose the root cause first: is it an environment problem (missing command, network, path) or a logic problem? Fix the cause and retry; change approach only if the method itself is wrong."
+                .into()
+        }
+    }
+
+    /// Heuristic classification of a tool failure: environment problems (the
+    /// user's tools/environment cannot run the approach) vs logic problems
+    /// (the approach itself is flawed). Used to shape the retry nudge so
+    /// environmental failures do not trigger an unnecessary method switch.
+    fn classify_tool_failure(tool_name: &str, err: &str) -> FailureKind {
+        // Tool-usage mistakes by the model itself (missing params, invalid
+        // input) are logic errors: the schema/validation error names the fix.
+        if tool_name == "files"
+            && (err.contains("MISSING REQUIRED FIELD")
+                || err.contains("old_string")
+                || err.contains("not found in file"))
+        {
+            return FailureKind::Logic;
+        }
+        let e = err.to_lowercase();
+        const ENV_MARKERS: &[&str] = &[
+            // command / executable missing
+            "not recognized",
+            "not recognized as an internal or external command",
+            "不是内部或外部命令",
+            "command not found",
+            "无法识别",
+            "not found",
+            "cannot be found",
+            "cannot find",
+            "找不到",
+            "no such file",
+            "no such directory",
+            "spawn",
+            "program not found",
+            // network / proxy / transport
+            "connection",
+            "timed out",
+            "timeout",
+            "refused",
+            "reset",
+            "proxy",
+            "unreachable",
+            "resolve",
+            "dns",
+            "ssl",
+            "tls",
+            "certificate",
+            "failed to connect",
+            "tunnel",
+            "network",
+            // paths / permissions
+            "path does not exist",
+            "路径不存在",
+            "access denied",
+            "拒绝访问",
+            // PowerShell/7z style environment mismatches
+            "无法将",
+            "不是有效的",
+        ];
+        if ENV_MARKERS.iter().any(|m| e.contains(m)) {
+            return FailureKind::Environmental;
+        }
+        const LOGIC_MARKERS: &[&str] = &[
+            "validation failed",
+            "missing required",
+            "parse error",
+            "syntax error",
+            "unterminated",
+            "invalid json",
+            "is required for",
+        ];
+        if LOGIC_MARKERS.iter().any(|m| e.contains(m)) {
+            return FailureKind::Logic;
+        }
+        FailureKind::Unknown
     }
 
     /// Parse LLM response into thought text and actions.
@@ -1731,8 +1999,8 @@ impl ReActEngine {
         &self,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        llm_messages: Vec<LlmMessage>,
-        tools: Vec<ToolDefinition>,
+        llm_messages: &[LlmMessage],
+        tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         emitter: &Arc<dyn AgentEventEmitter>,
         task_id: &str,
@@ -1778,8 +2046,8 @@ impl ReActEngine {
         let result = router
             .chat_stream_with_tools_aggregated_cancellable(
                 role,
-                llm_messages,
-                tools,
+                &llm_messages,
+                &tools,
                 move |c: &haven_llm::StreamChunk| {
                     if let Some(t) = &c.text {
                         pt.lock().unwrap().push_str(t);
@@ -1876,10 +2144,9 @@ impl ReActEngine {
         let step_cost = router
             .compute_cost(role, usage.prompt_tokens, usage.completion_tokens)
             .await;
-        let context_window = {
-            let cfg = router.config().await;
-            Self::context_window_for_role(&cfg, role)
-        };
+        // `context_window_for_role` always yields Some; the cached resolver
+        // avoids cloning the full LlmConfig on every step.
+        let context_window = Some(self.cached_context_window(role).await);
 
         let (cum_prompt, cum_completion, cum_total, cum_cost_opt, has_cost) = {
             let mut map = self.cumulative_usage.lock().unwrap();
@@ -1959,11 +2226,13 @@ impl ReActEngine {
         .await;
     }
 
-    /// Drop cumulative counters for a finished task so the map stays
-    /// bounded across long-running sessions.
+    /// Drop cumulative counters and the token-estimate cache for a finished
+    /// task so both maps stay bounded across long-running sessions.
     pub fn reset_cumulative_usage(&self, task_id: &str) {
         let mut map = self.cumulative_usage.lock().unwrap();
         map.remove(task_id);
+        drop(map);
+        self.reset_token_estimate(task_id);
     }
 
     /// Resolve the model's true context window for the endpoint used by
@@ -1986,17 +2255,52 @@ impl ReActEngine {
         Some(haven_llm::registry::context_window_for(ep))
     }
 
-    /// Build a compactor whose context window reflects the *actual* model for
-    /// the role that will handle the step (explicit `context_window` config,
-    /// else the builtin catalog, else `context_limits.default_context_window`).
-    /// Re-resolved on every call so a hot-swapped router config takes effect
-    /// immediately. The compaction threshold (ratio and reserve) and the
-    /// fallback window come from `context_limits`.
-    async fn context_compactor(&self, role: EndpointRole) -> ContextCompactor {
+    /// Resolve the model's true context window for `role` using a per-router
+    /// cache. Cloning the full LlmConfig on every step (compactor window +
+    /// usage display) is wasteful when the router only changes via
+    /// `replace_router`; the cache is keyed by the router instance pointer so
+    /// a hot-swapped router invalidates it immediately.
+    async fn cached_context_window(&self, role: EndpointRole) -> u32 {
         let router = self.router();
+        let ptr = Arc::as_ptr(&router) as usize;
+        // Fast path: read the cached window without awaiting the router
+        // config. The cache guard is scoped so it never crosses an await
+        // (the std Mutex guard is not Send).
+        if let Some(window) = {
+            let cache = self.context_window_cache.lock().unwrap();
+            if cache.0 == ptr {
+                cache.1.get(&role).copied()
+            } else {
+                None
+            }
+        } {
+            return window;
+        }
+        // Slow path: resolve from the live router config. A concurrent
+        // router swap between the fast-path miss and the insert is harmless:
+        // the entry is stored under the pointer that was current at read
+        // time and recomputed on the next miss.
         let cfg = router.config().await;
         let window = Self::context_window_for_role(&cfg, role)
             .unwrap_or(self.context_limits.default_context_window);
+        let mut cache = self.context_window_cache.lock().unwrap();
+        if cache.0 != ptr {
+            cache.0 = ptr;
+            cache.1.clear();
+        }
+        cache.1.insert(role, window);
+        window
+    }
+
+    /// Build a compactor whose context window reflects the *actual* model for
+    /// the role that will handle the step (explicit `context_window` config,
+    /// else the builtin catalog, else `context_limits.default_context_window`).
+    /// The window comes from `cached_context_window`, so a hot-swapped router
+    /// config takes effect immediately without cloning the full config on
+    /// every step. The compaction threshold (ratio and reserve) and the
+    /// fallback window come from `context_limits`.
+    async fn context_compactor(&self, role: EndpointRole) -> ContextCompactor {
+        let window = self.cached_context_window(role).await;
         ContextCompactor::with_ratio(
             window,
             self.context_limits.compaction_reserve_tokens,
@@ -2004,43 +2308,86 @@ impl ReActEngine {
         )
     }
 
+    /// Incremental token estimate for a task's canonical message list.
+    ///
+    /// The estimate is cached per task: each step adds only the token count
+    /// of the messages appended since the last pass instead of re-tokenizing
+    /// the whole history (which is O(n) per step, O(n^2) over a long task).
+    /// A full pass re-runs every `FULL_ESTIMATE_PASS_INTERVAL` calls and
+    /// whenever the list shrank (sanitize drops, compaction), which bounds
+    /// drift from mid-array inserts and from restored snapshots whose length
+    /// coincidentally matches the cache. Under-counting by one message's
+    /// worth of tokens is acceptable: the forced-compaction 400 retry remains
+    /// the safety net for genuine overflow.
+    fn estimate_canonical_tokens(&self, task_id: &str, canonical: &[CanonicalMessage]) -> u32 {
+        const FULL_ESTIMATE_PASS_INTERVAL: u32 = 8;
+        let mut cache = self.token_estimate_cache.lock().unwrap();
+        let entry = cache
+            .entry(task_id.to_string())
+            .or_insert_with(TokenEstimate::default);
+        let full_pass = entry.tokens == 0
+            || entry.msgs_len > canonical.len()
+            || entry.passes % FULL_ESTIMATE_PASS_INTERVAL == 0;
+        if full_pass {
+            entry.msgs_len = canonical.len();
+            entry.tokens = estimate_message_tokens(canonical);
+        } else if entry.msgs_len < canonical.len() {
+            entry.tokens += estimate_message_tokens(&canonical[entry.msgs_len..]);
+            entry.msgs_len = canonical.len();
+        }
+        entry.passes = entry.passes.saturating_add(1);
+        entry.tokens
+    }
+
+    /// Drop the per-task token-estimate cache entry (called alongside
+    /// `reset_cumulative_usage` on task completion/error).
+    pub fn reset_token_estimate(&self, task_id: &str) {
+        self.token_estimate_cache.lock().unwrap().remove(task_id);
+    }
+
     /// Check if context compaction is needed before the next LLM call.
+    ///
+    /// Returns `true` when a compaction actually ran (the caller re-checks
+    /// the image flag afterwards, since summarizing away the last image
+    /// changes the endpoint routing).
     pub async fn maybe_compact(
         &self,
         task_id: &str,
         canonical: &mut Vec<CanonicalMessage>,
+        has_image: bool,
         emitter: &Arc<dyn AgentEventEmitter>,
-    ) {
+    ) -> bool {
         if canonical.len() < 4 {
-            return;
+            return false;
         }
         // The compaction window must match the endpoint the next step will
         // use (image-routed steps compact against the image model's budget),
         // mirroring choose_agent_role's role selection.
         let router = self.router();
-        let role = if canonical.iter().any(|m| {
-            m.content
-                .iter()
-                .any(|p| matches!(p, ContentPart::Image { .. }))
-        }) {
+        let role = if has_image {
             router.vision_role().await
         } else {
             EndpointRole::DefaultModel
         };
         let compactor = self.context_compactor(role).await;
-        if !compactor.needs_compaction(canonical) {
-            return;
+        // Compare the incremental estimate against the threshold directly;
+        // `needs_compaction` would re-estimate the whole canonical and undo
+        // the incremental cache.
+        if self.estimate_canonical_tokens(task_id, canonical) <= compactor.threshold_tokens() {
+            return false;
         }
-        let router = self.router();
         if let Some(result) = compactor.compact(canonical, &router).await {
             tracing::info!(
-                "compaction for task {}: {} tokens 閳?{} tokens ({} msgs summarized)",
+                "compaction for task {}: {} tokens -> {} tokens ({} msgs summarized)",
                 task_id,
                 result.tokens_before,
                 result.tokens_after,
                 result.summarized_count
             );
             *canonical = result.compacted;
+            // Compaction replaced the list wholesale: the incremental
+            // estimate is stale, drop it so the next step does a full pass.
+            self.reset_token_estimate(task_id);
             EventDispatcher::emit_compaction_from(
                 emitter,
                 task_id,
@@ -2049,6 +2396,9 @@ impl ReActEngine {
                 result.tokens_after,
             )
             .await;
+            true
+        } else {
+            false
         }
     }
 
@@ -2142,6 +2492,128 @@ mod tests {
         )
     }
 
+    // ── failure classification & retry nudge ──────────────────────────────
+
+    #[test]
+    fn classify_environmental_command_missing() {
+        assert_eq!(
+            ReActEngine::classify_tool_failure(
+                "shell",
+                "'Get-FileHash' is not recognized as the name of a cmdlet, function, script file, or operable program"
+            ),
+            FailureKind::Environmental
+        );
+        assert_eq!(
+            ReActEngine::classify_tool_failure(
+                "shell",
+                "'curl' 不是内部或外部命令，也不是可运行的程序或批处理文件"
+            ),
+            FailureKind::Environmental
+        );
+    }
+
+    #[test]
+    fn classify_environmental_network() {
+        assert_eq!(
+            ReActEngine::classify_tool_failure(
+                "network",
+                "tcp connect error: A connection attempt failed because the connected party did not properly respond"
+            ),
+            FailureKind::Environmental
+        );
+        assert_eq!(
+            ReActEngine::classify_tool_failure(
+                "shell",
+                "curl: (7) Failed to connect to host port 443: Connection refused"
+            ),
+            FailureKind::Environmental
+        );
+        assert_eq!(
+            ReActEngine::classify_tool_failure("shell", "download timed out after 60s"),
+            FailureKind::Environmental
+        );
+    }
+
+    #[test]
+    fn classify_environmental_paths() {
+        assert_eq!(
+            ReActEngine::classify_tool_failure("shell", "7z: cannot find archive path"),
+            FailureKind::Environmental
+        );
+    }
+
+    #[test]
+    fn classify_logic_usage_errors() {
+        assert_eq!(
+            ReActEngine::classify_tool_failure(
+                "files",
+                "input validation failed for 'files': MISSING REQUIRED FIELD(S): operation"
+            ),
+            FailureKind::Logic
+        );
+        assert_eq!(
+            ReActEngine::classify_tool_failure(
+                "files",
+                "'old_string' is required for edit operation"
+            ),
+            FailureKind::Logic
+        );
+        assert_eq!(
+            ReActEngine::classify_tool_failure("files", "old_string not found in file"),
+            FailureKind::Logic
+        );
+        assert_eq!(
+            ReActEngine::classify_tool_failure("shell", "invalid json in script"),
+            FailureKind::Logic
+        );
+    }
+
+    #[test]
+    fn classify_unknown_falls_back() {
+        assert_eq!(
+            ReActEngine::classify_tool_failure("shell", "something odd happened"),
+            FailureKind::Unknown
+        );
+    }
+
+    #[test]
+    fn failure_nudge_environmental_keeps_approach() {
+        let nudge = ReActEngine::build_failure_nudge(&vec![(
+            "shell".into(),
+            "curl: (7) Failed to connect: Connection refused".into(),
+        )]);
+        assert!(
+            !nudge.contains("completely different approach"),
+            "environmental failures must not force a method switch, got: {nudge}"
+        );
+        assert!(nudge.contains("ENVIRONMENTAL"), "got: {nudge}");
+        assert!(
+            nudge.contains("curl"),
+            "should mention tool switching, got: {nudge}"
+        );
+    }
+
+    #[test]
+    fn failure_nudge_logic_allows_method_switch_after_fix() {
+        let nudge = ReActEngine::build_failure_nudge(&vec![(
+            "files".into(),
+            "'old_string' is required for edit operation".into(),
+        )]);
+        assert!(nudge.contains("logic errors"), "got: {nudge}");
+        assert!(
+            nudge.contains(
+                "Only consider a completely different approach if the same method fails again"
+            ),
+            "method switch must be gated, got: {nudge}"
+        );
+    }
+
+    #[test]
+    fn failure_nudge_empty_falls_back_to_generic() {
+        let nudge = ReActEngine::build_failure_nudge(&[]);
+        assert!(nudge.contains("Diagnose the root cause"), "got: {nudge}");
+    }
+
     fn text_msg(role: LlmRole, text: &str) -> LlmMessage {
         LlmMessage {
             role,
@@ -2175,8 +2647,11 @@ mod tests {
             text_msg(LlmRole::System, "be concise"),
             text_msg(LlmRole::User, "hello"),
         ];
+        let has_image = messages
+            .iter()
+            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
         assert_eq!(
-            choose_agent_role(&router, &messages).await,
+            choose_agent_role(&router, has_image).await,
             EndpointRole::DefaultModel
         );
     }
@@ -2185,8 +2660,11 @@ mod tests {
     async fn choose_agent_role_default_when_image_model_unconfigured() {
         let router = mock_router();
         let messages = vec![image_msg(LlmRole::User)];
+        let has_image = messages
+            .iter()
+            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
         assert_eq!(
-            choose_agent_role(&router, &messages).await,
+            choose_agent_role(&router, has_image).await,
             EndpointRole::DefaultModel
         );
     }
@@ -2198,8 +2676,11 @@ mod tests {
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
         let messages = vec![image_msg(LlmRole::User)];
+        let has_image = messages
+            .iter()
+            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
         assert_eq!(
-            choose_agent_role(&router, &messages).await,
+            choose_agent_role(&router, has_image).await,
             EndpointRole::ImageModel
         );
     }
@@ -2212,8 +2693,11 @@ mod tests {
             .await;
         router.force_routing_flags(true, false).await;
         let messages = vec![image_msg(LlmRole::User)];
+        let has_image = messages
+            .iter()
+            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
         assert_eq!(
-            choose_agent_role(&router, &messages).await,
+            choose_agent_role(&router, has_image).await,
             EndpointRole::DefaultModel
         );
     }

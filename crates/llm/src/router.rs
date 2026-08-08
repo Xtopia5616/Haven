@@ -17,7 +17,7 @@ use futures_util::future::join_all;
 use haven_common::config::{LlmConfig, ModelEndpoint, compute_cost_usd};
 use tokio::sync::mpsc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointRole {
     SmallModel,
     DefaultModel,
@@ -671,11 +671,15 @@ impl LlmRouter {
 
     /// Stream-chat a tool-aware request to the primary endpoint, aggregating
     /// the deltas into a final `LlmResponse`.
+    ///
+    /// `messages`/`tools` are borrowed: the router clones them for each
+    /// attempt internally, so callers (e.g. the ReAct loop) can convert once
+    /// per step and reuse the same converted messages across retries.
     pub async fn chat_stream_with_tools_aggregated(
         &self,
         role: EndpointRole,
-        messages: Vec<LlmMessage>,
-        tools: Vec<ToolDefinition>,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable(
@@ -695,8 +699,8 @@ impl LlmRouter {
     pub async fn chat_stream_with_tools_aggregated_cancellable(
         &self,
         role: EndpointRole,
-        messages: Vec<LlmMessage>,
-        tools: Vec<ToolDefinition>,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
@@ -718,8 +722,8 @@ impl LlmRouter {
             // Primary: single attempt with cancellation
             let primary_result = Self::aggregate_stream_cancellable(
                 primary.clone(),
-                messages.clone(),
-                tools.clone(),
+                messages.to_vec(),
+                tools.to_vec(),
                 on_chunk.clone(),
                 cancel.clone(),
                 &self.stream_rules,
@@ -737,9 +741,14 @@ impl LlmRouter {
                         "stream aborted by rule '{}', injecting guidance and retrying with primary",
                         rule_name
                     );
-                    let mut retry_msgs = messages.clone();
+                    let mut retry_msgs = messages.to_vec();
+                    // The guidance is appended AFTER the assistant's partial
+                    // turn. A trailing System message breaks OpenAI-compatible
+                    // providers (system must lead the request) and is merged
+                    // into the top-level system field by Anthropic/Gemini,
+                    // losing its position. A User message is legal anywhere.
                     retry_msgs.push(LlmMessage {
-                        role: LlmRole::System,
+                        role: LlmRole::User,
                         content: vec![ContentPart::text(inject)],
                         tool_call_id: None,
                         tool_calls: None,
@@ -749,7 +758,7 @@ impl LlmRouter {
                     Self::aggregate_stream_cancellable(
                         primary,
                         retry_msgs,
-                        tools,
+                        tools.to_vec(),
                         on_chunk,
                         cancel,
                         &self.stream_rules,
@@ -788,8 +797,8 @@ impl LlmRouter {
                     // Balanced model: single attempt with cancellation
                     let fb_result = Self::aggregate_stream_cancellable(
                         self.balanced_model.clone(),
-                        messages,
-                        tools,
+                        messages.to_vec(),
+                        tools.to_vec(),
                         on_chunk,
                         cancel,
                         &self.stream_rules,
@@ -1338,8 +1347,8 @@ mod tests {
         let resp = router
             .chat_stream_with_tools_aggregated(
                 EndpointRole::DefaultModel,
-                Vec::new(),
-                Vec::new(),
+                &[],
+                &[],
                 move |c| {
                     if let Some(t) = &c.text {
                         seen_clone.lock().unwrap().push_str(t);
@@ -1434,8 +1443,8 @@ mod tests {
         let resp = router
             .chat_stream_with_tools_aggregated(
                 EndpointRole::DefaultModel,
-                Vec::new(),
-                Vec::new(),
+                &[],
+                &[],
                 move |c| {
                     if let Some(p) = c.web_search {
                         phases_clone.lock().unwrap().push(p.as_str().to_string());
@@ -1789,7 +1798,7 @@ mod tests {
             client,
         );
         let resp = router
-            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, vec![], vec![], |_| {})
+            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], |_| {})
             .await
             .expect("aggregation succeeds");
         assert!(resp.text.is_empty());

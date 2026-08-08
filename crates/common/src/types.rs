@@ -120,9 +120,6 @@ pub struct CanonicalMessage {
     pub tool_calls: Option<Vec<CanonicalToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// Parent message ID for tree-structured conversation history (§2).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_message_id: Option<String>,
     /// Internal reasoning/chain-of-thought from the model (e.g. DeepSeek's
     /// reasoning_content). Kept on assistant messages so it can be echoed
     /// back to APIs that require it in multi-turn requests.
@@ -143,7 +140,6 @@ impl CanonicalMessage {
             content,
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         }
@@ -155,7 +151,6 @@ impl CanonicalMessage {
             content,
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         }
@@ -176,7 +171,6 @@ impl CanonicalMessage {
             content,
             tool_calls,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning,
             web_search_calls,
         }
@@ -188,7 +182,6 @@ impl CanonicalMessage {
             content,
             tool_calls: None,
             tool_call_id,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         }
@@ -290,7 +283,6 @@ mod tests {
             content: vec![ContentPart::text("system prompt")],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
@@ -308,7 +300,6 @@ mod tests {
             content: vec![ContentPart::text("use this tool")],
             tool_calls: None,
             tool_call_id: Some("call_abc".into()),
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
@@ -326,7 +317,6 @@ mod tests {
                 arguments: serde_json::json!({"cmd": "ls"}),
             }]),
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
@@ -341,7 +331,6 @@ mod tests {
             content: vec![ContentPart::text("tool output")],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
@@ -371,7 +360,6 @@ mod tests {
         let msg = CanonicalMessage::user_text("hello");
         assert!(msg.tool_calls.is_none());
         assert!(msg.tool_call_id.is_none());
-        assert!(msg.parent_message_id.is_none());
         assert!(msg.reasoning.is_none());
         let tool = CanonicalMessage::tool(vec![ContentPart::text("out")], Some("call_1".into()));
         assert_eq!(tool.tool_call_id.as_deref(), Some("call_1"));
@@ -466,7 +454,6 @@ mod tests {
             content: vec![ContentPart::text("hello")],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
@@ -488,7 +475,6 @@ mod tests {
                 arguments: serde_json::json!({"path": "/tmp"}),
             }]),
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };

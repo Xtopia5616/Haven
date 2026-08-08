@@ -34,6 +34,12 @@ struct OpenAiMessage {
     /// turns to be echoed back in the request for thinking-mode conversations.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
+    /// DeepSeek web search: the provider's built-in search tool output must
+    /// be passed back verbatim in the next request's assistant message so the
+    /// server restores the search context (stateless chat API). Never parsed
+    /// or rewritten.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    web_search_call: Vec<serde_json::Value>,
 }
 
 /// A tool call within an assistant message, matching the OpenAI API format.
@@ -122,6 +128,10 @@ struct OpenAiMessageOut {
     tool_calls: Option<Vec<OpenAiToolCallOut>>,
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// DeepSeek's built-in web search output (`web_search_call` items).
+    /// Accumulated and echoed back verbatim in the next request.
+    #[serde(default)]
+    web_search_call: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -319,6 +329,7 @@ impl OpenAiAdapter {
                     tool_call_id: m.tool_call_id,
                     tool_calls,
                     reasoning_content: m.reasoning,
+                    web_search_call: m.web_search_calls,
                 }
             })
             .collect()
@@ -420,6 +431,11 @@ impl OpenAiAdapter {
             .as_ref()
             .and_then(|m| m.reasoning_content.clone());
         let tool_calls = Self::extract_tool_calls(&choice);
+        let web_search_calls = choice
+            .message
+            .as_ref()
+            .map(|m| m.web_search_call.clone())
+            .unwrap_or_default();
 
         let usage = json
             .usage
@@ -441,7 +457,7 @@ impl OpenAiAdapter {
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning,
-            web_search_calls: Vec::new(),
+            web_search_calls,
         };
         tracing::trace!(
             "parse_openai_response: text={} chars, tool_calls={}, reasoning={}, usage p/c/t={}/{}/{}",
@@ -669,6 +685,7 @@ impl OpenAiAdapter {
             done: bool,
             accumulated_text: String,
             tool_calls_acc: Vec<ToolCall>,
+            web_search_acc: Vec<serde_json::Value>,
             last_model: Option<String>,
             has_finish_reason: bool,
             usage: Option<Usage>,
@@ -680,6 +697,7 @@ impl OpenAiAdapter {
                 done: false,
                 accumulated_text: String::new(),
                 tool_calls_acc: Vec::new(),
+                web_search_acc: Vec::new(),
                 last_model: None,
                 has_finish_reason: false,
                 usage: None,
@@ -703,7 +721,7 @@ impl OpenAiAdapter {
                                     model: state.last_model.clone(),
                                     reasoning: None,
                                     web_search: None,
-                                    web_search_calls: Vec::new(),
+                                    web_search_calls: std::mem::take(&mut state.web_search_acc),
                                 })
                             };
                         state.done = true;
@@ -744,6 +762,16 @@ impl OpenAiAdapter {
                                         c.function.arguments.as_deref(),
                                     );
                                 }
+                            }
+                            // DeepSeek's built-in web search: accumulate the
+                            // `web_search_call` items so they can be echoed
+                            // back verbatim on the next request.
+                            if let Some(delta) = choice_delta(&choice)
+                                && !delta.web_search_call.is_empty()
+                            {
+                                state
+                                    .web_search_acc
+                                    .extend(delta.web_search_call.iter().cloned());
                             }
                             if choice.finish_reason.is_some() {
                                 state.has_finish_reason = true;
@@ -988,6 +1016,7 @@ mod tests {
                     },
                 }]),
                 reasoning_content: None,
+                web_search_call: Vec::new(),
             }),
             delta: None,
             finish_reason: None,
@@ -995,6 +1024,61 @@ mod tests {
         let tc = OpenAiAdapter::extract_tool_calls(&choice);
         assert_eq!(tc.len(), 1);
         assert_eq!(tc[0].name, "file");
+    }
+
+    #[test]
+    fn parse_openai_response_collects_web_search_calls() {
+        // DeepSeek's built-in web search returns `web_search_call` items in
+        // the assistant message. They must be collected so the next request
+        // can echo them back verbatim (stateless chat API).
+        let ws = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed"
+        });
+        let choice = OpenAiChoice {
+            message: Some(OpenAiMessageOut {
+                role: Some("assistant".into()),
+                content: Some("searched".into()),
+                tool_calls: None,
+                reasoning_content: None,
+                web_search_call: vec![ws.clone()],
+            }),
+            delta: None,
+            finish_reason: Some("stop".into()),
+        };
+        let json = OpenAiResponse {
+            choices: vec![choice],
+            usage: None,
+            model: Some("deepseek".into()),
+        };
+        let ep = ModelEndpoint::default();
+        let adapter = OpenAiAdapter::new(ep);
+        let resp = adapter.parse_openai_response(json, None).unwrap();
+        assert_eq!(resp.web_search_calls.len(), 1);
+        assert_eq!(resp.web_search_calls[0]["type"], "web_search_call");
+    }
+
+    #[test]
+    fn convert_messages_echoes_web_search_calls_verbatim() {
+        let ws = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_9",
+            "status": "completed"
+        });
+        let msgs = vec![LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![ContentPart::text("searched")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: vec![ws.clone()],
+        }];
+        let ep = ModelEndpoint::default();
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(msgs, Vec::new(), false);
+        let out = body.messages[0].web_search_call.first().cloned().unwrap();
+        assert_eq!(out, ws);
     }
 
     #[test]
@@ -1324,6 +1408,7 @@ mod tests {
                 content: Some("plain text response".into()),
                 tool_calls: None,
                 reasoning_content: None,
+                web_search_call: Vec::new(),
             }),
             delta: None,
             finish_reason: Some("stop".into()),
@@ -1348,6 +1433,7 @@ mod tests {
                     },
                 }]),
                 reasoning_content: None,
+                web_search_call: Vec::new(),
             }),
             finish_reason: None,
         };
@@ -1370,6 +1456,7 @@ mod tests {
                     },
                 }]),
                 reasoning_content: None,
+                web_search_call: Vec::new(),
             }),
             delta: None,
             finish_reason: None,

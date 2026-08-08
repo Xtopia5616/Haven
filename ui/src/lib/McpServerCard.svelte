@@ -149,6 +149,9 @@
 				</div>
 			{:else}
 				<p class="no-tools">No tools available</p>
+				{#if server.diagnostic}
+					<p class="diag-msg">{server.diagnostic}</p>
+				{/if}
 			{/if}
 		</div>
 	{/if}
@@ -337,5 +340,15 @@
 		opacity: 0.7;
 		font-size: 12px;
 		padding: var(--md-sys-space-sm) 0;
+	}
+	.diag-msg {
+		color: var(--md-sys-color-warning, #b58900);
+		font-size: 12px;
+		line-height: 1.45;
+		background: var(--md-sys-color-surface-container-high, rgba(0, 0, 0, 0.06));
+		border-radius: var(--md-sys-shape-small);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 </style>

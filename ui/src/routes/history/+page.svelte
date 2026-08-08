@@ -30,7 +30,8 @@
 	});
 
 	import logger from '$lib/logger.js';
-	import { buildReviewMessages, mergeLiveStreaming, formatDate } from '$lib/reviewMessages.js';
+	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.js';
+	import { formatMessageTime } from '$lib/stores.js';
 	import { statusVariant } from '$lib/taskStatus.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
@@ -404,7 +405,7 @@
 			<div class="history-message">"{task.transcript}"</div>
 		{/if}
 		<div class="history-meta">
-			<span class="meta-date">{formatDate(task.created_at)}</span>
+			<span class="meta-date">{formatMessageTime(task.created_at)}</span>
 		</div>
 	</div>
 				</button>
@@ -452,7 +453,7 @@
 						<div class="history-message">"{task.transcript}"</div>
 					{/if}
 					<div class="history-meta">
-						<span class="meta-date">{formatDate(task.created_at)}</span>
+						<span class="meta-date">{formatMessageTime(task.created_at)}</span>
 						<button
 							class="md-btn md-btn--xs md-btn--text delete-btn-meta"
 							onclick={(e) => (e.stopPropagation(), deleteTarget = task)}

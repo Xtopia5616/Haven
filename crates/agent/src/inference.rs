@@ -81,9 +81,9 @@ impl InferenceEngine {
     /// Takes an explicit `task_id` so the fire-and-forget background task is
     /// immune to any concurrent task switching.
     ///
-    /// Extraction is incremental: a per-task cursor (stored as the preference
-    /// `fact_extraction.<task_id>` = last processed user-message id) makes
-    /// re-runs process only the messages that arrived since the previous
+    /// Extraction is incremental: a per-task cursor (stored in the internal
+    /// kv_store as `fact_extraction.<task_id>` = last processed user-message
+    /// id) makes re-runs process only the messages that arrived since the previous
     /// extraction instead of re-scanning the whole conversation. This keeps
     /// cost bounded on long tasks and makes fact decay meaningful 鈥?a fact's
     /// `last_seen_at` refreshes only when it is actually re-observed, not when
@@ -128,7 +128,7 @@ impl InferenceEngine {
             .db
             .run_blocking({
                 let key = cursor_key.clone();
-                move |db| db.get_preference(&key)
+                move |db| db.get_kv(&key)
             })
             .await
             .ok()
@@ -191,7 +191,7 @@ impl InferenceEngine {
             let key = cursor_key.clone();
             let _ = db
                 .run_blocking(move |db| {
-                    db.set_preference(&key, &last)?;
+                    db.set_kv(&key, &last)?;
                     Ok::<(), anyhow::Error>(())
                 })
                 .await;
@@ -321,9 +321,7 @@ impl InferenceEngine {
                 let _ = db.delete_sensitive_facts();
                 let _ = db.flush_low_confidence(0.3);
                 let _ = db.prune_orphaned_embeddings();
-                // Facts are the single channel for working_dir/uses domains:
-                // drop inferred.* preference residue superseded by facts.
-                let _ = db.prune_overlapping_inferred_preferences();
+                let _ = db.cleanup_orphan_extraction_cursors();
                 Ok::<(), anyhow::Error>(())
             })
             .await;
@@ -528,27 +526,11 @@ impl InferenceEngine {
         lines.join("\n")
     }
 
-    /// Run preference inference over a task's messages.
-    pub async fn infer_preferences(&self, task_id: &str) {
-        let db = self.db.clone();
-        let task_id = task_id.to_string();
-        let _ = db
-            .run_blocking(move |db| {
-                if let Ok(messages) = db.get_task_messages(&task_id) {
-                    let inferred = db.infer_preferences_from_messages(&messages);
-                    let _ = db.save_inferred_preferences(&inferred);
-                }
-                Ok::<(), anyhow::Error>(())
-            })
-            .await;
-    }
-
-    /// Run both fact and preference inference (common exit point in the ReAct
-    /// loop), followed by the maintenance pass so stale facts are flushed even
-    /// when extraction found nothing new.
+    /// Run fact inference (the single memory channel — preferences are facts
+    /// tagged `preference`), followed by the maintenance pass so stale facts
+    /// are flushed even when extraction found nothing new.
     pub async fn infer_all(&self, task_id: &str) {
         self.infer_facts(task_id).await;
-        self.infer_preferences(task_id).await;
         self.run_memory_maintenance().await;
     }
 }
@@ -673,7 +655,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![],
             voice: false,
         }
@@ -798,16 +779,12 @@ mod tests {
         engine.infer_facts(&task.id).await;
 
         // Cursor should point at the last processed user message.
-        let cursor: Option<String> = db
-            .get_preference(&format!("fact_extraction.{}", task.id))
-            .unwrap();
+        let cursor: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
         assert_eq!(cursor.as_deref(), Some(m2.id.as_str()));
 
         // Re-running with no new messages must not change anything.
         engine.infer_facts(&task.id).await;
-        let cursor2: Option<String> = db
-            .get_preference(&format!("fact_extraction.{}", task.id))
-            .unwrap();
+        let cursor2: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
         assert_eq!(cursor2, cursor);
     }
 
@@ -820,9 +797,7 @@ mod tests {
             .unwrap();
         let engine = make_engine(db.clone());
         engine.infer_facts(&task.id).await;
-        let cursor: Option<String> = db
-            .get_preference(&format!("fact_extraction.{}", task.id))
-            .unwrap();
+        let cursor: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
         assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
 
         // A new message moves the cursor forward.
@@ -830,9 +805,7 @@ mod tests {
             .add_message(&task.id, "user", "new signal only", Some("text"), None)
             .unwrap();
         engine.infer_facts(&task.id).await;
-        let cursor2: Option<String> = db
-            .get_preference(&format!("fact_extraction.{}", task.id))
-            .unwrap();
+        let cursor2: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
         assert_eq!(cursor2.as_deref(), Some(m2.id.as_str()));
     }
 
@@ -862,9 +835,7 @@ mod tests {
                 .any(|f| f.predicate == "likes" && f.object == "Rust"),
             "rule fallback must extract likes=Rust"
         );
-        let cursor: Option<String> = db
-            .get_preference(&format!("fact_extraction.{}", task.id))
-            .unwrap();
+        let cursor: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
         assert!(cursor.is_some());
     }
 }

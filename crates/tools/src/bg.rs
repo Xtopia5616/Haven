@@ -60,7 +60,107 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
     // commands in the app's own working directory. Callers may override with
     // `.current_dir(...)` before spawning.
     std_cmd.current_dir(haven_common::default_work_dir());
+    // Route git/npm/curl through a locally detected proxy so network-heavy
+    // commands (clone/install) don't stall on ECONNRESET when the user runs a
+    // local proxy (e.g. 127.0.0.1:10808). The probe is cached; env vars the
+    // user already configured take precedence and are never overridden.
+    for (key, val) in proxy_env_vars() {
+        if std::env::var_os(&key).is_none() {
+            std_cmd.env(key, val);
+        }
+    }
     std_cmd
+}
+
+/// Detect a locally running proxy (common Windows proxy ports) and return
+/// the env vars that route HTTP(S) traffic through it.
+///
+/// The probe (a short TCP connect per port) runs once and the result is
+/// cached for 5 minutes, so the first shell command on a fresh process pays
+/// a one-time ~100 ms cost at most. Env vars already present in the process
+/// environment (user-configured proxy) short-circuit the probe entirely —
+/// a detected local proxy must never override an explicit configuration.
+#[cfg(windows)]
+pub fn proxy_env_vars() -> Vec<(String, String)> {
+    use std::net::{SocketAddr, TcpStream};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    struct Cache {
+        probed_at: Instant,
+        vars: Vec<(String, String)>,
+    }
+    static CACHE: OnceLock<std::sync::Mutex<Option<Cache>>> = OnceLock::new();
+
+    if std::env::var_os("HTTP_PROXY").is_some()
+        || std::env::var_os("HTTPS_PROXY").is_some()
+        || std::env::var_os("http_proxy").is_some()
+        || std::env::var_os("https_proxy").is_some()
+    {
+        return Vec::new();
+    }
+
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = cache.lock().unwrap();
+    if let Some(c) = guard.as_ref()
+        && c.probed_at.elapsed() < Duration::from_secs(300)
+    {
+        return c.vars.clone();
+    }
+
+    let mut vars = Vec::new();
+    for port in [10808, 10809, 7890, 7897, 1080] {
+        let addr: SocketAddr = match format!("127.0.0.1:{port}").parse() {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(120)).is_ok() {
+            let url = format!("http://127.0.0.1:{port}");
+            for key in [
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+            ] {
+                vars.push((key.to_string(), url.clone()));
+            }
+            break;
+        }
+    }
+    guard.replace(Cache {
+        probed_at: Instant::now(),
+        vars: vars.clone(),
+    });
+    vars
+}
+
+#[cfg(not(windows))]
+pub fn proxy_env_vars() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+/// Directory for per-command output logs (background jobs and failed
+/// foreground commands), under the shared Temp working directory.
+pub fn output_log_dir(kind: &str) -> std::path::PathBuf {
+    haven_common::default_work_dir().join(kind)
+}
+
+/// Write a command's full (sanitized) output to a log file so a condensed
+/// failure summary never hides the root cause (e.g. an npm install failure
+/// whose real error sits mid-log). Returns the log file path.
+pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf {
+    let dir = output_log_dir(kind);
+    let path = dir.join(format!("{id}.log"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("failed to create output-log dir {}: {e}", dir.display());
+        return path;
+    }
+    if let Err(e) = std::fs::write(&path, text) {
+        tracing::warn!("failed to write output log {}: {e}", path.display());
+    }
+    path
 }
 
 /// Byte budget for collecting a command's combined stdout/stderr, derived
@@ -91,12 +191,20 @@ enum JobState {
     },
     Completed {
         output: String,
+        exit_code: Option<i32>,
         truncated: bool,
+        /// Path to the full-output log file (written when output was capped).
+        log_path: Option<String>,
         started_at: String,
         finished_at: String,
     },
     Failed {
         error: String,
+        error_reason: String,
+        /// Path to the full-output log file (always written for failures so
+        /// the root cause survives the condensed `error_reason`).
+        log_path: Option<String>,
+        exit_code: Option<i32>,
         started_at: String,
         finished_at: String,
     },
@@ -189,6 +297,37 @@ impl BackgroundJobs {
         });
     }
 
+    /// Board view of every job owned by `task_id`: one entry per job with
+    /// status, timestamps, and a bounded output/error preview. Lets the model
+    /// see all background work of a task in a single call instead of polling
+    /// `status` job by job. Order: oldest first.
+    pub async fn list_for_task(&self, task_id: &str) -> Vec<Value> {
+        let jobs = self.jobs.read().await;
+        let mut rows = Vec::new();
+        for (id, entry) in jobs.iter() {
+            if entry.task_id.as_deref() != Some(task_id) {
+                continue;
+            }
+            let mut row = match &entry.state {
+                JobState::Running { started_at } => json!({
+                    "job_id": id,
+                    "status": "running",
+                    "started_at": started_at,
+                }),
+                _ => render_status_json(id, &entry.state),
+            };
+            let preview = row
+                .get("output")
+                .and_then(|v| v.as_str())
+                .or_else(|| row.get("error").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            row["preview"] = json!(preview.chars().take(200).collect::<String>());
+            rows.push(row);
+        }
+        rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
+        rows
+    }
+
     /// Spawn a shell command as a background job. Returns the job id; the
     /// command keeps running after this function returns. `cwd` overrides the
     /// default Temp working directory when provided.
@@ -257,6 +396,8 @@ impl BackgroundJobs {
 
         let me = self.clone();
         let job_id = id.clone();
+        let shell_owned = shell.to_string();
+        let command_owned = command.to_string();
         // The direct child pid is captured before `run` moves `child`; on
         // Windows, cancelling must kill the whole process tree, not just the
         // cmd.exe/powershell.exe wrapper.
@@ -278,9 +419,13 @@ impl BackgroundJobs {
                     }
                     combined.push_str(&stderr);
                 }
+                // Strip PowerShell's NativeCommandError/CLIXML formatting so
+                // the payload carries the real message, not the noise.
+                combined = sanitize_shell_output(&combined, &shell_owned);
+                let exit_code = status.as_ref().ok().and_then(|s| s.code());
                 let success = matches!(status, Ok(s) if s.success());
                 let truncated = stdout_overflow || stderr_overflow;
-                (combined, success, truncated)
+                (combined, success, exit_code, truncated)
             };
             tokio::pin!(run);
             tokio::select! {
@@ -292,8 +437,8 @@ impl BackgroundJobs {
                     }
                     me.mark_cancelled(&job_id, &started_at).await;
                 }
-                (combined, success, truncated) = &mut run => {
-                    me.mark_finished(&job_id, &started_at, combined, success, truncated).await;
+                (combined, success, exit_code, truncated) = &mut run => {
+                    me.mark_finished(&job_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
                 }
             }
         });
@@ -312,7 +457,7 @@ impl BackgroundJobs {
                 "job_id": job_id,
                 "status": "running",
                 "started_at": started_at,
-                "hint": "The job is still running. Poll again with the status tool.",
+                "hint": "The job is still running. Its result is pushed back to your task automatically when it finishes — no polling needed. Use the jobs tool to see all background jobs at once.",
             }),
             _ => render_status_json(job_id, &entry.state),
         }
@@ -375,8 +520,11 @@ impl BackgroundJobs {
         &self,
         id: &str,
         started_at: &str,
+        shell: &str,
+        command: &str,
         combined: String,
         success: bool,
+        exit_code: Option<i32>,
         truncated: bool,
     ) {
         let mut jobs = self.jobs.write().await;
@@ -387,14 +535,33 @@ impl BackgroundJobs {
         let finished_at = chrono::Utc::now().to_rfc3339();
         entry.state = if success {
             JobState::Completed {
-                output: combined,
+                output: combined.clone(),
+                exit_code,
                 truncated,
+                // When the collected output was capped, the log file keeps
+                // the full transcript for inspection.
+                log_path: truncated
+                    .then(|| write_output_log("job-logs", id, &combined).to_string_lossy().into_owned()),
                 started_at: started_at.to_string(),
                 finished_at,
             }
         } else {
+            // The failure payload must not drown the model (or the user) in
+            // progress-bar spam: `error` keeps the sanitized output for full
+            // inspection, `error_reason` carries a short tail of the most
+            // likely error lines plus a Windows-trap hint when one matches.
+            // The full output always lands in a log file so the root cause
+            // is recoverable even when the summary misses it.
+            let diagnosed = append_windows_diagnostics(shell, command, &combined);
             JobState::Failed {
-                error: combined,
+                error: combined.clone(),
+                error_reason: summarize_error(&diagnosed, 1200),
+                log_path: Some(
+                    write_output_log("job-logs", id, &combined)
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                exit_code,
                 started_at: started_at.to_string(),
                 finished_at,
             }
@@ -422,7 +589,9 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
     match state {
         JobState::Completed {
             output,
+            exit_code,
             truncated,
+            log_path,
             started_at,
             finished_at,
         } => {
@@ -433,22 +602,41 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
                 "started_at": started_at,
                 "finished_at": finished_at,
             });
+            if let Some(code) = exit_code {
+                v["exit_code"] = json!(code);
+            }
             if *truncated {
                 v["truncated"] = json!(true);
+            }
+            if let Some(p) = log_path {
+                v["log_path"] = json!(p);
             }
             v
         }
         JobState::Failed {
             error,
+            error_reason,
+            log_path,
+            exit_code,
             started_at,
             finished_at,
-        } => json!({
-            "job_id": job_id,
-            "status": "failed",
-            "error": error,
-            "started_at": started_at,
-            "finished_at": finished_at,
-        }),
+        } => {
+            let mut v = json!({
+                "job_id": job_id,
+                "status": "failed",
+                "error": error,
+                "error_reason": error_reason,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            });
+            if let Some(code) = exit_code {
+                v["exit_code"] = json!(code);
+            }
+            if let Some(p) = log_path {
+                v["log_path"] = json!(p);
+            }
+            v
+        }
         JobState::Cancelled {
             started_at,
             finished_at,
@@ -460,6 +648,190 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
         }),
         JobState::Running { .. } => json!({ "job_id": job_id, "status": "running" }),
     }
+}
+
+/// Strip PowerShell-specific noise from captured command output so the real
+/// message survives instead of NativeCommandError formatting:
+/// - pwsh 7 serializes native stderr as CLIXML (`#< CLIXML` + escape chars);
+///   the message text inside `<S S="Error">...</S>` segments is extracted.
+/// - Windows PowerShell 5.1 wraps error records with header lines
+///   (`NativeCommandError`, `At line:`, `+ `, `~~~`, `+ CategoryInfo`,
+///   `+ FullyQualifiedErrorId`) that add no information.
+///
+/// CRLF line endings (cmd.exe / native Windows tools) are normalized to LF
+/// for every shell so downstream line-based processing and the model never
+/// see stray `\r` characters. Lone `\r` (progress-redraw lines) is kept —
+/// `summarize_error` relies on it to collapse progress bars.
+///
+/// Non-PowerShell output is returned unchanged apart from the line endings.
+pub fn sanitize_shell_output(text: &str, shell: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    if shell != "powershell" {
+        return text;
+    }
+    let text = if text.contains("#< CLIXML") {
+        extract_clixml_messages(&text)
+    } else {
+        text
+    };
+    let mut out = Vec::with_capacity(text.len() / 32);
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if is_powershell_noise_line(trimmed) {
+            continue;
+        }
+        out.push(line);
+    }
+    let joined = out.join("\n");
+    joined.trim().to_string()
+}
+
+/// Pull the human-readable messages out of a pwsh 7 CLIXML stderr blob. Each
+/// native stderr line arrives as `<S S="Error">text</S>`; non-matching content
+/// falls back to the raw text (control chars removed).
+fn extract_clixml_messages(text: &str) -> String {
+    const TAG: &str = "<S S=\"Error\">";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(TAG) {
+        let inner_start = start + TAG.len();
+        let Some(end_rel) = rest[inner_start..].find("</S>") else {
+            break;
+        };
+        let inner = &rest[inner_start..inner_start + end_rel];
+        if !inner.trim().is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(inner);
+        }
+        rest = &rest[inner_start + end_rel + 4..];
+    }
+    if out.is_empty() {
+        text.chars().filter(|c| !c.is_control()).collect::<String>()
+    } else {
+        out
+    }
+}
+
+/// True when a trimmed PowerShell output line is error-record formatting that
+/// should be dropped rather than surfaced to the model.
+fn is_powershell_noise_line(trimmed: &str) -> bool {
+    trimmed.is_empty()
+        || trimmed == "NativeCommandError"
+        || trimmed.starts_with("At line:")
+        || trimmed == "+"
+        || trimmed.starts_with("+ ")
+        || trimmed.starts_with("+~")
+        || trimmed.starts_with("~")
+        || trimmed.starts_with("+ CategoryInfo")
+        || trimmed.starts_with("+ FullyQualifiedErrorId")
+        || trimmed.starts_with("CategoryInfo")
+        || trimmed.starts_with("FullyQualifiedErrorId")
+}
+
+/// Condense a failed command's captured output into a short, readable reason:
+/// progress-bar/spinner lines are dropped, only the last few meaningful lines
+/// are kept, and the result is capped at `max_chars`. Used for the failed
+/// job's `error_reason` and the foreground shell tool's error text, so a
+/// multi-KB progress dump cannot drown the actual error (e.g. a 416 from a
+/// failed download).
+pub fn summarize_error(text: &str, max_chars: usize) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    for raw in text.split('\n') {
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Progress/spinner lines: carriage-return redraws (mid-line `\r`),
+        // bare percentages, and bar glyphs carry no diagnostic value. The
+        // trailing `\r` of a Windows CRLF line is trimmed above and ignored.
+        if line.contains('\r') {
+            continue;
+        }
+        if trimmed.ends_with('%') && trimmed.len() < 16 {
+            continue;
+        }
+        lines.push(line);
+    }
+    let start = lines.len().saturating_sub(12);
+    let mut out = lines[start..].join("\n");
+    let count = out.chars().count();
+    if count > max_chars {
+        let cutoff = out.floor_char_boundary(max_chars);
+        out = format!("{}[... {} chars omitted]", &out[..cutoff], count - cutoff);
+    }
+    out
+}
+
+/// Append a short diagnostic hint when a failed command output matches a
+/// common Windows trap (PowerShell aliases, execution policy, cmd-only
+/// syntax, missing commands). Returns the original text plus hint lines so
+/// the agent can fix the cause instead of blind-retrying.
+#[cfg(windows)]
+pub fn append_windows_diagnostics(shell: &str, command: &str, text: &str) -> String {
+    let lower = text.to_lowercase();
+    let cmd_lower = command.to_lowercase();
+    let mut hints: Vec<&str> = Vec::new();
+
+    if shell == "powershell" {
+        // `curl` is an alias for Invoke-WebRequest in PowerShell; the user
+        // almost always wants the real curl (curl.exe).
+        if cmd_lower.contains("curl ") && !cmd_lower.contains("curl.exe") {
+            hints.push(
+                "PowerShell's `curl` is an alias for Invoke-WebRequest — use `curl.exe` (e.g. curl.exe -L <url>) for real curl behavior.",
+            );
+        }
+        // `&&` is a parse error in PowerShell ("The token '&&' is not a valid
+        // statement separator" / 标记“&&”不是此版本中的有效语句分隔符).
+        if lower.contains("not a valid statement separator") || lower.contains("有效语句分隔符") {
+            hints.push("`&&` is not valid in PowerShell — use `;` instead (or pass shell: cmd).");
+        }
+        // .ps1 scripts are blocked by the execution policy.
+        if lower.contains("execution policy") || lower.contains("running scripts is disabled") {
+            hints.push(
+                "Windows script execution policy blocked a .ps1 — use the .cmd wrapper (e.g. npm.cmd instead of npm) or run: Set-ExecutionPolicy -Scope Process Bypass",
+            );
+        }
+        if lower.contains("无法加载模块") || lower.contains("cannot load module") {
+            hints.push(
+                "A PowerShell module failed to load (e.g. Expand-Archive) — check the module path or install it with Install-Module.",
+            );
+        }
+    } else {
+        // cmd: Chinese Windows reports plain syntax errors with no detail.
+        if lower.contains("语法不正确") {
+            hints.push(
+                "cmd reports a syntax error — check quoting and escaping: use double quotes around paths with spaces and escape & with ^ inside cmd.",
+            );
+        }
+    }
+    if lower.contains("禁止运行脚本") || lower.contains("执行策略") {
+        hints.push(
+            "Windows 脚本执行策略拦截了 .ps1 —— 改用 .cmd 包装（如 npm.cmd）或先执行 Set-ExecutionPolicy -Scope Process Bypass",
+        );
+    }
+    if lower.contains("不是内部或外部命令") || lower.contains("not recognized as an internal or external command") {
+        hints.push(
+            "Command not found — check PATH or use the full path (e.g. C:\\Users\\<name>\\AppData\\Roaming\\npm\\npm.cmd).",
+        );
+    }
+    if lower.contains("%1 不是有效的 win32") || lower.contains("not a valid win32 application") {
+        hints.push(
+            "'not a valid Win32 application' usually means a script without a launcher — invoke it via its interpreter (node/python) with the full script path, or use its .cmd wrapper.",
+        );
+    }
+    if hints.is_empty() {
+        text.to_string()
+    } else {
+        format!("{}\n\n[Windows trap?] {}", text, hints.join("\n"))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn append_windows_diagnostics(_shell: &str, _command: &str, text: &str) -> String {
+    text.to_string()
 }
 
 /// Terminate a child process together with its whole process tree. On
@@ -708,5 +1080,204 @@ mod tests {
         let (text, overflowed) = read_stream_capped(Some(&data[..]), 100).await;
         assert_eq!(text.len(), 100);
         assert!(overflowed);
+    }
+
+    // ── sanitize_shell_output ─────────────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_shell_output_normalizes_crlf() {
+        let out = sanitize_shell_output("line1\r\nline2\r\n", "cmd");
+        assert_eq!(out, "line1\nline2\n");
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_keeps_lone_cr_for_progress() {
+        // Progress-redraw lines use lone `\r`; they must survive so
+        // summarize_error can collapse them.
+        let out = sanitize_shell_output("downloading 42%\rfinal", "cmd");
+        assert!(out.contains('\r'), "lone \\r must be kept: {out:?}");
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_non_powershell_unchanged() {
+        let text = "NativeCommandError\nreal line";
+        assert_eq!(sanitize_shell_output(text, "cmd"), text);
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_strips_native_command_error_noise() {
+        // Windows PowerShell 5.1 error-record formatting around a real error.
+        let text = "NativeCommandError\ncurl.exe : curl: (7) Failed to connect\nAt line:1 char:1\n+ & curl.exe https://x\n+ ~~~~~~~~~~~~~~~~~~~~\n    + CategoryInfo          : NotSpecified: (curl.exe : ...)\n    + FullyQualifiedErrorId : NativeCommandError\n";
+        let out = sanitize_shell_output(text, "powershell");
+        assert!(!out.contains("NativeCommandError"), "got: {out}");
+        assert!(!out.contains("CategoryInfo"), "got: {out}");
+        assert!(!out.contains("At line:"), "got: {out}");
+        assert!(
+            out.contains("curl.exe : curl: (7) Failed to connect"),
+            "real error must survive, got: {out}"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_strips_clixml_wrapper() {
+        // pwsh 7 serializes native stderr as CLIXML.
+        let text = format!(
+            "#< CLIXML\n\u{1f}<Objs V=\"1\" S=\"Err\"><S S=\"Error\">boom: connection refused</S></Objs>"
+        );
+        let out = sanitize_shell_output(&text, "powershell");
+        assert!(
+            out.contains("boom: connection refused"),
+            "message must survive CLIXML, got: {out}"
+        );
+        assert!(!out.contains("CLIXML"), "got: {out}");
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_keeps_plus_prefixed_content() {
+        // A real `+line` (e.g. git diff addition) must not be mistaken for a
+        // PowerShell continuation line.
+        let out = sanitize_shell_output("+added line", "powershell");
+        assert_eq!(out, "+added line");
+    }
+
+    // ── append_windows_diagnostics ────────────────────────────────────────
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_diagnostics_curl_alias() {
+        let out = append_windows_diagnostics("powershell", "curl https://example.com", "curl.exe : Invoke-WebRequest failed");
+        assert!(
+            out.contains("Windows trap"),
+            "a hint must be appended, got: {out}"
+        );
+        assert!(out.contains("curl.exe"), "hint must name curl.exe, got: {out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_diagnostics_no_hint_for_clean_error() {
+        let out = append_windows_diagnostics("cmd", "echo hi", "some unrelated failure");
+        assert_eq!(out, "some unrelated failure", "no hint, no change: {out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_diagnostics_cmd_syntax_error_cn() {
+        let out = append_windows_diagnostics("cmd", "dir /q \\x", "该命令的语法不正确。");
+        assert!(out.contains("Windows trap"), "got: {out}");
+        assert!(out.contains("syntax"), "hint must explain quoting, got: {out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_diagnostics_powershell_and_chaining() {
+        let out = append_windows_diagnostics(
+            "powershell",
+            "git clone x && cd y",
+            "The token '&&' is not a valid statement separator in this version.",
+        );
+        assert!(out.contains("`;`"), "hint must suggest `;`, got: {out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_diagnostics_execution_policy() {
+        let out = append_windows_diagnostics(
+            "powershell",
+            "npm install",
+            "npm : 无法加载文件 npm.ps1，因为在此系统上禁止运行脚本",
+        );
+        assert!(out.contains("npm.cmd"), "hint must suggest the .cmd wrapper, got: {out}");
+    }
+
+    // ── summarize_error ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_summarize_error_drops_progress_and_keeps_tail() {
+        // Real progress bars redraw one line with mid-line carriage returns
+        // (no newlines); the whole redraw must collapse to nothing while the
+        // actual error line survives.
+        let mut text = String::new();
+        for i in 0..50 {
+            text.push_str(&format!("[download] {i}% of 1000MiB in 00:0{i}\r"));
+        }
+        text.push_str("\ncurl: (7) Failed to connect to x port 443");
+        let out = summarize_error(&text, 1200);
+        assert!(
+            !out.contains('%'),
+            "progress lines must be dropped, got: {out}"
+        );
+        assert!(out.contains("Failed to connect"), "got: {out}");
+    }
+
+    #[test]
+    fn test_summarize_error_caps_length() {
+        let text = (0..200)
+            .map(|i| format!("error line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = summarize_error(&text, 100);
+        assert!(
+            out.chars().count() <= 130,
+            "got {} chars",
+            out.chars().count()
+        );
+        assert!(out.contains("omitted"), "cap notice expected, got: {out}");
+    }
+
+    #[test]
+    fn test_summarize_error_blank_lines_removed() {
+        let out = summarize_error("a\n\n\nb", 1200);
+        assert_eq!(out, "a\nb");
+    }
+
+    // ── list_for_task (jobs board) ────────────────────────────────────────
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_list_for_task_scopes_to_owning_task() {
+        let jobs = Arc::new(BackgroundJobs::new());
+        let id_a = jobs
+            .spawn_shell("echo job-a", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        let id_b = jobs
+            .spawn_shell("echo job-b", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        jobs.attach_task(&id_a, "task-1").await;
+        jobs.attach_task(&id_b, "task-2").await;
+        wait_terminal(&jobs, &id_a, 10).await;
+        wait_terminal(&jobs, &id_b, 10).await;
+
+        let rows = jobs.list_for_task("task-1").await;
+        assert_eq!(rows.len(), 1, "only task-1's jobs: {rows:?}");
+        assert_eq!(rows[0]["job_id"], id_a);
+        assert_eq!(rows[0]["status"], "completed");
+        assert!(
+            rows[0]["preview"].as_str().unwrap().contains("job-a"),
+            "preview expected, got: {rows:?}"
+        );
+
+        let all = jobs.list_for_task("task-2").await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0]["job_id"], id_b);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_failed_job_reports_exit_code_and_reason() {
+        let jobs = Arc::new(BackgroundJobs::new());
+        let id = jobs
+            .spawn_shell("echo progress... && exit 42", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        let v = wait_terminal(&jobs, &id, 10).await;
+        assert_eq!(v["status"], "failed", "got: {v}");
+        assert_eq!(v["exit_code"], 42, "exit code must be captured, got: {v}");
+        assert!(
+            v["error_reason"].as_str().is_some_and(|s| !s.is_empty()),
+            "error_reason must be present, got: {v}"
+        );
     }
 }

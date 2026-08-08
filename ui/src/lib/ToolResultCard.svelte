@@ -14,6 +14,7 @@
 		reminder: '提醒',
 		env: '环境变量',
 		file: '文件操作',
+		files: '文件与搜索',
 		network: '网络请求',
 		clipboard: '剪贴板',
 		power: '电源状态',
@@ -133,6 +134,7 @@
 	function customShape(toolName, data) {
 		switch (toolName) {
 			case 'file_search':
+			case 'files':
 				return Array.isArray(data.results) ? data : null;
 			case 'system':
 				return data.cpu || data.memory || data.os || data.disks ? data : null;
@@ -147,6 +149,7 @@
 			case 'env':
 				return Array.isArray(data.variables) || data.name ? data : null;
 			case 'file':
+			case 'files':
 				return data.written ||
 					data.edited ||
 					data.copied ||
@@ -425,7 +428,7 @@
 						stroke-linecap="round"
 						stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
 					>
-				{:else if toolName === 'file_search'}
+				{:else if toolName === 'file_search' || toolName === 'files'}
 					<svg
 						width="12"
 						height="12"
@@ -528,7 +531,7 @@
 							d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"
 						/></svg
 					>
-				{:else if toolName === 'file'}
+		{:else if toolName === 'file' || (toolName === 'files' && !Array.isArray(data.results))}
 					<svg
 						width="12"
 						height="12"
@@ -614,7 +617,7 @@
 		{:else if kind === 'raw'}
 			<pre class="content-preview">{rawText}</pre>
 		{:else if parsed}
-			{#if toolName === 'file_search'}
+			{#if toolName === 'file_search' || (toolName === 'files' && Array.isArray(data.results))}
 				<div class="tool-card-count">
 					{data.count ?? data.results.length} 个结果 · {data.mode === 'content'
 						? '全文'

@@ -149,6 +149,8 @@ pub fn is_single_valued_predicate(predicate: &str) -> bool {
                 | "os"
                 | "location"
                 | "address"
+                | "language"
+                | "verbosity"
         )
 }
 
@@ -222,7 +224,9 @@ fn sort_facts_effective(facts: &mut [Fact]) {
 /// Map a predicate to a default tag set used by the inference engine.
 fn tags_for_predicate(predicate: &str) -> Vec<String> {
     match predicate {
-        "likes" | "dislikes" | "uses" => vec!["preference".into()],
+        "likes" | "dislikes" | "uses" | "language" | "verbosity" => {
+            vec!["preference".into()]
+        }
         "project_path" => vec!["workspace".into()],
         "name" | "works_at" => vec!["identity".into()],
         _ => vec![],
@@ -326,6 +330,97 @@ impl Database {
             last_seen_at: Some(now),
             source_ref: source_ref.cloned(),
         })
+    }
+
+    /// Store a fact the user explicitly stated (e.g. via the `remember_fact`
+    /// tool or the settings UI). User-stated facts are authoritative:
+    ///
+    /// - Same (subject, predicate, object) triple already present as a
+    ///   user fact → reinforcement (bump `mention_count`, refresh
+    ///   `last_seen_at`, raise confidence to 1.0).
+    /// - Same triple present as an inferred fact → the user just confirmed
+    ///   it, so the row is upgraded to `source="user"`.
+    /// - The predicate is single-valued (name, language, verbosity, ...) →
+    ///   every other value for that predicate (user or inferred) is removed
+    ///   first, so the new statement strictly replaces the old one.
+    /// - Multi-valued predicates (likes, uses, ...) → plain insert; the
+    ///   new value coexists with the existing ones.
+    pub fn set_user_fact(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        tags: &[&str],
+    ) -> anyhow::Result<Fact> {
+        let conn = self.conn();
+        let triple_exists: Option<Fact> = conn
+            .query_row(
+                "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
+                 FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                rusqlite::params![subject, predicate, object],
+                fact_from_row,
+            )
+            .ok();
+        if let Some(existing) = triple_exists {
+            if existing.source == "user" {
+                // Reinforcement: re-confirmed by the user, confidence maxed.
+                conn.execute(
+                    "UPDATE facts
+                     SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0
+                     WHERE id = ?2",
+                    rusqlite::params![Utc::now().to_rfc3339(), existing.id],
+                )?;
+                self.cache_invalidate_facts(subject);
+                let mut fact = existing;
+                fact.confidence = 1.0;
+                fact.mention_count += 1;
+                fact.last_seen_at = Some(Utc::now().to_rfc3339());
+                return Ok(fact);
+            }
+            // Upgrade an inferred row to user-stated.
+            conn.execute(
+                "UPDATE facts SET source = 'user', confidence = 1.0, last_seen_at = ?1 WHERE id = ?2",
+                rusqlite::params![Utc::now().to_rfc3339(), existing.id],
+            )?;
+            self.cache_invalidate_facts(subject);
+            let mut fact = existing;
+            fact.source = "user".into();
+            fact.confidence = 1.0;
+            fact.last_seen_at = Some(Utc::now().to_rfc3339());
+            return Ok(fact);
+        }
+        if is_single_valued_predicate(predicate) {
+            conn.execute(
+                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
+                rusqlite::params![subject, predicate],
+            )?;
+        }
+        self.insert_fact(subject, predicate, object, "user", 1.0, tags)
+    }
+
+    /// Delete facts by (subject, predicate[, object]) — used by the
+    /// `forget_fact` tool and the settings UI. When `object` is `None`,
+    /// every fact with that subject+predicate is removed (both sources).
+    /// Returns the number of deleted rows.
+    pub fn delete_facts_by_triple(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: Option<&str>,
+    ) -> anyhow::Result<u64> {
+        let conn = self.conn();
+        let deleted = match object {
+            Some(obj) => conn.execute(
+                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                rusqlite::params![subject, predicate, obj],
+            )?,
+            None => conn.execute(
+                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
+                rusqlite::params![subject, predicate],
+            )?,
+        };
+        self.cache_invalidate_facts(subject);
+        Ok(deleted as u64)
     }
 
     /// Insert a fact only if the same (subject, predicate, object) triple
@@ -975,6 +1070,53 @@ impl Database {
                     });
                 }
             }
+
+            // Rule 8: preferred language -> ("user", "language", "X", 0.75).
+            // Single-valued: a newer statement replaces the previous one via
+            // the upsert machinery (user-stated values stay authoritative).
+            for pattern in &["i speak ", "my language is ", "respond in "] {
+                if let Some(idx) = content.find(pattern)
+                    && let Some(obj) =
+                        Self::extract_object(content_orig, idx + pattern.len(), false)
+                {
+                    facts.push(InferredFact {
+                        subject: "user".into(),
+                        predicate: "language".into(),
+                        object: obj,
+                        confidence: 0.75,
+                        tags: tags_for_predicate("language"),
+                        source_ref: source_ref(),
+                    });
+                }
+            }
+
+            // Rule 9: output verbosity -> ("user", "verbosity", "concise"|"detailed", 0.6)
+            if content.contains("be concise")
+                || content.contains("keep it short")
+                || content.contains("brief")
+            {
+                facts.push(InferredFact {
+                    subject: "user".into(),
+                    predicate: "verbosity".into(),
+                    object: "concise".into(),
+                    confidence: 0.6,
+                    tags: tags_for_predicate("verbosity"),
+                    source_ref: source_ref(),
+                });
+            }
+            if content.contains("be detailed")
+                || content.contains("explain in detail")
+                || content.contains("thorough")
+            {
+                facts.push(InferredFact {
+                    subject: "user".into(),
+                    predicate: "verbosity".into(),
+                    object: "detailed".into(),
+                    confidence: 0.6,
+                    tags: tags_for_predicate("verbosity"),
+                    source_ref: source_ref(),
+                });
+            }
         }
 
         // Lower confidence of corrected facts
@@ -1010,7 +1152,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![],
             voice: false,
         }
@@ -1308,6 +1449,121 @@ mod tests {
     }
 
     #[test]
+    fn test_set_user_fact_inserts_user_sourced() {
+        let db = create_db();
+        db.set_user_fact("user", "email", "alice@example.com", &["identity"])
+            .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].predicate, "email");
+        assert_eq!(facts[0].source, "user");
+        assert_eq!(facts[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn test_set_user_fact_replaces_single_valued() {
+        let db = create_db();
+        // Inferred old value exists; the explicit statement must replace it.
+        db.insert_fact(
+            "user",
+            "language",
+            "Chinese",
+            "inferred",
+            0.75,
+            &["preference"],
+        )
+        .unwrap();
+        db.set_user_fact("user", "language", "English", &["preference"])
+            .unwrap();
+        let languages: Vec<_> = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.predicate == "language")
+            .collect();
+        assert_eq!(
+            languages.len(),
+            1,
+            "single-valued must be replaced, not coexisting"
+        );
+        assert_eq!(languages[0].object, "English");
+        assert_eq!(languages[0].source, "user");
+    }
+
+    #[test]
+    fn test_set_user_fact_upgrades_inferred_triple() {
+        let db = create_db();
+        db.insert_fact("user", "uses", "VSCode", "inferred", 0.7, &["preference"])
+            .unwrap();
+        db.set_user_fact("user", "uses", "VSCode", &["preference"])
+            .unwrap();
+        let uses: Vec<_> = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.predicate == "uses")
+            .collect();
+        assert_eq!(uses.len(), 1);
+        assert_eq!(
+            uses[0].source, "user",
+            "explicit confirmation must upgrade to user"
+        );
+        assert_eq!(uses[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn test_set_user_fact_multi_valued_coexists() {
+        let db = create_db();
+        db.set_user_fact("user", "likes", "Rust", &["preference"])
+            .unwrap();
+        db.set_user_fact("user", "likes", "Go", &["preference"])
+            .unwrap();
+        let likes: Vec<_> = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.predicate == "likes")
+            .collect();
+        assert_eq!(likes.len(), 2, "multi-valued predicates accumulate");
+    }
+
+    #[test]
+    fn test_delete_facts_by_triple_object_and_predicate() {
+        let db = create_db();
+        db.insert_fact("user", "uses", "VSCode", "user", 1.0, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "uses", "IntelliJ", "inferred", 0.6, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "likes", "Rust", "user", 1.0, &["preference"])
+            .unwrap();
+
+        // Delete a specific value.
+        let n = db
+            .delete_facts_by_triple("user", "uses", Some("VSCode"))
+            .unwrap();
+        assert_eq!(n, 1);
+        let remaining: Vec<_> = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.predicate == "uses")
+            .collect();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].object, "IntelliJ");
+
+        // Delete the whole predicate (both sources).
+        let n = db.delete_facts_by_triple("user", "uses", None).unwrap();
+        assert_eq!(n, 1);
+        let uses: Vec<_> = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.predicate == "uses")
+            .collect();
+        assert!(uses.is_empty());
+    }
+
+    #[test]
     fn test_delete_sensitive_facts() {
         let db = create_db();
         db.insert_fact("user", "name", "Alice", "user", 1.0, &["identity"])
@@ -1576,6 +1832,99 @@ mod tests {
             assert_eq!(f.confidence, 0.75);
             assert_eq!(f.tags, vec!["identity"]);
         }
+    }
+
+    #[test]
+    fn test_infer_rule_language() {
+        let db = create_db();
+        let msgs = vec![
+            make_message("I speak Chinese."),
+            make_message("My language is English"),
+            make_message("Please respond in 中文."),
+        ];
+        let facts = db.infer_facts_from_messages(&msgs);
+        assert_eq!(facts.len(), 3);
+        for f in &facts {
+            assert_eq!(f.subject, "user");
+            assert_eq!(f.predicate, "language");
+            assert_eq!(f.confidence, 0.75);
+            assert_eq!(f.tags, vec!["preference"]);
+        }
+    }
+
+    #[test]
+    fn test_infer_rule_verbosity() {
+        let db = create_db();
+        let msgs = vec![
+            make_message("Please be concise and keep it short."),
+            make_message("Be thorough and explain in detail."),
+        ];
+        let facts = db.infer_facts_from_messages(&msgs);
+        let concise: Vec<_> = facts
+            .iter()
+            .filter(|f| f.predicate == "verbosity" && f.object == "concise")
+            .collect();
+        let detailed: Vec<_> = facts
+            .iter()
+            .filter(|f| f.predicate == "verbosity" && f.object == "detailed")
+            .collect();
+        assert_eq!(concise.len(), 1);
+        assert_eq!(detailed.len(), 1);
+        for f in facts.iter().filter(|f| f.predicate == "verbosity") {
+            assert_eq!(f.confidence, 0.6);
+            assert_eq!(f.tags, vec!["preference"]);
+        }
+    }
+
+    #[test]
+    fn test_infer_rule_language_verbosity_single_valued_upsert() {
+        let db = create_db();
+        let msg = make_message("I speak Chinese.");
+        for f in db.infer_facts_from_messages(std::slice::from_ref(&msg)) {
+            let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
+            db.upsert_fact(
+                &f.subject,
+                &f.predicate,
+                &f.object,
+                "inferred",
+                f.confidence,
+                &tags,
+                f.source_ref.as_ref(),
+            )
+            .unwrap();
+        }
+        // A newer statement replaces the earlier value instead of coexisting.
+        let msg2 = make_message("My language is English.");
+        for f in db.infer_facts_from_messages(std::slice::from_ref(&msg2)) {
+            let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
+            db.upsert_fact(
+                &f.subject,
+                &f.predicate,
+                &f.object,
+                "inferred",
+                f.confidence,
+                &tags,
+                f.source_ref.as_ref(),
+            )
+            .unwrap();
+        }
+        let languages: Vec<_> = db
+            .get_facts("user")
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.predicate == "language")
+            .collect();
+        // Single-valued predicates demote (halve) superseded inferred values
+        // instead of deleting them — same mechanism as project_path.
+        assert_eq!(languages.len(), 2);
+        let english = languages.iter().find(|f| f.object == "English").unwrap();
+        let chinese = languages.iter().find(|f| f.object == "Chinese").unwrap();
+        assert!(english.confidence > chinese.confidence);
+        assert!(
+            (chinese.confidence - 0.375).abs() < 1e-9,
+            "old inferred language must be demoted, got {}",
+            chinese.confidence
+        );
     }
 
     #[test]

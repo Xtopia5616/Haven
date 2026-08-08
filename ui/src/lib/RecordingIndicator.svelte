@@ -71,7 +71,7 @@
 					{#if processing}
 						处理中…转写
 					{:else}
-						{speaking ? '正在聆听…' : '请说…'}
+						{speaking ? '正在聆听…' : '请说话'}
 					{/if}
 				</span>
 				{#if onCancel && isRecording && !processing}

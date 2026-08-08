@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
+use super::file_search::FileSearchEngine;
 use crate::{Tool, ToolResult};
 
 /// Classify a file by its extension into a coarse kind used to route binary
@@ -478,7 +479,7 @@ async fn read_lines(
     })
 }
 
-pub struct FileOpTool {
+pub struct FilesTool {
     /// Shared LlmRouter. `None` means the router has not been installed yet
     /// (transient state during startup). When present, the `summary` and image
     /// understanding operations route through `router.chat(...)`: image
@@ -505,9 +506,11 @@ pub struct FileOpTool {
     vision_max_bytes: u64,
     /// Outer timeout (secs) for summarization / vision LLM calls.
     summary_timeout_secs: u64,
+    /// Search engine for the `search` operation (filename / content modes).
+    search: FileSearchEngine,
 }
 
-impl Default for FileOpTool {
+impl Default for FilesTool {
     fn default() -> Self {
         Self {
             summarizer: None,
@@ -520,11 +523,12 @@ impl Default for FileOpTool {
             max_byte_read: 16 * 1024 * 1024,
             vision_max_bytes: 8 * 1024 * 1024,
             summary_timeout_secs: 120,
+            search: FileSearchEngine::default(),
         }
     }
 }
 
-impl FileOpTool {
+impl FilesTool {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         summarizer: Option<Arc<LlmRouter>>,
@@ -537,6 +541,7 @@ impl FileOpTool {
         max_byte_read: u64,
         vision_max_bytes: u64,
         summary_timeout_secs: u64,
+        search: FileSearchEngine,
     ) -> Self {
         Self {
             summarizer,
@@ -549,23 +554,25 @@ impl FileOpTool {
             max_byte_read,
             vision_max_bytes,
             summary_timeout_secs,
+            search,
         }
     }
 }
 
 #[async_trait]
-impl Tool for FileOpTool {
+impl Tool for FilesTool {
     fn name(&self) -> String {
-        "file".into()
+        "files".into()
     }
     fn description(&self) -> String {
-        "Read, write, edit, copy, move, delete, list, or summarize files (text files; images via vision)".into()
+        "Read, write, edit, copy, move, delete, list, summarize, or search files (text files; images via vision)".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
             Some("delete") => RiskLevel::High,
             Some("edit") | Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
+            Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
             _ => RiskLevel::Low,
         }
     }
@@ -574,18 +581,25 @@ impl Tool for FileOpTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary"] },
-                "path": { "type": "string" },
+                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "What to do with the file (required): read, write, edit, copy, move, delete, list, summary, or search" },
+                "path": { "type": "string", "description": "File or directory path to operate on (required)" },
                 "destination": { "type": "string" },
                 "content": { "type": "string" },
                 "old_string": { "type": "string", "description": "Text to search for (edit operation)" },
                 "new_string": { "type": "string", "description": "Replacement text (edit operation)" },
                 "offset": { "type": "integer", "description": "Byte offset to start reading from (bytes mode)", "default": 0, "minimum": 0 },
                 "limit": { "type": "integer", "description": "Max bytes to read (bytes mode)", "default": self.max_read_chars, "minimum": 1, "maximum": self.max_byte_read },
-                "start_line": { "type": "integer", "description": "1-based first line to read or summarize (lines mode / summary)", "default": 1 },
-                "end_line": { "type": "integer", "description": "1-based last line to read or summarize (lines mode / summary). When omitted, start_line + {} lines are read.", "default": self.line_span },
+                "start_line": { "type": "integer", "description": "1-based first line to read, summarize, or search within (lines mode / summary / search content mode)", "default": 1 },
+                "end_line": { "type": "integer", "description": "1-based last line to read, summarize, or search within (lines mode / summary / search content mode). When omitted, start_line + {} lines are read.", "default": self.line_span },
                 "focus": { "type": "string", "description": "Optional focus/topic (summary operation, or image understanding in read operation)" },
-                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": self.summary_input_chars }
+                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": self.summary_input_chars },
+                "root": { "type": "string", "description": "Root directory to search from (search operation)" },
+                "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search. (search operation)" },
+                "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers) (search operation)" },
+                "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited. (search operation)", "default": 10 },
+                "max_results": { "type": "integer", "description": format!("Maximum results to return (capped at {}) (search operation)", self.search.max_results_cap), "default": 50 },
+                "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories (search operation)", "default": true },
+                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited. (search operation)", "default": self.search.max_file_size }
             },
             "required": ["operation", "path"]
         })
@@ -801,6 +815,7 @@ impl Tool for FileOpTool {
                 )
                 .await
             }
+            "search" => self.search.search(input, cancel).await,
             _ => anyhow::bail!("unknown file operation: {}", op),
         }
     }
@@ -1099,49 +1114,57 @@ mod tests {
 
     #[test]
     fn test_file_name() {
-        assert_eq!(FileOpTool::default().name(), "file");
+        assert_eq!(FilesTool::default().name(), "files");
     }
 
     #[test]
     fn test_file_description() {
-        assert!(FileOpTool::default().description().contains("edit"));
+        assert!(FilesTool::default().description().contains("edit"));
     }
 
     #[test]
     fn test_file_risk_level() {
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "delete"})),
+            FilesTool::default().risk_level(&json!({"operation": "delete"})),
             RiskLevel::High
         );
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "write"})),
+            FilesTool::default().risk_level(&json!({"operation": "write"})),
             RiskLevel::Medium
         );
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "edit"})),
+            FilesTool::default().risk_level(&json!({"operation": "edit"})),
             RiskLevel::Medium
         );
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "move"})),
+            FilesTool::default().risk_level(&json!({"operation": "move"})),
             RiskLevel::Medium
         );
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "copy"})),
+            FilesTool::default().risk_level(&json!({"operation": "copy"})),
             RiskLevel::Medium
         );
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "read"})),
+            FilesTool::default().risk_level(&json!({"operation": "read"})),
             RiskLevel::Low
         );
         assert_eq!(
-            FileOpTool::default().risk_level(&json!({"operation": "list"})),
+            FilesTool::default().risk_level(&json!({"operation": "list"})),
             RiskLevel::Low
+        );
+        assert_eq!(
+            FilesTool::default().risk_level(&json!({"operation": "search"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            FilesTool::default().risk_level(&json!({"operation": "search", "mode": "content"})),
+            RiskLevel::Medium
         );
     }
 
     #[test]
     fn test_file_input_schema() {
-        let schema = FileOpTool::default().input_schema();
+        let schema = FilesTool::default().input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
@@ -1158,11 +1181,12 @@ mod tests {
         assert!(ops.contains(&"move"));
         assert!(ops.contains(&"delete"));
         assert!(ops.contains(&"list"));
+        assert!(ops.contains(&"search"));
     }
 
     #[test]
     fn test_file_read_schema_has_segmented_args() {
-        let schema = FileOpTool::default().input_schema();
+        let schema = FilesTool::default().input_schema();
         let props = &schema["properties"];
         assert!(props["offset"]["type"].as_str().is_some());
         assert!(props["limit"]["type"].as_str().is_some());
@@ -1186,7 +1210,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str}),
                 CancellationToken::new(),
@@ -1213,7 +1237,7 @@ mod tests {
         tokio::fs::write(&file, &content).await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str}),
                 CancellationToken::new(),
@@ -1248,7 +1272,7 @@ mod tests {
         tokio::fs::write(&file, &content).await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str}),
                 CancellationToken::new(),
@@ -1274,7 +1298,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str}),
                 CancellationToken::new(),
@@ -1294,7 +1318,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str, "offset": 5, "limit": 5}),
                 CancellationToken::new(),
@@ -1318,7 +1342,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str, "start_line": 2, "end_line": 4}),
                 CancellationToken::new(),
@@ -1344,7 +1368,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str, "start_line": 3}),
                 CancellationToken::new(),
@@ -1367,7 +1391,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str, "start_line": 1}),
                 CancellationToken::new(),
@@ -1394,7 +1418,7 @@ mod tests {
         tokio::fs::write(&file, &content).await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str, "start_line": 1}),
                 CancellationToken::new(),
@@ -1423,7 +1447,7 @@ mod tests {
         tokio::fs::write(&file, "hello world").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str}),
                 CancellationToken::new(),
@@ -1440,7 +1464,7 @@ mod tests {
         let file = tmp.path().join("output.txt");
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "write", "path": path_str, "content": "written content"}),
                 CancellationToken::new(),
@@ -1462,7 +1486,7 @@ mod tests {
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default().execute(
+        let result = FilesTool::default().execute(
                 json!({"operation": "edit", "path": path_str, "old_string": "world", "new_string": "there"}),
                 CancellationToken::new(),
             )
@@ -1481,7 +1505,7 @@ mod tests {
         tokio::fs::write(&file, "hello\nworld\n").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default().execute(
+        let result = FilesTool::default().execute(
                 json!({"operation": "edit", "path": path_str, "old_string": "nope", "new_string": "x"}),
                 CancellationToken::new(),
             )
@@ -1496,7 +1520,7 @@ mod tests {
         tokio::fs::write(&file, "foo\nfoo\n").await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
-        let result = FileOpTool::default().execute(
+        let result = FilesTool::default().execute(
                 json!({"operation": "edit", "path": path_str, "old_string": "foo", "new_string": "bar"}),
                 CancellationToken::new(),
             )
@@ -1519,7 +1543,7 @@ mod tests {
         let dst = tmp.path().join("dest.txt");
         tokio::fs::write(&src, "copy me").await.unwrap();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({
                     "operation": "copy",
@@ -1544,7 +1568,7 @@ mod tests {
         let dst = tmp.path().join("target.txt");
         tokio::fs::write(&src, "move me").await.unwrap();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({
                     "operation": "move",
@@ -1567,7 +1591,7 @@ mod tests {
         tokio::fs::write(&file, "delete me").await.unwrap();
         assert!(file.exists());
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "delete", "path": file.to_string_lossy()}),
                 CancellationToken::new(),
@@ -1589,7 +1613,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "list", "path": tmp.path().to_string_lossy()}),
                 CancellationToken::new(),
@@ -1605,7 +1629,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_execute_unknown() {
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(
                 json!({"operation": "unknown", "path": "file.txt"}),
                 CancellationToken::new(),
@@ -1618,7 +1642,7 @@ mod tests {
     async fn test_file_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = FileOpTool::default()
+        let result = FilesTool::default()
             .execute(json!({"operation": "read", "path": "file.txt"}), cancel)
             .await;
         assert!(result.is_err());

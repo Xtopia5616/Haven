@@ -37,14 +37,19 @@ impl ToolResult {
     }
 
     /// Plain-text summary of the result: the serialized output on success,
-    /// the error message on failure. On failure with an empty/absent error
-    /// (e.g. a shell command that exited non-zero without stderr), fall back
-    /// to the serialized output so the result is never an empty string —
+    /// the error message on failure. Plain-string outputs are returned as-is
+    /// (unquoted) so a tool returning "text" reads like text, not JSON; only
+    /// structured outputs are serialized. On failure with an empty/absent
+    /// error (e.g. a shell command that exited non-zero without stderr), fall
+    /// back to the serialized output so the result is never an empty string —
     /// an empty observation looks to the model and the chat like the tool
     /// never returned anything. Callers that need truncation apply it on top.
     pub fn summary_text(&self) -> String {
         if self.success {
-            serde_json::to_string(&self.output).unwrap_or_else(|_| "success".into())
+            match &self.output {
+                Value::String(s) => s.clone(),
+                _ => serde_json::to_string(&self.output).unwrap_or_else(|_| "success".into()),
+            }
         } else {
             match self.error.as_deref() {
                 Some(e) if !e.trim().is_empty() => e.to_string(),
@@ -143,12 +148,50 @@ pub trait Tool: Send + Sync {
         let compiled = jsonschema::JSONSchema::compile(&schema)
             .map_err(|e| anyhow::anyhow!("invalid tool schema for '{}': {}", self.name(), e))?;
         if let Err(errors) = compiled.validate(input) {
-            let msgs: Vec<String> = errors.map(|e| e.to_string()).collect();
-            anyhow::bail!(
-                "input validation failed for '{}': {}",
-                self.name(),
-                msgs.join("; ")
-            );
+            // Make the most common mistakes loud: missing required fields are
+            // listed up front (with allowed enum values when the schema
+            // declares them) instead of being buried in generic messages like
+            // "required property 'operation' was not present".
+            let mut missing: Vec<String> = Vec::new();
+            let mut rest: Vec<String> = Vec::new();
+            for e in errors {
+                if let jsonschema::error::ValidationErrorKind::Required { property } = &e.kind
+                    && let Some(s) = property.as_str()
+                {
+                    missing.push(s.to_string());
+                    continue;
+                }
+                rest.push(e.to_string());
+            }
+            let mut msg = format!("input validation failed for '{}'", self.name());
+            if !missing.is_empty() {
+                msg.push_str(&format!(
+                    ": MISSING REQUIRED FIELD(S): {}",
+                    missing.join(", ")
+                ));
+                if let Some(props) = schema.get("properties") {
+                    let hints: Vec<String> = missing
+                        .iter()
+                        .filter_map(|m| {
+                            let prop = props.get(m)?;
+                            let vals = prop.get("enum")?.as_array()?;
+                            let vals: Vec<&str> = vals.iter().filter_map(|v| v.as_str()).collect();
+                            if vals.is_empty() {
+                                None
+                            } else {
+                                Some(format!("{m} must be one of: {}", vals.join(", ")))
+                            }
+                        })
+                        .collect();
+                    if !hints.is_empty() {
+                        msg.push_str(&format!("\nAllowed values: {}", hints.join("; ")));
+                    }
+                }
+            }
+            if !rest.is_empty() {
+                msg.push_str(&format!("\nOther: {}", rest.join("; ")));
+            }
+            anyhow::bail!(msg);
         }
         Ok(())
     }
@@ -367,6 +410,13 @@ mod tests {
     fn test_tool_result_summary_text_success() {
         let result = ToolResult::ok(json!({"status": "done"}));
         assert_eq!(result.summary_text(), r#"{"status":"done"}"#);
+    }
+
+    #[test]
+    fn test_tool_result_summary_text_plain_string_unquoted() {
+        // A tool returning a plain string must read as text, not JSON-quoted.
+        let result = ToolResult::ok(json!("some plain text"));
+        assert_eq!(result.summary_text(), "some plain text");
     }
 
     #[test]
@@ -710,6 +760,35 @@ mod tests {
         let tool = SchemaMockTool;
         let result = tool.validate_input(&json!({"count": 5}));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_input_missing_required_message_lists_fields() {
+        let tool = SchemaMockTool;
+        let err = tool.validate_input(&json!({})).unwrap_err().to_string();
+        assert!(
+            err.contains("MISSING REQUIRED FIELD(S): name"),
+            "missing fields must be called out explicitly, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_input_enum_hint_included() {
+        // The file tool schema declares an enum on `operation`; a missing
+        // operation must surface the allowed values so the model can self-correct.
+        let tool = crate::builtin::file::FilesTool::default();
+        let err = tool
+            .validate_input(&json!({"path": "x.txt"}))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("operation"),
+            "operation must be named, got: {err}"
+        );
+        assert!(
+            err.contains("read, write, edit"),
+            "allowed operations should be listed, got: {err}"
+        );
     }
 
     #[test]

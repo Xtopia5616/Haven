@@ -130,6 +130,38 @@ describe('accumulateStreamChunk (thought)', () => {
 		expect(m[0].content).toBe('好的，我先查一下。今天20度。');
 		expect(m[0].streaming).toBe(true);
 	});
+
+	it('collapses segments when a cumulative echo follows a sentence split', () => {
+		// After a boundary the stream holds `A。` + `B`. A cumulative
+		// provider then echoes the FULL text `A。B。C` — comparing only
+		// against the last segment (`B`) would concatenate garbage
+		// (`BA。B。C`). All segments must collapse into one message.
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度');
+		const out = chunk(m, '好的。今天20度。适合出门');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度。适合出门',
+			streaming: true,
+			segmented: false,
+		});
+	});
+
+	it('collapses segments when a cumulative echo resumes a finalized split', () => {
+		// The split segment was finalized (streaming: false, segmented:
+		// true); the echo reopens it in place with the full text.
+		let m = chunk([], '好的。');
+		m = chunk(m, '今天20度。');
+		const out = chunk(m, '好的。今天20度。适合出门。');
+		expect(out).toHaveLength(1);
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '好的。今天20度。适合出门。',
+			streaming: true,
+			segmented: false,
+		});
+	});
 });
 
 describe('accumulateStreamChunk (reasoning)', () => {
@@ -146,6 +178,27 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
 		m = m.map((x) => ({ ...x, streaming: false }));
 		const out = accumulateStreamChunk(m, { ...base, delta: '多余' });
+		expect(out).toBe(m);
+	});
+
+	it('accepts the authoritative reconciliation delta after finalization', () => {
+		// The backend emits the COMPLETE reasoning text as a final chunk
+		// after the stream is finalized (batcher-flush reconciliation).
+		// It must replace the content, not be dropped — otherwise dropped
+		// trailing characters are lost forever.
+		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...base, delta: '思考了一部分' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, { ...base, delta: '思考了一部分，还有更多' });
+		expect(out).toHaveLength(1);
+		expect(out[0].content).toBe('思考了一部分，还有更多');
+	});
+
+	it('rejects a stale incremental delta after finalization', () => {
+		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, { ...base, delta: '不匹配的增量' });
 		expect(out).toBe(m);
 	});
 });
@@ -208,6 +261,37 @@ describe('applyThoughtSnap', () => {
 		const out = snap([reasoning], '回答');
 		expect(out.find((x) => x.id === REASONING_ID)).toMatchObject({ streaming: false });
 		expect(out.find((x) => x.id === STEP_ID)).toMatchObject({ content: '回答' });
+	});
+
+	it('moves a trailing reasoning block in front of the merged thought', () => {
+		// Interleaved providers may stream reasoning AFTER the thought
+		// segments (text first). The snap must not leave the final order
+		// as [answer, Thinking...].
+		let m = chunk([], '回答文字。');
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '迟到的推理',
+			streaming: true,
+		};
+		m = [...m, reasoning];
+		const out = snap(m, '回答文字。');
+		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+		expect(out[0]).toMatchObject({ content: '迟到的推理', streaming: false });
+		expect(out[1]).toMatchObject({ content: '回答文字。', streaming: false });
+	});
+
+	it('keeps a leading reasoning block in front of the merged thought', () => {
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '先推理',
+			streaming: true,
+		};
+		let m = [reasoning];
+		m = chunk(m, '回答文字。');
+		const out = snap(m, '回答文字。');
+		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
 	});
 });
 

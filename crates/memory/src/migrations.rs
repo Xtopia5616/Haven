@@ -41,7 +41,10 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         silent INTEGER NOT NULL DEFAULT 0
     )",
-    "CREATE TABLE IF NOT EXISTS preferences (
+    // Internal key-value store (fact-extraction cursors, etc.). User-facing
+    // preferences live in the `facts` table (tag `preference`) — the old
+    // `preferences` table was removed without a data migration.
+    "CREATE TABLE IF NOT EXISTS kv_store (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -249,12 +252,6 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch("DROP TABLE IF EXISTS hindsight_store")?;
     conn.execute_batch("DROP INDEX IF EXISTS idx_hindsight_key")?;
     conn.execute_batch("DROP INDEX IF EXISTS idx_hindsight_session")?;
-
-    // Compaction summaries were only ever written, never read: the DB keeps
-    // full message history and the in-memory compactor reports via events.
-    // Dropped idempotently on every open (fresh DBs create it in MIGRATIONS
-    // and immediately drop it here).
-    conn.execute_batch("DROP TABLE IF EXISTS compaction_entries")?;
 
     // Scratch table for in-flight streamed text (crash/stop partial-reply
     // recovery). Ensured on every open, independent of user_version, so
@@ -478,6 +475,8 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             )?;
 
             // 3. tasks: drop session_id, express branching via parent_task_id
+
+            // 3. tasks: drop session_id, express branching via parent_task_id
             //    (old sessions.parent_id → the task owning the parent session).
             //    status is normalized here too: pre-cancelled-fix databases
             //    can still hold 'cancelled' rows, which the rebuilt CHECK
@@ -527,6 +526,13 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         }
         result?;
     }
+
+    // Compaction summaries were only ever written, never read: the DB keeps
+    // full message history and the in-memory compactor reports via events.
+    // Dropped idempotently on every open — AFTER the legacy sessions-merge
+    // rebuild above (which still recreates the table for old DBs), and
+    // unconditionally (fresh DBs create it in MIGRATIONS and drop it here).
+    conn.execute_batch("DROP TABLE IF EXISTS compaction_entries")?;
 
     // §M8: voice flag on the messages table — marks user messages that came
     // from voice transcription so the UI can render the mic style after
@@ -651,6 +657,26 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         )?;
     }
 
+    // Internal kv_store (fact-extraction cursors, ...): the CREATE lives in
+    // MIGRATIONS at the index the `preferences` table used to occupy, but the
+    // version-gated loop cannot be relied on — most existing databases carry
+    // a user_version (17) higher than the array length, so they would never
+    // re-run that index. Ensure the table here, same as reminders/task_usage.
+    let has_kv_store_table: bool = conn
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='kv_store'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    if !has_kv_store_table {
+        conn.execute_batch(
+            "CREATE TABLE kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )?;
+    }
+
     // Indexes for the merged schema (idempotent; also covers fresh databases).
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_messages_task ON messages(task_id);
@@ -751,6 +777,28 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         ")?;
         if fk_on {
             conn.execute_batch("PRAGMA foreign_keys=ON")?;
+        }
+    }
+
+    // Dead columns after the branch-feature removal and the compaction
+    // cleanup: `tasks.parent_task_id` (branching links, no consumers),
+    // `messages.parent_message_id` (never written), and
+    // `messages.is_compacted`/`compaction_id` (never set). Dropped
+    // idempotently after every rebuild that might recreate them; runs on
+    // bundled SQLite ≥3.45 (ALTER TABLE DROP COLUMN needs 3.35+).
+    for (table, col) in [
+        ("messages", "parent_message_id"),
+        ("messages", "is_compacted"),
+        ("messages", "compaction_id"),
+        ("tasks", "parent_task_id"),
+    ] {
+        let exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2")?
+            .query_row(rusqlite::params![table, col], |r| r.get::<_, i32>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        if exists {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {col}"), [])?;
         }
     }
 
@@ -886,7 +934,7 @@ mod tests {
             "memory_embeddings",
             "messages",
             "partial_messages",
-            "preferences",
+            "kv_store",
             "reminders",
             "task_steps",
             "task_usage",
@@ -1018,6 +1066,26 @@ mod tests {
         assert_eq!(tables_after.len(), table_count_before);
     }
 
+    /// kv_store replaced `preferences` at an early array index; databases
+    /// whose user_version already passed that index (17 > array length) must
+    /// still get the table via the unconditional ensure block.
+    #[test]
+    fn run_migrations_repairs_kv_store_when_version_ahead() {
+        let conn = create_test_conn();
+        run_migrations(&conn).unwrap();
+        assert!(get_tables(&conn).contains(&"kv_store".to_string()));
+
+        // Simulate the stale state: table gone, user_version ahead of the
+        // array index where the CREATE lives.
+        conn.execute_batch("DROP TABLE kv_store; PRAGMA user_version = 17;")
+            .unwrap();
+        assert!(!get_tables(&conn).contains(&"kv_store".to_string()));
+
+        // A fresh open must recreate the table (version-gated loop skips it).
+        run_migrations(&conn).unwrap();
+        assert!(get_tables(&conn).contains(&"kv_store".to_string()));
+    }
+
     #[test]
     fn test_legacy_notify_reminders_backfilled_to_tool() {
         let conn = create_test_conn();
@@ -1063,25 +1131,21 @@ mod tests {
     }
 
     #[test]
-    fn test_compaction_columns_exist_after_migration() {
+    fn test_compaction_columns_dropped_after_migration() {
         let conn = create_test_conn();
         run_migrations(&conn).unwrap();
-        let has_is_compacted: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='is_compacted'")
-            .unwrap()
-            .query_row([], |r| r.get::<_, i32>(0))
-            .map(|c| c > 0)
-            .unwrap_or(false);
-        assert!(has_is_compacted);
-        let has_compaction_id: bool = conn
-            .prepare(
-                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='compaction_id'",
-            )
-            .unwrap()
-            .query_row([], |r| r.get::<_, i32>(0))
-            .map(|c| c > 0)
-            .unwrap_or(false);
-        assert!(has_compaction_id);
+        for col in &["is_compacted", "compaction_id"] {
+            let has: bool = conn
+                .prepare(&format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='{}'",
+                    col
+                ))
+                .unwrap()
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            assert!(!has, "column '{}' should be dropped", col);
+        }
     }
 
     #[test]
@@ -1109,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parent_task_id_column_exists_after_migration() {
+    fn test_parent_task_id_column_dropped_after_migration() {
         let conn = create_test_conn();
         run_migrations(&conn).unwrap();
         let has: bool = conn
@@ -1118,7 +1182,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i32>(0))
             .map(|c| c > 0)
             .unwrap_or(false);
-        assert!(has);
+        assert!(!has);
     }
 
     #[test]
@@ -1237,7 +1301,8 @@ mod tests {
             "compaction_entries table should be dropped"
         );
 
-        // tasks no longer carry session_id; parent_task_id is NULL here.
+        // tasks no longer carry session_id; the branch-link column
+        // (parent_task_id) is dropped after conversion.
         let has_session_col: i32 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='session_id'",
@@ -1246,14 +1311,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_session_col, 0);
-        let parent: Option<String> = conn
+        let has_parent_col: i32 = conn
             .query_row(
-                "SELECT parent_task_id FROM tasks WHERE id = 't1'",
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='parent_task_id'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(parent.is_none());
+        assert_eq!(has_parent_col, 0, "parent_task_id column should be dropped");
 
         // The created_at index survives the table rebuild (it was dropped
         // with the old messages table and must be recreated).
@@ -1286,15 +1351,16 @@ mod tests {
         conn.execute_batch("PRAGMA user_version = 0").unwrap();
         run_migrations(&conn).unwrap();
 
-        // t2's parent_task_id points at t1 (the owner of the parent session).
-        let parent: String = conn
+        // The branch-link column is dropped after conversion (the branching
+        // feature was removed; nothing consumes the link anymore).
+        let has_parent_col: i32 = conn
             .query_row(
-                "SELECT parent_task_id FROM tasks WHERE id = 't2'",
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='parent_task_id'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(parent, "t1");
+        assert_eq!(has_parent_col, 0, "parent_task_id column should be dropped");
         // Messages routed to their own tasks.
         let t1_msgs: i32 = conn
             .query_row(

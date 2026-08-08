@@ -1,28 +1,27 @@
-use async_trait::async_trait;
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkMatch};
-use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::{ToolResult};
 
-pub struct FileSearchTool {
+/// Search engine used by the `files` tool's `search` operation.
+pub struct FileSearchEngine {
     /// Snippet chars around each content-mode match.
-    snippet_chars: usize,
+    pub(crate) snippet_chars: usize,
     /// Upper clamp for `max_results` — untrusted input cannot disable the cap.
-    max_results_cap: usize,
+    pub(crate) max_results_cap: usize,
     /// Content-mode skip cap: files larger than this are not searched (0 = unlimited).
-    max_file_size: u64,
+    pub(crate) max_file_size: u64,
     /// Line-range search window cap in bytes. Ranges wider than this fall
     /// back to a whole-file scan with sink-side line filtering.
-    max_window_bytes: u64,
+    pub(crate) max_window_bytes: u64,
 }
 
-impl Default for FileSearchTool {
+impl Default for FileSearchEngine {
     fn default() -> Self {
         Self {
             snippet_chars: 200,
@@ -33,7 +32,7 @@ impl Default for FileSearchTool {
     }
 }
 
-impl FileSearchTool {
+impl FileSearchEngine {
     pub fn new(
         snippet_chars: usize,
         max_results_cap: usize,
@@ -47,43 +46,12 @@ impl FileSearchTool {
             max_window_bytes,
         }
     }
-}
 
-#[async_trait]
-impl Tool for FileSearchTool {
-    fn name(&self) -> String {
-        "file_search".into()
-    }
-    fn description(&self) -> String {
-        "Search local files by name pattern (glob/regex) or full-text content".into()
-    }
-
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        match input["mode"].as_str() {
-            Some("content") => RiskLevel::Medium,
-            _ => RiskLevel::Low,
-        }
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "root": { "type": "string", "description": "Root directory to search from" },
-                "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search." },
-                "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers)" },
-                "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited.", "default": 10 },
-                "max_results": { "type": "integer", "description": format!("Maximum results to return (capped at {})", self.max_results_cap), "default": 50 },
-                "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories", "default": true },
-                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited.", "default": self.max_file_size },
-                "start_line": { "type": "integer", "description": "Content mode: 1-based first line to search within each file (overrides byte scanning)", "default": 1 },
-                "end_line": { "type": "integer", "description": "Content mode: 1-based last line to search within each file", "default": 0 }
-            },
-            "required": ["root", "pattern"]
-        })
-    }
-
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+    pub async fn search(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
@@ -631,25 +599,7 @@ fn glob_to_regex(glob: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
     use serde_json::json;
-
-    #[test]
-    fn test_search_tool_name() {
-        assert_eq!(FileSearchTool::default().name(), "file_search");
-    }
-
-    #[test]
-    fn test_search_tool_risk_level() {
-        assert_eq!(
-            FileSearchTool::default().risk_level(&json!({"mode": "filename"})),
-            RiskLevel::Low
-        );
-        assert_eq!(
-            FileSearchTool::default().risk_level(&json!({"mode": "content"})),
-            RiskLevel::Medium
-        );
-    }
 
     #[test]
     fn test_glob_to_regex() {
@@ -708,8 +658,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().to_string_lossy(),
                     "pattern": "alpha",
@@ -753,8 +703,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().join("log.txt").to_string_lossy(),
                     "pattern": "needle",
@@ -786,8 +736,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().join("wide.txt").to_string_lossy(),
                     "pattern": "found",
@@ -815,8 +765,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().join("short.txt").to_string_lossy(),
                     "pattern": "one",
@@ -842,8 +792,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().join("many.txt").to_string_lossy(),
                     "pattern": "hit",
@@ -874,8 +824,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().to_string_lossy(),
                     "pattern": "error\\s+\\d{3}",
@@ -902,8 +852,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().to_string_lossy(),
                     "pattern": "foo(bar",
@@ -929,8 +879,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().to_string_lossy(),
                     "pattern": "needle",
@@ -956,8 +906,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().to_string_lossy(),
                     "pattern": "needle",
@@ -987,8 +937,8 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool::default()
-            .execute(
+        let result = FileSearchEngine::default()
+            .search(
                 json!({
                     "root": tmp.path().to_string_lossy(),
                     "pattern": "*.rs",

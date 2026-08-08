@@ -8,6 +8,18 @@ const FRAME_SIZE: usize = 480;
 const STATE_DIM: usize = 128;
 const ENERGY_THRESHOLD: f32 = 0.001;
 
+/// Root-mean-square energy of a frame.
+pub fn frame_energy(frame: &[f32]) -> f32 {
+    (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt()
+}
+
+/// Whether a frame carries enough energy to be worth running the model.
+/// Frames below [`ENERGY_THRESHOLD`] are treated as silence; this lets the
+/// recording loop skip the model round-trip for quiet audio (the common case).
+pub fn frame_has_energy(frame: &[f32]) -> bool {
+    frame_energy(frame) >= ENERGY_THRESHOLD
+}
+
 type Model = SimplePlan<TypedFact, Box<dyn TypedOp>, TypedModel>;
 
 /// Silero VAD inference engine. The bundled model is the **v5** variant,
@@ -46,8 +58,7 @@ impl VadEngine {
         if frame.len() < FRAME_SIZE {
             return 0.0;
         }
-        let energy: f32 = frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32;
-        if energy.sqrt() < ENERGY_THRESHOLD {
+        if !frame_has_energy(frame) {
             return 0.0;
         }
 

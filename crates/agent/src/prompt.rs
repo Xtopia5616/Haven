@@ -204,17 +204,8 @@ impl SystemPromptBuilder {
             }
         }
 
-        // Preferences (concise)
-        let mut preferences_section = String::new();
-        if let Ok(summary) = self.db.get_preference_summary()
-            && !summary.is_empty()
-        {
-            preferences_section.push_str("Preferences:");
-            for (key, value) in &summary {
-                preferences_section.push_str(&format!(" {}={}", key, value));
-            }
-            preferences_section.push('\n');
-        }
+        // Preferences are facts (tag "preference") and flow through the facts
+        // section above, so no separate section is built here.
 
         let mut context_section = String::new();
         if !conversation_history.is_empty() {
@@ -264,7 +255,6 @@ impl SystemPromptBuilder {
                 ("skills", &skills_section),
                 ("mcps", &mcp_section),
                 ("facts", &facts_section),
-                ("preferences", &preferences_section),
                 ("task", task_description),
                 ("context", &context_section),
                 ("history", &history_section),

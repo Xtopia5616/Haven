@@ -7,8 +7,11 @@ use thiserror::Error;
 
 /// Convert provider-neutral canonical messages into provider-specific LlmMessage.
 /// Called at the LLM invocation boundary — the Agent internally uses CanonicalMessage.
-pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
-    msgs.into_iter()
+/// Takes a slice so the caller keeps ownership of its canonical (retries reuse the
+/// converted messages instead of re-cloning the whole canonical and re-serializing
+/// every tool-call argument on each attempt).
+pub fn convert_to_llm(msgs: &[CanonicalMessage]) -> Vec<LlmMessage> {
+    msgs.iter()
         .map(|m| {
             let role = match m.role {
                 CanonicalRole::System => LlmRole::System,
@@ -18,9 +21,9 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
             };
             LlmMessage {
                 role,
-                content: m.content,
-                tool_call_id: m.tool_call_id,
-                tool_calls: m.tool_calls.map(|calls| {
+                content: m.content.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+                tool_calls: m.tool_calls.clone().map(|calls| {
                     calls
                         .into_iter()
                         .map(|tc| ToolCall {
@@ -30,8 +33,8 @@ pub fn convert_to_llm(msgs: Vec<CanonicalMessage>) -> Vec<LlmMessage> {
                         })
                         .collect()
                 }),
-                reasoning: m.reasoning,
-                web_search_calls: m.web_search_calls,
+                reasoning: m.reasoning.clone(),
+                web_search_calls: m.web_search_calls.clone(),
             }
         })
         .collect()
@@ -603,11 +606,10 @@ mod tests {
             content: vec![ContentPart::Text("system prompt".into())],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
-        let msgs = convert_to_llm(vec![cm]);
+        let msgs = convert_to_llm(&[cm]);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].role.to_string(), "system");
     }
@@ -619,11 +621,10 @@ mod tests {
             content: vec![ContentPart::text("hi")],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
-        let msgs = convert_to_llm(vec![cm]);
+        let msgs = convert_to_llm(&[cm]);
         assert_eq!(msgs[0].role.to_string(), "user");
     }
 
@@ -634,11 +635,10 @@ mod tests {
             content: vec![ContentPart::Text("tool result".into())],
             tool_calls: None,
             tool_call_id: Some("tid".into()),
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
-        let msgs = convert_to_llm(vec![cm]);
+        let msgs = convert_to_llm(&[cm]);
         assert_eq!(msgs[0].role.to_string(), "tool");
         assert_eq!(msgs[0].tool_call_id.as_deref(), Some("tid"));
     }
@@ -650,11 +650,10 @@ mod tests {
             content: vec![ContentPart::text("answer")],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
-        let msgs = convert_to_llm(vec![cm]);
+        let msgs = convert_to_llm(&[cm]);
         assert_eq!(msgs[0].role.to_string(), "assistant");
     }
 
@@ -668,11 +667,10 @@ mod tests {
             ],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         };
-        let msgs = convert_to_llm(vec![cm]);
+        let msgs = convert_to_llm(&[cm]);
         assert_eq!(msgs[0].content.len(), 2);
     }
 
@@ -684,7 +682,6 @@ mod tests {
                 content: vec![ContentPart::Text("prompt".into())],
                 tool_calls: None,
                 tool_call_id: None,
-                parent_message_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
@@ -693,12 +690,11 @@ mod tests {
                 content: vec![ContentPart::text("question")],
                 tool_calls: None,
                 tool_call_id: None,
-                parent_message_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
         ];
-        let msgs = convert_to_llm(cms);
+        let msgs = convert_to_llm(&cms);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role.to_string(), "system");
         assert_eq!(msgs[1].role.to_string(), "user");

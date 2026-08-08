@@ -7,6 +7,7 @@ pub mod file;
 pub mod file_search;
 pub mod input;
 pub mod job_status;
+pub mod jobs;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod network;
@@ -31,7 +32,7 @@ use crate::mcp::McpManager;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 
-pub use facts::FactsSearchTool;
+pub use facts::FactsTool;
 pub use reminder::{ReminderCenter, ReminderFired, ReminderMode, ReminderTool};
 pub use self_tool::{SelfTool, SelfToolContext};
 
@@ -66,9 +67,9 @@ pub async fn register_builtin_tools(
 ) {
     tools.push(Arc::new(audio::AudioTool));
     tools.push(Arc::new(ask::AskTool));
-    tools.push(Arc::new(file::FileOpTool::new(
+    tools.push(Arc::new(file::FilesTool::new(
         router,
-        tool_output_cap(settings, "file", limits.max_tool_output_chars),
+        tool_output_cap(settings, "files", limits.max_tool_output_chars),
         limits.file_read_max_chars,
         limits.file_line_span,
         limits.file_max_line_chars,
@@ -77,6 +78,12 @@ pub async fn register_builtin_tools(
         limits.file_max_byte_read,
         limits.file_vision_max_bytes,
         limits.file_summary_timeout_secs,
+        file_search::FileSearchEngine::new(
+            limits.search_snippet_chars,
+            limits.search_max_results,
+            limits.search_max_file_size_bytes,
+            limits.search_window_bytes,
+        ),
     )));
     tools.push(Arc::new(process::ProcessTool {
         max_output_chars: tool_output_cap(settings, "process", limits.max_tool_output_chars),
@@ -93,6 +100,9 @@ pub async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "shell", limits.max_tool_output_chars),
     }));
     tools.push(Arc::new(job_status::JobStatusTool {
+        jobs: background_jobs.clone(),
+    }));
+    tools.push(Arc::new(jobs::JobsTool {
         jobs: background_jobs,
     }));
     tools.push(Arc::new(input::InputTool));
@@ -109,12 +119,6 @@ pub async fn register_builtin_tools(
         max_body_bytes: limits.network_max_body_bytes,
     }));
     tools.push(Arc::new(notify::NotifyTool));
-    tools.push(Arc::new(file_search::FileSearchTool::new(
-        limits.search_snippet_chars,
-        limits.search_max_results,
-        limits.search_max_file_size_bytes,
-        limits.search_window_bytes,
-    )));
     tools.push(Arc::new(power::PowerTool));
     tools.push(Arc::new(load_skill::LoadSkillTool {
         skills_engine: skills_engine.clone(),
@@ -127,7 +131,7 @@ pub async fn register_builtin_tools(
     if let Some(ctx) = self_context {
         // Facts memory needs the DB; like SelfTool it only registers once the
         // desktop shell wires the app context (headless builds skip it).
-        tools.push(Arc::new(facts::FactsSearchTool::new(ctx.db.clone())));
+        tools.push(Arc::new(facts::FactsTool::new(ctx.db.clone())));
         tools.push(Arc::new(self_tool::SelfTool::new(
             ctx,
             skills_engine.clone(),
@@ -160,7 +164,7 @@ mod tests {
     #[test]
     fn tool_output_cap_falls_back_to_global_default() {
         assert_eq!(tool_output_cap(&HashMap::new(), "shell", 20_000), 20_000);
-        assert_eq!(tool_output_cap(&HashMap::new(), "file", 5_000), 5_000);
+        assert_eq!(tool_output_cap(&HashMap::new(), "files", 5_000), 5_000);
     }
 
     #[test]
@@ -168,7 +172,7 @@ mod tests {
         let settings = settings_with("shell", Some(1_000));
         assert_eq!(tool_output_cap(&settings, "shell", 20_000), 1_000);
         // Tools without a settings entry still get the global default.
-        assert_eq!(tool_output_cap(&settings, "file", 20_000), 20_000);
+        assert_eq!(tool_output_cap(&settings, "files", 20_000), 20_000);
     }
 
     #[test]

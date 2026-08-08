@@ -220,6 +220,12 @@ impl GeminiAdapter {
     fn convert_contents(msgs: Vec<LlmMessage>) -> (Vec<GeminiContent>, Option<Value>) {
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<GeminiContent> = Vec::new();
+        // Gemini's `functionResponse.name` must match the `functionCall.name`
+        // of the original call (call ids are generated locally and never sent
+        // to the API). Track the id -> function name mapping from assistant
+        // tool calls so tool results reference the function name.
+        let mut call_id_to_name: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for m in msgs {
             match m.role {
                 LlmRole::System => {
@@ -234,7 +240,11 @@ impl GeminiAdapter {
                         matches!(m.role, LlmRole::Tool) || m.tool_call_id.is_some();
                     let mut parts = Vec::new();
                     if is_tool_result {
-                        let name = m.tool_call_id.unwrap_or_default();
+                        let call_id = m.tool_call_id.unwrap_or_default();
+                        let name = call_id_to_name
+                            .get(&call_id)
+                            .cloned()
+                            .unwrap_or_else(|| call_id.clone());
                         let text = Self::text_content(&m.content);
                         parts.push(GeminiPart {
                             text: None,
@@ -258,8 +268,9 @@ impl GeminiAdapter {
                 }
                 LlmRole::Assistant => {
                     let mut parts = Self::content_to_parts(&m.content);
-                    if let Some(calls) = m.tool_calls {
+                    if let Some(calls) = &m.tool_calls {
                         for tc in calls {
+                            call_id_to_name.insert(tc.id.clone(), tc.name.clone());
                             let args = serde_json::from_str(&tc.arguments).unwrap_or_else(|_| {
                                 tracing::warn!(
                                     "tool call '{}' arguments are not valid JSON: {}",
@@ -835,6 +846,8 @@ mod tests {
 
     #[test]
     fn convert_contents_tool_result_function_response() {
+        // Without a preceding assistant declaration the call id is the only
+        // name available; use it as the fallback.
         let msgs = vec![LlmMessage {
             role: LlmRole::Tool,
             content: vec![ContentPart::text("result body")],
@@ -849,6 +862,90 @@ mod tests {
         let fr = contents[0].parts[0].function_response.as_ref().unwrap();
         assert_eq!(fr["name"], "call_1");
         assert_eq!(fr["response"]["result"], "result body");
+    }
+
+    #[test]
+    fn convert_contents_tool_result_uses_function_name_of_matching_call() {
+        // Gemini requires functionResponse.name to match the original
+        // functionCall.name; the local call id (call_N) must never leak
+        // into the response name. Build the assistant declaration first,
+        // then the tool result referencing the same call id.
+        let msgs = vec![
+            LlmMessage {
+                role: LlmRole::Assistant,
+                content: vec![ContentPart::text("checking")],
+                tool_call_id: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_0".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"/tmp"}"#.into(),
+                }]),
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            },
+            LlmMessage {
+                role: LlmRole::Tool,
+                content: vec![ContentPart::text("file contents")],
+                tool_call_id: Some("call_0".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            },
+        ];
+        let (contents, _) = GeminiAdapter::convert_contents(msgs);
+        assert_eq!(contents.len(), 2);
+        let fr = contents[1].parts[0].function_response.as_ref().unwrap();
+        assert_eq!(fr["name"], "read_file");
+        assert_eq!(fr["response"]["result"], "file contents");
+        // The assistant's functionCall keeps the function name (never the id).
+        let fc = contents[0].parts[1].function_call.as_ref().unwrap();
+        assert_eq!(fc["name"], "read_file");
+    }
+
+    #[test]
+    fn convert_contents_multiple_tool_results_map_their_own_call_names() {
+        let msgs = vec![
+            LlmMessage {
+                role: LlmRole::Assistant,
+                content: vec![ContentPart::text("doing")],
+                tool_call_id: None,
+                tool_calls: Some(vec![
+                    ToolCall {
+                        id: "c1".into(),
+                        name: "shell".into(),
+                        arguments: "{}".into(),
+                    },
+                    ToolCall {
+                        id: "c2".into(),
+                        name: "ask".into(),
+                        arguments: "{}".into(),
+                    },
+                ]),
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            },
+            LlmMessage {
+                role: LlmRole::Tool,
+                content: vec![ContentPart::text("out1")],
+                tool_call_id: Some("c1".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            },
+            LlmMessage {
+                role: LlmRole::Tool,
+                content: vec![ContentPart::text("out2")],
+                tool_call_id: Some("c2".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            },
+        ];
+        let (contents, _) = GeminiAdapter::convert_contents(msgs);
+        let fr1 = contents[1].parts[0].function_response.as_ref().unwrap();
+        let fr2 = contents[2].parts[0].function_response.as_ref().unwrap();
+        assert_eq!(fr1["name"], "shell");
+        assert_eq!(fr2["name"], "ask");
     }
 
     #[test]

@@ -241,12 +241,12 @@ describe('ChatBubble', () => {
 					mode: 'filename',
 				}),
 				type: 'tool',
-				toolName: 'file_search',
+				toolName: 'files',
 			}),
 		);
-		expect(screen.getByText('▶ Calling file_search')).toBeTruthy();
+		expect(screen.getByText('▶ Calling files')).toBeTruthy();
 		expect(document.querySelector('.tool-card')).toBeTruthy();
-		expect(screen.getByText('文件搜索')).toBeTruthy();
+		expect(screen.getByText('文件与搜索')).toBeTruthy();
 		expect(screen.getByText('C:\\a.rs')).toBeTruthy();
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});

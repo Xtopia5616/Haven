@@ -195,7 +195,7 @@ impl SttClient for LlmSttAdapter {
         // applies as an overall deadline.
         let resp = match self
             .router
-            .chat_stream_with_tools_aggregated(role, messages, Vec::new(), |_| {})
+            .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
             .await
         {
             Ok(r) => r,

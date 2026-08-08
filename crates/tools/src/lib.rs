@@ -490,11 +490,12 @@ impl ToolsManager {
 
         // The reminder tool needs the scheduling task id to support `continue`
         // (resume that task) and `tool` (run with the task's per-task tool
-        // context) modes. It is injected privately here — after the LLM-facing
-        // input was captured by the caller — so it never reaches the tool
-        // schema, the step history, or the LLM.
+        // context) modes, and the jobs tool needs it to scope the job board
+        // to the current task. The id is injected privately here — after the
+        // LLM-facing input was captured by the caller — so it never reaches
+        // the tool schema, the step history, or the LLM.
         let mut exec_input = input;
-        if tool_name == "reminder"
+        if (tool_name == "reminder" || tool_name == "jobs")
             && let Some(tid) = task_id
             && let Some(obj) = exec_input.as_object_mut()
         {
@@ -542,6 +543,17 @@ impl ToolsManager {
                 }
                 Err(e) => {
                     self.tool_circuits.record_failure(tool_name);
+                    // Long-running shell commands: on timeout, hand the
+                    // command to the background job registry instead of
+                    // failing the step, so the task can continue and pick
+                    // the result up later (auto-pushed on completion).
+                    if tool_name == "shell"
+                        && !cancel.is_cancelled()
+                        && is_tool_timeout(&e)
+                        && let Ok(result) = self.shell_to_background(&exec_input).await
+                    {
+                        return Ok(result);
+                    }
                     return Err(e);
                 }
             }
@@ -552,6 +564,37 @@ impl ToolsManager {
 
     pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
         &self.tool_circuits
+    }
+
+    /// Re-run a timed-out foreground shell command as a background job so
+    /// the task is not blocked by long-running work (git clone, npm install,
+    /// build scripts). Uses the same job registry as `shell background: true`,
+    /// so the result is pushed back to the task automatically on completion.
+    async fn shell_to_background(&self, input: &Value) -> anyhow::Result<ToolResult> {
+        let cmd = input["command"].as_str().unwrap_or("");
+        if cmd.trim().is_empty() {
+            anyhow::bail!("command is required");
+        }
+        #[cfg(windows)]
+        let shell = input["shell"].as_str().unwrap_or("powershell");
+        #[cfg(not(windows))]
+        let shell = input["shell"].as_str().unwrap_or("sh");
+        let max_chars = self.context_limits.read().await.max_tool_output_chars;
+        let cwd = input["cwd"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from);
+        let job_id = self
+            .background_jobs
+            .spawn_shell(cmd, shell, max_chars, cwd)
+            .await?;
+        Ok(ToolResult::ok(serde_json::json!({
+            "background": true,
+            "job_id": job_id,
+            "shell": shell,
+            "status": "running",
+            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this job's result.",
+        })))
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
@@ -579,6 +622,11 @@ fn is_retryable_tool_error(err: &anyhow::Error) -> bool {
         || msg.contains("connection refused")
         || msg.contains("connection reset")
         || msg.contains("eof")
+}
+
+/// Whether a tool call failed because its time budget ran out.
+fn is_tool_timeout(err: &anyhow::Error) -> bool {
+    err.to_string().to_lowercase().contains("timed out")
 }
 
 #[cfg(test)]
@@ -640,7 +688,7 @@ mod tests {
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
 
-        let file_tool = mgr.get_tool("file").await;
+        let file_tool = mgr.get_tool("files").await;
         assert!(file_tool.is_some());
 
         let process_tool = mgr.get_tool("process").await;
@@ -658,10 +706,10 @@ mod tests {
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
 
-        // Disable the `file` tool.
+        // Disable the `files` tool.
         let mut settings = HashMap::new();
         settings.insert(
-            "file".into(),
+            "files".into(),
             ToolConfig {
                 enabled: false,
                 ..Default::default()
@@ -670,21 +718,21 @@ mod tests {
         mgr.set_tool_settings(settings).await;
 
         // Excluded from the agent-facing registry...
-        assert!(mgr.get_tool("file").await.is_none());
+        assert!(mgr.get_tool("files").await.is_none());
         let schemas = mgr.registry.list_schemas().await;
-        assert!(!schemas.iter().any(|s| s["name"].as_str() == Some("file")));
+        assert!(!schemas.iter().any(|s| s["name"].as_str() == Some("files")));
 
         // ...still listed for the UI with enabled = false...
         let all = mgr.list_builtin_tools().await;
         let file = all
             .iter()
-            .find(|s| s["name"].as_str() == Some("file"))
+            .find(|s| s["name"].as_str() == Some("files"))
             .unwrap();
         assert_eq!(file["enabled"].as_bool(), Some(false));
 
         // ...and execution is blocked.
         let result = mgr
-            .execute_tool(None, "file", json!({}), CancellationToken::new())
+            .execute_tool(None, "files", json!({}), CancellationToken::new())
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("disabled"));
@@ -702,7 +750,7 @@ mod tests {
         let result = mgr
             .execute_tool(
                 None,
-                "file",
+                "files",
                 json!({"operation": "read", "path": file.to_string_lossy()}),
                 CancellationToken::new(),
             )

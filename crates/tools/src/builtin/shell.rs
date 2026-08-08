@@ -30,11 +30,19 @@ impl Tool for ShellTool {
         "shell".into()
     }
     fn description(&self) -> String {
-        "Execute a shell command on the user's PC".into()
+        "Execute a shell command on the user's PC. Default shell on Windows: powershell (cmd is available via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. The executed shell is reported in the result's shell field. Commands that exceed the timeout are automatically moved to the background and keep running.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
         RiskLevel::High
+    }
+
+    /// Shell commands get a generous timeout (5 min) so long-running
+    /// foreground work (git clone, npm install, build scripts) has room to
+    /// finish; truly hung commands are moved to the background by the tools
+    /// manager on timeout instead of failing the step.
+    fn default_timeout_secs(&self) -> u64 {
+        300
     }
 
     fn input_schema(&self) -> Value {
@@ -46,9 +54,9 @@ impl Tool for ShellTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "Shell command to execute" },
-                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in" },
+                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: powershell on Windows, sh on POSIX). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately", "default": false },
+                "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately. The result is pushed back to you automatically when the job finishes; list all jobs with the jobs tool.", "default": false },
                 "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
             },
             "required": ["command"]
@@ -62,7 +70,7 @@ impl Tool for ShellTool {
         }
         let silent = input["silent"].as_bool().unwrap_or(false);
         #[cfg(windows)]
-        let shell = input["shell"].as_str().unwrap_or("cmd");
+        let shell = input["shell"].as_str().unwrap_or("powershell");
         #[cfg(not(windows))]
         let shell = input["shell"].as_str().unwrap_or("sh");
         let max_chars = self.max_output_chars;
@@ -76,14 +84,16 @@ impl Tool for ShellTool {
         }
 
         // Background mode: hand the command to the job registry and return
-        // immediately. The agent polls status with the returned job_id.
+        // immediately. The result is pushed back to the task automatically on
+        // completion; the agent can list all jobs with the `jobs` tool.
         if input["background"].as_bool().unwrap_or(false) {
             let job_id = self.jobs.spawn_shell(cmd, shell, max_chars, cwd).await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
                 "job_id": job_id,
+                "shell": shell,
                 "status": "running",
-                "hint": "The command is running in the background. Its output will be delivered back to you automatically when it finishes — no need to poll.",
+                "hint": "The command is running in the background. Its output is pushed back to you automatically when it finishes — no need to poll. Use the jobs tool to see all background jobs at once, or the status tool with the job_id to inspect this one.",
             })));
         }
 
@@ -145,10 +155,17 @@ impl Tool for ShellTool {
             }
             combined.push_str(&stderr);
         }
+        // Strip PowerShell's NativeCommandError / CLIXML formatting noise so
+        // the reported text carries the real output, not the wrapper.
+        combined = bg::sanitize_shell_output(&combined, shell);
 
         let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
         let truncated = stdout_overflow || stderr_overflow;
-        let mut output = serde_json::json!({"output": text});
+        let exit_code = status.code();
+        let mut output = serde_json::json!({"output": text, "shell": shell});
+        if let Some(code) = exit_code {
+            output["exit_code"] = serde_json::Value::from(code);
+        }
         if truncated {
             output["truncated"] = serde_json::Value::Bool(true);
         }
@@ -158,15 +175,46 @@ impl Tool for ShellTool {
             // Non-zero exit: report the failure. When the command produced no
             // stderr, fall back to the combined output so the result is never
             // an empty observation (the model would see a silent tool call).
+            // The error text is condensed (progress bars dropped, tail kept)
+            // so a multi-KB progress dump cannot hide the real error, and the
+            // exit code is stated up front. The full output is also written
+            // to a log file and the path attached, so the root cause is
+            // recoverable even when the condensed tail misses it. Finally a
+            // Windows-trap hint is appended when the error matches a common
+            // PowerShell/cmd pitfall (aliases, execution policy, `&&`, …).
             let err_text = if stderr.trim().is_empty() {
                 text.clone()
             } else {
                 stderr
             };
+            let err_text = bg::sanitize_shell_output(&err_text, shell);
+            let mut err_text = bg::summarize_error(&err_text, 2000);
+            let code_str = exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".into());
+            let log_path = bg::write_output_log(
+                "shell-logs",
+                &format!(
+                    "shell-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                ),
+                &combined,
+            );
+            let log_path = log_path.to_string_lossy().into_owned();
+            output["log_path"] = serde_json::Value::String(log_path.clone());
+            err_text = bg::append_windows_diagnostics(shell, cmd, &err_text);
+            err_text = format!(
+                "{}\n[full output: {}]",
+                err_text.trim_end(),
+                log_path
+            );
             Ok(ToolResult {
                 success: false,
                 output,
-                error: Some(err_text),
+                error: Some(format!("exit code {}:\n{}", code_str, err_text)),
                 truncated,
             })
         }
@@ -333,6 +381,54 @@ mod tests {
             "error should carry the stdout content when stderr is empty, got: {:?}",
             err
         );
+        assert!(
+            err.contains("exit code 42"),
+            "error should state the exit code, got: {:?}",
+            err
+        );
+        assert_eq!(result.output["exit_code"], 42);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_reports_shell_and_exit_code_on_success() {
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "echo hello", "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["shell"], "cmd");
+        assert_eq!(result.output["exit_code"], 0);
+        assert!(result.output["output"].as_str().unwrap().contains("hello"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_strips_native_command_error_noise() {
+        // A successful PowerShell command whose stderr carries PS error-record
+        // formatting must report the real message without the wrapper noise.
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "Write-Output ok; cmd /c \"echo noise 1>&2\"", "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.success,
+            "exit 0 with stderr is still a success: {:?}",
+            result.error
+        );
+        let out = result.output["output"].as_str().unwrap_or("");
+        assert!(
+            !out.contains("NativeCommandError"),
+            "wrapper noise must be stripped, got: {}",
+            out
+        );
+        assert!(out.contains("ok"), "got: {}", out);
     }
 
     #[cfg(windows)]

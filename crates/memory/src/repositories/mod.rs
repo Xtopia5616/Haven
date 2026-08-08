@@ -1,7 +1,7 @@
 pub mod facts;
+pub mod kv_store;
 pub mod messages;
 pub mod partials;
-pub mod preferences;
 pub mod reminders;
 pub mod task_steps;
 pub mod tasks;

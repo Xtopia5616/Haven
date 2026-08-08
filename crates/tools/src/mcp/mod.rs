@@ -260,11 +260,17 @@ pub struct McpServerSnapshot {
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<String>,
+    pub cwd: Option<String>,
     pub url: String,
     pub enabled: bool,
     pub status: McpClientStatus,
     pub tools: Vec<McpToolInfo>,
     pub last_error: Option<String>,
+    /// Handshake/tool-discovery diagnostics (protocol version mismatch,
+    /// connected-but-zero-tools, failed list_tools). Lets the UI and the
+    /// agent distinguish "the server has no tools" from "the client and the
+    /// server are incompatible".
+    pub diagnostic: Option<String>,
     pub last_seen_at: Option<i64>,
 }
 
@@ -639,6 +645,8 @@ pub struct McpClient {
     command: String,
     args: Vec<String>,
     env: Vec<String>,
+    /// Working directory the stdio server is spawned from (optional).
+    cwd: Option<String>,
     url: String,
     enabled: Arc<AtomicBool>,
     inner: Arc<Mutex<Option<McpClientInner>>>,
@@ -646,6 +654,8 @@ pub struct McpClient {
     next_id: AtomicU64,
     tools_cache: Arc<Mutex<Option<Vec<McpToolInfo>>>>,
     last_error: Arc<Mutex<Option<String>>>,
+    /// Handshake/tool-discovery diagnostics; see `McpServerSnapshot`.
+    last_diagnostic: Arc<Mutex<Option<String>>>,
     last_seen_at: Arc<Mutex<Option<i64>>>,
     reconnect_retries: Arc<Mutex<u32>>,
     cancel_token: Arc<Mutex<CancellationToken>>,
@@ -689,6 +699,92 @@ impl RateLimiter {
     }
 }
 
+/// Spawn an MCP stdio server, retrying Windows-friendly variants when the
+/// configured command cannot be spawned directly. On Windows, npm/npx-style
+/// commands are `.ps1` scripts whose bare name is not an executable
+/// (`program not found`), and `.ps1` files are blocked by the execution
+/// policy unless run via `powershell -ExecutionPolicy Bypass`. Variants
+/// tried, in order: the configured command itself, its `.cmd` wrapper, and
+/// (for .ps1) a powershell invocation. Non-Windows spawns never retry.
+fn spawn_mcp_child(
+    name: &str,
+    command: &str,
+    args: &[String],
+    build: &dyn Fn(&str, &[String]) -> Command,
+) -> std::io::Result<Child> {
+    match build(command, args).spawn() {
+        Ok(child) => Ok(child),
+        Err(first) => {
+            #[cfg(not(windows))]
+            {
+                let _ = (name, command, args);
+                Err(first)
+            }
+            #[cfg(windows)]
+            {
+                use std::io::ErrorKind;
+                let extensionless = !command.contains(['\\', '/', '.']);
+                // 1) npm/npx-style extensionless commands: use the .cmd wrapper.
+                if extensionless && first.kind() == ErrorKind::NotFound {
+                    let variant = format!("{command}.cmd");
+                    if let Ok(child) = build(&variant, args).spawn() {
+                        tracing::warn!(
+                            "MCP server '{}': '{}' not found on PATH, spawned via '{}'",
+                            name,
+                            command,
+                            variant
+                        );
+                        return Ok(child);
+                    }
+                }
+                // 2) .ps1 scripts: run through powershell with a bypass policy.
+                let ps1 = command.to_lowercase().ends_with(".ps1");
+                if ps1 || (extensionless && first.raw_os_error() == Some(193)) {
+                    let mut ps_args: Vec<String> = vec![
+                        "-NoProfile".into(),
+                        "-ExecutionPolicy".into(),
+                        "Bypass".into(),
+                        "-File".into(),
+                        command.to_string(),
+                    ];
+                    ps_args.extend(args.iter().cloned());
+                    if let Ok(child) = build("powershell", &ps_args).spawn() {
+                        tracing::warn!(
+                            "MCP server '{}': spawned '{}' via powershell -ExecutionPolicy Bypass",
+                            name,
+                            command
+                        );
+                        return Ok(child);
+                    }
+                }
+                Err(first)
+            }
+        }
+    }
+}
+
+/// Human-readable fix hint appended to a failed MCP spawn, so "program not
+/// found" / "not a valid Win32 application" carry the cure, not just the
+/// symptom.
+#[cfg(windows)]
+fn windows_spawn_hint(command: &str, e: &std::io::Error) -> String {
+    use std::io::ErrorKind;
+    match e.kind() {
+        ErrorKind::NotFound => format!(
+            " — '{command}' was not found on PATH. On Windows, npm/npx-style commands must use their .cmd wrapper (e.g. npm.cmd) or an absolute path; .ps1 scripts need `powershell -ExecutionPolicy Bypass -File`."
+        ),
+        _ if e.raw_os_error() == Some(193) => format!(
+            " — '%1 is not a valid Win32 application': '{command}' is a script, not an executable. Run it via its interpreter (node.exe/python/powershell) with the full script path, or use its .cmd wrapper."
+        ),
+        _ => String::new(),
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_spawn_hint(_command: &str, _e: &std::io::Error) -> String {
+    String::new()
+}
+
 impl McpClient {
     pub fn new(
         config: &haven_common::McpServerConfig,
@@ -701,6 +797,7 @@ impl McpClient {
             command: config.command.clone(),
             args: config.args.clone(),
             env: config.env.clone(),
+            cwd: config.cwd.clone(),
             url: config.url.clone(),
             enabled: Arc::new(AtomicBool::new(config.enabled)),
             inner: Arc::new(Mutex::new(None)),
@@ -708,6 +805,7 @@ impl McpClient {
             next_id: AtomicU64::new(1),
             tools_cache: Arc::new(Mutex::new(None)),
             last_error: Arc::new(Mutex::new(None)),
+            last_diagnostic: Arc::new(Mutex::new(None)),
             last_seen_at: Arc::new(Mutex::new(None)),
             reconnect_retries: Arc::new(Mutex::new(0)),
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
@@ -738,6 +836,12 @@ impl McpClient {
         self.last_error.lock().await.clone()
     }
 
+    /// Handshake/tool-discovery diagnostics (protocol mismatch, connected
+    /// with zero tools, failed tools/list). `None` when everything is clean.
+    pub async fn diagnostic(&self) -> Option<String> {
+        self.last_diagnostic.lock().await.clone()
+    }
+
     pub async fn last_seen_at(&self) -> Option<i64> {
         *self.last_seen_at.lock().await
     }
@@ -753,11 +857,13 @@ impl McpClient {
             command: self.command.clone(),
             args: self.args.clone(),
             env: self.env.clone(),
+            cwd: self.cwd.clone(),
             url: self.url.clone(),
             enabled: self.enabled(),
             status: self.status.lock().await.clone(),
             tools: self.tools_cache.lock().await.clone().unwrap_or_default(),
             last_error: self.last_error.lock().await.clone(),
+            diagnostic: self.last_diagnostic.lock().await.clone(),
             last_seen_at: *self.last_seen_at.lock().await,
         }
     }
@@ -766,26 +872,33 @@ impl McpClient {
         &self,
         notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
     ) -> anyhow::Result<StdioInner> {
-        let mut cmd = Command::new(&self.command);
-        cmd.args(&self.args);
-        cmd.stdin(std::process::Stdio::piped());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        cmd.kill_on_drop(true);
         // MCP servers are user-configured external programs: their command and
-        // args may legitimately use relative paths, so they keep spawning from
-        // the app's working directory instead of the Temp default used for
-        // agent-executed commands.
-
-        for e in &self.env {
-            if let Some((key, val)) = e.split_once('=') {
-                cmd.env(key, val);
+        // args may legitimately use relative paths, so they spawn from the
+        // configured `cwd` when set, otherwise the app's working directory
+        // (not the Temp default used for agent-executed commands).
+        let build = |program: &str, args: &[String]| {
+            let mut cmd = Command::new(program);
+            cmd.args(args);
+            cmd.stdin(std::process::Stdio::piped());
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            cmd.kill_on_drop(true);
+            if let Some(cwd) = &self.cwd {
+                cmd.current_dir(cwd);
             }
-        }
+            for e in &self.env {
+                if let Some((key, val)) = e.split_once('=') {
+                    cmd.env(key, val);
+                }
+            }
+            cmd
+        };
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn MCP server '{}': {}", self.name, e))?;
+        let mut child = spawn_mcp_child(&self.name, &self.command, &self.args, &build)
+            .map_err(|e| {
+                let hint = windows_spawn_hint(&self.command, &e);
+                anyhow::anyhow!("failed to spawn MCP server '{}': {}{}", self.name, e, hint)
+            })?;
 
         let stdin = child
             .stdin
@@ -846,9 +959,21 @@ impl McpClient {
         Ok((shared, inner))
     }
 
+    /// Connect to the server (initialize handshake + tool discovery). On
+    /// failure, records a diagnostic explaining what happened at the
+    /// handshake level, so the caller can tell "server down" from "client
+    /// and server are incompatible".
     pub async fn connect(&self) -> anyhow::Result<()> {
         *self.status.lock().await = McpClientStatus::Connecting;
+        *self.last_diagnostic.lock().await = None;
+        let result = self.connect_inner().await;
+        if let Err(e) = &result {
+            *self.last_diagnostic.lock().await = Some(format!("connect failed: {e}"));
+        }
+        result
+    }
 
+    async fn connect_inner(&self) -> anyhow::Result<()> {
         let (notification_tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
         *self.notification_rx.lock().await = Some(new_rx);
 
@@ -900,6 +1025,11 @@ impl McpClient {
                 server_protocol,
                 PROTOCOL_VERSION
             );
+            *self.last_diagnostic.lock().await = Some(format!(
+                "protocol version mismatch: server negotiated '{}', client supports '{}' — tool discovery may be limited or fail",
+                server_protocol,
+                PROTOCOL_VERSION
+            ));
         }
         tracing::info!(
             "MCP server '{}' connected ({}): {} v{} (protocol {})",
@@ -930,9 +1060,27 @@ impl McpClient {
 
         *self.status.lock().await = McpClientStatus::Connected;
 
-        // Cache tools after successful connection
-        if let Ok(tools) = self.list_tools().await {
-            *self.tools_cache.lock().await = Some(tools);
+        // Cache tools after successful connection. A successful handshake
+        // with zero tools is suspicious (often a client/server SDK protocol
+        // mismatch rather than an empty server), so record a diagnostic that
+        // distinguishes the two cases.
+        match self.list_tools().await {
+            Ok(tools) => {
+                *self.tools_cache.lock().await = Some(tools.clone());
+                if tools.is_empty() {
+                    *self.last_diagnostic.lock().await = Some(format!(
+                        "Connected, but tools/list returned 0 tools (server {} v{}, protocol {} vs client {}). Either the server exposes no tools, or the client/server protocols are incompatible — check the server's logs and its SDK protocol support.",
+                        server_name,
+                        server_version,
+                        server_protocol,
+                        PROTOCOL_VERSION
+                    ));
+                }
+            }
+            Err(e) => {
+                *self.last_diagnostic.lock().await =
+                    Some(format!("connected, but tools/list failed: {e}"));
+            }
         }
 
         *self.last_error.lock().await = None;
@@ -1658,11 +1806,13 @@ mod tests {
             command: "".into(),
             args: vec![],
             env: vec!["AUTHORIZATION=Bearer x".into()],
+            cwd: None,
             url: "http://localhost:3001/mcp".into(),
             enabled: true,
             status: McpClientStatus::Connected,
             tools: vec![],
             last_error: None,
+            diagnostic: None,
             last_seen_at: Some(12345),
         };
         let json = serde_json::to_value(&snap).unwrap();

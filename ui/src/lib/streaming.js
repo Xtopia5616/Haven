@@ -119,9 +119,22 @@ export function accumulateStreamChunk(messages, opts) {
 	if (stepIdPrefix !== 'thought') {
 		// Reasoning: one block per step, no sentence splitting.
 		const idx = messages.findIndex((x) => x.id === stepId);
-		if (idx >= 0 && messages[idx].streaming === false) return messages;
 		if (idx >= 0) {
 			const curr = messages[idx].content || '';
+			// Finalized reasoning (streaming === false) normally rejects new
+			// deltas — except the backend's authoritative reconciliation
+			// chunk, which carries the complete reasoning text so the UI can
+			// recover characters lost to batcher drops. It arrives AFTER the
+			// stream is finalized, so detect it by prefix: a cumulative
+			// full-text delta starts with the current content.
+			if (messages[idx].streaming === false) {
+				if (delta.startsWith(curr) && delta.length > curr.length) {
+					const next = [...messages];
+					next[idx] = { ...next[idx], content: delta };
+					return next;
+				}
+				return messages;
+			}
 			const content = delta.startsWith(curr) ? delta : curr + delta;
 			const next = [...messages];
 			next[idx] = { ...next[idx], content, streaming: true };
@@ -156,6 +169,34 @@ export function accumulateStreamChunk(messages, opts) {
 	const last = messages[lastIdx];
 	const next = [...messages];
 
+	// Cumulative providers echo the WHOLE text with every chunk. After a
+	// sentence-boundary split the stream is multiple segments, so compare
+	// against the concatenation of all segments — not just the last one,
+	// which would misdetect an echo (e.g. `A。B。C` vs last `B`) and
+	// concatenate it into garbage (`BA。B。C`). When the delta extends the
+	// full content, collapse every segment into one message carrying the
+	// echoed text and resume streaming in place.
+	const byId = new Map(messages.map((x) => [x.id, x]));
+	const fullContent = segIds.map((id) => byId.get(id)?.content ?? '').join('');
+	if (fullContent && delta.startsWith(fullContent) && delta.length > fullContent.length) {
+		const firstSegIdx = messages.findIndex((x) => segIds.includes(x.id));
+		const rest = messages.filter((x) => !segIds.includes(x.id));
+		rest.splice(
+			firstSegIdx,
+			0,
+			newStreamMessage({
+				id: stepId,
+				content: delta,
+				streaming: true,
+				segmented: false,
+				msgType,
+				stepNumber,
+				time,
+			}),
+		);
+		return rest;
+	}
+
 	if (last.streaming === false) {
 		// Finalized by a sentence boundary (segmented) → the next chunk opens
 		// a fresh segment. Finalized by the snap / tool action (segmented
@@ -169,10 +210,8 @@ export function accumulateStreamChunk(messages, opts) {
 			return next;
 		}
 		// The opening chunk of a new segment may itself complete a sentence.
-		const byId = new Map(messages.map((x) => [x.id, x]));
-		const fullContent =
-			segIds.map((id) => byId.get(id)?.content ?? '').join('') + delta;
-		const segEnded = isSentenceEnd(delta) && !inUnclosedFence(fullContent);
+		const fullContent = segIds.map((id) => byId.get(id)?.content ?? '').join('');
+		const segEnded = isSentenceEnd(delta) && !inUnclosedFence(fullContent + delta);
 		next.push(
 			newStreamMessage({
 				id: `${stepId}-${segIds.length}`,
@@ -211,12 +250,16 @@ export function accumulateStreamChunk(messages, opts) {
  */
 export function applyThoughtSnap(messages, opts) {
 	const { stepId, reasoningId, thought, stepNumber, time } = opts;
-	const reasoningFixed = messages.map((x) =>
-		x.id === reasoningId ? { ...x, streaming: false } : x
-	);
-	const segIds = thoughtSegmentIds(reasoningFixed, stepId);
-	const firstSegIdx = reasoningFixed.findIndex((x) => segIds.includes(x.id));
-	const rest = reasoningFixed.filter((x) => !segIds.includes(x.id));
+	const segIds = thoughtSegmentIds(messages, stepId);
+	const firstSegIdx = messages.findIndex((x) => segIds.includes(x.id));
+	// Reasoning may stream AFTER the thought text started (providers that
+	// emit text and reasoning interleaved). The reasoning block belongs
+	// above the answer, so pull it out of the list and re-insert it in
+	// front of the merged thought message — otherwise the final order is
+	// [answer, Thinking...] and can never self-heal.
+	const reasoningRaw = messages.find((x) => x.id === reasoningId) ?? null;
+	const reasoning = reasoningRaw ? { ...reasoningRaw, streaming: false } : null;
+	const rest = messages.filter((x) => !segIds.includes(x.id) && x.id !== reasoningId);
 	const merged = newStreamMessage({
 		id: stepId,
 		content: thought,
@@ -224,7 +267,17 @@ export function applyThoughtSnap(messages, opts) {
 		stepNumber,
 		time,
 	});
-	if (firstSegIdx < 0) return [...rest, merged];
-	rest.splice(firstSegIdx, 0, merged);
+	if (firstSegIdx < 0) {
+		const out = [...rest];
+		if (reasoning) out.push(reasoning);
+		out.push(merged);
+		return out;
+	}
+	const insertAt = Math.min(firstSegIdx, rest.length);
+	rest.splice(insertAt, 0, merged);
+	if (reasoning) {
+		const reasoningAt = Math.max(insertAt - 1, 0);
+		rest.splice(reasoningAt, 0, reasoning);
+	}
 	return rest;
 }

@@ -8,6 +8,7 @@
 	let name = $state('');
 	let transport = $state('stdio');
 	let command = $state('');
+	let cwd = $state('');
 	let argsText = $state('');
 	let envText = $state('');
 	let url = $state('');
@@ -27,6 +28,7 @@
 		name = server?.name || '';
 		transport = server?.transport || 'stdio';
 		command = server?.command || '';
+		cwd = server?.cwd || '';
 		argsText = (server?.args || []).join('\n');
 		envText = (server?.env || []).join('\n');
 		url = server?.url || '';
@@ -75,6 +77,7 @@
 			name: name.trim(),
 			transport,
 			command: command.trim(),
+			cwd: cwd.trim() || null,
 			args: argsText
 				.split('\n')
 				.map((l) => l.trim())
@@ -176,6 +179,16 @@
 				{#if fieldErrors.command}
 					<span class="field-error">{fieldErrors.command}</span>
 				{/if}
+			</label>
+			<label>
+				<span>CWD (optional)</span>
+				<input
+					type="text"
+					class="md-input"
+					bind:value={cwd}
+					placeholder="C:\path\to\server"
+					autocomplete="off"
+				/>
 			</label>
 			<label>
 				<span>Args (one per line)</span>

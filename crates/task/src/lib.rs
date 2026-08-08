@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 
 /// A user message queued for injection into the ReAct loop (supplement or
@@ -65,14 +65,19 @@ impl From<&str> for Supplement {
 pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-const DISPATCH_POLL_MS: u64 = 1000;
 const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TaskStatus {
     Pending,
     Running,
     Paused,
+    /// Paused because the `ask` tool is awaiting a human answer. Background-job
+    /// completions must NOT auto-wake this state: the model is blocked on the
+    /// user, not on job results, and resuming would let the agent continue
+    /// (and run tools) without the user's consent. Serialized as "paused" so
+    /// the wire/DB format is unchanged.
+    PausedAwaitingAnswer,
     Completed,
     Error,
 }
@@ -82,7 +87,7 @@ impl TaskStatus {
         match self {
             TaskStatus::Pending => "pending",
             TaskStatus::Running => "running",
-            TaskStatus::Paused => "paused",
+            TaskStatus::Paused | TaskStatus::PausedAwaitingAnswer => "paused",
             TaskStatus::Completed => "completed",
             TaskStatus::Error => "error",
         }
@@ -97,8 +102,41 @@ impl TaskStatus {
             "error" => TaskStatus::Error,
             // Legacy: "cancelled" is treated as "error" since the variant was removed.
             "cancelled" => TaskStatus::Error,
-            _ => TaskStatus::Pending,
+            // Unknown/corrupt DB statuses must not silently map to Pending:
+            // that would auto-resurrect the task on the next dispatcher
+            // reload. Error is the safe interpretation (visible, inert).
+            other => {
+                tracing::warn!("unknown task status string {:?}; mapping to Error", other);
+                TaskStatus::Error
+            }
         }
+    }
+
+    /// True for both pause flavors: scheduling pause and ask-awaiting pause.
+    pub fn is_paused(&self) -> bool {
+        matches!(self, TaskStatus::Paused | TaskStatus::PausedAwaitingAnswer)
+    }
+
+    /// True when the pause is blocked on a human answer to an `ask` tool.
+    pub fn is_awaiting_answer(&self) -> bool {
+        matches!(self, TaskStatus::PausedAwaitingAnswer)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, TaskStatus::Completed | TaskStatus::Error)
+    }
+}
+
+impl serde::Serialize for TaskStatus {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TaskStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::from_status_str(&s))
     }
 }
 
@@ -161,7 +199,12 @@ type ConfirmRequestCallback = Arc<Mutex<Option<Box<dyn Fn(String, String, RiskLe
 pub struct TaskExecutor {
     db: Arc<Database>,
     tools: Arc<ToolsManager>,
-    tasks: Arc<Mutex<Vec<TaskInfo>>>,
+    /// Per-task working set. Keyed by task id; each entry is behind its own
+    /// mutex so a slow transition of one task (DB write under the entry lock)
+    /// never serializes the other tasks' operations on a global lock. The map
+    /// lock itself is only held for lookup/insert/remove (never while
+    /// awaiting an entry lock), keeping the lock order acyclic.
+    tasks: Arc<Mutex<HashMap<String, Arc<Mutex<TaskInfo>>>>>,
     running_tasks: Arc<Mutex<HashSet<String>>>,
     semaphore: Arc<Semaphore>,
     /// Tracks the semaphore permit held by each running task's handler.
@@ -170,19 +213,17 @@ pub struct TaskExecutor {
     task_permits: Arc<Mutex<HashMap<String, OwnedSemaphorePermit>>>,
     /// Cancellation tokens for each task, used to abort in-flight LLM calls.
     task_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    /// Per-task Notify signals so the ReAct loop can block on status changes
-    /// instead of polling every 200ms.
-    task_notify: Arc<Mutex<HashMap<String, Arc<Notify>>>>,
-    /// Notified when a task transitions to Pending, waking the dispatcher
-    /// immediately instead of waiting for the next poll cycle.
-    dispatch_notify: Arc<Notify>,
-    /// Tasks currently paused because the `ask` tool is awaiting a human
-    /// reply. While set, background-job completions must NOT auto-wake the
-    /// task: the model is blocked on a user answer, not on job results, and
-    /// resuming it would let the agent continue (and run tools) without the
-    /// user's consent. Cleared centrally in `update_task_status` whenever the
-    /// task is (re)activated to Pending/Running.
-    awaiting_answer: Arc<Mutex<HashSet<String>>>,
+    /// Per-task level-triggered status watchers: the ReAct loop blocks on the
+    /// receiver (`subscribe_status`) instead of polling, and a transition
+    /// that lands between a state read and the wait is never lost (unlike the
+    /// edge-triggered Notify it replaced, the stored value makes `changed()`
+    /// resolve immediately when the value moved).
+    status_tx: Arc<Mutex<HashMap<String, watch::Sender<TaskStatus>>>>,
+    /// Dispatch wake counter: incremented on every transition to Pending.
+    /// The dispatcher waits on a receiver of this watch, so a task that
+    /// becomes Pending right after a failed claim still wakes it (no missed
+    /// notification, no polling fallback).
+    dispatch_tx: watch::Sender<u64>,
     /// Per-task buffer of completed background-job results, delivered to the
     /// ReAct loop as context at the next step start. Kept separate from the
     /// steering queue so job output is never mistaken for a user reply (the
@@ -197,14 +238,13 @@ impl TaskExecutor {
         Self {
             db,
             tools,
-            tasks: Arc::new(Mutex::new(Vec::new())),
+            tasks: Arc::new(Mutex::new(HashMap::new())),
             running_tasks: Arc::new(Mutex::new(HashSet::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             task_permits: Arc::new(Mutex::new(HashMap::new())),
             task_cancellations: Arc::new(Mutex::new(HashMap::new())),
-            task_notify: Arc::new(Mutex::new(HashMap::new())),
-            dispatch_notify: Arc::new(Notify::new()),
-            awaiting_answer: Arc::new(Mutex::new(HashSet::new())),
+            status_tx: Arc::new(Mutex::new(HashMap::new())),
+            dispatch_tx: watch::channel(0).0,
             job_completions: Arc::new(Mutex::new(HashMap::new())),
             on_confirm_request: Arc::new(Mutex::new(None)),
         }
@@ -226,11 +266,51 @@ impl TaskExecutor {
         // it after construction so we keep the constructor single-purpose.
         task.summary = summary.into();
         let mut tasks = self.tasks.lock().await;
-        tasks.push(task.clone());
+        tasks.insert(task.id.clone(), Arc::new(Mutex::new(task.clone())));
 
         // Wake the dispatcher so it picks up this Pending task immediately.
-        self.dispatch_notify.notify_one();
+        self.wake_dispatcher();
         Ok(task)
+    }
+
+    /// Bump the dispatcher wake counter. Level-triggered: a bump that lands
+    /// between a failed claim and the dispatcher's wait resolves `changed()`
+    /// immediately, so no transition is ever lost.
+    fn wake_dispatcher(&self) {
+        let _ = self.dispatch_tx.send_modify(|c| *c += 1);
+    }
+
+    /// Subscribe to dispatch wake signals (a `watch` receiver on the wake
+    /// counter). The receiver resolves as soon as the counter moved past the
+    /// version it has seen, so it must be created before the first claim.
+    pub fn subscribe_dispatch(&self) -> watch::Receiver<u64> {
+        self.dispatch_tx.subscribe()
+    }
+
+    /// Persist a task status to the DB with a small number of retries. SQLite
+    /// writes through the blocking pool can transiently fail with SQLITE_BUSY;
+    /// a short retry turns that into extra latency instead of a diverged
+    /// memory/DB state. Returns the last failure after exhausting the retries.
+    async fn persist_status(db: &Arc<Database>, task_id: &str, status: &str) -> anyhow::Result<()> {
+        let mut last_err = None;
+        for attempt in 0..3 {
+            let db = db.clone();
+            let tid = task_id.to_string();
+            let st = status.to_string();
+            match db
+                .run_blocking(move |db| db.update_task_status(&tid, &st))
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("status persist failed")))
     }
 
     /// Spawn the background dispatcher. Whenever a semaphore permit is free
@@ -249,6 +329,10 @@ impl TaskExecutor {
                     reloaded
                 );
             }
+            // Subscribe BEFORE the first claim so a Pending transition that
+            // lands between a failed claim and the wait below is never lost:
+            // `changed()` resolves immediately when the counter moved.
+            let mut dispatch_rx = exec.subscribe_dispatch();
             let mut log_counter: u64 = 0;
             loop {
                 log_counter += 1;
@@ -266,13 +350,8 @@ impl TaskExecutor {
                 let task_id = exec.try_claim_pending().await;
                 let Some(task_id) = task_id else {
                     drop(permit);
-                    // Wait for a new Pending task to be signaled, but fall
-                    // back to a periodic poll in case a notify is missed.
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_millis(DISPATCH_POLL_MS),
-                        exec.dispatch_notify.notified(),
-                    )
-                    .await;
+                    // Wait for the next Pending transition, then re-claim.
+                    let _ = dispatch_rx.changed().await;
                     continue;
                 };
 
@@ -329,32 +408,50 @@ impl TaskExecutor {
     /// running set. Returns the claimed task id, or `None` if nothing is
     /// dispatchable.
     ///
-    /// Claiming under the `tasks` lock closes the TOCTOU window of the former
-    /// "find Pending" + "mark Running" pair, where `end_task`/rollback could
-    /// terminate a task in between and the dispatcher would resurrect it
-    /// (ghost execution) or leave DB and memory diverged.
-    ///
-    /// The `running_tasks` check prevents double-dispatch: a task whose
-    /// handler is still alive (e.g. blocked in a pause-wait after a
-    /// supplement flipped it Paused 鈫?Pending) must not be claimed again 鈥?
-    /// its own loop picks up the supplement via the status notifier.
+    /// The status flip happens under the task's own entry lock (never under
+    /// the map lock), so a slow transition of another task cannot block the
+    /// claim. The DB write precedes the memory flip: on a persistent DB
+    /// failure the claim is aborted before memory and the running set diverge,
+    /// keeping the memory/DB error policy consistent with `update_task_status`.
     async fn try_claim_pending(&self) -> Option<String> {
-        let mut tasks = self.tasks.lock().await;
-        let mut running = self.running_tasks.lock().await;
-        for task in tasks.iter_mut() {
-            if task.status == TaskStatus::Pending && !running.contains(&task.id) {
-                let task_id = task.id.clone();
-                task.status = TaskStatus::Running;
-                task.updated_at = chrono::Utc::now().to_rfc3339();
-                let db = self.db.clone();
-                let tid = task_id.clone();
-                let _ = db
-                    .run_blocking(move |db| db.update_task_status(&tid, "running"))
-                    .await;
-                running.insert(task_id.clone());
-                tracing::debug!("try_claim_pending: claimed task {}", task_id);
-                return Some(task_id);
+        // Snapshot the entry Arcs under a brief map lock; the per-entry
+        // evaluation below never holds the map lock across an await.
+        let entries: Vec<Arc<Mutex<TaskInfo>>> =
+            self.tasks.lock().await.values().cloned().collect();
+        for entry in entries {
+            let mut task = entry.lock().await;
+            if task.status != TaskStatus::Pending {
+                continue;
             }
+            // Re-check membership: `end_task` may have removed the task from
+            // the map between the snapshot and the entry lock; claiming it
+            // would resurrect it (ghost execution).
+            if !self.tasks.lock().await.contains_key(&task.id) {
+                continue;
+            }
+            // The `running_tasks` check prevents double-dispatch: a task whose
+            // handler is still alive (e.g. blocked in a pause-wait after a
+            // supplement flipped it Paused → Pending) must not be claimed
+            // again — its own loop picks up the supplement via the status
+            // watcher. Only the dispatcher inserts into this set, so the
+            // check-then-insert below cannot race.
+            if self.running_tasks.lock().await.contains(&task.id) {
+                continue;
+            }
+            let task_id = task.id.clone();
+            if let Err(e) = Self::persist_status(&self.db, &task_id, "running").await {
+                tracing::error!(
+                    "try_claim_pending: DB persist failed for task {}; leaving it Pending: {}",
+                    task_id,
+                    e
+                );
+                return None;
+            }
+            task.status = TaskStatus::Running;
+            task.updated_at = chrono::Utc::now().to_rfc3339();
+            self.running_tasks.lock().await.insert(task_id.clone());
+            tracing::debug!("try_claim_pending: claimed task {}", task_id);
+            return Some(task_id);
         }
         None
     }
@@ -365,23 +462,24 @@ impl TaskExecutor {
     /// active (Pending / Running) tasks.
     async fn unmark_running(&self, task_id: &str) {
         self.cleanup_task_maps(task_id).await;
-        let mut tasks = self.tasks.lock().await;
-        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-            let status = tasks[pos].status.clone();
-            if status == TaskStatus::Error || status == TaskStatus::Completed {
-                tracing::debug!(
-                    "task {} unmark_running: {:?}, removing from list",
-                    task_id,
-                    status
-                );
-                tasks.remove(pos);
-            } else {
-                tracing::debug!(
-                    "task {} unmark_running: {:?}, keeping in list",
-                    task_id,
-                    status
-                );
-            }
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
+            return;
+        };
+        let status = entry.lock().await.status.clone();
+        if status == TaskStatus::Error || status == TaskStatus::Completed {
+            tracing::debug!(
+                "task {} unmark_running: {:?}, removing from list",
+                task_id,
+                status
+            );
+            self.tasks.lock().await.remove(task_id);
+        } else {
+            tracing::debug!(
+                "task {} unmark_running: {:?}, keeping in list",
+                task_id,
+                status
+            );
         }
     }
 
@@ -429,34 +527,33 @@ impl TaskExecutor {
         attachments: &[MessageAttachment],
         is_answer: bool,
     ) -> anyhow::Result<()> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            let supplement = if is_answer {
-                Supplement::answer(text, attachments.to_vec())
-            } else {
-                Supplement::new(text, attachments.to_vec())
-            };
-            task.supplement_queue.push(supplement);
-            tracing::debug!(
-                "task {} {} added ({} chars, {} attachments)",
-                task_id,
-                if is_answer { "answer" } else { "supplement" },
-                text.len(),
-                attachments.len()
-            );
-            Ok(())
-        } else {
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
             anyhow::bail!("task '{}' not found", task_id)
-        }
+        };
+        let mut task = entry.lock().await;
+        let supplement = if is_answer {
+            Supplement::answer(text, attachments.to_vec())
+        } else {
+            Supplement::new(text, attachments.to_vec())
+        };
+        task.supplement_queue.push(supplement);
+        tracing::debug!(
+            "task {} {} added ({} chars, {} attachments)",
+            task_id,
+            if is_answer { "answer" } else { "supplement" },
+            text.len(),
+            attachments.len()
+        );
+        Ok(())
     }
 
     pub async fn get_supplements(&self, task_id: &str) -> Vec<Supplement> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.supplement_queue.drain(..).collect()
-        } else {
-            Vec::new()
-        }
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
+            return Vec::new();
+        };
+        entry.lock().await.supplement_queue.drain(..).collect()
     }
 
     /// Add a steering item: interrupts the current tool sequence and is
@@ -471,46 +568,29 @@ impl TaskExecutor {
         text: &str,
         attachments: &[MessageAttachment],
     ) -> anyhow::Result<()> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.steering_queue
-                .push(Supplement::new(text, attachments.to_vec()));
-            tracing::debug!(
-                "task {} steering added ({} chars, {} attachments)",
-                task_id,
-                text.len(),
-                attachments.len()
-            );
-            Ok(())
-        } else {
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
             anyhow::bail!("task '{}' not found", task_id)
-        }
+        };
+        let mut task = entry.lock().await;
+        task.steering_queue
+            .push(Supplement::new(text, attachments.to_vec()));
+        tracing::debug!(
+            "task {} steering added ({} chars, {} attachments)",
+            task_id,
+            text.len(),
+            attachments.len()
+        );
+        Ok(())
     }
 
     /// Drain the steering queue for a task.
     pub async fn get_steering(&self, task_id: &str) -> Vec<Supplement> {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.steering_queue.drain(..).collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Mark/unmark a task as paused awaiting a human answer to an `ask`
-    /// question. The background-job completion consumer consults this to avoid
-    /// auto-resuming a task that is blocked on the user.
-    pub async fn set_awaiting_answer(&self, task_id: &str, awaiting: bool) {
-        let mut set = self.awaiting_answer.lock().await;
-        if awaiting {
-            set.insert(task_id.to_string());
-        } else {
-            set.remove(task_id);
-        }
-    }
-
-    pub async fn is_awaiting_answer(&self, task_id: &str) -> bool {
-        self.awaiting_answer.lock().await.contains(task_id)
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
+            return Vec::new();
+        };
+        entry.lock().await.steering_queue.drain(..).collect()
     }
 
     /// Buffer a completed background-job result for a task. It is delivered
@@ -603,37 +683,35 @@ impl TaskExecutor {
         // Kill any background jobs the task spawned; they would otherwise
         // keep running (and leak child processes) after the task is gone.
         self.cancel_task_jobs(task_id).await;
-        let mut tasks = self.tasks.lock().await;
-        if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-            let new_status = TaskStatus::Completed;
-            tasks[pos].status = new_status.clone();
-            tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-            let db = self.db.clone();
-            let tid = task_id.to_string();
-            db.run_blocking(move |db| db.update_task_status(&tid, "completed"))
-                .await?;
-            tasks.remove(pos);
-            drop(tasks);
-            self.promote_partial_message(task_id).await;
-            // `task_notify` sits between the maps here — wake any ReAct-loop
-            // waiters before tearing down the rest of the per-task state.
-            self.running_tasks.lock().await.remove(task_id);
-            self.task_permits.lock().await.remove(task_id);
-            if let Some(notify) = self.task_notify.lock().await.remove(task_id) {
-                notify.notify_waiters();
-            }
-            self.task_cancellations.lock().await.remove(task_id);
-            Ok(new_status)
-        } else {
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
             // Task not in memory (e.g. after restart) 鈥?end it regardless of
             // its DB state; the user asked to finish it.
-            let db = self.db.clone();
-            let tid = task_id.to_string();
-            db.run_blocking(move |db| db.update_task_status(&tid, "completed"))
-                .await?;
+            if let Err(e) = Self::persist_status(&self.db, task_id, "completed").await {
+                tracing::error!("end_task: DB persist failed for task {}: {}", task_id, e);
+                return Err(e);
+            }
             self.promote_partial_message(task_id).await;
-            Ok(TaskStatus::Completed)
+            return Ok(TaskStatus::Completed);
+        };
+        {
+            let mut task = entry.lock().await;
+            if let Err(e) = Self::persist_status(&self.db, task_id, "completed").await {
+                tracing::error!("end_task: DB persist failed for task {}: {}", task_id, e);
+                return Err(e);
+            }
+            task.status = TaskStatus::Completed;
+            task.updated_at = chrono::Utc::now().to_rfc3339();
         }
+        self.promote_partial_message(task_id).await;
+        // Wake any ReAct-loop status waiter before tearing down the rest of
+        // the per-task state.
+        if let Some(tx) = self.status_tx.lock().await.remove(task_id) {
+            let _ = tx.send(TaskStatus::Completed);
+        }
+        self.cleanup_task_maps(task_id).await;
+        self.tasks.lock().await.remove(task_id);
+        Ok(TaskStatus::Completed)
     }
 
     /// Remove a task entirely from the in-memory state.
@@ -641,121 +719,195 @@ impl TaskExecutor {
     /// Succeeds even if the task is not in memory (e.g. after restart).
     pub async fn remove_task(&self, task_id: &str) {
         self.cancel_task_jobs(task_id).await;
-        let mut tasks = self.tasks.lock().await;
-        tasks.retain(|t| t.id != task_id);
-        drop(tasks);
+        self.tasks.lock().await.remove(task_id);
         self.cleanup_task_maps(task_id).await;
-        self.awaiting_answer.lock().await.remove(task_id);
+        self.status_tx.lock().await.remove(task_id);
         self.job_completions.lock().await.remove(task_id);
     }
 
     pub async fn update_task_title(&self, task_id: &str, title: &str) {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-            task.title = Some(title.into());
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        if let Some(entry) = entry {
+            entry.lock().await.title = Some(title.into());
         }
     }
 
     pub async fn list_tasks(&self) -> Vec<TaskInfo> {
-        self.tasks.lock().await.clone()
+        let entries: Vec<Arc<Mutex<TaskInfo>>> =
+            self.tasks.lock().await.values().cloned().collect();
+        let mut tasks: Vec<TaskInfo> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            tasks.push(entry.lock().await.clone());
+        }
+        // Preserve the insertion-order semantics of the former Vec storage
+        // (the map itself is unordered).
+        tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        tasks
     }
 
     /// Remove all tasks from memory and clean up running state.
     /// Used when the user clears history 鈥?the DB is already wiped.
     pub async fn clear_all_tasks(&self) {
-        let mut tasks = self.tasks.lock().await;
-        tasks.clear();
-        drop(tasks);
+        self.tasks.lock().await.clear();
         self.running_tasks.lock().await.clear();
         self.task_permits.lock().await.clear();
         self.task_cancellations.lock().await.clear();
-        self.awaiting_answer.lock().await.clear();
+        self.status_tx.lock().await.clear();
         self.job_completions.lock().await.clear();
     }
 
-    /// Get or create a Notify for a given task. The agent loop awaits this
-    /// to block on status changes instead of polling.
-    pub async fn status_notifier(&self, task_id: &str) -> Arc<Notify> {
-        let mut map = self.task_notify.lock().await;
-        map.entry(task_id.to_string())
-            .or_insert_with(|| Arc::new(Notify::new()))
-            .clone()
+    /// Subscribe to a task's status changes. Level-triggered: the receiver
+    /// holds the CURRENT status, so a transition that happened before the
+    /// subscription is visible immediately, and `changed()` resolves as soon
+    /// as the status moves after the receiver's last observed value. Callers
+    /// must re-read the authoritative state after waking (the watch value is
+    /// a hint, not a lock-free source of truth).
+    pub async fn subscribe_status(&self, task_id: &str) -> watch::Receiver<TaskStatus> {
+        // Initial value: the task's current status so a receiver created
+        // after a transition observes it; Pending when the task is absent
+        // (the caller re-checks state after waking anyway).
+        let initial = {
+            let entry = self.tasks.lock().await.get(task_id).cloned();
+            match entry {
+                Some(e) => e.lock().await.status.clone(),
+                None => TaskStatus::Pending,
+            }
+        };
+        self.status_tx
+            .lock()
+            .await
+            .entry(task_id.to_string())
+            .or_insert_with(|| watch::channel(initial).0)
+            .subscribe()
     }
 
+    /// Transition a task's status through the centralized state machine.
+    ///
+    /// Ordering guarantees (all under the task's own entry lock, so
+    /// transitions of different tasks never serialize on a global lock):
+    /// 1. The transition is validated against `can_transition`; illegal
+    ///    transitions (e.g. mutating a terminal state) are rejected with a
+    ///    warning and leave the state untouched.
+    /// 2. The DB write happens BEFORE the memory flip, with a short retry, so
+    ///    a persistent DB failure aborts the transition with memory/DB
+    ///    consistent (the DB is the source of truth across restarts).
+    /// 3. The status watcher is notified and, for Pending transitions, the
+    ///    dispatcher is woken — outside the entry lock.
+    /// 4. Terminal transitions run cleanup (maps, per-task tools, working
+    ///    set) after the wake so a waiter observing the terminal status
+    ///    always sees the task still resolvable.
     pub async fn update_task_status(
         &self,
         task_id: &str,
         status: TaskStatus,
     ) -> anyhow::Result<()> {
-        let status_str = status.as_str().to_string();
-        let is_terminal = status_str == "completed" || status_str == "error";
-        let is_pending = status_str == "pending";
-        // Determine whether this is a terminal transition and capture the
-        // task's index under the `tasks` lock. The lock is released before any
-        // subordinate locks (`running_tasks`, `task_permits`, ...) are touched
-        // so the acquisition order stays `tasks` -> (others), matching
-        // `unmark_running`'s `running_tasks` -> `tasks` without nesting.
-        let needs_terminal_cleanup: Option<usize>;
-        {
-            let mut tasks = self.tasks.lock().await;
-            if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-                let old_status = tasks[pos].status.as_str();
-                tasks[pos].status = status;
-                tracing::info!(
-                    "update_task_status: task={} {} -> {}",
-                    task_id,
-                    old_status,
-                    status_str
-                );
-                tasks[pos].updated_at = chrono::Utc::now().to_rfc3339();
-                let db = self.db.clone();
-                let tid = task_id.to_string();
-                let st = status_str.clone();
-                db.run_blocking(move |db| db.update_task_status(&tid, &st))
-                    .await?;
-                // Notify any waiter that status has changed. Lazily create the
-                // Notify so a transition that happens before the ReAct loop
-                // calls `status_notifier` is not lost (otherwise the later
-                // `notified().await` on a fresh Notify would block forever).
-                let notify = self
-                    .task_notify
-                    .lock()
-                    .await
-                    .entry(task_id.to_string())
-                    .or_insert_with(|| Arc::new(Notify::new()))
-                    .clone();
-                notify.notify_waiters();
-                // Wake the dispatcher when a task transitions to Pending.
-                if is_pending {
-                    self.dispatch_notify.notify_one();
-                }
-                // Reactivation clears the awaiting-answer gate: the task is
-                // being (re)dispatched (user answered, supplement flipped it,
-                // continue flow, ...), so background-job completions may once
-                // again auto-wake it if it pauses for scheduling reasons.
-                if is_pending || status_str == "running" {
-                    self.awaiting_answer.lock().await.remove(task_id);
-                }
-                needs_terminal_cleanup = if is_terminal { Some(pos) } else { None };
-            } else {
-                needs_terminal_cleanup = None;
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let Some(entry) = entry else {
+            // Task not in memory (e.g. already removed): no-op, matching the
+            // historical behavior of silently succeeding.
+            return Ok(());
+        };
+        let mut task = entry.lock().await;
+        let old_status = task.status.clone();
+        if old_status == status {
+            // Same-status refresh: still wake the dispatcher so a task
+            // re-registered as Pending (e.g. `create_task_with_first_message`)
+            // is picked up even though its status did not change.
+            if status == TaskStatus::Pending {
+                self.wake_dispatcher();
             }
+            return Ok(());
         }
-        // Terminal cleanup performed without holding `tasks` to avoid lock
-        // ordering inversion with `unmark_running` (which takes
-        // `running_tasks` before `tasks`).
-        if needs_terminal_cleanup.is_some() {
+        if !Self::can_transition(&old_status, &status) {
+            tracing::warn!(
+                "update_task_status: rejected illegal transition task={} {:?} -> {:?}",
+                task_id,
+                old_status,
+                status
+            );
+            return Ok(());
+        }
+        if let Err(e) = Self::persist_status(&self.db, task_id, status.as_str()).await {
+            tracing::error!(
+                "update_task_status: DB persist failed for task {}; transition {:?} -> {:?} aborted: {}",
+                task_id,
+                old_status,
+                status,
+                e
+            );
+            return Err(e);
+        }
+        task.status = status.clone();
+        task.updated_at = chrono::Utc::now().to_rfc3339();
+        tracing::info!(
+            "update_task_status: task={} {} -> {}",
+            task_id,
+            old_status.as_str(),
+            status.as_str()
+        );
+        let is_pending = status == TaskStatus::Pending;
+        let is_terminal = status.is_terminal();
+        drop(task);
+        drop(entry);
+        // Level-triggered wake: send on the existing watcher channel (or
+        // lazily create one) so the ReAct loop's pause-wait resolves.
+        let tx = {
+            let mut map = self.status_tx.lock().await;
+            map.entry(task_id.to_string())
+                .or_insert_with(|| watch::channel(status.clone()).0)
+                .clone()
+        };
+        let _ = tx.send(status.clone());
+        if is_pending {
+            self.wake_dispatcher();
+        }
+        if is_terminal {
             self.cleanup_task_maps(task_id).await;
-            if let Some(notify) = self.task_notify.lock().await.remove(task_id) {
-                notify.notify_waiters();
-            }
             self.tools.unregister_task(task_id).await;
-            let mut tasks = self.tasks.lock().await;
-            if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
-                tasks.remove(pos);
+            if let Some(tx) = self.status_tx.lock().await.remove(task_id) {
+                let _ = tx.send(status);
             }
+            self.tasks.lock().await.remove(task_id);
         }
         Ok(())
+    }
+
+    /// Centralized transition validation. Only transitions reachable from
+    /// real call sites are allowed; anything else (notably any mutation of a
+    /// terminal state except the explicit reopen/continue flows) is a bug and
+    /// is rejected.
+    fn can_transition(from: &TaskStatus, to: &TaskStatus) -> bool {
+        use TaskStatus::*;
+        match (from, to) {
+            // Claim by the dispatcher.
+            (Pending, Running) => true,
+            // Park / finish a queued task without dispatching it.
+            (Pending, Paused) | (Pending, PausedAwaitingAnswer) => true,
+            (Pending, Completed) | (Pending, Error) => true,
+            // Pause for a user reply / scheduling / budget checkpoint.
+            (Running, Paused) | (Running, PausedAwaitingAnswer) => true,
+            // Immediate resume: the ask was answered in the same turn
+            // (pause_turn → Pending while the handler is still alive).
+            (Running, Pending) => true,
+            // Natural completion / failure.
+            (Running, Completed) | (Running, Error) => true,
+            // Resume paths (user message, job completion, continue flow).
+            (Paused, Pending) | (PausedAwaitingAnswer, Pending) => true,
+            // Re-pause with an answer requirement.
+            (Paused, PausedAwaitingAnswer) => true,
+            // Defensive force-resume when a tool executes on a paused task
+            // (see `execute_step`; kept from the pre-validation era).
+            (Paused, Running) | (PausedAwaitingAnswer, Running) => true,
+            // Finish / fail a paused task (end_task's own path also exists,
+            // but explicit transitions are kept valid).
+            (Paused, Completed) | (Paused, Error) => true,
+            (PausedAwaitingAnswer, Completed) | (PausedAwaitingAnswer, Error) => true,
+            // User-driven exceptions: reopen a finished task for review
+            // (history flow), retry an errored task from its snapshot.
+            (Completed, Paused) | (Error, Paused) => true,
+            (Error, Pending) => true,
+            _ => false,
+        }
     }
 
     pub async fn cancellation_token(&self, task_id: &str) -> CancellationToken {
@@ -770,7 +922,7 @@ impl TaskExecutor {
     /// Remove `task_id` from the three per-task maps (`running_tasks`,
     /// `task_permits`, `task_cancellations`). Centralizes the three-line
     /// triplet that used to be copy-pasted at every cleanup site.
-    /// Does NOT touch `tasks` (working set) or `task_notify` — those have
+    /// Does NOT touch `tasks` (working set) or `status_tx` — those have
     /// ordering-sensitive callers (`update_task_status`, `unmark_running`)
     /// that need to remain in the lock-order path.
     pub async fn cleanup_task_maps(&self, task_id: &str) {
@@ -779,18 +931,10 @@ impl TaskExecutor {
         self.task_cancellations.lock().await.remove(task_id);
     }
 
-    /// Look up an in-memory `TaskInfo` by id. Equivalent to the
-    /// `list_tasks().await.into_iter().find(|t| t.id == task_id)` pattern
-    /// that was repeated at three call sites — using a method keeps the
-    /// scan colocated with the rest of the working-set code so any future
-    /// secondary index (e.g. HashMap-backed lookup) only needs one edit.
+    /// Look up an in-memory `TaskInfo` by id (O(1), per-task lock only).
     pub async fn get_task(&self, task_id: &str) -> Option<TaskInfo> {
-        self.tasks
-            .lock()
-            .await
-            .iter()
-            .find(|t| t.id == task_id)
-            .cloned()
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        Some(entry?.lock().await.clone())
     }
 
     /// Load a task from the database into the in-memory list if it is not
@@ -800,7 +944,7 @@ impl TaskExecutor {
     pub async fn ensure_task_loaded(&self, task_id: &str) -> anyhow::Result<()> {
         {
             let tasks = self.tasks.lock().await;
-            if tasks.iter().any(|t| t.id == task_id) {
+            if tasks.contains_key(task_id) {
                 return Ok(());
             }
         }
@@ -812,8 +956,8 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         // Re-check: another thread may have inserted this task between the
         // check above and the DB query.
-        if !tasks.iter().any(|t| t.id == task_id) {
-            tasks.push(task);
+        if !tasks.contains_key(task_id) {
+            tasks.insert(task_id.to_string(), Arc::new(Mutex::new(task)));
         }
         Ok(())
     }
@@ -831,7 +975,7 @@ impl TaskExecutor {
         {
             let mut tasks = self.tasks.lock().await;
             for record in pending {
-                if tasks.iter().any(|t| t.id == record.id) {
+                if tasks.contains_key(&record.id) {
                     continue;
                 }
                 // Force Pending: this loader only ever rehydrates tasks
@@ -840,23 +984,23 @@ impl TaskExecutor {
                 // the invariant explicit at the call site.
                 let mut info = TaskInfo::from_db_record(&record);
                 info.status = TaskStatus::Pending;
-                tasks.push(info);
+                tasks.insert(record.id.clone(), Arc::new(Mutex::new(info)));
                 loaded += 1;
             }
         }
         if loaded > 0 {
-            self.dispatch_notify.notify_one();
+            self.wake_dispatcher();
         }
         loaded
     }
 
-    pub async fn get_task_state(&self, task_id: &str) -> TaskStatus {
-        let tasks = self.tasks.lock().await;
-        tasks
-            .iter()
-            .find(|t| t.id == task_id)
-            .map(|t| t.status.clone())
-            .unwrap_or(TaskStatus::Error)
+    /// Current in-memory status of a task, or `None` when the task is not in
+    /// the working set (removed on terminal cleanup / `end_task` / restart).
+    /// Deliberately does NOT conflate "absent" with `Error`: callers that
+    /// previously probed for `Error` to detect removal must check for `None`.
+    pub async fn get_task_state(&self, task_id: &str) -> Option<TaskStatus> {
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        Some(entry?.lock().await.status.clone())
     }
 
     pub fn get_tools(&self) -> Arc<ToolsManager> {
@@ -884,15 +1028,16 @@ impl TaskExecutor {
             input
         );
         {
-            let mut tasks = self.tasks.lock().await;
-            if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-                let prev = task.status.as_str();
-                task.status = TaskStatus::Running;
-                if prev != "running" {
+            let entry = { self.tasks.lock().await.get(task_id).cloned() };
+            if let Some(entry) = entry {
+                let mut task = entry.lock().await;
+                let prev = task.status.clone();
+                if prev != TaskStatus::Running {
+                    task.status = TaskStatus::Running;
                     tracing::warn!(
                         "execute_step: task {} was {} before tool call, forcing Running",
                         task_id,
-                        prev
+                        prev.as_str()
                     );
                 }
             }
@@ -962,8 +1107,9 @@ impl TaskExecutor {
                 .await;
         }
         {
-            let mut tasks = self.tasks.lock().await;
-            if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            let entry = { self.tasks.lock().await.get(task_id).cloned() };
+            if let Some(entry) = entry {
+                let mut task = entry.lock().await;
                 task.steps.push(StepInfo {
                     id: uuid::Uuid::new_v4().to_string(),
                     step_index,
@@ -1017,10 +1163,10 @@ impl TaskExecutor {
 
     /// Atomically resolve a confirmation step and, when the caller wants to
     /// trust the risk level for the session, return the step's risk level.
-    /// The risk level is captured under the `tasks` lock so a concurrent
-    /// `end_task`/rollback cannot leave the caller trusting a step that was
-    /// already removed (the old `resolve_confirmation` command read the step
-    /// from a separate `list_tasks()` snapshot, racing with removal).
+    /// The risk level is captured from the per-task working set so a
+    /// concurrent `end_task`/rollback cannot leave the caller trusting a step
+    /// that was already removed (the old `resolve_confirmation` command read
+    /// the step from a separate `list_tasks()` snapshot, racing with removal).
     pub async fn resolve_confirmation(
         &self,
         step_id: &str,
@@ -1030,14 +1176,15 @@ impl TaskExecutor {
         let step_id_owned = step_id.to_string();
         db.run_blocking(move |db| db.confirm_step(&step_id_owned, confirmed))
             .await?;
-        let risk = self
-            .tasks
-            .lock()
-            .await
-            .iter()
-            .find_map(|t| t.steps.iter().find(|s| s.id == step_id))
-            .map(|s| s.risk_level);
-        Ok(risk)
+        let entries: Vec<Arc<Mutex<TaskInfo>>> =
+            self.tasks.lock().await.values().cloned().collect();
+        for entry in entries {
+            let task = entry.lock().await;
+            if let Some(step) = task.steps.iter().find(|s| s.id == step_id) {
+                return Ok(Some(step.risk_level));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -1097,10 +1244,9 @@ mod tests {
         }
         assert_eq!(db_status, "error");
         // Terminal status removed the task from the working set and released
-        // the running slot (get_task_state falls back to the Error sentinel
-        // for absent tasks).
+        // the running slot; the task is absent, not "error" in memory.
         assert!(!exec.running_tasks.lock().await.contains(&task.id));
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Error);
+        assert_eq!(exec.get_task_state(&task.id).await, None);
     }
 
     /// Dispatcher honors `max_concurrent` and drains all Pending tasks.
@@ -1167,7 +1313,7 @@ mod tests {
         assert_eq!(claimed.as_deref(), Some(task.id.as_str()));
 
         let state = exec.get_task_state(&task.id).await;
-        assert_eq!(state, TaskStatus::Running);
+        assert_eq!(state, Some(TaskStatus::Running));
         assert!(exec.running_tasks.lock().await.contains(&task.id));
         let db_status = exec
             .db
@@ -1196,7 +1342,7 @@ mod tests {
         exec.running_tasks.lock().await.remove(&task.id);
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(task.id.as_str()));
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Running);
+        assert_eq!(exec.get_task_state(&task.id).await, Some(TaskStatus::Running));
     }
 
     /// A task terminated by end_task between the old find/mark window must
@@ -1276,8 +1422,8 @@ mod tests {
         let status = exec.end_task(&task.id).await.unwrap();
         assert_eq!(status, TaskStatus::Completed);
         assert!(real_token.is_cancelled());
-        let state = exec.get_task_state(&task.id).await;
-        assert_eq!(state, TaskStatus::Error);
+        // end_task removes the task from the working set entirely.
+        assert_eq!(exec.get_task_state(&task.id).await, None);
     }
 
     #[tokio::test]
@@ -1406,15 +1552,19 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec.create_task("test").await.unwrap();
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Pending);
+        assert_eq!(
+            exec.get_task_state(&task.id).await,
+            Some(TaskStatus::Pending)
+        );
     }
 
     #[tokio::test]
-    async fn get_task_state_nonexistent_returns_error() {
+    async fn get_task_state_nonexistent_returns_none() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
-        assert_eq!(exec.get_task_state("nonexistent").await, TaskStatus::Error);
+        // Absent means "not in the working set", NOT Error.
+        assert_eq!(exec.get_task_state("nonexistent").await, None);
     }
 
     #[tokio::test]
@@ -1442,7 +1592,10 @@ mod tests {
 
         let claimed = exec2.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(task.id.as_str()));
-        assert_eq!(exec2.get_task_state(&task.id).await, TaskStatus::Running);
+        assert_eq!(
+            exec2.get_task_state(&task.id).await,
+            Some(TaskStatus::Running)
+        );
     }
 
     #[tokio::test]
@@ -1473,8 +1626,8 @@ mod tests {
         exec.update_task_status(&task.id, TaskStatus::Completed)
             .await
             .unwrap();
-        // Terminal status removes the task from the in-memory list
-        assert_eq!(exec.get_task_state(&task.id).await, TaskStatus::Error);
+        // Terminal status removes the task from the in-memory working set.
+        assert_eq!(exec.get_task_state(&task.id).await, None);
     }
 
     #[tokio::test]
@@ -1525,26 +1678,154 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn awaiting_answer_flag_set_and_cleared_on_reactivation() {
+    async fn awaiting_answer_pause_is_distinct_state() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec.create_task("ask me").await.unwrap();
 
-        assert!(!exec.is_awaiting_answer(&task.id).await);
-
-        // Simulate the ask pause path: set the gate, then pause.
-        exec.set_awaiting_answer(&task.id, true).await;
-        exec.update_task_status(&task.id, TaskStatus::Paused)
+        // The ask pause path pauses in PausedAwaitingAnswer.
+        exec.update_task_status(&task.id, TaskStatus::PausedAwaitingAnswer)
             .await
             .unwrap();
-        assert!(exec.is_awaiting_answer(&task.id).await);
+        assert_eq!(
+            exec.get_task_state(&task.id).await,
+            Some(TaskStatus::PausedAwaitingAnswer)
+        );
+        // Both pause flavors report is_paused; only the answer variant
+        // reports is_awaiting_answer.
+        let state = exec.get_task_state(&task.id).await.unwrap();
+        assert!(state.is_paused());
+        assert!(state.is_awaiting_answer());
+        // The wire/DB form stays "paused".
+        assert_eq!(state.as_str(), "paused");
 
-        // Reactivation (user answered 鈫?Pending) must clear the gate centrally.
+        // Reactivation (user answered → Pending) exits the awaiting state.
         exec.update_task_status(&task.id, TaskStatus::Pending)
             .await
             .unwrap();
-        assert!(!exec.is_awaiting_answer(&task.id).await);
+        assert_eq!(
+            exec.get_task_state(&task.id).await,
+            Some(TaskStatus::Pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_pause_is_not_awaiting_answer() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = TaskExecutor::new(db, tools, 3);
+        let task = exec.create_task("pause me").await.unwrap();
+        exec.update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+        let state = exec.get_task_state(&task.id).await.unwrap();
+        assert!(state.is_paused());
+        assert!(!state.is_awaiting_answer());
+        assert_eq!(state.as_str(), "paused");
+    }
+
+    #[tokio::test]
+    async fn terminal_tasks_need_explicit_reopen_to_reactivate() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = TaskExecutor::new(db, tools, 3);
+        let task = exec.create_task("t").await.unwrap();
+        exec.update_task_status(&task.id, TaskStatus::Completed)
+            .await
+            .unwrap();
+        // The terminal task was removed from the working set; any later
+        // update on the absent entry is a silent no-op, not a resurrection.
+        exec.update_task_status(&task.id, TaskStatus::Pending)
+            .await
+            .unwrap();
+        assert_eq!(exec.get_task_state(&task.id).await, None);
+        // In-memory resurrection is only possible through the explicit
+        // reopen path (Completed → Paused) after ensure_task_loaded.
+        exec.ensure_task_loaded(&task.id).await.unwrap();
+        exec.update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+        assert_eq!(
+            exec.get_task_state(&task.id).await,
+            Some(TaskStatus::Paused)
+        );
+        // And from Paused the task resumes via the normal Paused → Pending
+        // path (e.g. process_input / continue flow).
+        exec.update_task_status(&task.id, TaskStatus::Pending)
+            .await
+            .unwrap();
+        assert_eq!(
+            exec.get_task_state(&task.id).await,
+            Some(TaskStatus::Pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn status_watch_wakes_waiter_on_transition() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(TaskExecutor::new(db, tools, 3));
+        let task = exec.create_task("wait").await.unwrap();
+        exec.update_task_status(&task.id, TaskStatus::Running)
+            .await
+            .unwrap();
+        exec.update_task_status(&task.id, TaskStatus::Paused)
+            .await
+            .unwrap();
+
+        // Waiter subscribes AFTER the pause (the level-triggered value must
+        // still be visible) and wakes on the resume transition.
+        let exec2 = exec.clone();
+        let tid = task.id.clone();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut rx = exec2.subscribe_status(&tid).await;
+            let _ = rx.changed().await;
+            let _ = done_tx.send(exec2.get_task_state(&tid).await);
+        });
+
+        // Give the waiter a moment to register, then transition.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        exec.update_task_status(&task.id, TaskStatus::Pending)
+            .await
+            .unwrap();
+
+        let state = tokio::time::timeout(std::time::Duration::from_secs(2), done_rx)
+            .await
+            .expect("waiter must wake within 2s")
+            .unwrap();
+        assert_eq!(state, Some(TaskStatus::Pending));
+    }
+
+    #[tokio::test]
+    async fn same_status_pending_still_wakes_dispatcher() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(TaskExecutor::new(db, tools, 3));
+        let task = exec.create_task("already pending").await.unwrap();
+
+        // Re-registering as Pending (as `create_task_with_first_message`
+        // does after `ensure_task_loaded`) must wake the dispatcher even
+        // though the status did not change.
+        let mut rx = exec.subscribe_dispatch();
+        let before = *rx.borrow();
+        exec.update_task_status(&task.id, TaskStatus::Pending)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), rx.changed())
+            .await
+            .expect("dispatcher must be woken by a same-status Pending update");
+        assert!(*rx.borrow() > before);
+    }
+
+    #[tokio::test]
+    async fn unknown_status_string_maps_to_error() {
+        assert_eq!(TaskStatus::from_status_str("bogus"), TaskStatus::Error);
+        assert_eq!(TaskStatus::from_status_str("cancelled"), TaskStatus::Error);
+        assert_eq!(TaskStatus::from_status_str("paused"), TaskStatus::Paused);
+        // Both pause flavors serialize to the same wire string.
+        assert_eq!(TaskStatus::PausedAwaitingAnswer.as_str(), "paused");
     }
 
     #[tokio::test]
@@ -1565,16 +1846,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_task_clears_awaiting_and_job_buffers() {
+    async fn remove_task_clears_job_buffers_and_status_watcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = TaskExecutor::new(db, tools, 3);
         let task = exec.create_task("cleanup").await.unwrap();
-        exec.set_awaiting_answer(&task.id, true).await;
+        exec.update_task_status(&task.id, TaskStatus::PausedAwaitingAnswer)
+            .await
+            .unwrap();
         exec.add_job_completion(&task.id, "stranded").await;
+        let rx = exec.subscribe_status(&task.id).await;
+        let _ = rx; // a subscriber must not keep the task alive after removal
 
         exec.remove_task(&task.id).await;
-        assert!(!exec.is_awaiting_answer(&task.id).await);
+        assert_eq!(exec.get_task_state(&task.id).await, None);
         assert!(exec.drain_job_completions(&task.id).await.is_empty());
     }
 }

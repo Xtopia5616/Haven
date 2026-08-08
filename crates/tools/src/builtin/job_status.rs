@@ -20,7 +20,8 @@ impl Tool for JobStatusTool {
         "status".into()
     }
     fn description(&self) -> String {
-        "Check a background job's status by job_id".into()
+        "Check a single background job's status by job_id. Results are also pushed back automatically on completion — for an overview of all jobs use `jobs` instead of polling one by one."
+            .into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

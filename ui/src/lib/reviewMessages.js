@@ -30,8 +30,54 @@ export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
 		);
 	}
 	const dbIds = new Set(filteredDb.map((m) => m.id));
-	const streaming = existing.filter((m) => m.streaming);
-	return [...filteredDb, ...streaming.filter((m) => !dbIds.has(m.id))];
+	// Reasoning: DB-persisted reasoning (id `msg.*`) and live streaming
+	// reasoning (id `reasoning-*`) carry DIFFERENT ids for the same step,
+	// so plain id dedup leaves two "Thinking…" bubbles after a task switch
+	// mid-step. Dedup by content: the live block is kept only while its
+	// text is not already persisted in the DB (streaming or not yet
+	// reconciled). Same for thought text that the snap already finalized
+	// but that has not been written to the DB yet — keeping it is what
+	// prevents the "finalized-but-unpersisted" message from vanishing.
+	const liveReasoning = existing.filter((m) => m.type === 'reasoning');
+	const dbReasoningContents = new Set(
+		filteredDb.filter((m) => m.type === 'reasoning').map((m) => m.content)
+	);
+	const liveThought = existing.filter(
+		(m) => m.role === 'assistant' && m.id.startsWith('thought-')
+	);
+	const dbThoughtContents = new Set(
+		filteredDb.filter((m) => m.role === 'assistant').map((m) => m.content)
+	);
+	const streaming = existing.filter((m) => {
+		if (dbIds.has(m.id)) return false;
+		// Still streaming: always keep, whatever it is.
+		if (m.streaming) return true;
+		// Finalized live reasoning: drop when the DB already persisted the
+		// same text (the DB copy is authoritative).
+		if (m.type === 'reasoning') {
+			return m.content !== '' && !dbReasoningContents.has(m.content);
+		}
+		// Finalized live thought: keep only when the DB has no equivalent
+		// assistant message (prevents duplicates AND drops — the snap may
+		// have arrived before the DB write).
+		if (m.id.startsWith('thought-')) {
+			return m.content !== '' && !dbThoughtContents.has(m.content);
+		}
+		// Anything else finalized (user bubbles, tool cards) is represented
+		// by the DB copy; drop the live version.
+		return false;
+	});
+	// Ask cards: a task paused on an `ask` question loses its options and
+	// awaiting state when rebuilt from the DB (review builds `options: []`,
+	// `awaiting: false`). If a live ask card is still awaiting, prefer it
+	// over the DB card so the user can answer from the quick-reply buttons.
+	const liveAskAwaiting = existing.find((m) => m.type === 'ask' && m.awaiting);
+	if (liveAskAwaiting) {
+		filteredDb = filteredDb.filter((m) => !(m.type === 'ask'));
+		const others = streaming.filter((m) => m.id !== liveAskAwaiting.id);
+		return [...filteredDb, liveAskAwaiting, ...others];
+	}
+	return [...filteredDb, ...streaming];
 }
 
 export function buildReviewMessages(data) {
@@ -78,16 +124,27 @@ export function buildReviewMessages(data) {
 			// session message and rendered as an ask card instead of a raw
 			// JSON tool badge. Older records may store the question directly.
 			let askText = obs;
+			let askOptions = [];
 			if (obs) {
 				try {
 					const parsed = JSON.parse(obs);
 					if (parsed && typeof parsed.question === 'string') {
 						askText = parsed.question;
 					}
+					if (Array.isArray(parsed.options)) {
+						askOptions = parsed.options.map((o) =>
+							typeof o === 'string' ? o : String(o?.answer ?? o ?? '')
+						);
+					}
 				} catch {
 					// Not JSON — keep the raw text as-is.
 				}
 			}
+			// The task pauses to wait for the user's answer, so a paused
+			// task's ask card is still awaiting a reply. Without this, a
+			// task switch / reload renders the card without quick-reply
+			// buttons and the user cannot answer from the chat view.
+			const taskPaused = data.task?.status === 'Paused';
 			// When the model batches multiple ask calls into one step, the
 			// persisted assistant message joins the questions with "\n\n",
 			// while each step observes only its own question. Match either the
@@ -109,8 +166,8 @@ export function buildReviewMessages(data) {
 								...item,
 								type: 'ask',
 								toolName: 'ask',
-								options: [],
-								awaiting: false,
+								options: askOptions,
+								awaiting: taskPaused,
 							};
 						}
 						deduped = true;
@@ -128,8 +185,8 @@ export function buildReviewMessages(data) {
 			content: askText || '',
 			type: 'ask',
 			toolName: 'ask',
-			options: [],
-			awaiting: false,
+			options: askOptions,
+			awaiting: taskPaused,
 			voice: false,
 			time: formatMessageTime(step.created_at),
 			_ts: Date.parse(step.created_at) || 0,

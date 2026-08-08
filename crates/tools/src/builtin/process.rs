@@ -113,6 +113,13 @@ impl Tool for ProcessTool {
                 if let Some(cwd) = input["cwd"].as_str().filter(|s| !s.is_empty()) {
                     child.current_dir(cwd);
                 }
+                // Route launched commands through a locally detected proxy
+                // (same detection as the shell tool).
+                for (key, val) in crate::bg::proxy_env_vars() {
+                    if std::env::var_os(&key).is_none() {
+                        child.env(key, val);
+                    }
+                }
                 // Hide the console window when spawning GUI-less commands.
                 #[cfg(windows)]
                 {

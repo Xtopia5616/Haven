@@ -751,11 +751,13 @@ pub async fn list_mcp_tools(
                 command: config.command.clone(),
                 args: config.args.clone(),
                 env: config.env.clone(),
+                cwd: config.cwd.clone(),
                 url: config.url.clone(),
                 enabled: config.enabled,
                 status: McpClientStatus::Disconnected,
                 tools: vec![],
                 last_error: None,
+                diagnostic: None,
                 last_seen_at: None,
             });
         entry.enabled = config.enabled;
@@ -901,6 +903,7 @@ pub async fn update_mcp_server(
             || existing.command != config.command
             || existing.args != config.args
             || existing.env != config.env
+            || existing.cwd != config.cwd
             || existing.url != config.url;
         *existing = config.clone();
         loader.save().map_err(|e| log_err("update_mcp_server", e))?;
@@ -1363,6 +1366,14 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
         "stt".to_string(),
         serde_json::json!(!cfg.stt.api_key.is_empty()),
     );
+    let mut models_status = serde_json::Map::new();
+    for m in &cfg.llm.models {
+        models_status.insert(
+            m.name.clone(),
+            serde_json::json!(!m.endpoint.api_key.is_empty()),
+        );
+    }
+    status.insert("models".to_string(), serde_json::Value::Object(models_status));
     Ok(serde_json::Value::Object(status))
 }
 
@@ -1686,6 +1697,13 @@ pub async fn add_fact(
     object: String,
     tags: Option<Vec<String>>,
 ) -> Result<haven_memory::repositories::facts::Fact, String> {
+    use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
+    // Reject credential-like values up front so they never reach the facts
+    // table (the maintenance pass would purge them eventually, but the user
+    // should get immediate feedback instead of silent storage).
+    if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
+        return Err("refusing to store credential-like facts".into());
+    }
     let tags_owned = tags.unwrap_or_default();
     let tags: Vec<&str> = tags_owned.iter().map(|s| s.as_str()).collect();
     state
@@ -1700,47 +1718,6 @@ pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Re
         .db
         .delete_fact(&fact_id)
         .map_err(|e| log_err("delete_fact", e))
-}
-
-#[tauri::command]
-pub async fn get_preference(
-    state: State<'_, Arc<AppState>>,
-    key: String,
-) -> Result<Option<String>, String> {
-    state
-        .db
-        .get_preference(&key)
-        .map_err(|e| log_err("get_preference", e))
-}
-
-#[tauri::command]
-pub async fn list_preferences(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<(String, String)>, String> {
-    state
-        .db
-        .list_preferences()
-        .map_err(|e| log_err("list_preferences", e))
-}
-
-#[tauri::command]
-pub async fn update_preference(
-    state: State<'_, Arc<AppState>>,
-    key: String,
-    value: String,
-) -> Result<(), String> {
-    state
-        .db
-        .set_preference(&key, &value)
-        .map_err(|e| log_err("update_preference", e))
-}
-
-#[tauri::command]
-pub async fn delete_preference(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
-    state
-        .db
-        .delete_preference(&key)
-        .map_err(|e| log_err("delete_preference", e))
 }
 
 #[tauri::command]
@@ -2297,7 +2274,6 @@ mod tests {
             message_type: None,
             created_at: String::new(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![att("image/png", "aGVsbG8=")],
             voice: false,
         };
@@ -2336,7 +2312,6 @@ mod tests {
             message_type: None,
             created_at: String::new(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![],
             voice: false,
         };
@@ -2348,7 +2323,6 @@ mod tests {
             message_type: None,
             created_at: String::new(),
             tool_call_id: None,
-            parent_message_id: None,
             attachments: vec![],
             voice: false,
         };

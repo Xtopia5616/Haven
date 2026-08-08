@@ -19,6 +19,11 @@
 		image_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o', temperature: 0.2, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
 		audio_model: { provider: 'openai', api_style: '', model_name: 'gpt-4o-audio-preview', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
 		embedding_model: { provider: 'openai', api_style: '', model_name: 'text-embedding-3-small', temperature: 0, base_url: '', api_key: '', cost_per_1k_input_tokens: 0, cost_per_1k_output_tokens: 0, context_window: null },
+		// Named model library: reusable endpoint definitions roles reference.
+		// Each entry: { name, endpoint: {...} }. role_models maps a role key
+		// (e.g. `default_model`) to the library entry name it uses.
+		models: [],
+		role_models: {},
 		stt_use_audio_model: true,
 		vision_use_image_model: true,
 	});
@@ -32,6 +37,15 @@
 		embedding_model: false,
 		stt: false,
 	});
+
+	// Model library UI state: the popup manages named endpoints (`models`).
+	let libraryOpen = $state(false);
+	let editingIdx = $state(null); // index into llmConfig.models being edited; null = new
+	let libraryForm = $state(null); // { name, endpoint: {...} }
+	// Per-library-entry api_key configured status (from get_api_key_status).
+	let keyConfiguredModels = $state({});
+	// The six role keys; `audio_model` keeps its own inline card (STT handling).
+	const ROLE_KEYS = ['default_model', 'balanced_model', 'small_model', 'image_model', 'embedding_model', 'audio_model'];
 
 	// Single source of truth for the LLM endpoint cards; adding a model role
 	// here renders its card without duplicating markup. Cards are grouped:
@@ -50,8 +64,8 @@
 	// Per-card model discovery: fetched model IDs from the provider's
 	// `/models` endpoint, shown as autocomplete options on the Model field.
 	// `stt` holds STT-provider model lists fetched with the STT key.
-	let modelsByKey = $state({ stt: [] });
-	let modelFetching = $state({ stt: false });
+	let modelsByKey = $state({ stt: [], default_model: [], balanced_model: [], small_model: [], image_model: [], audio_model: [], embedding_model: [] });
+	let modelFetching = $state({ stt: false, default_model: false, balanced_model: false, small_model: false, image_model: false, audio_model: false, embedding_model: false });
 	let fetchTimers = {};
 	// Timestamp of the last fetch notification per card, so bursts of
 	// auto-fetch (focus / typing) don't spam the same message.
@@ -92,10 +106,10 @@
 	}
 
 	// Current value of the Audio Model card's API Style selector: either an LLM
-	// wire-protocol style (`auto` / `openai-chat` / …) or an `stt:*` provider.
+	// wire-protocol style (`openai-chat` / …) or an `stt:*` provider.
 	// Stored separately from `llmConfig.audio_model.api_style` so switching to
 	// an STT provider never clobbers the endpoint's LLM wire protocol.
-	let audioApiStyle = $state('auto');
+	let audioApiStyle = $state('openai-chat');
 
 	function isOpenAiCompatibleStt(provider) {
 		return OPENAI_COMPAT_STT.has(provider);
@@ -211,13 +225,11 @@
 			// LLM style picked (openai-chat): transcription routes through
 			// the audio_model endpoint, so there is no separate "LLM Adapter"
 			// STT option. The endpoint provider is fixed to the wire protocol.
-			if (v !== 'auto') {
-				stt.provider = 'llm';
-				llmConfig.audio_model.provider = 'openai';
-			}
+			stt.provider = 'llm';
+			llmConfig.audio_model.provider = 'openai';
 			audioApiStyle = v;
 		}
-		llmConfig[key].api_style = v === 'auto' ? '' : v;
+		llmConfig[key].api_style = v;
 		const url = styleDefaultBaseUrl[v];
 		if (url && !llmConfig[key].base_url.trim()) {
 			llmConfig[key].base_url = url;
@@ -358,7 +370,7 @@
 		{
 			id: 'files',
 			title: '文件与搜索工具',
-			hint: 'file / file_search 工具读取、总结与搜索的资源上限。',
+			hint: 'files 工具读取、总结与搜索的资源上限。',
 			fields: [
 				{ key: 'file_read_max_chars', label: '文件全读上限', unit: 'chars', danger: true, hint: '超过该大小的文件不整体读取，改用 offset/limit 分段。调大 = 大文件整读内存风险。' },
 				{ key: 'file_max_byte_read', label: '字节读取绝对上限', unit: 'bytes', mb: true, danger: true, hint: 'byte 模式单次读取的安全上限（不受调用方 limit 影响）。' },
@@ -458,6 +470,12 @@
 
 	let preferences = $state([]);
 	let prefLoaded = $state(false);
+	// Full facts management state (Memory section): every stored fact plus
+	// the manual-add form. Backed by list_facts / add_fact / delete_fact.
+	let facts = $state([]);
+	let factsLoaded = $state(false);
+	let newFact = $state({ predicate: '', object: '', tags: '' });
+	let addingFact = $state(false);
 	// Names of configured MCP servers, offered in the Audio Model card's
 	// Model field when the STT provider is an MCP server.
 	let mcpServerNames = $state([]);
@@ -488,6 +506,26 @@
 			if (!mounted) return;
 			if (settings) {
 				llmConfig = settings.llm || llmConfig;
+				// Seed the model library from the existing role endpoints on
+				// first load (or when the persisted library is empty), so role
+				// selection has entries to choose from. Also ensure every role
+				// has a role_models entry.
+				let seeded = false;
+				if (!Array.isArray(llmConfig.models) || llmConfig.models.length === 0) {
+					llmConfig.models = ROLE_KEYS.map((k) => ({
+						name: k,
+						endpoint: { ...llmConfig[k] },
+					}));
+					seeded = true;
+				}
+				llmConfig.role_models = llmConfig.role_models || {};
+				for (const k of ROLE_KEYS) {
+					if (seeded) {
+						llmConfig.role_models[k] = k;
+					} else if (!llmConfig.role_models[k]) {
+						llmConfig.role_models[k] = '';
+					}
+				}
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
 				audio = settings.audio || audio;
@@ -522,7 +560,7 @@
 				} else if (sttCfg && (sttCfg.provider !== 'mcp' || sttCfg.mcp_server || sttCfg.api_key || sttCfg.model || sttCfg.base_url)) {
 					audioApiStyle = `stt:${sttCfg.provider}`;
 				} else {
-					audioApiStyle = llmAudioStyle || 'auto';
+					audioApiStyle = llmAudioStyle || 'openai-chat';
 				}
 				mcpServerNames = (settings.mcp_servers || []).map((s) => s.name || '').filter(Boolean);
 			notification = settings.notification || notification;
@@ -540,7 +578,9 @@
 			addNotification(`加载设置失败: ${e}`, 'error', 4000);
 		}
 		try {
-			keyConfigured = await invoke('get_api_key_status');
+			const ks = await invoke('get_api_key_status');
+			keyConfigured = ks;
+			keyConfiguredModels = ks?.models || {};
 			if (!mounted) return;
 		} catch (e) {
 			addNotification(`获取 API Key 状态失败: ${e}`, 'error', 3000);
@@ -552,13 +592,14 @@
 			addNotification(`获取开机自启状态失败: ${e}`, 'error', 3000);
 		}
 		await loadPreferences();
+		await loadFacts();
 	});
 
 	async function loadPreferences() {
 		try {
-			const all = await invoke('list_preferences');
-			// filter out tool_usage counters (internal)
-			preferences = (all || []).filter(([k]) => !k.startsWith('tool_usage.') && !k.startsWith('tool_param.') && !k.startsWith('cfg.'));
+			const all = await invoke('list_facts');
+			// Preferences are facts tagged `preference` (single memory channel).
+			preferences = (all || []).filter((f) => (f.tags || []).includes('preference'));
 			prefLoaded = true;
 		} catch {
 			preferences = [];
@@ -566,12 +607,69 @@
 		}
 	}
 
-	async function deletePrefKey(key) {
+	async function deletePrefFact(factId) {
 		try {
-			await invoke('delete_preference', { key });
-			preferences = preferences.filter(([k]) => k !== key);
+			await invoke('delete_fact', { factId });
+			preferences = preferences.filter((f) => f.id !== factId);
 		} catch (e) {
 			addNotification(`删除偏好失败: ${e}`, 'error', 3000);
+		}
+	}
+
+	async function loadFacts() {
+		try {
+			facts = (await invoke('list_facts')) || [];
+			factsLoaded = true;
+		} catch {
+			facts = [];
+			logger.warn('settings', 'load facts error');
+		}
+	}
+
+	async function addFact() {
+		const predicate = newFact.predicate.trim();
+		const object = newFact.object.trim();
+		if (!predicate || !object) {
+			addNotification('请输入 predicate 和 object', 'error', 3000);
+			return;
+		}
+		addingFact = true;
+		try {
+			const tags = newFact.tags
+				.split(',')
+				.map((t) => t.trim())
+				.filter(Boolean);
+			const created = await invoke('add_fact', {
+				subject: 'user',
+				predicate,
+				object,
+				tags: tags.length ? tags : null,
+			});
+			facts = [created, ...facts];
+			// Keep the Preferences section in sync when the new fact carries
+			// the preference tag.
+			if ((created.tags || []).includes('preference')) {
+				preferences = [created, ...preferences];
+			}
+			newFact = { predicate: '', object: '', tags: '' };
+			addNotification('事实已保存', 'success', 2500);
+		} catch (e) {
+			addNotification(`添加事实失败: ${e}`, 'error', 3000);
+		} finally {
+			addingFact = false;
+		}
+	}
+
+	async function deleteFact(factId) {
+		try {
+			await invoke('delete_fact', { factId });
+			const removed = facts.find((f) => f.id === factId);
+			facts = facts.filter((f) => f.id !== factId);
+			if (removed && (removed.tags || []).includes('preference')) {
+				preferences = preferences.filter((f) => f.id !== factId);
+			}
+		} catch (e) {
+			addNotification(`删除事实失败: ${e}`, 'error', 3000);
 		}
 	}
 
@@ -709,6 +807,137 @@
 		const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 		return lum > 0.5 ? '#000000' : '#ffffff';
 	}
+
+	// --- Model library ------------------------------------------------------
+
+	function libraryModelOptions() {
+		return (llmConfig.models || []).map((m) => ({ value: m.name, label: m.name }));
+	}
+
+	// Role selection: pick a library entry (by name) and materialize its
+	// endpoint into the role field. `''` means the role keeps a custom config.
+	function selectRoleModel(roleKey, name) {
+		llmConfig.role_models[roleKey] = name;
+		const entry = (llmConfig.models || []).find((m) => m.name === name);
+		if (!entry) return;
+		llmConfig[roleKey] = { ...entry.endpoint };
+		if (roleKey === 'audio_model') {
+			// Sync the audio card's API-style state and STT routing from the
+			// selected library entry.
+			onApiStyleChange('audio_model', entry.endpoint.api_style || 'openai-chat');
+		}
+	}
+
+	// The endpoint a role currently uses, either from its library selection or
+	// its own inline config.
+	function roleEndpoint(roleKey) {
+		const name = llmConfig.role_models?.[roleKey];
+		const entry = name ? (llmConfig.models || []).find((m) => m.name === name) : null;
+		return entry ? entry.endpoint : llmConfig[roleKey];
+	}
+
+	function openLibrary() {
+		libraryOpen = true;
+		editingIdx = null;
+		libraryForm = null;
+	}
+
+	function startAddModel() {
+		editingIdx = null;
+		libraryForm = {
+			name: '',
+			endpoint: {
+				provider: 'openai',
+				api_style: '',
+				base_url: 'https://api.openai.com/v1',
+				api_key: '',
+				model_name: '',
+				temperature: 0.7,
+				context_window: null,
+				cost_per_1k_input_tokens: 0,
+				cost_per_1k_output_tokens: 0,
+			},
+		};
+	}
+
+	function startEditModel(idx) {
+		const m = llmConfig.models[idx];
+		editingIdx = idx;
+		libraryForm = {
+			name: m.name,
+			endpoint: { ...m.endpoint, api_key: '' }, // api_key is masked; keep on save
+		};
+	}
+
+	function deleteModel(idx) {
+		const name = llmConfig.models[idx]?.name;
+		if (!name) return;
+		// Reset any role referencing the deleted entry to its own config.
+		for (const k of ROLE_KEYS) {
+			if (llmConfig.role_models[k] === name) llmConfig.role_models[k] = '';
+		}
+		llmConfig.models.splice(idx, 1);
+		editingIdx = null;
+		libraryForm = null;
+	}
+
+	function saveModel() {
+		if (!libraryForm || !libraryForm.name.trim()) {
+			addNotification('请填写模型名称', 'error', 3000);
+			return;
+		}
+		const name = libraryForm.name.trim();
+		const existing = llmConfig.models.findIndex((m) => m.name === name);
+		if (editingIdx === null && existing !== -1) {
+			addNotification('模型名称已存在', 'error', 3000);
+			return;
+		}
+		// Preserve the previously stored api_key when the field was left empty.
+		const prevKey = editingIdx !== null ? (llmConfig.models[editingIdx]?.endpoint?.api_key || '') : '';
+		const endpoint = { ...libraryForm.endpoint, api_key: libraryForm.endpoint.api_key || prevKey };
+		if (editingIdx === null) {
+			llmConfig.models.push({ name, endpoint });
+		} else {
+			const oldName = llmConfig.models[editingIdx].name;
+			llmConfig.models[editingIdx] = { name, endpoint };
+			// Keep role references pointing at the renamed entry.
+			if (oldName !== name) {
+				for (const k of ROLE_KEYS) {
+					if (llmConfig.role_models[k] === oldName) llmConfig.role_models[k] = name;
+				}
+			}
+		}
+		editingIdx = null;
+		libraryForm = null;
+		addNotification('模型已保存', 'success', 2000);
+	}
+
+	function modelApiStyleOptions(name, currentStyle) {
+		if (name === 'audio_model' || (currentStyle || '').startsWith('stt:')) {
+			return [
+				{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+				...STT_STYLE_OPTIONS,
+			];
+		}
+		if (name === 'embedding_model') {
+			return [
+				{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+				{ value: 'llama.cpp', label: 'llama.cpp server (local)' },
+			];
+		}
+		return [
+			{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
+			{ value: 'llama.cpp', label: 'llama.cpp server' },
+			{ value: 'openai-responses', label: 'OpenAI Responses API' },
+			{ value: 'anthropic', label: 'Anthropic (Claude)' },
+			{ value: 'gemini', label: 'Google Gemini' },
+		];
+	}
+
+	function isModelApiKeyConfigured(name) {
+		return !!keyConfiguredModels[name];
+	}
+
 </script>
 
 <div class="settings-page">
@@ -729,187 +958,6 @@
 	</div>
 
 	{#if settingsTab === 'general'}
-	<div class="section">
-		<h2>LLM Configuration</h2>
-
-		{#snippet modelCard(card)}
-		<div class="model-card">
-			<h3>{card.label}</h3>
-			<p class="model-hint">{card.hint}</p>
-			{#if card.key !== 'audio_model'}
-				<div class="form-row">
-					<label for="{card.prefix}-provider">Provider</label>
-					<input id="{card.prefix}-provider" type="text" class="md-input" bind:value={llmConfig[card.key].provider} autocomplete="off" />
-				</div>
-			{/if}
-			<div class="form-row">
-				<label for="{card.prefix}-api-style">{card.key === 'audio_model' ? 'Provider' : 'API Style'}</label>
-				<MaterialSelect
-					id="{card.prefix}-api-style"
-					value={card.key === 'audio_model' ? audioApiStyle : (llmConfig[card.key].api_style || 'auto')}
-					options={card.key === 'audio_model'
-						? [
-							// Only wire protocols that accept audio input; the
-							// unsupported ones (anthropic, openai-responses)
-							// are omitted for this slot, as is the `gemini`
-							// LLM style — Gemini audio transcription is the
-							// `stt:gemini` option below.
-							{ value: 'auto', label: 'Auto (from provider)' },
-							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
-							...STT_STYLE_OPTIONS,
-						]
-						: card.key === 'embedding_model'
-							? [
-								// Embeddings only speak the OpenAI-compatible
-								// wire protocol (OpenAI, Ollama, LM Studio,
-								// vLLM, llama.cpp server — all expose
-								// `/embeddings`); chat-only styles are omitted.
-								{ value: 'auto', label: 'Auto (from provider)' },
-								{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
-								{ value: 'llama.cpp', label: 'llama.cpp server (local)' },
-							]
-							: [
-							{ value: 'auto', label: 'Auto (from provider)' },
-							{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
-							{ value: 'llama.cpp', label: 'llama.cpp server' },
-							{ value: 'openai-responses', label: 'OpenAI Responses API' },
-							{ value: 'anthropic', label: 'Anthropic (Claude)' },
-							{ value: 'gemini', label: 'Google Gemini' },
-						]}
-					onChange={(v) => onApiStyleChange(card.key, v)}
-				/>
-			</div>
-			{#if card.key === 'audio_model' && isAudioSttMode() && (isOpenAiCompatibleStt(audioSttProvider()) || isGeminiStt(audioSttProvider()))}
-				<div class="form-row">
-					<label for="{card.prefix}-base-url">Base URL</label>
-					<input id="{card.prefix}-base-url" type="text" class="md-input" bind:value={stt.base_url} placeholder={sttBasePlaceholder(audioSttProvider())} autocomplete="off" />
-				</div>
-			{:else}
-				<div class="form-row">
-					<label for="{card.prefix}-base-url">Base URL</label>
-					<input id="{card.prefix}-base-url" type="text" class="md-input" bind:value={llmConfig[card.key].base_url} placeholder={card.basePlaceholder} oninput={() => scheduleFetch(card.key)} autocomplete="off" />
-				</div>
-			{/if}
-			{#if card.key === 'audio_model' && isAudioSttMode() && isCloudSttProvider(audioSttProvider())}
-				<div class="form-row">
-					<label for="{card.prefix}-api-key">API Key</label>
-					<div class="key-status-row" class:key-not-configured={!keyConfigured.stt}>
-						<StatusDot color={keyConfigured.stt ? 'success' : 'outline'} />
-						<span class="key-configured-label">{keyConfigured.stt ? 'Configured' : 'Not Configured'}</span>
-						<button
-							id="{card.prefix}-api-key"
-							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog('stt', 'STT API Key')}
-						>
-							{keyConfigured.stt ? 'Change' : 'Set'}
-						</button>
-					</div>
-				</div>
-			{:else}
-				<div class="form-row">
-					<label for="{card.prefix}-api-key">API Key</label>
-					<div class="key-status-row" class:key-not-configured={!keyConfigured[card.key]}>
-						<StatusDot color={keyConfigured[card.key] ? 'success' : 'outline'} />
-						<span class="key-configured-label">{keyConfigured[card.key] ? 'Configured' : 'Not Configured'}</span>
-						<button
-							id="{card.prefix}-api-key"
-							class="md-btn md-btn--xs md-btn--outlined"
-							onclick={() => openKeyDialog(card.key, card.label)}
-						>
-							{keyConfigured[card.key] ? 'Change' : 'Set'}
-						</button>
-					</div>
-				</div>
-			{/if}
-			{#if card.key === 'audio_model' && isAudioSttMode()}
-				{#if audioSttProvider() === 'mcp'}
-					<div class="form-row">
-						<label for="{card.prefix}-model">MCP Server</label>
-						<div class="model-input-row">
-							<MaterialAutocomplete
-								id="{card.prefix}-model"
-								value={stt.mcp_server}
-								options={mcpServerNames.map((n) => ({ value: n, label: n }))}
-								placeholder="Pick a configured MCP server"
-								loading={false}
-								onChange={(v) => { stt.mcp_server = v; }}
-							/>
-						</div>
-					</div>
-				{:else if isCloudSttProvider(audioSttProvider())}
-					<div class="form-row">
-						<label for="{card.prefix}-model">Model</label>
-						<div class="model-input-row">
-							<MaterialAutocomplete
-								id="{card.prefix}-model"
-								value={stt.model}
-								options={sttModelOptions(audioSttProvider())}
-								placeholder={sttModelPlaceholder(audioSttProvider())}
-								loading={modelFetching.stt}
-								onChange={(v) => { stt.model = v; }}
-								onFocus={() => scheduleSttFetch()}
-							/>
-						</div>
-					</div>
-				{/if}
-			{:else}
-				<div class="form-row">
-					<label for="{card.prefix}-model">Model</label>
-					<div class="model-input-row">
-						<MaterialAutocomplete
-							id="{card.prefix}-model"
-							value={llmConfig[card.key].model_name}
-							options={(modelsByKey[card.key] || []).map((m) => ({ value: m.id, label: m.name || m.id }))}
-							placeholder="Type or pick from fetched models"
-							loading={modelFetching[card.key]}
-							onChange={(v) => {
-								llmConfig[card.key].model_name = v;
-								const info = (modelsByKey[card.key] || []).find((m) => m.id === v);
-								if (info?.context_window && !llmConfig[card.key].context_window) {
-									llmConfig[card.key].context_window = info.context_window;
-								}
-							}}
-							onFocus={() => scheduleFetch(card.key)}
-						/>
-					</div>
-				</div>
-			{/if}
-		<div class="form-row">
-			<label for="{card.prefix}-temp">Temperature</label>
-			<MaterialNumberField id="{card.prefix}-temp" value={llmConfig[card.key].temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig[card.key].temperature = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="{card.prefix}-context-window">Context Window</label>
-			<MaterialNumberField id="{card.prefix}-context-window" value={llmConfig[card.key].context_window ?? 0} step={1024} min={0} onChange={(v) => { llmConfig[card.key].context_window = v > 0 ? Math.round(v) : null; }} />
-		</div>
-		<p class="cost-hint">Leave empty to auto-detect. Context compaction triggers when estimated history reaches {Math.round(contextLimits.compaction_ratio * 100)}% of this (set in config.toml under [context_limits]).</p>
-		<div class="form-row cost-row">
-			<label for="{card.prefix}-cost-in">Cost In ($/1K)</label>
-			<MaterialNumberField id="{card.prefix}-cost-in" value={llmConfig[card.key].cost_per_1k_input_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig[card.key].cost_per_1k_input_tokens = v; }} />
-			<span class="cost-sep">/</span>
-			<label for="{card.prefix}-cost-out">Out ($/1K)</label>
-			<MaterialNumberField id="{card.prefix}-cost-out" value={llmConfig[card.key].cost_per_1k_output_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig[card.key].cost_per_1k_output_tokens = v; }} />
-		</div>
-		<p class="cost-hint">USD per 1K tokens (input/output). Leave 0 to disable cost display for this model.</p>
-	</div>
-	{/snippet}
-
-		<h3 class="model-group-heading">Core Models</h3>
-		<div class="model-grid">
-			{#each coreModelCards as card}
-				{@render modelCard(card)}
-			{/each}
-		</div>
-
-		<h3 class="model-group-heading">Specialized Models</h3>
-		<div class="model-grid">
-			{#each specializedModelCards as card}
-				{@render modelCard(card)}
-			{/each}
-		</div>
-
-		<p class="model-hint">录音转写与图片理解使用专用模型的路由开关已移至「输入格式」标签页。</p>
-	</div>
 
 	<div class="section">
 		<h2>Hotkeys</h2>
@@ -950,7 +998,7 @@
 
 	<div class="section">
 		<h2>STT (Speech-to-Text)</h2>
-		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 卡的 Provider 下拉框及其字段中完成。此处仅设置转写超时。</p>
+		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 行的 API Style 下拉框及其字段中完成。此处仅设置转写超时。</p>
 		<div class="form-row">
 			<label for="stt-timeout">Timeout (sec)</label>
 			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(v) => { stt.timeout_secs = v; }} />
@@ -1023,6 +1071,58 @@
 				<span class="recall-hint">上次清理 {memoryMaintenance.lastCount} 项</span>
 			{/if}
 		</div>
+		<h3 class="model-group-heading">Facts</h3>
+		<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 facts 工具的 remember / forget 操作更新这里。</p>
+		<div class="form-row add-fact-row">
+			<input
+				type="text"
+				class="md-input"
+				placeholder="predicate (e.g. email)"
+				bind:value={newFact.predicate}
+				autocomplete="off"
+			/>
+			<input
+				type="text"
+				class="md-input"
+				placeholder="object (e.g. alice@example.com)"
+				bind:value={newFact.object}
+				autocomplete="off"
+			/>
+			<input
+				type="text"
+				class="md-input"
+				placeholder="tags (optional, comma-separated)"
+				bind:value={newFact.tags}
+				autocomplete="off"
+			/>
+			<button class="md-btn" onclick={addFact} disabled={addingFact}>
+				{addingFact ? 'Adding…' : 'Add Fact'}
+			</button>
+		</div>
+		{#if factsLoaded && facts.length > 0}
+			<div class="pref-list">
+				{#each facts as fact}
+					<div class="pref-row">
+						<span class="pref-key">
+							{#if fact.subject !== 'user'}{fact.subject}:{/if}{fact.predicate}
+						</span>
+						<span class="pref-value">
+							{#if fact.source === 'inferred'}
+								<span class="pref-tag pref-tag--inf">inferred</span>
+							{:else}
+								<span class="pref-tag pref-tag--user">user</span>
+							{/if}
+							{fact.object}
+						</span>
+						<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deleteFact(fact.id)} title="Delete fact">
+							&times;
+						</button>
+					</div>
+				{/each}
+			</div>
+		{:else if factsLoaded}
+			<p class="model-hint">No facts recorded yet. They will appear here as you use Haven.</p>
+		{/if}
 	</div>
 
 	<div class="section appearance-section">
@@ -1093,21 +1193,21 @@
 
 	<div class="section pref-section">
 		<h2>Preferences</h2>
-		<p class="model-hint" style="margin-bottom: var(--md-sys-space-md)">Learned preferences from your interactions. User-set values take priority over inferred values.</p>
+		<p class="model-hint" style="margin-bottom: var(--md-sys-space-md)">Learned preferences from your interactions, stored as memory facts. User-set values take priority over inferred values.</p>
 		{#if prefLoaded && preferences.length > 0}
 			<div class="pref-list">
-				{#each preferences as [key, value]}
+				{#each preferences as fact}
 					<div class="pref-row">
-						<span class="pref-key">{key.trimStart('inferred.')}</span>
+						<span class="pref-key">{fact.predicate}</span>
 						<span class="pref-value">
-							{#if value.startsWith('[inferred]')}
+							{#if fact.source === 'inferred'}
 								<span class="pref-tag pref-tag--inf">inferred</span>
-							{:else if value.startsWith('[user]')}
+							{:else}
 								<span class="pref-tag pref-tag--user">user</span>
 							{/if}
-							{value.replace('[inferred] ', '').replace('[user] ', '')}
+							{fact.object}
 						</span>
-						<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deletePrefKey(key)} title="Delete preference">
+						<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deletePrefFact(fact.id)} title="Delete preference">
 							&times;
 						</button>
 					</div>
@@ -1182,6 +1282,226 @@
 	{/if}
 
 	{#if settingsTab === 'input'}
+	<div class="section">
+		<div class="llm-head">
+			<h2>LLM Configuration</h2>
+			<button class="md-btn md-btn--outlined" onclick={openLibrary}>管理模型库</button>
+		</div>
+		<p class="model-hint">每个模型角色从「模型库」中选择一个模型使用。点击「管理模型库」可添加、编辑、删除不同种类的模型。录音转写与图片理解的模型路由开关在下方对应的输入格式卡片中配置。</p>
+
+		{#snippet rolePicker(card)}
+		<div class="model-card">
+			<div class="picker-card">
+				<div class="model-field model-role">
+					<span class="field-label">{card.label}</span>
+					<div class="role-hint">{card.hint}</div>
+				</div>
+				<div class="model-field">
+					<span class="field-label">模型库</span>
+					<MaterialSelect
+						id="{card.prefix}-model-lib"
+						value={llmConfig.role_models[card.key] || ''}
+						options={libraryModelOptions()}
+						onChange={(v) => selectRoleModel(card.key, v)}
+					/>
+				</div>
+				<div class="model-field">
+					<span class="field-label">当前模型</span>
+					{#if llmConfig.role_models[card.key]}
+						<span class="current-model">{roleEndpoint(card.key)?.model_name || '—'}</span>
+					{:else}
+						<span class="current-model custom">自定义: {llmConfig[card.key]?.model_name || '—'}</span>
+					{/if}
+				</div>
+			</div>
+			{#if card.key === 'audio_model'}
+				{#if isAudioSttMode()}
+					<div class="model-row audio-transport">
+						<div class="model-field">
+							<span class="field-label">STT 提供商</span>
+							<span class="provider-note" title="Audio 行的 Provider 由 API Style 决定（LLM 或 STT 提供商）">LLM / STT</span>
+						</div>
+						<div class="model-field">
+							<span class="field-label">Base URL</span>
+							{#if isOpenAiCompatibleStt(audioSttProvider()) || isGeminiStt(audioSttProvider())}
+								<input id="au-base-url" type="text" class="md-input" bind:value={stt.base_url} placeholder={sttBasePlaceholder(audioSttProvider())} autocomplete="off" />
+							{:else}
+								<span class="provider-note">由提供商默认</span>
+							{/if}
+						</div>
+						<div class="model-field">
+							<span class="field-label">Model</span>
+							{#if audioSttProvider() === 'mcp'}
+								<MaterialAutocomplete
+									id="au-model"
+									value={stt.mcp_server}
+									options={mcpServerNames.map((n) => ({ value: n, label: n }))}
+									placeholder="Pick a configured MCP server"
+									loading={false}
+									onChange={(v) => { stt.mcp_server = v; }}
+								/>
+							{:else if isCloudSttProvider(audioSttProvider())}
+								<MaterialAutocomplete
+									id="au-model"
+									value={stt.model}
+									options={sttModelOptions(audioSttProvider())}
+									placeholder={sttModelPlaceholder(audioSttProvider())}
+									loading={modelFetching.stt}
+									onChange={(v) => { stt.model = v; }}
+									onFocus={() => scheduleSttFetch()}
+								/>
+							{:else}
+								<span class="provider-note">—</span>
+							{/if}
+						</div>
+						<div class="model-field">
+							<span class="field-label">API Key</span>
+							<div class="key-cell" class:key-not-configured={!keyConfigured.stt}>
+								<StatusDot color={keyConfigured.stt ? 'success' : 'outline'} />
+								<button
+									id="au-api-key"
+									class="md-btn md-btn--xs md-btn--outlined"
+									title={keyConfigured.stt ? 'Configured' : 'Not Configured'}
+									onclick={() => openKeyDialog('stt', 'STT API Key')}
+								>
+									{keyConfigured.stt ? 'Change' : 'Set'}
+								</button>
+							</div>
+						</div>
+					</div>
+				{:else}
+					<div class="model-row">
+						<div class="model-field">
+							<span class="field-label">Temp</span>
+							<MaterialNumberField id="au-temp" value={llmConfig.audio_model.temperature} step={0.1} min={0} max={2} onChange={(v) => { llmConfig.audio_model.temperature = v; }} />
+						</div>
+						<div class="model-field">
+							<span class="field-label">Context</span>
+							<MaterialNumberField id="au-context-window" value={llmConfig.audio_model.context_window ?? 0} step={1024} min={0} onChange={(v) => { llmConfig.audio_model.context_window = v > 0 ? Math.round(v) : null; }} />
+						</div>
+						<div class="model-field">
+							<span class="field-label">Cost $/1K in / out</span>
+							<div class="cost-cell">
+								<MaterialNumberField id="au-cost-in" value={llmConfig.audio_model.cost_per_1k_input_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig.audio_model.cost_per_1k_input_tokens = v; }} />
+								<span class="cost-sep">/</span>
+								<MaterialNumberField id="au-cost-out" value={llmConfig.audio_model.cost_per_1k_output_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig.audio_model.cost_per_1k_output_tokens = v; }} />
+							</div>
+						</div>
+					</div>
+				{/if}
+			{/if}
+		</div>
+		{/snippet}
+
+		<div class="model-list">
+			<div class="model-group">Core Models</div>
+			{#each coreModelCards as card}
+				{@render rolePicker(card)}
+			{/each}
+			<div class="model-group">Specialized Models</div>
+			{#each specializedModelCards as card}
+				{@render rolePicker(card)}
+			{/each}
+		</div>
+
+		<p class="cost-hint">Leave empty to auto-detect. Context compaction triggers when estimated history reaches {Math.round(contextLimits.compaction_ratio * 100)}% of this (set in config.toml under [context_limits]).</p>
+		<p class="cost-hint">USD per 1K tokens (input/output). Leave 0 to disable cost display for this model.</p>
+	</div>
+
+	{#if libraryOpen}
+	<MaterialDialog open={true} title="模型库" onClose={() => { libraryOpen = false; libraryForm = null; }}>
+		{#snippet children()}
+			<div class="lib-list">
+				{#each llmConfig.models as m, idx (m.name)}
+					<div class="lib-item">
+						<div class="lib-item-main">
+							<span class="lib-name">{m.name}</span>
+							<span class="lib-desc">{m.endpoint?.model_name || '—'} · {m.endpoint?.provider || '—'}</span>
+							<span class="lib-key">
+								<StatusDot color={isModelApiKeyConfigured(m.name) ? 'success' : 'outline'} />
+								{isModelApiKeyConfigured(m.name) ? '已配置' : '未配置'}
+							</span>
+						</div>
+						<div class="lib-item-actions">
+							<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => startEditModel(idx)}>编辑</button>
+							<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deleteModel(idx)}>删除</button>
+						</div>
+					</div>
+				{/each}
+				{#if (llmConfig.models || []).length === 0}
+					<p class="model-hint">模型库为空。点击「添加模型」创建第一个模型。</p>
+				{/if}
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			<button class="md-btn" onclick={startAddModel}>添加模型</button>
+		{/snippet}
+	</MaterialDialog>
+	{/if}
+
+	{#if libraryForm}
+	<MaterialDialog open={true} title={editingIdx === null ? '添加模型' : '编辑模型'} onClose={() => { libraryForm = null; }}>
+		{#snippet children()}
+			<div class="lib-form">
+				<div class="model-field">
+					<span class="field-label">名称</span>
+					<input type="text" class="md-input" bind:value={libraryForm.name} placeholder="唯一名称，角色据此选择" autocomplete="off" />
+				</div>
+				<div class="model-field">
+					<span class="field-label">Provider</span>
+					<input type="text" class="md-input" bind:value={libraryForm.endpoint.provider} autocomplete="off" />
+				</div>
+				<div class="model-field">
+					<span class="field-label">API Style</span>
+					<MaterialSelect
+						id="lib-api-style"
+						value={libraryForm.endpoint.api_style || 'openai-chat'}
+						options={modelApiStyleOptions(libraryForm.name, libraryForm.endpoint.api_style)}
+						onChange={(v) => { libraryForm.endpoint.api_style = v; }}
+					/>
+				</div>
+				<div class="model-field">
+					<span class="field-label">Base URL</span>
+					<input type="text" class="md-input" bind:value={libraryForm.endpoint.base_url} autocomplete="off" />
+				</div>
+				<div class="model-field">
+					<span class="field-label">Model</span>
+					<input type="text" class="md-input" bind:value={libraryForm.endpoint.model_name} placeholder="模型标识" autocomplete="off" />
+				</div>
+				<div class="model-field">
+					<span class="field-label">API Key</span>
+					<input type="password" class="md-input" bind:value={libraryForm.endpoint.api_key} placeholder={isModelApiKeyConfigured(libraryForm.name) ? '已配置，留空保持不变' : ''} autocomplete="off" />
+				</div>
+				<div class="lib-form-row">
+					<div class="model-field">
+						<span class="field-label">Temp</span>
+						<MaterialNumberField id="lib-temp" value={libraryForm.endpoint.temperature} step={0.1} min={0} max={2} onChange={(v) => { libraryForm.endpoint.temperature = v; }} />
+					</div>
+					<div class="model-field">
+						<span class="field-label">Context</span>
+						<MaterialNumberField id="lib-context" value={libraryForm.endpoint.context_window ?? 0} step={1024} min={0} onChange={(v) => { libraryForm.endpoint.context_window = v > 0 ? Math.round(v) : null; }} />
+					</div>
+				</div>
+				<div class="lib-form-row">
+					<div class="model-field">
+						<span class="field-label">Cost $/1K in</span>
+						<MaterialNumberField id="lib-cost-in" value={libraryForm.endpoint.cost_per_1k_input_tokens ?? 0} step={0.01} min={0} onChange={(v) => { libraryForm.endpoint.cost_per_1k_input_tokens = v; }} />
+					</div>
+					<div class="model-field">
+						<span class="field-label">Cost $/1K out</span>
+						<MaterialNumberField id="lib-cost-out" value={libraryForm.endpoint.cost_per_1k_output_tokens ?? 0} step={0.01} min={0} onChange={(v) => { libraryForm.endpoint.cost_per_1k_output_tokens = v; }} />
+					</div>
+				</div>
+			</div>
+		{/snippet}
+		{#snippet footer()}
+			<button class="md-btn" onclick={() => { libraryForm = null; }}>取消</button>
+			<button class="md-btn md-btn--filled" onclick={saveModel}>保存</button>
+		{/snippet}
+	</MaterialDialog>
+	{/if}
+
+
 	<div class="section">
 		<h2>输入格式</h2>
 		<p class="model-hint">每种输入格式的处理方式与限制。保存后对聊天输入框生效，后端校验使用相同配置。</p>
@@ -1416,25 +1736,156 @@
 		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase; letter-spacing: 1px; margin-bottom: var(--md-sys-space-lg);
 	}
-	.model-card {
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium); padding: var(--md-sys-space-md); margin-bottom: var(--md-sys-space-md);
-	}
-	.model-card h3 { font-size: 14px; font-weight: 600; color: var(--md-sys-color-primary); margin-bottom: var(--md-sys-space-md); }
 	.model-group-heading {
 		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-lg); margin-bottom: var(--md-sys-space-sm);
 		text-transform: uppercase; letter-spacing: 0.5px;
 	}
-	.model-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+	.model-list {
+		display: flex;
+		flex-direction: column;
 		gap: var(--md-sys-space-md);
 	}
-	.model-grid .model-card { margin-bottom: 0; }
-	.model-input-row { display: flex; align-items: center; gap: var(--md-sys-space-sm); flex: 1; min-width: 0; }
-	.model-input-row .md-input { flex: 1; min-width: 0; }
+	.model-group {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 1px;
+		color: var(--md-sys-color-primary);
+		margin: var(--md-sys-space-md) 0 var(--md-sys-space-xs);
+	}
+	.model-group:first-child { margin-top: 0; }
+	.llm-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.llm-head h2 { margin: 0; }
+	.picker-card {
+		display: grid;
+		grid-template-columns: minmax(200px, 1.2fr) minmax(180px, 1fr) minmax(160px, 1fr);
+		gap: var(--md-sys-space-lg);
+		align-items: end;
+	}
+	.current-model {
+		font-size: 13px;
+		color: var(--md-sys-color-primary);
+		font-weight: 500;
+		word-break: break-word;
+	}
+	.current-model.custom {
+		color: var(--md-sys-color-on-surface-variant);
+		font-weight: 400;
+	}
+	.lib-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-sm);
+		max-height: 40vh;
+		overflow-y: auto;
+	}
+	.lib-item {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.lib-item-main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+	.lib-name {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--md-sys-color-on-surface);
+	}
+	.lib-desc {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.lib-key {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.lib-item-actions {
+		display: flex;
+		gap: var(--md-sys-space-xs);
+		flex-shrink: 0;
+	}
+	.lib-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-md);
+	}
+	.lib-form-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--md-sys-space-md);
+	}
+	.model-card {
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-lowest);
+		padding: var(--md-sys-space-md);
+	}
+	.model-row {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+		gap: var(--md-sys-space-md);
+		align-items: end;
+	}
+	.audio-transport {
+		margin-top: var(--md-sys-space-md);
+		padding-top: var(--md-sys-space-md);
+		border-top: 1px dashed var(--md-sys-color-outline-variant);
+	}
+	.model-field {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.model-field .md-input { width: 100%; }
+	.model-field :global(.md-number-field) { width: 100%; }
+	.model-field :global(.md-select-container),
+	.model-field :global(.ma-root) { width: 100%; }
+	.field-label {
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--md-sys-color-on-surface-variant);
+		white-space: nowrap;
+	}
+	.model-role .field-label {
+		color: var(--md-sys-color-primary);
+		font-size: 13px;
+	}
+	.role-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: 2px; line-height: 1.4; }
+	.provider-note { font-size: 11px; color: var(--md-sys-color-on-surface-variant); font-style: italic; }
+	.key-cell {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		min-height: var(--md-comp-textfield-container-height);
+	}
+	.key-cell .md-btn { flex-shrink: 0; min-width: 64px; }
+	.cost-cell { display: flex; align-items: center; gap: 4px; }
+	.cost-cell :global(.md-number-field) { width: 74px; flex-shrink: 0; }
 	.key-input-row { display: flex; align-items: center; gap: var(--md-sys-space-xs); }
 	.key-input-row .md-input { flex: 1; min-width: 0; }
 	.key-visibility-btn {
@@ -1463,15 +1914,10 @@
 	.form-row label,
 	.form-row .form-label { width: 120px; color: var(--md-sys-color-on-surface-variant); font-size: 13px; flex-shrink: 0; }
 
-	.cost-row {
-		flex-wrap: wrap;
-		gap: var(--md-sys-space-sm) var(--md-sys-space-md);
-	}
-	.cost-row label { width: auto; font-size: 12px; }
-	.cost-row :global(.md-number-field) { width: 90px; flex-shrink: 0; }
 	.cost-sep {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
+		font-size: 12px;
+		flex-shrink: 0;
 	}
 	.cost-hint {
 		font-size: 11px;
@@ -1593,25 +2039,6 @@
 		display: block;
 		margin: var(--md-sys-space-md) auto 0;
 		z-index: 1;
-	}
-	.key-status-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		flex: 1;
-		min-height: var(--md-comp-textfield-container-height);
-	}
-	.key-configured-label {
-		color: var(--md-sys-color-success);
-		font-size: 13px;
-		font-weight: 500;
-		flex: 1;
-	}
-	.key-status-row.key-not-configured {
-		color: var(--md-sys-color-on-surface-variant);
-	}
-	.key-status-row.key-not-configured .key-configured-label {
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.recall-row {
 		display: flex;

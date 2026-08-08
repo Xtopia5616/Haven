@@ -150,6 +150,26 @@ impl Default for ModelEndpoint {
     }
 }
 
+/// A named entry in the model library. `endpoint` holds a reusable endpoint
+/// definition; `name` is the unique id referenced by role selection in the
+/// settings UI. Roles are materialized copies of an entry's endpoint, so the
+/// agent/router continue to read role fields directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ModelEntry {
+    pub name: String,
+    pub endpoint: ModelEndpoint,
+}
+
+impl Default for ModelEntry {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            endpoint: ModelEndpoint::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LlmConfig {
@@ -159,6 +179,15 @@ pub struct LlmConfig {
     pub image_model: ModelEndpoint,
     pub audio_model: ModelEndpoint,
     pub embedding_model: ModelEndpoint,
+    /// Model library: named, reusable endpoint definitions that roles can
+    /// reference in the settings UI. Each entry's `name` is unique.
+    #[serde(default)]
+    pub models: Vec<ModelEntry>,
+    /// Maps a role key (e.g. `default_model`) to the name of the model-library
+    /// entry the role is configured to use. Purely informational for the
+    /// settings UI: the agent reads the materialized role fields directly.
+    #[serde(default)]
+    pub role_models: HashMap<String, String>,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
     // §2.3/5.1: retry backoff parameters
@@ -185,6 +214,8 @@ impl Default for LlmConfig {
             image_model: ModelEndpoint::default(),
             audio_model: ModelEndpoint::default(),
             embedding_model: ModelEndpoint::default(),
+            models: Vec::new(),
+            role_models: HashMap::new(),
             max_total_duration_secs: 180,
             retry_base_secs: 2,
             retry_factor: 2,
@@ -193,6 +224,18 @@ impl Default for LlmConfig {
             stt_use_audio_model: true,
             vision_use_image_model: true,
         }
+    }
+}
+
+impl LlmConfig {
+    /// Look up a model-library entry by its unique name.
+    pub fn model_by_name(&self, name: &str) -> Option<&ModelEndpoint> {
+        self.models.iter().find(|m| m.name == name).map(|m| &m.endpoint)
+    }
+
+    /// Mutably look up a model-library entry by its unique name.
+    pub fn model_by_name_mut(&mut self, name: &str) -> Option<&mut ModelEndpoint> {
+        self.models.iter_mut().find(|m| m.name == name).map(|m| &mut m.endpoint)
     }
 }
 
@@ -258,8 +301,7 @@ pub struct ContextLimitsConfig {
     /// Default cap (in chars) for tool outputs. Tools without a per-tool
     /// `tool_settings.*.max_output_chars` use this value.
     pub max_tool_output_chars: usize,
-    /// Cap (in chars) for transcripts built for memory fact/preference
-    /// inference.
+    /// Cap (in chars) for transcripts built for memory fact inference.
     pub max_transcript_chars: usize,
     // —— user input attachments ——
     /// Max images attached to one user message.
@@ -291,7 +333,7 @@ pub struct ContextLimitsConfig {
     pub file_max_byte_read: u64,
     /// Cap on image bytes sent to the vision model.
     pub file_vision_max_bytes: u64,
-    // —— file_search tool ——
+    // —— files tool: search operation ——
     /// Snippet chars around each content-mode match.
     pub search_snippet_chars: usize,
     /// Upper clamp for `max_results` — untrusted input cannot disable the cap.
@@ -307,7 +349,7 @@ pub struct ContextLimitsConfig {
     pub partial_checkpoint_min_chars: usize,
     /// Min wall-clock seconds between partial-stream checkpoints.
     pub partial_checkpoint_interval_secs: u64,
-    /// Steps between mid-task fact/preference re-inference runs.
+    /// Steps between mid-task fact re-inference runs.
     pub fact_infer_interval_steps: u32,
     /// Max known facts listed in the extraction prompt as context.
     pub max_known_facts: usize,
@@ -755,6 +797,10 @@ pub struct McpServerConfig {
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<String>,
+    /// Working directory to spawn the stdio server process from. When set,
+    /// relative paths in `command`/`args` resolve against it; when absent the
+    /// server spawns from the app's working directory.
+    pub cwd: Option<String>,
     /// Endpoint URL for HTTP transports (e.g. `http://localhost:3001/mcp`).
     pub url: String,
     pub enabled: bool,
@@ -768,6 +814,7 @@ impl Default for McpServerConfig {
             command: String::new(),
             args: Vec::new(),
             env: Vec::new(),
+            cwd: None,
             url: String::new(),
             enabled: true,
         }
@@ -829,6 +876,9 @@ impl From<&AppConfig> for Settings {
         llm.image_model.api_key = String::new();
         llm.audio_model.api_key = String::new();
         llm.embedding_model.api_key = String::new();
+        for m in llm.models.iter_mut() {
+            m.endpoint.api_key = String::new();
+        }
         let mut stt = c.stt.clone();
         stt.api_key = String::new();
         Self {
@@ -975,6 +1025,8 @@ impl ConfigLoader {
         self.config.llm.image_model = incoming.image_model.clone();
         self.config.llm.audio_model = incoming.audio_model.clone();
         self.config.llm.embedding_model = incoming.embedding_model.clone();
+        self.config.llm.models = incoming.models.clone();
+        self.config.llm.role_models = incoming.role_models.clone();
         self.config.llm.max_total_duration_secs = incoming.max_total_duration_secs;
         self.config.llm.retry_base_secs = incoming.retry_base_secs;
         self.config.llm.retry_factor = incoming.retry_factor;
@@ -1000,6 +1052,25 @@ impl ConfigLoader {
         }
         if settings.llm.embedding_model.api_key.is_empty() {
             self.config.llm.embedding_model.api_key = prev_embedding_key;
+        }
+
+        // Preserve masked library-entry keys, matched by entry name.
+        {
+            let prev_keys: Vec<(String, String)> = self
+                .config
+                .llm
+                .models
+                .iter()
+                .map(|m| (m.name.clone(), m.endpoint.api_key.clone()))
+                .collect();
+            self.config.llm.models = settings.llm.models.clone();
+            for entry in self.config.llm.models.iter_mut() {
+                if entry.endpoint.api_key.is_empty() {
+                    if let Some((_, k)) = prev_keys.iter().find(|(n, _)| *n == entry.name) {
+                        entry.endpoint.api_key = k.clone();
+                    }
+                }
+            }
         }
 
         self.config.audio = settings.audio.clone();

@@ -4,8 +4,8 @@
 //! audio capture lives in [`capture`] (the capture engine thread + CPAL
 //! backend).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -67,19 +67,29 @@ pub struct RecordingResult {
     pub transcript_error: Option<String>,
 }
 
+impl Default for RecordingResult {
+    fn default() -> Self {
+        Self {
+            pcm: Vec::new(),
+            reason: RecordingReason::Manual,
+            duration_ms: 0,
+            transcript: None,
+            transcript_error: None,
+        }
+    }
+}
+
 pub struct InputPipeline {
     config: Arc<Mutex<AudioConfig>>,
     state: Mutex<RecordingState>,
     engine: Arc<StdMutex<Option<EngineHandle>>>,
-    vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
+    /// VAD worker thread handle (spawned by `prewarm`, reused by every
+    /// recording; owns the resident model).
+    vad_worker: Arc<StdMutex<Option<Arc<VadWorker>>>>,
     /// Audio ring buffer size in seconds (from `context_limits`).
     ring_buffer_secs: Arc<std::sync::Mutex<usize>>,
-    /// In-flight VAD preload task from `prewarm`. When the first recording
-    /// arrives before preload finishes, `start_recording` awaits this handle
-    /// instead of paying ONNX graph compilation a second time.
-    vad_preload: Arc<StdMutex<Option<tokio::task::JoinHandle<()>>>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    handler: Arc<StdMutex<Option<Arc<dyn InputHandler>>>>,
+    handler: OnceLock<Arc<dyn InputHandler>>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
     stt_client: Arc<Mutex<Option<Arc<dyn SttClient>>>>,
@@ -92,11 +102,10 @@ impl InputPipeline {
             config: Arc::new(Mutex::new(AudioConfig::default())),
             state: Mutex::new(RecordingState::Pending),
             engine: Arc::new(StdMutex::new(None)),
-            vad_engine: Arc::new(StdMutex::new(None)),
+            vad_worker: Arc::new(StdMutex::new(None)),
             ring_buffer_secs: Arc::new(std::sync::Mutex::new(20)),
-            vad_preload: Arc::new(StdMutex::new(None)),
             vad_detector: Arc::new(Mutex::new(vad_detector)),
-            handler: Arc::new(StdMutex::new(None)),
+            handler: OnceLock::new(),
             cancel_token: StdMutex::new(None),
             result_rx: StdMutex::new(None),
             stt_client: Arc::new(Mutex::new(None)),
@@ -111,9 +120,12 @@ impl Default for InputPipeline {
 }
 
 impl InputPipeline {
-    /// Install the unified input handler.
+    /// Install the unified input handler. May only be installed once; a second
+    /// install panics (the handler never changes at runtime).
     pub fn set_handler(&self, handler: Arc<dyn InputHandler>) {
-        *self.handler.lock().expect("handler lock poisoned") = Some(handler);
+        if self.handler.set(handler).is_err() {
+            panic!("input handler already installed");
+        }
     }
 
     /// Replace the unified context limits (audio ring buffer size).
@@ -137,52 +149,44 @@ impl InputPipeline {
     /// Start the capture engine at app startup so the first recording pays no
     /// engine-spawn latency. No capture stream is opened here (the microphone
     /// is only claimed while recording); `start_recording` opens the stream
-    /// itself. The VAD model is also preloaded here (off the async runtime
-    /// thread) so the first recording does not stall on ONNX graph
-    /// compilation.
+    /// itself. The VAD worker thread is also spawned here (off the async
+    /// runtime): the model loads on it in the background, so the first
+    /// recording does not stall on ONNX graph compilation — its first
+    /// inferences just queue behind the load.
     pub async fn prewarm(&self) {
-        let mut guard = self.engine.lock().expect("engine lock poisoned");
-        if guard.is_some() {
-            return;
-        }
-        let ring_secs = *self.ring_buffer_secs.lock().unwrap();
-        match capture::spawn_engine(ring_secs) {
-            Ok(h) => {
-                *guard = Some(h);
-                tracing::debug!("audio capture engine prewarmed");
-            }
-            Err(e) => {
-                tracing::warn!("audio capture engine prewarm failed: {e}");
-            }
-        }
-        drop(guard);
-
-        // Preload the VAD model off the async runtime thread. The handle is
-        // retained so the first recording can await this task instead of
-        // blocking on a duplicate ONNX graph compile.
-        let mut preload_guard = self.vad_preload.lock().expect("vad_preload lock poisoned");
-        if preload_guard.is_some()
-            || self
-                .vad_engine
-                .lock()
-                .expect("vad_engine lock poisoned")
-                .is_some()
         {
-            return;
-        }
-        let vad_engine = self.vad_engine.clone();
-        let handle = tokio::spawn(async move {
-            let loaded = tokio::task::spawn_blocking(vad::VadEngine::new).await;
-            match loaded {
-                Ok(Ok(e)) => {
-                    *vad_engine.lock().expect("vad_engine lock poisoned") = Some(e);
-                    tracing::debug!("VAD engine preloaded");
+            let mut guard = self.engine.lock().expect("engine lock poisoned");
+            if guard.is_none() {
+                let ring_secs = *self.ring_buffer_secs.lock().unwrap();
+                match capture::spawn_engine(ring_secs) {
+                    Ok(h) => {
+                        *guard = Some(h);
+                        tracing::debug!("audio capture engine prewarmed");
+                    }
+                    Err(e) => {
+                        tracing::warn!("audio capture engine prewarm failed: {e}");
+                    }
                 }
-                Ok(Err(err)) => tracing::warn!("VAD engine preload failed: {err}"),
-                Err(_) => tracing::warn!("VAD engine preload task panicked"),
             }
-        });
-        *preload_guard = Some(handle);
+        }
+        self.ensure_vad_worker();
+    }
+
+    /// Spawn the VAD worker thread on first use (from `prewarm` or the first
+    /// recording). The engine loads on the worker in the background; a failed
+    /// spawn leaves VAD disabled for this process.
+    fn ensure_vad_worker(&self) -> Option<Arc<VadWorker>> {
+        let mut guard = self.vad_worker.lock().expect("vad_worker lock poisoned");
+        if guard.is_none() {
+            match VadWorker::spawn() {
+                Ok(w) => {
+                    tracing::debug!("VAD worker spawned");
+                    *guard = Some(w.clone());
+                }
+                Err(e) => tracing::warn!("VAD worker spawn failed, VAD disabled: {e}"),
+            }
+        }
+        guard.clone()
     }
 
     pub async fn get_vad_state(&self) -> vad::VadState {
@@ -227,54 +231,12 @@ impl InputPipeline {
 
         {
             self.vad_detector.lock().await.reset();
-            // Reuse the prewarmed VAD engine; the model stays resident across
+            // Reuse the resident VAD worker; the model stays loaded across
             // recordings — graph compilation is the slow part, and a fresh
-            // recording only needs the recurrent state reset. If a preload
-            // task is still running, await it (it stores the engine itself)
-            // rather than compiling a second time.
-            let needs_load = {
-                let guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
-                guard.is_none()
-            };
-            if needs_load {
-                let pending = self
-                    .vad_preload
-                    .lock()
-                    .expect("vad_preload lock poisoned")
-                    .take();
-                if let Some(handle) = pending {
-                    let _ = handle.await;
-                }
-            }
-            // After the preload await, the engine is stored when prewarm
-            // succeeded; only load on demand when there was no prewarm (or it
-            // failed). No mutex is held across an await here.
-            let still_missing = {
-                let guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
-                guard.is_none()
-            };
-            if still_missing {
-                let loaded = tokio::task::spawn_blocking(vad::VadEngine::new).await;
-                let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
-                match loaded {
-                    Ok(Ok(e)) => *eng_guard = Some(e),
-                    Ok(Err(err)) => {
-                        tracing::warn!("VAD engine init failed, VAD disabled: {err}");
-                        *eng_guard = None;
-                    }
-                    Err(_) => {
-                        tracing::warn!("VAD engine init task panicked, VAD disabled");
-                        *eng_guard = None;
-                    }
-                }
-                if let Some(e) = eng_guard.as_mut() {
-                    e.reset();
-                }
-            } else {
-                let mut eng_guard = self.vad_engine.lock().expect("vad_engine lock poisoned");
-                if let Some(e) = eng_guard.as_mut() {
-                    e.reset();
-                }
+            // recording only needs the recurrent state reset, queued before
+            // any inference on the worker's serialized command channel.
+            if let Some(w) = self.ensure_vad_worker() {
+                w.reset();
             }
         }
 
@@ -289,10 +251,14 @@ impl InputPipeline {
 
         let loop_data = LoopData {
             config: self.config.clone(),
-            engine: self.engine.clone(),
-            vad_engine: self.vad_engine.clone(),
+            engine: handle.clone(),
+            vad_worker: self
+                .vad_worker
+                .lock()
+                .expect("vad_worker lock poisoned")
+                .clone(),
             vad_detector: self.vad_detector.clone(),
-            handler: self.handler.clone(),
+            handler: self.handler.get().cloned(),
             failed: handle.stream_failed.clone(),
             silent_abort: handle.silent_abort.clone(),
         };
@@ -310,11 +276,6 @@ impl InputPipeline {
         let max_duration = {
             let config = data.config.lock().await;
             Duration::from_secs(config.max_duration_secs)
-        };
-
-        let capture_handle = {
-            let guard = data.engine.lock().expect("engine lock poisoned");
-            guard.as_ref().cloned()
         };
 
         let mut accumulated_pcm: Vec<f32> = Vec::new();
@@ -337,13 +298,8 @@ impl InputPipeline {
             // recording silence until max_duration.
             if data.failed.load(Ordering::SeqCst) {
                 tracing::warn!("audio capture stream failed; stopping recording early");
+                notify_auto_stop(&data.handler);
                 let elapsed = start.elapsed();
-                let h = data.handler.lock().expect("handler lock poisoned").clone();
-                if let Some(h) = h {
-                    tokio::spawn(async move {
-                        h.on_auto_stop().await;
-                    });
-                }
                 return RecordingResult {
                     pcm: accumulated_pcm,
                     reason: RecordingReason::Manual,
@@ -369,12 +325,7 @@ impl InputPipeline {
             }
 
             if start.elapsed() >= max_duration {
-                let h = data.handler.lock().expect("handler lock poisoned").clone();
-                if let Some(h) = h {
-                    tokio::spawn(async move {
-                        h.on_auto_stop().await;
-                    });
-                }
+                notify_auto_stop(&data.handler);
                 let elapsed = start.elapsed();
                 return RecordingResult {
                     pcm: accumulated_pcm,
@@ -385,10 +336,7 @@ impl InputPipeline {
                 };
             }
 
-            let new_data = match &capture_handle {
-                Some(handle) => handle.drain_shared(),
-                None => Vec::new(),
-            };
+            let new_data = data.engine.drain_shared();
 
             if !new_data.is_empty() {
                 if accumulated_pcm.is_empty() && vad_partial.is_empty() {
@@ -421,52 +369,48 @@ impl InputPipeline {
                     let frame = &vad_input[offset..offset + VAD_FRAME_SAMPLES];
                     offset += VAD_FRAME_SAMPLES;
 
-                    let prob = {
-                        let engine = data.vad_engine.clone();
-                        let frame_owned = frame.to_vec();
-                        tokio::select! {
-                            res = tokio::task::spawn_blocking(move || {
-                                let mut guard = engine.lock().expect("vad_engine lock poisoned");
-                                match guard.as_mut() {
-                                    Some(e) => e.infer(&frame_owned),
-                                    None => 0.0,
+                    // Run the model on the dedicated VAD worker thread instead
+                    // of spawning a blocking task per frame (and locking the
+                    // engine). Frames below the energy floor skip the
+                    // round-trip entirely — they are silence by definition.
+                    let prob = match &data.vad_worker {
+                        Some(w) if vad::frame_has_energy(frame) => {
+                            let frame_owned = frame.to_vec();
+                            tokio::select! {
+                                p = w.infer(frame_owned) => p,
+                                _ = cancel.cancelled() => {
+                                    let elapsed = start.elapsed();
+                                    return RecordingResult {
+                                        pcm: accumulated_pcm,
+                                        reason: RecordingReason::Manual,
+                                        duration_ms: elapsed.as_millis() as u64,
+                                        transcript: None,
+                                        transcript_error: None,
+                                    };
                                 }
-                            }) => res.unwrap_or(0.0),
-                            _ = cancel.cancelled() => {
-                                let elapsed = start.elapsed();
-                                return RecordingResult {
-                                    pcm: accumulated_pcm,
-                                    reason: RecordingReason::Manual,
-                                    duration_ms: elapsed.as_millis() as u64,
-                                    transcript: None,
-                                    transcript_error: None,
-                                };
                             }
                         }
+                        _ => 0.0,
                     };
 
-                    let signal = {
+                    let (signal, state) = {
                         let mut det = data.vad_detector.lock().await;
                         let signal = det.process(prob);
                         let state = det.state();
-                        if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
-                            if let Some(h) =
-                                data.handler.lock().expect("handler lock poisoned").clone()
-                            {
-                                h.on_vad_status(signal, state);
-                            }
-                            last_vad_status = std::time::Instant::now();
-                        }
-                        signal
+                        (signal, state)
                     };
 
-                    if signal == vad::VadSignal::AutoStop {
-                        let h = data.handler.lock().expect("handler lock poisoned").clone();
-                        if let Some(h) = h {
-                            tokio::spawn(async move {
-                                h.on_auto_stop().await;
-                            });
+                    // Notify outside the detector lock: the hook may emit
+                    // events and must not stall VAD inference.
+                    if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
+                        if let Some(h) = &data.handler {
+                            h.on_vad_status(signal, state);
                         }
+                        last_vad_status = std::time::Instant::now();
+                    }
+
+                    if signal == vad::VadSignal::AutoStop {
+                        notify_auto_stop(&data.handler);
                         let elapsed = start.elapsed();
                         return RecordingResult {
                             pcm: accumulated_pcm,
@@ -647,23 +591,8 @@ impl InputPipeline {
                 .expect("result_rx lock poisoned")
                 .take();
             match rx {
-                Some(rx) => match rx.await {
-                    Ok(inner) => inner,
-                    Err(_) => RecordingResult {
-                        pcm: Vec::new(),
-                        reason: RecordingReason::Manual,
-                        duration_ms: 0,
-                        transcript: None,
-                        transcript_error: None,
-                    },
-                },
-                None => RecordingResult {
-                    pcm: Vec::new(),
-                    reason: RecordingReason::Manual,
-                    duration_ms: 0,
-                    transcript: None,
-                    transcript_error: None,
-                },
+                Some(rx) => rx.await.unwrap_or(RecordingResult::default()),
+                None => RecordingResult::default(),
             }
         };
 
@@ -706,14 +635,131 @@ impl InputPipeline {
     }
 }
 
+/// Commands for the VAD worker thread, serialized through one channel so a
+/// `Reset` is always applied before the following `Infer`s.
+enum VadCmd {
+    /// Infer speech probability for one frame; the worker replies with the
+    /// echoed sequence number (stale replies from a cancelled recording are
+    /// discarded by the caller).
+    Infer { seq: u64, frame: Vec<f32> },
+    /// Reset the model's recurrent state (between recordings).
+    Reset,
+}
+
+/// Client handle to the VAD worker thread. The worker owns the model
+/// exclusively, so inference needs no mutex and the model stays resident
+/// across recordings (graph compilation is the slow part).
+struct VadWorker {
+    cmd_tx: std::sync::mpsc::Sender<VadCmd>,
+    /// Mutex-wrapped because only the recording loop consumes replies, and
+    /// `recv` needs `&mut`; uncontended (single consumer), cheap.
+    prob_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<(u64, f32)>>,
+    /// Monotonic sequence counter shared with the worker: never reused, so a
+    /// stale reply can never be mistaken for the current inference.
+    seq: AtomicU64,
+}
+
+impl VadWorker {
+    /// Spawn the worker thread. The engine loads on it in the background, so
+    /// the first inference may be delayed but the caller never blocks.
+    fn spawn() -> std::io::Result<Arc<Self>> {
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let (prob_tx, prob_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::Builder::new()
+            .name("vad-worker".into())
+            .spawn(move || vad_worker_loop(cmd_rx, prob_tx))?;
+        Ok(Arc::new(Self {
+            cmd_tx,
+            prob_rx: Mutex::new(prob_rx),
+            seq: AtomicU64::new(0),
+        }))
+    }
+
+    fn reset(&self) {
+        let _ = self.cmd_tx.send(VadCmd::Reset);
+    }
+
+    /// Run one inference; returns 0.0 when the worker is gone (VAD disabled).
+    async fn infer(&self, frame: Vec<f32>) -> f32 {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        if self
+            .cmd_tx
+            .send(VadCmd::Infer { seq, frame })
+            .is_err()
+        {
+            return 0.0;
+        }
+        let mut rx = self.prob_rx.lock().await;
+        loop {
+            match rx.recv().await {
+                Some((s, prob)) if s == seq => return prob,
+                // Stale reply from a recording cancelled mid-inference.
+                Some(_) => continue,
+                None => return 0.0,
+            }
+        }
+    }
+}
+
+fn vad_worker_loop(
+    cmd_rx: std::sync::mpsc::Receiver<VadCmd>,
+    prob_tx: tokio::sync::mpsc::UnboundedSender<(u64, f32)>,
+) {
+    let mut engine = match vad::VadEngine::new() {
+        Ok(e) => Some(e),
+        Err(err) => {
+            tracing::warn!("VAD engine init failed, VAD disabled: {err}");
+            None
+        }
+    };
+    while let Ok(cmd) = cmd_rx.recv() {
+        match cmd {
+            VadCmd::Infer { seq, frame } => {
+                // A panicking inference must not kill the worker: degrade to
+                // silence for that frame instead (the reply channel closing
+                // would strand the recording loop on its await).
+                let prob = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    match engine.as_mut() {
+                        Some(e) => e.infer(&frame),
+                        None => 0.0,
+                    }
+                }))
+                .unwrap_or(0.0);
+                if prob_tx.send((seq, prob)).is_err() {
+                    break;
+                }
+            }
+            VadCmd::Reset => {
+                if let Some(e) = engine.as_mut() {
+                    e.reset();
+                }
+            }
+        }
+    }
+}
+
 struct LoopData {
     config: Arc<Mutex<AudioConfig>>,
-    engine: Arc<StdMutex<Option<EngineHandle>>>,
-    vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
+    engine: EngineHandle,
+    vad_worker: Option<Arc<VadWorker>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    handler: Arc<StdMutex<Option<Arc<dyn InputHandler>>>>,
+    /// Handler snapshot taken at `start_recording`; the loop never locks the
+    /// pipeline's handler storage.
+    handler: Option<Arc<dyn InputHandler>>,
     failed: Arc<AtomicBool>,
     silent_abort: Arc<AtomicBool>,
+}
+
+/// Fire the async auto-stop hook on a spawned task: the recording loop must
+/// return promptly (the hook drives the stop path that awaits this loop's
+/// result), so it can never be awaited in place.
+fn notify_auto_stop(handler: &Option<Arc<dyn InputHandler>>) {
+    if let Some(h) = handler {
+        let h = h.clone();
+        tokio::spawn(async move {
+            h.on_auto_stop().await;
+        });
+    }
 }
 
 #[cfg(test)]
@@ -790,7 +836,7 @@ mod tests {
         }
         let pipeline = InputPipeline::new();
         pipeline.set_handler(Arc::new(StopHandler));
-        assert!(pipeline.handler.lock().expect("lock").is_some());
+        assert!(pipeline.handler.get().is_some());
     }
 
     #[tokio::test]

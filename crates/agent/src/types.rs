@@ -61,7 +61,6 @@ mod tests {
             content: vec![ContentPart::text(text)],
             tool_calls: None,
             tool_call_id: None,
-            parent_message_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         }

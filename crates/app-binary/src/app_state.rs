@@ -259,7 +259,7 @@ mod tests {
         let state = AppState::new(&db_path, vec![], loader).await.unwrap();
 
         // Builtin tools are registered synchronously before new() returns.
-        assert!(state.tools.get_tool("file").await.is_some());
+        assert!(state.tools.get_tool("files").await.is_some());
         assert!(state.tools.get_tool("shell").await.is_some());
 
         // The default config is loaded and accessible via the mutex.

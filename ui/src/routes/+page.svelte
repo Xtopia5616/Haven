@@ -37,7 +37,6 @@
 		adoptDraftMessages,
 		clearTaskMessages,
 		clearSeqMap,
-		truncateTaskMessages,
 		reviewTargetStore,
 		activeTaskIdStore,
 		taskTokenStatsStore,
@@ -378,16 +377,13 @@
 					pause: true,
 					targetMessageId: msgId,
 				});
-				// Remove the user message and everything after it, keeping
-				// messages before it. This avoids truncateTaskMessages, which
-				// would match the user message itself if it has an inferred
-				// stepNumber (review view).
-				updateTaskMessages(activeTaskId, (m) => {
-					const idx = m.findIndex((x) => x.id === msgId);
-					if (idx === -1) return m;
-					return m.slice(0, idx);
-				});
 				clearSeqMap(activeTaskId);
+				// The backend is the source of truth for what the rollback
+				// deleted (target message + its whole discarded timeline).
+				// Live-view message ids are locally generated and never match
+				// the DB ids, so a client-side slice by msgId is unreliable;
+				// rebuild from the DB instead.
+				await resyncTaskMessages(activeTaskId);
 				inputRouterRef?.setDraft(content);
 				addNotification('已回退，请编辑后重新发送', 'info', 3000);
 			} else {
@@ -397,7 +393,8 @@
 					pause: false,
 					targetMessageId: msgId,
 				});
-				truncateTaskMessages(activeTaskId, stepNumber);
+				clearSeqMap(activeTaskId);
+				await resyncTaskMessages(activeTaskId);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
 		} catch (e) {
@@ -406,6 +403,23 @@
 		rollbackLoading = false;
 		rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
 		await loadTasks();
+	}
+
+	// Rebuild a task's in-memory message list from the authoritative DB
+	// state. Used after rollback (and by handleContinue) so the UI cannot
+	// diverge from what the backend actually kept/deleted.
+	async function resyncTaskMessages(taskId) {
+		if (!taskId) return;
+		try {
+			const result = await invoke('get_task_for_review', { taskId });
+			const dbMessages = buildReviewMessages(result);
+			updateTaskMessages(taskId, (existing) =>
+				mergeLiveStreaming(dbMessages, existing),
+			);
+			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
+		} catch (e) {
+			addNotification(`同步消息失败: ${e}`, 'error', 3000);
+		}
 	}
 
 	function newTask() {
@@ -818,6 +832,13 @@
 						taskErrorId = task_id;
 						activeTaskError = true;
 						clearAskAwaiting(task_id);
+						// The task died mid-tool-call: every streaming block
+						// (tool placeholder, reasoning, thought) would stay
+						// in its "expanded/streaming" state forever otherwise.
+						// Finalize them all so the UI reflects the stop.
+						updateTaskMessages(task_id, (m) =>
+							m.map((x) => (x.streaming ? { ...x, streaming: false } : x))
+						);
 					}
 					loadTasks();
 				},
