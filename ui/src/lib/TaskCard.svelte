@@ -1,5 +1,6 @@
 <script>
 	import { statusColor } from '$lib/taskStatus.js';
+	import ContextMenu from '$lib/ContextMenu.svelte';
 	let { task, onCancel, onPause, onResume } = $props();
 	let expanded = $state(false);
 
@@ -30,6 +31,56 @@
 		e.stopPropagation();
 		onResume?.(task.id);
 	}
+
+	// Right-click context menu with status-appropriate actions (pause/resume/
+	// cancel). Terminal tasks get no menu — nothing to do there.
+	let ctxMenu = $state({ open: false, x: 0, y: 0 });
+
+	function handleContextMenu(e) {
+		if (task.status !== 'running' && task.status !== 'pending' && task.status !== 'paused')
+			return;
+		e.preventDefault();
+		e.stopPropagation();
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0 };
+	}
+
+	let ctxMenuItems = $derived.by(() => {
+		const items = [];
+		if (task.status === 'running' || task.status === 'pending') {
+			items.push({
+				id: 'pause',
+				label: '暂停',
+				icon: 'pause',
+				action: () => onPause?.(task.id),
+			});
+			items.push({
+				id: 'cancel',
+				label: '停止',
+				icon: 'stop',
+				danger: true,
+				action: () => onCancel?.(task.id),
+			});
+		} else if (task.status === 'paused') {
+			items.push({
+				id: 'resume',
+				label: '继续',
+				icon: 'play',
+				action: () => onResume?.(task.id),
+			});
+			items.push({
+				id: 'cancel',
+				label: '停止',
+				icon: 'stop',
+				danger: true,
+				action: () => onCancel?.(task.id),
+			});
+		}
+		return items;
+	});
 </script>
 
 <div
@@ -44,6 +95,7 @@
 			expanded = !expanded;
 		}
 	}}
+	oncontextmenu={handleContextMenu}
 >
 	<div class="task-summary">
 		<span class="task-dot" style="color: {statusColor(task.status)}">&#9679;</span>
@@ -83,6 +135,14 @@
 			{/each}
 		</div>
 	{/if}
+
+	<ContextMenu
+		open={ctxMenu.open}
+		x={ctxMenu.x}
+		y={ctxMenu.y}
+		items={ctxMenuItems}
+		onClose={closeCtxMenu}
+	/>
 </div>
 
 <style>

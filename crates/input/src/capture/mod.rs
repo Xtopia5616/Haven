@@ -54,8 +54,9 @@ const MONITOR_INTERVAL: Duration = Duration::from_millis(20);
 /// can gate quiet input to digital zero, and users take a beat to start
 /// speaking after pressing record.
 const SILENCE_CHECK_DELAY: Duration = Duration::from_millis(3000);
-/// Ring capacity: 20 seconds of 16 kHz mono.
-const RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 20;
+/// Ring capacity is derived from `context_limits.input_ring_buffer_secs`
+/// (default 20 seconds of 16 kHz mono) at engine spawn time.
+const DEFAULT_RING_CAPACITY: usize = TARGET_SAMPLE_RATE as usize * 20;
 
 enum EngineCommand {
     Start(tokio::sync::oneshot::Sender<Result<()>>),
@@ -122,9 +123,15 @@ impl EngineHandle {
     }
 }
 
-/// Spawn the capture engine thread.
-pub fn spawn_engine() -> Result<EngineHandle> {
-    let ring = Arc::new(StdMutex::new(RingBuffer::new(RING_CAPACITY)));
+/// Spawn the capture engine thread. `ring_capacity_secs` (from
+/// `context_limits.input_ring_buffer_secs`) sets the audio ring size.
+pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
+    let capacity = if ring_capacity_secs == 0 {
+        DEFAULT_RING_CAPACITY
+    } else {
+        TARGET_SAMPLE_RATE as usize * ring_capacity_secs
+    };
+    let ring = Arc::new(StdMutex::new(RingBuffer::new(capacity)));
     let stream_failed = Arc::new(AtomicBool::new(false));
     let silent_abort = Arc::new(AtomicBool::new(false));
 

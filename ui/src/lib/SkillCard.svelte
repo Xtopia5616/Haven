@@ -1,5 +1,7 @@
 <script>
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { copyText } from '$lib/clipboard.js';
 
 	let { skill, onToggle } = $props();
 	let expanded = $state(false);
@@ -11,6 +13,31 @@
 	function handleToggle(checked) {
 		onToggle?.(skill.name, checked);
 	}
+
+	let ctxMenu = $state({ open: false, x: 0, y: 0 });
+
+	function handleContextMenu(e) {
+		e.preventDefault();
+		e.stopPropagation();
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0 };
+	}
+
+	let ctxMenuItems = $derived([
+		{ id: 'copyName', label: '复制名称', icon: 'copy', action: () => copyText(skill.name, '名称') },
+		{
+			id: 'copyDesc',
+			label: '复制描述',
+			icon: 'copy',
+			action: () => copyText(skill.description || '', '描述'),
+		},
+		skill.enabled
+			? { id: 'disable', label: '禁用', icon: 'power', action: () => onToggle?.(skill.name, false) }
+			: { id: 'enable', label: '启用', icon: 'power', action: () => onToggle?.(skill.name, true) },
+	]);
 
 	let previewParams = $state('{}');
 	let previewResult = $state(null);
@@ -44,7 +71,8 @@
 	}
 </script>
 
-<div class="skill-card" class:expanded>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="skill-card" class:expanded oncontextmenu={handleContextMenu}>
 	<div
 		class="card-header"
 		onclick={toggleExpand}
@@ -104,6 +132,14 @@
 			{/if}
 		</div>
 	{/if}
+
+	<ContextMenu
+		open={ctxMenu.open}
+		x={ctxMenu.x}
+		y={ctxMenu.y}
+		items={ctxMenuItems}
+		onClose={closeCtxMenu}
+	/>
 </div>
 
 <style>

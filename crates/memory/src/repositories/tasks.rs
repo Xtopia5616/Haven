@@ -81,37 +81,6 @@ impl Database {
         })
     }
 
-    /// Create a task as a branch of `parent_id`: the child carries the
-    /// branching pointer (parent_task_id) but its messages are copied
-    /// separately by the caller.
-    pub fn create_branch_task(
-        &self,
-        parent_id: &str,
-        input_text: &str,
-        transcript: &str,
-    ) -> anyhow::Result<Task> {
-        let id = Uuid::new_v4().to_string();
-        let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO tasks (id, input_text, status, created_at, updated_at, transcript, parent_task_id)
-             VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)",
-            rusqlite::params![id, input_text, now, now, transcript, parent_id],
-        )?;
-        self.cache_invalidate_tasks();
-        Ok(Task {
-            id,
-            input_text: input_text.into(),
-            title: None,
-            status: "pending".into(),
-            created_at: now.clone(),
-            updated_at: now,
-            transcript: transcript.into(),
-            react_state: None,
-            parent_task_id: Some(parent_id.to_string()),
-        })
-    }
-
     pub fn get_task(&self, id: &str) -> anyhow::Result<Option<Task>> {
         let conn = self.conn();
         // react_state is excluded here too: it is a full ReAct snapshot that
@@ -185,6 +154,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
+                OR EXISTS (SELECT 1 FROM messages
+                           WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)
              ORDER BY created_at DESC LIMIT 50",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern], map_task_list_row)?;
@@ -204,7 +175,9 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1",
+            "SELECT COUNT(*) FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
+                OR EXISTS (SELECT 1 FROM messages
+                           WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)",
             rusqlite::params![pattern],
             |r| r.get(0),
         )
@@ -222,6 +195,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at, transcript, parent_task_id
              FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
+                OR EXISTS (SELECT 1 FROM messages
+                           WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], map_task_list_row)?;
@@ -234,7 +209,7 @@ impl Database {
 
     pub fn delete_task(&self, id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
-        // messages, task_steps and compaction_entries cascade on task delete
+        // messages, task_steps and partial_messages cascade on task delete
         // (ON DELETE CASCADE), so a single statement keeps history consistent.
         let affected = conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
         if affected == 0 {
@@ -266,10 +241,38 @@ impl Database {
     /// never resume and must be surfaced as errored so the user can retry it
     /// via the continue flow. `paused`/`pending` tasks are left untouched 鈥?
     /// they represent legitimately waiting work that should survive a
-    /// restart.
+    /// restart. Checkpointed partial stream text is promoted into a real
+    /// assistant message so the user keeps what was already streamed before
+    /// the crash.
     pub fn finalize_orphaned_running_tasks(&self) -> anyhow::Result<usize> {
         let now = Utc::now().to_rfc3339();
+        let ids: Vec<String> = {
+            let conn = self.conn();
+            conn.prepare("SELECT id FROM tasks WHERE status = 'running'")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<_, _>>()?
+        };
         let count = self.set_running_status("error", &now, None)?;
+        for id in ids {
+            if let Some(text) = self.take_partial_message(&id)
+                && !text.trim().is_empty()
+                && let Err(e) = self.add_message_full(
+                    &id,
+                    "assistant",
+                    text.trim(),
+                    Some("text"),
+                    None,
+                    &[],
+                    false,
+                )
+            {
+                tracing::warn!(
+                    "finalize_orphaned_running_tasks: failed to promote partial for task {}: {}",
+                    id,
+                    e
+                );
+            }
+        }
         Ok(count)
     }
 
@@ -363,7 +366,13 @@ impl Database {
 
         if let Some(q) = query {
             let p = format!("%{q}%");
-            wheres.push("(input_text LIKE ? OR transcript LIKE ? OR title LIKE ?)".into());
+            wheres.push(
+                "(input_text LIKE ? OR transcript LIKE ? OR title LIKE ?
+                  OR EXISTS (SELECT 1 FROM messages
+                             WHERE messages.task_id = tasks.id AND messages.content LIKE ?))"
+                    .into(),
+            );
+            params.push(Box::new(p.clone()));
             params.push(Box::new(p.clone()));
             params.push(Box::new(p.clone()));
             params.push(Box::new(p));
@@ -476,17 +485,6 @@ mod tests {
         let db = create_db();
         let task = db.create_task("input", "").unwrap();
         assert!(task.parent_task_id.is_none());
-    }
-
-    #[test]
-    fn test_create_branch_task_links_parent() {
-        let db = create_db();
-        let parent = db.create_task("parent", "").unwrap();
-        let branch = db
-            .create_branch_task(&parent.id, "branch", "branch transcript")
-            .unwrap();
-        assert_eq!(branch.parent_task_id.as_deref(), Some(parent.id.as_str()));
-        assert_ne!(branch.id, parent.id);
     }
 
     #[test]

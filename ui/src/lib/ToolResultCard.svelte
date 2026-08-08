@@ -7,6 +7,7 @@
 	/** @type {Record<string, string>} */
 	const LABELS = {
 		search: '文件搜索',
+		file_search: '文件搜索',
 		process: '进程列表',
 		window: '窗口列表',
 		status: '后台任务',
@@ -131,7 +132,7 @@
 	 */
 	function customShape(toolName, data) {
 		switch (toolName) {
-			case 'search':
+			case 'file_search':
 				return Array.isArray(data.results) ? data : null;
 			case 'system':
 				return data.cpu || data.memory || data.os || data.disks ? data : null;
@@ -173,6 +174,8 @@
 <script>
 	import { untrack } from 'svelte';
 	import JsonView from '$lib/JsonView.svelte';
+	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { copyText } from '$lib/clipboard.js';
 
 	let {
 		type = 'tool',
@@ -302,6 +305,23 @@
 			// Clipboard unavailable — ignore.
 		}
 	}
+
+	// Right-click context menu: copy the raw observation text.
+	let ctxMenu = $state({ open: false, x: 0, y: 0 });
+
+	function handleContextMenu(e) {
+		e.preventDefault();
+		e.stopPropagation();
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0 };
+	}
+
+	let ctxMenuItems = $derived([
+		{ id: 'copy', label: '复制内容', icon: 'copy', action: () => copyText(content, '内容') },
+	]);
 </script>
 
 {#if type === 'ask'}
@@ -346,7 +366,7 @@
 		{/if}
 	</div>
 {:else}
-	<details class="tool-card" role="status" bind:open={cardOpen}>
+	<details class="tool-card" role="status" bind:open={cardOpen} oncontextmenu={handleContextMenu}>
 		<summary class="tool-card-header">
 			<span class="tool-card-icon" aria-hidden="true">
 				{#if kind === 'shell'}
@@ -405,7 +425,7 @@
 						stroke-linecap="round"
 						stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10" /></svg
 					>
-				{:else if toolName === 'search'}
+				{:else if toolName === 'file_search'}
 					<svg
 						width="12"
 						height="12"
@@ -594,7 +614,7 @@
 		{:else if kind === 'raw'}
 			<pre class="content-preview">{rawText}</pre>
 		{:else if parsed}
-			{#if toolName === 'search'}
+			{#if toolName === 'file_search'}
 				<div class="tool-card-count">
 					{data.count ?? data.results.length} 个结果 · {data.mode === 'content'
 						? '全文'
@@ -974,6 +994,14 @@
 		{/if}
 	</details>
 {/if}
+
+<ContextMenu
+	open={ctxMenu.open}
+	x={ctxMenu.x}
+	y={ctxMenu.y}
+	items={ctxMenuItems}
+	onClose={closeCtxMenu}
+/>
 
 <style>
 	.tool-card {

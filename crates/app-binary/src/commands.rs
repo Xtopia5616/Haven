@@ -67,7 +67,18 @@ async fn connect_and_monitor(
     config: &McpServerConfig,
     ctx: &str,
 ) -> Result<Arc<haven_tools::McpClient>, String> {
-    let client = Arc::new(haven_tools::McpClient::new(config));
+    let limits = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err(ctx, e))?
+        .config()
+        .context_limits
+        .clone();
+    let client = Arc::new(haven_tools::McpClient::new(
+        config,
+        limits.mcp_max_binary_payload_bytes,
+        limits.mcp_max_sse_buffer_bytes,
+    ));
     if config.enabled {
         client.connect().await.map_err(|e| log_err(ctx, e))?;
         let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
@@ -382,7 +393,14 @@ pub async fn process_transcript(
     attachments: Option<Vec<haven_memory::repositories::messages::MessageAttachment>>,
     voice: Option<bool>,
 ) -> Result<Value, String> {
-    let attachments = validate_attachments(attachments.unwrap_or_default())?;
+    let limits = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("process_transcript", e))?
+        .config()
+        .context_limits
+        .clone();
+    let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)?;
     let attachments = persist_file_attachments(attachments).await?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
@@ -524,33 +542,34 @@ async fn persist_file_attachments_to(
 }
 
 /// Server-side validation for user attachments, mirroring the frontend
-/// limits (≤4 images ≤10 MiB each, ≤5 files ≤20 MiB each, decodable base64,
-/// files must carry a name). The webview must not be the sole enforcement
-/// point for persisted payloads.
+/// limits (configurable via `[context_limits]`: max images/files, per-item
+/// byte caps, decodable base64, files must carry a name). The webview must
+/// not be the sole enforcement point for persisted payloads.
 fn validate_attachments(
     attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
+    limits: &haven_common::config::ContextLimitsConfig,
 ) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
-    const MAX_IMAGES: usize = 4;
-    const MAX_FILES: usize = 5;
-    const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
-    const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
+    let max_images = limits.max_attachment_images;
+    let max_files = limits.max_attachment_files;
+    let max_image_bytes = limits.max_attachment_image_bytes;
+    let max_file_bytes = limits.max_attachment_file_bytes;
     use base64::Engine as _;
     let images = attachments.iter().filter(|a| a.is_image()).count();
     let files = attachments.len().saturating_sub(images);
-    if images > MAX_IMAGES {
-        return Err(format!("最多支持 {MAX_IMAGES} 张图片"));
+    if images > max_images {
+        return Err(format!("最多支持 {max_images} 张图片"));
     }
-    if files > MAX_FILES {
-        return Err(format!("最多支持 {MAX_FILES} 个文件"));
+    if files > max_files {
+        return Err(format!("最多支持 {max_files} 个文件"));
     }
     for att in &attachments {
         let (cap, label) = if att.is_image() {
-            (MAX_IMAGE_BYTES, "图片")
+            (max_image_bytes, "图片")
         } else {
             if att.filename.as_deref().unwrap_or("").trim().is_empty() {
                 return Err("文件附件缺少文件名".to_string());
             }
-            (MAX_FILE_BYTES, "文件")
+            (max_file_bytes, "文件")
         };
         let decoded_len = att.data.len().saturating_mul(3) / 4;
         if decoded_len > cap {
@@ -1607,10 +1626,7 @@ pub async fn set_web_search(
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
 
-    let normalized = match mode.as_deref() {
-        Some(m) => Some(m.trim().to_ascii_lowercase()),
-        None => None,
-    };
+    let normalized = mode.as_deref().map(|m| m.trim().to_ascii_lowercase());
     match normalized.as_deref() {
         Some("off") | Some("auto") | Some("always") | None => {}
         _ => {
@@ -2069,23 +2085,6 @@ pub async fn rollback_task(
         .map_err(|e| log_err("rollback_task", e))
 }
 
-/// Branch a task from a specific step into a new conversation. Copies all
-/// messages up to that step into a new child task (parent_task_id links back)
-/// and creates a new Paused task seeded with the branch point state. Returns
-/// the new task id.
-#[tauri::command]
-pub async fn branch_task(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-    target_step: u32,
-) -> Result<String, String> {
-    state
-        .agent
-        .branch_task(&task_id, target_step)
-        .await
-        .map_err(|e| log_err("branch_task", e))
-}
-
 /// Resume a task that errored mid-step. Removes partial output persisted on
 /// error and sets the task to Pending so the dispatcher retries the failed
 /// step from the saved snapshot.
@@ -2146,22 +2145,26 @@ mod tests {
         haven_memory::repositories::messages::MessageAttachment::new(media_type, data)
     }
 
+    fn limits() -> haven_common::config::ContextLimitsConfig {
+        haven_common::config::ContextLimitsConfig::default()
+    }
+
     #[test]
     fn test_validate_attachments_accepts_valid() {
         let imgs = vec![att("image/png", "aGVsbG8="), att("image/jpeg", "YWJj")];
-        let out = validate_attachments(imgs.clone()).unwrap();
+        let out = validate_attachments(imgs.clone(), &limits()).unwrap();
         assert_eq!(out.len(), 2);
         // Files need a name; with one attached they pass through fine.
         let mut file = att("application/pdf", "aGVsbG8=");
         file.filename = Some("report.pdf".into());
-        let out = validate_attachments(vec![file]).unwrap();
+        let out = validate_attachments(vec![file], &limits()).unwrap();
         assert_eq!(out.len(), 1);
     }
 
     #[test]
     fn test_validate_attachments_rejects_images_over_count() {
         let imgs: Vec<_> = (0..5).map(|_| att("image/png", "aGVsbG8=")).collect();
-        let err = validate_attachments(imgs).unwrap_err();
+        let err = validate_attachments(imgs, &limits()).unwrap_err();
         assert!(err.contains("最多支持"));
     }
 
@@ -2175,14 +2178,14 @@ mod tests {
             })
             .collect();
         files.push(att("image/png", "aGVsbG8="));
-        let err = validate_attachments(files).unwrap_err();
+        let err = validate_attachments(files, &limits()).unwrap_err();
         assert!(err.contains("最多支持 5 个文件"));
     }
 
     #[test]
     fn test_validate_attachments_requires_filename_for_files() {
         let imgs = vec![att("application/x-msdownload", "aGVsbG8=")];
-        let err = validate_attachments(imgs).unwrap_err();
+        let err = validate_attachments(imgs, &limits()).unwrap_err();
         assert!(err.contains("文件名"));
     }
 
@@ -2190,7 +2193,7 @@ mod tests {
     fn test_validate_attachments_rejects_oversized_image() {
         let big = "A".repeat(15 * 1024 * 1024);
         let imgs = vec![att("image/png", &big)];
-        let err = validate_attachments(imgs).unwrap_err();
+        let err = validate_attachments(imgs, &limits()).unwrap_err();
         assert!(err.contains("10MB"));
     }
 
@@ -2198,14 +2201,14 @@ mod tests {
     fn test_validate_attachments_rejects_oversized_file() {
         let mut file = att("application/zip", &"A".repeat(28 * 1024 * 1024));
         file.filename = Some("big.zip".into());
-        let err = validate_attachments(vec![file]).unwrap_err();
+        let err = validate_attachments(vec![file], &limits()).unwrap_err();
         assert!(err.contains("20MB"));
     }
 
     #[test]
     fn test_validate_attachments_rejects_invalid_base64() {
         let imgs = vec![att("image/png", "not-base64!!!")];
-        let err = validate_attachments(imgs).unwrap_err();
+        let err = validate_attachments(imgs, &limits()).unwrap_err();
         assert!(err.contains("base64"));
     }
 
@@ -2294,8 +2297,6 @@ mod tests {
             message_type: None,
             created_at: String::new(),
             tool_call_id: None,
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: vec![att("image/png", "aGVsbG8=")],
             voice: false,
@@ -2335,8 +2336,6 @@ mod tests {
             message_type: None,
             created_at: String::new(),
             tool_call_id: None,
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: vec![],
             voice: false,
@@ -2349,8 +2348,6 @@ mod tests {
             message_type: None,
             created_at: String::new(),
             tool_call_id: None,
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: vec![],
             voice: false,

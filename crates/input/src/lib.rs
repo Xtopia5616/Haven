@@ -72,6 +72,8 @@ pub struct InputPipeline {
     state: Mutex<RecordingState>,
     engine: Arc<StdMutex<Option<EngineHandle>>>,
     vad_engine: Arc<StdMutex<Option<vad::VadEngine>>>,
+    /// Audio ring buffer size in seconds (from `context_limits`).
+    ring_buffer_secs: Arc<std::sync::Mutex<usize>>,
     /// In-flight VAD preload task from `prewarm`. When the first recording
     /// arrives before preload finishes, `start_recording` awaits this handle
     /// instead of paying ONNX graph compilation a second time.
@@ -91,6 +93,7 @@ impl InputPipeline {
             state: Mutex::new(RecordingState::Pending),
             engine: Arc::new(StdMutex::new(None)),
             vad_engine: Arc::new(StdMutex::new(None)),
+            ring_buffer_secs: Arc::new(std::sync::Mutex::new(20)),
             vad_preload: Arc::new(StdMutex::new(None)),
             vad_detector: Arc::new(Mutex::new(vad_detector)),
             handler: Arc::new(StdMutex::new(None)),
@@ -111,6 +114,11 @@ impl InputPipeline {
     /// Install the unified input handler.
     pub fn set_handler(&self, handler: Arc<dyn InputHandler>) {
         *self.handler.lock().expect("handler lock poisoned") = Some(handler);
+    }
+
+    /// Replace the unified context limits (audio ring buffer size).
+    pub fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        *self.ring_buffer_secs.lock().unwrap() = limits.input_ring_buffer_secs;
     }
 
     /// Install or clear the STT client. `None` disables transcription
@@ -137,7 +145,8 @@ impl InputPipeline {
         if guard.is_some() {
             return;
         }
-        match capture::spawn_engine() {
+        let ring_secs = *self.ring_buffer_secs.lock().unwrap();
+        match capture::spawn_engine(ring_secs) {
             Ok(h) => {
                 *guard = Some(h);
                 tracing::debug!("audio capture engine prewarmed");
@@ -194,16 +203,19 @@ impl InputPipeline {
             let existing = self.engine.lock().expect("engine lock poisoned").clone();
             match existing {
                 Some(h) => h,
-                None => match capture::spawn_engine() {
-                    Ok(h) => {
-                        *self.engine.lock().expect("engine lock poisoned") = Some(h.clone());
-                        h
+                None => {
+                    let ring_secs = *self.ring_buffer_secs.lock().unwrap();
+                    match capture::spawn_engine(ring_secs) {
+                        Ok(h) => {
+                            *self.engine.lock().expect("engine lock poisoned") = Some(h.clone());
+                            h
+                        }
+                        Err(e) => {
+                            *self.state.lock().await = RecordingState::Pending;
+                            return Err(e);
+                        }
                     }
-                    Err(e) => {
-                        *self.state.lock().await = RecordingState::Pending;
-                        return Err(e);
-                    }
-                },
+                }
             }
         };
 

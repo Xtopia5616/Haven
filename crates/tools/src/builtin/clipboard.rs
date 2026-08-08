@@ -75,18 +75,34 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-const DEFAULT_HISTORY_LIMIT: usize = 10;
-const MAX_HISTORY_LIMIT: usize = 100;
 /// Per-entry content truncation so a history dump stays readable.
-const HISTORY_ENTRY_MAX_CHARS: usize = 2000;
-
 pub struct ClipboardTool {
     history: Arc<ClipboardHistory>,
+    /// Output cap (chars) for clipboard content.
+    max_output_chars: usize,
+    /// Default `limit` for the `history` operation when the caller omits it.
+    default_limit: usize,
+    /// Upper clamp for the `history` operation's `limit` argument.
+    max_history_limit: usize,
+    /// Per-entry content truncation for history dumps.
+    entry_max_chars: usize,
 }
 
 impl ClipboardTool {
-    pub fn new(history: Arc<ClipboardHistory>) -> Self {
-        Self { history }
+    pub fn new(
+        history: Arc<ClipboardHistory>,
+        max_output_chars: usize,
+        default_limit: usize,
+        max_history_limit: usize,
+        entry_max_chars: usize,
+    ) -> Self {
+        Self {
+            history,
+            max_output_chars,
+            default_limit,
+            max_history_limit,
+            entry_max_chars,
+        }
     }
 }
 
@@ -138,7 +154,7 @@ impl Tool for ClipboardTool {
                     anyhow::bail!("cancelled");
                 }
                 self.history.record(text.clone());
-                let max_chars = self.max_output_chars();
+                let max_chars = self.max_output_chars;
                 let (text, truncated) = haven_common::encoding::truncate_output(&text, max_chars);
                 let mut result = serde_json::json!({"content": text});
                 if truncated {
@@ -171,15 +187,15 @@ impl Tool for ClipboardTool {
             "history" => {
                 let limit = input["limit"]
                     .as_u64()
-                    .map(|l| (l.min(MAX_HISTORY_LIMIT as u64)) as usize)
-                    .unwrap_or(DEFAULT_HISTORY_LIMIT);
+                    .map(|l| (l.min(self.max_history_limit as u64)) as usize)
+                    .unwrap_or(self.default_limit);
                 let entries = self.history.recent(limit);
                 let json_entries: Vec<Value> = entries
                     .iter()
                     .map(|e| {
                         let (content, _) = haven_common::encoding::truncate_output(
                             &e.content,
-                            HISTORY_ENTRY_MAX_CHARS,
+                            self.entry_max_chars,
                         );
                         serde_json::json!({
                             "content": content,
@@ -204,7 +220,7 @@ mod tests {
     use serde_json::json;
 
     fn test_tool() -> ClipboardTool {
-        ClipboardTool::new(Arc::new(ClipboardHistory::new(10)))
+        ClipboardTool::new(Arc::new(ClipboardHistory::new(10)), 20_000, 10, 100, 2000)
     }
 
     #[test]

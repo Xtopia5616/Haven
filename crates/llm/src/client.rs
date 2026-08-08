@@ -5,6 +5,25 @@ use std::time::Duration;
 
 use crate::types::{Embedding, LlmError, LlmMessage, LlmResponse, StreamChunk, ToolDefinition};
 
+/// User-Agent sent on every provider HTTP request so Haven's traffic is
+/// identifiable server-side: DeepSeek, OpenAI, Anthropic, Gemini and most
+/// gateways log the UA on every call (usage attribution, support, and
+/// rate-limit policy), the same way official SDKs identify themselves
+/// (e.g. `openai-python/1.x`, `anthropic-sdk-rust/0.x`).
+pub fn haven_user_agent() -> String {
+    format!(
+        "Haven/{} (voice assistant; rust)",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// Shared HTTP client defaults for every provider adapter: connection-pool
+/// tuning plus the Haven User-Agent so all LLM/STT/embedding traffic carries
+/// the same identifying header.
+pub fn http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().user_agent(haven_user_agent())
+}
+
 /// Unified interface implemented by every provider adapter. Adapters convert
 /// the provider's native wire protocol to/from the provider-neutral
 /// `LlmMessage` / `LlmResponse` / `StreamChunk` types (see `adapters/`).
@@ -207,6 +226,16 @@ where
 mod tests {
     use super::*;
     use crate::types::{FinishReason, Usage};
+
+    #[test]
+    fn user_agent_identifies_haven_and_version() {
+        let ua = haven_user_agent();
+        assert!(ua.starts_with("Haven/"), "UA must identify Haven: {ua}");
+        assert!(
+            ua.contains(env!("CARGO_PKG_VERSION")),
+            "UA must carry the version: {ua}"
+        );
+    }
 
     #[test]
     fn http_status_maps_correctly() {

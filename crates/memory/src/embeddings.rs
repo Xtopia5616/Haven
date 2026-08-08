@@ -144,25 +144,15 @@ impl Database {
                 Ok(out)
             }
             entity_kind::EPISODE => {
-                // Episodes are user messages plus compaction summaries. A
-                // message only becomes an episode once indexed, so track the
-                // candidates explicitly.
+                // Episodes are user messages. A message only becomes an
+                // episode once indexed, so track the candidates explicitly.
                 let mut stmt = conn.prepare(
-                    "SELECT id FROM messages WHERE role = 'user' AND is_compacted = 0
+                    "SELECT id FROM messages WHERE role = 'user'
                      AND id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)",
                 )?;
                 let rows =
                     stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
                 let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
-                }
-                let mut stmt = conn.prepare(
-                    "SELECT id FROM compaction_entries
-                     WHERE id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)",
-                )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
                 for row in rows {
                     out.push(row?);
                 }
@@ -185,8 +175,7 @@ impl Database {
         Ok(text)
     }
 
-    /// Source text for an episode entity: the user message content, or the
-    /// compaction summary for compaction entries.
+    /// Source text for an episode entity: the user message content.
     pub fn episode_text(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
         if let Ok(Some(content)) = conn
@@ -198,16 +187,6 @@ impl Database {
             .map(Some)
         {
             return Ok(Some(content));
-        }
-        if let Ok(Some(summary)) = conn
-            .query_row(
-                "SELECT summary FROM compaction_entries WHERE id = ?1",
-                rusqlite::params![entity_id],
-                |r| r.get::<_, String>(0),
-            )
-            .map(Some)
-        {
-            return Ok(Some(summary));
         }
         Ok(None)
     }
@@ -254,9 +233,7 @@ impl Database {
         // 1000 by creation time), matching how the vector index behaves.
         let mut stmt = conn.prepare(
             "SELECT content, created_at FROM (
-                 SELECT content, created_at FROM messages WHERE role = 'user' AND is_compacted = 0
-                 UNION ALL
-                 SELECT summary AS content, created_at FROM compaction_entries
+                 SELECT content, created_at FROM messages WHERE role = 'user'
              )
              ORDER BY created_at DESC LIMIT 1000",
         )?;
@@ -306,16 +283,15 @@ impl Database {
     }
 
     /// Remove embeddings whose owning entity no longer exists (facts deleted,
-    /// messages pruned, compactions dropped). Keeps the index from growing
-    /// unbounded around pruned memory.
+    /// messages pruned). Keeps the index from growing unbounded around
+    /// pruned memory.
     pub fn prune_orphaned_embeddings(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
         let deleted = conn.execute(
             "DELETE FROM memory_embeddings WHERE
                 (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM facts))
              OR (entity_type = 'episode'
-                 AND entity_id NOT IN (SELECT id FROM messages)
-                 AND entity_id NOT IN (SELECT id FROM compaction_entries))",
+                 AND entity_id NOT IN (SELECT id FROM messages))",
             [],
         )? as u64;
         Ok(deleted)
@@ -436,18 +412,17 @@ mod tests {
         let msg = db
             .add_message(&task.id, "user", "hello world", Some("text"), None)
             .unwrap();
-        db.save_compaction(&task.id, "a long summary", 100).unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
-        assert_eq!(missing.len(), 2);
+        assert_eq!(missing.len(), 1);
         assert!(missing.contains(&msg.id));
         db.save_embedding(entity_kind::EPISODE, &msg.id, "m", &[1.0], "hello world")
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
-        assert_eq!(missing.len(), 1);
+        assert_eq!(missing.len(), 0);
     }
 
     #[test]
-    fn episode_text_resolves_both_kinds() {
+    fn episode_text_resolves_message() {
         let db = db();
         let task = db.create_task("t", "").unwrap();
         let msg = db
@@ -456,11 +431,6 @@ mod tests {
         assert_eq!(
             db.episode_text(&msg.id).unwrap(),
             Some("remember this".into())
-        );
-        let comp = db.save_compaction(&task.id, "summary text", 50).unwrap();
-        assert_eq!(
-            db.episode_text(&comp.id).unwrap(),
-            Some("summary text".into())
         );
         assert_eq!(db.episode_text("nope").unwrap(), None);
     }
@@ -535,16 +505,11 @@ mod tests {
             None,
         )
         .unwrap();
-        db.save_compaction(&task.id, "user likes dark themes for the editor", 100)
-            .unwrap();
         let hits = db
             .search_episodes_by_keywords(&["dark", "theme"], 5)
             .unwrap();
-        assert_eq!(hits.len(), 2);
-        // Compaction summary matches both terms -> ranks above the single-term
-        // user message.
-        assert!(hits[0].contains("dark themes for the editor"));
-        assert!(hits.iter().any(|h| h.contains("dark theme preference")));
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].contains("dark theme preference"));
     }
 
     #[test]

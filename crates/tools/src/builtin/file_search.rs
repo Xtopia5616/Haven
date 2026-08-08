@@ -10,16 +10,44 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-const MAX_SNIPPET_CHARS: usize = 200;
-/// Upper clamp for `max_results` — untrusted input cannot disable the cap.
-const MAX_RESULTS_CAP: usize = 1_000;
-/// Content-mode skip cap: files larger than this are not searched (0 = unlimited).
-const DEFAULT_MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
-/// Line-range search window cap. Ranges wider than this fall back to a whole-file
-/// scan with sink-side line filtering (correct, just slower).
-const MAX_WINDOW_BYTES: u64 = 16 * 1024 * 1024;
+pub struct FileSearchTool {
+    /// Snippet chars around each content-mode match.
+    snippet_chars: usize,
+    /// Upper clamp for `max_results` — untrusted input cannot disable the cap.
+    max_results_cap: usize,
+    /// Content-mode skip cap: files larger than this are not searched (0 = unlimited).
+    max_file_size: u64,
+    /// Line-range search window cap in bytes. Ranges wider than this fall
+    /// back to a whole-file scan with sink-side line filtering.
+    max_window_bytes: u64,
+}
 
-pub struct FileSearchTool;
+impl Default for FileSearchTool {
+    fn default() -> Self {
+        Self {
+            snippet_chars: 200,
+            max_results_cap: 1_000,
+            max_file_size: 100 * 1024 * 1024,
+            max_window_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+impl FileSearchTool {
+    pub fn new(
+        snippet_chars: usize,
+        max_results_cap: usize,
+        max_file_size: u64,
+        max_window_bytes: u64,
+    ) -> Self {
+        Self {
+            snippet_chars,
+            max_results_cap,
+            max_file_size,
+            max_window_bytes,
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for FileSearchTool {
@@ -45,9 +73,9 @@ impl Tool for FileSearchTool {
                 "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search." },
                 "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers)" },
                 "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited.", "default": 10 },
-                "max_results": { "type": "integer", "description": "Maximum results to return (capped at 1000)", "default": 50 },
+                "max_results": { "type": "integer", "description": format!("Maximum results to return (capped at {})", self.max_results_cap), "default": 50 },
                 "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories", "default": true },
-                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited.", "default": 104857600 },
+                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited.", "default": self.max_file_size },
                 "start_line": { "type": "integer", "description": "Content mode: 1-based first line to search within each file (overrides byte scanning)", "default": 1 },
                 "end_line": { "type": "integer", "description": "Content mode: 1-based last line to search within each file", "default": 0 }
             },
@@ -75,12 +103,12 @@ impl Tool for FileSearchTool {
         let max_results = input["max_results"]
             .as_i64()
             .filter(|v| *v > 0)
-            .map(|v| (v as usize).min(MAX_RESULTS_CAP))
+            .map(|v| (v as usize).min(self.max_results_cap))
             .unwrap_or(50);
         let ignore_hidden = input["ignore_hidden"].as_bool().unwrap_or(true);
         let max_file_size = input["max_file_size"]
             .as_u64()
-            .unwrap_or(DEFAULT_MAX_FILE_SIZE);
+            .unwrap_or(self.max_file_size);
         let start_line = input["start_line"].as_u64().unwrap_or(1).max(1);
         // end_line = 0 means "unbounded" (scan to EOF).
         let end_line = match input["end_line"].as_u64() {
@@ -95,6 +123,8 @@ impl Tool for FileSearchTool {
 
         let mode_for_closure = mode.clone();
         let cancel_inner = cancel.clone();
+        let snippet_chars = self.snippet_chars;
+        let max_window_bytes = self.max_window_bytes;
         let (results, truncated) = tokio::task::spawn_blocking(move || {
             search_files(SearchParams {
                 root: &root_path,
@@ -106,6 +136,8 @@ impl Tool for FileSearchTool {
                 max_file_size,
                 start_line,
                 end_line,
+                snippet_chars,
+                max_window_bytes,
                 cancel: cancel_inner,
             })
         })
@@ -137,6 +169,8 @@ struct SearchParams<'a> {
     max_file_size: u64,
     start_line: u64,
     end_line: u64,
+    snippet_chars: usize,
+    max_window_bytes: u64,
     cancel: CancellationToken,
 }
 
@@ -150,6 +184,8 @@ struct ContentSearchParams<'a> {
     max_file_size: u64,
     start_line: u64,
     end_line: u64,
+    snippet_chars: usize,
+    max_window_bytes: u64,
     cancel: CancellationToken,
 }
 
@@ -164,6 +200,8 @@ fn search_files(params: SearchParams<'_>) -> (Vec<Value>, bool) {
             max_file_size: params.max_file_size,
             start_line: params.start_line,
             end_line: params.end_line,
+            snippet_chars: params.snippet_chars,
+            max_window_bytes: params.max_window_bytes,
             cancel: params.cancel,
         }),
         _ => search_filenames_parallel(
@@ -275,6 +313,8 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
     let max_file_size = p.max_file_size;
     let start_line = p.start_line;
     let end_line = p.end_line;
+    let snippet_chars = p.snippet_chars;
+    let max_window_bytes = p.max_window_bytes;
     let cancel = p.cancel.clone();
     let matcher = match RegexMatcher::new(pattern) {
         Ok(m) => m,
@@ -331,6 +371,8 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
                     max_results,
                     &found_flag,
                     &results,
+                    snippet_chars,
+                    max_window_bytes,
                 );
             } else {
                 let sink = CollectingSink::new(
@@ -338,6 +380,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
                     max_results,
                     found_flag.clone(),
                     results.clone(),
+                    snippet_chars,
                 );
                 let _ = searcher.search_path(matcher.clone(), entry.path(), sink);
             }
@@ -363,17 +406,20 @@ fn search_content_line_range(
     max_results: usize,
     found_flag: &Arc<AtomicBool>,
     results: &Arc<Mutex<Vec<Value>>>,
+    snippet_chars: usize,
+    max_window_bytes: u64,
 ) {
     let Ok(Some((start, end))) = line_range_bytes(path, start_line, end_line) else {
         return;
     };
     let window_len = end - start;
-    if window_len > MAX_WINDOW_BYTES {
+    if window_len > max_window_bytes {
         let sink = CollectingSink::new(
             path.to_path_buf(),
             max_results,
             found_flag.clone(),
             results.clone(),
+            snippet_chars,
         )
         .with_line_filter(start_line, end_line);
         let _ = searcher.search_path(matcher.clone(), path, sink);
@@ -401,6 +447,7 @@ fn search_content_line_range(
         max_results,
         found_flag.clone(),
         results.clone(),
+        snippet_chars,
     )
     .with_line_offset(start_line - 1);
     let _ = searcher.search_slice(matcher.clone(), &bytes, sink);
@@ -459,6 +506,7 @@ struct CollectingSink {
     last_line: Option<u64>,
     line_offset: u64,
     line_filter: Option<(u64, u64)>,
+    snippet_chars: usize,
 }
 
 impl CollectingSink {
@@ -467,6 +515,7 @@ impl CollectingSink {
         max: usize,
         found_flag: Arc<AtomicBool>,
         results: Arc<Mutex<Vec<Value>>>,
+        snippet_chars: usize,
     ) -> Self {
         Self {
             path,
@@ -476,6 +525,7 @@ impl CollectingSink {
             last_line: None,
             line_offset: 0,
             line_filter: None,
+            snippet_chars,
         }
     }
 
@@ -511,7 +561,11 @@ impl Sink for CollectingSink {
         if self.last_line == Some(line_number) {
             return Ok(true);
         }
-        let snippet = mat.lines().next().map(snippet_of).unwrap_or_default();
+        let snippet = mat
+            .lines()
+            .next()
+            .map(|l| snippet_of(l, self.snippet_chars))
+            .unwrap_or_default();
         let mut guard = self.results.lock().unwrap();
         if guard.len() >= self.max {
             self.found_flag.store(true, Ordering::Relaxed);
@@ -531,17 +585,17 @@ impl Sink for CollectingSink {
 /// line: only a bounded byte window is decoded, then the text is truncated at
 /// a char boundary. A `…` marker is appended when the window cut the line or
 /// the decoded text exceeds the snippet cap.
-fn snippet_of(line: &[u8]) -> String {
-    let windowed = line.len() > MAX_SNIPPET_CHARS * 4;
-    let window = &line[..line.len().min(MAX_SNIPPET_CHARS * 4)];
+fn snippet_of(line: &[u8], snippet_chars: usize) -> String {
+    let windowed = line.len() > snippet_chars * 4;
+    let window = &line[..line.len().min(snippet_chars * 4)];
     // decode_preview keeps the valid UTF-8 prefix of a window cut mid-sequence
     // and falls back to GBK for non-UTF-8 (CP936) files.
     let s = haven_common::encoding::decode_preview(window);
     let s = s.trim_end();
-    if s.len() <= MAX_SNIPPET_CHARS && !windowed {
+    if s.len() <= snippet_chars && !windowed {
         s.to_string()
     } else {
-        let cutoff = s.floor_char_boundary(MAX_SNIPPET_CHARS);
+        let cutoff = s.floor_char_boundary(snippet_chars);
         format!("{}…", &s[..cutoff])
     }
 }
@@ -582,17 +636,17 @@ mod tests {
 
     #[test]
     fn test_search_tool_name() {
-        assert_eq!(FileSearchTool.name(), "file_search");
+        assert_eq!(FileSearchTool::default().name(), "file_search");
     }
 
     #[test]
     fn test_search_tool_risk_level() {
         assert_eq!(
-            FileSearchTool.risk_level(&json!({"mode": "filename"})),
+            FileSearchTool::default().risk_level(&json!({"mode": "filename"})),
             RiskLevel::Low
         );
         assert_eq!(
-            FileSearchTool.risk_level(&json!({"mode": "content"})),
+            FileSearchTool::default().risk_level(&json!({"mode": "content"})),
             RiskLevel::Medium
         );
     }
@@ -613,13 +667,13 @@ mod tests {
 
     #[test]
     fn test_snippet_of_short() {
-        assert_eq!(snippet_of(b"hello world\n"), "hello world");
+        assert_eq!(snippet_of(b"hello world\n", 200), "hello world");
     }
 
     #[test]
     fn test_snippet_of_long_truncates_at_boundary() {
         let line = "中".repeat(300);
-        let snippet = snippet_of(line.as_bytes());
+        let snippet = snippet_of(line.as_bytes(), 200);
         assert!(snippet.len() < line.len());
         assert!(snippet.ends_with('…'));
     }
@@ -629,7 +683,7 @@ mod tests {
         // A byte window cut mid-CJK-sequence must keep only the valid UTF-8
         // prefix and never garble or panic.
         let line = "中".repeat(1000).into_bytes();
-        let snippet = snippet_of(&line[..500]);
+        let snippet = snippet_of(&line[..500], 200);
         assert!(snippet.is_char_boundary(snippet.len()));
         assert!(snippet.len() < 500);
         assert!(snippet.ends_with('…'));
@@ -640,7 +694,7 @@ mod tests {
         // "你好世界" in GBK: the snippet must decode to the CJK text, not an
         // empty/ASCII-only prefix.
         let gbk = [0xC4, 0xE3, 0xBA, 0xC3, 0xCA, 0xC0, 0xBD, 0xE7];
-        let snippet = snippet_of(&gbk);
+        let snippet = snippet_of(&gbk, 200);
         assert_eq!(snippet, "你好世界");
     }
 
@@ -654,7 +708,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().to_string_lossy(),
@@ -699,7 +753,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().join("log.txt").to_string_lossy(),
@@ -732,7 +786,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().join("wide.txt").to_string_lossy(),
@@ -761,7 +815,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().join("short.txt").to_string_lossy(),
@@ -788,7 +842,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().join("many.txt").to_string_lossy(),
@@ -820,7 +874,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().to_string_lossy(),
@@ -848,7 +902,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().to_string_lossy(),
@@ -875,7 +929,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().to_string_lossy(),
@@ -902,7 +956,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().to_string_lossy(),
@@ -933,7 +987,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = FileSearchTool
+        let result = FileSearchTool::default()
             .execute(
                 json!({
                     "root": tmp.path().to_string_lossy(),
@@ -1002,6 +1056,8 @@ mod tests {
             max_file_size: 0,
             start_line: 1,
             end_line: 0,
+            snippet_chars: 200,
+            max_window_bytes: 16 * 1024 * 1024,
             cancel: CancellationToken::new(),
         });
         let new_elapsed = t1.elapsed();

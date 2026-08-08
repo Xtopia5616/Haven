@@ -859,7 +859,6 @@ pub fn run() {
             commands::is_autostart_enabled,
             commands::get_task_for_review,
             commands::rollback_task,
-            commands::branch_task,
             commands::continue_task,
             commands::update_task_title,
         ])
@@ -1001,7 +1000,7 @@ fn degraded_app_state(
         router.clone(),
         30,
         50,
-        8000,
+        haven_common::config::ContextLimitsConfig::default(),
     ));
     let pipeline = Arc::new(haven_input::InputPipeline::new());
     let shell = Arc::new(crate::desktop::DesktopShell::new());

@@ -141,7 +141,7 @@ impl ModelRegistry {
         api_key: &str,
         auth_header: Option<(&str, &str)>,
     ) -> Result<Vec<ModelInfo>, crate::LlmError> {
-        let client = reqwest::Client::builder()
+        let client = crate::client::http_client_builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| crate::LlmError::Unknown(e.to_string()))?;

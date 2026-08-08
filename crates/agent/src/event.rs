@@ -198,11 +198,9 @@ type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 /// for at most this duration before a single `ThoughtChunk`/`ReasoningChunk` with
 /// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
 const CHUNK_BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
-/// Flush early once the accumulated batch exceeds this size to bound memory and latency.
-const CHUNK_BATCH_MAX_BYTES: usize = 8 * 1024;
 
 /// Runs a chunk batcher: aggregates incoming `(task_id, delta, step, run)` tuples
-/// for up to `CHUNK_BATCH_INTERVAL` (or until `CHUNK_BATCH_MAX_BYTES`), then emits
+/// for up to `CHUNK_BATCH_INTERVAL` (or until `max_batch_bytes`), then emits
 /// a single `AgentEvent::ThoughtChunk`/`ReasoningChunk` with the concatenated delta.
 /// A batch boundary is also forced whenever the `(task_id, step, run)` key changes
 /// or the sender half is dropped (flush remainder then exit).
@@ -210,6 +208,7 @@ async fn run_chunk_batcher(
     mut rx: tokio::sync::mpsc::Receiver<(String, String, u32, u64)>,
     emitter: Arc<dyn AgentEventEmitter>,
     is_reasoning: bool,
+    max_batch_bytes: usize,
 ) {
     let emit_batch = |tid: String, sn: u32, rid: u64, delta: String| {
         let emitter = emitter.clone();
@@ -252,7 +251,7 @@ async fn run_chunk_batcher(
         // iteration with the same value so it fires at the original deadline).
         let mut deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
 
-        if buf_bytes >= CHUNK_BATCH_MAX_BYTES {
+        if buf_bytes >= max_batch_bytes {
             emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
             continue;
         }
@@ -272,14 +271,14 @@ async fn run_chunk_batcher(
                                 buf = delta2;
                                 buf_bytes = buf.len();
                                 deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
-                                if buf_bytes >= CHUNK_BATCH_MAX_BYTES {
+                                if buf_bytes >= max_batch_bytes {
                                     emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
                                     break;
                                 }
                             } else {
                                 buf_bytes += delta2.len();
                                 buf.push_str(&delta2);
-                                if buf_bytes >= CHUNK_BATCH_MAX_BYTES {
+                                if buf_bytes >= max_batch_bytes {
                                     emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
                                     break;
                                 }
@@ -336,13 +335,24 @@ impl EventDispatcher {
 
     pub fn spawn_chunk_consumer_raw(
         emitter: &Arc<dyn AgentEventEmitter>,
+        max_batch_bytes: usize,
     ) -> (ChunkSender, ChunkSender, ConsumerHandle) {
         let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(1024);
         let (reasoning_tx, reasoning_rx) = tokio::sync::mpsc::channel(1024);
 
         let em_clone = emitter.clone();
-        let thought_task = tokio::spawn(run_chunk_batcher(chunk_rx, em_clone.clone(), false));
-        let reasoning_task = tokio::spawn(run_chunk_batcher(reasoning_rx, em_clone, true));
+        let thought_task = tokio::spawn(run_chunk_batcher(
+            chunk_rx,
+            em_clone.clone(),
+            false,
+            max_batch_bytes,
+        ));
+        let reasoning_task = tokio::spawn(run_chunk_batcher(
+            reasoning_rx,
+            em_clone,
+            true,
+            max_batch_bytes,
+        ));
         // Join both batchers so awaiting this handle guarantees all buffered chunks
         // have been flushed (and emitted) before the caller proceeds.
         let consumer_handle = Some(tokio::spawn(async move {
@@ -532,6 +542,10 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// Default max-batch threshold used by the batcher tests (the production
+    /// default now lives in `context_limits.event_chunk_batch_max_bytes`).
+    const DEFAULT_CHUNK_BATCH_MAX_BYTES: usize = 8 * 1024;
+
     /// Collects every emitted `AgentEvent` into a guarded Vec.
     struct CollectorEmitter {
         events: Mutex<Vec<AgentEvent>>,
@@ -559,7 +573,12 @@ mod tests {
             events: Mutex::new(Vec::new()),
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
-        let handle = tokio::spawn(run_chunk_batcher(rx, emitter.clone(), false));
+        let handle = tokio::spawn(run_chunk_batcher(
+            rx,
+            emitter.clone(),
+            false,
+            DEFAULT_CHUNK_BATCH_MAX_BYTES,
+        ));
 
         // Push 100 tiny per-token chunks faster than the batch interval.
         for i in 0..100u32 {
@@ -602,7 +621,12 @@ mod tests {
             events: Mutex::new(Vec::new()),
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
-        let handle = tokio::spawn(run_chunk_batcher(rx, emitter.clone(), true));
+        let handle = tokio::spawn(run_chunk_batcher(
+            rx,
+            emitter.clone(),
+            true,
+            DEFAULT_CHUNK_BATCH_MAX_BYTES,
+        ));
 
         tx.send(("t2".into(), "hello ".into(), 3, 1)).await.unwrap();
         tx.send(("t2".into(), "world".into(), 3, 1)).await.unwrap();
@@ -628,10 +652,15 @@ mod tests {
             events: Mutex::new(Vec::new()),
         });
         let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
-        let handle = tokio::spawn(run_chunk_batcher(rx, emitter.clone(), false));
+        let handle = tokio::spawn(run_chunk_batcher(
+            rx,
+            emitter.clone(),
+            false,
+            DEFAULT_CHUNK_BATCH_MAX_BYTES,
+        ));
 
-        // Push enough data to cross CHUNK_BATCH_MAX_BYTES mid-batch.
-        let big = "x".repeat(CHUNK_BATCH_MAX_BYTES);
+        // Push enough data to cross the default max-batch threshold mid-batch.
+        let big = "x".repeat(DEFAULT_CHUNK_BATCH_MAX_BYTES);
         tx.send(("t3".into(), big.clone(), 1, 1)).await.unwrap();
         tx.send(("t3".into(), "tail".into(), 1, 1)).await.unwrap();
         drop(tx);

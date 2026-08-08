@@ -85,6 +85,10 @@ pub struct SelfTool {
     mcp_manager: Arc<McpManager>,
     server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     registry: ToolRegistry,
+    /// Max bytes of skill `instructions` accepted by the create-skill op.
+    max_instructions_bytes: usize,
+    /// Max bytes of a skill script file accepted by the create-skill op.
+    max_script_bytes: usize,
 }
 
 impl SelfTool {
@@ -94,6 +98,8 @@ impl SelfTool {
         mcp_manager: Arc<McpManager>,
         server_configs: Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
         registry: ToolRegistry,
+        max_instructions_bytes: usize,
+        max_script_bytes: usize,
     ) -> Self {
         Self {
             context,
@@ -101,6 +107,8 @@ impl SelfTool {
             mcp_manager,
             server_configs,
             registry,
+            max_instructions_bytes,
+            max_script_bytes,
         }
     }
 
@@ -355,9 +363,6 @@ impl SelfTool {
     }
 
     async fn op_skill_create(&self, input: &Value) -> anyhow::Result<Value> {
-        const MAX_INSTRUCTIONS_BYTES: usize = 256 * 1024;
-        const MAX_SCRIPT_BYTES: usize = 512 * 1024;
-
         let name = input["name"]
             .as_str()
             .filter(|n| !n.is_empty())
@@ -373,8 +378,11 @@ impl SelfTool {
             .ok_or_else(|| {
                 anyhow::anyhow!("instructions are required (the '## Instructions' body)")
             })?;
-        if instructions.len() > MAX_INSTRUCTIONS_BYTES {
-            anyhow::bail!("instructions too large (max {MAX_INSTRUCTIONS_BYTES} bytes)");
+        if instructions.len() > self.max_instructions_bytes {
+            anyhow::bail!(
+                "instructions too large (max {} bytes)",
+                self.max_instructions_bytes
+            );
         }
         let language = input["language"].as_str().unwrap_or("python");
         // Only Python skills are executable: `SkillRunner::run` rejects any
@@ -395,9 +403,9 @@ impl SelfTool {
         }
         let script = input["script"].as_str().map(str::to_string);
         if let Some(s) = &script
-            && s.len() > MAX_SCRIPT_BYTES
+            && s.len() > self.max_script_bytes
         {
-            anyhow::bail!("script too large (max {MAX_SCRIPT_BYTES} bytes)");
+            anyhow::bail!("script too large (max {} bytes)", self.max_script_bytes);
         }
 
         let root = self.skills_engine.resolved_root().await;
@@ -1217,6 +1225,8 @@ mod tests {
             Arc::new(McpManager::new()),
             Arc::new(RwLock::new(HashMap::new())),
             ToolRegistry::new(),
+            256 * 1024,
+            512 * 1024,
         );
         (tool, dir)
     }

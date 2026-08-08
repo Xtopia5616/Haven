@@ -198,7 +198,7 @@ pub struct OpenAiResponsesAdapter {
 
 impl OpenAiResponsesAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
-        let mut builder = reqwest::Client::builder();
+        let mut builder = crate::client::http_client_builder();
 
         // §2.5: proxy support
         if let Some(ref proxy_url) = endpoint.proxy_url

@@ -64,12 +64,16 @@ fn http_fixture_path() -> String {
 }
 
 async fn create_client() -> Arc<McpClient> {
-    let client = Arc::new(McpClient::new(&McpServerConfig {
-        name: "echo-test".into(),
-        command: python_exe().into(),
-        args: vec![fixture_path()],
-        ..Default::default()
-    }));
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "echo-test".into(),
+            command: python_exe().into(),
+            args: vec![fixture_path()],
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
     client.connect().await.unwrap();
     client
 }
@@ -133,12 +137,16 @@ async fn spawn_http_server() -> (u16, tokio::process::Child) {
 }
 
 async fn create_http_client(port: u16) -> Arc<McpClient> {
-    let client = Arc::new(McpClient::new(&McpServerConfig {
-        name: "echo-http".into(),
-        transport: McpTransportType::Http,
-        url: format!("http://127.0.0.1:{}/mcp", port),
-        ..Default::default()
-    }));
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "echo-http".into(),
+            transport: McpTransportType::Http,
+            url: format!("http://127.0.0.1:{}/mcp", port),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
     client.connect().await.unwrap();
     client
 }

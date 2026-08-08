@@ -8,7 +8,6 @@ import {
 	addTaskMessage,
 	updateTaskMessages,
 	truncateTaskMessages,
-	branchTaskMessages,
 	adoptDraftMessages,
 	moveTaskMessages,
 	clearTaskMessages,
@@ -203,44 +202,6 @@ describe('truncateTaskMessages', () => {
 		setTaskMessages('t1', msgs());
 		truncateTaskMessages('nope', 3);
 		expect(storeMap().t1).toHaveLength(5);
-	});
-});
-
-describe('branchTaskMessages', () => {
-	/** @returns {any} */
-	const storeMap = () => get(taskMessagesStore);
-
-	beforeEach(() => {
-		taskMessagesStore.set({});
-	});
-
-	const msgs = () => [
-		{ id: 'a', stepNumber: 1 },
-		{ id: 'b', stepNumber: 2 },
-		{ id: 'c', stepNumber: 3 },
-	];
-
-	it('copies messages before the target step into a new task', () => {
-		setTaskMessages('src', msgs());
-		branchTaskMessages('src', 'dst', 3);
-		expect(storeMap().dst.map((x) => x.id)).toEqual(['a', 'b']);
-		expect(storeMap().src).toHaveLength(3);
-	});
-
-	it('copies the whole list when the target step is never reached', () => {
-		setTaskMessages('src', msgs());
-		branchTaskMessages('src', 'dst', 99);
-		expect(storeMap().dst.map((x) => x.id)).toEqual(['a', 'b', 'c']);
-	});
-
-	it('keeps a user message at the target step', () => {
-		setTaskMessages('src', [
-			{ id: 'u1', role: 'user', stepNumber: 3 },
-			{ id: 't1', stepNumber: 3 },
-			{ id: 't2', stepNumber: 4 },
-		]);
-		branchTaskMessages('src', 'dst', 3);
-		expect(storeMap().dst.map((x) => x.id)).toEqual(['u1']);
 	});
 });
 

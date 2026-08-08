@@ -226,11 +226,11 @@ impl Database {
 
             // Preferred tool / tool family hint
             for tool_hint in &["use ", "using ", "prefer ", "always use "] {
-                let needle = format!("{} {}", tool_hint, "search");
+                let needle = format!("{} {}", tool_hint, "file_search");
                 if content_lower.contains(&needle) {
                     prefs.push(InferredPreference {
                         key: "inferred.tool_pref".into(),
-                        value: "search".into(),
+                        value: "file_search".into(),
                         confidence: 0.55,
                     });
                 }
@@ -405,8 +405,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: chrono::Utc::now().to_rfc3339(),
             tool_call_id: None,
-            compaction_id: None,
-            is_compacted: false,
             parent_message_id: None,
             attachments: vec![],
             voice: false,

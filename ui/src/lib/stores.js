@@ -153,25 +153,6 @@ export function truncateTaskMessages(taskId, targetStep) {
 	clearSeqMap(taskId);
 }
 
-/**
- * Copy messages up to (but not including) the given step number from a source
- * task into a new task. Used by the branch feature: the branched conversation
- * contains everything before the branch point. Mirrors truncateTaskMessages
- * selection logic but writes to a new task id instead of mutating the source.
- */
-export function branchTaskMessages(sourceTaskId, newTaskId, targetStep) {
-	if (!sourceTaskId || !newTaskId) return;
-	taskMessagesStore.update((m) => {
-		const list = m[sourceTaskId];
-		if (!list || list.length === 0) return m;
-		const cutIdx = cutIndexForStep(list, targetStep);
-		const kept = cutIdx === -1 ? [...list] : list.slice(0, cutIdx);
-		const next = { ...m };
-		next[newTaskId] = kept;
-		return next;
-	});
-}
-
 // Move all messages from `fromKey` to `toKey` in a single store update.
 // No-op when `fromKey` is missing, empty, or equal to `toKey`.
 function _moveMessages(m, fromKey, toKey) {
@@ -327,6 +308,32 @@ export function imageDataUrl(att) {
 }
 
 /**
+ * Format a message timestamp for bubble display. Messages from today show
+ * the wall-clock time (matching live streaming bubbles); older messages
+ * show the full `yyyy/mm/dd hh:mm:ss` so history stays navigable. Both the
+ * live path (Date) and the review path (RFC3339 `created_at` string) share
+ * this helper so a merged list never mixes formats.
+ * @param {Date|string|number} input
+ * @returns {string}
+ */
+export function formatMessageTime(input) {
+	const d = input instanceof Date ? input : new Date(input);
+	const now = new Date();
+	const sameDay =
+		d.getFullYear() === now.getFullYear() &&
+		d.getMonth() === now.getMonth() &&
+		d.getDate() === now.getDate();
+	if (sameDay) return d.toLocaleTimeString();
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, '0');
+	const day = String(d.getDate()).padStart(2, '0');
+	const h = String(d.getHours()).padStart(2, '0');
+	const min = String(d.getMinutes()).padStart(2, '0');
+	const s = String(d.getSeconds()).padStart(2, '0');
+	return `${y}/${m}/${day} ${h}:${min}:${s}`;
+}
+
+/**
  * @param {{ role: string, content: string, type?: string|null, voice?: boolean, time?: string, attachments?: Array<{media_type: string, data: string}>, idPrefix?: string }} opts
  */
 export function newMessage({ role, content, type = null, voice = false, time, attachments = [], idPrefix = '' }) {
@@ -336,7 +343,7 @@ export function newMessage({ role, content, type = null, voice = false, time, at
 		content,
 		type,
 		voice,
-		time: time || new Date().toLocaleTimeString(),
+		time: time || formatMessageTime(new Date()),
 		attachments,
 	};
 }

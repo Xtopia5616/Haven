@@ -11,12 +11,15 @@ use crate::{Tool, ToolResult};
 pub struct ShellTool {
     /// Registry of background jobs for `background: true` invocations.
     pub jobs: Arc<BackgroundJobs>,
+    /// Output cap (chars) for command output.
+    pub max_output_chars: usize,
 }
 
 impl Default for ShellTool {
     fn default() -> Self {
         Self {
             jobs: Arc::new(BackgroundJobs::new()),
+            max_output_chars: 20_000,
         }
     }
 }
@@ -62,7 +65,7 @@ impl Tool for ShellTool {
         let shell = input["shell"].as_str().unwrap_or("cmd");
         #[cfg(not(windows))]
         let shell = input["shell"].as_str().unwrap_or("sh");
-        let max_chars = self.max_output_chars();
+        let max_chars = self.max_output_chars;
         let cwd = input["cwd"]
             .as_str()
             .filter(|s| !s.is_empty())

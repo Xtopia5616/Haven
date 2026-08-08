@@ -48,8 +48,6 @@ pub struct Message {
     pub message_type: Option<String>,
     pub created_at: String,
     pub tool_call_id: Option<String>,
-    pub is_compacted: bool,
-    pub compaction_id: Option<String>,
     pub parent_message_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
@@ -68,13 +66,12 @@ impl Database {
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
     ) -> anyhow::Result<Message> {
-        self.add_message_with_window_full(
+        self.add_message_full(
             task_id,
             role,
             content,
             message_type,
             tool_call_id,
-            50,
             &[],
             false,
         )
@@ -89,92 +86,46 @@ impl Database {
         tool_call_id: Option<&str>,
         attachments: &[MessageAttachment],
     ) -> anyhow::Result<Message> {
-        self.add_message_with_window_full(
+        self.add_message_full(
             task_id,
             role,
             content,
             message_type,
             tool_call_id,
-            50,
             attachments,
             false,
         )
     }
 
-    pub fn add_message_with_window(
-        &self,
-        task_id: &str,
-        role: &str,
-        content: &str,
-        message_type: Option<&str>,
-        tool_call_id: Option<&str>,
-        window_size: usize,
-    ) -> anyhow::Result<Message> {
-        self.add_message_with_window_full(
-            task_id,
-            role,
-            content,
-            message_type,
-            tool_call_id,
-            window_size,
-            &[],
-            false,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub fn add_message_with_window_full(
+    pub fn add_message_full(
         &self,
         task_id: &str,
         role: &str,
         content: &str,
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
-        window_size: usize,
         attachments: &[MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<Message> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
-        // Wrap INSERT + DELETE in an immediate transaction so concurrent
-        // callers cannot interleave (the second DELETE could remove the
-        // first caller's just-inserted message).
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| {
-            conn.execute(
-                "INSERT INTO messages (id, task_id, role, content, message_type, created_at, tool_call_id, is_compacted, attachments, voice)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)",
-                rusqlite::params![
-                    id,
-                    task_id,
-                    role,
-                    content,
-                    message_type,
-                    now,
-                    tool_call_id,
-                    Self::serialize_attachments(attachments),
-                    voice,
-                ],
-            )?;
-            // Sliding window: keep only the last N messages per task.
-            // Clamp to i64::MAX so callers can pass a huge value to disable
-            // trimming (e.g. when bulk-copying messages during branching).
-            let limit: i64 = window_size.min(i64::MAX as usize) as i64;
-            conn.execute(
-                "DELETE FROM messages WHERE task_id = ?1 AND id NOT IN (
-                    SELECT id FROM messages WHERE task_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2
-                )",
-                rusqlite::params![task_id, limit],
-            )?;
-            Ok::<(), anyhow::Error>(())
-        })();
-        if result.is_err() {
-            let _ = conn.execute_batch("ROLLBACK");
-        } else {
-            conn.execute_batch("COMMIT")?;
-        }
-        result?;
+        conn.execute(
+            "INSERT INTO messages (id, task_id, role, content, message_type, created_at, tool_call_id, attachments, voice)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                id,
+                task_id,
+                role,
+                content,
+                message_type,
+                now,
+                tool_call_id,
+                Self::serialize_attachments(attachments),
+                voice,
+            ],
+        )?;
         drop(conn);
         self.cache_invalidate_messages(task_id);
         Ok(Message {
@@ -185,8 +136,6 @@ impl Database {
             message_type: message_type.map(String::from),
             created_at: now,
             tool_call_id: tool_call_id.map(String::from),
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: attachments.to_vec(),
             voice,
@@ -218,7 +167,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id, parent_message_id, attachments, voice
+                    parent_message_id, attachments, voice
              FROM messages WHERE task_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![task_id], |row| {
@@ -230,11 +179,9 @@ impl Database {
                 message_type: row.get(4)?,
                 created_at: row.get(5)?,
                 tool_call_id: row.get(6)?,
-                is_compacted: row.get::<_, i32>(7)? != 0,
-                compaction_id: row.get(8)?,
-                parent_message_id: row.get(9)?,
-                attachments: Self::parse_attachments(row.get(10)?),
-                voice: row.get::<_, i32>(11)? != 0,
+                parent_message_id: row.get(7)?,
+                attachments: Self::parse_attachments(row.get(8)?),
+                voice: row.get::<_, i32>(9)? != 0,
             })
         })?;
         let mut msgs = Vec::new();
@@ -253,7 +200,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, role, content, message_type, created_at, tool_call_id,
-                    is_compacted, compaction_id, parent_message_id, attachments, voice
+                    parent_message_id, attachments, voice
              FROM messages WHERE task_id = ?1 AND (message_type IS NULL OR message_type = 'text')
              ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
@@ -266,11 +213,9 @@ impl Database {
                 message_type: row.get(4)?,
                 created_at: row.get(5)?,
                 tool_call_id: row.get(6)?,
-                is_compacted: row.get::<_, i32>(7)? != 0,
-                compaction_id: row.get(8)?,
-                parent_message_id: row.get(9)?,
-                attachments: Self::parse_attachments(row.get(10)?),
-                voice: row.get::<_, i32>(11)? != 0,
+                parent_message_id: row.get(7)?,
+                attachments: Self::parse_attachments(row.get(8)?),
+                voice: row.get::<_, i32>(9)? != 0,
             })
         })?;
         let mut msgs = Vec::new();
@@ -302,6 +247,19 @@ impl Database {
             |row| row.get::<_, String>(0),
         )
         .ok()
+    }
+
+    /// Delete a single message by its primary key. Used to remove a user
+    /// message that was persisted before the backend discovered the task is
+    /// terminal (no ghost rows in history).
+    pub fn delete_message_by_id(&self, task_id: &str, message_id: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM messages WHERE id = ?1 AND task_id = ?2",
+            rusqlite::params![message_id, task_id],
+        )?;
+        self.cache_invalidate_messages(task_id);
+        Ok(())
     }
 
     /// Delete every message in a task whose `created_at` is strictly after
@@ -386,24 +344,24 @@ mod tests {
         let db = test_db();
         let tid = test_task(&db);
         let msg = db.add_message(&tid, "user", "hello", None, None).unwrap();
-        assert!(!msg.is_compacted);
-        assert!(msg.compaction_id.is_none());
+        assert_eq!(msg.content, "hello");
         let msgs = db.get_task_messages(&tid).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
     }
 
     #[test]
-    fn sliding_window_trims_old_messages() {
+    fn no_sliding_window_trim_keeps_full_history() {
         let db = test_db();
         let tid = test_task(&db);
         for i in 0..5 {
-            db.add_message_with_window(&tid, "user", &format!("msg {}", i), None, None, 3)
+            db.add_message(&tid, "user", &format!("msg {}", i), None, None)
                 .unwrap();
         }
         let msgs = db.get_task_messages(&tid).unwrap();
-        assert_eq!(msgs.len(), 3);
-        assert_eq!(msgs[0].content, "msg 2");
+        assert_eq!(msgs.len(), 5);
+        assert_eq!(msgs[0].content, "msg 0");
+        assert_eq!(msgs[4].content, "msg 4");
     }
 
     #[test]
@@ -479,8 +437,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: vec![MessageAttachment::new("image/jpeg", "abc")],
             voice: true,
@@ -496,17 +452,8 @@ mod tests {
     fn voice_flag_persists_and_roundtrips() {
         let db = test_db();
         let tid = test_task(&db);
-        db.add_message_with_window_full(
-            &tid,
-            "user",
-            "voice hello",
-            Some("text"),
-            None,
-            50,
-            &[],
-            true,
-        )
-        .unwrap();
+        db.add_message_full(&tid, "user", "voice hello", Some("text"), None, &[], true)
+            .unwrap();
         db.add_message(&tid, "user", "typed hello", Some("text"), None)
             .unwrap();
         let msgs = db.get_task_messages(&tid).unwrap();

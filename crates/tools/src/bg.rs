@@ -6,8 +6,6 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 /// Maximum concurrent *running* background jobs per process. Prevents an
 /// agent from leaking unbounded child processes. Finished jobs are reaped
 /// on the next spawn, so this is a concurrency cap, not a lifetime cap.
-const MAX_JOBS: usize = 64;
-
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. Window
 /// suppression (`CREATE_NO_WINDOW`) is applied here unconditionally because
@@ -135,6 +133,8 @@ pub struct BackgroundJobs {
     completion_tx: mpsc::UnboundedSender<JobCompletion>,
     /// Receiver handed out exactly once to the consumer (the agent layer).
     completion_rx: Mutex<Option<mpsc::UnboundedReceiver<JobCompletion>>>,
+    /// Max concurrent *running* jobs (from `context_limits.background_max_jobs`).
+    max_jobs: RwLock<usize>,
 }
 
 impl Default for BackgroundJobs {
@@ -150,7 +150,13 @@ impl BackgroundJobs {
             jobs: RwLock::new(HashMap::new()),
             completion_tx: tx,
             completion_rx: Mutex::new(Some(rx)),
+            max_jobs: RwLock::new(64),
         }
+    }
+
+    /// Replace the unified context limits (background job concurrency cap).
+    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        *self.max_jobs.write().await = limits.background_max_jobs;
     }
 
     /// Take the completion receiver exactly once. The caller spawns a consumer
@@ -213,8 +219,11 @@ impl BackgroundJobs {
                 .values()
                 .filter(|e| matches!(e.state, JobState::Running { .. }))
                 .count();
-            if running >= MAX_JOBS {
-                anyhow::bail!("too many running background jobs (limit {})", MAX_JOBS);
+            if running >= *self.max_jobs.read().await {
+                anyhow::bail!(
+                    "too many running background jobs (limit {})",
+                    *self.max_jobs.read().await
+                );
             }
             jobs.insert(
                 id.clone(),
@@ -588,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn test_completion_skipped_for_running() {
         let jobs = Arc::new(BackgroundJobs::new());
-        // No jobs → no completion. Just confirm the receiver is taken.
+        // No jobs 鈫?no completion. Just confirm the receiver is taken.
         let _rx = jobs.take_completion_receiver().expect("receiver available");
         // status on not_found doesn't notify.
         assert_eq!(jobs.status("nope").await["status"], "not_found");

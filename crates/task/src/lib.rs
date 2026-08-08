@@ -532,6 +532,57 @@ impl TaskExecutor {
             .unwrap_or_default()
     }
 
+    /// Promote a checkpointed partial stream reply into a real assistant
+    /// message when the user stops the task mid-generation, so history keeps
+    /// the text that was already streamed to the screen. Skips when a real
+    /// message was persisted after the last checkpoint (the loop finished
+    /// writing before the cancel landed) — promoting then would duplicate it.
+    async fn promote_partial_message(&self, task_id: &str) {
+        let db = self.db.clone();
+        let tid = task_id.to_string();
+        let partial = db
+            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
+            .await
+            .ok()
+            .flatten();
+        let Some((content, updated_at)) = partial else {
+            return;
+        };
+        if content.trim().is_empty() {
+            return;
+        }
+        let db = self.db.clone();
+        let tid = task_id.to_string();
+        let last_ts = db
+            .run_blocking(move |db| Ok(db.get_last_message_created_at(&tid)))
+            .await
+            .ok()
+            .flatten();
+        if let Some(last) = last_ts
+            && last >= updated_at
+        {
+            return;
+        }
+        let db = self.db.clone();
+        let tid = task_id.to_string();
+        let res = db
+            .run_blocking(move |db| {
+                let taken = db.take_partial_message(&tid);
+                if let Some(text) = taken {
+                    db.add_message_full(&tid, "assistant", &text, Some("text"), None, &[], false)?;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
+        if let Err(e) = res {
+            tracing::warn!(
+                "promote_partial_message: failed to promote partial reply for task {}: {}",
+                task_id,
+                e
+            );
+        }
+    }
+
     /// End a task. Since the user explicitly asked to end it, the task is
     /// always marked as Completed 鈥?regardless of whether it was still
     /// Running (forced stop) or Paused (naturally finished). Clean up
@@ -563,6 +614,7 @@ impl TaskExecutor {
                 .await?;
             tasks.remove(pos);
             drop(tasks);
+            self.promote_partial_message(task_id).await;
             // `task_notify` sits between the maps here — wake any ReAct-loop
             // waiters before tearing down the rest of the per-task state.
             self.running_tasks.lock().await.remove(task_id);
@@ -579,6 +631,7 @@ impl TaskExecutor {
             let tid = task_id.to_string();
             db.run_blocking(move |db| db.update_task_status(&tid, "completed"))
                 .await?;
+            self.promote_partial_message(task_id).await;
             Ok(TaskStatus::Completed)
         }
     }

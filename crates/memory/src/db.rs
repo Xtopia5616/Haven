@@ -229,8 +229,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: vec![],
             voice: false,

@@ -49,13 +49,6 @@ fn jsonrpc_notification(method: &str, params: Option<Value>) -> Value {
     req
 }
 
-/// Per-block binary payload cap for `tools/call` content. Binary blocks that
-/// exceed this (in base64 characters) are reduced to metadata + a byte-length
-/// marker instead of being copied verbatim into the output, so `summary_text()`
-/// — which serializes the whole `output` into the DB action step and
-/// notifications — cannot grow without bound from untrusted MCP servers.
-const MAX_BINARY_PAYLOAD: usize = 2 * 1024 * 1024;
-
 // ---------------------------------------------------------------------------
 // MCP content block extraction
 // ---------------------------------------------------------------------------
@@ -83,10 +76,11 @@ fn base64_decoded_len(s: &str) -> usize {
 /// text-resources fold into the plain-text summary. Binary media (`image`,
 /// `audio`, embedded resource blobs) is surfaced once under `output.images` /
 /// `output.audio` / `output.resources` (base64 + mimeType, capped at
-/// [`MAX_BINARY_PAYLOAD`]) for downstream rendering, while `output.content`
-/// keeps a metadata-only list of every block (no raw payload) for UI fidelity.
-/// Unknown or malformed block types are preserved rather than silently dropped.
-fn extract_mcp_content(content: &[Value]) -> (Value, String) {
+/// `max_binary_payload` base64 chars) for downstream rendering, while
+/// `output.content` keeps a metadata-only list of every block (no raw payload)
+/// for UI fidelity. Unknown or malformed block types are preserved rather than
+/// silently dropped.
+fn extract_mcp_content(content: &[Value], max_binary_payload: usize) -> (Value, String) {
     let mut text_parts: Vec<String> = Vec::new();
     let mut images: Vec<Value> = Vec::new();
     let mut audio: Vec<Value> = Vec::new();
@@ -128,7 +122,7 @@ fn extract_mcp_content(content: &[Value]) -> (Value, String) {
             }
             "image" | "audio" => {
                 let data = item["data"].as_str().unwrap_or("");
-                let entry = if data.len() <= MAX_BINARY_PAYLOAD {
+                let entry = if data.len() <= max_binary_payload {
                     serde_json::json!({
                         "type": kind,
                         "mimeType": mime_type,
@@ -157,7 +151,7 @@ fn extract_mcp_content(content: &[Value]) -> (Value, String) {
                     kind,
                     mime_type,
                     data.len(),
-                    if data.len() > MAX_BINARY_PAYLOAD {
+                    if data.len() > max_binary_payload {
                         ", oversized"
                     } else {
                         ""
@@ -173,7 +167,7 @@ fn extract_mcp_content(content: &[Value]) -> (Value, String) {
                     let uri = res["uri"].as_str().unwrap_or("");
                     // Compute the decoded size without allocating the buffer.
                     let decoded_len = base64_decoded_len(blob);
-                    let entry = if blob.len() <= MAX_BINARY_PAYLOAD {
+                    let entry = if blob.len() <= max_binary_payload {
                         serde_json::json!({
                             "uri": uri,
                             "mimeType": res["mimeType"].as_str().unwrap_or(mime_type),
@@ -196,7 +190,7 @@ fn extract_mcp_content(content: &[Value]) -> (Value, String) {
                         if uri.is_empty() { mime_type } else { uri },
                         blob.len(),
                         decoded_len,
-                        if blob.len() > MAX_BINARY_PAYLOAD {
+                        if blob.len() > max_binary_payload {
                             ", oversized"
                         } else {
                             ""
@@ -364,6 +358,8 @@ struct HttpShared {
 struct HttpInner {
     shared: Arc<HttpShared>,
     notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    /// Single buffered (incomplete) SSE line/event cap (from context limits).
+    max_sse_buffer: usize,
 }
 
 impl HttpInner {
@@ -414,7 +410,7 @@ impl HttpInner {
             .unwrap_or(false);
 
         if is_sse {
-            read_sse_response(resp, id, &self.notification_tx).await
+            read_sse_response(resp, id, &self.notification_tx, self.max_sse_buffer).await
         } else {
             let value: Value = resp.json().await?;
             unpack_jsonrpc(value)
@@ -519,9 +515,10 @@ async fn read_sse_response(
     resp: reqwest::Response,
     id: u64,
     tx: &tokio::sync::mpsc::UnboundedSender<Value>,
+    max_sse_buffer: usize,
 ) -> anyhow::Result<Value> {
     let mut stream = resp.bytes_stream();
-    let mut parser = SseParser::new();
+    let mut parser = SseParser::new(max_sse_buffer);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(REQUEST_TIMEOUT_SECS);
     loop {
         let chunk = tokio::time::timeout_at(deadline, stream.next())
@@ -553,6 +550,7 @@ async fn listen_sse(
     shared: &Arc<HttpShared>,
     tx: &tokio::sync::mpsc::UnboundedSender<Value>,
     cancel: &CancellationToken,
+    max_sse_buffer: usize,
 ) -> anyhow::Result<()> {
     let builder = shared
         .http
@@ -565,7 +563,7 @@ async fn listen_sse(
         anyhow::bail!("SSE stream open failed (status {})", status.as_u16());
     }
     let mut stream = resp.bytes_stream();
-    let mut parser = SseParser::new();
+    let mut parser = SseParser::new(max_sse_buffer);
     loop {
         tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
@@ -591,6 +589,7 @@ fn spawn_sse_listener(
     cancel: CancellationToken,
     shared: Arc<HttpShared>,
     notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    max_sse_buffer: usize,
 ) {
     tokio::spawn(async move {
         let shared = Arc::new(shared);
@@ -598,7 +597,7 @@ fn spawn_sse_listener(
             if cancel.is_cancelled() {
                 break;
             }
-            match listen_sse(&shared, &notification_tx, &cancel).await {
+            match listen_sse(&shared, &notification_tx, &cancel, max_sse_buffer).await {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::debug!(
@@ -652,6 +651,11 @@ pub struct McpClient {
     cancel_token: Arc<Mutex<CancellationToken>>,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Value>>>>,
+    /// Binary content (image/audio/resource blob) kept in observations (base64
+    /// chars) before being replaced by an `oversized` marker.
+    max_binary_payload: usize,
+    /// Single buffered (incomplete) SSE line/event cap for the HTTP transport.
+    max_sse_buffer: usize,
 }
 
 struct RateLimiter {
@@ -686,7 +690,11 @@ impl RateLimiter {
 }
 
 impl McpClient {
-    pub fn new(config: &haven_common::McpServerConfig) -> Self {
+    pub fn new(
+        config: &haven_common::McpServerConfig,
+        max_binary_payload: usize,
+        max_sse_buffer: usize,
+    ) -> Self {
         Self {
             name: config.name.clone(),
             transport: config.transport.clone(),
@@ -705,6 +713,8 @@ impl McpClient {
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(10.0))),
             notification_rx: Arc::new(Mutex::new(None)),
+            max_binary_payload,
+            max_sse_buffer,
         }
     }
 
@@ -831,6 +841,7 @@ impl McpClient {
         let inner = HttpInner {
             shared: shared.clone(),
             notification_tx,
+            max_sse_buffer: self.max_sse_buffer,
         };
         Ok((shared, inner))
     }
@@ -908,7 +919,13 @@ impl McpClient {
         // (e.g. tools/list_changed) are received.
         if let Some(shared) = http_shared {
             let cancel = self.cancel_token.lock().await.clone();
-            spawn_sse_listener(self.name.clone(), cancel, shared, notification_tx);
+            spawn_sse_listener(
+                self.name.clone(),
+                cancel,
+                shared,
+                notification_tx,
+                self.max_sse_buffer,
+            );
         }
 
         *self.status.lock().await = McpClientStatus::Connected;
@@ -1049,7 +1066,7 @@ impl McpClient {
         };
 
         let content = result["content"].as_array().cloned().unwrap_or_default();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, self.max_binary_payload);
 
         let is_error = result
             .get("isError")
@@ -1254,6 +1271,7 @@ pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
+    limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
 }
 
 impl Clone for McpManager {
@@ -1262,6 +1280,7 @@ impl Clone for McpManager {
             clients: self.clients.clone(),
             status_tx: self.status_tx.clone(),
             discovery_config: self.discovery_config.clone(),
+            limits: self.limits.clone(),
         }
     }
 }
@@ -1275,7 +1294,16 @@ impl McpManager {
             discovery_config: Arc::new(tokio::sync::RwLock::new(
                 haven_common::config::McpDiscoveryConfig::default(),
             )),
+            limits: Arc::new(tokio::sync::RwLock::new(
+                haven_common::config::ContextLimitsConfig::default(),
+            )),
         }
+    }
+
+    /// Replace the unified context limits (binary payload / SSE buffer caps)
+    /// used when creating MCP clients from config.
+    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        *self.limits.write().await = limits.clone();
     }
 
     pub fn status_tx(&self) -> tokio::sync::broadcast::Sender<McpStatusChangeEvent> {
@@ -1319,7 +1347,12 @@ impl McpManager {
             if !server.enabled {
                 continue;
             }
-            let client = Arc::new(McpClient::new(server));
+            let limits = self.limits.read().await.clone();
+            let client = Arc::new(McpClient::new(
+                server,
+                limits.mcp_max_binary_payload_bytes,
+                limits.mcp_max_sse_buffer_bytes,
+            ));
             let name = client.name().to_string();
             self.clients
                 .lock()
@@ -1384,7 +1417,12 @@ impl McpManager {
             }
         }
 
-        let client = Arc::new(McpClient::new(config));
+        let limits = self.limits.read().await.clone();
+        let client = Arc::new(McpClient::new(
+            config,
+            limits.mcp_max_binary_payload_bytes,
+            limits.mcp_max_sse_buffer_bytes,
+        ));
 
         let listener_client = client.clone();
         listener_client.start_notification_listener(move |server_name: &str| {
@@ -1656,11 +1694,15 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_client_new_initial_state() {
-        let client = McpClient::new(&McpServerConfig {
-            name: "test".into(),
-            command: "echo".into(),
-            ..Default::default()
-        });
+        let client = McpClient::new(
+            &McpServerConfig {
+                name: "test".into(),
+                command: "echo".into(),
+                ..Default::default()
+            },
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+        );
         assert_eq!(client.name(), "test");
         assert!(client.enabled());
         let status = client.status().await;
@@ -1669,11 +1711,15 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_client_snapshot_initial() {
-        let client = McpClient::new(&McpServerConfig {
-            name: "test".into(),
-            command: "echo".into(),
-            ..Default::default()
-        });
+        let client = McpClient::new(
+            &McpServerConfig {
+                name: "test".into(),
+                command: "echo".into(),
+                ..Default::default()
+            },
+            2 * 1024 * 1024,
+            2 * 1024 * 1024,
+        );
         let snap = client.snapshot().await;
         assert_eq!(snap.name, "test");
         assert_eq!(snap.transport, "stdio");
@@ -1716,7 +1762,7 @@ mod tests {
         .as_array()
         .unwrap()
         .clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert_eq!(text, "hello\nworld");
         assert_eq!(output["text"], "hello\nworld");
         assert!(output.get("images").is_none());
@@ -1737,7 +1783,7 @@ mod tests {
         .as_array()
         .unwrap()
         .clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert!(text.contains("caption"));
         assert!(text.contains("[image block returned: image/png"));
         assert!(text.contains("[audio block returned: audio/wav"));
@@ -1773,7 +1819,7 @@ mod tests {
         .as_array()
         .unwrap()
         .clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert_eq!(text, "file contents here");
         assert_eq!(output["text"], "file contents here");
         assert!(output.get("resources").is_none());
@@ -1795,7 +1841,7 @@ mod tests {
         .as_array()
         .unwrap()
         .clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert!(text.contains("[resource block returned: result.bin"));
         assert!(text.contains("~4 decoded bytes"));
         let resources = output["resources"].as_array().unwrap();
@@ -1818,7 +1864,7 @@ mod tests {
         .as_array()
         .unwrap()
         .clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert!(text.contains("[resource block returned: memory://note"));
         assert!(text.contains("no readable payload"));
         assert!(output.get("resources").is_none());
@@ -1833,7 +1879,7 @@ mod tests {
         .as_array()
         .unwrap()
         .clone();
-        let (_, text) = extract_mcp_content(&content);
+        let (_, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         // Both malformed/unknown blocks must be preserved, not swallowed.
         assert!(text.contains("somedata"));
         assert!(text.contains("weird"));
@@ -1841,26 +1887,26 @@ mod tests {
 
     #[test]
     fn extract_mcp_content_oversized_image_capped() {
-        let big = "A".repeat(MAX_BINARY_PAYLOAD + 1);
+        let big = "A".repeat((2 * 1024 * 1024) + 1);
         let content = json!([
             {"type": "image", "mimeType": "image/png", "data": big},
         ])
         .as_array()
         .unwrap()
         .clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert!(text.contains("oversized"));
         let images = output["images"].as_array().unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0]["oversized"], true);
         assert_eq!(images[0]["data"], "");
-        assert_eq!(images[0]["bytes"], MAX_BINARY_PAYLOAD + 1);
+        assert_eq!(images[0]["bytes"], (2 * 1024 * 1024) + 1);
     }
 
     #[test]
     fn extract_mcp_content_empty() {
         let content = json!([]).as_array().unwrap().clone();
-        let (output, text) = extract_mcp_content(&content);
+        let (output, text) = extract_mcp_content(&content, 2 * 1024 * 1024);
         assert_eq!(text, "");
         assert_eq!(output["text"], "");
     }

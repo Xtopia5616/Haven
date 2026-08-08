@@ -1,6 +1,8 @@
 <script>
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
+	import ContextMenu from '$lib/ContextMenu.svelte';
+	import { copyText } from '$lib/clipboard.js';
 
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
 	let expanded = $state(false);
@@ -41,9 +43,54 @@
 		const s = server.status;
 		return s === 'Connecting' || (typeof s === 'object' && 'Connecting' in s);
 	}
+
+	let ctxMenu = $state({ open: false, x: 0, y: 0 });
+
+	function handleContextMenu(e) {
+		e.preventDefault();
+		e.stopPropagation();
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY };
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0 };
+	}
+
+	let ctxMenuItems = $derived.by(() => {
+		const items = [];
+		items.push(
+			server.enabled
+				? { id: 'disable', label: '禁用', icon: 'power', action: () => onToggle?.(server.name, false) }
+				: { id: 'enable', label: '启用', icon: 'power', action: () => onToggle?.(server.name, true) },
+		);
+		if (isOffline()) {
+			items.push({
+				id: 'reconnect',
+				label: '重连',
+				icon: 'refresh',
+				action: () => onReconnect?.(server.name),
+			});
+		}
+		items.push({ id: 'edit', label: '编辑', icon: 'edit', action: () => onEdit?.(server) });
+		items.push({
+			id: 'copyName',
+			label: '复制名称',
+			icon: 'copy',
+			action: () => copyText(server.name, '名称'),
+		});
+		items.push({
+			id: 'remove',
+			label: '移除',
+			icon: 'delete',
+			danger: true,
+			action: () => onRemove?.(server.name),
+		});
+		return items;
+	});
 </script>
 
-<div class="server-card" class:expanded>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="server-card" class:expanded oncontextmenu={handleContextMenu}>
 	<div class="card-header" onclick={toggleExpand} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && toggleExpand()}>
 		<div class="card-info">
 			<div class="card-name">
@@ -105,6 +152,14 @@
 			{/if}
 		</div>
 	{/if}
+
+	<ContextMenu
+		open={ctxMenu.open}
+		x={ctxMenu.x}
+		y={ctxMenu.y}
+		items={ctxMenuItems}
+		onClose={closeCtxMenu}
+	/>
 </div>
 
 <style>

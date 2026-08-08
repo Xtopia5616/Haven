@@ -7,7 +7,7 @@ pub mod skills;
 pub mod tool;
 pub mod util;
 
-use haven_common::config::{McpServerConfig, SkillsExecConfig, ToolConfig};
+use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
 use haven_common::types::RiskLevel;
 use haven_llm::LlmRouter;
 use serde_json::Value;
@@ -83,6 +83,10 @@ pub struct ToolsManager {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub safety_gateway: SafetyGateway,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
+    /// Unified context limits. `max_tool_output_chars` is the global default
+    /// cap for tool outputs; per-tool `tool_settings.*.max_output_chars`
+    /// overrides it.
+    context_limits: RwLock<ContextLimitsConfig>,
     /// Full builtin tool list (enabled and disabled) so the UI can list and
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
@@ -128,6 +132,7 @@ impl ToolsManager {
             ))),
             safety_gateway: SafetyGateway::new(RiskLevel::Low),
             tool_settings: RwLock::new(HashMap::new()),
+            context_limits: RwLock::new(ContextLimitsConfig::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
@@ -158,6 +163,17 @@ impl ToolsManager {
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
         *self.tool_settings.write().await = settings;
+        self.rebuild_catalog().await;
+    }
+
+    /// Replace the unified context limits (global tool output cap etc.) and
+    /// rebuild the catalog so tools pick up the new values.
+    pub async fn set_context_limits(&self, limits: ContextLimitsConfig) {
+        self.mcp_manager.set_limits(&limits).await;
+        self.skills_engine.set_limits(&limits).await;
+        self.background_jobs.set_limits(&limits).await;
+        self.reminders.set_limits(&limits).await;
+        *self.context_limits.write().await = limits;
         self.rebuild_catalog().await;
     }
 
@@ -206,6 +222,8 @@ impl ToolsManager {
         // Register builtin tools (including progressive load_skill and load_mcp)
         let router = self.router.read().await.clone();
         let self_context = self.self_context.read().await.clone();
+        let settings = self.tool_settings.read().await;
+        let limits = self.context_limits.read().await.clone();
         builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
@@ -218,12 +236,13 @@ impl ToolsManager {
             self_context,
             self.registry.clone(),
             self.clipboard_history.clone(),
+            &settings,
+            &limits,
         )
         .await;
 
         // Keep the full list (enabled + disabled) for the UI, and exclude
         // disabled tools from the registry the agent sees.
-        let settings = self.tool_settings.read().await;
         let enabled_tools: Vec<ToolBox> = all_tools
             .iter()
             .filter(|t| tool_config_enabled(&settings, &t.name()))
@@ -583,6 +602,21 @@ mod tests {
         let mut settings = HashMap::new();
         settings.insert("test_tool".into(), ToolConfig::default());
         mgr.set_tool_settings(settings).await;
+    }
+
+    #[tokio::test]
+    async fn test_tools_manager_set_context_limits_stores_global_cap() {
+        let mgr = ToolsManager::new();
+        assert_eq!(
+            mgr.context_limits.read().await.max_tool_output_chars,
+            20_000
+        );
+        let limits = ContextLimitsConfig {
+            max_tool_output_chars: 5_000,
+            ..Default::default()
+        };
+        mgr.set_context_limits(limits).await;
+        assert_eq!(mgr.context_limits.read().await.max_tool_output_chars, 5_000);
     }
 
     #[tokio::test]

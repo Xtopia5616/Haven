@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod env_var;
 pub mod facts;
 pub mod file;
+pub mod file_search;
 pub mod input;
 pub mod job_status;
 pub mod load_mcp;
@@ -14,7 +15,6 @@ pub mod power;
 pub mod process;
 pub mod registry;
 pub mod reminder;
-pub mod search;
 pub mod self_tool;
 pub mod shell;
 pub mod system;
@@ -35,6 +35,19 @@ pub use facts::FactsSearchTool;
 pub use reminder::{ReminderCenter, ReminderFired, ReminderMode, ReminderTool};
 pub use self_tool::{SelfTool, SelfToolContext};
 
+/// Effective output cap for a tool: the per-tool `tool_settings` override
+/// when set, else the global `context_limits.max_tool_output_chars`.
+fn tool_output_cap(
+    settings: &HashMap<String, haven_common::config::ToolConfig>,
+    name: &str,
+    default_cap: usize,
+) -> usize {
+    settings
+        .get(name)
+        .and_then(|c| c.max_output_chars)
+        .unwrap_or(default_cap)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn register_builtin_tools(
     tools: &mut Vec<ToolBox>,
@@ -48,14 +61,36 @@ pub async fn register_builtin_tools(
     self_context: Option<SelfToolContext>,
     registry: ToolRegistry,
     clipboard_history: Arc<clipboard::ClipboardHistory>,
+    settings: &HashMap<String, haven_common::config::ToolConfig>,
+    limits: &haven_common::config::ContextLimitsConfig,
 ) {
     tools.push(Arc::new(audio::AudioTool));
     tools.push(Arc::new(ask::AskTool));
-    tools.push(Arc::new(file::FileOpTool::new(router)));
-    tools.push(Arc::new(process::ProcessTool));
-    tools.push(Arc::new(clipboard::ClipboardTool::new(clipboard_history)));
+    tools.push(Arc::new(file::FileOpTool::new(
+        router,
+        tool_output_cap(settings, "file", limits.max_tool_output_chars),
+        limits.file_read_max_chars,
+        limits.file_line_span,
+        limits.file_max_line_chars,
+        limits.file_summary_input_chars,
+        limits.file_max_list_entries,
+        limits.file_max_byte_read,
+        limits.file_vision_max_bytes,
+        limits.file_summary_timeout_secs,
+    )));
+    tools.push(Arc::new(process::ProcessTool {
+        max_output_chars: tool_output_cap(settings, "process", limits.max_tool_output_chars),
+    }));
+    tools.push(Arc::new(clipboard::ClipboardTool::new(
+        clipboard_history,
+        tool_output_cap(settings, "clipboard", limits.max_tool_output_chars),
+        limits.clipboard_history_entries,
+        limits.clipboard_history_max_entries,
+        limits.clipboard_entry_max_chars,
+    )));
     tools.push(Arc::new(shell::ShellTool {
         jobs: background_jobs.clone(),
+        max_output_chars: tool_output_cap(settings, "shell", limits.max_tool_output_chars),
     }));
     tools.push(Arc::new(job_status::JobStatusTool {
         jobs: background_jobs,
@@ -63,12 +98,23 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(input::InputTool));
     tools.push(Arc::new(reminder::ReminderTool { center: reminders }));
     tools.push(Arc::new(system::SystemInfoTool));
-    tools.push(Arc::new(env_var::EnvTool));
+    tools.push(Arc::new(env_var::EnvTool {
+        max_output_chars: tool_output_cap(settings, "env", limits.max_tool_output_chars),
+    }));
     tools.push(Arc::new(window::WindowTool));
     tools.push(Arc::new(registry::RegistryTool));
-    tools.push(Arc::new(network::NetworkTool));
+    tools.push(Arc::new(network::NetworkTool {
+        max_retries: limits.network_max_retries,
+        backoff_base_secs: limits.network_backoff_base_secs,
+        max_body_bytes: limits.network_max_body_bytes,
+    }));
     tools.push(Arc::new(notify::NotifyTool));
-    tools.push(Arc::new(search::SearchTool));
+    tools.push(Arc::new(file_search::FileSearchTool::new(
+        limits.search_snippet_chars,
+        limits.search_max_results,
+        limits.search_max_file_size_bytes,
+        limits.search_window_bytes,
+    )));
     tools.push(Arc::new(power::PowerTool));
     tools.push(Arc::new(load_skill::LoadSkillTool {
         skills_engine: skills_engine.clone(),
@@ -88,6 +134,46 @@ pub async fn register_builtin_tools(
             mcp_manager.clone(),
             server_configs.clone(),
             registry,
+            limits.self_tool_max_instructions_bytes,
+            limits.self_tool_max_script_bytes,
         )));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use haven_common::config::ToolConfig;
+
+    fn settings_with(tool: &str, cap: Option<usize>) -> HashMap<String, ToolConfig> {
+        let mut map = HashMap::new();
+        map.insert(
+            tool.to_string(),
+            ToolConfig {
+                max_output_chars: cap,
+                ..Default::default()
+            },
+        );
+        map
+    }
+
+    #[test]
+    fn tool_output_cap_falls_back_to_global_default() {
+        assert_eq!(tool_output_cap(&HashMap::new(), "shell", 20_000), 20_000);
+        assert_eq!(tool_output_cap(&HashMap::new(), "file", 5_000), 5_000);
+    }
+
+    #[test]
+    fn tool_output_cap_prefers_per_tool_override() {
+        let settings = settings_with("shell", Some(1_000));
+        assert_eq!(tool_output_cap(&settings, "shell", 20_000), 1_000);
+        // Tools without a settings entry still get the global default.
+        assert_eq!(tool_output_cap(&settings, "file", 20_000), 20_000);
+    }
+
+    #[test]
+    fn tool_output_cap_none_inherits_global() {
+        let settings = settings_with("shell", None);
+        assert_eq!(tool_output_cap(&settings, "shell", 5_000), 5_000);
     }
 }

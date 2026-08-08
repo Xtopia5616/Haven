@@ -7,20 +7,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Maximum size of a single SKILL.md file (256 KiB). Larger files are skipped
-/// with a warning to prevent accidental OOM on crafted/gigabyte files.
-const MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
-
-/// Maximum lines the parser will process from a single SKILL.md.
-const MAX_PARSE_LINES: usize = 5000;
-
-/// Maximum length of a single line in the SKILL.md parser.
-const MAX_LINE_LEN: usize = 4096;
-
-// ---------------------------------------------------------------------------
 // Manifest types
 // ---------------------------------------------------------------------------
 
@@ -54,7 +40,7 @@ impl Language {
     }
 }
 
-/// Structured metadata parsed from `SKILL.md` (§4.6.3).
+/// Structured metadata parsed from `SKILL.md` (搂4.6.3).
 #[derive(Debug, Clone)]
 pub struct SkillManifest {
     pub name: String,
@@ -186,13 +172,17 @@ impl From<&Skill> for SkillInfo {
 /// ```
 ///
 /// The H1 line is parsed for `<name>` and the `name:` metadata field (if
-/// present) takes precedence — this lets a directory's `SKILL.md` carry a name
+/// present) takes precedence 鈥?this lets a directory's `SKILL.md` carry a name
 /// differing from its folder name without surprising the registry.
 ///
-/// **Safety:** The parser enforces a maximum line count (`MAX_PARSE_LINES`)
-/// and a maximum per-line length (`MAX_LINE_LEN`) to prevent unbounded memory
-/// accumulation from crafted/oversized input.
-pub fn parse_skill_md(input: &str) -> anyhow::Result<SkillManifest> {
+/// **Safety:** The parser enforces a maximum line count and a maximum per-line
+/// length (from `context_limits`) to prevent unbounded memory accumulation
+/// from crafted/oversized input.
+pub fn parse_skill_md(
+    input: &str,
+    max_parse_lines: usize,
+    max_line_len: usize,
+) -> anyhow::Result<SkillManifest> {
     let input = input.strip_prefix('\u{FEFF}').unwrap_or(input);
 
     let mut name: Option<String> = None;
@@ -205,11 +195,11 @@ pub fn parse_skill_md(input: &str) -> anyhow::Result<SkillManifest> {
     let mut instruction_lines: Vec<String> = Vec::new();
 
     for (i, line) in input.lines().enumerate() {
-        if i >= MAX_PARSE_LINES {
-            anyhow::bail!("SKILL.md exceeds {MAX_PARSE_LINES} lines");
+        if i >= max_parse_lines {
+            anyhow::bail!("SKILL.md exceeds {max_parse_lines} lines");
         }
-        if line.len() > MAX_LINE_LEN {
-            anyhow::bail!("SKILL.md line {} exceeds {MAX_LINE_LEN} characters", i + 1);
+        if line.len() > max_line_len {
+            anyhow::bail!("SKILL.md line {} exceeds {max_line_len} characters", i + 1);
         }
         let trimmed = line.trim_end();
         if trimmed.is_empty() {
@@ -283,16 +273,20 @@ pub fn parse_skill_md(input: &str) -> anyhow::Result<SkillManifest> {
 /// Scan `<root>/<skill-name>/SKILL.md` for all skills under `root`.
 ///
 /// `enabled_filter` semantics:
-/// - `None` → all skills are enabled.
-/// - `Some(list)` → only skills whose names are in `list` are enabled (empty
+/// - `None` 鈫?all skills are enabled.
+/// - `Some(list)` 鈫?only skills whose names are in `list` are enabled (empty
 ///   `Some([])` disables everything).
 ///
 /// Invalid SKILL.md files produce a `warn!` and are skipped (non-fatal).
 ///
 /// **Safety:** The scan canonicalises both `root` and each entry to guard
 /// against symlink/junction traversal outside the skills directory. Files
-/// larger than `MAX_SKILL_MD_BYTES` are skipped with a warning.
-pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Result<Vec<Skill>> {
+/// larger than `limits.skills_max_md_bytes` are skipped with a warning.
+pub fn scan_dir(
+    root: &Path,
+    enabled_filter: Option<&[String]>,
+    limits: &haven_common::config::ContextLimitsConfig,
+) -> anyhow::Result<Vec<Skill>> {
     let mut out = Vec::new();
     if !root.exists() {
         return Ok(out);
@@ -351,10 +345,11 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
                 continue;
             }
         };
-        if md_len > MAX_SKILL_MD_BYTES {
+        if md_len > limits.skills_max_md_bytes {
             tracing::warn!(
-                "skipping oversized SKILL.md ({} bytes > {MAX_SKILL_MD_BYTES} cap): {}",
+                "skipping oversized SKILL.md ({} bytes > {} cap): {}",
                 md_len,
+                limits.skills_max_md_bytes,
                 skill_md.display()
             );
             continue;
@@ -367,7 +362,9 @@ pub fn scan_dir(root: &Path, enabled_filter: Option<&[String]>) -> anyhow::Resul
                 continue;
             }
         };
-        match parse_skill_md(&content) {
+        let max_parse_lines = limits.skills_max_parse_lines;
+        let max_line_len = limits.skills_max_line_len;
+        match parse_skill_md(&content, max_parse_lines, max_line_len) {
             Ok(manifest) => {
                 let enabled = enabled_filter
                     .map(|f| f.contains(&manifest.name))
@@ -393,6 +390,8 @@ struct Inner {
     /// `None` = all enabled, `Some(list)` = exhaustive allowlist.
     enabled: Option<Vec<String>>,
     skills: HashMap<String, Skill>,
+    /// Unified context limits (SKILL.md size / parse caps).
+    limits: haven_common::config::ContextLimitsConfig,
 }
 
 /// Registry of discovered Skills, backed by an in-memory map protected by a
@@ -416,14 +415,20 @@ impl SkillsEngine {
                 root: None,
                 enabled: None,
                 skills: HashMap::new(),
+                limits: haven_common::config::ContextLimitsConfig::default(),
             })),
         }
+    }
+
+    /// Replace the unified context limits (SKILL.md size / parse caps).
+    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        self.inner.write().await.limits = limits.clone();
     }
 
     /// Configure the skills root + optional exhaustive enabled allowlist, and
     /// trigger an immediate disk refresh.
     ///
-    /// `enabled` semantics: `None` → all enabled; `Some(list)` → allowlist.
+    /// `enabled` semantics: `None` 鈫?all enabled; `Some(list)` 鈫?allowlist.
     pub async fn set_config(
         &self,
         root: Option<PathBuf>,
@@ -447,12 +452,12 @@ impl SkillsEngine {
 
     /// Re-scan the skills directory from disk, replacing the in-memory map.
     pub async fn refresh_from_disk(&self) -> anyhow::Result<()> {
-        let (root, enabled) = {
+        let (root, enabled, limits) = {
             let g = self.inner.read().await;
-            (g.root.clone(), g.enabled.clone())
+            (g.root.clone(), g.enabled.clone(), g.limits.clone())
         };
         let effective = Self::resolve_root(root.as_deref());
-        let scanned = scan_dir(&effective, enabled.as_deref())?;
+        let scanned = scan_dir(&effective, enabled.as_deref(), &limits)?;
         let mut g = self.inner.write().await;
         g.skills.clear();
         for s in scanned {
@@ -505,7 +510,7 @@ impl SkillsEngine {
                 {
                     list.push(name.to_string());
                 }
-                // None means all enabled — no change.
+                // None means all enabled 鈥?no change.
             }
             false => {
                 let all_names: Vec<String> = g.skills.keys().cloned().collect();
@@ -566,7 +571,7 @@ mod tests {
     #[test]
     fn parse_full_skill_md() {
         let md = "# Skill: file-organizer\n\n## Metadata\n- name: file-organizer\n- description: org files\n- version: 1.0.0\n- language: python\n\n## Instructions\nDo the thing.\n";
-        let m = parse_skill_md(md).unwrap();
+        let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "file-organizer");
         assert_eq!(m.description, "org files");
         assert_eq!(m.version.as_deref(), Some("1.0.0"));
@@ -577,20 +582,20 @@ mod tests {
     #[test]
     fn parse_missing_name_errors() {
         let md = "## Metadata\n- description: x\n";
-        assert!(parse_skill_md(md).is_err());
+        assert!(parse_skill_md(md, 5000, 4096).is_err());
     }
 
     #[test]
     fn parse_h1_provides_name_when_metadata_omitted() {
         let md = "# Skill: fallback-named\n\n## Instructions\nonly instructions\n";
-        let m = parse_skill_md(md).unwrap();
+        let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "fallback-named");
     }
 
     #[test]
     fn parse_unsupported_language_preserved() {
         let md = "# Skill: x\n## Metadata\n- language: bash\n## Instructions\ni\n";
-        let m = parse_skill_md(md).unwrap();
+        let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.language, Language::Unsupported("bash".to_string()));
         assert_eq!(m.language.as_str(), "bash");
     }
@@ -598,7 +603,7 @@ mod tests {
     #[test]
     fn parse_strips_bom() {
         let md = "\u{FEFF}# Skill: bom\n## Metadata\n- description: d\n## Instructions\ni\n";
-        let m = parse_skill_md(md).unwrap();
+        let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "bom");
     }
 
@@ -607,17 +612,17 @@ mod tests {
         // `allowed_tools` is no longer part of the metadata schema; unknown
         // fields must be ignored so legacy SKILL.md files keep parsing.
         let md = "# Skill: x\n## Metadata\n- allowed_tools: [a, b]\n- description: d\n## Instructions\ni\n";
-        let m = parse_skill_md(md).unwrap();
+        let m = parse_skill_md(md, 5000, 4096).unwrap();
         assert_eq!(m.name, "x");
         assert_eq!(m.description, "d");
     }
 
     #[test]
     fn parse_rejects_oversized_line() {
-        let long_line = "a".repeat(MAX_LINE_LEN + 1);
+        let long_line = "a".repeat(4096 + 1);
         let md =
             format!("# Skill: x\n## Metadata\n- description: {long_line}\n## Instructions\ni\n");
-        assert!(parse_skill_md(&md).is_err());
+        assert!(parse_skill_md(&md, 5000, 4096).is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -651,7 +656,7 @@ mod tests {
         // not-a-dir SKILL.md-less
         std::fs::create_dir_all(dir.join("no-skill-md")).unwrap();
 
-        let skills = scan_dir(&dir, None).unwrap();
+        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["good-a", "good-b"]);
         assert!(
@@ -687,7 +692,7 @@ mod tests {
             "# Skill: two\n## Metadata\n- description: t\n## Instructions\ni\n",
             false,
         );
-        let skills = scan_dir(&dir, Some(&["two".to_string()])).unwrap();
+        let skills = scan_dir(&dir, Some(&["two".to_string()]), &Default::default()).unwrap();
         let enabled: Vec<bool> = skills.iter().map(|s| s.enabled()).collect();
         assert_eq!(enabled, vec![false, true]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -703,7 +708,7 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let skills = scan_dir(&dir, None).unwrap();
+        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
         assert!(skills.iter().all(|s| s.enabled()));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -718,7 +723,7 @@ mod tests {
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
             false,
         );
-        let skills = scan_dir(&dir, Some(&[] as &[String])).unwrap();
+        let skills = scan_dir(&dir, Some(&[] as &[String]), &Default::default()).unwrap();
         assert!(!skills[0].enabled());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -738,11 +743,11 @@ mod tests {
         std::fs::create_dir_all(&big).unwrap();
         let big_content = format!(
             "# Skill: big\n## Metadata\n- description: {}\n## Instructions\ni\n",
-            "x".repeat(MAX_SKILL_MD_BYTES as usize)
+            "x".repeat(256 * 1024)
         );
         std::fs::write(big.join("SKILL.md"), &big_content).unwrap();
 
-        let skills = scan_dir(&dir, None).unwrap();
+        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["small"], "oversized entry should be skipped");
         let _ = std::fs::remove_dir_all(&dir);
@@ -774,7 +779,7 @@ mod tests {
         assert!(s.has_script);
         assert!(s.enabled);
 
-        // Disable → persisted as Some exhaustive list minus alpha
+        // Disable 鈫?persisted as Some exhaustive list minus alpha
         eng.set_enabled("alpha", false).await.unwrap();
         let updated = eng.get("alpha").await.unwrap();
         assert!(!updated.enabled);
@@ -835,7 +840,7 @@ mod tests {
 
         // Disable a, enable b explicitly
         eng.set_enabled("a", false).await.unwrap();
-        // b should still be enabled (None → all, but we transitioned to Some(["b"]) after disabling a)
+        // b should still be enabled (None 鈫?all, but we transitioned to Some(["b"]) after disabling a)
         let list = eng.list().await;
         let a = list.iter().find(|s| s.name == "a").unwrap();
         let b = list.iter().find(|s| s.name == "b").unwrap();

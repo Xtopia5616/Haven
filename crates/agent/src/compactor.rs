@@ -59,6 +59,11 @@ pub struct CompactionResult {
 /// reserve_tokens`) was too conservative and triggered compaction only when
 /// the model was already close to overflowing, forcing an expensive
 /// retry-and-resummarize cycle.
+///
+/// NOTE: production construction goes through
+/// `ReActEngine::context_compactor`, which passes `context_limits` values
+/// from `[context_limits]` in config.toml; these `new`/`with_ratio` defaults
+/// must stay in sync with `ContextLimitsConfig` for tests and direct users.
 pub struct ContextCompactor {
     /// Soft limit: total context window in tokens (from model config).
     pub context_window: u32,

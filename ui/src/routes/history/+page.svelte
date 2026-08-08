@@ -21,6 +21,9 @@
 	let editingTitle = $state(null); // { taskId, value }
 	let renameValue = $state('');
 
+	// Right-click context menu on a history item (open / rename / export / delete)
+	let ctxMenu = $state({ open: false, x: 0, y: 0, task: null });
+
 	const todayISO = $derived.by(() => {
 		const n = new Date();
 		return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
@@ -39,6 +42,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialDatePicker from '$lib/MaterialDatePicker.svelte';
+	import ContextMenu from '$lib/ContextMenu.svelte';
 
 	const statusOptions = [
 		{ value: '', label: 'All' },
@@ -250,13 +254,12 @@
 		else if (e.key === 'Escape') { cancelEdit(); }
 	}
 
-	function exportSelected() {
-		const selected = tasks.filter((t) => selectedIds.has(t.id));
+	function downloadTasks(tasksToExport) {
 		const json = JSON.stringify(
 			{
 				exported_at: new Date().toISOString(),
-				count: selected.length,
-				tasks: selected,
+				count: tasksToExport.length,
+				tasks: tasksToExport,
 			},
 			null,
 			2,
@@ -268,6 +271,32 @@
 		a.download = `haven-history-${new Date().toISOString().slice(0, 10)}.json`;
 		a.click();
 		URL.revokeObjectURL(url);
+	}
+
+	function openCtxMenu(e, task) {
+		e.preventDefault();
+		e.stopPropagation();
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY, task };
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = { open: false, x: 0, y: 0, task: null };
+	}
+
+	let ctxMenuItems = $derived.by(() => {
+		const task = ctxMenu.task;
+		if (!task) return [];
+		return [
+			{ id: 'open', label: '打开', icon: 'open', action: () => reviewTask(task) },
+			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(task) },
+			{ id: 'export', label: '导出', icon: 'export', action: () => downloadTasks([task]) },
+			{ id: 'delete', label: '删除', icon: 'delete', danger: true, action: () => (deleteTarget = task) },
+		];
+	});
+
+	function exportSelected() {
+		const selected = tasks.filter((t) => selectedIds.has(t.id));
+		downloadTasks(selected);
 		cancelSelectMode();
 	}
 
@@ -387,6 +416,7 @@
 				tabindex="0"
 				onclick={() => reviewTask(task)}
 				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), reviewTask(task))}
+				oncontextmenu={(e) => openCtxMenu(e, task)}
 			>
 				<div class="history-item-main">
 					<div class="history-title-row">
@@ -533,6 +563,14 @@
 		<button class="md-btn md-btn--danger" onclick={clearHistory}>Clear All</button>
 	{/snippet}
 </MaterialDialog>
+
+<ContextMenu
+	open={ctxMenu.open}
+	x={ctxMenu.x}
+	y={ctxMenu.y}
+	items={ctxMenuItems}
+	onClose={closeCtxMenu}
+/>
 
 <style>
 	.history-page {

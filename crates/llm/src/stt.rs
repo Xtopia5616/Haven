@@ -234,7 +234,7 @@ impl SttClient for LlmSttAdapter {
 
 /// Build an HTTP client with a transport timeout for cloud STT providers.
 fn stt_http_client(timeout: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
+    crate::client::http_client_builder()
         .timeout(timeout)
         .build()
         .unwrap_or_default()

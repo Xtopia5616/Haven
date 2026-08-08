@@ -17,10 +17,11 @@ pub use prompt::SystemPromptBuilder;
 pub use react::ReActEngine;
 pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
 
+use haven_common::config::ContextLimitsConfig;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::LlmRouter;
 use haven_memory::Database;
-use haven_memory::repositories::messages::MessageAttachment;
+use haven_memory::repositories::messages::{Message, MessageAttachment};
 use haven_tools::ReminderMode;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -28,9 +29,10 @@ use tokio_util::sync::CancellationToken;
 use crate::title::TitleGenerator;
 
 /// The single persistence entry point for chat messages: insert a message
-/// into a task's message stream with the sliding-window trim applied. Both
-/// user turns (AgentLayer) and assistant turns (ReActEngine) go through this
-/// one implementation so the two paths cannot drift apart.
+/// into a task's message stream, dropping any checkpointed partial stream
+/// text first (a real message supersedes it). Both user turns (AgentLayer)
+/// and assistant turns (ReActEngine) go through this one implementation so
+/// the two paths cannot drift apart.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_task_message(
     db: &Arc<Database>,
@@ -39,39 +41,40 @@ pub(crate) async fn persist_task_message(
     content: &str,
     message_type: Option<&str>,
     attachments: &[MessageAttachment],
-    window_size: usize,
     voice: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Message> {
     let task_id = task_id.to_string();
     let role = role.to_string();
     let content = content.to_string();
     let message_type = message_type.map(String::from);
     let attachments = attachments.to_vec();
+    let task_dup = task_id.clone();
+    let _ = db
+        .run_blocking(move |db| db.delete_partial_message(&task_dup))
+        .await;
     db.run_blocking(move |db| {
-        db.add_message_with_window_full(
+        db.add_message_full(
             &task_id,
             &role,
             &content,
             message_type.as_deref(),
             None,
-            window_size,
             &attachments,
             voice,
         )
     })
-    .await?;
-    Ok(())
+    .await
 }
 
-/// Cap on the tool-result text embedded in a fired-reminder notification.
-const NOTIFICATION_SUMMARY_MAX_CHARS: usize = 800;
-
+/// Checkpoint throttle for streamed partial text lives in
+/// `context_limits.partial_checkpoint_interval_secs` /
+/// `partial_checkpoint_min_chars` (see `ReActEngine::stream_llm_response`).
 /// Trim a long tool result to fit a notification body.
-fn truncate_notification(text: &str) -> String {
-    if text.chars().count() <= NOTIFICATION_SUMMARY_MAX_CHARS {
+fn truncate_notification(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
         return text.to_string();
     }
-    let cutoff = text.floor_char_boundary(NOTIFICATION_SUMMARY_MAX_CHARS);
+    let cutoff = text.floor_char_boundary(max_chars);
     format!(
         "{}[... {} chars omitted]",
         &text[..cutoff],
@@ -139,6 +142,7 @@ pub struct AgentLayer {
     db: Arc<Database>,
     executor: Arc<TaskExecutor>,
     conversation_window_size: usize,
+    context_limits: ContextLimitsConfig,
     events: Arc<EventDispatcher>,
     prompt_builder: Arc<SystemPromptBuilder>,
     react_engine: Arc<ReActEngine>,
@@ -162,7 +166,7 @@ impl AgentLayer {
         router: Arc<LlmRouter>,
         max_steps: u32,
         conversation_window_size: usize,
-        max_observation_chars: usize,
+        context_limits: ContextLimitsConfig,
     ) -> Self {
         let events = Arc::new(EventDispatcher::new());
         let prompt_builder = Arc::new(SystemPromptBuilder::new(executor.get_tools(), db.clone()));
@@ -171,10 +175,16 @@ impl AgentLayer {
             executor.clone(),
             db.clone(),
             max_steps,
-            max_observation_chars,
-            conversation_window_size,
+            context_limits.clone(),
         ));
-        let inference = Arc::new(InferenceEngine::new(db.clone(), router.clone()));
+        let inference = Arc::new(InferenceEngine::new(
+            db.clone(),
+            router.clone(),
+            context_limits.max_transcript_chars,
+            context_limits.embedding_chunk_size,
+            context_limits.max_known_facts,
+            context_limits.sanitize_field_max_chars,
+        ));
         let _ = db.set_preference("name", "Xtopia");
         // Idempotent: repeated startup seeding must not pile up duplicates
         // (historically one `name=Xtopia` fact was inserted per launch).
@@ -189,6 +199,7 @@ impl AgentLayer {
             db,
             executor,
             conversation_window_size,
+            context_limits,
             events,
             prompt_builder,
             react_engine,
@@ -198,6 +209,8 @@ impl AgentLayer {
     }
 
     /// Persist a message into the task's message stream (conversation history).
+    /// Returns the persisted message so callers can roll it back precisely
+    /// (e.g. when the task turns out to be terminal right after).
     async fn persist_message_parts(
         &self,
         task_id: &str,
@@ -206,7 +219,7 @@ impl AgentLayer {
         message_type: Option<&str>,
         attachments: &[haven_memory::repositories::messages::MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
         persist_task_message(
             &self.db,
             task_id,
@@ -214,7 +227,6 @@ impl AgentLayer {
             content,
             message_type,
             attachments,
-            self.conversation_window_size,
             voice,
         )
         .await
@@ -233,7 +245,7 @@ impl AgentLayer {
     /// Reopen a terminal task to Paused state.
     /// Used by the history review flow ??shows the task as active on the chat
     /// page.  The dispatcher won't pick it up until the user sends a
-    /// follow-up message (which calls supplement_task ??Paused→Pending).
+    /// follow-up message (which calls supplement_task ??Paused鈫扨ending).
     pub async fn reopen_task(&self, task_id: &str) -> anyhow::Result<()> {
         // Terminal tasks (Error/Completed) are removed from the in-memory
         // list by unmark_running, so ensure_task_loaded is needed to bring
@@ -403,7 +415,10 @@ impl AgentLayer {
                                 .await
                             {
                                 Ok(result) => {
-                                    let summary = truncate_notification(&result.summary_text());
+                                    let summary = truncate_notification(
+                                        &result.summary_text(),
+                                        agent.context_limits.notification_summary_chars,
+                                    );
                                     agent
                                         .events
                                         .emit_notification(
@@ -738,6 +753,14 @@ impl AgentLayer {
             }
         }
 
+        // Drop any checkpointed partial stream text: the restored timeline
+        // must not inherit a stale partial from the discarded run.
+        let db = self.db.clone();
+        let tid = task_id.to_string();
+        let _ = db
+            .run_blocking(move |db| db.delete_partial_message(&tid))
+            .await;
+
         // For user-message rollback, also remove the user message from the
         // restored canonical so the LLM doesn't see it when the task resumes.
         // The user message is the last CanonicalRole::User entry; everything
@@ -795,107 +818,6 @@ impl AgentLayer {
         Ok(())
     }
 
-    /// Branch a task from a specific step into a brand-new conversation.
-    /// Creates a new child task (parent_task_id = source task), copies every
-    /// message up to and including the branch point into it, then creates a
-    /// new Paused task seeded with the branch point's canonical/history so the
-    /// user can continue from that point. Returns the new task id.
-    pub async fn branch_task(&self, task_id: &str, target_step: u32) -> anyhow::Result<String> {
-        // Load the source task + its saved ReAct snapshot.
-        let source = self
-            .db
-            .get_task(task_id)?
-            .ok_or_else(|| anyhow::anyhow!("task '{}' not found", task_id))?;
-
-        let state_json = self
-            .db
-            .get_react_state(task_id)?
-            .ok_or_else(|| anyhow::anyhow!("no saved state for task {}", task_id))?;
-        let snapshot: ReActSnapshot = serde_json::from_str(&state_json)?;
-        let bp = snapshot
-            .branch_points
-            .get(&target_step)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("no branch point at step {}", target_step))?;
-
-        // Create the new task in the DB (status pending), then overwrite its
-        // status to paused and save the seeded react_state. The branch task
-        // row must exist before messages can reference it (FK), so on any
-        // failure below the half-created record is deleted again ??otherwise
-        // a ghost Paused task without react_state would linger forever.
-        let record = self
-            .db
-            .create_branch_task(task_id, &source.input_text, &source.transcript)?;
-        self.db.update_task_status(&record.id, "paused")?;
-
-        let result = (|| -> anyhow::Result<()> {
-            // Copy every message up to (and including) the branch point's
-            // last_msg_at into the new task. Use a very large window so the
-            // sliding-window trim never fires during the copy.
-            let cutoff = bp.last_msg_at.as_deref();
-            let msgs = self.db.get_task_messages(task_id)?;
-            for m in &msgs {
-                if let Some(ts) = cutoff
-                    && m.created_at.as_str() > ts
-                {
-                    break;
-                }
-                self.db.add_message_with_window_full(
-                    &record.id,
-                    &m.role,
-                    &m.content,
-                    m.message_type.as_deref(),
-                    m.tool_call_id.as_deref(),
-                    usize::MAX,
-                    &m.attachments,
-                    m.voice,
-                )?;
-            }
-
-            // Build the new task's ReAct snapshot from the branch point. The
-            // branch point may carry a dangling tool_call/tool-result split
-            // (same corruption the resume path repairs), so sanitize it.
-            let mut canonical = bp.canonical.clone();
-            sanitize_canonical(&mut canonical);
-            let new_snapshot = ReActSnapshot {
-                canonical,
-                history: bp.history.clone(),
-                step_number: bp.step_number,
-                branch_points: HashMap::new(),
-            };
-            let json = serde_json::to_string(&new_snapshot)?;
-            self.db.save_react_state(&record.id, &json)?;
-            Ok(())
-        })();
-        if let Err(e) = result {
-            let _ = self.db.delete_task(&record.id);
-            return Err(e);
-        }
-
-        // Load into executor memory and set to Paused (do NOT auto-dispatch).
-        self.executor.ensure_task_loaded(&record.id).await?;
-        self.executor
-            .update_task_status(&record.id, TaskStatus::Paused)
-            .await?;
-
-        // Emit a task-created event so the frontend's task list refreshes.
-        let task_info = self
-            .executor
-            .get_task(&record.id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("branched task '{}' not in executor", record.id))?;
-        self.events.emit_task_created(&task_info).await;
-        self.events.emit_task_updated(&record.id, "paused").await;
-
-        tracing::info!(
-            "branched task {} from step {} -> new task {}",
-            task_id,
-            target_step,
-            record.id
-        );
-        Ok(record.id)
-    }
-
     /// Resume a task that errored mid-step. Removes any partial assistant
     /// output that was persisted on error (so the retry produces a clean
     /// message), then sets the task to Pending so the dispatcher picks it up
@@ -938,6 +860,15 @@ impl AgentLayer {
                 self.db.truncate_task_after(task_id, &ts, false)?;
             }
         }
+
+        // Drop any checkpointed partial stream text: the retry re-streams
+        // from scratch, so a crash during the retry must not promote the
+        // pre-retry partial.
+        let db = self.db.clone();
+        let tid = task_id.to_string();
+        let _ = db
+            .run_blocking(move |db| db.delete_partial_message(&tid))
+            .await;
 
         // Set to Pending for the dispatcher to pick up.
         self.set_task_status(task_id, TaskStatus::Pending).await?;
@@ -1294,8 +1225,13 @@ impl AgentLayer {
             voice
         );
 
+        // The message is persisted BEFORE the state check on purpose: the
+        // steering/supplement fallback paths below rely on it being on disk.
+        // If the task turns out to be terminal, the persisted row is removed
+        // again below so history never shows a ghost user message.
+        let mut persisted_msg = None;
         if let Some(task_id) = active_task_id {
-            if let Err(e) = self
+            match self
                 .persist_message_parts(
                     &task_id,
                     "user",
@@ -1306,11 +1242,14 @@ impl AgentLayer {
                 )
                 .await
             {
-                tracing::warn!(
-                    "process_input: failed to persist user message for task {}: {}",
-                    task_id,
-                    e
-                );
+                Ok(msg) => persisted_msg = Some(msg),
+                Err(e) => {
+                    tracing::warn!(
+                        "process_input: failed to persist user message for task {}: {}",
+                        task_id,
+                        e
+                    );
+                }
             }
 
             let state = self.executor.get_task_state(&task_id).await;
@@ -1384,6 +1323,27 @@ impl AgentLayer {
                             task_id,
                             fresh_state
                         );
+                        // Remove the just-persisted user message so history
+                        // does not show an unanswered ghost bubble (the
+                        // frontend is told to drop its copy below).
+                        if let Some(msg) = persisted_msg.take() {
+                            let db = self.db.clone();
+                            let tid = task_id.clone();
+                            let msg_id = msg.id.clone();
+                            let tid_c = tid.clone();
+                            let msg_id_c = msg_id.clone();
+                            if let Err(e) = db
+                                .run_blocking(move |db| db.delete_message_by_id(&tid_c, &msg_id_c))
+                                .await
+                            {
+                                tracing::warn!(
+                                    "process_input: failed to remove ghost user message {} for task {}: {}",
+                                    msg_id,
+                                    tid,
+                                    e
+                                );
+                            }
+                        }
                         // Notify the frontend so it can drop the stale
                         // activeTaskId and reset the model indicator instead of
                         // showing an orphaned bubble with no response.
@@ -1586,7 +1546,14 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
+        let agent = Arc::new(AgentLayer::new(
+            db,
+            executor.clone(),
+            router,
+            30,
+            50,
+            ContextLimitsConfig::default(),
+        ));
 
         let recorder = Arc::new(RecordingEmitter {
             thoughts: std::sync::Mutex::new(Vec::new()),
@@ -1620,7 +1587,7 @@ mod tests {
         );
     }
 
-    // ─── Pure-logic and data-layer tests (no LLM required) ───
+    // 鈹€鈹€鈹€ Pure-logic and data-layer tests (no LLM required) 鈹€鈹€鈹€
 
     fn make_test_agent() -> (Arc<AgentLayer>, Arc<TaskExecutor>) {
         let mut p = std::env::temp_dir();
@@ -1636,7 +1603,14 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
+        let agent = Arc::new(AgentLayer::new(
+            db,
+            executor.clone(),
+            router,
+            30,
+            50,
+            ContextLimitsConfig::default(),
+        ));
         (agent, executor)
     }
 
@@ -1655,7 +1629,7 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = AgentLayer::new(db, executor, router, 10, 20, 4000);
+        let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
         // Verify construction succeeded; no per-session indirection remains.
         let task = agent.db.create_task("input", "transcript").unwrap();
         assert!(!task.id.is_empty());
@@ -1699,7 +1673,14 @@ mod tests {
             client_a.clone(),
             client_a,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor, router_a, 10, 20, 4000));
+        let agent = Arc::new(AgentLayer::new(
+            db,
+            executor,
+            router_a,
+            10,
+            20,
+            ContextLimitsConfig::default(),
+        ));
         // Create a new router via the same mock client factory
         let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router_b = Arc::new(LlmRouter::new_with_clients(
@@ -1819,7 +1800,14 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor, router, 30, 50, 8000));
+        let agent = Arc::new(AgentLayer::new(
+            db,
+            executor,
+            router,
+            30,
+            50,
+            ContextLimitsConfig::default(),
+        ));
 
         // Simulate a history where load_skill was called.
         let history = vec![ReActStep {
@@ -1884,7 +1872,7 @@ mod tests {
             .persist_message_parts(
                 &task.id,
                 "user",
-                "看看",
+                "鐪嬬湅",
                 Some("text"),
                 std::slice::from_ref(&att),
                 false,
@@ -1896,7 +1884,7 @@ mod tests {
         let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
         let found = msgs
             .iter()
-            .find(|m| m.role == "user" && m.content == "看看");
+            .find(|m| m.role == "user" && m.content == "鐪嬬湅");
         assert!(found.is_some(), "persisted message not found in db");
         let msg = found.unwrap();
         assert_eq!(msg.attachments.len(), 1);
@@ -2328,13 +2316,13 @@ mod tests {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
         let task = executor
-            .create_task_with_summary("看看", "看看")
+            .create_task_with_summary("鐪嬬湅", "鐪嬬湅")
             .await
             .unwrap();
         let att =
             haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
-            .persist_message_parts(&task.id, "user", "看看", Some("text"), &[att], false)
+            .persist_message_parts(&task.id, "user", "鐪嬬湅", Some("text"), &[att], false)
             .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -2371,7 +2359,7 @@ mod tests {
         let att =
             haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
-            .process_input_with_attachments("补充看图", Some(task.id.clone()), &[att], false)
+            .process_input_with_attachments("琛ュ厖鐪嬪浘", Some(task.id.clone()), &[att], false)
             .await
             .unwrap();
         agent.run_task_from_id(&task.id).await.unwrap();
@@ -2613,7 +2601,7 @@ mod tests {
             haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         let result = agent
             .process_input_with_attachments(
-                "看看",
+                "鐪嬬湅",
                 Some(task.id.clone()),
                 std::slice::from_ref(&att),
                 false,
@@ -2624,14 +2612,14 @@ mod tests {
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Pending);
         let supps = executor.get_supplements(&task.id).await;
         assert_eq!(supps.len(), 1);
-        assert_eq!(supps[0].text, "看看");
+        assert_eq!(supps[0].text, "鐪嬬湅");
         assert_eq!(supps[0].attachments, vec![att]);
 
         // Persisted with attachments in the task's message stream.
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
         let user_msg = msgs
             .iter()
-            .find(|m| m.role == "user" && m.content == "看看")
+            .find(|m| m.role == "user" && m.content == "鐪嬬湅")
             .expect("user message persisted");
         assert_eq!(user_msg.attachments.len(), 1);
         assert_eq!(user_msg.attachments[0].media_type, "image/png");
@@ -2660,7 +2648,7 @@ mod tests {
         agent.inference.infer_preferences(&task.id).await;
     }
 
-    // ─── Integration tests for the ReAct core loop (refine ??1) ───
+    // 鈹€鈹€鈹€ Integration tests for the ReAct core loop (refine ??1) 鈹€鈹€鈹€
 
     fn make_test_agent_with(
         client: Arc<dyn LlmClient>,
@@ -2677,7 +2665,14 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = Arc::new(AgentLayer::new(db, executor.clone(), router, 30, 50, 8000));
+        let agent = Arc::new(AgentLayer::new(
+            db,
+            executor.clone(),
+            router,
+            30,
+            50,
+            ContextLimitsConfig::default(),
+        ));
         (agent, executor)
     }
 
@@ -3654,117 +3649,6 @@ mod tests {
         let result = agent.run_task_from_id(&task.id).await;
         assert!(result.is_err(), "should error when compaction fails");
         assert_eq!(executor.get_task_state(&task.id).await, TaskStatus::Error);
-    }
-
-    #[tokio::test]
-    async fn branch_task_creates_new_task_with_copied_messages() {
-        let (agent, executor) = make_test_agent();
-
-        // Set up a source task, a couple of messages, and a saved react_state
-        // containing a branch point at step 1.
-        let task = executor.create_task("branch me").await.unwrap();
-        agent.db.update_task_status(&task.id, "paused").unwrap();
-        executor
-            .update_task_status(&task.id, TaskStatus::Paused)
-            .await
-            .unwrap();
-
-        // Persist some messages into the source task. The first carries an
-        // image attachment, which must survive the branch copy.
-        let att =
-            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
-        agent
-            .db
-            .add_message_with_attachments(
-                &task.id,
-                "user",
-                "hello",
-                Some("text"),
-                None,
-                std::slice::from_ref(&att),
-            )
-            .unwrap();
-        let m2 = agent
-            .db
-            .add_message(&task.id, "assistant", "hi there", Some("text"), None)
-            .unwrap();
-
-        // Build a snapshot with a branch point at step 1 whose last_msg_at is
-        // the timestamp of the last persisted message.
-        let canonical = vec![CanonicalMessage {
-            role: CanonicalRole::User,
-            content: vec![ContentPart::text("hello")],
-            tool_calls: None,
-            tool_call_id: None,
-            parent_message_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        }];
-        let mut branch_points = HashMap::new();
-        branch_points.insert(
-            1,
-            BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
-                step_number: 1,
-                last_msg_at: Some(m2.created_at.clone()),
-            },
-        );
-        let snapshot = ReActSnapshot {
-            canonical,
-            history: vec![],
-            step_number: 1,
-            branch_points,
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
-        agent.db.save_react_state(&task.id, &json).unwrap();
-
-        // Branch from step 1.
-        let new_id = agent.branch_task(&task.id, 1).await.unwrap();
-        assert_ne!(new_id, task.id);
-
-        // New task should be Paused.
-        assert_eq!(executor.get_task_state(&new_id).await, TaskStatus::Paused);
-
-        // New task is a branch of the source (parent_task_id), with the
-        // copied messages.
-        let new_task = agent.db.get_task(&new_id).unwrap().unwrap();
-        assert_eq!(
-            new_task.parent_task_id.as_deref(),
-            Some(task.id.as_str()),
-            "branched task should link back to its parent"
-        );
-        let new_msgs = agent.db.get_task_messages(&new_id).unwrap();
-        assert_eq!(new_msgs.len(), 2);
-        assert_eq!(new_msgs[0].content, "hello");
-        assert_eq!(new_msgs[0].attachments, vec![att]);
-        assert_eq!(new_msgs[1].content, "hi there");
-
-        // New task has a seeded react_state snapshot.
-        let state = agent.db.get_react_state(&new_id).unwrap().unwrap();
-        let snap: ReActSnapshot = serde_json::from_str(&state).unwrap();
-        assert_eq!(snap.step_number, 1);
-        assert!(snap.branch_points.is_empty());
-        assert_eq!(snap.canonical.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn branch_task_missing_branch_point_errors() {
-        let (agent, executor) = make_test_agent();
-        let task = executor.create_task("no bp").await.unwrap();
-        // Save a snapshot with no branch points.
-        let snapshot = ReActSnapshot {
-            canonical: vec![],
-            history: vec![],
-            step_number: 0,
-            branch_points: HashMap::new(),
-        };
-        agent
-            .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
-            .unwrap();
-        let result = agent.branch_task(&task.id, 5).await;
-        assert!(result.is_err());
     }
 
     #[tokio::test]

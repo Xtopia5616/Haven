@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildReviewMessages, formatDate, mergeLiveStreaming } from './reviewMessages.js';
+import { buildReviewMessages, mergeLiveStreaming } from './reviewMessages.js';
+import { formatMessageTime } from './stores.js';
 
 const sampleTask = {
 	id: 'task-1',
@@ -238,10 +239,18 @@ describe('buildReviewMessages', () => {
 	});
 });
 
-describe('formatDate', () => {
-	it('formats ISO timestamps as yyyy/mm/dd hh:mm:ss', () => {
+describe('formatMessageTime', () => {
+	it('formats non-today ISO timestamps as yyyy/mm/dd hh:mm:ss', () => {
 		// Local-time ISO (no Z): the formatter renders in local time.
-		expect(formatDate('2026-08-01T10:05:09')).toBe('2026/08/01 10:05:09');
+		expect(formatMessageTime('2026-08-01T10:05:09')).toBe('2026/08/01 10:05:09');
+	});
+
+	it('formats today timestamps as wall-clock time only', () => {
+		// Same-day messages use the live-stream format so a merged review
+		// list never mixes formats.
+		const now = new Date();
+		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 30, 15);
+		expect(formatMessageTime(today)).toBe(today.toLocaleTimeString());
 	});
 });
 

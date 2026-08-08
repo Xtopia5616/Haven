@@ -7,7 +7,7 @@ const searchJson = (results, extra = {}) =>
 
 describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
-		expect(canRenderToolResult('search', searchJson([{ path: 'a.rs' }]))).toBe(true);
+		expect(canRenderToolResult('file_search', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
 	it('accepts system, process, window, status, reminder, env, file, network, clipboard, power', () => {
 		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
@@ -43,25 +43,25 @@ describe('canRenderToolResult', () => {
 			),
 		).toBe(true);
 		expect(canRenderToolResult('audio', JSON.stringify({ played: true }))).toBe(true);
-		expect(canRenderToolResult('search', JSON.stringify({ nope: 1 }))).toBe(true);
+		expect(canRenderToolResult('file_search', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
 	it('accepts any non-empty text as a raw card', () => {
-		expect(canRenderToolResult('search', '{not json[... truncated')).toBe(true);
+		expect(canRenderToolResult('file_search', '{not json[... truncated')).toBe(true);
 		expect(canRenderToolResult('audio', 'plain text')).toBe(true);
 		expect(canRenderToolResult('notify', 'Some other text')).toBe(true);
 	});
 	it('rejects empty content', () => {
 		expect(canRenderToolResult('', '')).toBe(false);
-		expect(canRenderToolResult('search', '')).toBe(false);
+		expect(canRenderToolResult('file_search', '')).toBe(false);
 	});
 });
 
 describe('parseToolResult', () => {
 	it('returns null for empty content', () => {
-		expect(parseToolResult('search', '')).toBeNull();
+		expect(parseToolResult('file_search', '')).toBeNull();
 	});
 	it('classifies non-JSON text, arrays and primitives as raw', () => {
-		expect(parseToolResult('search', 'plain text')).toEqual({ kind: 'raw', data: null });
+		expect(parseToolResult('file_search', 'plain text')).toEqual({ kind: 'raw', data: null });
 		expect(parseToolResult('status', JSON.stringify([1, 2]))).toEqual({
 			kind: 'raw',
 			data: [1, 2],
@@ -217,7 +217,7 @@ describe('ToolResultCard raw', () => {
 describe('ToolResultCard collapsible', () => {
 	it('renders collapsed once the observation is final', () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'search',
+			toolName: 'file_search',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
 		const details = /** @type {HTMLDetailsElement} */ (
@@ -229,7 +229,7 @@ describe('ToolResultCard collapsible', () => {
 
 	it('expands while streaming and auto-collapses when streaming ends', async () => {
 		const { container, rerender } = render(ToolResultCard, {
-			toolName: 'search',
+			toolName: 'file_search',
 			content: searchJson([{ path: 'a.rs' }]),
 			streaming: true,
 		});
@@ -243,7 +243,7 @@ describe('ToolResultCard collapsible', () => {
 
 	it('toggles open when the header is clicked and keeps a manual expand', async () => {
 		const { container, rerender } = render(ToolResultCard, {
-			toolName: 'search',
+			toolName: 'file_search',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
 		const details = /** @type {HTMLDetailsElement} */ (
@@ -257,10 +257,10 @@ describe('ToolResultCard collapsible', () => {
 	});
 });
 
-describe('ToolResultCard search', () => {
+describe('ToolResultCard file_search', () => {
 	it('renders a filename-mode search card with paths and count', () => {
 		render(ToolResultCard, {
-			toolName: 'search',
+			toolName: 'file_search',
 			content: searchJson([{ path: 'D:\\workspace\\a.rs' }, { path: 'D:\\workspace\\b.rs' }]),
 		});
 		expect(screen.getByText('文件搜索')).toBeTruthy();
@@ -271,7 +271,7 @@ describe('ToolResultCard search', () => {
 
 	it('renders line numbers and snippets in content mode', () => {
 		render(ToolResultCard, {
-			toolName: 'search',
+			toolName: 'file_search',
 			content: JSON.stringify({
 				results: [{ path: 'lib.rs', line: 42, snippet: 'fn main() {}' }],
 				count: 1,
@@ -285,7 +285,7 @@ describe('ToolResultCard search', () => {
 
 	it('renders the truncated hint when present', () => {
 		render(ToolResultCard, {
-			toolName: 'search',
+			toolName: 'file_search',
 			content: searchJson([{ path: 'a' }], { hint: 'Results hit the max_results cap.' }),
 		});
 		expect(screen.getByText('Results hit the max_results cap.')).toBeTruthy();

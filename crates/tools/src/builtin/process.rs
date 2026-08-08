@@ -5,7 +5,18 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-pub struct ProcessTool;
+pub struct ProcessTool {
+    /// Output cap (chars) for process listings.
+    pub max_output_chars: usize,
+}
+
+impl Default for ProcessTool {
+    fn default() -> Self {
+        Self {
+            max_output_chars: 20_000,
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ProcessTool {
@@ -39,7 +50,7 @@ impl Tool for ProcessTool {
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let op = input["operation"].as_str().unwrap_or("list");
-        let max_chars = self.max_output_chars();
+        let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -153,33 +164,33 @@ mod tests {
 
     #[test]
     fn test_process_tool_name() {
-        assert_eq!(ProcessTool.name(), "process");
+        assert_eq!(ProcessTool::default().name(), "process");
     }
 
     #[test]
     fn test_process_tool_description() {
-        assert!(ProcessTool.description().contains("kill"));
+        assert!(ProcessTool::default().description().contains("kill"));
     }
 
     #[test]
     fn test_process_tool_risk_level() {
         assert_eq!(
-            ProcessTool.risk_level(&json!({"operation": "kill"})),
+            ProcessTool::default().risk_level(&json!({"operation": "kill"})),
             RiskLevel::High
         );
         assert_eq!(
-            ProcessTool.risk_level(&json!({"operation": "list"})),
+            ProcessTool::default().risk_level(&json!({"operation": "list"})),
             RiskLevel::Low
         );
         assert_eq!(
-            ProcessTool.risk_level(&json!({"operation": "launch"})),
+            ProcessTool::default().risk_level(&json!({"operation": "launch"})),
             RiskLevel::Medium
         );
     }
 
     #[test]
     fn test_process_tool_input_schema() {
-        let schema = ProcessTool.input_schema();
+        let schema = ProcessTool::default().input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let enum_vals = schema["properties"]["operation"]["enum"]
             .as_array()
@@ -192,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_execute_list() {
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(json!({"operation": "list"}), CancellationToken::new())
             .await
             .unwrap();
@@ -209,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_execute_launch() {
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(
                 json!({"operation": "launch", "command": "echo hello"}),
                 CancellationToken::new(),
@@ -222,7 +233,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_execute_launch_requires_command() {
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(
                 json!({"operation": "launch", "command": ""}),
                 CancellationToken::new(),
@@ -233,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_execute_kill_requires_pid() {
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(json!({"operation": "kill"}), CancellationToken::new())
             .await;
         assert!(result.is_err());
@@ -241,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_execute_kill_not_found() {
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(
                 json!({"operation": "kill", "pid": 999999999}),
                 CancellationToken::new(),
@@ -252,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_execute_unknown_operation() {
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(json!({"operation": "bogus"}), CancellationToken::new())
             .await;
         assert!(result.is_err());
@@ -262,7 +273,7 @@ mod tests {
     async fn test_process_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = ProcessTool
+        let result = ProcessTool::default()
             .execute(json!({"operation": "list"}), cancel)
             .await;
         assert!(result.is_err());

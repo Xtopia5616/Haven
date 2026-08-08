@@ -2,6 +2,8 @@
 // steps) into the chat bubble message list used by the chat page and the
 // history review flow.
 
+import { formatMessageTime } from '$lib/stores.js';
+
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that
  * arrived concurrently (e.g. a task still running while the user
@@ -32,17 +34,6 @@ export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
 	return [...filteredDb, ...streaming.filter((m) => !dbIds.has(m.id))];
 }
 
-export function formatDate(iso) {
-	const d = new Date(iso);
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, '0');
-	const day = String(d.getDate()).padStart(2, '0');
-	const h = String(d.getHours()).padStart(2, '0');
-	const min = String(d.getMinutes()).padStart(2, '0');
-	const s = String(d.getSeconds()).padStart(2, '0');
-	return `${y}/${m}/${day} ${h}:${min}:${s}`;
-}
-
 export function buildReviewMessages(data) {
 	const items = [];
 	const msgs = data.messages || [];
@@ -57,7 +48,8 @@ export function buildReviewMessages(data) {
 			content: msg.content,
 			type: msg.message_type === 'text' ? undefined : msg.message_type || undefined,
 			voice: !!msg.voice,
-			time: formatDate(msg.created_at),
+			time: formatMessageTime(msg.created_at),
+			_ts: Date.parse(msg.created_at) || 0,
 			streaming: false,
 			attachments: msg.attachments || [],
 		});
@@ -130,33 +122,35 @@ export function buildReviewMessages(data) {
 			// No matching session message (e.g. an old task without the
 			// persisted question): still surface the extracted question as an
 			// ask card instead of a raw JSON tool badge.
-			items.push({
-				id: stepId,
-				role: 'assistant',
-				content: askText || '',
-				type: 'ask',
-				toolName: 'ask',
-				options: [],
-				awaiting: false,
-				voice: false,
-				time: formatDate(step.created_at),
-				streaming: false,
-				stepNumber: step.step_index,
-			});
-			continue;
-		}
 		items.push({
 			id: stepId,
 			role: 'assistant',
-			content: obs || '',
-			type: 'tool',
-			toolName: step.action_tool,
+			content: askText || '',
+			type: 'ask',
+			toolName: 'ask',
+			options: [],
+			awaiting: false,
 			voice: false,
-			time: formatDate(step.created_at),
+			time: formatMessageTime(step.created_at),
+			_ts: Date.parse(step.created_at) || 0,
 			streaming: false,
 			stepNumber: step.step_index,
 		});
+		continue;
 	}
+	items.push({
+		id: stepId,
+		role: 'assistant',
+		content: obs || '',
+		type: 'tool',
+		toolName: step.action_tool,
+		voice: false,
+		time: formatMessageTime(step.created_at),
+		_ts: Date.parse(step.created_at) || 0,
+		streaming: false,
+		stepNumber: step.step_index,
+	});
+}
 	// Thought-only steps are not added as separate items (their text is in
 	// session messages), but we still need their step_index for stepNumber
 	// inference — otherwise tasks with no tool steps (e.g. errored on the
@@ -179,11 +173,7 @@ export function buildReviewMessages(data) {
 			}
 		}
 	}
-	items.sort((a, b) => {
-		if (a.time < b.time) return -1;
-		if (a.time > b.time) return 1;
-		return 0;
-	});
+	items.sort((a, b) => (a._ts || 0) - (b._ts || 0));
 	// Fallback: if no messages or steps exist, show the task input text
 	// so the review page is not completely empty.
 	if (items.length === 0 && task.input_text) {
@@ -192,7 +182,8 @@ export function buildReviewMessages(data) {
 			role: 'user',
 			content: task.input_text,
 			voice: false,
-			time: formatDate(task.created_at || new Date().toISOString()),
+			time: formatMessageTime(task.created_at || new Date().toISOString()),
+			_ts: Date.parse(task.created_at || new Date().toISOString()) || 0,
 			streaming: false,
 		});
 	}

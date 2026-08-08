@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use haven_common::config::ContextLimitsConfig;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_llm::types::{LlmMessage, LlmRole};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
@@ -21,7 +22,7 @@ use crate::types::{Action, BranchPoint, ReActStep};
 /// Images become vision content parts (base64 payload); non-image file
 /// attachments (persisted on disk with a `path`) become a short text
 /// reference so the agent knows the file exists and where to read it with
-/// the file tool — the raw bytes are never shipped to the model.
+/// the file tool 鈥?the raw bytes are never shipped to the model.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
     if att.is_image() {
         ContentPart::Image {
@@ -32,14 +33,14 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
     } else {
         let name = att.filename.as_deref().unwrap_or("attachment");
         match &att.path {
-            Some(path) => ContentPart::text(format!("[附件: {name}，路径: {path}]")),
-            None => ContentPart::text(format!("[附件: {name}]")),
+            Some(path) => ContentPart::text(format!("[闄勪欢: {name}锛岃矾寰? {path}]")),
+            None => ContentPart::text(format!("[闄勪欢: {name}]")),
         }
     }
 }
 
 /// Pick the endpoint role for an agent step. Conversations that carry image
-/// content parts route through the router's vision role 鈥?the dedicated
+/// content parts route through the router's vision role 閳?the dedicated
 /// `image_model` (vision-capable) endpoint when configured, otherwise the
 /// default model. Everything else uses the default model.
 async fn choose_agent_role(router: &LlmRouter, messages: &[LlmMessage]) -> EndpointRole {
@@ -64,10 +65,8 @@ const PAUSE_POLL_MS: u64 = 500;
 /// Interval (in ReAct steps) at which long-running tasks re-run fact and
 /// preference inference mid-task, so memory is refreshed before the task
 /// ever pauses or completes.
-const FACT_INFER_INTERVAL_STEPS: u32 = 25;
-
 /// Message persisted when a run exhausts its step budget (`max_steps`). The
-/// task is intentionally paused as a checkpoint — the task is NOT finished,
+/// task is intentionally paused as a checkpoint 鈥?the task is NOT finished,
 /// and the next user message resumes it with a fresh budget. System notices
 /// like this must NOT land in the chat as an assistant bubble; they are
 /// surfaced as a notification (in-app toast + Windows) instead.
@@ -76,7 +75,7 @@ const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任�
 
 /// Nudge appended to the retry call when a text-only response looks cut off
 /// (truncated generation or text ending mid-sentence). The retry is private
-/// to the loop — the nudge is never persisted into the canonical, so the
+/// to the loop 鈥?the nudge is never persisted into the canonical, so the
 /// conversation stream stays clean if the retry succeeds or falls back.
 const CUT_OFF_RETRY_NUDGE: &str =
     "Your previous response was cut off before you finished. Please continue and complete it.";
@@ -86,8 +85,7 @@ pub struct ReActEngine {
     executor: Arc<TaskExecutor>,
     db: Arc<Database>,
     max_steps: Mutex<u32>,
-    max_observation_chars: usize,
-    message_window_size: usize,
+    context_limits: ContextLimitsConfig,
     balanced_model_notified: Mutex<HashSet<String>>,
     run_counter: AtomicU64,
     current_run_id: AtomicU64,
@@ -103,7 +101,7 @@ pub struct ReActEngine {
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
-/// canonical/history/branch_points (which accumulate to O(n²) over a long
+/// canonical/history/branch_points (which accumulate to O(n虏) over a long
 /// task). Field names/shape match `ReActSnapshot` exactly so the persisted
 /// JSON stays wire-compatible.
 #[derive(serde::Serialize)]
@@ -143,16 +141,14 @@ impl ReActEngine {
         executor: Arc<TaskExecutor>,
         db: Arc<Database>,
         max_steps: u32,
-        max_observation_chars: usize,
-        message_window_size: usize,
+        context_limits: ContextLimitsConfig,
     ) -> Self {
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,
             db,
             max_steps: Mutex::new(max_steps),
-            max_observation_chars,
-            message_window_size,
+            context_limits,
             balanced_model_notified: Mutex::new(HashSet::new()),
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
@@ -229,7 +225,7 @@ impl ReActEngine {
     ///
     /// Returns `true` when at least one message was injected. Called at the
     /// top of every step, and again right before a step completes with final
-    /// content — a message that arrived while the LLM call was in flight is
+    /// content 鈥?a message that arrived while the LLM call was in flight is
     /// delivered there instead of being deferred until the turn ends.
     async fn inject_pending_context(
         &self,
@@ -357,7 +353,7 @@ impl ReActEngine {
         // `max_steps` then paused for the user's next turn), give the loop
         // another full budget so the resume doesn't degenerate into an
         // immediate budget-exhaustion pause below. This intentionally
-        // re-budgets on every resume — a task can run `max_steps` per run,
+        // re-budgets on every resume 鈥?a task can run `max_steps` per run,
         // not once per task lifetime (documented in refactor-dedup.md A9).
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
@@ -430,10 +426,10 @@ impl ReActEngine {
 
             // Incremental fact/preference inference on long-running tasks:
             // turns that never pause would otherwise only trigger extraction
-            // at the very end. Every FACT_INFER_INTERVAL_STEPS steps we
-            // re-run inference; the upsert/known-facts machinery makes this
-            // idempotent (re-confirmed facts are reinforced, not duplicated).
-            if step_num % FACT_INFER_INTERVAL_STEPS == 0 {
+            // at the very end. Every `context_limits.fact_infer_interval_steps`
+            // steps we re-run inference; the upsert/known-facts machinery makes
+            // this idempotent (re-confirmed facts are reinforced, not duplicated).
+            if step_num % self.context_limits.fact_infer_interval_steps == 0 {
                 infer();
             }
 
@@ -507,7 +503,7 @@ impl ReActEngine {
                         compactor.compact(canonical, &self.router()).await
                     } {
                         tracing::debug!(
-                            "compacted {} 鈫?{} tokens",
+                            "compacted {} 閳?{} tokens",
                             result.tokens_before,
                             result.tokens_after
                         );
@@ -647,7 +643,7 @@ impl ReActEngine {
                 // only from batched deltas, so a dropped/delayed final chunk
                 // would permanently lose trailing characters. Emitting the
                 // complete reasoning as a final delta lets the frontend's
-                // cumulative-detection (delta.startsWith(curr) 鈫?replace)
+                // cumulative-detection (delta.startsWith(curr) 閳?replace)
                 // snap the content to the exact full text. This runs after the
                 // chunk batcher has flushed, so it is guaranteed to be the
                 // last reasoning event for this step.
@@ -667,7 +663,7 @@ impl ReActEngine {
             // A completely empty model response (no text, no reasoning, no
             // tool calls) is almost always a transient upstream glitch. Retry
             // the same context once before concluding the model decided
-            // nothing — otherwise the task would instantly "complete" with a
+            // nothing 鈥?otherwise the task would instantly "complete" with a
             // "No action decided." message and pause without answering.
             // A response carrying `web_search_call` items is NOT empty: it is
             // a server-side search round that must round-trip instead.
@@ -716,9 +712,8 @@ impl ReActEngine {
             // A text-only response that ends without an explicit tool call is
             // only trusted as a deliberate final answer when it looks
             // complete: the provider reported Stop AND the text does not end
-            // mid-sentence. Anything else — a truncated generation (Length /
-            // ContentFilter / unknown finish) or text cut off mid-thought —
-            // must not end the turn presenting a partial answer as final.
+            // mid-sentence. Anything else 鈥?a truncated generation (Length /
+            // ContentFilter / unknown finish) or text cut off mid-thought 鈥?            // must not end the turn presenting a partial answer as final.
             // Retry once with a continuation nudge (never persisted into the
             // canonical); if the retry is also unusable, fall back to the
             // original text below.
@@ -820,7 +815,7 @@ impl ReActEngine {
                 });
             }
 
-            // ── Web search round-trip ─────────────────────────────────────
+            // 鈹€鈹€ Web search round-trip 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // `web_search_call` output items come from the provider's
             // server-side search tool (DeepSeek built-in). The search itself
             // runs on the provider; the items must be passed back verbatim in
@@ -858,7 +853,7 @@ impl ReActEngine {
                     continue;
                 }
                 // synthesized_final: the answer arrived in the same response
-                // as the search call — fall through to the final-answer path,
+                // as the search call 鈥?fall through to the final-answer path,
                 // which ends the turn. The canonical push above keeps the
                 // search context alive for follow-up turns.
             }
@@ -1049,7 +1044,7 @@ impl ReActEngine {
                 let tool_name = action.tool_name.clone();
                 let tool_input = action.tool_input.clone();
                 let action = (*action).clone();
-                let max_obs = self.max_observation_chars;
+                let max_obs = self.context_limits.max_observation_chars;
                 let db = self.db.clone();
                 let executor = self.executor.clone();
                 tool_futures.push(async move {
@@ -1156,7 +1151,7 @@ impl ReActEngine {
             let mut asked_questions: Vec<String> = Vec::new();
             // Drain tool results while remaining responsive to cancellation.
             // Without select!, a cancel arriving mid-batch would only be
-            // detected at the next step boundary 鈥?after all tools finish.
+            // detected at the next step boundary 閳?after all tools finish.
             loop {
                 tokio::select! {
                     biased;
@@ -1195,7 +1190,7 @@ impl ReActEngine {
                         }
                         // Surface an `ask` result as a readable question rather
                         // than raw JSON. The user's reply arrives via
-                        // process_input 鈫?supplement 鈫?Paused鈫扨ending resume.
+                        // process_input 閳?supplement 閳?Paused閳墾ending resume.
                         if let Some(q) = &ask_question {
                             asked_questions.push(q.clone());
                         }
@@ -1264,7 +1259,7 @@ impl ReActEngine {
 
             // The agent asked the human a question: pause so the user can
             // answer. Their reply arrives as a supplement and resumes the task
-            // (Paused 鈫?Pending 鈫?dispatcher re-enters the loop, injecting the
+            // (Paused 閳?Pending 閳?dispatcher re-enters the loop, injecting the
             // answer as context at the top of the next step).
             if !asked_questions.is_empty() {
                 let question = asked_questions.join("\n\n");
@@ -1272,8 +1267,8 @@ impl ReActEngine {
                 // the steering queue (task was still Running). Convert it to a
                 // supplement and, if present, resume immediately as Pending so
                 // the answer isn't stranded while the task sits Paused. The
-                // steering queue holds only user interjections now 鈥?background
-                // job results are buffered separately 鈥?so `has_answer` truly
+                // steering queue holds only user interjections now 閳?background
+                // job results are buffered separately 閳?so `has_answer` truly
                 // reflects a human reply.
                 let steering = self.executor.get_steering(task_id).await;
                 let has_answer = !steering.is_empty();
@@ -1338,10 +1333,12 @@ impl ReActEngine {
         Ok(())
     }
 
-    /// Persist an assistant message into the task's message stream, applying
-    /// the configured sliding-window trim. Delegates to the shared
-    /// `crate::persist_task_message` so this path cannot drift from the
-    /// user-turn persistence path (same trim, same error policy).
+    /// Persist an assistant message into the task's message stream.
+    /// Delegates to the shared `crate::persist_task_message` so this path
+    /// cannot drift from the user-turn persistence path (same trim, same
+    /// error policy). Persistence failures are logged here instead of being
+    /// silently swallowed: a dropped write would make the streamed content
+    /// disappear after a reload while the UI keeps showing it.
     async fn persist_task_message(
         &self,
         task_id: &str,
@@ -1349,24 +1346,24 @@ impl ReActEngine {
         content: &str,
         message_type: Option<&str>,
     ) {
-        let _ = crate::persist_task_message(
-            &self.db,
-            task_id,
-            role,
-            content,
-            message_type,
-            &[],
-            self.message_window_size,
-            false,
-        )
-        .await;
+        if let Err(e) =
+            crate::persist_task_message(&self.db, task_id, role, content, message_type, &[], false)
+                .await
+        {
+            tracing::warn!(
+                "ReAct: failed to persist {} message for task {} (type={:?}): {}",
+                role,
+                task_id,
+                message_type,
+                e
+            );
+        }
     }
 
     /// Finalize a turn: persist the assistant text, save the branch point
     /// (when requested), snapshot the ReAct state, then mark the task with
     /// the given status and notify the frontend + inference. Shared by all
-    /// pause/complete paths so the persist → branch-point → snapshot →
-    /// status → event ordering cannot drift between them. The snapshot is
+    /// pause/complete paths so the persist 鈫?branch-point 鈫?snapshot 鈫?    /// status 鈫?event ordering cannot drift between them. The snapshot is
     /// taken after the branch point so it includes the newly added entry.
     /// The step-budget checkpoint uses `pause_turn_budget` instead, which
     /// skips the assistant-message persist (the notice is a notification).
@@ -1416,7 +1413,7 @@ impl ReActEngine {
     /// `pause_turn`'s checkpoint side effects (snapshot, Paused status,
     /// infer) but does NOT persist an assistant chat message: system notices
     /// of this kind must not pollute the conversation stream as fake agent
-    /// replies — they are surfaced as a notification (in-app toast +
+    /// replies 鈥?they are surfaced as a notification (in-app toast +
     /// Windows) instead, so the user sees them without the chat pretending
     /// the turn produced an answer.
     #[allow(clippy::too_many_arguments)]
@@ -1457,7 +1454,7 @@ impl ReActEngine {
     /// result is present and no user message follows it. The ask pause path
     /// normally prevents this state from reaching an LLM call, but a reply
     /// lost to compaction/sanitization or a dropped answer can leave the
-    /// question dangling — and a model Stop response must then not be judged
+    /// question dangling 鈥?and a model Stop response must then not be judged
     /// final (it would end the turn with the question still unanswered).
     fn canonical_has_pending_ask(canonical: &[CanonicalMessage]) -> bool {
         let mut last_ask = None;
@@ -1506,14 +1503,20 @@ impl ReActEngine {
     /// True when a text-only response should not be trusted as a deliberate
     /// final answer: either the provider did not report Stop (truncated /
     /// filtered / unknown finish) or the text itself ends mid-sentence
-    /// (trailing comma/connector/ellipsis — the generation was interrupted
+    /// (trailing comma/connector/ellipsis 鈥?the generation was interrupted
     /// rather than concluded).
     fn looks_cut_off(text: &str) -> bool {
         text.ends_with("...")
-            || text.ends_with("···")
+            || text.ends_with("路路路")
             || matches!(
                 text.chars().last(),
-                Some('，' | '、' | '；' | '：' | ',' | ';' | ':' | '…')
+                Some('，')
+                    | Some('：')
+                    | Some('！')
+                    | Some(',')
+                    | Some(';')
+                    | Some(':')
+                    | Some('…')
             )
     }
 
@@ -1591,10 +1594,10 @@ impl ReActEngine {
         (thought, actions)
     }
 
-    /// Save snapshot including branch points for tree-structured rollback (搂2).
+    /// Save snapshot including branch points for tree-structured rollback (鎼?).
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
-    /// of canonical/history/branch_points — those clones were O(n²) over a
+    /// of canonical/history/branch_points 鈥?those clones were O(n虏) over a
     /// long task) into a reusable buffer, then writes to SQLite on the
     /// blocking thread pool so the WAL fsync never stalls the async runtime.
     async fn save_snapshot_with_branches(
@@ -1686,7 +1689,7 @@ impl ReActEngine {
         }
     }
 
-    /// Save a branch point at the current step before tool execution (搂2).
+    /// Save a branch point at the current step before tool execution (鎼?).
     async fn save_branch_point(
         &self,
         task_id: &str,
@@ -1738,13 +1741,29 @@ impl ReActEngine {
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
-        let (chunk_tx, reasoning_tx, consumer_handle) =
-            EventDispatcher::spawn_chunk_consumer_raw(emitter);
+        let (chunk_tx, reasoning_tx, consumer_handle) = EventDispatcher::spawn_chunk_consumer_raw(
+            emitter,
+            self.context_limits.event_chunk_batch_max_bytes,
+        );
         let chunk_tx_c = chunk_tx.clone();
         let reasoning_tx_c = reasoning_tx.clone();
         let task_id_c = task_id.to_string();
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
+        // Crash/stop recovery: the accumulated thought text is checkpointed
+        // into the `partial_messages` scratch table while streaming so a
+        // crash, user stop, or app exit does not lose the whole reply. The
+        // first chunk checkpoints immediately; afterwards at most every 2s
+        // or every `partial_checkpoint_min_chars` new chars, and never while
+        // a write is in flight.
+        let checkpoint_db = self.db.clone();
+        let checkpoint_task = task_id.to_string();
+        let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let partial_checkpoint_min_chars = self.context_limits.partial_checkpoint_min_chars;
+        let partial_checkpoint_interval =
+            std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs);
+        let mut checkpoint_at = std::time::Instant::now() - partial_checkpoint_interval;
+        let mut checkpoint_len = 0usize;
         // Web search phases are emitted as discrete events (not deltas), so
         // they bypass the chunk batcher through their own channel: the
         // on_chunk callback is synchronous and cannot await the emitter.
@@ -1768,6 +1787,37 @@ impl ReActEngine {
                             chunk_tx_c.try_send((task_id_c.clone(), t.clone(), step_num, run_id))
                         {
                             tracing::warn!("thought chunk channel full, dropping: {}", e);
+                        }
+                        let now = std::time::Instant::now();
+                        let len = pt.lock().unwrap().len();
+                        if !checkpoint_inflight.load(std::sync::atomic::Ordering::Relaxed)
+                            && (now.duration_since(checkpoint_at) >= partial_checkpoint_interval
+                                || len.saturating_sub(checkpoint_len)
+                                    >= partial_checkpoint_min_chars)
+                        {
+                            checkpoint_at = now;
+                            checkpoint_len = len;
+                            let snapshot = pt.lock().unwrap().clone();
+                            let db = checkpoint_db.clone();
+                            let tid = checkpoint_task.clone();
+                            let flag = checkpoint_inflight.clone();
+                            tokio::spawn(async move {
+                                let tid_c = tid.clone();
+                                let snapshot_c = snapshot.clone();
+                                let res = db
+                                    .run_blocking(move |db| {
+                                        db.upsert_partial_message(&tid_c, &snapshot_c)
+                                    })
+                                    .await;
+                                flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                if let Err(e) = res {
+                                    tracing::warn!(
+                                        "failed to checkpoint partial stream text for task {}: {}",
+                                        tid,
+                                        e
+                                    );
+                                }
+                            });
                         }
                     }
                     if let Some(r) = &c.reasoning {
@@ -1818,7 +1868,7 @@ impl ReActEngine {
     ) {
         let usage = &response.usage;
         if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
-            // No usage reported by the provider 鈥?nothing useful to surface.
+            // No usage reported by the provider 閳?nothing useful to surface.
             return;
         }
 
@@ -1917,7 +1967,7 @@ impl ReActEngine {
     }
 
     /// Resolve the model's true context window for the endpoint used by
-    /// `role` — explicit `context_window` config, else the builtin catalog
+    /// `role` 鈥?explicit `context_window` config, else the builtin catalog
     /// (e.g. 1M for gpt-4.1-nano / Gemini 2.5 Flash), else a 128K default.
     /// This is the real input budget for the token-usage display, not the
     /// per-response output cap (`max_tokens`).
@@ -1938,15 +1988,20 @@ impl ReActEngine {
 
     /// Build a compactor whose context window reflects the *actual* model for
     /// the role that will handle the step (explicit `context_window` config,
-    /// else the builtin catalog, else 128K). Re-resolved on every call so a
-    /// hot-swapped router config takes effect immediately. `reserve_tokens`
-    /// stays fixed at 4096; the ratio dominates the threshold at large
-    /// windows.
+    /// else the builtin catalog, else `context_limits.default_context_window`).
+    /// Re-resolved on every call so a hot-swapped router config takes effect
+    /// immediately. The compaction threshold (ratio and reserve) and the
+    /// fallback window come from `context_limits`.
     async fn context_compactor(&self, role: EndpointRole) -> ContextCompactor {
         let router = self.router();
         let cfg = router.config().await;
-        let window = Self::context_window_for_role(&cfg, role).unwrap_or(128_000);
-        ContextCompactor::with_ratio(window, 4_096, 0.75)
+        let window = Self::context_window_for_role(&cfg, role)
+            .unwrap_or(self.context_limits.default_context_window);
+        ContextCompactor::with_ratio(
+            window,
+            self.context_limits.compaction_reserve_tokens,
+            self.context_limits.compaction_ratio,
+        )
     }
 
     /// Check if context compaction is needed before the next LLM call.
@@ -1979,7 +2034,7 @@ impl ReActEngine {
         let router = self.router();
         if let Some(result) = compactor.compact(canonical, &router).await {
             tracing::info!(
-                "compaction for task {}: {} tokens 鈫?{} tokens ({} msgs summarized)",
+                "compaction for task {}: {} tokens 閳?{} tokens ({} msgs summarized)",
                 task_id,
                 result.tokens_before,
                 result.tokens_after,

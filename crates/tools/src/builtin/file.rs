@@ -13,27 +13,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-/// Full-read cap: files larger than this are not read entirely; callers must
-/// use `offset`/`limit` (bytes) or `start_line`/`end_line` (lines) instead.
-const MAX_READ_BYTES: u64 = 128_000;
-/// Default `limit` for byte-mode reads when only `offset` is given.
-const DEFAULT_LIMIT_BYTES: u64 = 128_000;
-/// Default lines to read in line mode when only `start_line` is given.
-const DEFAULT_LINE_SPAN: u64 = 100;
-/// Single line too long to buffer safely.
-const MAX_LINE_BYTES: usize = 128_000;
-/// Default input budget (chars) sent to the summarizer model.
-const SUMMARY_INPUT_BUDGET: usize = 60_000;
-/// Outer timeout for a summarization LLM call.
-const SUMMARY_TIMEOUT_SECS: u64 = 120;
-/// Cap on directory entries returned by `list`.
-const MAX_LIST_ENTRIES: usize = 1_000;
-/// Absolute safety cap for byte-mode reads, regardless of caller `limit`.
-const MAX_BYTE_READ: u64 = 16 * 1024 * 1024;
-/// Cap on image bytes sent to the vision model (8 MB). Larger images are
-/// rejected rather than shipped as a giant base64 payload.
-const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
-
 /// Classify a file by its extension into a coarse kind used to route binary
 /// reads. Returns `(kind, mime)` where kind is one of: image, pdf, archive,
 /// office, audio, video, executable, or unknown.
@@ -84,6 +63,8 @@ async fn understand_image(
     focus: Option<&str>,
     summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
+    vision_max_bytes: u64,
+    summary_timeout_secs: u64,
 ) -> anyhow::Result<ToolResult> {
     // Validate the extension first so a non-image path is rejected even when
     // no summarizer is configured — otherwise arbitrary bytes could be
@@ -109,7 +90,7 @@ async fn understand_image(
     }
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
-    if size > MAX_IMAGE_BYTES {
+    if size > vision_max_bytes {
         return Ok(ToolResult::ok(serde_json::json!({
             "image": true,
             "path": path,
@@ -117,7 +98,7 @@ async fn understand_image(
             "too_large": true,
             "hint": format!(
                 "Image is {} bytes, above the {} byte vision limit.",
-                size, MAX_IMAGE_BYTES
+                size, vision_max_bytes
             )
         })));
     }
@@ -158,7 +139,7 @@ async fn understand_image(
 
     let call = async {
         tokio::time::timeout(
-            std::time::Duration::from_secs(SUMMARY_TIMEOUT_SECS),
+            std::time::Duration::from_secs(summary_timeout_secs),
             client.chat(role, messages),
         )
         .await
@@ -180,7 +161,7 @@ async fn understand_image(
                 output: serde_json::json!({"image": true, "path": path, "understand_error": true}),
                 error: Some(format!(
                     "vision call timed out after {}s",
-                    SUMMARY_TIMEOUT_SECS
+                    summary_timeout_secs
                 )),
                 truncated: false,
             });
@@ -238,25 +219,37 @@ fn binary_result(path: &str, size: u64) -> ToolResult {
     }))
 }
 
-/// Read a file in full. Refuses files larger than `MAX_READ_BYTES` (A) and
-/// rejects binary content (E). Only reads what the output budget can hold,
+/// Read a file in full. Refuses files larger than `max_read_chars` and
+/// rejects binary content. Only reads what the output budget can hold,
 /// instead of pulling the whole file into memory first.
+#[allow(clippy::too_many_arguments)]
 async fn read_full(
     path: &str,
     max_chars: usize,
+    max_read_chars: u64,
+    vision_max_bytes: u64,
     focus: Option<&str>,
     summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
+    summary_timeout_secs: u64,
 ) -> anyhow::Result<ToolResult> {
     let (kind, _mime) = classify_by_extension(path);
     // Non-text files: route images to the vision model instead of returning a
     // useless binary blob. Other rich files fall through to the binary hint.
     if kind == "image" {
-        return understand_image(path, focus, summarizer, cancel).await;
+        return understand_image(
+            path,
+            focus,
+            summarizer,
+            cancel,
+            vision_max_bytes,
+            summary_timeout_secs,
+        )
+        .await;
     }
     let meta = tokio::fs::metadata(path).await?;
     let size = meta.len();
-    if size > MAX_READ_BYTES {
+    if size > max_read_chars {
         // Still return a bounded content prefix (budget-sized read, never the
         // whole file) so callers can see the head and reconstruct if needed.
         let to_read = ((max_chars as u64).saturating_mul(4)).min(size).max(1) as usize;
@@ -273,7 +266,7 @@ async fn read_full(
             "content": output,
             "hint": format!(
                 "File is {} bytes, above the {} byte full-read limit. The head is included above; read specific ranges with offset/limit (bytes) or start_line/end_line (lines), or locate text with search(mode=content).",
-                size, MAX_READ_BYTES
+                size, max_read_chars
             ),
         });
         if truncated {
@@ -309,6 +302,7 @@ async fn read_bytes(
     offset: u64,
     limit: u64,
     max_chars: usize,
+    max_byte_read: u64,
 ) -> anyhow::Result<ToolResult> {
     let mut file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
@@ -325,7 +319,7 @@ async fn read_bytes(
     // The output is truncated to max_chars anyway, and the caller-supplied
     // limit is untrusted: cap the allocation and the actual read.
     let effective_limit = limit
-        .clamp(1, MAX_BYTE_READ)
+        .clamp(1, max_byte_read)
         .min((max_chars as u64).saturating_mul(4).max(1))
         .min(total - offset) as usize;
     file.seek(tokio::io::SeekFrom::Start(offset)).await?;
@@ -398,6 +392,7 @@ async fn read_lines(
     start_line: u64,
     end_line: u64,
     max_chars: usize,
+    max_line_chars: usize,
 ) -> anyhow::Result<ToolResult> {
     let file = tokio::fs::File::open(path).await?;
     let total = file.metadata().await?.len();
@@ -410,7 +405,7 @@ async fn read_lines(
 
     loop {
         let Some((n, exceeded)) =
-            read_line_bounded(&mut reader, &mut line_buf, MAX_LINE_BYTES).await?
+            read_line_bounded(&mut reader, &mut line_buf, max_line_chars).await?
         else {
             break;
         };
@@ -440,7 +435,7 @@ async fn read_lines(
         }
         current += 1;
         if current > end_line {
-            more = read_line_bounded(&mut reader, &mut line_buf, MAX_LINE_BYTES)
+            more = read_line_bounded(&mut reader, &mut line_buf, max_chars)
                 .await?
                 .is_some();
             break;
@@ -483,7 +478,6 @@ async fn read_lines(
     })
 }
 
-#[derive(Default)]
 pub struct FileOpTool {
     /// Shared LlmRouter. `None` means the router has not been installed yet
     /// (transient state during startup). When present, the `summary` and image
@@ -491,11 +485,71 @@ pub struct FileOpTool {
     /// understanding uses the image_model role, text summarization uses
     /// small_model. The router handles retries and the balanced-model fallback.
     summarizer: Option<Arc<LlmRouter>>,
+    /// Output cap (chars) for file reads.
+    max_output_chars: usize,
+    /// Full-read cap (chars): larger files need `offset`/`limit` or
+    /// `start_line`/`end_line`. Also the default byte-mode `limit`.
+    max_read_chars: u64,
+    /// Default lines to read in line mode when only `start_line` is given.
+    line_span: u64,
+    /// Single line too long to buffer safely (chars).
+    max_line_chars: usize,
+    /// Default input budget (chars) sent to the summarizer model.
+    summary_input_chars: usize,
+    /// Cap on directory entries returned by `list`.
+    max_list_entries: usize,
+    /// Absolute safety cap for byte-mode reads, regardless of caller `limit`.
+    max_byte_read: u64,
+    /// Cap on image bytes sent to the vision model. Larger images are
+    /// rejected rather than shipped as a giant base64 payload.
+    vision_max_bytes: u64,
+    /// Outer timeout (secs) for summarization / vision LLM calls.
+    summary_timeout_secs: u64,
+}
+
+impl Default for FileOpTool {
+    fn default() -> Self {
+        Self {
+            summarizer: None,
+            max_output_chars: 20_000,
+            max_read_chars: 128_000,
+            line_span: 100,
+            max_line_chars: 128_000,
+            summary_input_chars: 60_000,
+            max_list_entries: 1_000,
+            max_byte_read: 16 * 1024 * 1024,
+            vision_max_bytes: 8 * 1024 * 1024,
+            summary_timeout_secs: 120,
+        }
+    }
 }
 
 impl FileOpTool {
-    pub fn new(summarizer: Option<Arc<LlmRouter>>) -> Self {
-        Self { summarizer }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        summarizer: Option<Arc<LlmRouter>>,
+        max_output_chars: usize,
+        max_read_chars: u64,
+        line_span: u64,
+        max_line_chars: usize,
+        summary_input_chars: usize,
+        max_list_entries: usize,
+        max_byte_read: u64,
+        vision_max_bytes: u64,
+        summary_timeout_secs: u64,
+    ) -> Self {
+        Self {
+            summarizer,
+            max_output_chars,
+            max_read_chars,
+            line_span,
+            max_line_chars,
+            summary_input_chars,
+            max_list_entries,
+            max_byte_read,
+            vision_max_bytes,
+            summary_timeout_secs,
+        }
     }
 }
 
@@ -527,11 +581,11 @@ impl Tool for FileOpTool {
                 "old_string": { "type": "string", "description": "Text to search for (edit operation)" },
                 "new_string": { "type": "string", "description": "Replacement text (edit operation)" },
                 "offset": { "type": "integer", "description": "Byte offset to start reading from (bytes mode)", "default": 0, "minimum": 0 },
-                "limit": { "type": "integer", "description": "Max bytes to read (bytes mode)", "default": 128_000, "minimum": 1, "maximum": 16777216 },
+                "limit": { "type": "integer", "description": "Max bytes to read (bytes mode)", "default": self.max_read_chars, "minimum": 1, "maximum": self.max_byte_read },
                 "start_line": { "type": "integer", "description": "1-based first line to read or summarize (lines mode / summary)", "default": 1 },
-                "end_line": { "type": "integer", "description": "1-based last line to read or summarize (lines mode / summary). When omitted, start_line + 100 lines are read.", "default": 100 },
+                "end_line": { "type": "integer", "description": "1-based last line to read or summarize (lines mode / summary). When omitted, start_line + {} lines are read.", "default": self.line_span },
                 "focus": { "type": "string", "description": "Optional focus/topic (summary operation, or image understanding in read operation)" },
-                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": 60000 }
+                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": self.summary_input_chars }
             },
             "required": ["operation", "path"]
         })
@@ -540,7 +594,7 @@ impl Tool for FileOpTool {
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let op = input["operation"].as_str().unwrap_or("read");
         let path = sanitize_path(input["path"].as_str().unwrap_or(""))?;
-        let max_chars = self.max_output_chars();
+        let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -560,24 +614,27 @@ impl Tool for FileOpTool {
                     let end_line = input
                         .get("end_line")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(start_line + DEFAULT_LINE_SPAN)
+                        .unwrap_or(start_line + self.line_span)
                         .max(start_line);
-                    read_lines(&path, start_line, end_line, max_chars).await
+                    read_lines(&path, start_line, end_line, max_chars, self.max_line_chars).await
                 } else if has_byte_args {
                     let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
                     let limit = input
                         .get("limit")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(DEFAULT_LIMIT_BYTES);
-                    read_bytes(&path, offset, limit, max_chars).await
+                        .unwrap_or(self.max_read_chars);
+                    read_bytes(&path, offset, limit, max_chars, self.max_byte_read).await
                 } else {
                     let focus = input["focus"].as_str().map(|s| s.to_string());
                     read_full(
                         &path,
                         max_chars,
+                        self.max_read_chars,
+                        self.vision_max_bytes,
                         focus.as_deref(),
                         self.summarizer.clone(),
                         cancel.clone(),
+                        self.summary_timeout_secs,
                     )
                     .await
                 }
@@ -600,11 +657,11 @@ impl Tool for FileOpTool {
                 // edit rewrites the whole file; refuse files beyond the read cap
                 // to avoid loading multi-hundred-MB files into memory.
                 let meta = tokio::fs::metadata(&path).await?;
-                if meta.len() > MAX_READ_BYTES {
+                if meta.len() > self.max_read_chars {
                     anyhow::bail!(
                         "file is {} bytes, above the {} byte edit limit. Locate the text with search(mode=content) and rewrite the file in smaller pieces.",
                         meta.len(),
-                        MAX_READ_BYTES
+                        self.max_read_chars
                     );
                 }
                 let bytes = tokio::fs::read(&path).await?;
@@ -699,7 +756,7 @@ impl Tool for FileOpTool {
                     if cancel.is_cancelled() {
                         anyhow::bail!("cancelled");
                     }
-                    if names.len() >= MAX_LIST_ENTRIES {
+                    if names.len() >= self.max_list_entries {
                         truncated = true;
                         break;
                     }
@@ -711,7 +768,7 @@ impl Tool for FileOpTool {
                     result["truncated"] = serde_json::Value::Bool(true);
                     result["hint"] = serde_json::json!(format!(
                         "Directory has more than {} entries; only the first {} are listed.",
-                        MAX_LIST_ENTRIES, MAX_LIST_ENTRIES
+                        self.max_list_entries, self.max_list_entries
                     ));
                 }
                 Ok(ToolResult::ok(result))
@@ -728,8 +785,8 @@ impl Tool for FileOpTool {
                 // value cannot buffer the whole file or ship a giant payload.
                 let input_budget = input["max_chars"]
                     .as_u64()
-                    .unwrap_or(SUMMARY_INPUT_BUDGET as u64)
-                    .min(SUMMARY_INPUT_BUDGET as u64)
+                    .unwrap_or(self.summary_input_chars as u64)
+                    .min(self.summary_input_chars as u64)
                     .max(1) as usize;
                 summarize(
                     &path,
@@ -737,8 +794,10 @@ impl Tool for FileOpTool {
                     end_line,
                     focus.as_deref(),
                     input_budget,
+                    self.max_line_chars,
                     self.summarizer.clone(),
                     cancel.clone(),
+                    self.summary_timeout_secs,
                 )
                 .await
             }
@@ -750,14 +809,17 @@ impl Tool for FileOpTool {
 /// Summarize a file (or a `start_line`..=`end_line` range) using the
 /// `small_model` endpoint. Content is read line-streamed (never fully buffered)
 /// and capped at `input_budget` chars before the LLM call.
+#[allow(clippy::too_many_arguments)]
 async fn summarize(
     path: &str,
     start_line: u64,
     end_line: u64,
     focus: Option<&str>,
     input_budget: usize,
+    max_line_chars: usize,
     summarizer: Option<Arc<LlmRouter>>,
     cancel: CancellationToken,
+    summary_timeout_secs: u64,
 ) -> anyhow::Result<ToolResult> {
     let Some(client) = summarizer else {
         return Ok(ToolResult::ok(serde_json::json!({
@@ -779,7 +841,7 @@ async fn summarize(
     }
 
     let (content, actual_start, actual_end, size, truncated) =
-        read_for_summary(path, start_line, end_line, input_budget).await?;
+        read_for_summary(path, start_line, end_line, input_budget, max_line_chars).await?;
 
     if content.is_empty() {
         return Ok(ToolResult::ok(serde_json::json!({
@@ -821,7 +883,7 @@ async fn summarize(
 
     let call = async {
         tokio::time::timeout(
-            std::time::Duration::from_secs(SUMMARY_TIMEOUT_SECS),
+            std::time::Duration::from_secs(summary_timeout_secs),
             client.chat(EndpointRole::SmallModel, messages),
         )
         .await
@@ -843,7 +905,7 @@ async fn summarize(
                 output: serde_json::json!({"summary_error": true, "path": path}),
                 error: Some(format!(
                     "summarizer timed out after {}s",
-                    SUMMARY_TIMEOUT_SECS
+                    summary_timeout_secs
                 )),
                 truncated: false,
             });
@@ -873,6 +935,7 @@ async fn read_for_summary(
     start_line: u64,
     end_line: u64,
     max_chars: usize,
+    max_line_chars: usize,
 ) -> anyhow::Result<(String, u64, u64, u64, bool)> {
     let file = tokio::fs::File::open(path).await?;
     let size = file.metadata().await?.len();
@@ -885,7 +948,7 @@ async fn read_for_summary(
 
     loop {
         let Some((n, exceeded)) =
-            read_line_bounded(&mut reader, &mut line_buf, MAX_LINE_BYTES).await?
+            read_line_bounded(&mut reader, &mut line_buf, max_line_chars).await?
         else {
             break;
         };
@@ -893,7 +956,7 @@ async fn read_for_summary(
             anyhow::bail!(
                 "line {} exceeds the {} byte single-line limit; summarize a narrower range",
                 current,
-                MAX_LINE_BYTES
+                max_line_chars
             );
         }
         if current >= start_line {
@@ -1001,9 +1064,16 @@ mod tests {
         ];
         tokio::fs::write(&path, png).await.unwrap();
         let path_str = path.to_string_lossy().to_string();
-        let r = understand_image(&path_str, None, None, CancellationToken::new())
-            .await
-            .unwrap();
+        let r = understand_image(
+            &path_str,
+            None,
+            None,
+            CancellationToken::new(),
+            8 * 1024 * 1024,
+            120,
+        )
+        .await
+        .unwrap();
         assert!(r.success);
         assert_eq!(r.output["understand_unavailable"], serde_json::json!(true));
     }
@@ -1015,7 +1085,15 @@ mod tests {
         let path = tmp.path().join("data.txt");
         tokio::fs::write(&path, b"hello").await.unwrap();
         let path_str = path.to_string_lossy().to_string();
-        let r = understand_image(&path_str, None, None, CancellationToken::new()).await;
+        let r = understand_image(
+            &path_str,
+            None,
+            None,
+            CancellationToken::new(),
+            8 * 1024 * 1024,
+            120,
+        )
+        .await;
         assert!(r.is_err());
     }
 
@@ -1103,7 +1181,7 @@ mod tests {
     async fn test_file_execute_read_too_large() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("big.txt");
-        tokio::fs::write(&file, vec![b'a'; (MAX_READ_BYTES + 1) as usize])
+        tokio::fs::write(&file, vec![b'a'; (128_000 + 1) as usize])
             .await
             .unwrap();
         let path_str = file.to_string_lossy().to_string();
@@ -1131,7 +1209,7 @@ mod tests {
         // returned head must still decode as UTF-8, not as GBK mojibake.
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("big_cjk.txt");
-        let content = "中".repeat((MAX_READ_BYTES as usize) / 3 + 100);
+        let content = "中".repeat(128_000 / 3 + 100);
         tokio::fs::write(&file, &content).await.unwrap();
         let path_str = file.to_string_lossy().to_string();
 
@@ -1163,8 +1241,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("big_gbk.txt");
         let gbk_line = [0xC4, 0xE3, 0xBA, 0xC3]; // "你好" in GBK
-        let mut content = Vec::with_capacity(MAX_READ_BYTES as usize + 4);
-        while content.len() <= MAX_READ_BYTES as usize {
+        let mut content = Vec::with_capacity(128_000 + 4);
+        while content.len() <= 128_000 {
             content.extend_from_slice(&gbk_line);
         }
         tokio::fs::write(&file, &content).await.unwrap();

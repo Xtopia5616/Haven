@@ -49,7 +49,7 @@ pub struct ReminderFired {
     pub title: String,
     pub body: String,
     pub mode: ReminderMode,
-    /// Task that scheduled the reminder — resume target for `Continue` mode,
+    /// Task that scheduled the reminder 閳?resume target for `Continue` mode,
     /// tool-context scope for `Tool` mode. `None` on legacy rows.
     pub task_id: Option<String>,
     /// `Tool` mode: tool to call when the reminder fires.
@@ -84,12 +84,8 @@ pub struct ReminderSpec {
 
 /// Lifetime cap on reminders per process. Fired reminders are reaped on the
 /// next `set`, so this bounds concurrent pending timers, not history.
-const MAX_REMINDERS: usize = 32;
-
 /// Upper bound on a `due_at`-scheduled reminder (365 days) — guards against
 /// typos like a swapped year. Delay-based reminders are capped separately.
-const MAX_DUE_HORIZON_SECS: i64 = 365 * 24 * 3600;
-
 struct ReminderEntry {
     title: String,
     body: String,
@@ -114,6 +110,9 @@ pub struct ReminderCenter {
     fired_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ReminderFired>>>,
     /// Persistent store; `None` in headless/test builds (in-memory only).
     db: RwLock<Option<Arc<Database>>>,
+    /// Lifetime cap on pending reminders (from context limits).
+    max_reminders: RwLock<usize>,
+    max_due_horizon_secs: RwLock<i64>,
 }
 
 impl Default for ReminderCenter {
@@ -130,7 +129,15 @@ impl ReminderCenter {
             fired_tx: tx,
             fired_rx: Mutex::new(Some(rx)),
             db: RwLock::new(None),
+            max_reminders: RwLock::new(32),
+            max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
         }
+    }
+
+    /// Replace the unified context limits (reminder caps).
+    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
+        *self.max_reminders.write().await = limits.reminders_max;
+        *self.max_due_horizon_secs.write().await = limits.reminders_due_horizon_secs;
     }
 
     /// Attach the database used for persistence. Wired by the desktop shell
@@ -155,7 +162,7 @@ impl ReminderCenter {
     /// - Future reminders are re-armed in memory with their remaining delay.
     ///
     /// Returns the number of reminders fired as overdue. Called once from the
-    /// agent layer startup; safe to call again (idempotent — in-memory
+    /// agent layer startup; safe to call again (idempotent 閳?in-memory
     /// entries are skipped).
     pub async fn restore_pending(self: &Arc<Self>) -> usize {
         let Some(db) = self.db.read().await.clone() else {
@@ -289,7 +296,7 @@ impl ReminderCenter {
                 if remaining <= 0 {
                     anyhow::bail!("due_at must be in the future");
                 }
-                if remaining > MAX_DUE_HORIZON_SECS {
+                if remaining > *self.max_due_horizon_secs.read().await {
                     anyhow::bail!("due_at is more than 365 days in the future");
                 }
                 (parsed, remaining)
@@ -328,9 +335,10 @@ impl ReminderCenter {
             let mut reminders = self.reminders.write().await;
             // Reap fired entries so they never occupy the cap.
             reminders.retain(|_, e| !e.fired);
-            if reminders.len() >= MAX_REMINDERS {
+            if reminders.len() >= *self.max_reminders.read().await {
                 anyhow::bail!(
-                    "too many pending reminders (limit {MAX_REMINDERS}); cancel some first"
+                    "too many pending reminders (limit {}); cancel some first",
+                    *self.max_reminders.read().await
                 );
             }
             reminders.insert(
@@ -441,8 +449,7 @@ impl ReminderCenter {
 /// ReAct loop, so the agent can schedule and continue working.
 ///
 /// Two fire behaviors are available via `mode`:
-/// - `tool` (default): call the tool in `tool_name` with `tool_args` —
-///   use `tool_name` `notify` with `tool_args` `{title, body}` to send a
+/// - `tool` (default): call the tool in `tool_name` with `tool_args` 閳?///   use `tool_name` `notify` with `tool_args` `{title, body}` to send a
 ///   message at fire time.
 /// - `continue`: resume the task that scheduled the reminder, delivering
 ///   `prompt` as the continuation instruction in the same conversation.
@@ -465,7 +472,7 @@ impl Tool for ReminderTool {
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
-            // set only schedules a local timer — no system mutation.
+            // set only schedules a local timer 閳?no system mutation.
             Some("set") => RiskLevel::Low,
             _ => RiskLevel::Safe,
         }

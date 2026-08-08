@@ -6,12 +6,24 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-const MAX_RETRIES: u32 = 2;
-const BASE_BACKOFF_SECS: u64 = 1;
-/// Cap on how much of the response body is read (and thus buffered).
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+pub struct NetworkTool {
+    /// Max retries for failed HTTP requests.
+    pub max_retries: u32,
+    /// Exponential backoff base (secs) between retries.
+    pub backoff_base_secs: u64,
+    /// Cap on how much of the response body is read (and thus buffered).
+    pub max_body_bytes: usize,
+}
 
-pub struct NetworkTool;
+impl Default for NetworkTool {
+    fn default() -> Self {
+        Self {
+            max_retries: 2,
+            backoff_base_secs: 1,
+            max_body_bytes: 1024 * 1024,
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for NetworkTool {
@@ -69,11 +81,15 @@ impl Tool for NetworkTool {
         }
 
         // GET is idempotent → retry on transient errors. POST is not retried.
-        let max_attempts = if method == "GET" { 1 + MAX_RETRIES } else { 1 };
+        let max_attempts = if method == "GET" {
+            1 + self.max_retries
+        } else {
+            1
+        };
 
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                let delay = Duration::from_secs(BASE_BACKOFF_SECS * 2u64.pow(attempt - 1));
+                let delay = Duration::from_secs(self.backoff_base_secs * 2u64.pow(attempt - 1));
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {},
                     _ = cancel.cancelled() => anyhow::bail!("cancelled"),
@@ -90,6 +106,7 @@ impl Tool for NetworkTool {
                 body.as_deref(),
                 as_html,
                 timeout_secs,
+                self.max_body_bytes,
             )
             .await
             {
@@ -117,13 +134,14 @@ async fn execute_once(
     body: Option<&str>,
     as_html: bool,
     timeout_secs: u64,
+    max_body_bytes: usize,
 ) -> anyhow::Result<ToolResult> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
         .user_agent("Haven/1.0")
         .build()?;
 
-    execute_once_with(&client, url, method, headers, body, as_html).await
+    execute_once_with(&client, url, method, headers, body, as_html, max_body_bytes).await
 }
 
 /// Send one request with a caller-supplied client. Split out so tests can
@@ -137,6 +155,7 @@ async fn execute_once_with(
     headers: &[(String, String)],
     body: Option<&str>,
     as_html: bool,
+    max_body_bytes: usize,
 ) -> anyhow::Result<ToolResult> {
     let mut req = match method {
         "GET" => client.get(url),
@@ -171,11 +190,11 @@ async fn execute_once_with(
     // HTML loses bulk when extracted to text, so read more raw bytes for it;
     // the final body is still truncated to `max_chars`.
     let byte_cap = if html_by_header {
-        MAX_BODY_BYTES
+        max_body_bytes
     } else {
         max_chars * 4
     };
-    let response_bytes = read_body_capped(response, byte_cap).await?;
+    let response_bytes = read_body_capped(response, byte_cap, max_body_bytes).await?;
     let response_body = haven_common::encoding::decode_lossy(&response_bytes);
 
     let is_html = html_by_header || looks_like_html(&response_body);
@@ -198,12 +217,16 @@ async fn execute_once_with(
     })))
 }
 
-/// Read at most `byte_cap` bytes (bounded by `MAX_BODY_BYTES`) of the response
+/// Read at most `byte_cap` bytes (bounded by `max_body_bytes`) of the response
 /// body, streaming, so huge responses never get fully buffered and we never
 /// read far more than what will be shown.
-async fn read_body_capped(response: reqwest::Response, byte_cap: usize) -> anyhow::Result<Vec<u8>> {
+async fn read_body_capped(
+    response: reqwest::Response,
+    byte_cap: usize,
+    max_body_bytes: usize,
+) -> anyhow::Result<Vec<u8>> {
     use futures_util::StreamExt;
-    let cap = byte_cap.min(MAX_BODY_BYTES);
+    let cap = byte_cap.min(max_body_bytes);
     let mut stream = response.bytes_stream();
     let mut out = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -347,17 +370,20 @@ mod tests {
 
     #[test]
     fn test_network_tool_name() {
-        assert_eq!(NetworkTool.name(), "network");
+        assert_eq!(NetworkTool::default().name(), "network");
     }
 
     #[test]
     fn test_network_tool_risk_level() {
-        assert_eq!(NetworkTool.risk_level(&json!({})), RiskLevel::Medium);
+        assert_eq!(
+            NetworkTool::default().risk_level(&json!({})),
+            RiskLevel::Medium
+        );
     }
 
     #[test]
     fn test_network_tool_input_schema() {
-        let schema = NetworkTool.input_schema();
+        let schema = NetworkTool::default().input_schema();
         assert!(schema["properties"]["url"].is_object());
     }
 
@@ -445,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_get_success() {
         let url = serve_once("200 OK", "text/plain", "hello from mock server").await;
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -494,7 +520,7 @@ mod tests {
     async fn test_network_execute_html_converted_to_text() {
         let html = "<html><head><title>x</title></head><body><h1>Welcome</h1><p>Hello Haven</p><script>bad()</script></body></html>";
         let url = serve_once("200 OK", "text/html; charset=utf-8", html).await;
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -514,7 +540,7 @@ mod tests {
     async fn test_network_execute_as_html_returns_raw() {
         let html = "<html><body><p>hi</p></body></html>";
         let url = serve_once("200 OK", "text/html", html).await;
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "as_html": true, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -528,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_plain_body_format_raw() {
         let url = serve_once("200 OK", "application/json", "{\"ok\":true}").await;
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -542,7 +568,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_get_not_found_no_retry() {
         let url = serve_once("404 Not Found", "text/plain", "nope").await;
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -557,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_post_with_body() {
         let url = serve_once("201 Created", "text/plain", "created").await;
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "POST", "url": url, "body": "payload", "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -581,7 +607,16 @@ mod tests {
             .build()
             .unwrap();
         let url = connection_drop_url().await;
-        let result = execute_once_with(&client, &url, "POST", &[], Some("payload"), false).await;
+        let result = execute_once_with(
+            &client,
+            &url,
+            "POST",
+            &[],
+            Some("payload"),
+            false,
+            1024 * 1024,
+        )
+        .await;
         assert!(
             result.is_err(),
             "connection failure must surface as an error"
@@ -590,7 +625,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_execute_unsupported_method() {
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "PUT", "url": "http://127.0.0.1:1/"}),
                 CancellationToken::new(),
@@ -607,7 +642,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_execute_requires_url() {
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(json!({"method": "GET"}), CancellationToken::new())
             .await;
         assert!(result.is_err());
@@ -618,7 +653,7 @@ mod tests {
     async fn test_network_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = NetworkTool
+        let result = NetworkTool::default()
             .execute(
                 json!({"method": "GET", "url": "http://127.0.0.1:1/"}),
                 cancel,

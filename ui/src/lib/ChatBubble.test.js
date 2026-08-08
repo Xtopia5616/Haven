@@ -241,10 +241,10 @@ describe('ChatBubble', () => {
 					mode: 'filename',
 				}),
 				type: 'tool',
-				toolName: 'search',
+				toolName: 'file_search',
 			}),
 		);
-		expect(screen.getByText('▶ Calling search')).toBeTruthy();
+		expect(screen.getByText('▶ Calling file_search')).toBeTruthy();
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('文件搜索')).toBeTruthy();
 		expect(screen.getByText('C:\\a.rs')).toBeTruthy();

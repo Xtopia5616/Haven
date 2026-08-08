@@ -250,6 +250,24 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch("DROP INDEX IF EXISTS idx_hindsight_key")?;
     conn.execute_batch("DROP INDEX IF EXISTS idx_hindsight_session")?;
 
+    // Compaction summaries were only ever written, never read: the DB keeps
+    // full message history and the in-memory compactor reports via events.
+    // Dropped idempotently on every open (fresh DBs create it in MIGRATIONS
+    // and immediately drop it here).
+    conn.execute_batch("DROP TABLE IF EXISTS compaction_entries")?;
+
+    // Scratch table for in-flight streamed text (crash/stop partial-reply
+    // recovery). Ensured on every open, independent of user_version, so
+    // existing databases get it even though the versioned MIGRATIONS array
+    // predates it (see MEMORY_EMBEDDINGS_SCHEMA doc).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS partial_messages (
+            task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )?;
+
     // Add tags column to facts table (JSON array of strings, default '[]').
     let has_facts_tags: bool = conn
         .prepare("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='tags'")?
@@ -864,10 +882,10 @@ mod tests {
         let tables = get_tables(&conn);
 
         let expected = &[
-            "compaction_entries",
             "facts",
             "memory_embeddings",
             "messages",
+            "partial_messages",
             "preferences",
             "reminders",
             "task_steps",
@@ -1212,15 +1230,12 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
 
-        // Compaction entries migrated.
-        let comp_task: String = conn
-            .query_row(
-                "SELECT task_id FROM compaction_entries WHERE id = 'c1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(comp_task, "t1");
+        // Compaction entries were migrated by the merge rebuild, then the
+        // (dead, write-only) table is dropped again on every open.
+        assert!(
+            !get_tables(&conn).iter().any(|t| t == "compaction_entries"),
+            "compaction_entries table should be dropped"
+        );
 
         // tasks no longer carry session_id; parent_task_id is NULL here.
         let has_session_col: i32 = conn

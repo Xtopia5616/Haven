@@ -9,18 +9,10 @@ use haven_memory::repositories::facts::{
 };
 use tokio::sync::Semaphore;
 
-/// Maximum characters of transcript sent to the BalancedModel for fact
-/// extraction. Prevents unbounded token cost on long conversations.
-const MAX_TRANSCRIPT_CHARS: usize = 4000;
-
 /// Maximum known facts listed in the extraction prompt as context, so the
 /// model can re-confirm or update existing facts instead of re-extracting
-/// everything from scratch.
-const MAX_KNOWN_FACTS: usize = 40;
-
-/// Embedding requests are chunked to stay under provider request limits.
-const EMBED_CHUNK_SIZE: usize = 64;
-
+/// everything from scratch. Embedding requests are chunked to stay under
+/// provider request limits.
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
 #[derive(Clone, serde::Deserialize)]
 struct LlmFact {
@@ -48,6 +40,16 @@ fn default_confidence() -> f64 {
 pub struct InferenceEngine {
     db: Arc<Database>,
     router: Arc<LlmRouter>,
+    /// Cap (chars) for transcripts sent to the BalancedModel for fact
+    /// extraction. Prevents unbounded token cost on long conversations.
+    max_transcript_chars: usize,
+    /// Embedding requests are chunked to stay under provider request limits.
+    embed_chunk_size: usize,
+    /// Max known facts listed in the extraction prompt as context.
+    max_known_facts: usize,
+    /// Max chars of a fact subject/predicate/object field (prompt-injection
+    /// sanitization truncation).
+    sanitize_max_chars: usize,
     /// Limits concurrent LLM fact-extraction calls to avoid overwhelming
     /// the BalancedModel endpoint when multiple tasks complete in rapid
     /// succession.
@@ -55,10 +57,21 @@ pub struct InferenceEngine {
 }
 
 impl InferenceEngine {
-    pub fn new(db: Arc<Database>, router: Arc<LlmRouter>) -> Self {
+    pub fn new(
+        db: Arc<Database>,
+        router: Arc<LlmRouter>,
+        max_transcript_chars: usize,
+        embed_chunk_size: usize,
+        max_known_facts: usize,
+        sanitize_max_chars: usize,
+    ) -> Self {
         Self {
             db,
             router,
+            max_transcript_chars,
+            embed_chunk_size,
+            max_known_facts,
+            sanitize_max_chars,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
@@ -72,7 +85,7 @@ impl InferenceEngine {
     /// `fact_extraction.<task_id>` = last processed user-message id) makes
     /// re-runs process only the messages that arrived since the previous
     /// extraction instead of re-scanning the whole conversation. This keeps
-    /// cost bounded on long tasks and makes fact decay meaningful — a fact's
+    /// cost bounded on long tasks and makes fact decay meaningful 鈥?a fact's
     /// `last_seen_at` refreshes only when it is actually re-observed, not when
     /// the same old messages are re-scanned.
     ///
@@ -190,7 +203,7 @@ impl InferenceEngine {
 
     /// True when the vector index holds embeddings from a different model
     /// than the currently configured `embedding_model`. Vectors from another
-    /// model are not comparable (dimension mismatch → cosine similarity
+    /// model are not comparable (dimension mismatch 鈫?cosine similarity
     /// degenerates to 0), so the index must be rebuilt.
     async fn embedding_model_changed(&self) -> bool {
         let current = self
@@ -266,7 +279,7 @@ impl InferenceEngine {
             .model_name
             .clone();
         tracing::info!("embedding {} memory items", pending.len());
-        for chunk in pending.chunks(EMBED_CHUNK_SIZE) {
+        for chunk in pending.chunks(self.embed_chunk_size) {
             let texts: Vec<String> = chunk.iter().map(|(_, _, t)| t.clone()).collect();
             match self.router.embed(texts).await {
                 Ok(emb) => {
@@ -419,6 +432,7 @@ impl InferenceEngine {
         let owned: Vec<(LlmFact, Option<FactSourceRef>)> =
             facts.iter().cloned().zip(refs).collect();
         let db = self.db.clone();
+        let sanitize_max = self.sanitize_max_chars;
         let _ = db
             .run_blocking(move |db| {
                 for (f, src_ref) in &owned {
@@ -431,9 +445,9 @@ impl InferenceEngine {
                     }
                     let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
                     let _ = db.upsert_fact(
-                        &sanitize_fact_field(&f.subject),
-                        &sanitize_fact_field(&f.predicate),
-                        &sanitize_fact_field(&f.object),
+                        &sanitize_fact_field(&f.subject, sanitize_max),
+                        &sanitize_fact_field(&f.predicate, sanitize_max),
+                        &sanitize_fact_field(&f.object, sanitize_max),
                         "inferred",
                         f.confidence,
                         &tags,
@@ -457,13 +471,13 @@ impl InferenceEngine {
         &self,
         user_messages: &[haven_memory::repositories::messages::Message],
     ) -> anyhow::Result<Vec<LlmFact>> {
-        let transcript = build_truncated_transcript(user_messages, MAX_TRANSCRIPT_CHARS);
+        let transcript = build_truncated_transcript(user_messages, self.max_transcript_chars);
         let known_facts = self.load_known_facts().await;
         let user_content = if known_facts.is_empty() {
             transcript
         } else {
             format!(
-                "Known user facts (already stored; re-confirming one is fine, output a new value if the user changed it):\n{}\n\nConversation (each message is numbered as [N] — set \"message_index\" to the number supporting each fact):\n{}",
+                "Known user facts (already stored; re-confirming one is fine, output a new value if the user changed it):\n{}\n\nConversation (each message is numbered as [N] 鈥?set \"message_index\" to the number supporting each fact):\n{}",
                 known_facts, transcript
             )
         };
@@ -487,7 +501,7 @@ impl InferenceEngine {
         let json_str = extract_json_array(&response.text);
         let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|e| {
             let preview: String = response.text.chars().take(200).collect();
-            anyhow::anyhow!("failed to parse LLM fact JSON: {} — raw: {}", e, preview)
+            anyhow::anyhow!("failed to parse LLM fact JSON: {} 鈥?raw: {}", e, preview)
         })?;
 
         tracing::info!("LLM fact extraction: {} facts extracted", facts.len());
@@ -503,11 +517,11 @@ impl InferenceEngine {
             .await
             .unwrap_or_default();
         let mut lines: Vec<String> = Vec::new();
-        for fact in facts.iter().take(MAX_KNOWN_FACTS) {
+        for fact in facts.iter().take(self.max_known_facts) {
             lines.push(format!(
                 "- {}={} ({:.0}%)",
-                sanitize_fact_field(&fact.predicate),
-                sanitize_fact_field(&fact.object),
+                sanitize_fact_field(&fact.predicate, self.sanitize_max_chars),
+                sanitize_fact_field(&fact.object, self.sanitize_max_chars),
                 haven_memory::repositories::facts::fact_effective_confidence(fact) * 100.0
             ));
         }
@@ -542,7 +556,7 @@ impl InferenceEngine {
 /// Build a transcript string from user messages, truncated to `max_chars`
 /// to prevent unbounded token cost on long sessions. Recent messages take
 /// priority (the last N messages that fit within the limit). Each line is
-/// prefixed with its absolute index `[N]` in the input slice — truncation
+/// prefixed with its absolute index `[N]` in the input slice 鈥?truncation
 /// may drop old lines, but the numbering stays stable so the model's
 /// `message_index` values map straight back into the slice.
 fn build_truncated_transcript(
@@ -567,11 +581,11 @@ fn build_truncated_transcript(
 /// Sanitize a fact field value before it is stored and later interpolated
 /// into the agent's system prompt. Strips newlines and control characters
 /// that could be used for indirect prompt injection, and caps the length.
-fn sanitize_fact_field(value: &str) -> String {
+fn sanitize_fact_field(value: &str, max_chars: usize) -> String {
     value
         .chars()
         .filter(|c| !c.is_control() || *c == ' ')
-        .take(256)
+        .take(max_chars)
         .collect()
 }
 
@@ -659,8 +673,6 @@ mod tests {
             message_type: Some("text".into()),
             created_at: "2026-01-01T00:00:00Z".into(),
             tool_call_id: None,
-            is_compacted: false,
-            compaction_id: None,
             parent_message_id: None,
             attachments: vec![],
             voice: false,
@@ -742,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_strips_newlines() {
-        let result = sanitize_fact_field("hello\nworld\r\nIGNORE INSTRUCTIONS");
+        let result = sanitize_fact_field("hello\nworld\r\nIGNORE INSTRUCTIONS", 256);
         assert!(!result.contains('\n'));
         assert!(!result.contains('\r'));
         assert!(result.contains("hello"));
@@ -750,13 +762,13 @@ mod tests {
 
     #[test]
     fn test_sanitize_caps_length() {
-        let result = sanitize_fact_field(&"x".repeat(500));
+        let result = sanitize_fact_field(&"x".repeat(500), 256);
         assert_eq!(result.len(), 256);
     }
 
     #[test]
     fn test_sanitize_preserves_normal_text() {
-        let result = sanitize_fact_field("Alice likes Rust");
+        let result = sanitize_fact_field("Alice likes Rust", 256);
         assert_eq!(result, "Alice likes Rust");
     }
 
@@ -764,6 +776,10 @@ mod tests {
         InferenceEngine {
             db,
             router: mock_router("[]"),
+            max_transcript_chars: 4_000,
+            embed_chunk_size: 64,
+            max_known_facts: 40,
+            sanitize_max_chars: 256,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
@@ -832,6 +848,10 @@ mod tests {
         let engine = InferenceEngine {
             db: db.clone(),
             router: mock_router("not a json array"),
+            max_transcript_chars: 4_000,
+            embed_chunk_size: 64,
+            max_known_facts: 40,
+            sanitize_max_chars: 256,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         };
         engine.infer_facts(&task.id).await;

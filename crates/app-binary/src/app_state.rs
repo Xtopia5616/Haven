@@ -54,7 +54,8 @@ impl AppState {
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.task.max_steps;
         let conversation_window_size = cfg.memory.session_window_size;
-        let max_observation_chars = cfg.task.max_observation_chars;
+        let context_limits = cfg.context_limits.clone();
+        let context_limits_clone = context_limits.clone();
 
         let tools = Arc::new(ToolsManager::new());
 
@@ -62,6 +63,9 @@ impl AppState {
         // so `rebuild_catalog` can apply them from the first rebuild.
         let tool_settings = cfg.tool_settings.clone();
         tools.set_tool_settings(tool_settings).await;
+        // Unified context limits (compaction threshold, tool output cap, ...)
+        // feed the catalog rebuild so tools pick up the global output cap.
+        tools.set_context_limits(context_limits.clone()).await;
 
         let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 3));
 
@@ -71,10 +75,11 @@ impl AppState {
             router.clone(),
             max_steps,
             conversation_window_size,
-            max_observation_chars,
+            context_limits,
         ));
 
         let pipeline = Arc::new(InputPipeline::new());
+        pipeline.set_limits(&context_limits_clone);
 
         // Periodic memory maintenance: fact decay, dedup, sensitive purge and
         // embedding pruning run on a timer so stale memory is flushed even

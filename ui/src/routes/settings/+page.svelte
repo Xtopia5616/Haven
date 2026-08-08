@@ -281,6 +281,160 @@
 	});
 
 	let task = $state({ max_concurrent: 3, max_steps: 30 });
+	let contextLimits = $state({
+		compaction_ratio: 0.75,
+		compaction_reserve_tokens: 4096,
+		default_context_window: 128000,
+		max_observation_chars: 8000,
+		max_tool_output_chars: 20000,
+		max_transcript_chars: 4000,
+		max_attachment_images: 4,
+		max_attachment_files: 5,
+		max_attachment_image_bytes: 10 * 1024 * 1024,
+		max_attachment_file_bytes: 20 * 1024 * 1024,
+		max_attachment_image_dim_px: 1568,
+		attachment_image_jpeg_quality: 0.85,
+		file_read_max_chars: 128000,
+		file_line_span: 100,
+		file_max_line_chars: 128000,
+		file_summary_input_chars: 60000,
+		file_max_list_entries: 1000,
+		file_max_byte_read: 16 * 1024 * 1024,
+		file_vision_max_bytes: 8 * 1024 * 1024,
+		search_snippet_chars: 200,
+		search_max_results: 1000,
+		search_max_file_size_bytes: 100 * 1024 * 1024,
+		search_window_bytes: 16 * 1024 * 1024,
+		notification_summary_chars: 800,
+		partial_checkpoint_min_chars: 1000,
+		partial_checkpoint_interval_secs: 2,
+		fact_infer_interval_steps: 25,
+		max_known_facts: 40,
+		sanitize_field_max_chars: 256,
+		file_summary_timeout_secs: 120,
+		mcp_max_binary_payload_bytes: 2 * 1024 * 1024,
+		mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
+		skills_max_md_bytes: 256 * 1024,
+		skills_max_parse_lines: 5000,
+		skills_max_line_len: 4096,
+		self_tool_max_instructions_bytes: 256 * 1024,
+		self_tool_max_script_bytes: 512 * 1024,
+		network_max_retries: 2,
+		network_backoff_base_secs: 1,
+		network_max_body_bytes: 1024 * 1024,
+		clipboard_history_entries: 10,
+		clipboard_history_max_entries: 100,
+		clipboard_entry_max_chars: 2000,
+		reminders_max: 32,
+		reminders_due_horizon_secs: 365 * 24 * 3600,
+		background_max_jobs: 64,
+		event_chunk_batch_max_bytes: 8 * 1024,
+		input_ring_buffer_secs: 20,
+		embedding_chunk_size: 64,
+	});
+
+	// Data-driven limit editor. `danger: true` fields get a warning badge and
+	// red styling: raising them widens the memory / cost / attack surface.
+	const LIMIT_GROUPS = [
+		{
+			id: 'context',
+			title: '上下文与压缩',
+			hint: '模型上下文窗口与自动压缩（compaction）行为的阈值。压缩阈值过高可能导致上下文溢出。',
+			fields: [
+				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'tokens', danger: true, hint: '端点未配置 context_window 且模型不在内置目录时的回退窗口。调高会增大每次请求的成本与溢出风险。' },
+				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
+				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
+				{ key: 'max_observation_chars', label: '工具观察字符上限', unit: 'chars', danger: true, hint: '工具结果进入对话的最大字符数。调大直接推高 token 成本。' },
+				{ key: 'max_tool_output_chars', label: '工具输出默认上限', unit: 'chars', danger: true, hint: 'shell/file/process 等工具输出截断上限（per-tool 可覆盖）。调大 = 更多 token 与内存。' },
+				{ key: 'max_transcript_chars', label: '记忆提取转录上限', unit: 'chars', danger: true, hint: '事实/偏好提取时发送给模型的转录长度。' },
+				{ key: 'notification_summary_chars', label: '通知摘要字符上限', unit: 'chars', danger: false },
+				{ key: 'partial_checkpoint_min_chars', label: '流式检查点最小增量', unit: 'chars', danger: false, hint: '部分回复累计新增多少字符后落盘一次（崩溃恢复粒度）。' },
+				{ key: 'partial_checkpoint_interval_secs', label: '流式检查点间隔', unit: 'secs', danger: false },
+				{ key: 'fact_infer_interval_steps', label: '事实推断间隔', unit: 'steps', danger: false, hint: '长任务每多少步重新做一次事实/偏好提取。调小增加调用成本。' },
+				{ key: 'max_known_facts', label: '提示中已知事实数', unit: 'count', danger: false },
+				{ key: 'sanitize_field_max_chars', label: '事实字段消毒长度', unit: 'chars', danger: true, hint: '事实字段注入到系统提示前的截断长度。调大 = 更大提示注入面。' },
+			],
+		},
+		{
+			id: 'files',
+			title: '文件与搜索工具',
+			hint: 'file / file_search 工具读取、总结与搜索的资源上限。',
+			fields: [
+				{ key: 'file_read_max_chars', label: '文件全读上限', unit: 'chars', danger: true, hint: '超过该大小的文件不整体读取，改用 offset/limit 分段。调大 = 大文件整读内存风险。' },
+				{ key: 'file_max_byte_read', label: '字节读取绝对上限', unit: 'bytes', mb: true, danger: true, hint: 'byte 模式单次读取的安全上限（不受调用方 limit 影响）。' },
+				{ key: 'file_line_span', label: '行模式默认跨度', unit: 'lines', danger: false },
+				{ key: 'file_max_line_chars', label: '单行缓冲上限', unit: 'chars', danger: true, hint: '病态单行文件（压缩包/超长行）的缓冲上限。' },
+				{ key: 'file_summary_input_chars', label: '总结输入预算', unit: 'chars', danger: true, hint: '发送给 small_model 的总结输入上限。调大 = 更多 token。' },
+				{ key: 'file_summary_timeout_secs', label: '总结超时', unit: 'secs', danger: false },
+				{ key: 'file_max_list_entries', label: '目录列表条目上限', unit: 'count', danger: true },
+				{ key: 'file_vision_max_bytes', label: '图片理解大小上限', unit: 'MB', mb: true, danger: true, hint: '超过该大小的图片拒绝送视觉模型。' },
+				{ key: 'search_snippet_chars', label: '搜索片段长度', unit: 'chars', danger: false },
+				{ key: 'search_max_results', label: '搜索结果上限', unit: 'count', danger: true },
+				{ key: 'search_max_file_size_bytes', label: '搜索跳过文件大小', unit: 'MB', mb: true, danger: true },
+				{ key: 'search_window_bytes', label: '行范围搜索窗口', unit: 'MB', mb: true, danger: true },
+			],
+		},
+		{
+			id: 'safety',
+			title: '安全边界',
+			hint: '外部输入与扩展（MCP、技能、脚本、网络）的防护上限。调大直接扩大攻击面，请谨慎。',
+			fields: [
+				{ key: 'mcp_max_binary_payload_bytes', label: 'MCP 二进制内容上限', unit: 'MB', mb: true, danger: true, hint: 'MCP image/audio/resource 内容保留在观察中的 base64 上限，超出替换为 oversized 标记。' },
+				{ key: 'mcp_max_sse_buffer_bytes', label: 'MCP SSE 缓冲上限', unit: 'MB', mb: true, danger: true, hint: '单条未完成 SSE 事件缓冲上限，防恶意服务器无限增长。' },
+				{ key: 'skills_max_md_bytes', label: 'SKILL.md 大小上限', unit: 'KB', kb: true, danger: true, hint: '超过该大小的技能描述文件被跳过（防 OOM）。' },
+				{ key: 'skills_max_parse_lines', label: 'SKILL.md 解析行数', unit: 'lines', danger: true },
+				{ key: 'skills_max_line_len', label: 'SKILL.md 单行长度', unit: 'chars', danger: true },
+				{ key: 'self_tool_max_instructions_bytes', label: '技能 instructions 上限', unit: 'KB', kb: true, danger: true },
+				{ key: 'self_tool_max_script_bytes', label: '技能脚本大小上限', unit: 'KB', kb: true, danger: true },
+				{ key: 'network_max_retries', label: '网络重试次数', unit: 'count', danger: true, hint: 'GET 请求的重试次数。调大 = 故障放大。' },
+				{ key: 'network_backoff_base_secs', label: '网络重试退避基数', unit: 'secs', danger: false },
+				{ key: 'network_max_body_bytes', label: '网络响应体上限', unit: 'MB', mb: true, danger: true },
+			],
+		},
+		{
+			id: 'resources',
+			title: '资源上限',
+			hint: '并发与内存资源保护。调大可能造成 CPU/内存/进程占用失控。',
+			fields: [
+				{ key: 'background_max_jobs', label: '后台任务并发上限', unit: 'count', danger: true, hint: '同时运行的 background shell 任务数。调大 = 子进程失控风险。' },
+				{ key: 'reminders_max', label: '提醒数量上限', unit: 'count', danger: true },
+				{ key: 'reminders_due_horizon_secs', label: '提醒最远排期', unit: 'days', days: true, danger: false },
+				{ key: 'clipboard_history_entries', label: '剪贴板历史默认条数', unit: 'count', danger: false },
+				{ key: 'clipboard_history_max_entries', label: '剪贴板历史上限', unit: 'count', danger: true },
+				{ key: 'clipboard_entry_max_chars', label: '剪贴板条目截断', unit: 'chars', danger: false },
+				{ key: 'event_chunk_batch_max_bytes', label: '事件分块批量上限', unit: 'KB', kb: true, danger: false, hint: 'agent 流式事件聚合分块的大小（IPC 频率与延迟权衡）。' },
+				{ key: 'input_ring_buffer_secs', label: '音频环形缓冲', unit: 'secs', danger: true, hint: '录音缓冲时长。调大 = 内存增加 + 停止录音后仍会处理更长音频。' },
+				{ key: 'embedding_chunk_size', label: '嵌入分块大小', unit: 'count', danger: false, hint: 'embedding 请求分块（提供方限制）。' },
+			],
+		},
+	];
+
+	function limitDisplay(key, value) {
+		const f = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
+		if (!f) return value;
+		if (f.mb) return Math.round((value / 1048576) * 10) / 10;
+		if (f.kb) return Math.round((value / 1024) * 10) / 10;
+		if (f.days) return Math.round((value / 86400) * 10) / 10;
+		return value;
+	}
+	function limitCommit(key, v) {
+		const f = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
+		if (!f) return v;
+		if (f.mb) return Math.round(v * 1048576);
+		if (f.kb) return Math.round(v * 1024);
+		if (f.days) return Math.round(v * 86400);
+		return v;
+	}
+
+	// Settings sub-tabs: general sections vs. the per-input-format handling
+	// page. The full `context_limits` object is sent on save so fields the UI
+	// does not render are never reset to defaults.
+	let settingsTab = $state('general');
+	const settingsTabs = [
+		{ id: 'general', label: '常规' },
+		{ id: 'input', label: '输入格式' },
+		{ id: 'limits', label: '限制' },
+	];
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let memoryRecall = $state({ query: '', kind: 'fact', results: [], loading: false });
 	let memoryMaintenance = $state({ running: false, lastCount: null });
@@ -338,6 +492,7 @@
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
 				audio = settings.audio || audio;
 				task = settings.task || task;
+				contextLimits = settings.context_limits || contextLimits;
 				memory = settings.memory || memory;
 				security = {
 					confirmation_mode: settings.security?.confirmation_mode || 'always',
@@ -477,6 +632,9 @@
 					min_risk_level: security.min_risk_level,
 					encrypt_sensitive: true,
 				},
+				// Full object (loaded state kept intact) so fields the UI does
+				// not render are preserved; backend applies it wholesale.
+				context_limits: contextLimits,
 					stt: {
 						provider: stt.provider,
 						mcp_server: stt.mcp_server || null,
@@ -556,6 +714,21 @@
 <div class="settings-page">
 	<h1>Settings</h1>
 
+	<div class="md-tabs settings-tabs" role="tablist">
+		{#each settingsTabs as tab}
+			<button
+				class="md-tab"
+				class:active={settingsTab === tab.id}
+				role="tab"
+				aria-selected={settingsTab === tab.id}
+				onclick={() => (settingsTab = tab.id)}
+			>
+				{tab.label}
+			</button>
+		{/each}
+	</div>
+
+	{#if settingsTab === 'general'}
 	<div class="section">
 		<h2>LLM Configuration</h2>
 
@@ -709,7 +882,7 @@
 			<label for="{card.prefix}-context-window">Context Window</label>
 			<MaterialNumberField id="{card.prefix}-context-window" value={llmConfig[card.key].context_window ?? 0} step={1024} min={0} onChange={(v) => { llmConfig[card.key].context_window = v > 0 ? Math.round(v) : null; }} />
 		</div>
-		<p class="cost-hint">Leave empty to auto-detect. Context compaction triggers when estimated history reaches 75% of this.</p>
+		<p class="cost-hint">Leave empty to auto-detect. Context compaction triggers when estimated history reaches {Math.round(contextLimits.compaction_ratio * 100)}% of this (set in config.toml under [context_limits]).</p>
 		<div class="form-row cost-row">
 			<label for="{card.prefix}-cost-in">Cost In ($/1K)</label>
 			<MaterialNumberField id="{card.prefix}-cost-in" value={llmConfig[card.key].cost_per_1k_input_tokens ?? 0} step={0.01} min={0} onChange={(v) => { llmConfig[card.key].cost_per_1k_input_tokens = v; }} />
@@ -735,16 +908,7 @@
 			{/each}
 		</div>
 
-		<h3 class="routing-heading">Model Routing</h3>
-		<div class="form-row switch-row">
-			<span class="switch-label">Recording transcription uses the dedicated audio model</span>
-			<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(v) => { llmConfig.stt_use_audio_model = v; }} />
-		</div>
-		<div class="form-row switch-row">
-			<span class="switch-label">Image understanding uses the dedicated image model</span>
-			<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(v) => { llmConfig.vision_use_image_model = v; }} />
-		</div>
-		<p class="model-hint">Turn off to route recording transcription and image understanding through the Default Model instead.</p>
+		<p class="model-hint">录音转写与图片理解使用专用模型的路由开关已移至「输入格式」标签页。</p>
 	</div>
 
 	<div class="section">
@@ -1015,6 +1179,152 @@
 				<MaterialSwitch checked={autostartEnabled} onChange={toggleAutostart} />
 		</div>
 	</div>
+	{/if}
+
+	{#if settingsTab === 'input'}
+	<div class="section">
+		<h2>输入格式</h2>
+		<p class="model-hint">每种输入格式的处理方式与限制。保存后对聊天输入框生效，后端校验使用相同配置。</p>
+
+		<div class="format-card">
+			<h3>文本 Text</h3>
+			<p class="model-hint">文字指令直接发送给 Default Model 处理。语音转写结果也以文本形式进入同一通道，无需额外配置。</p>
+		</div>
+
+		<div class="format-card">
+			<h3>图片 Image</h3>
+			<p class="model-hint">
+				粘贴或选取的图片先压缩为 JPEG（最长边 ≤{contextLimits.max_attachment_image_dim_px}px、质量
+				{Math.round(contextLimits.attachment_image_jpeg_quality * 100)}%），再交由视觉模型理解；关闭专用模型后改由
+				Default Model 处理。
+			</p>
+			<div class="form-row switch-row">
+				<span class="switch-label">图片理解使用专用视觉模型</span>
+				<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(v) => { llmConfig.vision_use_image_model = v; }} />
+			</div>
+			<div class="form-row">
+				<label for="max-attachment-images">单条消息最多图片数</label>
+				<MaterialNumberField
+					id="max-attachment-images"
+					value={contextLimits.max_attachment_images}
+					min={1}
+					max={20}
+					step={1}
+					onChange={(v) => { contextLimits.max_attachment_images = v; }}
+				/>
+			</div>
+			<div class="form-row">
+				<label for="max-attachment-image-mb">单张图片大小上限 (MiB)</label>
+				<MaterialNumberField
+					id="max-attachment-image-mb"
+					value={Math.round((contextLimits.max_attachment_image_bytes / 1048576) * 10) / 10}
+					min={1}
+					max={50}
+					step={1}
+					onChange={(v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
+				/>
+			</div>
+			<div class="form-row">
+				<label for="max-attachment-image-dim">压缩最长边 (px)</label>
+				<MaterialNumberField
+					id="max-attachment-image-dim"
+					value={contextLimits.max_attachment_image_dim_px}
+					min={512}
+					max={4096}
+					step={64}
+					onChange={(v) => { contextLimits.max_attachment_image_dim_px = v; }}
+				/>
+			</div>
+			<div class="form-row">
+				<label for="attachment-image-quality">JPEG 压缩质量</label>
+				<MaterialNumberField
+					id="attachment-image-quality"
+					value={contextLimits.attachment_image_jpeg_quality}
+					min={0.1}
+					max={1}
+					step={0.05}
+					onChange={(v) => { contextLimits.attachment_image_jpeg_quality = v; }}
+				/>
+			</div>
+		</div>
+
+		<div class="format-card">
+			<h3>文件 File</h3>
+			<p class="model-hint">
+				附件以 base64 上传，后端保存到磁盘，agent 通过 file 工具读取路径进行处理，无需额外配置。
+			</p>
+			<div class="form-row">
+				<label for="max-attachment-files">单条消息最多文件数</label>
+				<MaterialNumberField
+					id="max-attachment-files"
+					value={contextLimits.max_attachment_files}
+					min={1}
+					max={20}
+					step={1}
+					onChange={(v) => { contextLimits.max_attachment_files = v; }}
+				/>
+			</div>
+			<div class="form-row">
+				<label for="max-attachment-file-mb">单个文件大小上限 (MiB)</label>
+				<MaterialNumberField
+					id="max-attachment-file-mb"
+					value={Math.round((contextLimits.max_attachment_file_bytes / 1048576) * 10) / 10}
+					min={1}
+					max={100}
+					step={1}
+					onChange={(v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
+				/>
+			</div>
+		</div>
+
+		<div class="format-card">
+			<h3>语音 Voice</h3>
+			<p class="model-hint">
+				按住热键录音，经 STT 转写为文本后作为普通消息发送；转写可走专用音频模型或直接使用 Default Model。
+			</p>
+			<div class="form-row switch-row">
+				<span class="switch-label">录音转写使用专用音频模型</span>
+				<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(v) => { llmConfig.stt_use_audio_model = v; }} />
+			</div>
+			<p class="model-hint">STT 提供商与录音参数（VAD、采样率、时长上限）在「常规 → Audio / STT」中配置。</p>
+		</div>
+	</div>
+	{/if}
+
+	{#if settingsTab === 'limits'}
+	<div class="limits-grid">
+		{#each LIMIT_GROUPS as group}
+		<div class="format-card limit-card">
+			<h3>{group.title}</h3>
+			<p class="model-hint">{group.hint}</p>
+			{#each group.fields as f}
+			<div class="form-row limit-row" class:danger-row={f.danger}>
+				<div class="limit-label">
+					<label for="limit-{f.key}">{f.label}</label>
+					{#if f.danger}
+					<span class="danger-badge" title={f.hint || '调整此值存在内存 / 成本 / 安全风险'}>⚠ 危险</span>
+					{/if}
+					{#if f.hint}
+					<p class="limit-hint">{f.hint}</p>
+					{/if}
+				</div>
+				<div class="limit-input">
+					<MaterialNumberField
+						id="limit-{f.key}"
+						value={limitDisplay(f.key, contextLimits[f.key])}
+						step={f.step ?? 1}
+						min={f.min ?? 0}
+						max={f.max ?? 100000000}
+						onChange={(v) => { contextLimits[f.key] = limitCommit(f.key, v); }}
+					/>
+					<span class="limit-unit">{f.unit}</span>
+				</div>
+			</div>
+			{/each}
+		</div>
+		{/each}
+	</div>
+	{/if}
 
 	<button class="md-btn md-btn--filled save-btn" onclick={saveSettings}>
 		Save Settings
@@ -1064,6 +1374,37 @@
 
 <style>
 	.settings-page { max-width: var(--md-sys-content-max-width); }
+	.settings-tabs { margin-bottom: var(--md-sys-space-xl); }
+	.format-card {
+		background: var(--md-sys-color-surface-container-lowest);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		padding: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-md);
+	}
+	.format-card h3 { font-size: 14px; font-weight: 600; color: var(--md-sys-color-primary); margin-bottom: var(--md-sys-space-sm); }
+	.format-card .model-hint { margin-top: 0; margin-bottom: var(--md-sys-space-md); }
+	.limits-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--md-sys-space-md); }
+	.limit-card { min-width: 0; }
+	.limit-row { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--md-sys-space-md); }
+	.limit-row.danger-row {
+		border: 1px solid var(--md-sys-color-error, #ba1a1a);
+		border-radius: var(--md-sys-shape-small);
+		padding: 6px 8px;
+		margin-bottom: 6px;
+		background: color-mix(in srgb, var(--md-sys-color-error, #ba1a1a) 6%, transparent);
+	}
+	.limit-label { flex: 1; min-width: 0; }
+	.limit-label label { font-size: 13px; font-weight: 500; }
+	.limit-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin: 2px 0 0; }
+	.danger-badge {
+		display: inline-block; margin-left: 6px; padding: 1px 6px;
+		border-radius: 999px; font-size: 10px; font-weight: 600;
+		color: #fff; background: var(--md-sys-color-error, #ba1a1a);
+		vertical-align: 1px;
+	}
+	.limit-input { display: flex; align-items: center; gap: 6px; }
+	.limit-unit { font-size: 11px; color: var(--md-sys-color-on-surface-variant); min-width: 42px; }
 	h1 { font-size: 24px; font-weight: 600; margin-bottom: var(--md-sys-space-xl); color: var(--md-sys-color-on-surface); }
 	.section {
 		background: var(--md-sys-color-surface-container);
@@ -1114,11 +1455,6 @@
 	.key-visibility-btn:hover {
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface);
-	}
-	.routing-heading {
-		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
-		margin-top: var(--md-sys-space-lg); margin-bottom: var(--md-sys-space-sm);
-		text-transform: uppercase; letter-spacing: 0.5px;
 	}
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
 	.form-row {
