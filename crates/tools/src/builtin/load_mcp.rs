@@ -110,6 +110,17 @@ impl Tool for LoadMcpTool {
 
         Ok(ToolResult::ok(result))
     }
+
+    /// Declare the per-task MCP adapter registration so the executor
+    /// registers it without name-matching "load_mcp".
+    fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
+        output
+            .get("server_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|name| vec![crate::tool::ToolRegistration::McpServer(name.to_string())])
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

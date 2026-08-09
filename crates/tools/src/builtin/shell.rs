@@ -24,6 +24,23 @@ impl Default for ShellTool {
     }
 }
 
+impl ShellTool {
+    /// Resolve the `shell` and `cwd` arguments from tool input, applying the
+    /// platform default shell (powershell on Windows, sh elsewhere). Shared
+    /// by the foreground and background execution paths.
+    fn resolve_shell_and_cwd(input: &Value) -> (&str, Option<PathBuf>) {
+        #[cfg(windows)]
+        let shell = input["shell"].as_str().unwrap_or("powershell");
+        #[cfg(not(windows))]
+        let shell = input["shell"].as_str().unwrap_or("sh");
+        let cwd = input["cwd"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        (shell, cwd)
+    }
+}
+
 #[async_trait]
 impl Tool for ShellTool {
     fn name(&self) -> String {
@@ -69,15 +86,8 @@ impl Tool for ShellTool {
             anyhow::bail!("command is required");
         }
         let silent = input["silent"].as_bool().unwrap_or(false);
-        #[cfg(windows)]
-        let shell = input["shell"].as_str().unwrap_or("powershell");
-        #[cfg(not(windows))]
-        let shell = input["shell"].as_str().unwrap_or("sh");
+        let (shell, cwd) = Self::resolve_shell_and_cwd(&input);
         let max_chars = self.max_output_chars;
-        let cwd = input["cwd"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -125,9 +135,11 @@ impl Tool for ShellTool {
 
         // Stream stdout/stderr into capped buffers so huge command output never
         // gets fully buffered (OOM protection). Mirrors network tool behavior.
+        // No live tail: foreground shell output is shown in the tool card only
+        // after it completes.
         let max_collect = bg::collect_byte_cap(max_chars);
-        let stdout_fut = bg::read_stream_capped(child.stdout.take(), max_collect);
-        let stderr_fut = bg::read_stream_capped(child.stderr.take(), max_collect);
+        let stdout_fut = bg::read_stream_capped(child.stdout.take(), max_collect, None);
+        let stderr_fut = bg::read_stream_capped(child.stderr.take(), max_collect, None);
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
         let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
@@ -206,18 +218,55 @@ impl Tool for ShellTool {
             let log_path = log_path.to_string_lossy().into_owned();
             output["log_path"] = serde_json::Value::String(log_path.clone());
             err_text = bg::append_windows_diagnostics(shell, cmd, &err_text);
-            err_text = format!(
-                "{}\n[full output: {}]",
-                err_text.trim_end(),
-                log_path
-            );
+            err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
             Ok(ToolResult {
                 success: false,
                 output,
                 error: Some(format!("exit code {}:\n{}", code_str, err_text)),
                 truncated,
+                signals: crate::tool::ToolSignals::default(),
             })
         }
+    }
+
+    /// Re-run a timed-out foreground command as a background job so the task
+    /// is not blocked by long-running work (git clone, npm install, build
+    /// scripts). Uses the same job registry as `background: true`, so the
+    /// result is pushed back to the task automatically on completion.
+    async fn timeout_fallback(&self, input: &Value) -> Option<ToolResult> {
+        let cmd = input["command"].as_str().unwrap_or("");
+        if cmd.trim().is_empty() {
+            return None;
+        }
+        let (shell, cwd) = Self::resolve_shell_and_cwd(input);
+        let max_chars = self.max_output_chars;
+        let job_id = self
+            .jobs
+            .spawn_shell(cmd, shell, max_chars, cwd)
+            .await
+            .ok()?;
+        Some(ToolResult::ok(serde_json::json!({
+            "background": true,
+            "job_id": job_id,
+            "shell": shell,
+            "status": "running",
+            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this job's result.",
+        })))
+    }
+
+    /// Declare the background-job binding for `background: true` invocations
+    /// (and the timeout-fallback result above) so the executor attaches the
+    /// job to this task without name-matching "shell".
+    fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
+        if output.get("background").and_then(|v| v.as_bool()) != Some(true) {
+            return Vec::new();
+        }
+        output
+            .get("job_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|job_id| vec![crate::tool::ToolRegistration::Activity(job_id.to_string())])
+            .unwrap_or_default()
     }
 }
 

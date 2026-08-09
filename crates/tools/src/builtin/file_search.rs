@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use crate::{ToolResult};
+use crate::ToolResult;
 
 /// Search engine used by the `files` tool's `search` operation.
 pub struct FileSearchEngine {

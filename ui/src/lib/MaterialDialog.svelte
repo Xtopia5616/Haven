@@ -8,8 +8,9 @@
 	 * @prop {function} onClose
 	 * @prop {string} title
 	 * @prop {function} onConfirm — optional confirm callback
+	 * @prop {string} dialogClass — extra class for the dialog container
 	 */
-	let { open = false, onClose, title = '', children, footer } = $props();
+	let { open = false, onClose, title = '', children, footer, dialogClass = '' } = $props();
 
 	function handleOverlayClick(e) {
 		if (e.target === e.currentTarget) onClose?.();
@@ -28,7 +29,7 @@
 
 {#if open}
 	<div class="md-dialog-overlay" onclick={handleOverlayClick} onkeydown={handleOverlayKeydown} role="dialog" aria-modal="true" tabindex={-1} in:fade={{ duration: 300, easing: cubicOut }}>
-		<div class="md-dialog" role="presentation" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
+		<div class="md-dialog {dialogClass}" role="presentation" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
 			{#if title}
 				<div class="md-dialog-header">
 					<h3>{title}</h3>

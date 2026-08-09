@@ -44,7 +44,7 @@ describe('buildReviewMessages', () => {
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's1', action_tool: 'file', observation: '{"ok":true}', thought: null, step_index: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's1', action_tool: 'file', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
 			],
 		});
 		expect(items).toHaveLength(2);
@@ -61,7 +61,7 @@ describe('buildReviewMessages', () => {
 				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's1', action_tool: 'shell', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_index: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's1', action_tool: 'shell', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
 			],
 		});
 		expect(items).toHaveLength(2);
@@ -80,8 +80,8 @@ describe('buildReviewMessages', () => {
 				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 't1', action_tool: null, thought: '稍等，我检查一下', silent: false, step_index: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 's1', action_tool: 'shell', observation: 'ok', thought: null, silent: true, step_index: 1, created_at: '2026-08-01T10:01:01Z' },
+				{ id: 't1', action_tool: null, thought: '稍等，我检查一下', silent: false, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's1', action_tool: 'shell', observation: 'ok', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
 			],
 		});
 		expect(items.find((i) => i.id === 'm2').stepNumber).toBe(1);
@@ -122,7 +122,7 @@ describe('buildReviewMessages', () => {
 					action_tool: 'ask',
 					observation: '你想要怎么处理？A 还是 B？',
 					thought: null,
-					step_index: 1,
+					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
 				},
 			],
@@ -154,7 +154,7 @@ describe('buildReviewMessages', () => {
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '哪个文件？', context: null, awaiting_answer: true, hint: 'The task is paused.' }),
 					thought: null,
-					step_index: 1,
+					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
 				},
 			],
@@ -180,7 +180,7 @@ describe('buildReviewMessages', () => {
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '继续吗？', context: null, awaiting_answer: true, hint: 'The task is paused.' }),
 					thought: null,
-					step_index: 1,
+					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
 				},
 			],
@@ -209,8 +209,8 @@ describe('buildReviewMessages', () => {
 				{ id: 'm2', role: 'assistant', content: 'Q1？\n\nQ2？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's1', action_tool: 'ask', observation: 'Q1？', thought: null, step_index: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 's2', action_tool: 'ask', observation: 'Q2？', thought: null, step_index: 2, created_at: '2026-08-01T10:01:01Z' },
+				{ id: 's1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 's2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
 			],
 		});
 		expect(items).toHaveLength(2);
@@ -232,7 +232,7 @@ describe('buildReviewMessages', () => {
 				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's2', action_tool: null, thought: '网络不好就让我帮忙', step_index: 2, created_at: '2026-08-01T10:02:00Z' },
+				{ id: 's2', action_tool: null, thought: '网络不好就让我帮忙', step_number: 2, created_at: '2026-08-01T10:02:00Z' },
 			],
 		});
 		expect(items.find((i) => i.id === 'm3').stepNumber).toBe(2);
@@ -253,7 +253,7 @@ describe('buildReviewMessages', () => {
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
 					thought: null,
-					step_index: 1,
+					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
 				},
 			],
@@ -279,7 +279,7 @@ describe('buildReviewMessages', () => {
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
 					thought: null,
-					step_index: 1,
+					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
 				},
 			],

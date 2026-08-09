@@ -5,8 +5,9 @@ use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
 use haven_memory::repositories::facts::{
-    FactSourceRef, is_sensitive_object, is_sensitive_predicate,
+    FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
 };
+use serde::Deserialize;
 use tokio::sync::Semaphore;
 
 /// Maximum known facts listed in the extraction prompt as context, so the
@@ -16,14 +17,21 @@ use tokio::sync::Semaphore;
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
 #[derive(Clone, serde::Deserialize)]
 struct LlmFact {
-    #[serde(default = "default_subject")]
+    #[serde(default = "default_subject", deserialize_with = "coerce_to_string")]
     subject: String,
+    #[serde(deserialize_with = "coerce_to_string")]
     predicate: String,
+    #[serde(deserialize_with = "coerce_to_string")]
     object: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "coerce_string_array")]
     tags: Vec<String>,
     #[serde(default = "default_confidence")]
     confidence: f64,
+    /// 0..1 rating of how long this fact stays useful. Missing/unsure falls
+    /// back to 0.6 (moderately durable) so an omitted field does not make a
+    /// fact immortal by defaulting to 1.0.
+    #[serde(default)]
+    durability: Option<f64>,
     /// Index into the numbered conversation transcript of the message that
     /// supports this fact (the model is asked to fill this in).
     #[serde(default)]
@@ -33,8 +41,80 @@ struct LlmFact {
 fn default_subject() -> String {
     "user".into()
 }
+
+/// Deserialize any JSON value into a string. The extraction model sometimes
+/// emits booleans or numbers for fact fields (e.g. `"object": true`), which
+/// would otherwise hard-fail the whole batch; coerce them to their string
+/// form instead of dropping the fact.
+/// Coerce any JSON value to its string form for a fact field. The extraction
+/// model sometimes emits booleans or numbers (e.g. `"object": true`), which
+/// would otherwise hard-fail the whole batch; coerce them instead of dropping
+/// the fact. Single shared implementation used by both the scalar and array
+/// deserializers so the coercion policy cannot drift.
+fn coerce_value_to_string(value: serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn coerce_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(coerce_value_to_string(value))
+}
+
+/// Deserialize an array of arbitrary JSON values into strings, coercing each
+/// element the same way `coerce_to_string` does.
+fn coerce_string_array<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(values.into_iter().map(coerce_value_to_string).collect())
+}
 fn default_confidence() -> f64 {
     0.7
+}
+
+/// One extracted fact ready for the shared persistence path:
+/// (subject, predicate, object, confidence, tags, source reference, durability).
+type FactDraft = (
+    String,
+    String,
+    String,
+    f64,
+    Vec<String>,
+    Option<FactSourceRef>,
+    f64,
+);
+
+/// Fact tags allowed to enter long-term memory. The extraction prompt asks
+/// the model to stick to these, but it may still emit arbitrary values; this
+/// whitelist keeps the prompt-side grouping (`tags.first()`) clean and stops
+/// tag drift from polluting the facts index.
+const ALLOWED_FACT_TAGS: &[&str] = &["identity", "preference", "workspace", "project"];
+
+/// Keep only tags from the allowed set, normalized to lowercase, capped in
+/// number and length so a stray model output cannot inflate the tag column.
+fn sanitize_tags(tags: &[String]) -> Vec<String> {
+    tags.iter()
+        .map(|t| t.trim().to_ascii_lowercase())
+        .filter(|t| ALLOWED_FACT_TAGS.contains(&t.as_str()))
+        .take(4)
+        .collect()
+}
+
+/// Normalize a predicate to its canonical lowercase form so the same concept
+/// stored by different models/runs merges into one row instead of fanning out
+/// into `Likes`/`likes`/` likes`.
+fn normalize_predicate(predicate: &str) -> String {
+    predicate.trim().to_ascii_lowercase()
 }
 
 pub struct InferenceEngine {
@@ -140,9 +220,8 @@ impl InferenceEngine {
             .unwrap_or(0);
         if start >= user_messages.len() {
             tracing::debug!("fact inference: no new messages since cursor");
-            // Even with no new user messages, catch up on pending indexing
-            // (compaction summaries, facts added from other paths).
-            self.embed_new_memory().await;
+            // Nothing new to extract; indexing catch-up happens in the
+            // maintenance pass that `infer_all` / the scheduler runs.
             return;
         }
         let new_messages = &user_messages[start..];
@@ -159,29 +238,24 @@ impl InferenceEngine {
             Err(e) => {
                 tracing::warn!("LLM fact extraction failed ({}), falling back to rules", e);
                 let inferred = self.db.infer_facts_from_messages(new_messages);
-                let db = self.db.clone();
-                let _ = db
-                    .run_blocking(move |db| {
-                        for f in &inferred {
-                            if is_sensitive_predicate(&f.predicate)
-                                || is_sensitive_object(&f.object)
-                            {
-                                continue;
-                            }
-                            let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
-                            let _ = db.upsert_fact(
-                                &f.subject,
-                                &f.predicate,
-                                &f.object,
-                                "inferred",
-                                f.confidence,
-                                &tags,
-                                f.source_ref.as_ref(),
-                            );
-                        }
-                        Ok::<(), anyhow::Error>(())
+                // The rule extractor feeds the SAME persistence path as the
+                // LLM (sensitivity filter, confidence floor, normalization),
+                // so the two extraction channels cannot drift.
+                let batch: Vec<FactDraft> = inferred
+                    .into_iter()
+                    .map(|f| {
+                        (
+                            f.subject,
+                            f.predicate,
+                            f.object,
+                            f.confidence,
+                            f.tags,
+                            f.source_ref,
+                            f.durability,
+                        )
                     })
-                    .await;
+                    .collect();
+                self.persist_fact_batch(batch).await;
             }
         }
 
@@ -196,9 +270,6 @@ impl InferenceEngine {
                 })
                 .await;
         }
-
-        // Index the new facts + conversation events into vector memory.
-        self.embed_new_memory().await;
     }
 
     /// True when the vector index holds embeddings from a different model
@@ -310,9 +381,11 @@ impl InferenceEngine {
 
     /// Full memory maintenance pass, independent of any extraction: collapse
     /// duplicate facts, purge sensitive facts, flush stale low-confidence
-    /// facts, and prune embeddings whose source rows were deleted. Run after
-    /// each extraction AND periodically via the app-level scheduler so decay
-    /// never depends on inference having happened.
+    /// facts, and prune embeddings whose source rows were deleted, then catch
+    /// up on vector indexing (facts + episodes, incl. compaction summaries).
+    /// Run after each extraction (via `infer_all`) AND periodically via the
+    /// app-level scheduler so decay never depends on inference having
+    /// happened.
     pub async fn run_memory_maintenance(&self) {
         let db = self.db.clone();
         let _ = db
@@ -411,50 +484,138 @@ impl InferenceEngine {
         .unwrap_or_default()
     }
 
-    /// Persist a batch of LLM-extracted facts plus the maintenance pass in a
-    /// single blocking DB round-trip. `user_messages` resolves each fact's
-    /// `message_index` into a `FactSourceRef` for traceability.
+    /// Persist a batch of LLM-extracted facts. `user_messages` resolves each
+    /// fact's `message_index` into a `FactSourceRef` for traceability.
     async fn persist_facts(
         &self,
         facts: &[LlmFact],
         user_messages: &[haven_memory::repositories::messages::Message],
     ) {
-        let refs: Vec<Option<FactSourceRef>> = facts
+        let batch: Vec<FactDraft> = facts
             .iter()
             .map(|f| {
-                f.message_index
+                let src_ref = f
+                    .message_index
                     .and_then(|idx| user_messages.get(idx))
-                    .map(|m| FactSourceRef::from_message(&m.id, &m.content))
+                    .map(|m| FactSourceRef::from_message(&m.id, &m.content));
+                (
+                    f.subject.clone(),
+                    f.predicate.clone(),
+                    f.object.clone(),
+                    f.confidence,
+                    f.tags.clone(),
+                    src_ref,
+                    f.durability.unwrap_or(0.6),
+                )
             })
             .collect();
-        let owned: Vec<(LlmFact, Option<FactSourceRef>)> =
-            facts.iter().cloned().zip(refs).collect();
+        self.persist_fact_batch(batch).await;
+    }
+
+    /// Shared persistence policy for a batch of extracted facts, used by BOTH
+    /// the LLM extraction path and the rule-based fallback so the two cannot
+    /// drift: sensitivity filter, degenerate rejection, confidence floor for
+    /// brand-new facts, field sanitization / predicate normalization / tag
+    /// whitelist. Maintenance (dedup, sensitive purge, low-confidence flush)
+    /// is NOT inlined here — it runs once per task via `infer_all` →
+    /// `run_memory_maintenance` (and on the app scheduler), so the same facts
+    /// are never swept twice.
+    async fn persist_fact_batch(&self, facts: Vec<FactDraft>) {
         let db = self.db.clone();
         let sanitize_max = self.sanitize_max_chars;
+        // Hard floor for NEW facts entering long-term memory. The extraction
+        // prompt already asks for durable, generalizable facts; this rejects
+        // whatever slips through with a borderline confidence so one-off
+        // trivia does not linger for a year (the 365-day decay half-life
+        // would otherwise keep a 0.5-confidence fact around for ~450 days).
+        // Re-confirmations of an ALREADY-STORED triple must bypass the floor:
+        // dropping them would skip the reinforcement (mention_count bump,
+        // last_seen_at refresh, confidence boost) and let genuinely
+        // re-confirmed facts keep decaying.
+        const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
         let _ = db
             .run_blocking(move |db| {
-                for (f, src_ref) in &owned {
-                    if is_sensitive_predicate(&f.predicate) || is_sensitive_object(&f.object) {
+                // Phase 1: sanitize/validate every draft, collecting the
+                // survivors' subjects so the existence check below runs as ONE
+                // query for the whole batch instead of two per fact (each
+                // query would re-checkout a pooled connection).
+                let mut candidates: Vec<FactDraft> = Vec::new();
+                for (subject_raw, predicate_raw, object_raw, confidence_raw, tags_raw, src_ref, durability_raw) in
+                    facts
+                {
+                    let subject = sanitize_fact_field(&subject_raw, sanitize_max);
+                    let predicate = normalize_predicate(&predicate_raw);
+                    let object = sanitize_fact_field(&object_raw, sanitize_max);
+                    if predicate.is_empty() || subject.is_empty() || object.is_empty() {
                         tracing::debug!(
-                            "fact inference: dropping sensitive fact '{}'",
-                            f.predicate
+                            "fact inference: dropping degenerate fact (empty subject/predicate/object)"
                         );
                         continue;
                     }
-                    let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
-                    let _ = db.upsert_fact(
-                        &sanitize_fact_field(&f.subject, sanitize_max),
-                        &sanitize_fact_field(&f.predicate, sanitize_max),
-                        &sanitize_fact_field(&f.object, sanitize_max),
+                    if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
+                        tracing::debug!(
+                            "fact inference: dropping sensitive fact '{}'",
+                            predicate
+                        );
+                        continue;
+                    }
+                    // Clamp to the documented range so an over-eager model
+                    // (e.g. 1.2) does not skew decay/ordering.
+                    candidates.push((
+                        subject,
+                        predicate,
+                        object,
+                        confidence_raw.clamp(0.5, 1.0),
+                        tags_raw,
+                        src_ref,
+                        durability_raw.clamp(0.1, 1.0),
+                    ));
+                }
+                let subjects: Vec<&str> = candidates
+                    .iter()
+                    .map(|(s, _, _, _, _, _, _)| s.as_str())
+                    .collect();
+                let (existing_triples, existing_pairs) = db
+                    .facts_exist_batch(&subjects)
+                    // Fail in the same direction as the per-fact queries they
+                    // replace: on error, nothing exists -> the confidence
+                    // floor applies.
+                    .unwrap_or_default();
+                for (subject, predicate, object, confidence, tags_raw, src_ref, durability) in candidates
+                {
+                    let is_new_fact =
+                        !existing_triples.contains(&(subject.clone(), predicate.clone(), object.clone()));
+                    // A single-valued predicate that already has a stored value
+                    // (for a DIFFERENT object) is a user correction/update, not
+                    // a brand-new fact: the floor must not drop it, or the
+                    // latest value the user stated would never replace the
+                    // stale one.
+                    let is_single_valued_update = is_single_valued_predicate(&predicate)
+                        && existing_pairs.contains(&(subject.clone(), predicate.clone()));
+                    if is_new_fact
+                        && !is_single_valued_update
+                        && confidence < PERSIST_CONFIDENCE_FLOOR
+                    {
+                        tracing::debug!(
+                            "fact inference: dropping low-confidence fact '{}' (confidence {})",
+                            predicate,
+                            confidence
+                        );
+                        continue;
+                    }
+                    let tags = sanitize_tags(&tags_raw);
+                    let tags: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+                    let _ = db.upsert_fact_with_durability(
+                        &subject,
+                        &predicate,
+                        &object,
                         "inferred",
-                        f.confidence,
+                        confidence,
                         &tags,
                         src_ref.as_ref(),
+                        durability,
                     );
                 }
-                let _ = db.dedup_facts();
-                let _ = db.delete_sensitive_facts();
-                let _ = db.flush_low_confidence(0.3);
                 Ok::<(), anyhow::Error>(())
             })
             .await;
@@ -475,7 +636,7 @@ impl InferenceEngine {
             transcript
         } else {
             format!(
-                "Known user facts (already stored; re-confirming one is fine, output a new value if the user changed it):\n{}\n\nConversation (each message is numbered as [N] 鈥?set \"message_index\" to the number supporting each fact):\n{}",
+                "Known facts (already stored; re-confirming one is fine, output a new value if the user changed it):\n{}\n\nConversation (each message is numbered as [N]; set \"message_index\" to the number supporting each fact):\n{}",
                 known_facts, transcript
             )
         };
@@ -496,6 +657,11 @@ impl InferenceEngine {
             .await
             .map_err(|e| anyhow::anyhow!("balanced model chat failed: {}", e))?;
 
+        if response.text.trim().is_empty() {
+            tracing::debug!("LLM fact extraction: empty model response, treating as no facts");
+            return Ok(Vec::new());
+        }
+
         let json_str = extract_json_array(&response.text);
         let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|e| {
             let preview: String = response.text.chars().take(200).collect();
@@ -506,18 +672,30 @@ impl InferenceEngine {
         Ok(facts)
     }
 
-    /// Compact list of the stored user facts (effective-confidence order) to
-    /// hand the extraction model as context.
+    /// Compact list of the stored facts (effective-confidence order, all
+    /// subjects) to hand the extraction model as context. Cross-subject facts
+    /// (projects, tools, other entities) carry their subject prefix so the
+    /// model can re-confirm or update them with the same subject instead of
+    /// collapsing everything onto "user".
     async fn load_known_facts(&self) -> String {
         let db = self.db.clone();
         let facts = db
-            .run_blocking(move |db| db.get_facts("user"))
+            .run_blocking(move |db| db.list_facts())
             .await
             .unwrap_or_default();
         let mut lines: Vec<String> = Vec::new();
         for fact in facts.iter().take(self.max_known_facts) {
+            let subject = if fact.subject == "user" {
+                String::new()
+            } else {
+                format!(
+                    "[{}] ",
+                    sanitize_fact_field(&fact.subject, self.sanitize_max_chars)
+                )
+            };
             lines.push(format!(
-                "- {}={} ({:.0}%)",
+                "- {}{}={} ({:.0}%)",
+                subject,
                 sanitize_fact_field(&fact.predicate, self.sanitize_max_chars),
                 sanitize_fact_field(&fact.object, self.sanitize_max_chars),
                 haven_memory::repositories::facts::fact_effective_confidence(fact) * 100.0
@@ -563,12 +741,10 @@ fn build_truncated_transcript(
 /// Sanitize a fact field value before it is stored and later interpolated
 /// into the agent's system prompt. Strips newlines and control characters
 /// that could be used for indirect prompt injection, and caps the length.
+/// Shared implementation lives in `haven_common::text` so the policy cannot
+/// drift from prompt / tool index sanitization.
 fn sanitize_fact_field(value: &str, max_chars: usize) -> String {
-    value
-        .chars()
-        .filter(|c| !c.is_control() || *c == ' ')
-        .take(max_chars)
-        .collect()
+    haven_common::text::sanitize_prompt_field(value, max_chars)
 }
 
 /// Extract the first JSON array `[...]` from a string that may contain
@@ -690,6 +866,75 @@ mod tests {
     fn test_extract_json_array_no_array() {
         let result = extract_json_array("No facts found.");
         assert_eq!(result, "No facts found.");
+    }
+
+    #[test]
+    fn test_llm_fact_coerces_non_string_fields() {
+        let json = r#"[
+            {"subject":"user","predicate":"has_pentest_mcp","object":true,"tags":["workspace"],"confidence":0.6,"message_index":0},
+            {"subject":"user","predicate":"likes_count","object":3,"tags":["preference"],"confidence":0.8},
+            {"subject":"user","predicate":"nickname","object":null,"tags":["identity"]},
+            {"subject":"user","predicate":"name","object":"Alice","tags":[42],"confidence":0.9}
+        ]"#;
+        let facts: Vec<LlmFact> = serde_json::from_str(json).unwrap();
+        assert_eq!(facts.len(), 4);
+        assert_eq!(facts[0].object, "true");
+        assert_eq!(facts[0].predicate, "has_pentest_mcp");
+        assert_eq!(facts[1].object, "3");
+        assert_eq!(facts[2].object, "");
+        assert_eq!(facts[3].object, "Alice");
+        assert_eq!(facts[3].tags, vec!["42"]);
+    }
+
+    #[test]
+    fn test_llm_fact_durability_optional_with_default() {
+        // Omitted durability → None (persistence maps to the 0.6 fallback).
+        let no_dup: Vec<LlmFact> =
+            serde_json::from_str(r#"[{"subject":"user","predicate":"name","object":"Alice"}]"#)
+                .unwrap();
+        assert!(no_dup[0].durability.is_none());
+        // Explicit value round-trips; subject defaults to "user".
+        let with_dup: Vec<LlmFact> = serde_json::from_str(
+            r#"[{"subject":"haven","predicate":"project_path","object":"D:/w","durability":0.4}]"#,
+        )
+        .unwrap();
+        assert_eq!(with_dup[0].durability, Some(0.4));
+        assert_eq!(with_dup[0].subject, "haven");
+        // Cross-subject facts deserialize without a subject field defaulting.
+        let default_subj: Vec<LlmFact> =
+            serde_json::from_str(r#"[{"predicate":"name","object":"A"}]"#).unwrap();
+        assert_eq!(default_subj[0].subject, "user");
+    }
+
+    #[test]
+    fn test_sanitize_tags_whitelists_and_lowercases() {
+        assert_eq!(
+            sanitize_tags(&["Workspace".into(), "Preference".into()]),
+            vec!["workspace", "preference"]
+        );
+        // Out-of-set and empty tags are dropped.
+        assert_eq!(
+            sanitize_tags(&["hacker".into(), "".into()]),
+            Vec::<String>::new()
+        );
+        // Mixed valid/invalid keeps only valid, capped to the allowed count.
+        assert_eq!(
+            sanitize_tags(&["identity".into(), "project".into(), "nonsense".into()]),
+            vec!["identity", "project"]
+        );
+    }
+
+    #[test]
+    fn test_normalize_predicate_lowercases_and_trims() {
+        assert_eq!(normalize_predicate("  Likes  "), "likes");
+        assert_eq!(normalize_predicate("Works_at"), "works_at");
+        assert_eq!(normalize_predicate("PROJECT_PATH"), "project_path");
+    }
+
+    #[test]
+    fn test_sanitize_tags_caps_count() {
+        let many: Vec<String> = (0..10).map(|_| "identity".to_string()).collect();
+        assert_eq!(sanitize_tags(&many).len(), 4);
     }
 
     #[test]

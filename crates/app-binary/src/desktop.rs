@@ -149,11 +149,7 @@ impl DesktopShell {
         let was_recording = state.is_recording;
         state.is_recording_toggle = !state.is_recording_toggle;
         let new_val = state.is_recording_toggle;
-        if new_val {
-            state.is_recording = true;
-        } else {
-            state.is_recording = false;
-        }
+        state.is_recording = new_val;
         drop(state);
         if let Some(h) = &handler {
             h.on_toggle_change(new_val);
@@ -161,10 +157,8 @@ impl DesktopShell {
         if new_val {
             // Already recording via another source (UI button): keep the
             // toggle flag but do not double-start the pipeline.
-            if !was_recording {
-                if let Some(h) = &handler {
-                    h.on_recording_start().await;
-                }
+            if !was_recording && let Some(h) = &handler {
+                h.on_recording_start().await;
             }
         } else if let Some(h) = &handler {
             h.on_recording_stop().await;

@@ -892,26 +892,42 @@ impl SelfTool {
         Ok(serde_json::json!({ "level": level, "saved": true }))
     }
 
-    async fn op_tasks(&self, input: &Value) -> anyhow::Result<Value> {
+    /// Parse the `limit` arg and list tasks from the attached DB. Shared by
+    /// `op_tasks` / `op_errors`; returns `None` when no DB is attached.
+    fn list_tasks_for_op(
+        &self,
+        input: &Value,
+    ) -> anyhow::Result<Option<(i64, Vec<haven_memory::repositories::tasks::Task>)>> {
         let limit = input["limit"].as_i64().unwrap_or(10).clamp(1, 50);
         let Some(db) = &self.context.db else {
-            return Ok(serde_json::json!({ "unavailable": true }));
+            return Ok(None);
         };
         let tasks = db.list_tasks(limit, 0)?;
+        Ok(Some((limit, tasks)))
+    }
+
+    /// Truncate a task's input text to 200 chars for display.
+    fn task_input_preview(input_text: &str) -> String {
+        if input_text.chars().count() > 200 {
+            let cut = input_text.floor_char_boundary(200);
+            format!("{}…", &input_text[..cut])
+        } else {
+            input_text.to_string()
+        }
+    }
+
+    async fn op_tasks(&self, input: &Value) -> anyhow::Result<Value> {
+        let Some((_limit, tasks)) = self.list_tasks_for_op(input)? else {
+            return Ok(serde_json::json!({ "unavailable": true }));
+        };
         let rows: Vec<Value> = tasks
             .into_iter()
             .map(|t| {
-                let input_text = if t.input_text.chars().count() > 200 {
-                    let cut = t.input_text.floor_char_boundary(200);
-                    format!("{}…", &t.input_text[..cut])
-                } else {
-                    t.input_text.clone()
-                };
                 serde_json::json!({
                     "id": t.id,
                     "status": t.status,
                     "title": t.title,
-                    "input": input_text,
+                    "input": Self::task_input_preview(&t.input_text),
                     "created_at": t.created_at,
                     "updated_at": t.updated_at,
                 })
@@ -921,11 +937,9 @@ impl SelfTool {
     }
 
     async fn op_errors(&self, input: &Value) -> anyhow::Result<Value> {
-        let limit = input["limit"].as_i64().unwrap_or(10).clamp(1, 50);
-        let Some(db) = &self.context.db else {
+        let Some((_limit, tasks)) = self.list_tasks_for_op(input)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
-        let tasks = db.list_tasks(limit, 0)?;
         let rows: Vec<Value> = tasks
             .into_iter()
             .filter(|t| t.status == "error")
@@ -947,7 +961,7 @@ impl SelfTool {
                 serde_json::json!({
                     "id": t.id,
                     "title": t.title,
-                    "input": t.input_text,
+                    "input": Self::task_input_preview(&t.input_text),
                     "created_at": t.created_at,
                     "transcript_tail": transcript,
                 })
@@ -1370,7 +1384,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.output["api_key"], "[masked]");
-        assert_eq!(result.output["model_name"].as_str().is_some(), true);
+        assert!(result.output["model_name"].as_str().is_some());
 
         let result = tool
             .execute(
@@ -1686,6 +1700,23 @@ mod tests {
         candidates[0].to_string_lossy().to_string()
     }
 
+    /// Add the fixture echo server with `enabled: true` via the `mcp_add`
+    /// operation. Returns the tool result so tests can assert connection.
+    async fn add_echo_server(tool: &SelfTool) -> ToolResult {
+        tool.execute(
+            json!({
+                "operation": "mcp_add",
+                "name": "echo-srv",
+                "command": "python",
+                "args": [fixture_path()],
+                "enabled": true,
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn test_mcp_toggle_enable_connects_persists_and_disables() {
         let (tool, _dir) = make_tool();
@@ -1929,19 +1960,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_remove_disconnects_and_persists() {
         let (tool, _dir) = make_tool();
-        let result = tool
-            .execute(
-                json!({
-                    "operation": "mcp_add",
-                    "name": "echo-srv",
-                    "command": "python",
-                    "args": [fixture_path()],
-                    "enabled": true,
-                }),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = add_echo_server(&tool).await;
         assert_eq!(result.output["connected"], json!(true));
 
         let result = tool
@@ -1981,19 +2000,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_reload_reconnects_enabled() {
         let (tool, _dir) = make_tool();
-        let result = tool
-            .execute(
-                json!({
-                    "operation": "mcp_add",
-                    "name": "echo-srv",
-                    "command": "python",
-                    "args": [fixture_path()],
-                    "enabled": true,
-                }),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = add_echo_server(&tool).await;
         assert_eq!(result.output["connected"], json!(true));
 
         // Kill the live client but keep enabled=true in config.
@@ -2021,18 +2028,7 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_reload_reconnects_even_when_client_already_exists() {
         let (tool, _dir) = make_tool();
-        tool.execute(
-            json!({
-                "operation": "mcp_add",
-                "name": "echo-srv",
-                "command": "python",
-                "args": [fixture_path()],
-                "enabled": true,
-            }),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
+        add_echo_server(&tool).await;
         assert!(tool.mcp_manager.get_client("echo-srv").await.is_some());
 
         // Reload restarts every enabled server, so the existing client is

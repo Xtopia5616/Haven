@@ -213,12 +213,13 @@ describe('adoptDraftMessages', () => {
 		taskMessagesStore.set({});
 	});
 
-	it('moves draft messages into the new task after existing ones', () => {
-		addTaskMessage('_draft', { id: 'd1' });
+	it('prepends draft messages into the new task before any agent streaming', () => {
+		addTaskMessage('_draft', { id: 'd1', role: 'user' });
 		setTaskMessages('t1', [{ id: 'e1' }]);
 		adoptDraftMessages('t1');
 		const m = storeMap();
-		expect(m.t1.map((x) => x.id)).toEqual(['e1', 'd1']);
+		expect(m.t1.map((x) => x.id)).toEqual(['d1', 'e1']);
+		expect(m.t1[0].received).toBe(true);
 		expect(m._draft).toEqual([]);
 	});
 
@@ -238,20 +239,22 @@ describe('moveTaskMessages', () => {
 		taskMessagesStore.set({});
 	});
 
-	it('moves messages from a stale task into a newly created one', () => {
-		setTaskMessages('stale', [{ id: 's1' }, { id: 's2' }]);
+	it('prepends messages from a stale task into a newly created one', () => {
+		setTaskMessages('stale', [{ id: 's1', role: 'user' }, { id: 's2', role: 'user' }]);
 		setTaskMessages('new', [{ id: 'n1' }]);
 		moveTaskMessages('stale', 'new');
 		const m = storeMap();
-		expect(m.new.map((x) => x.id)).toEqual(['n1', 's1', 's2']);
+		expect(m.new.map((x) => x.id)).toEqual(['s1', 's2', 'n1']);
+		expect(m.new.every((x) => x.role !== 'user' || x.received)).toBe(true);
 		expect(m.stale).toEqual([]);
 	});
 
 	it('moves draft messages into a new task', () => {
-		addTaskMessage('_draft', { id: 'd1' });
+		addTaskMessage('_draft', { id: 'd1', role: 'user' });
 		moveTaskMessages('_draft', 't9');
 		const m = storeMap();
 		expect(m.t9.map((x) => x.id)).toEqual(['d1']);
+		expect(m.t9[0].received).toBe(true);
 		expect(m._draft).toEqual([]);
 	});
 

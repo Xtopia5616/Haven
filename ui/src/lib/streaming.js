@@ -140,10 +140,20 @@ export function accumulateStreamChunk(messages, opts) {
 			next[idx] = { ...next[idx], content, streaming: true };
 			return next;
 		}
-		return [
-			...messages,
-			newStreamMessage({ id: stepId, content: delta, msgType, stepNumber, time }),
-		];
+		// Interleaved providers may stream reasoning AFTER the thought text
+		// already started (text first, thinking later). Appending at the end
+		// would render Thinking... below the answer until the snap finally
+		// reorders it — a visible jump. Insert in front of the same step's
+		// first thought segment so the order is stable the whole way through.
+		const thoughtBase = `thought${stepId.slice(stepIdPrefix.length)}`;
+		const insertAt = messages.findIndex(
+			(x) => x.id === thoughtBase || x.id.startsWith(thoughtBase + '-'),
+		);
+		const newMsg = newStreamMessage({ id: stepId, content: delta, msgType, stepNumber, time });
+		if (insertAt < 0) return [...messages, newMsg];
+		const next = [...messages];
+		next.splice(insertAt, 0, newMsg);
+		return next;
 	}
 
 	const segIds = thoughtSegmentIds(messages, stepId);
@@ -273,11 +283,24 @@ export function applyThoughtSnap(messages, opts) {
 		out.push(merged);
 		return out;
 	}
-	const insertAt = Math.min(firstSegIdx, rest.length);
+	// The merged thought replaces the first segment's slot. `rest` is the
+	// original list with segments + reasoning removed, so `firstSegIdx`
+	// (an index into `messages`) no longer maps directly: subtract every
+	// removed item that sat before the first segment to get the equivalent
+	// position in `rest`. This keeps any preceding user question and any
+	// interleaved tool cards in their correct relative order — clamping
+	// against `rest.length` alone mis-placed the thought/reasoning relative
+	// to those messages.
+	let insertAt = firstSegIdx;
+	for (let i = 0; i < firstSegIdx; i++) {
+		if (segIds.includes(messages[i].id) || messages[i].id === reasoningId) insertAt--;
+	}
+	insertAt = Math.max(0, Math.min(insertAt, rest.length));
 	rest.splice(insertAt, 0, merged);
 	if (reasoning) {
-		const reasoningAt = Math.max(insertAt - 1, 0);
-		rest.splice(reasoningAt, 0, reasoning);
+		// Reasoning goes immediately before the merged thought, i.e. at the
+		// same insertion slot as the thought.
+		rest.splice(insertAt, 0, reasoning);
 	}
 	return rest;
 }

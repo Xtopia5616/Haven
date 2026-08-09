@@ -73,6 +73,17 @@ impl Tool for LoadSkillTool {
             serde_json::json!({"skill": schema, "status": "loaded", "skill_name": skill.name()}),
         ))
     }
+
+    /// Declare the per-task skill adapter registration so the executor
+    /// registers it without name-matching "load_skill".
+    fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
+        output
+            .get("skill_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|name| vec![crate::tool::ToolRegistration::Skill(name.to_string())])
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

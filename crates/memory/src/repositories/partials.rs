@@ -39,24 +39,17 @@ impl Database {
         .ok()
     }
 
-    /// Read and remove the partial row for a task. Used by `end_task` and the
-    /// startup orphan finalizer to promote streamed text into real messages.
-    pub fn take_partial_message(&self, task_id: &str) -> Option<String> {
+    /// Read and remove the partial row for a task. Atomic (single
+    /// `DELETE ... RETURNING` statement), so a concurrent writer can never
+    /// observe a row that was already taken.
+    pub fn take_partial_message(&self, task_id: &str) -> Option<(String, String)> {
         let conn = self.conn();
-        let taken = conn
-            .query_row(
-                "SELECT content FROM partial_messages WHERE task_id = ?1",
-                rusqlite::params![task_id],
-                |row| row.get::<_, String>(0),
-            )
-            .ok();
-        if taken.is_some() {
-            let _ = conn.execute(
-                "DELETE FROM partial_messages WHERE task_id = ?1",
-                rusqlite::params![task_id],
-            );
-        }
-        taken
+        conn.query_row(
+            "DELETE FROM partial_messages WHERE task_id = ?1 RETURNING content, updated_at",
+            rusqlite::params![task_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok()
     }
 
     /// Drop the partial row for a task (superseded by a real message, or the
@@ -68,6 +61,39 @@ impl Database {
             rusqlite::params![task_id],
         )?;
         Ok(())
+    }
+
+    /// Atomically promote the partial row into a real assistant message.
+    /// Skips (without inserting) when:
+    /// - no partial row exists, or it holds only whitespace,
+    /// - a real message was persisted AFTER the last checkpoint (the
+    ///   stream's text already reached the message stream) — promoting
+    ///   then would duplicate it.
+    ///
+    /// Returns `true` when a message was inserted. Single blocking round
+    /// trip; used by task-end promotion and the startup orphan finalizer.
+    pub fn promote_partial_message(&self, task_id: &str) -> anyhow::Result<bool> {
+        let Some((content, updated_at)) = self.take_partial_message(task_id) else {
+            return Ok(false);
+        };
+        if content.trim().is_empty() {
+            return Ok(false);
+        }
+        if let Some(last) = self.get_last_message_created_at(task_id)
+            && last >= updated_at
+        {
+            return Ok(false);
+        }
+        self.add_message_full(
+            task_id,
+            "assistant",
+            content.trim(),
+            Some("text"),
+            None,
+            &[],
+            false,
+        )?;
+        Ok(true)
     }
 }
 
@@ -90,7 +116,7 @@ mod tests {
             .get_partial_message(&task_id)
             .expect("partial exists after upsert");
         assert_eq!(content, "partial two");
-        let taken = db.take_partial_message(&task_id).expect("taken");
+        let (taken, _) = db.take_partial_message(&task_id).expect("taken");
         assert_eq!(taken, "partial two");
         assert!(db.get_partial_message(&task_id).is_none());
     }
@@ -102,5 +128,46 @@ mod tests {
         db.upsert_partial_message(&task_id, "hello").unwrap();
         db.delete_partial_message(&task_id).unwrap();
         assert!(db.get_partial_message(&task_id).is_none());
+    }
+
+    #[test]
+    fn promote_partial_creates_real_message() {
+        let db = test_db();
+        let task_id = db.create_task("input", "").unwrap().id;
+        db.upsert_partial_message(&task_id, "streamed reply")
+            .unwrap();
+        assert!(db.promote_partial_message(&task_id).unwrap());
+        let msgs = db.get_task_messages(&task_id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].role, "assistant");
+        assert_eq!(msgs[0].content, "streamed reply");
+        // The row is consumed: a second promote is a no-op.
+        assert!(!db.promote_partial_message(&task_id).unwrap());
+    }
+
+    #[test]
+    fn promote_partial_skips_empty_and_superseded() {
+        let db = test_db();
+        let task_id = db.create_task("input", "").unwrap().id;
+        // Whitespace-only partial: nothing to promote.
+        db.upsert_partial_message(&task_id, "   ").unwrap();
+        assert!(!db.promote_partial_message(&task_id).unwrap());
+        // A real message written after the last checkpoint supersedes it.
+        db.upsert_partial_message(&task_id, "older stream text")
+            .unwrap();
+        db.add_message_full(
+            &task_id,
+            "assistant",
+            "newer real message",
+            Some("text"),
+            None,
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(!db.promote_partial_message(&task_id).unwrap());
+        let msgs = db.get_task_messages(&task_id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "newer real message");
     }
 }

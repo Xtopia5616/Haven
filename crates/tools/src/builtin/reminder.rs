@@ -8,6 +8,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::bg::{BackgroundJobs, EventSink, EventSinkState};
+use crate::tool::RegistryProbe;
 use crate::{Tool, ToolResult};
 
 /// What happens when a reminder fires.
@@ -20,6 +22,9 @@ pub enum ReminderMode {
     Tool,
     /// Resume the task that scheduled the reminder: the task continues with
     /// the reminder text as a new instruction in the same conversation.
+    /// Only works while the scheduling task is still alive (running/paused):
+    /// reminders are cancelled automatically when their task ends or is
+    /// removed, so a `continue` reminder cannot resurrect a completed task.
     Continue,
 }
 
@@ -64,10 +69,17 @@ pub struct ReminderFired {
 /// Everything needed to schedule one reminder.
 pub struct ReminderSpec {
     /// Absolute fire time (RFC3339, local time accepted). Use this OR
-    /// `delay_secs`; exactly one is required.
+    /// `delay_secs` OR `watch_job_id`; exactly one is required.
     pub due_at: Option<String>,
-    /// Delay in seconds before the reminder fires. Use this OR `due_at`.
+    /// Delay in seconds before the reminder fires. Use this OR `due_at` OR
+    /// `watch_job_id`.
     pub delay_secs: Option<u64>,
+    /// Background job to wait for: the reminder fires when the job reaches a
+    /// terminal state (completed/failed/cancelled) instead of on a timer,
+    /// resuming the task with the job's result. Use this OR `due_at` OR
+    /// `delay_secs`; in-memory only (the watched job cannot survive a
+    /// restart, so these reminders are not persisted).
+    pub watch_job_id: Option<String>,
     pub title: String,
     pub body: String,
     pub mode: ReminderMode,
@@ -86,6 +98,7 @@ pub struct ReminderSpec {
 /// next `set`, so this bounds concurrent pending timers, not history.
 /// Upper bound on a `due_at`-scheduled reminder (365 days) — guards against
 /// typos like a swapped year. Delay-based reminders are capped separately.
+#[derive(Clone)]
 struct ReminderEntry {
     title: String,
     body: String,
@@ -95,6 +108,9 @@ struct ReminderEntry {
     tool_name: Option<String>,
     tool_args: Option<Value>,
     prompt: Option<String>,
+    /// Background job this reminder waits for (empty for timer-based
+    /// reminders). Fires when the job reaches a terminal state.
+    watch_job_id: Option<String>,
     fired: bool,
 }
 
@@ -113,6 +129,13 @@ pub struct ReminderCenter {
     /// Lifetime cap on pending reminders (from context limits).
     max_reminders: RwLock<usize>,
     max_due_horizon_secs: RwLock<i64>,
+    /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
+    /// to forward lifecycle events as Tauri events.
+    event_sink: EventSinkState,
+    /// Background-job registry for `watch_job_id` reminders (polled for a
+    /// terminal state). Wired by the tools manager; `None` in headless/test
+    /// builds where job-watch reminders are rejected.
+    jobs: Mutex<Option<Arc<BackgroundJobs>>>,
 }
 
 impl Default for ReminderCenter {
@@ -131,7 +154,42 @@ impl ReminderCenter {
             db: RwLock::new(None),
             max_reminders: RwLock::new(32),
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
+            event_sink: EventSinkState::default(),
+            jobs: Mutex::new(None),
         }
+    }
+
+    /// Attach the background-job registry so `watch_job_id` reminders can
+    /// wait for a job to finish. Wired once by the tools manager.
+    pub fn set_jobs(&self, jobs: Option<Arc<BackgroundJobs>>) {
+        *self.jobs.lock().unwrap() = jobs;
+    }
+
+    /// Install the UI event sink (called once by the desktop shell).
+    pub fn set_event_sink(&self, sink: EventSink) {
+        self.event_sink.set(sink);
+    }
+
+    /// Forward a lifecycle event to the installed sink (no-op without one).
+    fn emit(&self, event: &str, payload: Value) {
+        self.event_sink.emit(event, payload);
+    }
+
+    /// Emit the `activity:finished` event for a reminder (delivered alongside
+    /// the `ReminderFired` channel message so the UI can drop it from the
+    /// pending list and surface its own toast).
+    fn emit_fired(&self, id: &str, entry: &ReminderEntry) {
+        self.emit(
+            "activity:finished",
+            serde_json::json!({
+                "id": id,
+                "title": entry.title,
+                "body": entry.body,
+                "mode": entry.mode.as_str(),
+                "task_id": entry.task_id.clone(),
+                "due_at": entry.due_at,
+            }),
+        );
     }
 
     /// Replace the unified context limits (reminder caps).
@@ -153,6 +211,32 @@ impl ReminderCenter {
         &self,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<ReminderFired>> {
         self.fired_rx.lock().unwrap().take()
+    }
+
+    /// Mark a reminder fired, emit its `activity:finished` event, deliver the
+    /// `ReminderFired` payload, and persist the fired flag. Shared by the
+    /// overdue re-arm path (`restore_pending`) and the job-watch timer.
+    async fn fire_entry(self: &Arc<Self>, id: &str) {
+        let mut reminders = self.reminders.write().await;
+        if let Some(entry) = reminders.get_mut(id)
+            && !entry.fired
+        {
+            entry.fired = true;
+            self.emit_fired(id, entry);
+            let _ = self.fired_tx.send(ReminderFired {
+                reminder_id: id.to_string(),
+                title: entry.title.clone(),
+                body: entry.body.clone(),
+                mode: entry.mode,
+                task_id: entry.task_id.clone(),
+                tool_name: entry.tool_name.clone(),
+                tool_args: entry.tool_args.clone(),
+                prompt: entry.prompt.clone(),
+            });
+            if let Some(db) = self.db.read().await.as_ref() {
+                let _ = db.mark_reminder_fired(id);
+            }
+        }
     }
 
     /// Re-arm all pending reminders from the database after a restart.
@@ -200,20 +284,23 @@ impl ReminderCenter {
             };
             if remaining <= 0 {
                 // Overdue while the app was closed: fire now.
-                self.reminders.write().await.insert(
-                    row.id.clone(),
-                    ReminderEntry {
-                        title: row.title.clone(),
-                        body: row.body.clone(),
-                        due_at: row.due_at.clone(),
-                        mode,
-                        task_id: row.task_id.clone(),
-                        tool_name: row.tool_name.clone(),
-                        tool_args: tool_args.clone(),
-                        prompt: row.prompt.clone(),
-                        fired: true,
-                    },
-                );
+                let entry = ReminderEntry {
+                    title: row.title.clone(),
+                    body: row.body.clone(),
+                    due_at: row.due_at.clone(),
+                    mode,
+                    task_id: row.task_id.clone(),
+                    tool_name: row.tool_name.clone(),
+                    tool_args: tool_args.clone(),
+                    prompt: row.prompt.clone(),
+                    watch_job_id: None,
+                    fired: true,
+                };
+                self.reminders
+                    .write()
+                    .await
+                    .insert(row.id.clone(), entry.clone());
+                self.emit_fired(&row.id, &entry);
                 let _ = self.fired_tx.send(fired_payload);
                 let _ = db.mark_reminder_fired(&row.id);
                 overdue += 1;
@@ -231,47 +318,34 @@ impl ReminderCenter {
                         tool_name: row.tool_name.clone(),
                         tool_args: tool_args.clone(),
                         prompt: row.prompt.clone(),
+                        watch_job_id: None,
                         fired: false,
                     },
                 );
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
-                    let mut reminders = center.reminders.write().await;
-                    if let Some(entry) = reminders.get_mut(&id)
-                        && !entry.fired
-                    {
-                        entry.fired = true;
-                        let _ = center.fired_tx.send(ReminderFired {
-                            reminder_id: id.clone(),
-                            title: entry.title.clone(),
-                            body: entry.body.clone(),
-                            mode: entry.mode,
-                            task_id: entry.task_id.clone(),
-                            tool_name: entry.tool_name.clone(),
-                            tool_args: entry.tool_args.clone(),
-                            prompt: entry.prompt.clone(),
-                        });
-                        if let Some(db) = center.db.read().await.as_ref() {
-                            let _ = db.mark_reminder_fired(&id);
-                        }
-                    }
+                    center.fire_entry(&id).await;
                 });
             }
         }
         overdue
     }
 
-    /// Schedule a reminder to fire at an absolute time or after a delay.
-    /// Exactly one of `spec.due_at` (RFC3339, local time accepted) or
-    /// `spec.delay_secs` must be given. `spec.mode` selects what happens at
-    /// fire time (see [`ReminderMode`]).
+    /// Schedule a reminder to fire at an absolute time, after a delay, or
+    /// when a background job reaches a terminal state. Exactly one of
+    /// `spec.due_at` (RFC3339, local time accepted), `spec.delay_secs` or
+    /// `spec.watch_job_id` must be given. `spec.mode` selects what happens
+    /// at fire time (see [`ReminderMode`]).
     ///
-    /// Returns the reminder id; the timer runs detached from the ReAct loop
-    /// and delivers a `ReminderFired` on the channel when it expires.
+    /// Returns the reminder id; the timer (or job watcher) runs detached from
+    /// the ReAct loop and delivers a `ReminderFired` on the channel when it
+    /// expires. Job-watch reminders are in-memory only: the watched job
+    /// cannot survive a restart, so they are not persisted.
     pub async fn set(self: &Arc<Self>, spec: ReminderSpec) -> anyhow::Result<String> {
         let ReminderSpec {
             due_at,
             delay_secs,
+            watch_job_id,
             title,
             body,
             mode,
@@ -280,34 +354,60 @@ impl ReminderCenter {
             tool_args,
             prompt,
         } = spec;
-        // Resolve when the reminder fires.
+        let watch_job_id = watch_job_id
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty());
+        if watch_job_id.is_some() && (due_at.is_some() || delay_secs.is_some()) {
+            anyhow::bail!("watch_job_id cannot be combined with due_at or delay_secs");
+        }
+        // Resolve when the reminder fires. Exactly one of `due_at` /
+        // `delay_secs` / `watch_job_id` must be given; passing two timing
+        // styles is an error (silently preferring one would hide the mistake
+        // until the reminder fires at the wrong time).
         let now = chrono::Utc::now();
-        let (due, remaining) = match (due_at.as_deref(), delay_secs) {
-            (Some(due_at), _) => {
-                let parsed = chrono::DateTime::parse_from_rfc3339(due_at.trim())
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "due_at must be an ISO 8601 timestamp, e.g. 2026-08-05T15:00:00+08:00 (got '{}')",
-                            due_at
-                        )
-                    })?
-                    .with_timezone(&chrono::Utc);
-                let remaining = (parsed - now).num_seconds();
-                if remaining <= 0 {
-                    anyhow::bail!("due_at must be in the future");
-                }
-                if remaining > *self.max_due_horizon_secs.read().await {
-                    anyhow::bail!("due_at is more than 365 days in the future");
-                }
-                (parsed, remaining)
+        let (due, remaining) = if watch_job_id.is_some() {
+            if self.jobs.lock().unwrap().is_none() {
+                anyhow::bail!(
+                    "watch_job_id requires the background-jobs registry (internal error)"
+                );
             }
-            (None, Some(delay)) => {
-                if delay == 0 || delay > 86_400 {
-                    anyhow::bail!("delay_secs must be between 1 and 86400");
+            (None::<chrono::DateTime<chrono::Utc>>, 0)
+        } else {
+            match (due_at.as_deref(), delay_secs) {
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("use exactly one of due_at or delay_secs, not both")
                 }
-                (now + chrono::Duration::seconds(delay as i64), delay as i64)
+                (Some(due_at), None) => {
+                    let parsed = chrono::DateTime::parse_from_rfc3339(due_at.trim())
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "due_at must be an ISO 8601 timestamp, e.g. 2026-08-05T15:00:00+08:00 (got '{}')",
+                                due_at
+                            )
+                        })?
+                        .with_timezone(&chrono::Utc);
+                    let remaining = (parsed - now).num_seconds();
+                    if remaining <= 0 {
+                        anyhow::bail!("due_at must be in the future");
+                    }
+                    if remaining > *self.max_due_horizon_secs.read().await {
+                        anyhow::bail!("due_at is more than 365 days in the future");
+                    }
+                    (Some(parsed), remaining)
+                }
+                (None, Some(delay)) => {
+                    if delay == 0 || delay > 86_400 {
+                        anyhow::bail!("delay_secs must be between 1 and 86400");
+                    }
+                    (
+                        Some(now + chrono::Duration::seconds(delay as i64)),
+                        delay as i64,
+                    )
+                }
+                (None, None) => {
+                    anyhow::bail!("either due_at, delay_secs or watch_job_id is required")
+                }
             }
-            (None, None) => anyhow::bail!("either due_at or delay_secs is required"),
         };
         let body = body.trim().to_string();
         if body.is_empty() {
@@ -329,8 +429,8 @@ impl ReminderCenter {
             anyhow::bail!("tool_name is required when mode is 'tool'");
         }
 
-        let id = format!("rem-{}", uuid::Uuid::new_v4().simple());
-        let due_at_rfc = due.to_rfc3339();
+        let id = haven_common::types::new_id("act");
+        let due_at_rfc = due.map(|d| d.to_rfc3339()).unwrap_or_default();
         {
             let mut reminders = self.reminders.write().await;
             // Reap fired entries so they never occupy the cap.
@@ -340,6 +440,32 @@ impl ReminderCenter {
                     "too many pending reminders (limit {}); cancel some first",
                     *self.max_reminders.read().await
                 );
+            }
+            // Persist BEFORE inserting into memory so a failed DB write
+            // aborts the whole `set` with an explicit error (the reminder
+            // would otherwise silently exist only in memory and vanish on
+            // restart — the DB is the source of truth). The write lock is
+            // held across the insert, so the cap check above and the insert
+            // below cannot be interleaved by a concurrent `set`.
+            // Job-watch reminders skip the DB entirely: the watched job
+            // cannot survive a restart, so persisting them would just leave
+            // dangling rows that restore_pending could never satisfy.
+            if watch_job_id.is_none()
+                && let Some(db) = self.db.read().await.as_ref()
+            {
+                let args_json = tool_args.as_ref().map(|v| v.to_string());
+                db.save_reminder(
+                    &id,
+                    &due_at_rfc,
+                    &title,
+                    &body,
+                    mode.as_str(),
+                    task_id.as_deref(),
+                    tool_name.as_deref(),
+                    args_json.as_deref(),
+                    prompt.as_deref(),
+                )
+                .map_err(|e| anyhow::anyhow!("failed to persist reminder '{}': {}", id, e))?;
             }
             reminders.insert(
                 id.clone(),
@@ -352,55 +478,82 @@ impl ReminderCenter {
                     tool_name: tool_name.clone(),
                     tool_args: tool_args.clone(),
                     prompt: prompt.clone(),
+                    watch_job_id: watch_job_id.clone(),
                     fired: false,
                 },
             );
         }
-        // Persist so the reminder survives restarts; without a DB this is
-        // still a valid in-memory-only reminder (headless/test builds).
-        if let Some(db) = self.db.read().await.as_ref() {
-            let args_json = tool_args.as_ref().map(|v| v.to_string());
-            if let Err(e) = db.save_reminder(
-                &id,
-                &due_at_rfc,
-                &title,
-                &body,
-                mode.as_str(),
-                task_id.as_deref(),
-                tool_name.as_deref(),
-                args_json.as_deref(),
-                prompt.as_deref(),
-            ) {
-                tracing::warn!("failed to persist reminder {}: {}", id, e);
-            }
-        }
+        self.emit(
+            "activity:created",
+            serde_json::json!({
+                "id": id,
+                "title": title,
+                "body": body,
+                "mode": mode.as_str(),
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "watch_job_id": watch_job_id,
+                "due_at": due_at_rfc,
+            }),
+        );
 
         let center = self.clone();
         let fired_id = id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
-            let mut reminders = center.reminders.write().await;
-            if let Some(entry) = reminders.get_mut(&fired_id)
-                && !entry.fired
-            {
-                entry.fired = true;
-                let _ = center.fired_tx.send(ReminderFired {
-                    reminder_id: fired_id.clone(),
-                    title: entry.title.clone(),
-                    body: entry.body.clone(),
-                    mode: entry.mode,
-                    task_id: entry.task_id.clone(),
-                    tool_name: entry.tool_name.clone(),
-                    tool_args: entry.tool_args.clone(),
-                    prompt: entry.prompt.clone(),
-                });
-                if let Some(db) = center.db.read().await.as_ref() {
-                    let _ = db.mark_reminder_fired(&fired_id);
-                }
-            }
-        });
+        if let Some(job_id) = watch_job_id {
+            // Condition-based wake: poll the watched job until it reaches a
+            // terminal state, then fire. Decoupled from the single completion
+            // channel the agent layer consumes.
+            tokio::spawn(async move {
+                center.watch_job_timer(fired_id, &job_id).await;
+            });
+        } else {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(remaining.max(0) as u64)).await;
+                center.fire_entry(&fired_id).await;
+            });
+        }
 
         Ok(id)
+    }
+
+    /// Poll the watched background job until it reaches a terminal state,
+    /// then fire the reminder: the task is resumed with the job's result
+    /// (mirroring `continue`-mode payloads). `not_found` is treated as
+    /// terminal (the job finished long ago and was reaped, or never existed)
+    /// so a job-watch reminder can never hang forever.
+    async fn watch_job_timer(self: &Arc<Self>, id: String, job_id: &str) {
+        let poll = Duration::from_millis(1000);
+        loop {
+            tokio::time::sleep(poll).await;
+            let Some(jobs) = self.jobs.lock().unwrap().clone() else {
+                return;
+            };
+            let status = jobs.status(job_id).await;
+            if status["status"].as_str() == Some("running") {
+                continue;
+            }
+            let mut reminders = self.reminders.write().await;
+            let Some(entry) = reminders.get_mut(&id) else {
+                return;
+            };
+            if entry.fired {
+                return;
+            }
+            entry.fired = true;
+            let prompt = job_finished_prompt(job_id, &status);
+            self.emit_fired(&id, entry);
+            let _ = self.fired_tx.send(ReminderFired {
+                reminder_id: id.clone(),
+                title: entry.title.clone(),
+                body: entry.body.clone(),
+                mode: entry.mode,
+                task_id: entry.task_id.clone(),
+                tool_name: None,
+                tool_args: None,
+                prompt: Some(prompt),
+            });
+            return;
+        }
     }
 
     /// List pending (not yet fired) reminders, newest first.
@@ -419,6 +572,7 @@ impl ReminderCenter {
                     "tool_name": e.tool_name,
                     "tool_args": e.tool_args,
                     "prompt": e.prompt,
+                    "watch_job_id": e.watch_job_id,
                     "due_at": e.due_at,
                 })
             })
@@ -437,11 +591,53 @@ impl ReminderCenter {
             }
             _ => false,
         };
-        if cancelled && let Some(db) = self.db.read().await.as_ref() {
-            let _ = db.delete_reminder(id);
+        if cancelled {
+            self.emit("activity:updated", serde_json::json!({ "id": id }));
+            if let Some(db) = self.db.read().await.as_ref() {
+                let _ = db.delete_reminder(id);
+            }
         }
         cancelled
     }
+
+    /// Cancel every pending reminder owned by `task_id`. Called when the
+    /// task ends, is removed, or is rolled back so its reminders cannot
+    /// fire against a task that no longer exists.
+    pub async fn cancel_for_task(&self, task_id: &str) {
+        let mut reminders = self.reminders.write().await;
+        let ids: Vec<String> = reminders
+            .iter()
+            .filter(|(_, e)| !e.fired && e.task_id.as_deref() == Some(task_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(entry) = reminders.get_mut(&id) {
+                entry.fired = true;
+            }
+            self.emit("activity:updated", serde_json::json!({ "id": id }));
+            if let Some(db) = self.db.read().await.as_ref() {
+                let _ = db.delete_reminder(&id);
+            }
+        }
+    }
+}
+
+/// Build the continuation message for a fired job-watch reminder: the job's
+/// terminal status and its result payload, so the resumed task continues
+/// from the actual outcome instead of a generic wake text.
+fn job_finished_prompt(job_id: &str, status: &Value) -> String {
+    let st = status["status"].as_str().unwrap_or("unknown");
+    if st == "not_found" {
+        return format!(
+            "Background job {job_id} not found (it may have finished long ago and been cleaned up, or never existed)."
+        );
+    }
+    let payload = status["output"]
+        .as_str()
+        .or_else(|| status["error_reason"].as_str())
+        .or_else(|| status["error"].as_str())
+        .unwrap_or_default();
+    format!("Background job {job_id} {st}.\nOutput:\n{payload}")
 }
 
 /// Schedule in-app reminders: set a timer that fires an action after a
@@ -455,6 +651,10 @@ impl ReminderCenter {
 ///   `prompt` as the continuation instruction in the same conversation.
 pub struct ReminderTool {
     pub center: Arc<ReminderCenter>,
+    /// Weak probe into the tool registry so `set` can reject unknown
+    /// `tool_name` values and report the scheduled tool's risk level at
+    /// schedule time. `None` in headless/test builds (checks skipped).
+    pub(crate) registry: Option<RegistryProbe>,
 }
 
 #[async_trait]
@@ -466,7 +666,10 @@ impl Tool for ReminderTool {
     fn description(&self) -> String {
         "Schedule actions to run later, mode picks what happens when \
          it fires: tool (default) calls the tool; continue \
-         resumes the current task later."
+         resumes the current task later (only while the task is still \
+         active — it is cancelled when the task ends). With watch_job_id \
+         the reminder fires when a background job finishes instead of on a \
+         timer, resuming the task with the job's result."
             .into()
     }
 
@@ -476,6 +679,12 @@ impl Tool for ReminderTool {
             Some("set") => RiskLevel::Low,
             _ => RiskLevel::Safe,
         }
+    }
+
+    /// Needs the private `_task_id` input so `continue` mode knows which
+    /// task to resume.
+    fn requires_task_id(&self) -> bool {
+        true
     }
 
     fn input_schema(&self) -> Value {
@@ -489,16 +698,20 @@ impl Tool for ReminderTool {
                 },
                 "delay_secs": {
                     "type": "integer",
-                    "description": "Delay in seconds before firing (set only; use delay_secs OR due_at)"
+                    "description": "Delay in seconds before firing (set only; use delay_secs OR due_at OR watch_job_id, exactly one, not combined)"
                 },
                 "due_at": {
                     "type": "string",
-                    "description": "Absolute fire time, ISO 8601 e.g. 2026-08-05T15:00:00+08:00 (set only; use due_at OR delay_secs)"
+                    "description": "Absolute fire time, ISO 8601 e.g. 2026-08-05T15:00:00+08:00 (set only; use due_at OR delay_secs OR watch_job_id, exactly one, not combined)"
+                },
+                "watch_job_id": {
+                    "type": "string",
+                    "description": "Set only: fire when this background job (id from shell background:true) finishes or fails, instead of on a timer. Requires mode 'continue' — the task is resumed with the job's result. Exclusive with delay_secs and due_at; in-memory only (the watched job cannot survive a restart)."
                 },
                 "mode": {
                     "type": "string",
                     "enum": ["tool", "continue"],
-                    "description": "Action when it fires (set only): tool (default) = call tool_name with tool_args, e.g. tool_name 'notify' to send a message; continue = resume the current task with prompt as the continuation instruction"
+                    "description": "Action when it fires (set only): tool (default) = call tool_name with tool_args, e.g. tool_name 'notify' to send a message; continue = resume the current task with prompt as the continuation instruction (or with the job's result when watch_job_id is set; only works while that task is still active — it is cancelled when the task ends)"
                 },
                 "title": {
                     "type": "string",
@@ -540,8 +753,16 @@ impl Tool for ReminderTool {
             "set" => {
                 let delay = input["delay_secs"].as_i64();
                 let due_at = input["due_at"].as_str();
-                if delay.is_none() && due_at.is_none() {
-                    anyhow::bail!("either delay_secs or due_at is required for set");
+                let watch_job_id = input["watch_job_id"].as_str().map(str::to_string);
+                let watch = watch_job_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|w| !w.is_empty());
+                if watch.is_some() && (delay.is_some() || due_at.is_some()) {
+                    anyhow::bail!("watch_job_id cannot be combined with delay_secs or due_at");
+                }
+                if delay.is_none() && due_at.is_none() && watch.is_none() {
+                    anyhow::bail!("one of delay_secs, due_at or watch_job_id is required for set");
                 }
                 let title = input["title"].as_str().unwrap_or("Haven");
                 let body = input["body"]
@@ -554,6 +775,11 @@ impl Tool for ReminderTool {
                         anyhow::bail!("unknown reminder mode: {other} (expected tool or continue)")
                     }
                 };
+                if watch.is_some() && mode != ReminderMode::Continue {
+                    anyhow::bail!(
+                        "watch_job_id requires mode 'continue' (the reminder fires by resuming the task with the job result)"
+                    );
+                }
                 // `_task_id` is injected privately by ToolsManager::execute_tool
                 // (never part of the LLM-visible schema or step history) so the
                 // reminder knows which task to resume in continue mode.
@@ -565,12 +791,38 @@ impl Tool for ReminderTool {
                 }
                 let tool_name = input["tool_name"].as_str().map(str::to_string);
                 let tool_args = input.get("tool_args").filter(|v| !v.is_null()).cloned();
+                // Eager existence check at schedule time: a typo'd tool name
+                // would otherwise fail only at fire time (in a detached timer,
+                // hours later, with no LLM to recover). Per-task skill/MCP
+                // adapters are not in the global registry and cannot be
+                // scheduled as fire-time calls. Skipped in headless/test
+                // builds where no registry is wired.
+                let risk_level = if mode == ReminderMode::Tool {
+                    match &self.registry {
+                        Some(probe) => {
+                            let Some(tool_name) = tool_name.as_deref() else {
+                                anyhow::bail!("tool_name is required when mode is 'tool'");
+                            };
+                            let Some(tool) = probe.find(tool_name).await else {
+                                anyhow::bail!(
+                                    "tool '{}' is not a registered tool; schedule a builtin tool call instead (per-task skill/MCP tools cannot be scheduled for fire time)",
+                                    tool_name
+                                );
+                            };
+                            Some(tool.risk_level(tool_args.as_ref().unwrap_or(&Value::Null)))
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
                 let prompt = input["prompt"].as_str();
                 let id = self
                     .center
                     .set(ReminderSpec {
                         due_at: due_at.map(str::to_string),
                         delay_secs: delay.map(|d| d as u64),
+                        watch_job_id: watch_job_id.clone(),
                         title: title.to_string(),
                         body: body.to_string(),
                         mode,
@@ -580,20 +832,43 @@ impl Tool for ReminderTool {
                         prompt: prompt.map(str::to_string),
                     })
                     .await?;
-                let fires_at = due_at
-                    .and_then(|d| chrono::DateTime::parse_from_rfc3339(d.trim()).ok())
-                    .map(|d| d.to_rfc3339())
-                    .unwrap_or_else(|| {
-                        (chrono::Utc::now() + chrono::Duration::seconds(delay.unwrap_or(0)))
-                            .to_rfc3339()
-                    });
-                Ok(ToolResult::ok(serde_json::json!({
+                let fires_at = if watch.is_some() {
+                    String::new()
+                } else {
+                    due_at
+                        .and_then(|d| chrono::DateTime::parse_from_rfc3339(d.trim()).ok())
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_else(|| {
+                            (chrono::Utc::now() + chrono::Duration::seconds(delay.unwrap_or(0)))
+                                .to_rfc3339()
+                        })
+                };
+                let mut output = serde_json::json!({
                     "id": id,
                     "mode": mode.as_str(),
                     "fires_at": fires_at,
                     "wakes_task": mode == ReminderMode::Continue,
                     "note": "The reminder fires while the app is running; overdue ones fire on next startup.",
-                })))
+                });
+                if let Some(job_id) = &watch_job_id {
+                    output["watch_job_id"] = serde_json::json!(job_id);
+                    output["note"] = serde_json::json!(format!(
+                        "Fires when background job {job_id} finishes or fails, resuming this task with the job's result. Job-watch reminders are in-memory only (the watched job cannot survive a restart)."
+                    ));
+                }
+                if let Some(risk) = risk_level {
+                    output["risk_level"] = serde_json::json!(risk);
+                    if risk >= RiskLevel::Medium {
+                        output["may_require_confirmation"] = serde_json::json!(true);
+                        if let Some(note) = output["note"].as_str() {
+                            output["note"] = serde_json::json!(format!(
+                                "{} The scheduled tool may require user confirmation when it fires; if nobody confirms in time, the call is skipped.",
+                                note
+                            ));
+                        }
+                    }
+                }
+                Ok(ToolResult::ok(output))
             }
             "list" => {
                 let rows = self.center.list().await;
@@ -617,12 +892,13 @@ impl Tool for ReminderTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
+    use crate::{Tool, ToolRegistry};
     use serde_json::json;
 
     fn make_tool() -> ReminderTool {
         ReminderTool {
             center: Arc::new(ReminderCenter::new()),
+            registry: None,
         }
     }
 
@@ -630,6 +906,7 @@ mod tests {
         ReminderSpec {
             due_at: None,
             delay_secs: Some(delay),
+            watch_job_id: None,
             title: title.into(),
             body: body.into(),
             mode: ReminderMode::Tool,
@@ -774,6 +1051,346 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_set_rejects_both_delay_and_due_at() {
+        let tool = make_tool();
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "delay_secs": 60,
+                    "due_at": (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339(),
+                    "body": "x"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("exactly one"), "unexpected error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_center_set_rejects_both_delay_and_due_at() {
+        let center = Arc::new(ReminderCenter::new());
+        let err = center
+            .set(ReminderSpec {
+                due_at: Some((chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339()),
+                delay_secs: Some(60),
+                watch_job_id: None,
+                title: "T".into(),
+                body: "B".into(),
+                mode: ReminderMode::Tool,
+                task_id: None,
+                tool_name: Some("notify".into()),
+                tool_args: None,
+                prompt: None,
+            })
+            .await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("exactly one"), "unexpected error: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_set_rejects_watch_with_delay_or_due_at() {
+        let tool = make_tool();
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "delay_secs": 60,
+                    "watch_job_id": "act-1",
+                    "body": "x",
+                    "mode": "continue"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("cannot be combined"),
+            "unexpected error: {msg}"
+        );
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "due_at": (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339(),
+                    "watch_job_id": "act-1",
+                    "body": "x",
+                    "mode": "continue"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_watch_requires_continue_mode() {
+        let tool = make_tool();
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "watch_job_id": "act-1",
+                    "body": "x",
+                    "mode": "tool",
+                    "tool_name": "notify"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("requires mode 'continue'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_watch_requires_jobs_registry() {
+        // No jobs registry wired (headless/test build): watch reminders fail
+        // fast instead of never firing.
+        let center = Arc::new(ReminderCenter::new());
+        let err = center
+            .set(ReminderSpec {
+                due_at: None,
+                delay_secs: None,
+                watch_job_id: Some("act-1".into()),
+                title: "T".into(),
+                body: "B".into(),
+                mode: ReminderMode::Continue,
+                task_id: Some("task-1".into()),
+                tool_name: None,
+                tool_args: None,
+                prompt: None,
+            })
+            .await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("requires the background-jobs registry"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_watch_job_fires_with_result_when_job_finishes() {
+        use crate::bg::BackgroundJobs;
+        let jobs = Arc::new(BackgroundJobs::new());
+        let center = Arc::new(ReminderCenter::new());
+        center.set_jobs(Some(jobs.clone()));
+        let mut rx = center.take_fired_receiver().expect("receiver available");
+
+        let job_id = jobs
+            .spawn_shell("echo job-watch-result", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        let id = center
+            .set(ReminderSpec {
+                due_at: None,
+                delay_secs: None,
+                watch_job_id: Some(job_id.clone()),
+                title: "Watch".into(),
+                body: "job done".into(),
+                mode: ReminderMode::Continue,
+                task_id: Some("task-1".into()),
+                tool_name: None,
+                tool_args: None,
+                prompt: None,
+            })
+            .await
+            .unwrap();
+
+        // Fires once the job completes, resuming the task with the result.
+        let fired = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+            .await
+            .expect("timed out waiting for job-watch fire")
+            .expect("channel closed");
+        assert_eq!(fired.reminder_id, id);
+        assert_eq!(fired.mode, ReminderMode::Continue);
+        assert_eq!(fired.task_id.as_deref(), Some("task-1"));
+        let prompt = fired.prompt.expect("watch fire must carry the result");
+        assert!(
+            prompt.contains("job-watch-result"),
+            "prompt must carry the job output: {prompt}"
+        );
+        assert!(
+            prompt.contains("completed"),
+            "prompt must carry the status: {prompt}"
+        );
+        // Not persisted (in-memory only).
+        assert!(center.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_watch_job_not_persisted_to_db() {
+        let (db, _dir) = test_db();
+        let jobs = Arc::new(crate::bg::BackgroundJobs::new());
+        let center = Arc::new(ReminderCenter::new());
+        center.set_db(Some(db.clone())).await;
+        center.set_jobs(Some(jobs));
+        center
+            .set(ReminderSpec {
+                due_at: None,
+                delay_secs: None,
+                watch_job_id: Some("act-nope".into()),
+                title: "T".into(),
+                body: "B".into(),
+                mode: ReminderMode::Continue,
+                task_id: Some("task-1".into()),
+                tool_name: None,
+                tool_args: None,
+                prompt: None,
+            })
+            .await
+            .unwrap();
+        // The watched job cannot survive a restart: nothing in the DB.
+        assert!(db.list_pending_reminders().unwrap().is_empty());
+        // Listed in memory (with the watched job id).
+        let rows = center.list().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["watch_job_id"], json!("act-nope"));
+    }
+    /// Minimal tool stub for registry-backed validation tests.
+    struct DummyTool {
+        name: &'static str,
+        risk: RiskLevel,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for DummyTool {
+        fn name(&self) -> String {
+            self.name.into()
+        }
+        fn description(&self) -> String {
+            "dummy test tool".into()
+        }
+        fn risk_level(&self, _input: &Value) -> RiskLevel {
+            self.risk
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(
+            &self,
+            _input: Value,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::ok(serde_json::json!({})))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_rejects_unknown_tool_name() {
+        let registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(DummyTool {
+                name: "notify",
+                risk: RiskLevel::Safe,
+            }))
+            .await;
+        let tool = ReminderTool {
+            center: Arc::new(ReminderCenter::new()),
+            registry: Some(registry.probe()),
+        };
+        // A typo'd tool name fails at schedule time instead of at fire time.
+        let err = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "delay_secs": 60,
+                    "body": "x",
+                    "mode": "tool",
+                    "tool_name": "notiy"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("not a registered tool"),
+            "unexpected error: {msg}"
+        );
+        // A known tool passes.
+        let ok = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "delay_secs": 60,
+                    "body": "x",
+                    "mode": "tool",
+                    "tool_name": "notify",
+                    "tool_args": {"title": "T", "body": "B"}
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(ok.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_set_reports_risk_and_confirmation_flag() {
+        let registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(DummyTool {
+                name: "shell",
+                risk: RiskLevel::High,
+            }))
+            .await;
+        registry
+            .register(Arc::new(DummyTool {
+                name: "notify",
+                risk: RiskLevel::Safe,
+            }))
+            .await;
+        let tool = ReminderTool {
+            center: Arc::new(ReminderCenter::new()),
+            registry: Some(registry.probe()),
+        };
+        // High-risk scheduled tool: flagged so the user knows the fire-time
+        // call may be skipped when nobody confirms.
+        let res = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "delay_secs": 60,
+                    "body": "x",
+                    "mode": "tool",
+                    "tool_name": "shell",
+                    "tool_args": {}
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.output["risk_level"], json!("high"));
+        assert_eq!(res.output["may_require_confirmation"], json!(true));
+        // Safe tool: no flag.
+        let res = tool
+            .execute(
+                json!({
+                    "operation": "set",
+                    "delay_secs": 60,
+                    "body": "x",
+                    "mode": "tool",
+                    "tool_name": "notify",
+                    "tool_args": {}
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.output["risk_level"], json!("safe"));
+        assert!(res.output.get("may_require_confirmation").is_none());
+    }
+
+    #[tokio::test]
     async fn test_set_with_due_at_and_prompt() {
         let (db, _dir) = test_db();
         let center = Arc::new(ReminderCenter::new());
@@ -786,6 +1403,7 @@ mod tests {
             .set(ReminderSpec {
                 due_at: Some(due),
                 delay_secs: None,
+                watch_job_id: None,
                 title: "Wake".into(),
                 body: "body text".into(),
                 mode: ReminderMode::Continue,
@@ -828,6 +1446,7 @@ mod tests {
             .set(ReminderSpec {
                 due_at: None,
                 delay_secs: Some(1),
+                watch_job_id: None,
                 title: "Backup".into(),
                 body: "running backup".into(),
                 mode: ReminderMode::Tool,
@@ -954,6 +1573,7 @@ mod tests {
         let mut rx = center.take_fired_receiver().expect("receiver available");
         let tool = ReminderTool {
             center: center.clone(),
+            registry: None,
         };
         let id = center.set(tool_spec(1, "Test", "fire now")).await.unwrap();
         let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -990,7 +1610,7 @@ mod tests {
 
         // A future reminder (5s out) and an overdue one (already past).
         let future_id = center.set(tool_spec(5, "Future", "later")).await.unwrap();
-        let overdue_id = format!("rem-{}", uuid::Uuid::new_v4().simple());
+        let overdue_id = format!("act-{}", uuid::Uuid::new_v4().simple());
         db.save_reminder(
             &overdue_id,
             &(chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339(),
@@ -1057,5 +1677,60 @@ mod tests {
             .execute(json!({"operation": "bogus"}), CancellationToken::new())
             .await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_event_sink_receives_set_fire_cancel() {
+        let center = Arc::new(ReminderCenter::new());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        center.set_event_sink(Arc::new(move |name, payload| {
+            sink_events.lock().unwrap().push((name, payload));
+        }));
+        let mut rx = center.take_fired_receiver().expect("receiver available");
+
+        // set -> activity:created event with the payload.
+        let id = center.set(tool_spec(1, "Evt", "fire me")).await.unwrap();
+        {
+            let evs = events.lock().unwrap();
+            let set_evt = evs
+                .iter()
+                .find(|(n, _)| n == "activity:created")
+                .expect("activity:created emitted");
+            assert_eq!(set_evt.1["id"], id);
+            assert_eq!(set_evt.1["body"], "fire me");
+            assert!(set_evt.1["due_at"].as_str().is_some());
+        }
+
+        // Fire -> activity:finished event.
+        let fired = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for fire")
+            .expect("channel closed");
+        assert_eq!(fired.reminder_id, id);
+        {
+            let evs = events.lock().unwrap();
+            let fired_evt = evs
+                .iter()
+                .find(|(n, _)| n == "activity:finished")
+                .expect("activity:finished emitted");
+            assert_eq!(fired_evt.1["id"], id);
+            assert_eq!(fired_evt.1["mode"], "tool");
+        }
+
+        // cancel -> activity:updated event.
+        let id2 = center
+            .set(tool_spec(3600, "Keep", "pending"))
+            .await
+            .unwrap();
+        assert!(center.cancel(&id2).await);
+        {
+            let evs = events.lock().unwrap();
+            let cancel_evt = evs
+                .iter()
+                .find(|(n, _)| n == "activity:updated")
+                .expect("activity:updated emitted");
+            assert_eq!(cancel_evt.1["id"], id2);
+        }
     }
 }

@@ -2,12 +2,15 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use futures_util::Stream;
 use futures_util::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::pin::Pin;
 use std::time::Duration;
 
+use crate::adapters::{
+    build_client, build_headers, health_check_request, send_request,
+};
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{
     ContentPart, Embedding, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
@@ -201,50 +204,12 @@ pub struct OpenAiAdapter {
 
 impl OpenAiAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
-        let mut builder = crate::client::http_client_builder();
-
-        // §2.5: proxy support
-        if let Some(ref proxy_url) = endpoint.proxy_url
-            && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
-        {
-            if let Some(ref no_proxy) = endpoint.no_proxy {
-                let proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy));
-                builder = builder.proxy(proxy);
-            } else {
-                builder = builder.proxy(proxy);
-            }
-        }
-
-        // §5.5: connection pool tuning
-        builder = builder
-            .pool_max_idle_per_host(5)
-            .pool_idle_timeout(Duration::from_secs(90));
-
-        // §2.9: no global timeout — per-request timeout applied in chat_inner/chat_stream_inner
-
-        let client = builder.build().unwrap_or_default();
+        let client = build_client(&endpoint);
         Self { endpoint, client }
     }
 
     fn build_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if !self.endpoint.api_key.is_empty() {
-            // §2.15: customizable auth header name and prefix
-            let auth = format!(
-                "{} {}",
-                self.endpoint.auth_header_prefix, self.endpoint.api_key
-            );
-            if let Ok(v) = HeaderValue::from_str(&auth) {
-                let name = self
-                    .endpoint
-                    .auth_header_name
-                    .parse::<reqwest::header::HeaderName>()
-                    .unwrap_or(AUTHORIZATION);
-                headers.insert(name, v);
-            }
-        }
-        headers
+        build_headers(&self.endpoint, "Authorization", true)
     }
 
     fn convert_messages(msgs: Vec<LlmMessage>) -> Vec<OpenAiMessage> {
@@ -491,29 +456,7 @@ impl OpenAiAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = req.send().await.map_err(LlmError::from)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // §2.3: extract Retry-After header before consuming body
-            let retry_after = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| {
-                    // Try seconds first, then HTTP-date
-                    s.parse::<u64>()
-                        .ok()
-                        .or_else(|| {
-                            // HTTP-date: not commonly used; log and fall back to None
-                            tracing::warn!("Retry-After as HTTP-date not yet supported: {}", s);
-                            None
-                        })
-                        .map(Duration::from_secs)
-                });
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(http_status_to_error(status, &txt, retry_after));
-        }
+        let resp = send_request(req).await?;
 
         let json: OpenAiResponse = resp
             .json()
@@ -563,7 +506,6 @@ impl OpenAiAdapter {
             LlmError::from(e)
         })?;
         tracing::debug!("chat_stream_inner response status: {}", resp.status());
-
         if !resp.status().is_success() {
             let status = resp.status();
             // §2.3: extract Retry-After header before consuming body
@@ -880,18 +822,7 @@ impl LlmClient for OpenAiAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = req.send().await.map_err(LlmError::from)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let retry_after = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok().map(Duration::from_secs));
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(http_status_to_error(status, &txt, retry_after));
-        }
+        let resp = send_request(req).await?;
 
         let json: OpenAiEmbedResponse = resp
             .json()
@@ -933,21 +864,13 @@ impl LlmClient for OpenAiAdapter {
 
     async fn health_check(&self) -> Result<(), LlmError> {
         let url = format!("{}/models", self.endpoint.base_url.trim_end_matches('/'));
-        let resp = self
-            .client
-            .get(&url)
-            .headers(self.build_headers())
-            .timeout(Duration::from_secs(self.endpoint.timeout_secs.min(7)))
-            .send()
-            .await
-            .map_err(LlmError::from)?;
-        if resp.status().is_success() {
-            Ok(())
-        } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
-            Err(LlmError::Auth(format!("status {}", resp.status())))
-        } else {
-            Err(LlmError::ServerError(format!("status {}", resp.status())))
-        }
+        health_check_request(
+            &self.client,
+            &url,
+            self.build_headers(),
+            self.endpoint.timeout_secs,
+        )
+        .await
     }
 }
 

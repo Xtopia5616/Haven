@@ -2,14 +2,17 @@ use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
 use haven_memory::repositories::tasks::Task as DbTask;
-use haven_tools::{ToolResult, ToolsManager, is_silent_action};
+use haven_tools::{ConfirmationResult, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
+
+pub mod partial;
 
 /// A user message queued for injection into the ReAct loop (supplement or
 /// steering). `text` is the plain-text content; `attachments` hold binary
@@ -66,6 +69,15 @@ pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
+
+/// Bounded wait for a user confirmation. A pending confirmation whose
+/// frontend answer never arrives (window closed, dialog lost, reminder fired
+/// with no UI attached) must fail CLOSED instead of blocking the task — or,
+/// for the reminder path, the whole sequential reminder consumer — for an
+/// unbounded time. The bound is short enough that a headless queue recovers
+/// quickly, yet still gives an interactive user a comfortable window to
+/// approve/deny a dialog.
+const CONFIRM_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TaskStatus {
@@ -185,7 +197,7 @@ impl TaskInfo {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepInfo {
     pub id: String,
-    pub step_index: i32,
+    pub step_number: i32,
     pub tool_name: String,
     pub input: Value,
     pub output: Option<Value>,
@@ -194,7 +206,33 @@ pub struct StepInfo {
     pub confirmed: Option<bool>,
 }
 
-type ConfirmRequestCallback = Arc<Mutex<Option<Box<dyn Fn(String, String, RiskLevel) + Send>>>>;
+type ConfirmRequestCallback = Arc<
+    Mutex<Option<Box<dyn Fn(haven_common::types::ConfirmId, String, String, RiskLevel) + Send>>>,
+>;
+
+/// Terminal-failure callback: invoked when the dispatcher marks a task as
+/// Error on a path that bypasses the ReAct loop's normal error emission
+/// (handler panic / abort). The app layer wires it to emit `task:error` and
+/// the `task:updated` secondary broadcast so the UI never misses a terminal
+/// transition (busy indicators, status chip, task list refresh).
+type TaskErrorCallback = Arc<Mutex<Option<Box<dyn Fn(String, String) + Send>>>>;
+
+/// A pending safety-gateway confirmation wait, keyed by a generated step id
+/// in `TaskExecutor::confirm_waits`. The executing task blocks on the oneshot
+/// receiver until the frontend resolves the confirmation via
+/// `resolve_confirmation` (or the task is cancelled).
+struct ConfirmWait {
+    risk_level: RiskLevel,
+    tx: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// Result of a safety-gated tool execution: the tool result plus the
+/// risk level and confirmation state recorded for the step.
+pub struct ToolExecution {
+    pub result: ToolResult,
+    pub risk_level: RiskLevel,
+    pub confirmed: Option<bool>,
+}
 
 pub struct TaskExecutor {
     db: Arc<Database>,
@@ -207,10 +245,21 @@ pub struct TaskExecutor {
     tasks: Arc<Mutex<HashMap<String, Arc<Mutex<TaskInfo>>>>>,
     running_tasks: Arc<Mutex<HashSet<String>>>,
     semaphore: Arc<Semaphore>,
+    /// Current configured task concurrency ceiling. Kept separate from the
+    /// semaphore's live permit count so `set_max_concurrent` can compute the
+    /// delta when the user changes the setting at runtime.
+    max_concurrent: std::sync::atomic::AtomicUsize,
     /// Tracks the semaphore permit held by each running task's handler.
     /// When a task is paused, its permit is dropped so the dispatcher slot
     /// is freed. On resume the dispatcher re-acquires a permit.
     task_permits: Arc<Mutex<HashMap<String, OwnedSemaphorePermit>>>,
+    /// FIFO dispatch queue: task ids in the order they became `Pending`
+    /// (insertion order ≈ creation order for fresh tasks). The dispatcher
+    /// claims from the front, so queued tasks run in submission order instead
+    /// of the nondeterministic `HashMap` iteration order a full scan would
+    /// produce. Entries are (re-)enqueued on every transition to Pending and
+    /// removed on terminal states / claims / explicit removal.
+    pending_queue: Arc<Mutex<VecDeque<String>>>,
     /// Cancellation tokens for each task, used to abort in-flight LLM calls.
     task_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Per-task level-triggered status watchers: the ReAct loop blocks on the
@@ -230,23 +279,36 @@ pub struct TaskExecutor {
     /// `ask` pause path keys resume off the steering queue, which now holds
     /// only genuine user interjections).
     job_completions: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Pending user confirmations for safety-gated tool calls, keyed by the
+    /// generated step id reported in the `confirm:requested` event.
+    confirm_waits: Arc<Mutex<HashMap<haven_common::types::ConfirmId, ConfirmWait>>>,
+    /// Coordinated lifecycle for checkpointed stream text (checkpoint /
+    /// promote / discard), shared with the agent loop and the end/rollback
+    /// paths.
+    pub partials: Arc<crate::partial::PartialStore>,
     pub on_confirm_request: ConfirmRequestCallback,
+    pub on_task_error: TaskErrorCallback,
 }
 
 impl TaskExecutor {
     pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
         Self {
+            partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
             db,
             tools,
             tasks: Arc::new(Mutex::new(HashMap::new())),
             running_tasks: Arc::new(Mutex::new(HashSet::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            max_concurrent: std::sync::atomic::AtomicUsize::new(max_concurrent),
+            pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             task_permits: Arc::new(Mutex::new(HashMap::new())),
             task_cancellations: Arc::new(Mutex::new(HashMap::new())),
             status_tx: Arc::new(Mutex::new(HashMap::new())),
             dispatch_tx: watch::channel(0).0,
             job_completions: Arc::new(Mutex::new(HashMap::new())),
+            confirm_waits: Arc::new(Mutex::new(HashMap::new())),
             on_confirm_request: Arc::new(Mutex::new(None)),
+            on_task_error: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -268,6 +330,10 @@ impl TaskExecutor {
         let mut tasks = self.tasks.lock().await;
         tasks.insert(task.id.clone(), Arc::new(Mutex::new(task.clone())));
 
+        // FIFO dispatch: queue the task before waking so the dispatcher's
+        // first claim finds it at the tail, in submission order.
+        self.enqueue_pending(&task.id).await;
+
         // Wake the dispatcher so it picks up this Pending task immediately.
         self.wake_dispatcher();
         Ok(task)
@@ -277,7 +343,22 @@ impl TaskExecutor {
     /// between a failed claim and the dispatcher's wait resolves `changed()`
     /// immediately, so no transition is ever lost.
     fn wake_dispatcher(&self) {
-        let _ = self.dispatch_tx.send_modify(|c| *c += 1);
+        self.dispatch_tx.send_modify(|c| *c += 1);
+    }
+
+    /// Enqueue a task id at the tail of the FIFO dispatch queue (idempotent:
+    /// a task already queued is not duplicated).
+    async fn enqueue_pending(&self, task_id: &str) {
+        let mut q = self.pending_queue.lock().await;
+        if !q.iter().any(|t| t == task_id) {
+            q.push_back(task_id.to_string());
+        }
+    }
+
+    /// Remove a task id from the FIFO dispatch queue (no-op when absent).
+    async fn dequeue_pending(&self, task_id: &str) {
+        let mut q = self.pending_queue.lock().await;
+        q.retain(|t| t != task_id);
     }
 
     /// Subscribe to dispatch wake signals (a `watch` receiver on the wake
@@ -285,6 +366,53 @@ impl TaskExecutor {
     /// version it has seen, so it must be created before the first claim.
     pub fn subscribe_dispatch(&self) -> watch::Receiver<u64> {
         self.dispatch_tx.subscribe()
+    }
+
+    /// Adjust the task concurrency ceiling at runtime (settings save). The
+    /// semaphore permit count is updated by the delta:
+    /// - Raising: `add_permits` grows the cap immediately; queued tasks start
+    ///   as soon as a permit is free.
+    /// - Lowering: unused permits are reclaimed best-effort. Permits held by
+    ///   in-flight tasks cannot be revoked (they finish and release naturally),
+    ///   so the effective concurrency may stay above the new target until the
+    ///   current tasks complete — never forcibly cancelled.
+    pub fn set_max_concurrent(&self, new_max: usize) {
+        let new_max = new_max.max(1);
+        let cur = self
+            .max_concurrent
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if new_max == cur {
+            return;
+        }
+        if new_max > cur {
+            self.semaphore.add_permits(new_max - cur);
+        } else {
+            let mut reclaimed = 0usize;
+            while reclaimed < cur - new_max {
+                match self.semaphore.clone().try_acquire_owned() {
+                    Ok(p) => {
+                        // `forget` (not `drop`): dropping a permit returns it
+                        // to the semaphore, which would make the reclaim loop
+                        // a no-op and let the ceiling drift (a later raise
+                        // would then overshoot by the stale delta).
+                        p.forget();
+                        reclaimed += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+            if reclaimed < cur - new_max {
+                tracing::warn!(
+                    "set_max_concurrent: reclaimed {}/{} permits; in-flight tasks keep \
+                     the effective concurrency above the new target until they finish",
+                    reclaimed,
+                    cur - new_max
+                );
+            }
+        }
+        self.max_concurrent
+            .store(new_max, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!("task concurrency ceiling: {} -> {}", cur, new_max);
     }
 
     /// Persist a task status to the DB with a small number of retries. SQLite
@@ -372,14 +500,21 @@ impl TaskExecutor {
 
                 let exec_inner = exec.clone();
                 let handler_inner = handler.clone();
-                tracing::info!("dispatcher spawning handler for task: {:?}", task_id);
+                tracing::info!(task_id = %task_id, "dispatcher spawning handler");
                 // Run the handler on a nested task so a panic in the ReAct
                 // loop is contained: the JoinHandle turns it into an Err and
                 // the cleanup below still runs. Without this, a panicked
                 // handler would skip the Error marking and unmark_running,
                 // leaving the task stuck in Running (memory + DB) forever.
+                //
+                // The handler runs inside a task-level span so every log line
+                // emitted by the ReAct loop (agent, compactor, title,
+                // inference) carries the task_id even when the call site does
+                // not name it — parallel tasks stay distinguishable in logs.
+                let task_span = tracing::info_span!("run_task", task_id = %task_id);
                 tokio::spawn(async move {
-                    let result = tokio::spawn(handler_inner(task_id.clone())).await;
+                    let result =
+                        tokio::spawn(handler_inner(task_id.clone()).instrument(task_span)).await;
                     let failed = match result {
                         Ok(Ok(())) => None,
                         Ok(Err(e)) => Some(format!("handler failed: {}", e)),
@@ -389,13 +524,21 @@ impl TaskExecutor {
                         Err(join_err) => Some(format!("handler aborted: {}", join_err)),
                     };
                     if let Some(reason) = failed {
-                        tracing::error!("dispatcher task {} {}", task_id, reason);
+                        tracing::error!(task_id = %task_id, "dispatcher task {} {}", task_id, reason);
                         let _ = exec_inner
                             .update_task_status(&task_id, TaskStatus::Error)
                             .await;
                         // The ReAct loop errored out: kill any background jobs
                         // the task spawned so their children cannot leak.
                         exec_inner.cancel_task_jobs(&task_id).await;
+                        // The ReAct loop never emitted a terminal event for
+                        // this failure (panic bypasses its error path), so
+                        // surface it through the wired callback — otherwise
+                        // the UI keeps the task in its busy set and the chip
+                        // would stay stuck on "waiting" forever.
+                        if let Some(cb) = exec_inner.on_task_error.lock().await.as_ref() {
+                            cb(task_id.clone(), reason);
+                        }
                     }
                     exec_inner.unmark_running(&task_id).await;
                 });
@@ -403,30 +546,43 @@ impl TaskExecutor {
         });
     }
 
-    /// Atomically claim the first `Pending` task that is not already being
-    /// handled, flip it to `Running` (memory + DB) and insert it into the
-    /// running set. Returns the claimed task id, or `None` if nothing is
-    /// dispatchable.
+    /// Claim the oldest `Pending` task from the FIFO dispatch queue, flip it
+    /// to `Running` (memory + DB) and insert it into the running set. Returns
+    /// the claimed task id, or `None` if nothing is dispatchable.
+    ///
+    /// Stale queue entries are skipped without re-queuing: a task whose
+    /// status moved away from Pending (paused, cancelled, ended) or whose
+    /// handler is still alive (a supplement flipped it Paused → Pending —
+    /// its own loop picks up the supplement via the status watcher, and only
+    /// the dispatcher inserts into `running_tasks`, so a re-claim would be a
+    /// double-dispatch) must not be started again.
     ///
     /// The status flip happens under the task's own entry lock (never under
     /// the map lock), so a slow transition of another task cannot block the
     /// claim. The DB write precedes the memory flip: on a persistent DB
     /// failure the claim is aborted before memory and the running set diverge,
     /// keeping the memory/DB error policy consistent with `update_task_status`.
+    /// The task is re-queued at the tail so it is not lost.
     async fn try_claim_pending(&self) -> Option<String> {
-        // Snapshot the entry Arcs under a brief map lock; the per-entry
-        // evaluation below never holds the map lock across an await.
-        let entries: Vec<Arc<Mutex<TaskInfo>>> =
-            self.tasks.lock().await.values().cloned().collect();
-        for entry in entries {
+        loop {
+            let task_id = {
+                let mut q = self.pending_queue.lock().await;
+                match q.pop_front() {
+                    Some(id) => id,
+                    None => return None,
+                }
+            };
+            let entry = { self.tasks.lock().await.get(&task_id).cloned() };
+            let Some(entry) = entry else {
+                // Task removed between enqueue and claim (end_task /
+                // remove_task / terminal cleanup): stale queue entry.
+                continue;
+            };
             let mut task = entry.lock().await;
             if task.status != TaskStatus::Pending {
-                continue;
-            }
-            // Re-check membership: `end_task` may have removed the task from
-            // the map between the snapshot and the entry lock; claiming it
-            // would resurrect it (ghost execution).
-            if !self.tasks.lock().await.contains_key(&task.id) {
+                // Status moved (paused, ended, errored) while queued: no
+                // longer dispatchable, and the transition path already
+                // re-enqueued it if it became Pending again.
                 continue;
             }
             // The `running_tasks` check prevents double-dispatch: a task whose
@@ -435,16 +591,16 @@ impl TaskExecutor {
             // again — its own loop picks up the supplement via the status
             // watcher. Only the dispatcher inserts into this set, so the
             // check-then-insert below cannot race.
-            if self.running_tasks.lock().await.contains(&task.id) {
+            if self.running_tasks.lock().await.contains(&task_id) {
                 continue;
             }
-            let task_id = task.id.clone();
             if let Err(e) = Self::persist_status(&self.db, &task_id, "running").await {
                 tracing::error!(
-                    "try_claim_pending: DB persist failed for task {}; leaving it Pending: {}",
+                    "try_claim_pending: DB persist failed for task {}; re-queuing it: {}",
                     task_id,
                     e
                 );
+                self.pending_queue.lock().await.push_back(task_id);
                 return None;
             }
             task.status = TaskStatus::Running;
@@ -453,7 +609,6 @@ impl TaskExecutor {
             tracing::debug!("try_claim_pending: claimed task {}", task_id);
             return Some(task_id);
         }
-        None
     }
 
     /// Remove a task from the running set. Terminal status updates are
@@ -473,8 +628,22 @@ impl TaskExecutor {
                 task_id,
                 status
             );
+            self.dequeue_pending(task_id).await;
             self.tasks.lock().await.remove(task_id);
         } else {
+            // The handler has exited (unmark_running runs after the handler
+            // future completes). A task left Pending here is claimable again
+            // — re-enqueue it, or it would strand forever: the FIFO claim
+            // consumed its queue entry when it skipped it while the handler
+            // was still alive, and no later Pending transition re-queues it.
+            // The alive-handler case is safe: a task whose handler is truly
+            // still running is claimed only after `running_tasks` re-check.
+            if status == TaskStatus::Pending {
+                self.enqueue_pending(task_id).await;
+                // The dispatcher may be parked on its wake channel after a
+                // failed claim; re-queueing alone would not wake it.
+                self.wake_dispatcher();
+            }
             tracing::debug!(
                 "task {} unmark_running: {:?}, keeping in list",
                 task_id,
@@ -612,55 +781,34 @@ impl TaskExecutor {
             .unwrap_or_default()
     }
 
-    /// Promote a checkpointed partial stream reply into a real assistant
-    /// message when the user stops the task mid-generation, so history keeps
-    /// the text that was already streamed to the screen. Skips when a real
-    /// message was persisted after the last checkpoint (the loop finished
-    /// writing before the cancel landed) — promoting then would duplicate it.
-    async fn promote_partial_message(&self, task_id: &str) {
-        let db = self.db.clone();
-        let tid = task_id.to_string();
-        let partial = db
-            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
-            .await
-            .ok()
-            .flatten();
-        let Some((content, updated_at)) = partial else {
-            return;
+    /// Drain all pending user-facing context for a task in one lock pass:
+    /// supplements (paused-task replies / `ask` answers), steering (mid-run
+    /// user interjections) and buffered background-job results. The ReAct loop
+    /// calls this once per step instead of three separate queue drains (three
+    /// global task-map lock acquisitions per step), so the three batches can
+    /// never drift apart either.
+    pub async fn drain_pending_context(
+        &self,
+        task_id: &str,
+    ) -> (Vec<Supplement>, Vec<Supplement>, Vec<String>) {
+        let entry = { self.tasks.lock().await.get(task_id).cloned() };
+        let (supplements, steering) = match entry {
+            Some(entry) => {
+                let mut task = entry.lock().await;
+                (
+                    task.supplement_queue.drain(..).collect(),
+                    task.steering_queue.drain(..).collect(),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
         };
-        if content.trim().is_empty() {
-            return;
-        }
-        let db = self.db.clone();
-        let tid = task_id.to_string();
-        let last_ts = db
-            .run_blocking(move |db| Ok(db.get_last_message_created_at(&tid)))
+        let job_results = self
+            .job_completions
+            .lock()
             .await
-            .ok()
-            .flatten();
-        if let Some(last) = last_ts
-            && last >= updated_at
-        {
-            return;
-        }
-        let db = self.db.clone();
-        let tid = task_id.to_string();
-        let res = db
-            .run_blocking(move |db| {
-                let taken = db.take_partial_message(&tid);
-                if let Some(text) = taken {
-                    db.add_message_full(&tid, "assistant", &text, Some("text"), None, &[], false)?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })
-            .await;
-        if let Err(e) = res {
-            tracing::warn!(
-                "promote_partial_message: failed to promote partial reply for task {}: {}",
-                task_id,
-                e
-            );
-        }
+            .remove(task_id)
+            .unwrap_or_default();
+        (supplements, steering, job_results)
     }
 
     /// End a task. Since the user explicitly asked to end it, the task is
@@ -683,6 +831,17 @@ impl TaskExecutor {
         // Kill any background jobs the task spawned; they would otherwise
         // keep running (and leak child processes) after the task is gone.
         self.cancel_task_jobs(task_id).await;
+        // Promote checkpointed stream text into history (skip when a real
+        // message already supersedes it). Runs BEFORE the task is torn down;
+        // the PartialStore's generation bump also invalidates any in-flight
+        // checkpoint so it cannot re-create the row afterwards.
+        if let Err(e) = self.partials.promote(task_id).await {
+            tracing::warn!(
+                "end_task: failed to promote partial reply for task {}: {}",
+                task_id,
+                e
+            );
+        }
         let entry = { self.tasks.lock().await.get(task_id).cloned() };
         let Some(entry) = entry else {
             // Task not in memory (e.g. after restart) 鈥?end it regardless of
@@ -691,7 +850,6 @@ impl TaskExecutor {
                 tracing::error!("end_task: DB persist failed for task {}: {}", task_id, e);
                 return Err(e);
             }
-            self.promote_partial_message(task_id).await;
             return Ok(TaskStatus::Completed);
         };
         {
@@ -703,12 +861,12 @@ impl TaskExecutor {
             task.status = TaskStatus::Completed;
             task.updated_at = chrono::Utc::now().to_rfc3339();
         }
-        self.promote_partial_message(task_id).await;
         // Wake any ReAct-loop status waiter before tearing down the rest of
         // the per-task state.
         if let Some(tx) = self.status_tx.lock().await.remove(task_id) {
             let _ = tx.send(TaskStatus::Completed);
         }
+        self.dequeue_pending(task_id).await;
         self.cleanup_task_maps(task_id).await;
         self.tasks.lock().await.remove(task_id);
         Ok(TaskStatus::Completed)
@@ -720,6 +878,7 @@ impl TaskExecutor {
     pub async fn remove_task(&self, task_id: &str) {
         self.cancel_task_jobs(task_id).await;
         self.tasks.lock().await.remove(task_id);
+        self.dequeue_pending(task_id).await;
         self.cleanup_task_maps(task_id).await;
         self.status_tx.lock().await.remove(task_id);
         self.job_completions.lock().await.remove(task_id);
@@ -749,6 +908,7 @@ impl TaskExecutor {
     /// Used when the user clears history 鈥?the DB is already wiped.
     pub async fn clear_all_tasks(&self) {
         self.tasks.lock().await.clear();
+        self.pending_queue.lock().await.clear();
         self.running_tasks.lock().await.clear();
         self.task_permits.lock().await.clear();
         self.task_cancellations.lock().await.clear();
@@ -814,6 +974,7 @@ impl TaskExecutor {
             // re-registered as Pending (e.g. `create_task_with_first_message`)
             // is picked up even though its status did not change.
             if status == TaskStatus::Pending {
+                self.enqueue_pending(task_id).await;
                 self.wake_dispatcher();
             }
             return Ok(());
@@ -859,9 +1020,11 @@ impl TaskExecutor {
         };
         let _ = tx.send(status.clone());
         if is_pending {
+            self.enqueue_pending(task_id).await;
             self.wake_dispatcher();
         }
         if is_terminal {
+            self.dequeue_pending(task_id).await;
             self.cleanup_task_maps(task_id).await;
             self.tools.unregister_task(task_id).await;
             if let Some(tx) = self.status_tx.lock().await.remove(task_id) {
@@ -972,6 +1135,7 @@ impl TaskExecutor {
             .search_tasks_filtered(None, Some("pending"), None, None, -1, 0)
             .unwrap_or_default();
         let mut loaded = 0;
+        let mut queued = Vec::new();
         {
             let mut tasks = self.tasks.lock().await;
             for record in pending {
@@ -985,8 +1149,14 @@ impl TaskExecutor {
                 let mut info = TaskInfo::from_db_record(&record);
                 info.status = TaskStatus::Pending;
                 tasks.insert(record.id.clone(), Arc::new(Mutex::new(info)));
+                queued.push(record.id);
                 loaded += 1;
             }
+        }
+        // FIFO: enqueue after releasing the working-set lock (the queue lock
+        // is never held across the map lock to keep the order acyclic).
+        for id in queued {
+            self.enqueue_pending(&id).await;
         }
         if loaded > 0 {
             self.wake_dispatcher();
@@ -1007,11 +1177,17 @@ impl TaskExecutor {
         self.tools.clone()
     }
 
-    /// Cancel and drop all background jobs owned by a task. Called when the
-    /// task ends, is removed, or is rolled back so child processes cannot
-    /// leak past their task.
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Cancel and drop all background jobs owned by a task, and cancel its
+    /// pending reminders. Called when the task ends, is removed, or is
+    /// rolled back so child processes cannot leak past their task and no
+    /// reminder fires against a task that no longer exists.
     pub async fn cancel_task_jobs(&self, task_id: &str) {
         self.tools.background_jobs.cancel_for_task(task_id).await;
+        self.tools.reminders.cancel_for_task(task_id).await;
     }
 
     pub async fn execute_step(
@@ -1032,7 +1208,22 @@ impl TaskExecutor {
             if let Some(entry) = entry {
                 let mut task = entry.lock().await;
                 let prev = task.status.clone();
+                if prev.is_terminal() {
+                    // Executing a tool on a Completed/Error task is always a
+                    // stale call from a racing loop (end/rollback already
+                    // finished this task). Failing fast here prevents the
+                    // force below from resurrecting a dead task.
+                    return Err(anyhow::anyhow!(
+                        "execute_step: task {} is {}; refusing to execute tool '{}'",
+                        task_id,
+                        prev.as_str(),
+                        tool_name
+                    ));
+                }
                 if prev != TaskStatus::Running {
+                    // The ReAct loop runs with status Pending (the dispatcher
+                    // never flips it to Running), and scheduled reminders fire
+                    // on Paused tasks; both are legitimate tool-call moments.
                     task.status = TaskStatus::Running;
                     tracing::warn!(
                         "execute_step: task {} was {} before tool call, forcing Running",
@@ -1044,42 +1235,51 @@ impl TaskExecutor {
         }
 
         let cancel = self.cancellation_token(task_id).await;
-        let result = self
-            .tools
-            .execute_tool(Some(task_id), tool_name, input.clone(), cancel)
+        let gated = self
+            .execute_gated(Some(task_id), tool_name, input.clone(), cancel)
             .await?;
+        let ToolExecution {
+            result,
+            risk_level,
+            confirmed,
+        } = gated;
         tracing::info!(
             "execute_step result: tool={} success={}",
             tool_name,
             result.success
         );
 
-        let risk_level = self
-            .tools
-            .get_risk_level(Some(task_id), tool_name, &input)
-            .await;
-
-        // Register skill adapter per-task on successful load_skill
-        // instead of polluting the global registry (refine 搂6).
-        if result.success
-            && tool_name == "load_skill"
-            && let Some(skill_name) = result.output["skill"]["name"].as_str()
-        {
-            let clean_name = skill_name.strip_prefix("skill__").unwrap_or(skill_name);
+        // Apply the tool's declared per-task side effects (skill/MCP adapter
+        // registration) instead of name-matching load_skill/load_mcp here —
+        // a new tool with a side effect declares it via `Tool::registrations`
+        // and nothing in this executor needs to change. Background-job
+        // bindings are applied after the running-set guard below (a job
+        // spawned in a concurrently-rolled-back step must not attach past
+        // the cleanup sweep). `registrations` is extracted ONCE: calling it
+        // twice could yield divergent results for stateful tools, and the
+        // variant split below is explicit rather than silently partitioned.
+        let registrations = if result.success {
             self.tools
-                .register_skill_for_task(task_id, clean_name)
-                .await;
+                .get_tool_for_task(Some(task_id), tool_name)
+                .await
+                .map(|t| t.registrations(&result.output))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for reg in &registrations {
+            match reg {
+                haven_tools::ToolRegistration::Skill(name) => {
+                    self.tools.register_skill_for_task(task_id, name).await;
+                }
+                haven_tools::ToolRegistration::McpServer(name) => {
+                    self.tools.register_mcp_for_task(task_id, name).await;
+                }
+                // Activity is applied after the running-set guard.
+                haven_tools::ToolRegistration::Activity(_) => {}
+            }
         }
-
-        // Register MCP tool adapters per-task on successful load_mcp
-        if result.success
-            && tool_name == "load_mcp"
-            && let Some(server_name) = result.output["server_name"].as_str()
-        {
-            self.tools.register_mcp_for_task(task_id, server_name).await;
-        }
-
-        let step_index = step_num as i32;
+        let step_number = step_num as i32;
         // Guard against rollback/cancel: if the task has been removed from the
         // running set while the tool was executing (e.g. rollback_task marked
         // it Error and restored a snapshot), skip persisting step records that
@@ -1092,42 +1292,17 @@ impl TaskExecutor {
             return Ok(result);
         }
         // Tie a background job to its task so end/rollback can clean it up.
-        // After the running-set guard: a job spawned in a step that was
-        // concurrently rolled back must not attach past the cleanup sweep.
-        // Gated on the shell tool 鈥?any other tool whose output happens to
-        // carry "background"+job_id must not re-bind a foreign job.
-        if result.success
-            && tool_name == "shell"
-            && result.output.get("background").and_then(|v| v.as_bool()) == Some(true)
-            && let Some(job_id) = result.output["job_id"].as_str()
-        {
-            self.tools
-                .background_jobs
-                .attach_task(job_id, task_id)
-                .await;
-        }
-        {
-            let entry = { self.tasks.lock().await.get(task_id).cloned() };
-            if let Some(entry) = entry {
-                let mut task = entry.lock().await;
-                task.steps.push(StepInfo {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    step_index,
-                    tool_name: tool_name.into(),
-                    input: input.clone(),
-                    output: Some(result.output.clone()),
-                    status: if result.success {
-                        "completed".into()
-                    } else {
-                        "failed".into()
-                    },
-                    risk_level,
-                    confirmed: None,
-                });
-                task.updated_at = chrono::Utc::now().to_rfc3339();
+        // Applied only AFTER the running-set guard above passed (a rollback
+        // racing this step may have removed the task); the registrations were
+        // extracted once, before the guard.
+        for reg in &registrations {
+            if let haven_tools::ToolRegistration::Activity(job_id) = reg {
+                self.tools
+                    .background_jobs
+                    .attach_task(job_id, task_id)
+                    .await;
             }
         }
-
         let step_record = self
             .db
             .run_blocking({
@@ -1138,11 +1313,12 @@ impl TaskExecutor {
                 move |db| {
                     db.create_action_step(
                         &task_id,
-                        step_index,
+                        step_number,
                         &tool_name,
                         &tool_input,
                         risk_level != RiskLevel::Safe,
                         silent,
+                        confirmed,
                     )
                 }
             })
@@ -1150,39 +1326,194 @@ impl TaskExecutor {
         let obs = result.summary_text();
         let step_id = step_record.id.clone();
         let success = result.success;
+        // The in-memory StepInfo reuses the persisted step row's id so the
+        // live task state and the review history reference the same step.
+        if let Some(entry) = self.tasks.lock().await.get(task_id).cloned() {
+            let mut task = entry.lock().await;
+            task.steps.push(StepInfo {
+                id: step_id.clone(),
+                step_number,
+                tool_name: tool_name.into(),
+                input: input.clone(),
+                output: Some(result.output.clone()),
+                status: if success {
+                    "completed".into()
+                } else {
+                    "failed".into()
+                },
+                risk_level,
+                confirmed,
+            });
+            task.updated_at = chrono::Utc::now().to_rfc3339();
+        }
         self.db
             .run_blocking(move |db| db.complete_action_step(&step_id, &obs, success))
             .await?;
         Ok(result)
     }
 
-    pub fn confirm_step(&self, step_id: &str, confirmed: bool) -> anyhow::Result<()> {
-        self.db.confirm_step(step_id, confirmed)?;
-        Ok(())
+    /// Execute a tool through the safety gateway. The tool's risk level is
+    /// checked against the configured threshold BEFORE anything runs; an
+    /// operation at/above the threshold blocks on the user's confirmation
+    /// (`confirm:requested` event + `resolve_confirmation`), and is aborted
+    /// when the user declines or the task is cancelled. Returns a failed
+    /// `ToolResult` for declined operations so the ReAct loop sees a normal
+    /// tool failure the model can react to.
+    pub async fn execute_gated(
+        &self,
+        task_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolExecution> {
+        let risk_level = self.tools.get_risk_level(task_id, tool_name, &input).await;
+        let mut confirmed: Option<bool> = None;
+        match self
+            .tools
+            .safety_gateway
+            .check(tool_name, &input, risk_level)
+            .await
+        {
+            ConfirmationResult::AutoApproved => {}
+            ConfirmationResult::Blocked => {
+                return Ok(ToolExecution {
+                    result: ToolResult {
+                        success: false,
+                        output: Value::Null,
+                        error: Some(format!(
+                            "operation '{}' is blocked by the security policy. Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                            tool_name
+                        )),
+                        truncated: false,
+                        signals: haven_tools::ToolSignals::default(),
+                    },
+                    risk_level,
+                    confirmed: Some(false),
+                });
+            }
+            ConfirmationResult::RequiresConfirmation { .. } => {
+                if !self
+                    .await_confirmation(task_id, tool_name, risk_level)
+                    .await
+                {
+                    return Ok(ToolExecution {
+                        result: ToolResult {
+                            success: false,
+                            output: Value::Null,
+                            error: Some(format!(
+                                "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                                tool_name
+                            )),
+                            truncated: false,
+                            signals: haven_tools::ToolSignals::default(),
+                        },
+                        risk_level,
+                        confirmed: Some(false),
+                    });
+                }
+                confirmed = Some(true);
+            }
+        }
+        let result = self
+            .tools
+            .execute_tool(task_id, tool_name, input, cancel)
+            .await?;
+        Ok(ToolExecution {
+            result,
+            risk_level,
+            confirmed,
+        })
     }
 
-    /// Atomically resolve a confirmation step and, when the caller wants to
-    /// trust the risk level for the session, return the step's risk level.
-    /// The risk level is captured from the per-task working set so a
-    /// concurrent `end_task`/rollback cannot leave the caller trusting a step
-    /// that was already removed (the old `resolve_confirmation` command read
-    /// the step from a separate `list_tasks()` snapshot, racing with removal).
+    /// Request user confirmation for a safety-gated tool call and wait for
+    /// the answer. Emits `confirm:requested` through the wired callback and
+    /// blocks until `resolve_confirmation` resolves the generated step id, or
+    /// the task's cancellation token fires (end/rollback/stop). Returns
+    /// `true` when the user approved.
+    async fn await_confirmation(
+        &self,
+        task_id: Option<&str>,
+        tool_name: &str,
+        risk_level: RiskLevel,
+    ) -> bool {
+        let step_id: haven_common::types::ConfirmId = haven_common::types::new_id("conf").into();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.confirm_waits
+            .lock()
+            .await
+            .insert(step_id.clone(), ConfirmWait { risk_level, tx });
+        let tid = task_id.unwrap_or("activity").to_string();
+        // No confirmation callback wired (unit tests, degraded startup):
+        // there is no UI that could ever answer — fail closed so the tool
+        // never runs without approval, instead of blocking the task forever.
+        if self.on_confirm_request.lock().await.as_ref().is_none() {
+            self.confirm_waits.lock().await.remove(&step_id);
+            tracing::info!(
+                "confirmation for tool '{}' on task {} rejected: no confirmation channel wired",
+                tool_name,
+                tid
+            );
+            return false;
+        }
+        if let Some(cb) = self.on_confirm_request.lock().await.as_ref() {
+            cb(
+                step_id.clone(),
+                tid.clone(),
+                tool_name.to_string(),
+                risk_level,
+            );
+        }
+        let cancel = self.cancellation_token(&tid).await;
+        let decision = tokio::select! {
+            r = rx => r.ok(),
+            _ = cancel.cancelled() => None,
+            // Bounded, fail-closed fallback: an unanswered confirmation (e.g.
+            // the app window is closed when a scheduled reminder fires) must
+            // not wedge the task — or the sequential reminder consumer —
+            // forever.
+            _ = tokio::time::sleep(CONFIRM_WAIT_TIMEOUT) => {
+                tracing::warn!(
+                    "confirmation for tool '{}' on task {} timed out after {:?}; treating as rejected",
+                    tool_name,
+                    tid,
+                    CONFIRM_WAIT_TIMEOUT
+                );
+                None
+            }
+        };
+        self.confirm_waits.lock().await.remove(&step_id);
+        match decision {
+            Some(true) => true,
+            Some(false) | None => {
+                tracing::info!(
+                    "confirmation for tool '{}' on task {} not approved (answer={:?})",
+                    tool_name,
+                    tid,
+                    decision
+                );
+                false
+            }
+        }
+    }
+
+    /// Resolve a pending safety-gateway confirmation and return the risk level
+    /// the gate attached to it, so the caller can trust the level for the
+    /// session. The approval/denial itself is persisted on the real `task_steps`
+    /// row when `create_action_step` records the step (via the `confirmed`
+    /// returned by `execute_gated`); this method only unblocks the ReAct loop
+    /// waiting on the oneshot. Every step id handed here comes from a
+    /// `confirm:requested` payload, which is only emitted by `await_confirmation`
+    /// — so an id not present in `confirm_waits` is stale (already resolved or
+    /// cancelled); there is no legacy path.
     pub async fn resolve_confirmation(
         &self,
-        step_id: &str,
+        step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
     ) -> anyhow::Result<Option<RiskLevel>> {
-        let db = self.db.clone();
-        let step_id_owned = step_id.to_string();
-        db.run_blocking(move |db| db.confirm_step(&step_id_owned, confirmed))
-            .await?;
-        let entries: Vec<Arc<Mutex<TaskInfo>>> =
-            self.tasks.lock().await.values().cloned().collect();
-        for entry in entries {
-            let task = entry.lock().await;
-            if let Some(step) = task.steps.iter().find(|s| s.id == step_id) {
-                return Ok(Some(step.risk_level));
-            }
+        if let Some(wait) = self.confirm_waits.lock().await.remove(step_id) {
+            let level = wait.risk_level;
+            let _ = wait.tx.send(confirmed);
+            return Ok(Some(level));
         }
         Ok(None)
     }
@@ -1218,6 +1549,16 @@ mod tests {
         let exec = make_executor(1);
         let task = exec.create_task("t1").await.unwrap();
 
+        // The panic path bypasses the ReAct loop's event emission, so the
+        // wired on_task_error callback must fire — otherwise the UI would
+        // never learn about the terminal transition.
+        let notified = Arc::new(tokio::sync::Mutex::new(None::<(String, String)>));
+        let nt = notified.clone();
+        *exec.on_task_error.lock().await =
+            Some(Box::new(move |task_id: String, reason: String| {
+                *nt.try_lock().unwrap() = Some((task_id, reason));
+            }));
+
         let handler: RunHandler = Arc::new(move |_id: String| {
             Box::pin(async move {
                 panic!("simulated handler panic");
@@ -1247,6 +1588,21 @@ mod tests {
         // the running slot; the task is absent, not "error" in memory.
         assert!(!exec.running_tasks.lock().await.contains(&task.id));
         assert_eq!(exec.get_task_state(&task.id).await, None);
+        // The wired failure callback fired with the task id and a panic
+        // reason (the UI clears its busy set from this signal). Poll: the
+        // callback runs right after the DB write in the dispatcher's spawned
+        // task.
+        let mut seen = None;
+        for _ in 0..100 {
+            seen = notified.lock().await.clone();
+            if seen.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (seen_id, seen_reason) = seen.expect("on_task_error callback must fire");
+        assert_eq!(seen_id, task.id);
+        assert!(seen_reason.contains("panicked"), "reason: {seen_reason}");
     }
 
     /// Dispatcher honors `max_concurrent` and drains all Pending tasks.
@@ -1330,6 +1686,9 @@ mod tests {
     /// A Pending task whose handler is still alive (present in the running
     /// set, e.g. blocked in a pause-wait after Paused 鈫?Pending) must not be
     /// claimed again 鈥?otherwise the dispatcher spawns a duplicate ReAct loop.
+    /// The stale queue entry is consumed on the skip: the alive handler picks
+    /// up the supplement via the status watcher itself, and a later transition
+    /// to Pending re-enqueues the task if it ever becomes claimable again.
     #[tokio::test]
     async fn try_claim_pending_skips_task_already_in_running_set() {
         let exec = make_executor(2);
@@ -1338,11 +1697,76 @@ mod tests {
 
         assert!(exec.try_claim_pending().await.is_none());
 
-        // Once the handler releases the slot, the task becomes claimable.
+        // Once the handler releases the slot, the task only becomes claimable
+        // again after it re-enters the FIFO queue (a fresh Pending transition).
         exec.running_tasks.lock().await.remove(&task.id);
+        assert!(exec.try_claim_pending().await.is_none());
+        exec.enqueue_pending(&task.id).await;
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(task.id.as_str()));
-        assert_eq!(exec.get_task_state(&task.id).await, Some(TaskStatus::Running));
+        assert_eq!(
+            exec.get_task_state(&task.id).await,
+            Some(TaskStatus::Running)
+        );
+    }
+
+    /// Claims follow FIFO submission order: the oldest Pending task is
+    /// claimed first, not a HashMap-iteration lottery.
+    #[tokio::test]
+    async fn try_claim_pending_is_fifo_by_submission_order() {
+        let exec = make_executor(1);
+        let t1 = exec.create_task("first").await.unwrap();
+        let t2 = exec.create_task("second").await.unwrap();
+        let t3 = exec.create_task("third").await.unwrap();
+
+        let c1 = exec.try_claim_pending().await;
+        let c2 = exec.try_claim_pending().await;
+        let c3 = exec.try_claim_pending().await;
+        assert_eq!(c1.as_deref(), Some(t1.id.as_str()));
+        assert_eq!(c2.as_deref(), Some(t2.id.as_str()));
+        assert_eq!(c3.as_deref(), Some(t3.id.as_str()));
+        assert!(exec.try_claim_pending().await.is_none());
+    }
+
+    /// `set_max_concurrent` must reclaim permits on lowering (not return them
+    /// to the semaphore — that would be a no-op) and must not overshoot on a
+    /// later raise. The effective ceiling is measured by how many concurrent
+    /// dispatcher acquisitions succeed without blocking.
+    #[tokio::test]
+    async fn set_max_concurrent_reclaims_and_does_not_overshoot() {
+        let exec = make_executor(4);
+        exec.set_max_concurrent(1);
+        // Idle pool: exactly one permit may be acquired without waiting.
+        let first = exec.semaphore.clone().try_acquire_owned();
+        assert!(
+            first.is_ok(),
+            "one permit must be available after lowering to 1"
+        );
+        let second = exec.semaphore.clone().try_acquire_owned();
+        assert!(
+            second.is_err(),
+            "lowering must reclaim unused permits (no-op reclaim would leave 3 free)"
+        );
+        drop(first.unwrap());
+        // Raise back to 3: available permits must be 3, not 3 + stale 3.
+        exec.set_max_concurrent(3);
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            match exec.semaphore.clone().try_acquire_owned() {
+                Ok(p) => held.push(p),
+                Err(_) => break,
+            }
+        }
+        assert_eq!(
+            held.len(),
+            3,
+            "raise after lower must yield exactly 3 permits"
+        );
+        assert!(
+            exec.semaphore.clone().try_acquire_owned().is_err(),
+            "no extra permits may leak from the lower→raise cycle"
+        );
+        drop(held);
     }
 
     /// A task terminated by end_task between the old find/mark window must
@@ -1667,16 +2091,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn confirm_step_nonexistent_does_not_panic() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = TaskExecutor::new(db, tools, 3);
-        let result = exec.confirm_step("nonexistent-step", true);
-        // lenient: DB UPDATE on missing step is a no-op
-        assert!(result.is_ok());
-    }
-
     #[tokio::test]
     async fn awaiting_answer_pause_is_distinct_state() {
         let db = temp_db();
@@ -1813,9 +2227,11 @@ mod tests {
         exec.update_task_status(&task.id, TaskStatus::Pending)
             .await
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), rx.changed())
-            .await
-            .expect("dispatcher must be woken by a same-status Pending update");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            rx.changed().await.expect("dispatcher must wake");
+        })
+        .await
+        .expect("dispatcher must be woken by a same-status Pending update");
         assert!(*rx.borrow() > before);
     }
 

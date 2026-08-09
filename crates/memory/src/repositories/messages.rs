@@ -1,6 +1,5 @@
 use crate::db::Database;
 use chrono::Utc;
-use uuid::Uuid;
 
 /// A binary attachment on a message (e.g. a user-provided image or file).
 /// `data` holds base64-encoded bytes; `media_type` is the MIME type (e.g. "image/png").
@@ -37,6 +36,23 @@ impl MessageAttachment {
     pub fn is_image(&self) -> bool {
         self.media_type.starts_with("image/")
     }
+}
+
+/// Map a `messages` row (9 columns: id, task_id, role, content, message_type,
+/// created_at, tool_call_id, attachments, voice) into a `Message`. Shared by
+/// every read query so column order cannot drift between them.
+fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
+    Ok(Message {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        message_type: row.get(4)?,
+        created_at: row.get(5)?,
+        tool_call_id: row.get(6)?,
+        attachments: Database::parse_attachments(row.get(7)?),
+        voice: row.get::<_, i32>(8)? != 0,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -107,7 +123,7 @@ impl Database {
         attachments: &[MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<Message> {
-        let id = Uuid::new_v4().to_string();
+        let id = haven_common::types::new_id("msg");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -168,19 +184,7 @@ impl Database {
                     attachments, voice
              FROM messages WHERE task_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![task_id], |row| {
-            Ok(Message {
-                id: row.get(0)?,
-                task_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                message_type: row.get(4)?,
-                created_at: row.get(5)?,
-                tool_call_id: row.get(6)?,
-                attachments: Self::parse_attachments(row.get(7)?),
-                voice: row.get::<_, i32>(8)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![task_id], map_message_row)?;
         let mut msgs = Vec::new();
         for row in rows {
             msgs.push(row?);
@@ -201,19 +205,7 @@ impl Database {
              FROM messages WHERE task_id = ?1 AND (message_type IS NULL OR message_type = 'text')
              ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![task_id, limit], |row| {
-            Ok(Message {
-                id: row.get(0)?,
-                task_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                message_type: row.get(4)?,
-                created_at: row.get(5)?,
-                tool_call_id: row.get(6)?,
-                attachments: Self::parse_attachments(row.get(7)?),
-                voice: row.get::<_, i32>(8)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![task_id, limit], map_message_row)?;
         let mut msgs = Vec::new();
         for row in rows {
             msgs.push(row?);

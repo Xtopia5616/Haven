@@ -21,6 +21,12 @@ pub struct AppState {
     pub shell: Arc<DesktopShell>,
     pub log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub config_loader: Arc<std::sync::Mutex<ConfigLoader>>,
+    /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
+    /// recording starts (button or hotkey), consumed by
+    /// `finalize_transcription`, and shared by every event of the same
+    /// recording (`recording:started` / `transcription:result` /
+    /// `transcription:error`) so the frontend can correlate them by id.
+    pub recording_session: Arc<std::sync::Mutex<Option<haven_common::types::SessionId>>>,
 }
 
 impl AppState {
@@ -66,8 +72,20 @@ impl AppState {
         // Unified context limits (compaction threshold, tool output cap, ...)
         // feed the catalog rebuild so tools pick up the global output cap.
         tools.set_context_limits(context_limits.clone()).await;
+        // Apply the configured security threshold to the safety gateway NOW
+        // (not only when settings are saved later), so a hand-edited
+        // config.toml takes effect on startup. The gateway is what gates
+        // every tool execution in the agent loop.
+        tools
+            .safety_gateway
+            .set_min_risk_level(cfg.security.min_risk_level)
+            .await;
 
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 3));
+        let executor = Arc::new(TaskExecutor::new(
+            db.clone(),
+            tools.clone(),
+            cfg.task.max_concurrent.max(1),
+        ));
 
         let agent = Arc::new(AgentLayer::new(
             db.clone(),
@@ -182,20 +200,35 @@ impl AppState {
             }
         });
 
-        // Start the task dispatcher
-        agent.clone().start();
+        // Pre-warm LLM HTTP connection pools for all configured endpoints so
+        // the first user message doesn't pay TCP+TLS handshake latency
+        // (~50-200ms) on whichever model slot it hits, then start the task
+        // dispatcher. Starting the dispatcher only after prewarm finishes means
+        // a resumed task's first chat request reuses a warm connection instead
+        // of racing the prewarm; dispatch is never blocked on the model slot
+        // cold start the prewarm cannot warm (the provider's model load still
+        // happens on the first real request). AppState::new returns immediately;
+        // both prewarm and dispatch run in the background.
+        let router_warm = router.clone();
+        let agent_start = agent.clone();
+        tokio::spawn(async move {
+            // Bound the prewarm gate: a slow/unreachable endpoint's health
+            // check (up to 7s per attempt, retried once) must not hold up task
+            // dispatch for seconds. In the common case prewarm finishes in
+            // ~200ms and the pool is warm before the first request; on timeout
+            // the dispatcher still starts, leaving that endpoint to fail fast
+            // (and retry) on its own.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                router_warm.prewarm_all(),
+            )
+            .await;
+            agent_start.start();
+        });
         tracing::debug!(
             "AppState::new phase=agent elapsed={}ms",
             t0.elapsed().as_millis()
         );
-
-        // Pre-warm LLM HTTP connection pools for all configured endpoints so
-        // the first user message doesn't pay TCP+TLS handshake latency
-        // (~50-200ms) on whichever model slot it hits.
-        let router_warm = router.clone();
-        tokio::spawn(async move {
-            router_warm.prewarm_all().await;
-        });
 
         let config_loader_arc = Arc::new(std::sync::Mutex::new(config_loader));
 
@@ -239,6 +272,7 @@ impl AppState {
             shell,
             log_filter_handles: filter_handles,
             config_loader: config_loader_arc,
+            recording_session: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 }

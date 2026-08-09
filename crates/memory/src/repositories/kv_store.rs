@@ -56,7 +56,6 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db::Database;
 
     fn test_db() -> Database {

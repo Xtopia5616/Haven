@@ -81,6 +81,52 @@ const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任�
 const CUT_OFF_RETRY_NUDGE: &str =
     "Your previous response was cut off before you finished. Please continue and complete it.";
 
+/// A stronger nudge for the mid-task retry. The model stopped with a text-only
+/// reply while a tool result is still pending (it described the next step but
+/// did not run it). The generic cut-off nudge ("continue and complete") does not
+/// push it to actually issue the tool call it was narrating, so this variant
+/// spells out that the task still needs a tool call.
+const MID_TASK_RETRY_NUDGE: &str = "The task is not finished: the last step ran a tool and its result is in context, but your reply only described the next step instead of doing it. If the task still needs a tool call or a follow-up action, make that tool call NOW instead of describing it. Do not repeat work already done. Continue and finish the actual task.";
+
+/// How many times a text-only response that looks cut off / mid-task is retried
+/// with a continuation nudge before it is accepted as a final answer. Bounded so
+/// a model that keeps refusing to call a tool cannot spin the loop forever.
+const MAX_CUT_OFF_RETRIES: u32 = 2;
+
+/// How many times a completely empty model response is retried before the
+/// turn errors out. Providers occasionally return HTTP 200 with an empty
+/// stream (a silent upstream failure); one retry is often not enough, and
+/// falling back to "No action decided." makes the assistant look like it
+/// ignored the user.
+const EMPTY_RESPONSE_MAX_RETRIES: u32 = 3;
+/// Settling delay between empty-response retries, giving the upstream
+/// transient glitch time to clear.
+const EMPTY_RESPONSE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Mid-run React-state snapshot writes are throttled to once per this many
+/// steps (`save_branch_point`). The in-memory canonical/history/branch-point
+/// map is always current (branch points are inserted every step regardless),
+/// and every pause/error/final path plus every cancellation exit writes the
+/// snapshot unconditionally, so the DB row only lags behind by this many
+/// steps in a hard-crash window — the resume then re-runs at most this many
+/// tool batches, which is already the behavior for a crash mid-batch today.
+const SNAPSHOT_WRITE_INTERVAL: u32 = 3;
+
+/// A type-appropriate placeholder for a required JSON-schema field that has no
+/// declared `default`, used to repair tool-call arguments that are missing a
+/// required field. Keeps the call deserializable (avoiding a provider 400)
+/// without inventing a semantic value the tool would act on.
+fn placeholder_for_schema_type(ty: Option<&str>) -> serde_json::Value {
+    match ty {
+        Some("string") => serde_json::Value::String(String::new()),
+        Some("integer") | Some("number") => serde_json::Value::Number(0.into()),
+        Some("boolean") => serde_json::Value::Bool(false),
+        Some("array") => serde_json::Value::Array(Vec::new()),
+        Some("object") => serde_json::Value::Object(Default::default()),
+        _ => serde_json::Value::Null,
+    }
+}
+
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<TaskExecutor>,
@@ -94,10 +140,12 @@ pub struct ReActEngine {
     /// parallel tasks each track their own counters. Reset on task
     /// completion to avoid leaking finished-task entries.
     cumulative_usage: Mutex<HashMap<String, CumulativeUsage>>,
-    /// Reusable serialization buffer for ReAct snapshots (see
+    /// Reusable per-task serialization buffers for ReAct snapshots (see
     /// `save_snapshot_with_branches`): avoids a fresh allocation for every
-    /// per-step snapshot write.
-    snapshot_buf: Mutex<Vec<u8>>,
+    /// per-step snapshot write. Keyed by `task_id` so parallel tasks never
+    /// contend on one shared buffer (a long task's canonical+history can be
+    /// sizable).
+    snapshot_bufs: Mutex<HashMap<String, Vec<u8>>>,
     /// Per-task incremental token-estimate cache (see
     /// `estimate_canonical_tokens`): avoids re-tokenizing the whole canonical
     /// on every step.
@@ -107,6 +155,17 @@ pub struct ReActEngine {
     /// full LlmConfig on every step (the router only changes via
     /// `replace_router`).
     context_window_cache: Mutex<(usize, HashMap<EndpointRole, u32>)>,
+    /// Per-task step number of the last DB snapshot write (see
+    /// `save_branch_point`): mid-run snapshot writes are throttled to every
+    /// `SNAPSHOT_WRITE_INTERVAL` steps; pause/error/final and cancellation
+    /// exit paths always write.
+    last_snapshot_step: Mutex<HashMap<String, u32>>,
+    /// Per-task tool-definition cache keyed by the ToolsManager catalog
+    /// version (see `build_tool_definitions_for_task`): the definitions are
+    /// rebuilt only when a skill/MCP per-task registration or a catalog
+    /// rebuild bumps the version, instead of re-querying the registry on
+    /// every step.
+    tool_def_cache: Mutex<HashMap<String, (u64, Vec<ToolDefinition>)>>,
 }
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
@@ -143,6 +202,49 @@ struct TokenEstimate {
     tokens: u32,
     /// number of estimation calls so far (drives the periodic full pass)
     passes: u32,
+}
+
+/// Per-step context shared by the ReAct-loop helpers (context injection,
+/// streaming, error handling). Bundles the four values every helper needs so
+/// signatures stay readable instead of threading 4 parameters through each
+/// call.
+#[derive(Clone)]
+struct StepCtx {
+    task_id: String,
+    step_num: u32,
+    run_id: u64,
+    emitter: Arc<dyn AgentEventEmitter>,
+}
+
+/// Result of one step's LLM call (including the compaction retry). The loop
+/// dispatches on this instead of inlining ~130 lines of error handling.
+enum StepCallOutcome {
+    /// A usable response (possibly from the post-compaction retry).
+    Response(LlmResponse),
+    /// Cancelled mid-call (end_task / rollback): exit silently.
+    Cancelled,
+    /// Persisted/emitted error already; the loop must propagate it.
+    Fatal(String),
+}
+
+/// Update a task's status and emit the `TaskUpdated` event, in that order.
+/// Shared by every status-transition path (pause, budget pause, agent layer)
+/// so the pair cannot drift.
+pub(crate) async fn set_status_and_emit(
+    executor: &TaskExecutor,
+    emitter: &Arc<dyn AgentEventEmitter>,
+    task_id: &str,
+    status: TaskStatus,
+) -> anyhow::Result<()> {
+    let status_str = status.as_str().to_string();
+    executor.update_task_status(task_id, status).await?;
+    emitter
+        .emit(crate::event::AgentEvent::TaskUpdated {
+            task_id: task_id.into(),
+            status: status_str,
+        })
+        .await;
+    Ok(())
 }
 
 /// Failure classification used to shape the post-failure retry nudge.
@@ -188,9 +290,11 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
             cumulative_usage: Mutex::new(HashMap::new()),
-            snapshot_buf: Mutex::new(Vec::new()),
+            snapshot_bufs: Mutex::new(HashMap::new()),
             token_estimate_cache: Mutex::new(HashMap::new()),
             context_window_cache: Mutex::new((0, HashMap::new())),
+            last_snapshot_step: Mutex::new(HashMap::new()),
+            tool_def_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -231,13 +335,26 @@ impl ReActEngine {
     /// Build the full tool-definition list for a task: global registry tools
     /// plus per-task skill/MCP adapters registered via `load_skill`/`load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
+    ///
+    /// The result is cached per task against the ToolsManager catalog version:
+    /// the definitions only change when a per-task registration
+    /// (`load_skill`/`load_mcp`) or a catalog rebuild bumps the version, so
+    /// the registry query + JSON mapping is skipped on the vast majority of
+    /// steps (the per-task registry query takes the global tools lock and
+    /// rebuilds schema JSON on every step otherwise).
     async fn build_tool_definitions_for_task(&self, task_id: &str) -> Vec<ToolDefinition> {
+        let version = self.executor.get_tools().catalog_version();
+        if let Some(cached) = self.tool_def_cache.lock().unwrap().get(task_id).cloned()
+            && cached.0 == version
+        {
+            return cached.1;
+        }
         let schemas = self
             .executor
             .get_tools()
             .list_schemas_for_task(task_id)
             .await;
-        schemas
+        let defs: Vec<ToolDefinition> = schemas
             .iter()
             .map(|s| {
                 let name = s["name"].as_str().unwrap_or("");
@@ -252,7 +369,12 @@ impl ReActEngine {
                     },
                 }
             })
-            .collect()
+            .collect();
+        self.tool_def_cache
+            .lock()
+            .unwrap()
+            .insert(task_id.to_string(), (version, defs.clone()));
+        defs
     }
 
     /// Drain user-facing context into the canonical message list: supplements
@@ -266,15 +388,15 @@ impl ReActEngine {
     /// delivered there instead of being deferred until the turn ends.
     async fn inject_pending_context(
         &self,
-        task_id: &str,
+        ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
-        step_num: u32,
-        run_id: u64,
-        emitter: &Arc<dyn AgentEventEmitter>,
     ) -> bool {
         let mut injected = false;
 
-        let supplements = self.executor.get_supplements(task_id).await;
+        // One combined drain pass instead of three separate queue reads:
+        // the task-map lock is taken once per step instead of three times.
+        let (supplements, steering, job_results) =
+            self.executor.drain_pending_context(&ctx.task_id).await;
         for supplement in &supplements {
             // A reply to a pending `ask` is injected as a paired answer so
             // the model sees the old question as resolved instead of treating
@@ -285,10 +407,7 @@ impl ReActEngine {
                 "Additional context from user"
             };
             self.push_user_context(
-                task_id,
-                step_num,
-                run_id,
-                emitter,
+                ctx,
                 canonical,
                 prefix,
                 &supplement.text,
@@ -298,29 +417,22 @@ impl ReActEngine {
             injected = true;
         }
 
-        let steering = self.executor.get_steering(task_id).await;
         for s in &steering {
-            self.push_user_context(
-                task_id,
-                step_num,
-                run_id,
-                emitter,
-                canonical,
-                "Steering",
-                &s.text,
-                &s.attachments,
-            )
-            .await;
+            self.push_user_context(ctx, canonical, "Steering", &s.text, &s.attachments)
+                .await;
             injected = true;
         }
 
         // Deliver completed background-job results as context. These are
         // kept separate from the steering queue so job output is never
         // mistaken for a user reply (which would let the `ask` pause path
-        // resume the task without the user's answer).
-        let job_results = self.executor.drain_job_completions(task_id).await;
+        // resume the task without the user's answer). The payload text is
+        // self-labelling (`[Background job result] ... job_id ...`) and is
+        // pushed as a User-role message because a mid-conversation System
+        // message is rejected by some providers and a Tool message would need
+        // a preceding assistant tool_call (see `is_dangling_boundary`).
         for s in &job_results {
-            canonical.push(CanonicalMessage::user_text(format!("Steering: {s}")));
+            canonical.push(CanonicalMessage::user_text(s));
             injected = true;
         }
 
@@ -333,37 +445,85 @@ impl ReActEngine {
     /// two paths cannot drift. The thought-step row lets the session message
     /// be matched back to a step after a reload; without it an interrupted
     /// input would have no determinable step for review/rollback.
-    #[allow(clippy::too_many_arguments)]
     async fn push_user_context(
         &self,
-        task_id: &str,
-        step_num: u32,
-        run_id: u64,
-        emitter: &Arc<dyn AgentEventEmitter>,
+        ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
         prefix: &str,
         text: &str,
         attachments: &[MessageAttachment],
     ) {
-        emitter
+        ctx.emitter
             .emit(crate::event::AgentEvent::Supplement {
-                task_id: task_id.into(),
+                task_id: ctx.task_id.clone(),
                 additional_context: text.to_string(),
-                step_number: step_num,
-                run_id,
+                step_number: ctx.step_num,
+                run_id: ctx.run_id,
             })
             .await;
         let _ = self
             .db
             .run_blocking({
-                let task_id = task_id.to_string();
+                let task_id = ctx.task_id.clone();
                 let text = text.to_string();
+                let step_num = ctx.step_num;
                 move |db| db.create_thought_step(&task_id, step_num as i32, &text)
             })
             .await;
         let mut content = vec![ContentPart::text(format!("{prefix}: {text}"))];
         content.extend(attachments.iter().map(attachment_to_content_part));
+        // Deduplicate repeated user inputs. Two failure modes to avoid:
+        // 1. Rapid repeat clicks (several "继续" while the task is paused or
+        //    erroring) pile identical User messages into the canonical, and
+        //    the model reads a stack of the same instruction as separate new
+        //    questions.
+        // 2. Terse commands carry no information beyond "proceed" — any
+        //    earlier identical input in this run makes a new one redundant.
+        //    Full-length messages are deduplicated only when ADJACENT (a
+        //    repeated question separated by an assistant turn is legitimate).
+        let new_text = format!("{prefix}: {text}");
+        let is_terse_command = text.trim().chars().count() <= 10;
+        let skip = if is_terse_command {
+            canonical.iter().rev().any(|m| {
+                m.role == CanonicalRole::User
+                    && m.content.iter().any(|p| match p {
+                        ContentPart::Text(t) => Self::strip_user_prefix(t) == new_text,
+                        _ => false,
+                    })
+            })
+        } else {
+            canonical.last().is_some_and(|m| {
+                m.role == CanonicalRole::User
+                    && m.content.iter().any(|p| match p {
+                        ContentPart::Text(t) => Self::strip_user_prefix(t) == new_text,
+                        _ => false,
+                    })
+            })
+        };
+        if skip {
+            tracing::debug!(
+                "push_user_context: skipping duplicate {} input '{}'",
+                prefix,
+                text.chars().take(40).collect::<String>()
+            );
+            return;
+        }
         canonical.push(CanonicalMessage::user(content));
+    }
+
+    /// Strip the injection prefix ("Additional context from user: —, "Answer
+    /// to your previous question: —, "Steering: —) so duplicate detection
+    /// compares the actual user text across differently-prefixed injections.
+    fn strip_user_prefix(text: &str) -> &str {
+        const PREFIXES: [&str; 3] = [
+            "Additional context from user: ",
+            "Answer to your previous question: ",
+            "Steering: ",
+        ];
+        PREFIXES
+            .iter()
+            .find_map(|p| text.strip_prefix(p))
+            .unwrap_or(text)
     }
 
     /// Shared ReAct loop body. Runs from `start_step` through `max_steps`.
@@ -394,28 +554,43 @@ impl ReActEngine {
         // not once per task lifetime (documented in refactor-dedup.md A9).
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
-        // Guard so an empty or cut-off model response is retried at most once
-        // per run. Initialized outside the step loop so the assignment below
-        // is read by later iterations (keeps the lint clean).
-        let mut retried_empty = false;
+        // Cut-off retry counter: a text-only response that looks truncated (or
+        // is a mid-task narration that stopped without a tool call) is retried
+        // up to MAX_CUT_OFF_RETRIES times per run with a continuation nudge (the
+        // nudge is not persisted into the canonical). Kept separate from the
+        // empty response budget — the two heuristics address different failure
+        // modes.
+        let mut cut_off_retries: u32 = 0;
+        // Level-triggered status subscription, taken ONCE per run and reused
+        // across steps: unlike the edge-triggered Notify it replaces, a
+        // transition that lands between a state read and the `changed()` wait
+        // is never lost — the receiver's stored value moves and `changed()`
+        // resolves immediately. No polling timeout is needed, and one
+        // long-lived receiver avoids allocating a watch subscription (two
+        // task-map lock acquisitions) on every step.
+        let mut status_rx = self.executor.subscribe_status(task_id).await;
 
         for step_num in start_step..=effective_max {
             last_step = step_num;
             let cancel = self.executor.cancellation_token(task_id).await;
-            // Level-triggered status subscription, taken BEFORE the state
-            // check: unlike the edge-triggered Notify it replaces, a
-            // transition that lands between a state read and the `changed()`
-            // wait is never lost — the receiver's stored value moves and
-            // `changed()` resolves immediately. No polling timeout is needed.
-            let mut status_rx = self.executor.subscribe_status(task_id).await;
+            // The paused-state snapshot is saved once per pause episode: the
+            // canonical/history/branch points cannot change while paused, so
+            // re-observing a still-paused state after a transition (e.g.
+            // Paused -> PausedAwaitingAnswer) must not rewrite the identical
+            // snapshot to disk.
+            let mut paused_snapshot_saved = false;
             loop {
                 // Check cancellation first: end_task / rollback cancel the
                 // token, so the loop must exit silently without touching
                 // status or emitting events. The state check below would
                 // otherwise observe the Error sentinel of a task that
                 // end_task already removed from memory and announce a
-                // spurious "task interrupted" error.
+                // spurious "task interrupted" error. A final snapshot is
+                // written so the DB row is never left stale for the rollback
+                // that just cancelled us.
                 if cancel.is_cancelled() {
+                    self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                        .await;
                     return Ok(());
                 }
                 let state = self.executor.get_task_state(task_id).await;
@@ -428,19 +603,21 @@ impl ReActEngine {
                         // An external path marked the task Error while the
                         // loop was alive: announce the interruption so the
                         // user sees why it stopped.
-                        self.emit_error(&emitter, task_id, "task interrupted")
-                            .await;
+                        self.emit_error(&emitter, task_id, "task interrupted").await;
                         return Ok(());
                     }
                     Some(s) if s.is_paused() => {
-                        self.save_snapshot_with_branches(
-                            task_id,
-                            canonical,
-                            history,
-                            step_num,
-                            branch_points,
-                        )
-                        .await;
+                        if !paused_snapshot_saved {
+                            self.save_snapshot_with_branches(
+                                task_id,
+                                canonical,
+                                history,
+                                step_num,
+                                branch_points,
+                            )
+                            .await;
+                            paused_snapshot_saved = true;
+                        }
                     }
                     _ => break,
                 }
@@ -449,7 +626,21 @@ impl ReActEngine {
                 // the snapshot save above resolves `changed()` immediately.
                 tokio::select! {
                     biased;
-                    _ = cancel.cancelled() => return Ok(()),
+                    _ = cancel.cancelled() => {
+                        // Same final-write as the loop-head cancel above:
+                        // rollback/end_task must find the DB row current.
+                        if !paused_snapshot_saved {
+                            self.save_exit_snapshot(
+                                task_id,
+                                canonical,
+                                history,
+                                step_num,
+                                branch_points,
+                            )
+                            .await;
+                        }
+                        return Ok(());
+                    }
                     r = status_rx.changed() => {
                         // `Err` means the sender was dropped (task cleaned
                         // up): the state re-check at the loop head handles it.
@@ -458,11 +649,19 @@ impl ReActEngine {
                 }
             }
 
+            // Per-step context shared by all helpers below (context injection,
+            // streaming, error handling, final-answer delivery).
+            let ctx = StepCtx {
+                task_id: task_id.to_string(),
+                step_num,
+                run_id,
+                emitter: emitter.clone(),
+            };
+
             // Deliver user interjections (supplements, steering) and
             // background-job results as context at the top of each step so
             // they land in the gap between tool calls and the next LLM call.
-            self.inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
-                .await;
+            self.inject_pending_context(&ctx, canonical).await;
 
             // Scan for image content once per step; the flag is shared by the
             // compactor window selection and the endpoint role below, so the
@@ -481,7 +680,9 @@ impl ReActEngine {
             // at the very end. Every `context_limits.fact_infer_interval_steps`
             // steps we re-run inference; the upsert/known-facts machinery makes
             // this idempotent (re-confirmed facts are reinforced, not duplicated).
-            if step_num % self.context_limits.fact_infer_interval_steps == 0 {
+            // Step 0 never infers: there is no prior message window to scan.
+            let infer_interval = self.context_limits.fact_infer_interval_steps;
+            if step_num > 0 && infer_interval > 0 && step_num % infer_interval == 0 {
                 infer();
             }
 
@@ -496,7 +697,9 @@ impl ReActEngine {
             let tools: Vec<ToolDefinition> = self.build_tool_definitions_for_task(task_id).await;
 
             let router = self.router();
-            let cancel_res = self.executor.cancellation_token(task_id).await;
+            // Same cancellation token as the loop-head wait above; one
+            // executor lookup per step instead of two.
+            let cancel_res = cancel.clone();
             // Convert once per step; retries below reuse the converted
             // messages (the canonical is only replaced by the compaction
             // path, which re-converts) instead of cloning the whole
@@ -525,159 +728,32 @@ impl ReActEngine {
                     .collect::<Vec<_>>()
             );
             let response = match self
-                .stream_llm_step(
+                .call_step_llm(
+                    &ctx,
                     router.clone(),
                     role,
-                    &llm_messages,
+                    &mut llm_messages,
                     &tools,
                     cancel_res.clone(),
-                    &emitter,
-                    task_id,
-                    step_num,
-                    run_id,
+                    canonical,
+                    history,
+                    branch_points,
                     &partial_thought,
                     &partial_reasoning,
                 )
                 .await
             {
-                Ok(resp) => {
-                    if router.balanced_model_active() {
-                        self.emit_balanced_model(&emitter, task_id, "switching to balanced model")
-                            .await;
-                    }
-                    self.record_usage_and_emit(task_id, role, &resp, &emitter)
+                StepCallOutcome::Response(resp) => resp,
+                StepCallOutcome::Cancelled => {
+                    // A final snapshot keeps the DB row current for the
+                    // rollback/continue that cancelled the LLM call (the
+                    // response was never parsed, so the saved state is the
+                    // clean pre-step state).
+                    self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
                         .await;
-                    resp
-                }
-                Err(haven_llm::LlmError::ContextLengthExceeded) => {
-                    tracing::warn!(
-                        "context length exceeded for task {}, forcing compaction",
-                        task_id
-                    );
-                    if let Some(result) = {
-                        let compactor = self.context_compactor(role).await;
-                        compactor.compact(canonical, &self.router()).await
-                    } {
-                        tracing::debug!(
-                            "compacted {} -> {} tokens",
-                            result.tokens_before,
-                            result.tokens_after
-                        );
-                        *canonical = result.compacted;
-                        // The retry must convert the *compacted* canonical
-                        // (the old messages are stale), and the role must be
-                        // re-resolved: summarizing away the last image-bearing
-                        // turn changes the routing for the retry.
-                        llm_messages = haven_llm::types::convert_to_llm(canonical);
-                        let retry_role = if canonical_has_image(canonical) {
-                            router.vision_role().await
-                        } else {
-                            EndpointRole::DefaultModel
-                        };
-                        EventDispatcher::emit_compaction_from(
-                            &emitter,
-                            task_id,
-                            &result.summary,
-                            result.tokens_before,
-                            result.tokens_after,
-                        )
-                        .await;
-                        // Reset the accumulators: the first attempt's partial
-                        // text was based on pre-compaction context and should
-                        // not be mixed with the retry's output.
-                        partial_thought.lock().unwrap().clear();
-                        partial_reasoning.lock().unwrap().clear();
-                        match self
-                            .stream_llm_step(
-                                router.clone(),
-                                retry_role,
-                                &llm_messages,
-                                &tools,
-                                cancel_res.clone(),
-                                &emitter,
-                                task_id,
-                                step_num,
-                                run_id,
-                                &partial_thought,
-                                &partial_reasoning,
-                            )
-                            .await
-                        {
-                            Ok(retry_resp) => {
-                                self.record_usage_and_emit(
-                                    task_id, retry_role, &retry_resp, &emitter,
-                                )
-                                .await;
-                                retry_resp
-                            }
-                            Err(haven_llm::LlmError::Cancelled) => {
-                                return Ok(());
-                            }
-                            Err(e2) => {
-                                let err_msg = format!("Compaction retry also failed: {}", e2);
-                                self.persist_partial_on_error(
-                                    task_id,
-                                    step_num,
-                                    run_id,
-                                    &partial_thought,
-                                    &partial_reasoning,
-                                    canonical,
-                                    history,
-                                    branch_points,
-                                    &emitter,
-                                )
-                                .await;
-                                self.emit_error(&emitter, task_id, &err_msg).await;
-                                self.executor
-                                    .update_task_status(task_id, TaskStatus::Error)
-                                    .await?;
-                                return Err(anyhow::anyhow!("{}", err_msg));
-                            }
-                        }
-                    } else {
-                        let err_msg = "context length exceeded but compaction failed".to_string();
-                        self.persist_partial_on_error(
-                            task_id,
-                            step_num,
-                            run_id,
-                            &partial_thought,
-                            &partial_reasoning,
-                            canonical,
-                            history,
-                            branch_points,
-                            &emitter,
-                        )
-                        .await;
-                        EventDispatcher::emit_task_error_from(&emitter, task_id, &err_msg).await;
-                        self.executor
-                            .update_task_status(task_id, TaskStatus::Error)
-                            .await?;
-                        return Err(anyhow::anyhow!("{}", err_msg));
-                    }
-                }
-                Err(haven_llm::LlmError::Cancelled) => {
                     return Ok(());
                 }
-                Err(e) => {
-                    let err_msg = format!("Both default model and balanced model failed: {}", e);
-                    self.persist_partial_on_error(
-                        task_id,
-                        step_num,
-                        run_id,
-                        &partial_thought,
-                        &partial_reasoning,
-                        canonical,
-                        history,
-                        branch_points,
-                        &emitter,
-                    )
-                    .await;
-                    EventDispatcher::emit_task_error_from(&emitter, task_id, &err_msg).await;
-                    self.executor
-                        .update_task_status(task_id, TaskStatus::Error)
-                        .await?;
-                    return Err(anyhow::anyhow!("{}", err_msg));
-                }
+                StepCallOutcome::Fatal(msg) => return Err(anyhow::anyhow!("{}", msg)),
             };
 
             // L2/C2: a rollback or end_task may have cancelled the task while
@@ -691,6 +767,8 @@ impl ReActEngine {
                     step_num,
                     task_id
                 );
+                self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                    .await;
                 return Ok(());
             }
 
@@ -727,46 +805,109 @@ impl ReActEngine {
             let (mut thought, mut actions) =
                 Self::parse_default_model_response(&response, step_num);
 
-            // A completely empty model response (no text, no reasoning, no
-            // tool calls) is almost always a transient upstream glitch. Retry
-            // the same context once before concluding the model decided
-            // nothing 鈥?otherwise the task would instantly "complete" with a
-            // "No action decided." message and pause without answering.
+            // Empty-response retry budget for THIS step. A completely empty
+            // model response (no text, no reasoning, no tool calls) is almost
+            // always a transient upstream glitch. Retry the same context up
+            // to EMPTY_RESPONSE_MAX_RETRIES times before concluding the model
+            // decided nothing — otherwise the task would instantly "complete"
+            // with a "No action decided." message and pause without answering.
+            // Declared per step so an earlier empty response in this run
+            // cannot starve a later incident of its retries; the exhausted
+            // state (reached 0) also drives the explicit error path below.
+            let mut empty_retries_remaining = EMPTY_RESPONSE_MAX_RETRIES;
             // A response carrying `web_search_call` items is NOT empty: it is
             // a server-side search round that must round-trip instead.
-            if thought.is_none()
-                && actions.is_empty()
-                && response.web_search_calls.is_empty()
-                && !retried_empty
-            {
-                retried_empty = true;
-                tracing::warn!(
-                    "ReAct step {} task {} model returned an empty response; retrying once",
-                    step_num,
-                    task_id
-                );
-                match router
-                    .chat_stream_with_tools_aggregated(role, &llm_messages, &tools, |_| {})
-                    .await
-                {
-                    Ok(retry_resp) => {
-                        let (t2, a2) = Self::parse_default_model_response(&retry_resp, step_num);
-                        if t2.is_some() || !a2.is_empty() {
-                            thought = t2;
-                            actions = a2;
-                        } else {
+            if thought.is_none() && actions.is_empty() && response.web_search_calls.is_empty() {
+                while empty_retries_remaining > 0 {
+                    empty_retries_remaining -= 1;
+                    if cancel_res.is_cancelled() {
+                        self.save_exit_snapshot(
+                            task_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    // Settling delay between attempts: an upstream glitch that
+                    // just produced an empty stream often clears within a
+                    // second or two. Cancellable: a user rollback / end_task
+                    // during the delay must not wait out the whole sleep — the
+                    // retry loop is exited as soon as the token fires, so the
+                    // handler releases the running slot promptly instead of
+                    // blocking the rollback's 5s wait.
+                    tokio::select! {
+                        _ = cancel_res.cancelled() => {
+                            self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                                .await;
+                            return Ok(());
+                        }
+                        _ = tokio::time::sleep(EMPTY_RESPONSE_RETRY_DELAY) => {}
+                    }
+                    if cancel_res.is_cancelled() {
+                        self.save_exit_snapshot(
+                            task_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    tracing::warn!(
+                        "ReAct step {} task {} model returned an empty response; retrying ({} left)",
+                        step_num,
+                        task_id,
+                        empty_retries_remaining
+                    );
+                    // Cancellable: end_task / rollback must be able to abort
+                    // the retries mid-flight (the non-cancellable variant
+                    // would also grant each attempt a fresh total-duration
+                    // budget instead of sharing the step's cancellation).
+                    match router
+                        .chat_stream_with_tools_aggregated_cancellable(
+                            role,
+                            &llm_messages,
+                            &tools,
+                            |_| {},
+                            cancel_res.clone(),
+                        )
+                        .await
+                    {
+                        Ok(retry_resp) => {
+                            let (t2, a2) =
+                                Self::parse_default_model_response(&retry_resp, step_num);
+                            if t2.is_some() || !a2.is_empty() {
+                                thought = t2;
+                                actions = a2;
+                                break;
+                            }
                             tracing::warn!(
                                 "ReAct step {} retry also returned an empty response",
                                 step_num
                             );
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "ReAct step {} empty-response retry failed: {}",
-                            step_num,
-                            e
-                        );
+                        Err(haven_llm::LlmError::Cancelled) => {
+                            self.save_exit_snapshot(
+                                task_id,
+                                canonical,
+                                history,
+                                step_num,
+                                branch_points,
+                            )
+                            .await;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "ReAct step {} empty-response retry failed: {}",
+                                step_num,
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -774,38 +915,68 @@ impl ReActEngine {
             // A text-only response that ends without an explicit tool call is
             // only trusted as a deliberate final answer when it looks
             // complete: the provider reported Stop AND the text does not end
-            // mid-sentence. Anything else 鈥?a truncated generation (Length /
-            // ContentFilter / unknown finish) or text cut off mid-thought 鈥?            // must not end the turn presenting a partial answer as final.
-            // Retry once with a continuation nudge (never persisted into the
-            // canonical); if the retry is also unusable, fall back to the
-            // original text below.
+            // mid-sentence AND the agent is not still mid-task. Anything else
+            // 鈥?a truncated generation (Length / ContentFilter / unknown
+            // finish), text cut off mid-thought, or a mid-task narration that
+            // stopped without issuing the tool call it described 鈥?must not
+            // end the turn presenting a partial answer as final.
+            // Retry with a continuation nudge (never persisted into the
+            // canonical), up to MAX_CUT_OFF_RETRIES times; if every retry is
+            // also unusable, fall back to the original text below.
             let pending_ask = Self::canonical_has_pending_ask(canonical);
             // Responses that carried a web search call must never be re-asked:
             // the search round itself is a legitimate (non-cut-off) outcome,
             // and retrying would trigger a duplicate server-side search.
-            if !retried_empty
+            while cut_off_retries < MAX_CUT_OFF_RETRIES
                 && !pending_ask
                 && response.web_search_calls.is_empty()
-                && Self::is_suspect_final(&thought, &actions, &response)
+                && Self::is_suspect_final(&thought, &actions, &response, canonical)
             {
-                retried_empty = true;
+                cut_off_retries += 1;
+                if cancel_res.is_cancelled() {
+                    self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                        .await;
+                    return Ok(());
+                }
+                // Mid-task narrations get a stronger nudge that explicitly asks
+                // for the pending tool call; plain truncation gets the generic
+                // continuation nudge.
+                let mid_task = Self::canonical_has_pending_tool_context(canonical);
+                let nudge = if mid_task {
+                    MID_TASK_RETRY_NUDGE
+                } else {
+                    CUT_OFF_RETRY_NUDGE
+                };
                 tracing::warn!(
-                    "ReAct step {} task {} response looks cut off (finish={:?}); retrying once",
+                    "ReAct step {} task {} response looks cut off (finish={:?}, mid_task={}); retrying (attempt {}/{})",
                     step_num,
                     task_id,
-                    response.finish_reason
+                    response.finish_reason,
+                    mid_task,
+                    cut_off_retries,
+                    MAX_CUT_OFF_RETRIES
                 );
                 let mut retry_messages = llm_messages.clone();
                 retry_messages.push(LlmMessage {
                     role: LlmRole::User,
-                    content: vec![ContentPart::text(CUT_OFF_RETRY_NUDGE)],
+                    content: vec![ContentPart::text(nudge)],
                     tool_call_id: None,
                     tool_calls: None,
                     reasoning: None,
                     web_search_calls: Vec::new(),
                 });
+                // Cancellable so an interruption (rollback / end_task) aborts
+                // the retry promptly instead of letting its stream run to
+                // completion after the task was cancelled (the empty-response
+                // retry below uses the same cancellable variant).
                 match router
-                    .chat_stream_with_tools_aggregated(role, &retry_messages, &tools, |_| {})
+                    .chat_stream_with_tools_aggregated_cancellable(
+                        role,
+                        &retry_messages,
+                        &tools,
+                        |_| {},
+                        cancel_res.clone(),
+                    )
                     .await
                 {
                     Ok(retry_resp) => {
@@ -818,10 +989,17 @@ impl ReActEngine {
                                 "ReAct step {} cut-off retry also returned an empty response",
                                 step_num
                             );
+                            break;
                         }
+                    }
+                    Err(haven_llm::LlmError::Cancelled) => {
+                        self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                            .await;
+                        return Ok(());
                     }
                     Err(e) => {
                         tracing::warn!("ReAct step {} cut-off retry failed: {}", step_num, e);
+                        break;
                     }
                 }
             }
@@ -848,6 +1026,26 @@ impl ReActEngine {
                     task_id
                 );
                 actions.clear();
+            }
+
+            // Repair tool-call arguments that are missing required fields
+            // before they reach the provider / tool (common after an
+            // interrupted/continued generation). A missing required field is
+            // filled from the schema default, else a type placeholder, so the
+            // call deserializes instead of triggering a 400. Runs on the
+            // finalized actions so retry-replaced responses are covered too.
+            if !actions.is_empty() {
+                let repaired = self
+                    .supplement_missing_required_fields(task_id, &mut actions)
+                    .await;
+                if repaired > 0 {
+                    tracing::warn!(
+                        "ReAct step {} task {} repaired {} tool call(s) with missing required fields",
+                        step_num,
+                        task_id,
+                        repaired
+                    );
+                }
             }
 
             tracing::trace!(
@@ -908,8 +1106,15 @@ impl ReActEngine {
                         self.persist_task_message(task_id, "assistant", t, Some("text"))
                             .await;
                     }
-                    self.save_branch_point(task_id, canonical, history, step_num, branch_points)
-                        .await;
+                    self.save_branch_point(
+                        task_id,
+                        canonical,
+                        history,
+                        step_num,
+                        branch_points,
+                        false,
+                    )
+                    .await;
                     tracing::debug!(
                         "ReAct step {} task {} server-side web search round ({} item(s)); continuing",
                         step_num,
@@ -947,6 +1152,21 @@ impl ReActEngine {
                     .await?;
                     return Ok(());
                 }
+                // The empty-response retries all failed: the model produced
+                // nothing (no text, no tool calls) on every attempt. Ending
+                // the turn with a fake "No action decided." answer would look
+                // like the assistant ignored the user — surface an explicit
+                // error instead so the user can retry the task, and the real
+                // cause (upstream silent failure) is visible.
+                if thought.is_none() && empty_retries_remaining < EMPTY_RESPONSE_MAX_RETRIES {
+                    let err_msg = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。"
+                        .to_string();
+                    self.emit_error(&emitter, task_id, &err_msg).await;
+                    self.executor
+                        .update_task_status(task_id, TaskStatus::Error)
+                        .await?;
+                    return Err(anyhow::anyhow!("{}", err_msg));
+                }
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
                 // Guard against clobbering: when the response carried no text
                 // (thought is None after failed retries), `history.last()`
@@ -983,36 +1203,20 @@ impl ReActEngine {
                 // answer is persisted so the conversation stays consistent,
                 // then the loop re-runs with the new context.
                 let before_inject_len = canonical.len();
-                if self
-                    .inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
-                    .await
-                {
-                    self.persist_task_message(task_id, "assistant", &msg, Some("text"))
-                        .await;
-                    // The injected messages were appended after
-                    // `before_inject_len`; the finished answer must sit BEFORE
-                    // them so the re-run's LLM call sees the agent's own
-                    // completed answer followed by the interjection. Without
-                    // this the canonical jumps from the tool results straight
-                    // to the steering/user message and the model re-answers
-                    // blind, producing a duplicate or context-free follow-up
-                    // bubble. This branch is only reachable without
-                    // web_search_calls (the search-round path continues above),
-                    // so no duplicate assistant push is possible here.
-                    canonical.insert(
+                if self.inject_pending_context(&ctx, canonical).await {
+                    self.deliver_final_with_pending_context(
+                        &ctx,
+                        &msg,
+                        response.reasoning.clone(),
+                        canonical,
+                        history,
+                        branch_points,
                         before_inject_len,
-                        CanonicalMessage::assistant(
-                            vec![ContentPart::text(msg.clone())],
-                            None,
-                            response.reasoning.clone(),
-                            Vec::new(),
-                        ),
-                    );
-                    // Keep a rollback target for the interrupted final step:
-                    // the normal pause_turn path saves one, so mirror it here
-                    // or rollback to this step restores a stale snapshot.
-                    self.save_branch_point(task_id, canonical, history, step_num, branch_points)
-                        .await;
+                        // This branch carries no web search and no tool calls,
+                        // so no assistant message was pushed yet.
+                        false,
+                    )
+                    .await;
                     continue;
                 }
                 // Mirror the finished answer into the canonical before the
@@ -1063,29 +1267,18 @@ impl ReActEngine {
                 // message that arrived during this final LLM call is injected
                 // before the turn ends so it influences the answer.
                 let before_inject_len = canonical.len();
-                if self
-                    .inject_pending_context(task_id, canonical, step_num, run_id, &emitter)
-                    .await
-                {
-                    self.persist_task_message(task_id, "assistant", &final_text, Some("text"))
-                        .await;
-                    // Same rollback target guarantee as the empty-actions
-                    // branch: the interrupted final step must retain a branch
-                    // point. Insert the finished answer BEFORE the injected
-                    // messages (see the empty-actions branch for why).
-                    if !already_pushed {
-                        canonical.insert(
-                            before_inject_len,
-                            CanonicalMessage::assistant(
-                                vec![ContentPart::text(final_text.clone())],
-                                None,
-                                response.reasoning.clone(),
-                                Vec::new(),
-                            ),
-                        );
-                    }
-                    self.save_branch_point(task_id, canonical, history, step_num, branch_points)
-                        .await;
+                if self.inject_pending_context(&ctx, canonical).await {
+                    self.deliver_final_with_pending_context(
+                        &ctx,
+                        &final_text,
+                        response.reasoning.clone(),
+                        canonical,
+                        history,
+                        branch_points,
+                        before_inject_len,
+                        already_pushed,
+                    )
+                    .await;
                     continue;
                 }
                 // Mirror the finished answer into the canonical before the
@@ -1176,7 +1369,7 @@ impl ReActEngine {
                 ));
             }
 
-            self.save_branch_point(task_id, canonical, history, step_num, branch_points)
+            self.save_branch_point(task_id, canonical, history, step_num, branch_points, false)
                 .await;
 
             use futures_util::StreamExt;
@@ -1225,26 +1418,15 @@ impl ReActEngine {
                                 } else {
                                     text
                                 };
-                                // The ask signal is read from the structured output
-                                // BEFORE truncation: parsing the truncated text
-                                // would yield invalid JSON when the output exceeds
-                                // the observation budget, silently dropping the
-                                // question and never pausing the task.
-                                let (ask_question, ask_options) = if tool_name == "ask" && r.success
-                                {
-                                    haven_tools::extract_ask_signal(&r.output)
-                                } else {
-                                    (None, Vec::new())
-                                };
-                                // The notify signal (from the `notify` tool) is also
-                                // read from the structured output BEFORE truncation,
-                                // mirroring the ask handling above.
-                                let (notify_title, notify_body) =
-                                    if tool_name == "notify" && r.success {
-                                        haven_tools::extract_notify_signal(&r.output)
-                                    } else {
-                                        (None, None)
-                                    };
+                                // The ask/notify signals are attached to the
+                                // result by the tool itself (declared via
+                                // `Tool::signals`) BEFORE the loop truncates
+                                // the observation text, so a question or toast
+                                // is never lost to the budget.
+                                let ask_question = r.signals.ask_question.clone();
+                                let ask_options = r.signals.ask_options.clone();
+                                let notify_title = r.signals.notify_title.clone();
+                                let notify_body = r.signals.notify_body.clone();
                                 (
                                     text,
                                     !r.success,
@@ -1295,6 +1477,17 @@ impl ReActEngine {
                     biased;
                     _ = cancel_res.cancelled() => {
                         tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
+                        // A rollback that lands mid-batch must find the DB row
+                        // at the pre-batch branch point (the response and
+                        // partial tool results are discarded by the exit).
+                        self.save_exit_snapshot(
+                            task_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                        )
+                        .await;
                         return Ok(());
                     }
                     item = tool_futures.next() => {
@@ -1507,15 +1700,50 @@ impl ReActEngine {
         content: &str,
         message_type: Option<&str>,
     ) {
-        if let Err(e) =
-            crate::persist_task_message(&self.db, task_id, role, content, message_type, &[], false)
-                .await
+        if let Err(e) = crate::persist_task_message(
+            &self.executor,
+            task_id,
+            role,
+            content,
+            message_type,
+            &[],
+            false,
+        )
+        .await
         {
             tracing::warn!(
                 "ReAct: failed to persist {} message for task {} (type={:?}): {}",
                 role,
                 task_id,
                 message_type,
+                e
+            );
+        }
+    }
+
+    /// Persist a compaction summary into episodic long-term memory
+    /// (`memory_episodes`) so context that compaction summarized away stays
+    /// retrievable across tasks (embedding + keyword recall). Fire-and-forget:
+    /// a dropped write only loses the summary episode, never the task itself.
+    async fn persist_compaction_summary(&self, task_id: &str, summary: &str) {
+        let summary = summary.trim();
+        if summary.is_empty() {
+            return;
+        }
+        let db = self.db.clone();
+        let task_id = task_id.to_string();
+        let summary = summary.to_string();
+        let task_id_owned = task_id.clone();
+        if let Err(e) = db
+            .run_blocking(move |db| {
+                db.add_episode(&task_id_owned, &summary)?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+        {
+            tracing::warn!(
+                "ReAct: failed to persist compaction summary for task {}: {}",
+                task_id,
                 e
             );
         }
@@ -1549,7 +1777,7 @@ impl ReActEngine {
         self.persist_task_message(task_id, "assistant", final_text, Some("text"))
             .await;
         if let Some(step) = branch_point_step {
-            self.save_branch_point(task_id, canonical, history, step, branch_points)
+            self.save_branch_point(task_id, canonical, history, step, branch_points, false)
                 .await;
         }
         self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
@@ -1558,14 +1786,7 @@ impl ReActEngine {
         // (`PausedAwaitingAnswer`), so the transition is atomic: a
         // background-job completion landing concurrently reads the final
         // state and cannot auto-wake an answer-blocked task.
-        let status_str = status.as_str().to_string();
-        self.executor.update_task_status(task_id, status).await?;
-        emitter
-            .emit(crate::event::AgentEvent::TaskUpdated {
-                task_id: task_id.into(),
-                status: status_str,
-            })
-            .await;
+        set_status_and_emit(&self.executor, emitter, task_id, status).await?;
         infer();
         Ok(())
     }
@@ -1590,16 +1811,7 @@ impl ReActEngine {
     ) -> anyhow::Result<()> {
         self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
             .await;
-        let status_str = TaskStatus::Paused.as_str().to_string();
-        self.executor
-            .update_task_status(task_id, TaskStatus::Paused)
-            .await?;
-        emitter
-            .emit(crate::event::AgentEvent::TaskUpdated {
-                task_id: task_id.into(),
-                status: status_str,
-            })
-            .await;
+        set_status_and_emit(&self.executor, emitter, task_id, TaskStatus::Paused).await?;
         emitter
             .emit(crate::event::AgentEvent::Notification {
                 task_id: task_id.into(),
@@ -1626,15 +1838,12 @@ impl ReActEngine {
         for m in canonical.iter().rev() {
             match m.role {
                 CanonicalRole::User => return false,
-                CanonicalRole::Tool => {
-                    if m.content.iter().any(|p| match p {
-                        ContentPart::Text(t) => {
-                            t.contains("\"ask\":true") || t.contains("\"ask\": true")
-                        }
-                        _ => false,
-                    }) {
-                        return true;
-                    }
+                CanonicalRole::Tool
+                    if m.content.iter().any(|p| {
+                        matches!(p, ContentPart::Text(t) if t.contains("\"ask\":true") || t.contains("\"ask\": true"))
+                    }) =>
+                {
+                    return true;
                 }
                 _ => {}
             }
@@ -1667,14 +1876,40 @@ impl ReActEngine {
 
     /// True when a text-only response should not be trusted as a deliberate
     /// final answer: either the provider did not report Stop (truncated /
-    /// filtered / unknown finish) or the text itself ends mid-sentence
-    /// (trailing comma/connector/ellipsis 鈥?the generation was interrupted
-    /// rather than concluded).
+    /// filtered / unknown finish), the text itself ends mid-sentence (trailing
+    /// comma/connector/ellipsis 鈥?the generation was interrupted rather than
+    /// concluded), or it ends on a planning/transition phrase (「接下来」「确认
+    /// 一下」…) that signals the model was about to take a further action but
+    /// stopped short of describing/issuing it.
     fn looks_cut_off(text: &str) -> bool {
+        const PLAN_ENDINGS: &[&str] = &[
+            // Chinese: plan/transition phrases that expect a following action
+            "接下来",
+            "下一步",
+            "然后",
+            "接着",
+            "再确认",
+            "确认一下",
+            "检查一下",
+            "核对一下",
+            "查看一下",
+            "再看",
+            "以便",
+            "才能",
+            // English: transition/plan phrases
+            "next",
+            "next step",
+            "then",
+            "let me",
+            "I will",
+            "I'll",
+        ];
+        let t = text.trim_end();
         text.ends_with("...")
             || text.ends_with("路路路")
+            || PLAN_ENDINGS.iter().any(|w| t.ends_with(w))
             || matches!(
-                text.chars().last(),
+                t.chars().last(),
                 Some('，')
                     | Some('：')
                     | Some('！')
@@ -1688,12 +1923,18 @@ impl ReActEngine {
     /// True when the parsed response is a text-only "final" that must be
     /// retried before ending the turn. Trusts explicit tool calls (final or
     /// not) and empty responses (handled by the empty-response retry); only
-    /// a thought without actions is examined, and it must pass both the
-    /// finish-reason and the mid-sentence checks.
+    /// a thought without actions is examined, and it must pass the
+    /// finish-reason, mid-sentence, and mid-task checks.
+    ///
+    /// `canonical` supplies the mid-task signal: when the agent has pending
+    /// tool context (the canonical ends in tool results with no user reply), a
+    /// text-only Stop is far more likely to be "I'll do X next" narration than
+    /// a deliberate final answer, so it is treated as suspect too.
     fn is_suspect_final(
         thought: &Option<String>,
         actions: &[Action],
         response: &LlmResponse,
+        canonical: &[CanonicalMessage],
     ) -> bool {
         if !actions.is_empty()
             && !actions
@@ -1703,9 +1944,29 @@ impl ReActEngine {
             return false;
         }
         match thought {
-            Some(t) => response.finish_reason != Some(FinishReason::Stop) || Self::looks_cut_off(t),
+            Some(t) => {
+                response.finish_reason != Some(FinishReason::Stop)
+                    || Self::looks_cut_off(t)
+                    || Self::canonical_has_pending_tool_context(canonical)
+            }
             None => false,
         }
+    }
+
+    /// True when the agent is mid-task: scanning back from the tail, the first
+    /// User message or Tool result decides. A Tool result before any User
+    /// message means tool(s) ran this turn and the reply has not come yet, so
+    /// a text-only Stop should not be trusted as final. A User message first
+    /// means a fresh turn (the agent is answering, not continuing tool work).
+    fn canonical_has_pending_tool_context(canonical: &[CanonicalMessage]) -> bool {
+        for m in canonical.iter().rev() {
+            match m.role {
+                CanonicalRole::User => return false,
+                CanonicalRole::Tool => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Compose the retry nudge after a step where tool calls failed. The
@@ -1718,7 +1979,9 @@ impl ReActEngine {
     /// the old unconditional "try a completely different approach" nudge,
     /// which repeatedly sent users down wrong paths when the real cause was
     /// environmental (Get-FileHash missing in the chosen shell, a broken
-    /// proxy, a different 7z path).
+    /// proxy, a different 7z path). The generic branch reuses the canonical
+    /// guidance from the system prompt (guideline 12) so the two cannot
+    /// drift.
     fn build_failure_nudge(failures: &[(String, String)]) -> String {
         let has_env = failures
             .iter()
@@ -1733,8 +1996,10 @@ impl ReActEngine {
             "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
                 .into()
         } else {
-            "The previous approach encountered errors. Diagnose the root cause first: is it an environment problem (missing command, network, path) or a logic problem? Fix the cause and retry; change approach only if the method itself is wrong."
-                .into()
+            format!(
+                "The previous approach encountered errors. {}",
+                haven_common::prompts::TOOL_FAILURE_DIAGNOSIS
+            )
         }
     }
 
@@ -1811,6 +2076,96 @@ impl ReActEngine {
         FailureKind::Unknown
     }
 
+    /// Supplement missing required fields on a tool call's arguments before
+    /// they reach the provider / tool. The model sometimes returns a call whose
+    /// `arguments` is valid JSON but omits a field the tool's input schema
+    /// marks required (e.g. an `action` discriminator) — most often after an
+    /// interrupted/continued generation. Providers reject such a call with a
+    /// 400 when deserializing the request body, so the ReAct loop repairs the
+    /// arguments up front: a missing required field is filled from the
+    /// schema's `default` when declared, otherwise from a type-appropriate
+    /// placeholder. Returns the number of actions that were repaired.
+    pub(crate) async fn supplement_missing_required_fields(
+        &self,
+        task_id: &str,
+        actions: &mut [Action],
+    ) -> usize {
+        let mut repaired = 0usize;
+        for action in actions.iter_mut() {
+            if action.is_final {
+                continue;
+            }
+            let Some(tool) = self
+                .executor
+                .get_tools()
+                .get_tool_for_task(Some(task_id), &action.tool_name)
+                .await
+            else {
+                continue;
+            };
+            let schema = tool.input_schema();
+            let Some(required) = schema.get("required").and_then(|r| r.as_array()) else {
+                continue;
+            };
+            let props = schema.get("properties");
+            // A truncated/interrupted generation often yields UNPARSEABLE
+            // arguments (parse_default_model_response falls back to Null),
+            // so the call arrives without any object to repair. Normalize it
+            // to an empty object so the required-field pass below can fill
+            // it — otherwise the bare Null reaches validate_input and fails
+            // with "MISSING REQUIRED FIELD(S)" for every required field.
+            if !action.tool_input.is_object() {
+                action.tool_input = serde_json::json!({});
+            }
+            let Some(obj) = action.tool_input.as_object_mut() else {
+                continue;
+            };
+            let mut filled = 0usize;
+            for req in required {
+                let Some(field) = req.as_str() else {
+                    continue;
+                };
+                // A required field that is present but null is just as
+                // unusable as a missing one (the validator rejects null for
+                // typed fields), so fill it too.
+                let present = obj.get(field).is_some_and(|v| !v.is_null());
+                if present {
+                    continue;
+                }
+                let prop = props.and_then(|p| p.get(field));
+                // Prefer the schema default; for enum-constrained fields
+                // (e.g. `operation` discriminators) fall back to the first
+                // declared value instead of a type placeholder, which would
+                // fail the enum constraint; otherwise a type placeholder.
+                let fallback = prop
+                    .and_then(|p| p.get("default"))
+                    .cloned()
+                    .or_else(|| {
+                        prop.and_then(|p| p.get("enum"))
+                            .and_then(|e| e.as_array())
+                            .and_then(|arr| arr.first().cloned())
+                    })
+                    .unwrap_or_else(|| {
+                        placeholder_for_schema_type(
+                            prop.and_then(|p| p.get("type")).and_then(|t| t.as_str()),
+                        )
+                    });
+                tracing::warn!(
+                    "supplementing missing required field '{}' on tool call '{}' with {:?}",
+                    field,
+                    action.tool_name,
+                    fallback
+                );
+                obj.insert(field.to_string(), fallback);
+                filled += 1;
+            }
+            if filled > 0 {
+                repaired += 1;
+            }
+        }
+        repaired
+    }
+
     /// Parse LLM response into thought text and actions.
     pub fn parse_default_model_response(
         response: &LlmResponse,
@@ -1831,6 +2186,12 @@ impl ReActEngine {
                 .map(|tc| {
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
+                    // `final_answer` is the canonical final tool name (used by
+                    // the synthesized finals and the tests). `answer`/`done`
+                    // are deliberate compatibility aliases: some providers
+                    // emit them for natural-language finals, and the alias is
+                    // cheaper than re-asking the model. Kept in one place so
+                    // the accepted names cannot drift.
                     let is_final =
                         tc.name == "final_answer" || tc.name == "answer" || tc.name == "done";
                     Action {
@@ -1838,7 +2199,7 @@ impl ReActEngine {
                         tool_input: args,
                         is_final,
                         tool_call_id: Some(if tc.id.is_empty() {
-                            uuid::Uuid::new_v4().to_string()
+                            haven_common::types::new_id("call")
                         } else {
                             tc.id.clone()
                         }),
@@ -1862,6 +2223,24 @@ impl ReActEngine {
         (thought, actions)
     }
 
+    /// Persist one final snapshot before leaving the loop on a cancellation,
+    /// so the DB row is never stale when `rollback_task` / `continue_task`
+    /// read it after the handler exits. The mid-run throttle in
+    /// `save_branch_point` may have skipped the last write, and the state at
+    /// this point is always a clean step boundary (the cancelled response or
+    /// partial tool results are discarded by the exit).
+    async fn save_exit_snapshot(
+        &self,
+        task_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        step_number: u32,
+        branch_points: &HashMap<u32, BranchPoint>,
+    ) {
+        self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points)
+            .await;
+    }
+
     /// Save snapshot including branch points for tree-structured rollback (鎼?).
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
@@ -1882,50 +2261,45 @@ impl ReActEngine {
             step_number,
             branch_points,
         };
-        // Serialize into the shared buffer inside a scoped block so the
+        // Serialize into the task's own buffer inside a scoped block so the
         // mutex guard is dropped before the await below (the guard is not
         // Send, so it must not be live across the spawn_blocking boundary).
         let bytes = {
-            let mut buf = self.snapshot_buf.lock().unwrap();
+            let mut bufs = self.snapshot_bufs.lock().unwrap();
+            let buf = bufs.entry(task_id.to_string()).or_default();
             buf.clear();
             if serde_json::to_writer(&mut *buf, &view).is_err() {
                 return;
             }
-            std::mem::take(&mut *buf)
+            std::mem::take(buf)
         };
         let json = String::from_utf8(bytes).unwrap_or_default();
         let db = self.db.clone();
-        let task_id = task_id.to_string();
+        let tid_owned = task_id.to_string();
         // Return ownership of the serialized bytes so the allocation is
-        // handed back to the shared buffer for reuse on the next snapshot.
+        // handed back to the task's buffer for reuse on the next snapshot.
         let back: String = db
             .run_blocking(move |db| {
-                let _ = db.save_react_state(&task_id, &json);
+                let _ = db.save_react_state(&tid_owned, &json);
                 Ok(json)
             })
             .await
             .unwrap_or_default();
-        if let Ok(mut buf) = self.snapshot_buf.lock() {
-            *buf = back.into_bytes();
+        if let Ok(mut bufs) = self.snapshot_bufs.lock() {
+            *bufs.entry(task_id.to_string()).or_default() = back.into_bytes();
         }
     }
-
-    /// Persist partial thought/reasoning text when a step fails mid-stream,
     /// and save a snapshot so the task can be resumed via "continue" or
     /// rolled back. Without this, any text streamed before the error is lost
     /// on page refresh because it was only in the frontend's memory.
-    #[allow(clippy::too_many_arguments)]
     async fn persist_partial_on_error(
         &self,
-        task_id: &str,
-        step_num: u32,
-        run_id: u64,
-        partial_thought: &Arc<std::sync::Mutex<String>>,
-        partial_reasoning: &Arc<std::sync::Mutex<String>>,
+        ctx: &StepCtx,
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         branch_points: &mut HashMap<u32, BranchPoint>,
-        emitter: &Arc<dyn AgentEventEmitter>,
+        partial_thought: &Arc<std::sync::Mutex<String>>,
+        partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) {
         // Save a branch point BEFORE persisting the partial output, so
         // last_msg_at captures the timestamp of the last message BEFORE the
@@ -1934,14 +2308,24 @@ impl ReActEngine {
         // The canonical/history here represent the state BEFORE the failed
         // LLM call (the response was never pushed to canonical), so resuming
         // will retry the step cleanly.
-        self.save_branch_point(task_id, canonical, history, step_num, branch_points)
-            .await;
+        // FORCED write: continue_task / rollback_task locate this branch
+        // point in the DB snapshot; a throttled (stale) row would silently
+        // skip their message truncation.
+        self.save_branch_point(
+            &ctx.task_id,
+            canonical,
+            history,
+            ctx.step_num,
+            branch_points,
+            true,
+        )
+        .await;
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
         if !reasoning_text.trim().is_empty() {
             self.persist_task_message(
-                task_id,
+                &ctx.task_id,
                 "assistant",
                 reasoning_text.trim(),
                 Some("reasoning"),
@@ -1950,14 +2334,35 @@ impl ReActEngine {
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            self.persist_task_message(task_id, "assistant", text, Some("text"))
+            self.persist_task_message(&ctx.task_id, "assistant", text, Some("text"))
                 .await;
-            EventDispatcher::emit_thought_from(emitter, task_id, text, step_num, run_id, &self.db)
-                .await;
+            EventDispatcher::emit_thought_from(
+                &ctx.emitter,
+                &ctx.task_id,
+                text,
+                ctx.step_num,
+                ctx.run_id,
+                &self.db,
+            )
+            .await;
         }
+        // The stream text now lives in the message stream (persisted above),
+        // so any checkpointed partial row for this task is obsolete — and an
+        // in-flight checkpoint write must not re-create it. Discard goes
+        // through the PartialStore, whose generation bump invalidates stale
+        // writes.
+        self.executor.partials.discard(&ctx.task_id).await;
     }
 
     /// Save a branch point at the current step before tool execution (鎼?).
+    ///
+    /// The DB snapshot write is throttled to every `SNAPSHOT_WRITE_INTERVAL`
+    /// steps on the happy path (`force = false`): the in-memory branch-point
+    /// map is always current, and every pause/error/final path plus every
+    /// cancellation exit writes unconditionally. Error paths MUST pass
+    /// `force = true` (e.g. `persist_partial_on_error`): `continue_task` /
+    /// `rollback_task` locate the failed step's branch point in the DB
+    /// snapshot, and a stale row would silently skip their message truncation.
     async fn save_branch_point(
         &self,
         task_id: &str,
@@ -1965,6 +2370,7 @@ impl ReActEngine {
         history: &[ReActStep],
         step_number: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
+        force: bool,
     ) {
         // `get_last_message_created_at` is a blocking SQLite read; run it on
         // the blocking thread pool instead of the async runtime.
@@ -1984,8 +2390,29 @@ impl ReActEngine {
                 last_msg_at,
             },
         );
-        self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points)
+        // The throttle marker guard is confined to this block so it is always
+        // dropped before the write's await.
+        let due = {
+            let mut last_written = self.last_snapshot_step.lock().unwrap();
+            let due = force
+                || last_written.get(task_id).is_none_or(|last| {
+                    step_number.saturating_sub(*last) >= SNAPSHOT_WRITE_INTERVAL
+                });
+            if due {
+                last_written.insert(task_id.to_string(), step_number);
+            }
+            due
+        };
+        if due {
+            self.save_snapshot_with_branches(
+                task_id,
+                canonical,
+                history,
+                step_number,
+                branch_points,
+            )
             .await;
+        }
     }
 
     /// Run one streamed LLM call for an agent step: spawn the chunk consumer,
@@ -1994,28 +2421,25 @@ impl ReActEngine {
     /// drain the consumer and return the aggregated response. Shared by the
     /// primary step call and the post-compaction retry so the two cannot
     /// drift. Error handling stays at the call site.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
     async fn stream_llm_step(
         &self,
+        ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
         llm_messages: &[LlmMessage],
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
-        emitter: &Arc<dyn AgentEventEmitter>,
-        task_id: &str,
-        step_num: u32,
-        run_id: u64,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
         let (chunk_tx, reasoning_tx, consumer_handle) = EventDispatcher::spawn_chunk_consumer_raw(
-            emitter,
+            &ctx.emitter,
             self.context_limits.event_chunk_batch_max_bytes,
         );
         let chunk_tx_c = chunk_tx.clone();
         let reasoning_tx_c = reasoning_tx.clone();
-        let task_id_c = task_id.to_string();
+        let task_id_c = ctx.task_id.clone();
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
         // Crash/stop recovery: the accumulated thought text is checkpointed
@@ -2023,9 +2447,11 @@ impl ReActEngine {
         // crash, user stop, or app exit does not lose the whole reply. The
         // first chunk checkpoints immediately; afterwards at most every 2s
         // or every `partial_checkpoint_min_chars` new chars, and never while
-        // a write is in flight.
-        let checkpoint_db = self.db.clone();
-        let checkpoint_task = task_id.to_string();
+        // a write is in flight. All writes go through the executor's
+        // `PartialStore`, which serializes them against promote/discard and
+        // drops writes that land after the task was ended/rolled back.
+        let partial_store = self.executor.partials.clone();
+        let checkpoint_task = ctx.task_id.clone();
         let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let partial_checkpoint_min_chars = self.context_limits.partial_checkpoint_min_chars;
         let partial_checkpoint_interval =
@@ -2037,54 +2463,62 @@ impl ReActEngine {
         // on_chunk callback is synchronous and cannot await the emitter.
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
         let ws_tx_c = ws_tx.clone();
-        let em_ws = emitter.clone();
+        let em_ws = ctx.emitter.clone();
         let ws_task = tokio::spawn(async move {
             while let Some(event) = ws_rx.recv().await {
                 em_ws.emit(event).await;
             }
         });
+        let step_num = ctx.step_num;
+        let run_id = ctx.run_id;
         let result = router
             .chat_stream_with_tools_aggregated_cancellable(
                 role,
-                &llm_messages,
-                &tools,
+                llm_messages,
+                tools,
                 move |c: &haven_llm::StreamChunk| {
-                    if let Some(t) = &c.text {
-                        pt.lock().unwrap().push_str(t);
-                        if let Err(e) =
-                            chunk_tx_c.try_send((task_id_c.clone(), t.clone(), step_num, run_id))
-                        {
+                    if let Some(t) = c.text.as_deref() {
+                        // Single lock scope per chunk: push, read the new
+                        // length and clone the checkpoint snapshot (when due)
+                        // under one guard instead of locking up to three times
+                        // per token.
+                        let checkpoint_snapshot = {
+                            let mut guard = pt.lock().unwrap();
+                            guard.push_str(t);
+                            let len = guard.len();
+                            let now = std::time::Instant::now();
+                            if !checkpoint_inflight.load(std::sync::atomic::Ordering::Relaxed)
+                                && (now.duration_since(checkpoint_at)
+                                    >= partial_checkpoint_interval
+                                    || len.saturating_sub(checkpoint_len)
+                                        >= partial_checkpoint_min_chars)
+                            {
+                                checkpoint_at = now;
+                                checkpoint_len = len;
+                                Some(guard.clone())
+                            } else {
+                                None
+                            }
+                        };
+                        if let Err(e) = chunk_tx_c.try_send((
+                            task_id_c.clone(),
+                            t.to_string(),
+                            step_num,
+                            run_id,
+                        )) {
                             tracing::warn!("thought chunk channel full, dropping: {}", e);
                         }
-                        let now = std::time::Instant::now();
-                        let len = pt.lock().unwrap().len();
-                        if !checkpoint_inflight.load(std::sync::atomic::Ordering::Relaxed)
-                            && (now.duration_since(checkpoint_at) >= partial_checkpoint_interval
-                                || len.saturating_sub(checkpoint_len)
-                                    >= partial_checkpoint_min_chars)
-                        {
-                            checkpoint_at = now;
-                            checkpoint_len = len;
-                            let snapshot = pt.lock().unwrap().clone();
-                            let db = checkpoint_db.clone();
+                        if let Some(snapshot) = checkpoint_snapshot {
+                            // Generation captured BEFORE the write is spawned:
+                            // if a promote/discard bumps it while the write is
+                            // queued, the PartialStore drops the stale snapshot.
+                            let gen_id = partial_store.generation(&checkpoint_task);
+                            let store = partial_store.clone();
                             let tid = checkpoint_task.clone();
                             let flag = checkpoint_inflight.clone();
                             tokio::spawn(async move {
-                                let tid_c = tid.clone();
-                                let snapshot_c = snapshot.clone();
-                                let res = db
-                                    .run_blocking(move |db| {
-                                        db.upsert_partial_message(&tid_c, &snapshot_c)
-                                    })
-                                    .await;
+                                store.checkpoint(&tid, gen_id, &snapshot).await;
                                 flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                                if let Err(e) = res {
-                                    tracing::warn!(
-                                        "failed to checkpoint partial stream text for task {}: {}",
-                                        tid,
-                                        e
-                                    );
-                                }
                             });
                         }
                     }
@@ -2121,6 +2555,226 @@ impl ReActEngine {
         }
         let _ = ws_task.await;
         result
+    }
+
+    /// One step's full LLM call, including the context-length compaction
+    /// retry and all failure paths. The loop dispatches on the returned
+    /// [`StepCallOutcome`] instead of inlining the error handling: a
+    /// `Fatal` outcome has already persisted partial text, emitted the error
+    /// event and marked the task Error.
+    #[allow(clippy::too_many_arguments)] // consolidates ~130 lines of inline error handling
+    async fn call_step_llm(
+        &self,
+        ctx: &StepCtx,
+        router: Arc<LlmRouter>,
+        role: EndpointRole,
+        llm_messages: &mut Vec<LlmMessage>,
+        tools: &[ToolDefinition],
+        cancel: tokio_util::sync::CancellationToken,
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &[ReActStep],
+        branch_points: &mut HashMap<u32, BranchPoint>,
+        partial_thought: &Arc<std::sync::Mutex<String>>,
+        partial_reasoning: &Arc<std::sync::Mutex<String>>,
+    ) -> StepCallOutcome {
+        match self
+            .stream_llm_step(
+                ctx,
+                router.clone(),
+                role,
+                llm_messages,
+                tools,
+                cancel.clone(),
+                partial_thought,
+                partial_reasoning,
+            )
+            .await
+        {
+            Ok(resp) => {
+                if router.balanced_model_active() {
+                    self.emit_balanced_model(
+                        &ctx.emitter,
+                        &ctx.task_id,
+                        "switching to balanced model",
+                    )
+                    .await;
+                }
+                self.record_usage_and_emit(&ctx.task_id, role, &resp, &ctx.emitter)
+                    .await;
+                StepCallOutcome::Response(resp)
+            }
+            Err(haven_llm::LlmError::ContextLengthExceeded) => {
+                tracing::warn!(
+                    "context length exceeded for task {}, forcing compaction",
+                    ctx.task_id
+                );
+                if let Some(result) = {
+                    let compactor = self.context_compactor(role).await;
+                    compactor.compact(canonical, &self.router()).await
+                } {
+                    tracing::debug!(
+                        "compacted {} -> {} tokens",
+                        result.tokens_before,
+                        result.tokens_after
+                    );
+                    *canonical = result.compacted;
+                    // The retry must convert the *compacted* canonical
+                    // (the old messages are stale), and the role must be
+                    // re-resolved: summarizing away the last image-bearing
+                    // turn changes the routing for the retry.
+                    *llm_messages = haven_llm::types::convert_to_llm(canonical);
+                    let retry_role = if canonical_has_image(canonical) {
+                        router.vision_role().await
+                    } else {
+                        EndpointRole::DefaultModel
+                    };
+                    EventDispatcher::emit_compaction_from(
+                        &ctx.emitter,
+                        &ctx.task_id,
+                        &result.summary,
+                        result.tokens_before,
+                        result.tokens_after,
+                    )
+                    .await;
+                    self.persist_compaction_summary(&ctx.task_id, &result.summary)
+                        .await;
+                    // Reset the accumulators: the first attempt's partial
+                    // text was based on pre-compaction context and should
+                    // not be mixed with the retry's output.
+                    partial_thought.lock().unwrap().clear();
+                    partial_reasoning.lock().unwrap().clear();
+                    match self
+                        .stream_llm_step(
+                            ctx,
+                            router.clone(),
+                            retry_role,
+                            llm_messages,
+                            tools,
+                            cancel,
+                            partial_thought,
+                            partial_reasoning,
+                        )
+                        .await
+                    {
+                        Ok(retry_resp) => {
+                            self.record_usage_and_emit(
+                                &ctx.task_id,
+                                retry_role,
+                                &retry_resp,
+                                &ctx.emitter,
+                            )
+                            .await;
+                            StepCallOutcome::Response(retry_resp)
+                        }
+                        Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
+                        Err(e2) => {
+                            let err_msg = format!("Compaction retry also failed: {}", e2);
+                            self.persist_partial_on_error(
+                                ctx,
+                                canonical,
+                                history,
+                                branch_points,
+                                partial_thought,
+                                partial_reasoning,
+                            )
+                            .await;
+                            self.emit_error(&ctx.emitter, &ctx.task_id, &err_msg).await;
+                            self.mark_task_error(&ctx.task_id).await;
+                            StepCallOutcome::Fatal(err_msg)
+                        }
+                    }
+                } else {
+                    let err_msg = "context length exceeded but compaction failed".to_string();
+                    self.persist_partial_on_error(
+                        ctx,
+                        canonical,
+                        history,
+                        branch_points,
+                        partial_thought,
+                        partial_reasoning,
+                    )
+                    .await;
+                    EventDispatcher::emit_task_error_from(&ctx.emitter, &ctx.task_id, &err_msg)
+                        .await;
+                    self.mark_task_error(&ctx.task_id).await;
+                    StepCallOutcome::Fatal(err_msg)
+                }
+            }
+            Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
+            Err(e) => {
+                let err_msg = format!("Both default model and balanced model failed: {}", e);
+                self.persist_partial_on_error(
+                    ctx,
+                    canonical,
+                    history,
+                    branch_points,
+                    partial_thought,
+                    partial_reasoning,
+                )
+                .await;
+                EventDispatcher::emit_task_error_from(&ctx.emitter, &ctx.task_id, &err_msg).await;
+                self.mark_task_error(&ctx.task_id).await;
+                StepCallOutcome::Fatal(err_msg)
+            }
+        }
+    }
+
+    /// Mark the task Error without propagating DB failures (the loop is
+    /// already unwinding through the Fatal outcome).
+    async fn mark_task_error(&self, task_id: &str) {
+        if let Err(e) = self
+            .executor
+            .update_task_status(task_id, TaskStatus::Error)
+            .await
+        {
+            tracing::warn!(
+                "ReAct: failed to mark task {} Error after a fatal step failure: {}",
+                task_id,
+                e
+            );
+        }
+    }
+
+    /// Shared tail of the two "final answer" branches when a user message or
+    /// background-job result arrived while the LLM was generating: persist
+    /// the finished answer, insert it BEFORE the injected messages (so the
+    /// re-run's LLM call sees the completed answer followed by the
+    /// interjection, instead of answering blind and duplicating the bubble),
+    /// and keep a rollback target for the interrupted final step.
+    #[allow(clippy::too_many_arguments)] // consolidates two near-identical final branches
+    async fn deliver_final_with_pending_context(
+        &self,
+        ctx: &StepCtx,
+        final_text: &str,
+        reasoning: Option<String>,
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &[ReActStep],
+        branch_points: &mut HashMap<u32, BranchPoint>,
+        before_inject_len: usize,
+        already_pushed: bool,
+    ) {
+        self.persist_task_message(&ctx.task_id, "assistant", final_text, Some("text"))
+            .await;
+        if !already_pushed {
+            canonical.insert(
+                before_inject_len,
+                CanonicalMessage::assistant(
+                    vec![ContentPart::text(final_text.to_string())],
+                    None,
+                    reasoning,
+                    Vec::new(),
+                ),
+            );
+        }
+        self.save_branch_point(
+            &ctx.task_id,
+            canonical,
+            history,
+            ctx.step_num,
+            branch_points,
+            false,
+        )
+        .await;
     }
 
     /// Update the per-task cumulative token counters and emit an
@@ -2187,25 +2841,29 @@ impl ReActEngine {
 
         // Persist the cumulative counters so a resumed session (after task
         // completion or app restart) restores the correct token-stats display
-        // instead of restarting from zero. Run on a blocking thread: the
-        // autocommit hits the disk/fsync path and must not stall the agent
-        // step loop on the async runtime (it also shares the global DB lock).
+        // instead of restarting from zero. Fire-and-forget on a blocking
+        // thread: the autocommit hits the disk/fsync path and awaiting it
+        // would stall the agent step loop on every usage event (the previous
+        // awaited variant serialized each step behind the disk write). A
+        // dropped handle only risks losing the final step's counters on a
+        // hard kill — the next usage event rewrites the absolute totals, and
+        // the in-memory map stays authoritative for the running session.
         let db = self.db.clone();
         let task_id_for_persist = task_id.to_string();
-        let persist = {
-            let cum_cost = cum_cost_opt.unwrap_or(0.0);
-            tokio::task::spawn_blocking(move || {
-                let _ = db.update_task_usage(
-                    &task_id_for_persist,
-                    cum_prompt,
-                    cum_completion,
-                    cum_total,
-                    cum_cost,
-                    has_cost,
-                );
-            })
-        };
-        persist.await.ok();
+        let cum_cost = cum_cost_opt.unwrap_or(0.0);
+        let persist = tokio::task::spawn_blocking(move || {
+            let _ = db.update_task_usage(
+                &task_id_for_persist,
+                cum_prompt,
+                cum_completion,
+                cum_total,
+                cum_cost,
+                has_cost,
+            );
+        });
+        // Detach: the write completes on the blocking pool without the step
+        // loop waiting for it.
+        drop(persist);
 
         EventDispatcher::emit_usage_from(
             emitter,
@@ -2226,13 +2884,18 @@ impl ReActEngine {
         .await;
     }
 
-    /// Drop cumulative counters and the token-estimate cache for a finished
-    /// task so both maps stay bounded across long-running sessions.
+    /// Drop cumulative counters, the token-estimate cache, the snapshot
+    /// buffer, the snapshot-throttle marker and the tool-definition cache for
+    /// a finished task so all per-task maps stay bounded across long-running
+    /// sessions.
     pub fn reset_cumulative_usage(&self, task_id: &str) {
         let mut map = self.cumulative_usage.lock().unwrap();
         map.remove(task_id);
         drop(map);
         self.reset_token_estimate(task_id);
+        self.last_snapshot_step.lock().unwrap().remove(task_id);
+        self.tool_def_cache.lock().unwrap().remove(task_id);
+        self.snapshot_bufs.lock().unwrap().remove(task_id);
     }
 
     /// Resolve the model's true context window for the endpoint used by
@@ -2322,12 +2985,10 @@ impl ReActEngine {
     fn estimate_canonical_tokens(&self, task_id: &str, canonical: &[CanonicalMessage]) -> u32 {
         const FULL_ESTIMATE_PASS_INTERVAL: u32 = 8;
         let mut cache = self.token_estimate_cache.lock().unwrap();
-        let entry = cache
-            .entry(task_id.to_string())
-            .or_insert_with(TokenEstimate::default);
+        let entry = cache.entry(task_id.to_string()).or_default();
         let full_pass = entry.tokens == 0
             || entry.msgs_len > canonical.len()
-            || entry.passes % FULL_ESTIMATE_PASS_INTERVAL == 0;
+            || entry.passes.is_multiple_of(FULL_ESTIMATE_PASS_INTERVAL);
         if full_pass {
             entry.msgs_len = canonical.len();
             entry.tokens = estimate_message_tokens(canonical);
@@ -2396,6 +3057,8 @@ impl ReActEngine {
                 result.tokens_after,
             )
             .await;
+            self.persist_compaction_summary(task_id, &result.summary)
+                .await;
             true
         } else {
             false
@@ -2578,7 +3241,7 @@ mod tests {
 
     #[test]
     fn failure_nudge_environmental_keeps_approach() {
-        let nudge = ReActEngine::build_failure_nudge(&vec![(
+        let nudge = ReActEngine::build_failure_nudge(&[(
             "shell".into(),
             "curl: (7) Failed to connect: Connection refused".into(),
         )]);
@@ -2595,7 +3258,7 @@ mod tests {
 
     #[test]
     fn failure_nudge_logic_allows_method_switch_after_fix() {
-        let nudge = ReActEngine::build_failure_nudge(&vec![(
+        let nudge = ReActEngine::build_failure_nudge(&[(
             "files".into(),
             "'old_string' is required for edit operation".into(),
         )]);
@@ -2611,7 +3274,11 @@ mod tests {
     #[test]
     fn failure_nudge_empty_falls_back_to_generic() {
         let nudge = ReActEngine::build_failure_nudge(&[]);
-        assert!(nudge.contains("Diagnose the root cause"), "got: {nudge}");
+        // The generic branch reuses the canonical system-prompt guidance.
+        assert!(
+            nudge.contains(haven_common::prompts::TOOL_FAILURE_DIAGNOSIS),
+            "got: {nudge}"
+        );
     }
 
     fn text_msg(role: LlmRole, text: &str) -> LlmMessage {
@@ -2640,16 +3307,22 @@ mod tests {
         }
     }
 
+    fn msgs_contain_image(messages: &[LlmMessage]) -> bool {
+        messages.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|p| matches!(p, ContentPart::Image { .. }))
+        })
+    }
+
     #[tokio::test]
     async fn choose_agent_role_default_without_images() {
         let router = mock_router();
-        let messages = vec![
+        let messages = [
             text_msg(LlmRole::System, "be concise"),
             text_msg(LlmRole::User, "hello"),
         ];
-        let has_image = messages
-            .iter()
-            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
+        let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
             EndpointRole::DefaultModel
@@ -2659,10 +3332,8 @@ mod tests {
     #[tokio::test]
     async fn choose_agent_role_default_when_image_model_unconfigured() {
         let router = mock_router();
-        let messages = vec![image_msg(LlmRole::User)];
-        let has_image = messages
-            .iter()
-            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
+        let messages = [image_msg(LlmRole::User)];
+        let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
             EndpointRole::DefaultModel
@@ -2675,10 +3346,8 @@ mod tests {
         router
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
-        let messages = vec![image_msg(LlmRole::User)];
-        let has_image = messages
-            .iter()
-            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
+        let messages = [image_msg(LlmRole::User)];
+        let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
             EndpointRole::ImageModel
@@ -2692,10 +3361,8 @@ mod tests {
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
         router.force_routing_flags(true, false).await;
-        let messages = vec![image_msg(LlmRole::User)];
-        let has_image = messages
-            .iter()
-            .any(|m| m.content.iter().any(|p| matches!(p, ContentPart::Image { .. })));
+        let messages = [image_msg(LlmRole::User)];
+        let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
             EndpointRole::DefaultModel
@@ -2945,7 +3612,8 @@ mod tests {
         assert!(!ReActEngine::is_suspect_final(
             &Some("done".into()),
             &[explicit],
-            &r
+            &r,
+            &[]
         ));
     }
 
@@ -2958,7 +3626,7 @@ mod tests {
         ] {
             let r = resp("partial text", vec![], finish);
             assert!(
-                ReActEngine::is_suspect_final(&Some("partial text".into()), &[], &r),
+                ReActEngine::is_suspect_final(&Some("partial text".into()), &[], &r, &[]),
                 "finish={finish:?} must be suspect"
             );
         }
@@ -2970,19 +3638,98 @@ mod tests {
         assert!(ReActEngine::is_suspect_final(
             &Some("让我先查一下，".into()),
             &[],
-            &r
+            &r,
+            &[]
         ));
         let r2 = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
         assert!(!ReActEngine::is_suspect_final(
             &Some("好的，已经完成了。".into()),
             &[],
-            &r2
+            &r2,
+            &[]
         ));
     }
 
     #[test]
     fn is_suspect_final_ignores_empty_thought() {
         let r = resp("", vec![], Some(FinishReason::Length));
-        assert!(!ReActEngine::is_suspect_final(&None, &[], &r));
+        assert!(!ReActEngine::is_suspect_final(&None, &[], &r, &[]));
+    }
+
+    #[test]
+    fn is_suspect_final_flags_stop_with_planning_ending() {
+        let r = resp("接下来我需要确认一下", vec![], Some(FinishReason::Stop));
+        assert!(ReActEngine::is_suspect_final(
+            &Some("接下来我需要确认一下".into()),
+            &[],
+            &r,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn is_suspect_final_flags_mid_task_text_only_stop() {
+        // Tool result pending (no user message after it): a text-only Stop
+        // must not be trusted as final even though the text is complete.
+        let canonical = vec![
+            CanonicalMessage::user_text("检查工具"),
+            CanonicalMessage::assistant(
+                vec![ContentPart::text("接下来").into()],
+                Some(vec![CanonicalToolCall {
+                    id: "c1".into(),
+                    name: "mcp_list".into(),
+                    arguments: serde_json::json!({}),
+                }]),
+                None,
+                Vec::new(),
+            ),
+            CanonicalMessage::tool(
+                vec![ContentPart::text(r#"{"success":true,"output":"[tools]"}"#)],
+                Some("c1".into()),
+            ),
+        ];
+        let r = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
+        assert!(ReActEngine::is_suspect_final(
+            &Some("好的，已经完成了。".into()),
+            &[],
+            &r,
+            &canonical
+        ));
+    }
+
+    #[test]
+    fn is_suspect_final_accepts_text_only_stop_on_fresh_turn() {
+        // No tool result in this turn: a clean text-only Stop is final.
+        let canonical = vec![CanonicalMessage::user_text("你好")];
+        let r = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
+        assert!(!ReActEngine::is_suspect_final(
+            &Some("好的，已经完成了。".into()),
+            &[],
+            &r,
+            &canonical
+        ));
+    }
+
+    #[test]
+    fn canonical_has_pending_tool_context_detects_mid_task() {
+        let mid = vec![
+            CanonicalMessage::user_text("go"),
+            CanonicalMessage::tool(vec![ContentPart::text("ok")], Some("c1".into())),
+        ];
+        assert!(ReActEngine::canonical_has_pending_tool_context(&mid));
+        let fresh = vec![
+            CanonicalMessage::user_text("first"),
+            CanonicalMessage::tool(vec![ContentPart::text("ok")], Some("c1".into())),
+            CanonicalMessage::user_text("second question"),
+        ];
+        assert!(!ReActEngine::canonical_has_pending_tool_context(&fresh));
+    }
+
+    #[test]
+    fn looks_cut_off_flags_planning_endings() {
+        assert!(ReActEngine::looks_cut_off("接下来"));
+        assert!(ReActEngine::looks_cut_off("确认一下"));
+        assert!(!ReActEngine::looks_cut_off("好的，已经完成了。"));
+        assert!(!ReActEngine::looks_cut_off("完成"));
     }
 }

@@ -13,6 +13,7 @@ use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -35,8 +36,8 @@ pub use skills::runner::SkillRunner;
 pub use skills::venv::VenvManager;
 pub use skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine};
 pub use tool::{
-    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistry, ToolResult, extract_ask_signal,
-    extract_notify_signal, is_silent_action,
+    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistration, ToolRegistry, ToolResult,
+    ToolSignals, extract_ask_signal, extract_notify_signal, is_silent_action,
 };
 
 /// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
@@ -67,12 +68,11 @@ pub fn llm_tool_name(qualified: &str) -> String {
 
 /// Lightweight sanitizer for strings interpolated into the system prompt:
 /// replaces control characters (newlines, tabs) that could inject prompt
-/// text, and caps the length.
+/// text, and caps the length. Shared implementation lives in
+/// `haven_common::text` so the policy cannot drift from the agent prompt /
+/// fact sanitizers.
 fn sanitize_index_field(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .take(256)
-        .collect()
+    haven_common::text::sanitize_prompt_field(s, 256)
 }
 
 pub struct ToolsManager {
@@ -83,9 +83,9 @@ pub struct ToolsManager {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
     pub safety_gateway: SafetyGateway,
     tool_settings: RwLock<HashMap<String, ToolConfig>>,
-    /// Unified context limits. `max_tool_output_chars` is the global default
-    /// cap for tool outputs; per-tool `tool_settings.*.max_output_chars`
-    /// overrides it.
+    /// Unified context limits. `max_observation_chars` is the observation
+    /// budget for tool outputs fed back into the conversation; per-tool
+    /// `tool_settings.*.max_output_chars` overrides it.
     context_limits: RwLock<ContextLimitsConfig>,
     /// Full builtin tool list (enabled and disabled) so the UI can list and
     /// re-enable disabled tools even though they are excluded from the
@@ -112,6 +112,11 @@ pub struct ToolsManager {
     /// Shared clipboard history for the `clipboard` tool. Lives on the
     /// manager (not the tool) so it survives catalog rebuilds.
     pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
+    /// Monotonic catalog version, bumped whenever the global registry or any
+    /// per-task registration changes. The ReAct loop caches per-task tool
+    /// definitions keyed by this version, so a bump forces a rebuild without
+    /// the loop re-querying schemas on every step.
+    catalog_version: AtomicU64,
 }
 
 impl ToolsManager {
@@ -121,6 +126,11 @@ impl ToolsManager {
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
         let registry = ToolRegistry::new();
+        let background_jobs = Arc::new(bg::BackgroundJobs::new());
+        let reminders = Arc::new(builtin::reminder::ReminderCenter::new());
+        // Wire the background-job registry into the reminder center so
+        // `watch_job_id` reminders can wait for a job to finish.
+        reminders.set_jobs(Some(background_jobs.clone()));
         Self {
             registry,
             mcp_manager: McpManager::new(),
@@ -130,18 +140,26 @@ impl ToolsManager {
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
             ))),
-            safety_gateway: SafetyGateway::new(RiskLevel::Low),
+            safety_gateway: SafetyGateway::new(RiskLevel::Medium),
             tool_settings: RwLock::new(HashMap::new()),
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
             task_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
-            background_jobs: Arc::new(bg::BackgroundJobs::new()),
-            reminders: Arc::new(builtin::reminder::ReminderCenter::new()),
+            background_jobs,
+            reminders,
             self_context: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
+            catalog_version: AtomicU64::new(0),
         }
+    }
+
+    /// Monotonic catalog version (see `catalog_version`). Consumers cache
+    /// derived views (e.g. per-step LLM tool definitions) keyed by this
+    /// value and rebuild only when it changes.
+    pub fn catalog_version(&self) -> u64 {
+        self.catalog_version.load(Ordering::Relaxed)
     }
 
     /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
@@ -154,9 +172,11 @@ impl ToolsManager {
     /// Wire the app-level context for the `self` management tool and register
     /// the tool. Called by the desktop shell after the config loader exists;
     /// later catalog rebuilds keep the tool registered. Also hands the DB to
-    /// the reminder registry so reminders persist across restarts.
+    /// the reminder registry and the background-job registry so reminders and
+    /// job results persist across restarts.
     pub async fn set_self_context(&self, ctx: builtin::SelfToolContext) {
         self.reminders.set_db(ctx.db.clone()).await;
+        self.background_jobs.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
         self.rebuild_catalog().await;
     }
@@ -252,6 +272,7 @@ impl ToolsManager {
 
         *self.all_builtin_tools.write().await = all_tools;
         self.registry.rebuild(enabled_tools).await;
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Register a tool for a specific task (per-task skill overlay).
@@ -264,11 +285,13 @@ impl ToolsManager {
             .entry(task_id.to_string())
             .or_default()
             .insert(name, tool);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Remove all per-task tool registrations for a given task.
     pub async fn unregister_task(&self, task_id: &str) {
         self.task_registrations.write().await.remove(task_id);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Register a skill as a per-task tool adapter. Looks up the skill by
@@ -290,11 +313,18 @@ impl ToolsManager {
     /// Register all tools from an MCP server as per-task tool adapters.
     /// Looks up the client by server name and registers `McpToolAdapter`
     /// for each cached tool. Returns `true` if the client was found.
+    ///
+    /// After a restart the server may still be connecting in the background
+    /// (`discover_all`), so the tools cache can be empty even though the
+    /// server is configured and enabled. Wait briefly (bounded) for the
+    /// handshake + tools/list to complete so a fast resume does not register
+    /// zero tools and silently lose the task's MCP access. A server that is
+    /// definitively offline gives up early instead of stalling the resume.
     pub async fn register_mcp_for_task(&self, task_id: &str, server_name: &str) -> bool {
         let Some(client) = self.mcp_manager.get_client(server_name).await else {
             return false;
         };
-        let tools = client.tools_cache().await;
+        let tools = client.wait_for_tools(Duration::from_secs(3)).await;
         for info in tools {
             let adapter = McpToolAdapter::new(client.clone(), server_name, info);
             self.register_for_task(task_id, Arc::new(adapter)).await;
@@ -488,14 +518,13 @@ impl ToolsManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
 
-        // The reminder tool needs the scheduling task id to support `continue`
-        // (resume that task) and `tool` (run with the task's per-task tool
-        // context) modes, and the jobs tool needs it to scope the job board
-        // to the current task. The id is injected privately here — after the
-        // LLM-facing input was captured by the caller — so it never reaches
-        // the tool schema, the step history, or the LLM.
+        // Tools that scope to the current task (reminder, jobs) get the task
+        // id injected privately here — after the LLM-facing input was
+        // captured by the caller — so it never reaches the tool schema, the
+        // step history, or the LLM. Declared via `Tool::requires_task_id` so
+        // the injection cannot drift from the tool that consumes it.
         let mut exec_input = input;
-        if (tool_name == "reminder" || tool_name == "jobs")
+        if tool.requires_task_id()
             && let Some(tid) = task_id
             && let Some(obj) = exec_input.as_object_mut()
         {
@@ -530,6 +559,12 @@ impl ToolsManager {
             {
                 Ok(result) => {
                     self.tool_circuits.record_success(tool_name);
+                    // Attach the tool's declared side-channel signals (ask
+                    // question / notify toast) BEFORE returning: consumers
+                    // (the ReAct loop) read structured signals instead of
+                    // name-matching and re-parsing the output JSON.
+                    let mut result = result;
+                    result.signals = tool.signals(&result.output);
                     return Ok(result);
                 }
                 Err(e) if attempt + 1 < max_attempts && is_retryable_tool_error(&e) => {
@@ -543,14 +578,14 @@ impl ToolsManager {
                 }
                 Err(e) => {
                     self.tool_circuits.record_failure(tool_name);
-                    // Long-running shell commands: on timeout, hand the
-                    // command to the background job registry instead of
-                    // failing the step, so the task can continue and pick
-                    // the result up later (auto-pushed on completion).
-                    if tool_name == "shell"
-                        && !cancel.is_cancelled()
+                    // Long-running tools may hand the work to a background
+                    // mechanism on timeout instead of failing the step, so
+                    // the task can continue and pick the result up later
+                    // (auto-pushed on completion). Declared per-tool via
+                    // `Tool::timeout_fallback` (currently the shell tool).
+                    if !cancel.is_cancelled()
                         && is_tool_timeout(&e)
-                        && let Ok(result) = self.shell_to_background(&exec_input).await
+                        && let Some(result) = tool.timeout_fallback(&exec_input).await
                     {
                         return Ok(result);
                     }
@@ -564,37 +599,6 @@ impl ToolsManager {
 
     pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
         &self.tool_circuits
-    }
-
-    /// Re-run a timed-out foreground shell command as a background job so
-    /// the task is not blocked by long-running work (git clone, npm install,
-    /// build scripts). Uses the same job registry as `shell background: true`,
-    /// so the result is pushed back to the task automatically on completion.
-    async fn shell_to_background(&self, input: &Value) -> anyhow::Result<ToolResult> {
-        let cmd = input["command"].as_str().unwrap_or("");
-        if cmd.trim().is_empty() {
-            anyhow::bail!("command is required");
-        }
-        #[cfg(windows)]
-        let shell = input["shell"].as_str().unwrap_or("powershell");
-        #[cfg(not(windows))]
-        let shell = input["shell"].as_str().unwrap_or("sh");
-        let max_chars = self.context_limits.read().await.max_tool_output_chars;
-        let cwd = input["cwd"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(std::path::PathBuf::from);
-        let job_id = self
-            .background_jobs
-            .spawn_shell(cmd, shell, max_chars, cwd)
-            .await?;
-        Ok(ToolResult::ok(serde_json::json!({
-            "background": true,
-            "job_id": job_id,
-            "shell": shell,
-            "status": "running",
-            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this job's result.",
-        })))
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
@@ -655,16 +659,13 @@ mod tests {
     #[tokio::test]
     async fn test_tools_manager_set_context_limits_stores_global_cap() {
         let mgr = ToolsManager::new();
-        assert_eq!(
-            mgr.context_limits.read().await.max_tool_output_chars,
-            20_000
-        );
+        assert_eq!(mgr.context_limits.read().await.max_observation_chars, 8_000);
         let limits = ContextLimitsConfig {
-            max_tool_output_chars: 5_000,
+            max_observation_chars: 5_000,
             ..Default::default()
         };
         mgr.set_context_limits(limits).await;
-        assert_eq!(mgr.context_limits.read().await.max_tool_output_chars, 5_000);
+        assert_eq!(mgr.context_limits.read().await.max_observation_chars, 5_000);
     }
 
     #[tokio::test]

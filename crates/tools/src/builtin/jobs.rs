@@ -32,6 +32,12 @@ impl Tool for JobsTool {
         RiskLevel::Safe
     }
 
+    /// Needs the private `_task_id` input so the job board is scoped to the
+    /// current task.
+    fn requires_task_id(&self) -> bool {
+        true
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",

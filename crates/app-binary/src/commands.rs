@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::events::*;
 use haven_common::McpServerConfig;
-use haven_common::config::{LlmConfig, ModelEndpoint};
+use haven_common::config::{LlmConfig, LogConfig, ModelEndpoint};
 use haven_common::types::RiskLevel;
 use haven_input::{RecordingReason, RecordingResult};
 use haven_llm::stt::build_stt_client;
@@ -12,7 +12,7 @@ use haven_memory::repositories::task_steps::TaskStep;
 use haven_memory::repositories::tasks::Task;
 use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -105,15 +105,32 @@ pub(crate) fn recording_reason_str(reason: RecordingReason) -> &'static str {
     }
 }
 
-/// Emit `recording:started` with a freshly generated session id. Used by
-/// both the `start_recording` Tauri command and the shell hotkey start path
-/// so the wire shape stays consistent across entry points.
-pub(crate) fn emit_recording_started(app: &tauri::AppHandle) {
+/// The `rec-{uuid}` session id of the in-flight recording: created on the
+/// first start (button or hotkey), reused by every event of the same
+/// recording until `finalize_transcription` consumes it. One recording =
+/// one id, so `recording:started` and the later `transcription:*` events
+/// correlate by id instead of by timing.
+pub(crate) fn begin_recording_session(state: &AppState) -> haven_common::types::SessionId {
+    let mut cur = state
+        .recording_session
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let id = cur.get_or_insert_with(|| haven_common::types::new_id("rec").into());
+    id.clone()
+}
+
+/// Emit `recording:started` with the session's id. Used by both the
+/// `start_recording` Tauri command and the shell hotkey start path so the
+/// wire shape stays consistent across entry points.
+pub(crate) fn emit_recording_started(
+    app: &tauri::AppHandle,
+    session_id: &haven_common::types::SessionId,
+) {
     let _ = app.emit(
         "recording:started",
         RecordingEvent {
             is_recording: true,
-            session_id: Some(uuid::Uuid::new_v4().to_string()),
+            session_id: Some(session_id.clone()),
             reason: None,
             duration_ms: None,
         },
@@ -146,7 +163,7 @@ pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<Stri
     let _ = app.emit(
         "recording:error",
         serde_json::json!({
-            "session_id": uuid::Uuid::new_v4().to_string(),
+            "session_id": haven_common::types::new_id("rec"),
             "error": error.into(),
         }),
     );
@@ -251,9 +268,19 @@ pub(crate) async fn finalize_transcription(
 ) -> Option<String> {
     state.pipeline.transcribe(&mut result).await;
 
+    // The session id of the recording that produced this transcription:
+    // generated at start (recording:started) and consumed here, so both
+    // event families of one recording share the same `rec-` id. The
+    // fallback covers events that never went through a start (defensive).
+    let session_id = state
+        .recording_session
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .unwrap_or_else(|| haven_common::types::new_id("rec").into());
+
     match result.transcript {
         Some(text) => {
-            let session_id = uuid::Uuid::new_v4().to_string();
             let _ = app.emit(
                 "transcription:result",
                 TranscriptionResultEvent {
@@ -270,7 +297,7 @@ pub(crate) async fn finalize_transcription(
                 let _ = app.emit(
                     "transcription:error",
                     TranscriptionErrorEvent {
-                        session_id: uuid::Uuid::new_v4().to_string(),
+                        session_id: session_id.clone(),
                         error: err,
                     },
                 );
@@ -282,7 +309,7 @@ pub(crate) async fn finalize_transcription(
                 let _ = app.emit(
                     "transcription:result",
                     TranscriptionResultEvent {
-                        session_id: uuid::Uuid::new_v4().to_string(),
+                        session_id: session_id.clone(),
                         text: String::new(),
                         duration_ms: result.duration_ms,
                         confidence: None,
@@ -305,7 +332,8 @@ pub async fn start_recording(
         let pipeline_state = state.pipeline.get_state().await;
         if matches!(pipeline_state, haven_input::RecordingState::Recording) {
             state.shell.sync_recording(true).await;
-            emit_recording_started(&app);
+            let session_id = begin_recording_session(&state);
+            emit_recording_started(&app, &session_id);
             return Ok(());
         }
         let msg = if matches!(pipeline_state, haven_input::RecordingState::Processing) {
@@ -319,7 +347,8 @@ pub async fn start_recording(
     // Keep the shell state in sync so the tray icon, the mute hotkey and the
     // recording toggle reflect a UI-button-started recording.
     state.shell.sync_recording(true).await;
-    emit_recording_started(&app);
+    let session_id = begin_recording_session(&state);
+    emit_recording_started(&app, &session_id);
     Ok(())
 }
 
@@ -381,6 +410,12 @@ pub async fn cancel_recording(
         .await
         .map_err(|e| log_err("cancel_recording", e))?;
     state.shell.sync_recording(false).await;
+    // No transcription follows a cancel: drop the session id so the next
+    // recording starts a fresh one instead of reusing the cancelled id.
+    *state
+        .recording_session
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
     emit_recording_stopped(&app, "cancel", None);
     Ok(())
 }
@@ -458,7 +493,7 @@ fn sanitize_filename(name: &str) -> String {
         _ => false,
     };
     if clean.trim().is_empty() || clean == "." || clean == ".." || reserved {
-        clean = format!("file_{}", uuid::Uuid::new_v4());
+        clean = haven_common::types::new_id("file");
     }
     // `String::truncate` panics when the index is not a char boundary; pop
     // whole chars instead (CJK/emoji names are common).
@@ -511,7 +546,7 @@ async fn persist_file_attachments_to(
             .filename
             .as_deref()
             .map(sanitize_filename)
-            .unwrap_or_else(|| format!("file_{}", uuid::Uuid::new_v4()));
+            .unwrap_or_else(|| haven_common::types::new_id("file"));
         // Keep the extension for readability but dedupe collisions so two
         // same-named uploads in one batch never overwrite each other.
         let mut name = base_name.clone();
@@ -603,6 +638,179 @@ pub async fn get_tasks(state: State<'_, Arc<AppState>>) -> Result<TaskListRespon
     Ok(TaskListResponse { tasks })
 }
 
+/// Board view of every activity (background jobs + pending reminders), for
+/// the UI's activity panel. Mirrors the `activity:created` / `activity:updated`
+/// / `activity:finished` / `activity:output` events so the panel can hydrate
+/// on mount / navigation. Job rows carry `kind: "job"` (plus `job_id`),
+/// reminder rows `kind: "reminder"` (plus `id`).
+///
+/// Live jobs come from the in-memory board (with output preview); terminal
+/// job rows that already aged out of the board's TTL are merged back in from
+/// the persisted activity table, so the panel keeps showing history (results
+/// survive app restarts).
+#[tauri::command]
+pub async fn list_activities(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, String> {
+    let mut rows = state.tools.background_jobs.board().await;
+    for row in &mut rows {
+        row["kind"] = json!("job");
+    }
+    let mut live_ids = std::collections::HashSet::new();
+    for row in &rows {
+        if let Some(id) = row.get("job_id").and_then(|v| v.as_str()) {
+            live_ids.insert(id.to_string());
+        }
+    }
+    if let Ok(history) = state.db.list_activities(Some("job")) {
+        for a in history {
+            if live_ids.contains(&a.id) {
+                continue;
+            }
+            let mut row = json!({
+                "kind": "job",
+                "job_id": a.id,
+                "status": a.status,
+                "started_at": a.started_at,
+                "finished_at": a.finished_at,
+                "command": a.command,
+            });
+            if let Some(tid) = &a.task_id {
+                row["task_id"] = json!(tid);
+            }
+            if let Some(code) = a.exit_code {
+                row["exit_code"] = json!(code);
+            }
+            if let Some(p) = &a.log_path {
+                row["log_path"] = json!(p);
+            }
+            let preview = a
+                .output
+                .as_deref()
+                .or(a.error.as_deref())
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect::<String>();
+            row["output"] = json!(a.output);
+            if let Some(e) = &a.error {
+                row["error"] = json!(e);
+            }
+            if let Some(r) = &a.error_reason {
+                row["error_reason"] = json!(r);
+            }
+            row["preview"] = json!(preview);
+            rows.push(row);
+        }
+    }
+    let mut reminder_rows = state.tools.reminders.list().await;
+    for row in &mut reminder_rows {
+        row["kind"] = json!("reminder");
+    }
+    rows.extend(reminder_rows);
+    Ok(rows)
+}
+
+/// Cancel a running activity from the UI (a background job or a pending
+/// reminder, selected via `kind`). Returns false when the activity does not
+/// exist or is not cancellable.
+#[tauri::command]
+pub async fn cancel_activity(
+    state: State<'_, Arc<AppState>>,
+    activity_id: String,
+    kind: String,
+) -> Result<bool, String> {
+    let cancelled = if kind == "reminder" {
+        state.tools.reminders.cancel(&activity_id).await
+    } else {
+        state.tools.background_jobs.cancel(&activity_id).await
+    };
+    if !cancelled {
+        tracing::warn!(
+            "cancel_activity: not found or not cancellable: {}",
+            activity_id
+        );
+    }
+    Ok(cancelled)
+}
+
+/// Fired-reminder history (and terminal job history past the in-memory TTL)
+/// from the persisted activity table, newest first, for the activity panel's
+/// history tab. Rows carry `kind` plus the full stored payload; reminder rows
+/// are limited to `limit` entries (default 50) so the panel cannot grow
+/// unboundedly.
+#[tauri::command]
+pub async fn list_activity_history(
+    state: State<'_, Arc<AppState>>,
+    kind: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<Value>, String> {
+    let limit = limit.unwrap_or(50).min(200);
+    let rows = state
+        .db
+        .list_activities(kind.as_deref())
+        .map_err(|e| log_err("list_activity_history", e))?;
+    let mut out = Vec::new();
+    for a in rows.into_iter().take(limit) {
+        let mut row = json!({
+            "kind": a.kind,
+            "id": a.id,
+            "fired": a.fired,
+        });
+        if let Some(t) = &a.due_at {
+            row["due_at"] = json!(t);
+        }
+        if let Some(t) = &a.started_at {
+            row["started_at"] = json!(t);
+        }
+        if let Some(t) = &a.finished_at {
+            row["finished_at"] = json!(t);
+        }
+        if let Some(s) = &a.status {
+            row["status"] = json!(s);
+        }
+        row["title"] = json!(&a.title);
+        if let Some(b) = &a.body {
+            row["body"] = json!(b);
+        }
+        if let Some(m) = &a.mode {
+            row["mode"] = json!(m);
+        }
+        if let Some(tid) = &a.task_id {
+            row["task_id"] = json!(tid);
+        }
+        if let Some(c) = &a.command {
+            row["command"] = json!(c);
+        }
+        if let Some(o) = &a.output {
+            row["output"] = json!(o);
+        }
+        if let Some(e) = &a.error_reason {
+            row["error_reason"] = json!(e);
+        }
+        if let Some(p) = &a.log_path {
+            row["log_path"] = json!(p);
+        }
+        if let Some(code) = a.exit_code {
+            row["exit_code"] = json!(code);
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
+/// Remove a persisted activity row (fired reminder or terminal job history)
+/// by id. Returns false when no row matched.
+#[tauri::command]
+pub async fn delete_activity(
+    state: State<'_, Arc<AppState>>,
+    activity_id: String,
+) -> Result<bool, String> {
+    state
+        .db
+        .delete_activity(&activity_id)
+        .map(|_| true)
+        .map_err(|e| log_err("delete_activity", e))
+}
+
 #[tauri::command]
 pub async fn end_task(
     state: State<'_, Arc<AppState>>,
@@ -647,11 +855,11 @@ pub async fn resolve_confirmation(
 ) -> Result<(), String> {
     // Resolve the confirmation and capture the step's risk level atomically
     // (under the executor's tasks lock). This avoids the previous race where
-    // `confirm_step` and a separate `list_tasks()` lookup could observe a
+    // the resolution and a separate `list_tasks()` lookup could observe a
     // step that a concurrent `end_task`/rollback had already removed.
     let risk_level = state
         .executor
-        .resolve_confirmation(&step_id, confirmed)
+        .resolve_confirmation(&step_id.into(), confirmed)
         .await
         .map_err(|e| log_err("resolve_confirmation", e))?;
     if trust_session.unwrap_or(false)
@@ -979,6 +1187,28 @@ pub async fn remove_mcp_server(
     Ok(())
 }
 
+/// Flip the `enabled` flag for an MCP server in the persisted config via the
+/// shared loader (single source of truth) and save.
+async fn persist_mcp_enabled(
+    state: &State<'_, Arc<AppState>>,
+    name: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut loader = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("toggle_mcp_server", e))?;
+    if let Some(existing) = loader
+        .config_mut()
+        .mcp_servers
+        .iter_mut()
+        .find(|s| s.name == name)
+    {
+        existing.enabled = enabled;
+    }
+    loader.save().map_err(|e| log_err("toggle_mcp_server", e))
+}
+
 #[tauri::command]
 pub async fn toggle_mcp_server(
     state: State<'_, Arc<AppState>>,
@@ -1006,39 +1236,11 @@ pub async fn toggle_mcp_server(
         // server is unreachable, config must stay disabled so it never
         // diverges from the (absent) live client and monitor.
         let client = connect_and_monitor(&state, &discovery, &config, "toggle_mcp_server").await?;
-        {
-            let mut loader = state
-                .config_loader
-                .lock()
-                .map_err(|e| log_err("toggle_mcp_server", e))?;
-            if let Some(existing) = loader
-                .config_mut()
-                .mcp_servers
-                .iter_mut()
-                .find(|s| s.name == name)
-            {
-                existing.enabled = enabled;
-            }
-            loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
-        }
+        persist_mcp_enabled(&state, &name, true).await?;
         state.tools.mcp_manager.add_client(client).await;
     } else {
         // Disable: no connect to validate, persist the flag now.
-        {
-            let mut loader = state
-                .config_loader
-                .lock()
-                .map_err(|e| log_err("toggle_mcp_server", e))?;
-            if let Some(existing) = loader
-                .config_mut()
-                .mcp_servers
-                .iter_mut()
-                .find(|s| s.name == name)
-            {
-                existing.enabled = enabled;
-            }
-            loader.save().map_err(|e| log_err("toggle_mcp_server", e))?;
-        }
+        persist_mcp_enabled(&state, &name, false).await?;
         state.tools.mcp_manager.remove_client(&name).await;
     }
 
@@ -1322,23 +1524,38 @@ pub async fn update_task_title(
 }
 
 #[tauri::command]
-pub async fn delete_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
+pub async fn delete_task(
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+    task_id: String,
+) -> Result<(), String> {
     state
         .db
         .delete_task(&task_id)
         .map_err(|e| log_err("delete_task", e))?;
     state.executor.remove_task(&task_id).await;
+    // The task is gone, so no `task:updated` terminal transition will ever
+    // fire for it; a dedicated `task:deleted` lets listeners (busy-task
+    // tracking, per-task state) release the id immediately.
+    let _ = app.emit("task:deleted", serde_json::json!({ "task_id": task_id }));
     Ok(())
 }
 
 #[tauri::command]
-pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+pub async fn clear_history(
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<u64, String> {
     let count = state
         .db
         .clear_tasks()
         .map(|n| n as u64)
         .map_err(|e| log_err("clear_history", e))?;
     state.executor.clear_all_tasks().await;
+    // `task_id: null` signals "every task was removed" so listeners clear
+    // per-task state (e.g. the busy set) in one shot instead of one event
+    // per deleted task.
+    let _ = app.emit("task:deleted", serde_json::json!({ "task_id": null }));
     Ok(count)
 }
 
@@ -1373,7 +1590,10 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
             serde_json::json!(!m.endpoint.api_key.is_empty()),
         );
     }
-    status.insert("models".to_string(), serde_json::Value::Object(models_status));
+    status.insert(
+        "models".to_string(),
+        serde_json::Value::Object(models_status),
+    );
     Ok(serde_json::Value::Object(status))
 }
 
@@ -1772,7 +1992,14 @@ pub async fn update_settings(
     state.pipeline.update_config(settings.audio).await;
 
     // Reload MCP servers from config
-    let (mcp_servers, mcp_discovery, task_max_steps, llm_config, min_risk_level) = {
+    let (
+        mcp_servers,
+        mcp_discovery,
+        task_max_steps,
+        task_max_concurrent,
+        llm_config,
+        min_risk_level,
+    ) = {
         let cfg = state
             .config_loader
             .lock()
@@ -1782,6 +2009,7 @@ pub async fn update_settings(
             config.mcp_servers.clone(),
             config.mcp_discovery.clone(),
             config.task.max_steps,
+            config.task.max_concurrent,
             config.llm.clone(),
             config.security.min_risk_level,
         )
@@ -1791,6 +2019,7 @@ pub async fn update_settings(
     let new_router = Arc::new(LlmRouter::new(llm_config));
     hot_swap_router(&state, new_router).await?;
     state.agent.set_max_steps(task_max_steps);
+    state.executor.set_max_concurrent(task_max_concurrent);
     state
         .tools
         .safety_gateway
@@ -2049,6 +2278,7 @@ pub async fn rollback_task(
     target_step: u32,
     pause: Option<bool>,
     target_message_id: Option<String>,
+    target_content: Option<String>,
 ) -> Result<(), String> {
     state
         .agent
@@ -2057,6 +2287,7 @@ pub async fn rollback_task(
             target_step,
             pause.unwrap_or(false),
             target_message_id.as_deref(),
+            target_content.as_deref(),
         )
         .await
         .map_err(|e| log_err("rollback_task", e))
@@ -2072,6 +2303,138 @@ pub async fn continue_task(state: State<'_, Arc<AppState>>, task_id: String) -> 
         .continue_task(&task_id)
         .await
         .map_err(|e| log_err("continue_task", e))
+}
+
+// ---------------------------------------------------------------------------
+// Log viewing (settings page)
+// ---------------------------------------------------------------------------
+
+/// True when `name` looks like a rolling daily log file: `{stem}.{YYYY-MM-DD}`.
+fn is_daily_log_name(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.len() == 10 && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+}
+
+/// Resolve the log file the app is currently writing to. `log_path` is the
+/// configured `[log] file_path` (or the default). The tracing rolling
+/// appender writes `{stem}.{YYYY-MM-DD}` files (e.g. `haven.2026-08-09`) in
+/// the same directory, so the newest matching file wins.
+fn resolve_current_log_file(log_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = log_path.parent()?;
+    let stem = log_path.file_stem()?.to_string_lossy();
+    let prefix = format!("{}.", stem);
+    let mut best: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_daily_log_name(&name, &prefix) {
+            continue;
+        }
+        let mtime = entry.metadata().ok().and_then(|m| m.modified().ok());
+        let Some(mtime) = mtime else { continue };
+        if best.is_none() || mtime > best.as_ref().unwrap().1 {
+            best = Some((entry.path(), mtime));
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// Read the last `max_lines` lines of a text file. Reads backwards from the
+/// end in fixed-size chunks so a multi-MB log file costs O(tail) instead of a
+/// full read. Output decoded via `decode_lossy` (UTF-8, GBK fallback).
+fn read_tail(path: &std::path::Path, max_lines: usize) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(String::new());
+    }
+    const CHUNK: u64 = 8192;
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut pos = file_len;
+    let mut lines = 0usize;
+    loop {
+        let read_from = pos.saturating_sub(CHUNK);
+        let chunk_len = (pos - read_from) as usize;
+        file.seek(SeekFrom::Start(read_from))?;
+        let mut chunk = vec![0u8; chunk_len];
+        file.read_exact(&mut chunk)?;
+        lines += chunk.iter().filter(|&&b| b == b'\n').count();
+        chunks.push(chunk);
+        if lines >= max_lines || read_from == 0 {
+            break;
+        }
+        pos = read_from;
+    }
+    let mut buffer = Vec::new();
+    for c in chunks.into_iter().rev() {
+        buffer.extend_from_slice(&c);
+    }
+    let text = haven_common::encoding::decode_lossy(&buffer);
+    let mut all_lines: Vec<&str> = text.split('\n').collect();
+    // A trailing newline produces a final empty element; drop it so
+    // "last N lines" means the last N real lines.
+    if all_lines.last() == Some(&"") {
+        all_lines.pop();
+    }
+    let start = all_lines.len().saturating_sub(max_lines);
+    Ok(all_lines[start..].join("\n"))
+}
+
+#[derive(serde::Serialize)]
+pub struct LogTail {
+    pub path: String,
+    pub content: String,
+}
+
+/// Settings page: current log file location + whether file logging is on.
+#[tauri::command]
+pub fn get_log_info(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let cfg = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("get_log_info", e))?;
+    let log_cfg = &cfg.config().log;
+    let log_path = log_cfg
+        .file_path
+        .clone()
+        .unwrap_or_else(LogConfig::default_log_path);
+    let path = resolve_current_log_file(&log_path).map(|p| p.to_string_lossy().into_owned());
+    Ok(serde_json::json!({
+        "enabled": log_cfg.file_enabled,
+        "level": log_cfg.level.as_str(),
+        "path": path,
+    }))
+}
+
+/// Settings page: read the tail of the current log file (default 200 lines,
+/// clamped to [10, 2000]).
+#[tauri::command]
+pub fn read_log_tail(
+    state: State<'_, Arc<AppState>>,
+    max_lines: Option<usize>,
+) -> Result<LogTail, String> {
+    let cfg = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("read_log_tail", e))?;
+    let log_cfg = &cfg.config().log;
+    if !log_cfg.file_enabled {
+        return Err(log_err("read_log_tail", "file logging is disabled"));
+    }
+    let log_path = log_cfg
+        .file_path
+        .clone()
+        .unwrap_or_else(LogConfig::default_log_path);
+    let path = resolve_current_log_file(&log_path)
+        .ok_or_else(|| log_err("read_log_tail", "no log file found yet"))?;
+    let content = read_tail(&path, max_lines.unwrap_or(200).clamp(10, 2000))
+        .map_err(|e| log_err("read_log_tail", e))?;
+    Ok(LogTail {
+        path: path.to_string_lossy().into_owned(),
+        content,
+    })
 }
 
 #[cfg(test)]
@@ -2107,12 +2470,104 @@ mod tests {
     #[test]
     fn test_recording_state_serde() {
         let state = RecordingState {
-            is_recording: true,
-            is_toggle: true,
+            is_recording: false,
+            is_toggle: false,
         };
         let json = serde_json::to_string(&state).unwrap();
-        assert!(json.contains("\"is_recording\":true"));
-        assert!(json.contains("\"is_toggle\":true"));
+        assert_eq!(json, r#"{"is_recording":false,"is_toggle":false}"#);
+    }
+
+    // ── log viewing helpers ───────────────────────────────────────────────
+
+    fn temp_log_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("haven-logtest-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_read_tail_returns_last_lines() {
+        let dir = temp_log_dir("tail-lines");
+        let path = dir.join("haven.2026-08-09");
+        std::fs::write(&path, "l1\nl2\nl3\nl4\n").unwrap();
+        assert_eq!(read_tail(&path, 2).unwrap(), "l3\nl4");
+        assert_eq!(read_tail(&path, 100).unwrap(), "l1\nl2\nl3\nl4");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_tail_no_trailing_newline() {
+        let dir = temp_log_dir("tail-nonl");
+        let path = dir.join("haven.log");
+        std::fs::write(&path, "a\nb").unwrap();
+        assert_eq!(read_tail(&path, 10).unwrap(), "a\nb");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_tail_empty_and_missing() {
+        let dir = temp_log_dir("tail-empty");
+        let empty = dir.join("empty.log");
+        std::fs::write(&empty, "").unwrap();
+        assert_eq!(read_tail(&empty, 10).unwrap(), "");
+        assert!(read_tail(&dir.join("nope.log"), 10).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_tail_lossy_decodes_non_utf8() {
+        let dir = temp_log_dir("tail-lossy");
+        let path = dir.join("haven.2026-08-09");
+        // Invalid UTF-8 bytes (0xFF) must not panic; decode_lossy replaces them.
+        std::fs::write(&path, b"ok\n\xff\xfe\nlast").unwrap();
+        assert_eq!(read_tail(&path, 10).unwrap(), "ok\n\u{FFFD}\u{FFFD}\nlast");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_tail_caps_huge_line_count() {
+        let dir = temp_log_dir("tail-cap");
+        let path = dir.join("haven.log");
+        std::fs::write(
+            &path,
+            (0..100)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(read_tail(&path, 10).unwrap().split('\n').count(), 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_current_log_file_picks_newest_mtime() {
+        let dir = temp_log_dir("resolve");
+        let old = dir.join("haven.2026-08-08");
+        let new = dir.join("haven.2026-08-09");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(&new, "new").unwrap();
+        // Pin the old file's mtime in the past so ordering is deterministic.
+        // (Windows rejects set_modified on read-only handles; open read-write.)
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let f = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
+        f.set_modified(past).unwrap();
+        drop(f);
+
+        let resolved = resolve_current_log_file(&dir.join("haven.log")).unwrap();
+        assert_eq!(resolved, new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_current_log_file_ignores_unrelated_files() {
+        let dir = temp_log_dir("resolve-ignore");
+        std::fs::write(dir.join("other.log"), "x").unwrap();
+        std::fs::write(dir.join("haven.txt"), "x").unwrap();
+        assert!(resolve_current_log_file(&dir.join("haven.log")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn att(
@@ -2280,7 +2735,7 @@ mod tests {
         let step = TaskStep {
             id: "s1".into(),
             task_id: "t1".into(),
-            step_index: 0,
+            step_number: 0,
             thought: Some("查找文件".into()),
             action_tool: Some("file".into()),
             action_input: Some("{\"path\":\"C:/tmp\"}".into()),

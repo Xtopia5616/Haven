@@ -175,7 +175,7 @@ impl Tool for RegistryTool {
                             key.set_raw_value(
                                 name,
                                 &winreg::RegValue {
-                                    bytes,
+                                    bytes: bytes.into(),
                                     vtype: winreg::enums::REG_BINARY,
                                 },
                             )?;
@@ -188,7 +188,7 @@ impl Tool for RegistryTool {
                             key.set_raw_value(
                                 name,
                                 &winreg::RegValue {
-                                    bytes,
+                                    bytes: bytes.into(),
                                     vtype: winreg::enums::REG_EXPAND_SZ,
                                 },
                             )?;
@@ -205,7 +205,7 @@ impl Tool for RegistryTool {
                             key.set_raw_value(
                                 name,
                                 &winreg::RegValue {
-                                    bytes,
+                                    bytes: bytes.into(),
                                     vtype: winreg::enums::REG_MULTI_SZ,
                                 },
                             )?;

@@ -73,6 +73,17 @@ impl Tool for NotifyTool {
             "delivered_to": ["in_app", "windows"],
         })))
     }
+
+    /// Declare the toast signal so the loop emits the Notification event
+    /// without name-matching "notify" or re-parsing the output.
+    fn signals(&self, output: &Value) -> crate::tool::ToolSignals {
+        let (title, body) = crate::extract_notify_signal(output);
+        crate::tool::ToolSignals {
+            notify_title: title,
+            notify_body: body,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,3 @@
-use haven_common::config::ToolConfig;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -15,6 +14,45 @@ pub struct ToolResult {
     pub output: Value,
     pub error: Option<String>,
     pub truncated: bool,
+    /// Side-channel signals the tool attaches to its own result (an `ask`
+    /// question to pause for, a `notify` toast to surface). Populated by
+    /// `ToolsManager::execute_tool` from the tool's `signals()` hook BEFORE
+    /// any observation truncation, so the ReAct loop reads structured data
+    /// instead of name-matching and re-parsing output JSON.
+    #[serde(default)]
+    pub signals: ToolSignals,
+}
+
+/// Side-channel signals a tool declares through its result. Declared by the
+/// tool itself (via `Tool::signals`) so the ReAct loop does not need to know
+/// which tool names carry which signals.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ToolSignals {
+    /// The `ask` tool's question: when present, the loop pauses the task
+    /// and waits for the user's reply.
+    pub ask_question: Option<String>,
+    /// Quick-reply options for the pending `ask`, surfaced as buttons.
+    pub ask_options: Vec<String>,
+    /// The `notify` tool's toast title (defaults to "Haven").
+    pub notify_title: Option<String>,
+    /// The `notify` tool's toast body.
+    pub notify_body: Option<String>,
+}
+
+/// Per-task side effects a tool declares through its result. The task
+/// executor applies them (registering skill/MCP adapters, attaching
+/// background jobs) without hard-coding tool names, so a new tool that needs
+/// a side effect declares it here instead of adding a name check in the
+/// executor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolRegistration {
+    /// Load a skill (raw name) for the current task.
+    Skill(String),
+    /// Load an MCP server (by name) for the current task.
+    McpServer(String),
+    /// Attach a background job (an activity of kind `job`) to the current
+    /// task (end/rollback cleanup).
+    Activity(String),
 }
 
 impl ToolResult {
@@ -24,6 +62,7 @@ impl ToolResult {
             output,
             error: None,
             truncated: false,
+            signals: ToolSignals::default(),
         }
     }
 
@@ -33,6 +72,7 @@ impl ToolResult {
             output,
             error: None,
             truncated: true,
+            signals: ToolSignals::default(),
         }
     }
 
@@ -132,11 +172,35 @@ pub trait Tool: Send + Sync {
         30
     }
 
-    fn max_output_chars(&self) -> usize {
-        20_000
+    /// Whether this tool needs the private `_task_id` input field injected
+    /// before execution (e.g. `reminder`/`jobs` scope to the current task).
+    /// The id is injected after the LLM-facing input was captured, so it
+    /// never reaches the tool schema, the step history, or the LLM.
+    fn requires_task_id(&self) -> bool {
+        false
     }
 
-    fn tool_config(&self) -> Option<ToolConfig> {
+    /// Side-channel signals carried by this tool's result (`ask` question /
+    /// `notify` toast). Parsed from the structured output by the tool itself,
+    /// BEFORE the loop truncates the observation text.
+    fn signals(&self, output: &Value) -> ToolSignals {
+        let _ = output;
+        ToolSignals::default()
+    }
+
+    /// Per-task side effects to apply after a successful execution
+    /// (skill/MCP adapters, background-job attachment).
+    fn registrations(&self, output: &Value) -> Vec<ToolRegistration> {
+        let _ = output;
+        Vec::new()
+    }
+
+    /// Fallback result when this tool times out: instead of failing the step,
+    /// the tool may hand the work to a background mechanism and return a
+    /// success result carrying the continuation. Only invoked for timeout
+    /// errors of the final attempt; returning `None` keeps the error.
+    async fn timeout_fallback(&self, input: &Value) -> Option<ToolResult> {
+        let _ = input;
         None
     }
 
@@ -145,9 +209,10 @@ pub trait Tool: Send + Sync {
         if schema.is_null() || schema == serde_json::Value::Null {
             return Ok(());
         }
-        let compiled = jsonschema::JSONSchema::compile(&schema)
+        let validator = jsonschema::validator_for(&schema)
             .map_err(|e| anyhow::anyhow!("invalid tool schema for '{}': {}", self.name(), e))?;
-        if let Err(errors) = compiled.validate(input) {
+        let errors: Vec<_> = validator.iter_errors(input).collect();
+        if !errors.is_empty() {
             // Make the most common mistakes loud: missing required fields are
             // listed up front (with allowed enum values when the schema
             // declares them) instead of being buried in generic messages like
@@ -155,7 +220,7 @@ pub trait Tool: Send + Sync {
             let mut missing: Vec<String> = Vec::new();
             let mut rest: Vec<String> = Vec::new();
             for e in errors {
-                if let jsonschema::error::ValidationErrorKind::Required { property } = &e.kind
+                if let jsonschema::error::ValidationErrorKind::Required { property } = e.kind()
                     && let Some(s) = property.as_str()
                 {
                     missing.push(s.to_string());
@@ -302,6 +367,38 @@ impl ToolRegistry {
         drop(snap);
         self.version.fetch_add(1, Ordering::SeqCst);
     }
+
+    /// Non-owning probe into the current snapshot (see [`RegistryProbe`]).
+    /// The probe holds a weak handle, so it never keeps the snapshot alive
+    /// and cannot create a reference cycle (the snapshot owns the tools, and
+    /// a tool holding a strong registry reference would loop back to itself).
+    pub fn probe(&self) -> RegistryProbe {
+        RegistryProbe {
+            snapshot: Arc::downgrade(&self.snapshot),
+        }
+    }
+}
+
+/// Weak lookup handle into a [`ToolRegistry`] snapshot. Lets a tool (e.g.
+/// `reminder`) validate tool names / risk levels at call time without owning
+/// the registry — the snapshot is mutated in place by `rebuild`, so the weak
+/// handle always observes the current state. `find` returns `None` for
+/// unknown names or when the registry was dropped.
+pub struct RegistryProbe {
+    snapshot: std::sync::Weak<RwLock<RegistrySnapshot>>,
+}
+
+impl RegistryProbe {
+    /// Look up a tool by name; `None` when unknown or the registry is gone.
+    pub async fn find(&self, name: &str) -> Option<ToolBox> {
+        self.snapshot
+            .upgrade()?
+            .read()
+            .await
+            .name_index
+            .get(name)
+            .cloned()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -426,6 +523,7 @@ mod tests {
             output: json!(null),
             error: Some("boom".into()),
             truncated: false,
+            signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), "boom");
     }
@@ -437,6 +535,7 @@ mod tests {
             output: json!(null),
             error: None,
             truncated: false,
+            signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), "unknown failure");
     }
@@ -451,6 +550,7 @@ mod tests {
             output: json!({"output": "some stdout"}),
             error: Some(String::new()),
             truncated: false,
+            signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), r#"{"output":"some stdout"}"#);
     }
@@ -462,6 +562,7 @@ mod tests {
             output: json!(null),
             error: Some("   ".into()),
             truncated: false,
+            signals: ToolSignals::default(),
         };
         assert_eq!(result.summary_text(), "unknown failure");
     }
@@ -520,6 +621,49 @@ mod tests {
 
     struct MockTool {
         name: String,
+        schema: Value,
+        execute_delay: Option<Duration>,
+    }
+
+    impl MockTool {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.into(),
+                schema: json!({"type": "object"}),
+                execute_delay: None,
+            }
+        }
+
+        fn with_schema(name: &str, schema: Value) -> Self {
+            Self {
+                name: name.into(),
+                schema,
+                execute_delay: None,
+            }
+        }
+
+        fn with_delay(name: &str, delay: Duration) -> Self {
+            Self {
+                name: name.into(),
+                schema: json!({"type": "object"}),
+                execute_delay: Some(delay),
+            }
+        }
+    }
+
+    /// The schema-validation mock used by the `validate_input` tests.
+    fn schema_mock() -> MockTool {
+        MockTool::with_schema(
+            "schema_mock",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "count": { "type": "integer" }
+                },
+                "required": ["name"]
+            }),
+        )
     }
 
     #[async_trait::async_trait]
@@ -538,68 +682,13 @@ mod tests {
             _input: Value,
             _cancel: CancellationToken,
         ) -> anyhow::Result<ToolResult> {
+            if let Some(delay) = self.execute_delay {
+                tokio::time::sleep(delay).await;
+            }
             Ok(ToolResult::ok(json!({"ok": true})))
         }
         fn input_schema(&self) -> Value {
-            json!({"type": "object"})
-        }
-    }
-
-    struct SlowMockTool;
-
-    #[async_trait::async_trait]
-    impl Tool for SlowMockTool {
-        fn name(&self) -> String {
-            "slow".into()
-        }
-        fn description(&self) -> String {
-            "slow mock tool".into()
-        }
-        fn risk_level(&self, _: &Value) -> RiskLevel {
-            RiskLevel::Safe
-        }
-        async fn execute(
-            &self,
-            _input: Value,
-            _cancel: CancellationToken,
-        ) -> anyhow::Result<ToolResult> {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            Ok(ToolResult::ok(json!({"done": true})))
-        }
-        fn input_schema(&self) -> Value {
-            json!({"type": "object"})
-        }
-    }
-
-    struct SchemaMockTool;
-
-    #[async_trait::async_trait]
-    impl Tool for SchemaMockTool {
-        fn name(&self) -> String {
-            "schema_mock".into()
-        }
-        fn description(&self) -> String {
-            "schema validation mock".into()
-        }
-        fn risk_level(&self, _: &Value) -> RiskLevel {
-            RiskLevel::Safe
-        }
-        async fn execute(
-            &self,
-            _input: Value,
-            _cancel: CancellationToken,
-        ) -> anyhow::Result<ToolResult> {
-            Ok(ToolResult::ok(json!({"ok": true})))
-        }
-        fn input_schema(&self) -> Value {
-            json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string" },
-                    "count": { "type": "integer" }
-                },
-                "required": ["name"]
-            })
+            self.schema.clone()
         }
     }
 
@@ -613,9 +702,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_register_and_get() {
         let registry = ToolRegistry::new();
-        let tool = Arc::new(MockTool {
-            name: "mock1".into(),
-        });
+        let tool = Arc::new(MockTool::new("mock1"));
         registry.register(tool).await;
 
         let fetched = registry.get("mock1").await;
@@ -634,10 +721,10 @@ mod tests {
     async fn test_registry_list_multiple() {
         let registry = ToolRegistry::new();
         registry
-            .register(Arc::new(MockTool { name: "a".into() }))
+            .register(Arc::new(MockTool::new("a")))
             .await;
         registry
-            .register(Arc::new(MockTool { name: "b".into() }))
+            .register(Arc::new(MockTool::new("b")))
             .await;
 
         let tools = registry.list().await;
@@ -655,9 +742,7 @@ mod tests {
     async fn test_registry_list_schemas() {
         let registry = ToolRegistry::new();
         registry
-            .register(Arc::new(MockTool {
-                name: "mock".into(),
-            }))
+            .register(Arc::new(MockTool::new("mock")))
             .await;
 
         let schemas = registry.list_schemas().await;
@@ -670,10 +755,10 @@ mod tests {
     #[tokio::test]
     async fn test_registry_rebuild() {
         let registry = ToolRegistry::new();
-        let old_tool = Arc::new(MockTool { name: "old".into() });
+        let old_tool = Arc::new(MockTool::new("old"));
         registry.register(old_tool).await;
 
-        let new_tool = Arc::new(MockTool { name: "new".into() });
+        let new_tool = Arc::new(MockTool::new("new"));
         registry.rebuild(vec![new_tool.clone()]).await;
 
         assert!(registry.get("old").await.is_none());
@@ -750,21 +835,21 @@ mod tests {
 
     #[test]
     fn test_validate_input_valid() {
-        let tool = SchemaMockTool;
+        let tool = schema_mock();
         let result = tool.validate_input(&json!({"name": "test", "count": 5}));
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_input_missing_required() {
-        let tool = SchemaMockTool;
+        let tool = schema_mock();
         let result = tool.validate_input(&json!({"count": 5}));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_input_missing_required_message_lists_fields() {
-        let tool = SchemaMockTool;
+        let tool = schema_mock();
         let err = tool.validate_input(&json!({})).unwrap_err().to_string();
         assert!(
             err.contains("MISSING REQUIRED FIELD(S): name"),
@@ -793,16 +878,14 @@ mod tests {
 
     #[test]
     fn test_validate_input_wrong_type() {
-        let tool = SchemaMockTool;
+        let tool = schema_mock();
         let result = tool.validate_input(&json!({"name": 123}));
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_execute_with_timeout_quick() {
-        let tool = MockTool {
-            name: "quick".into(),
-        };
+        let tool = MockTool::new("quick");
         let result = tool
             .execute_with_timeout(json!({}), CancellationToken::new(), 30)
             .await;
@@ -812,7 +895,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_timeout_slow() {
-        let tool = SlowMockTool;
+        let tool = MockTool::with_delay("slow", Duration::from_secs(10));
         let result = tool
             .execute_with_timeout(json!({}), CancellationToken::new(), 1)
             .await;

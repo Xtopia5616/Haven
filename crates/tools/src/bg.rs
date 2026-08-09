@@ -1,8 +1,11 @@
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{RwLock, mpsc, oneshot};
+use tracing::Instrument;
 
+use haven_memory::Database;
 /// Maximum concurrent *running* background jobs per process. Prevents an
 /// agent from leaking unbounded child processes. Finished jobs are reaped
 /// on the next spawn, so this is a concurrency cap, not a lifetime cap.
@@ -154,11 +157,11 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
     let dir = output_log_dir(kind);
     let path = dir.join(format!("{id}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!("failed to create output-log dir {}: {e}", dir.display());
+        tracing::warn!(job_id = %id, "failed to create output-log dir {}: {e}", dir.display());
         return path;
     }
     if let Err(e) = std::fs::write(&path, text) {
-        tracing::warn!("failed to write output log {}: {e}", path.display());
+        tracing::warn!(job_id = %id, "failed to write output log {}: {e}", path.display());
     }
     path
 }
@@ -183,6 +186,48 @@ pub struct JobCompletion {
     /// states), carrying the output/error payload.
     pub status_json: Value,
 }
+
+/// Optional sink for background lifecycle events surfaced to the UI. The
+/// sink is called with `(event, payload)` where event is one of:
+/// - `activity:created`  — a job was spawned `{ job_id, started_at }`
+/// - `activity:updated`  — the job was bound to a task `{ job_id, task_id }`
+/// - `activity:output`   — live output preview while the job runs
+///   `{ job_id, output }` (bounded tail, emitted periodically)
+/// - `activity:finished` — the job reached a terminal state (full status
+///   JSON, which already carries `job_id`, `status`, and the output/error
+///   payload)
+///
+/// Shared by the reminder registry (`activity:created` / `activity:finished`
+/// / `activity:updated`), which uses the same callback shape.
+pub type EventSink = Arc<dyn Fn(String, serde_json::Value) + Send + Sync>;
+
+/// Shared storage + forwarding for the UI event sink, used identically by
+/// `BackgroundJobs` and the reminder registry. Keeps the sink behind a
+/// `Mutex<Option<_>>` so `set_event_sink` can be called once from the desktop
+/// shell and `emit` is a no-op before that.
+#[derive(Default)]
+pub(crate) struct EventSinkState(Mutex<Option<EventSink>>);
+
+impl EventSinkState {
+    pub(crate) fn set(&self, sink: EventSink) {
+        *self.0.lock().unwrap() = Some(sink);
+    }
+
+    pub(crate) fn emit(&self, event: &str, payload: Value) {
+        if let Some(sink) = self.0.lock().unwrap().as_ref() {
+            sink(event.to_string(), payload);
+        }
+    }
+}
+
+/// Bounded live-output tail kept per running job for `activity:output`
+/// preview events. Characters, not bytes: decoded lossy on emit.
+const JOB_TAIL_MAX_CHARS: usize = 2000;
+/// Cadence of `activity:output` events while a job produces output.
+const JOB_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(1500);
+/// Terminal jobs stay on the board this long, then are reaped by the next
+/// spawn (the UI panel and the persisted log files remain the record).
+const TERMINAL_JOB_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Debug)]
 enum JobState {
@@ -225,6 +270,30 @@ struct JobEntry {
     state: JobState,
     /// Kill signal for the running child process.
     kill: Option<oneshot::Sender<()>>,
+    /// Bounded tail of the combined live output, for `activity:output` preview
+    /// events while the job runs. `None` for terminal entries.
+    tail: Option<Arc<Mutex<String>>>,
+    /// The shell command this job is executing (surfaced in running status so
+    /// the agent can see what the job is doing right now).
+    command: String,
+    /// Interpreter the command runs under ("cmd", "powershell", "bash", ...).
+    shell: String,
+}
+
+/// True when a terminal entry has outlived `TERMINAL_JOB_TTL` (running
+/// entries are never stale). Entries with an unparseable `finished_at` are
+/// kept (never wrongly reaped).
+fn terminal_entry_stale(entry: &JobEntry) -> bool {
+    let finished = match &entry.state {
+        JobState::Completed { finished_at, .. }
+        | JobState::Failed { finished_at, .. }
+        | JobState::Cancelled { finished_at, .. } => finished_at,
+        JobState::Running { .. } => return false,
+    };
+    chrono::DateTime::parse_from_rfc3339(finished)
+        .map(|t| t.with_timezone(&chrono::Utc))
+        .map(|t| chrono::Utc::now() - t > chrono::Duration::from_std(TERMINAL_JOB_TTL).unwrap())
+        .unwrap_or(false)
 }
 
 /// Registry of background tool jobs (refine: long-running commands).
@@ -243,6 +312,13 @@ pub struct BackgroundJobs {
     completion_rx: Mutex<Option<mpsc::UnboundedReceiver<JobCompletion>>>,
     /// Max concurrent *running* jobs (from `context_limits.background_max_jobs`).
     max_jobs: RwLock<usize>,
+    /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
+    /// to forward lifecycle events as Tauri events.
+    event_sink: EventSinkState,
+    /// Persistent store; `None` in headless/test builds (in-memory only).
+    /// Terminal job rows stay here as history even after the in-memory board
+    /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
+    db: RwLock<Option<Arc<Database>>>,
 }
 
 impl Default for BackgroundJobs {
@@ -259,12 +335,110 @@ impl BackgroundJobs {
             completion_tx: tx,
             completion_rx: Mutex::new(Some(rx)),
             max_jobs: RwLock::new(64),
+            event_sink: EventSinkState::default(),
+            db: RwLock::new(None),
         }
+    }
+
+    /// Install the UI event sink (called once by the desktop shell).
+    pub fn set_event_sink(&self, sink: EventSink) {
+        self.event_sink.set(sink);
+    }
+
+    /// Forward a lifecycle event to the installed sink (no-op without one).
+    fn emit(&self, event: &str, payload: Value) {
+        self.event_sink.emit(event, payload);
     }
 
     /// Replace the unified context limits (background job concurrency cap).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *self.max_jobs.write().await = limits.background_max_jobs;
+    }
+
+    /// Attach the database used for persistence. Wired by the desktop shell
+    /// (same handle the reminder registry receives); headless tests skip it.
+    pub async fn set_db(&self, db: Option<Arc<Database>>) {
+        *self.db.write().await = db;
+    }
+
+    /// Post-restart cleanup: job rows a previous process left `running` are
+    /// stale (their child processes died with the app), so mark them failed.
+    /// Called once from the agent layer startup. Returns the number of rows
+    /// marked. Idempotent.
+    pub async fn restore_after_restart(&self) -> usize {
+        let Some(db) = self.db.read().await.clone() else {
+            return 0;
+        };
+        db.mark_interrupted_jobs().unwrap_or_else(|e| {
+            tracing::warn!("restore_after_restart: failed to mark interrupted jobs: {e}");
+            0
+        })
+    }
+
+    /// Persist a terminal job row (its status payload + owning task) so the
+    /// result survives the in-memory board's TTL and app restarts. No-op
+    /// without a database. Must run outside the `jobs` lock is not required
+    /// (the DB is a separate lock); callers may hold either.
+    async fn persist_terminal(&self, job_id: &str, entry: &JobEntry) {
+        let Some(db) = self.db.read().await.clone() else {
+            return;
+        };
+        let (status, output, error, error_reason, log_path, exit_code, finished_at) =
+            match &entry.state {
+                JobState::Completed {
+                    output,
+                    exit_code,
+                    log_path,
+                    finished_at,
+                    ..
+                } => (
+                    "completed",
+                    Some(output.as_str()),
+                    None,
+                    None,
+                    log_path.as_deref(),
+                    *exit_code,
+                    finished_at.as_str(),
+                ),
+                JobState::Failed {
+                    error,
+                    error_reason,
+                    log_path,
+                    exit_code,
+                    finished_at,
+                    ..
+                } => (
+                    "failed",
+                    None,
+                    Some(error.as_str()),
+                    Some(error_reason.as_str()),
+                    log_path.as_deref(),
+                    *exit_code,
+                    finished_at.as_str(),
+                ),
+                JobState::Cancelled { finished_at, .. } => (
+                    "cancelled",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    finished_at.as_str(),
+                ),
+                JobState::Running { .. } => return,
+            };
+        if let Err(e) = db.finish_job(
+            job_id,
+            status,
+            output,
+            error,
+            error_reason,
+            log_path,
+            exit_code,
+            finished_at,
+        ) {
+            tracing::warn!(job_id = %job_id, "failed to persist job result: {e}");
+        }
     }
 
     /// Take the completion receiver exactly once. The caller spawns a consumer
@@ -277,8 +451,9 @@ impl BackgroundJobs {
     /// Emit a completion notification for a job (if it has a terminal state),
     /// reading the owning task_id from the entry. Called from `mark_finished`,
     /// `mark_cancelled`, and `attach_task` (the latter to close the race where
-    /// a job finishes before its task binding is recorded).
-    fn notify_completion(&self, job_id: &str, entry: &JobEntry) {
+    /// a job finishes before its task binding is recorded). Also persists the
+    /// terminal row so the result survives restarts.
+    async fn notify_completion(&self, job_id: &str, entry: &JobEntry) {
         if !entry.state.is_terminal() {
             return;
         }
@@ -288,13 +463,37 @@ impl BackgroundJobs {
             JobState::Cancelled { .. } => "cancelled",
             JobState::Running { .. } => return,
         };
+        self.persist_terminal(job_id, entry).await;
         let status_json = render_status_json(job_id, &entry.state);
+        self.emit("activity:finished", status_json.clone());
         let _ = self.completion_tx.send(JobCompletion {
             job_id: job_id.to_string(),
             task_id: entry.task_id.clone(),
             status: status.to_string(),
             status_json,
         });
+    }
+
+    /// Board view of every job: one entry per job with status, timestamps,
+    /// owning task id, and a bounded output/error preview. Surfaces the full
+    /// job set to the UI (the per-task variant `list_for_task` serves the
+    /// agent). Order: oldest first.
+    pub async fn board(&self) -> Vec<Value> {
+        let jobs = self.jobs.read().await;
+        let mut rows = Vec::new();
+        for (id, entry) in jobs.iter() {
+            let mut row = match &entry.state {
+                JobState::Running { .. } => running_status_json(id, entry),
+                _ => render_status_json(id, &entry.state),
+            };
+            if let Some(tid) = &entry.task_id {
+                row["task_id"] = json!(tid);
+            }
+            attach_preview(&mut row);
+            rows.push(row);
+        }
+        rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
+        rows
     }
 
     /// Board view of every job owned by `task_id`: one entry per job with
@@ -309,19 +508,13 @@ impl BackgroundJobs {
                 continue;
             }
             let mut row = match &entry.state {
-                JobState::Running { started_at } => json!({
-                    "job_id": id,
-                    "status": "running",
-                    "started_at": started_at,
-                }),
+                JobState::Running { .. } => running_status_json(id, entry),
                 _ => render_status_json(id, &entry.state),
             };
-            let preview = row
-                .get("output")
-                .and_then(|v| v.as_str())
-                .or_else(|| row.get("error").and_then(|v| v.as_str()))
-                .unwrap_or("");
-            row["preview"] = json!(preview.chars().take(200).collect::<String>());
+            if let Some(tid) = &entry.task_id {
+                row["task_id"] = json!(tid);
+            }
+            attach_preview(&mut row);
             rows.push(row);
         }
         rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
@@ -341,19 +534,22 @@ impl BackgroundJobs {
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
         }
-        // Unpredictable job id: a sequential counter would let any task's
-        // agent enumerate and read other tasks' background outputs through
-        // status (which is RiskLevel::Safe).
-        let id = format!("job-{}", uuid::Uuid::new_v4().simple());
+        // Unpredictable activity id: a sequential counter would let any
+        // task's agent enumerate and read other tasks' background outputs
+        // through status (which is RiskLevel::Safe).
+        let id = haven_common::types::new_id("act");
         let started_at = chrono::Utc::now().to_rfc3339();
         let (kill_tx, kill_rx) = oneshot::channel();
+        let tail = Arc::new(Mutex::new(String::new()));
         {
             let mut jobs = self.jobs.write().await;
             // Reap terminal entries first: their results were already
             // delivered via the completion channel, so they must not occupy
             // the cap forever (64 lifetime jobs would otherwise brick the
-            // feature for long-lived tasks).
-            jobs.retain(|_, e| !e.state.is_terminal());
+            // feature for long-lived tasks). Terminal entries older than
+            // `TERMINAL_JOB_TTL` are dropped the same way (the UI panel and
+            // the persisted log files remain the record after that).
+            jobs.retain(|_, e| !terminal_entry_stale(e));
             let running = jobs
                 .values()
                 .filter(|e| matches!(e.state, JobState::Running { .. }))
@@ -372,6 +568,9 @@ impl BackgroundJobs {
                         started_at: started_at.clone(),
                     },
                     kill: Some(kill_tx),
+                    tail: Some(tail.clone()),
+                    command: command.to_string(),
+                    shell: shell.to_string(),
                 },
             );
         }
@@ -394,20 +593,47 @@ impl BackgroundJobs {
             }
         };
 
+        // Persist the spawn so activity history survives restarts even when
+        // the process dies mid-run (`restore_after_restart` marks such rows
+        // failed). The task binding arrives later via `attach_task`.
+        if let Some(db) = self.db.read().await.clone()
+            && let Err(e) = db.save_job(&id, None, command, &started_at)
+        {
+            tracing::warn!(job_id = %id, "failed to persist job spawn: {e}");
+        }
+
         let me = self.clone();
         let job_id = id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
+        self.emit(
+            "activity:created",
+            json!({
+                "job_id": job_id,
+                "started_at": started_at,
+            }),
+        );
         // The direct child pid is captured before `run` moves `child`; on
         // Windows, cancelling must kill the whole process tree, not just the
         // cmd.exe/powershell.exe wrapper.
         let child_pid = child.id();
+        // The job runner outlives its spawner: give it a job-level span so
+        // every log line emitted while the job runs/cancels (output-log
+        // writes, completion) carries the job id — parallel background jobs
+        // stay distinguishable in logs.
+        let job_span = tracing::info_span!("bg_job", job_id = %job_id);
+        let runner_tail = tail.clone();
+        let emit_job_id = job_id.clone();
         tokio::spawn(async move {
             // The job outlives this task: when `run` is dropped (kill signal
             // received), kill_on_drop terminates the child.
             let max_collect = collect_byte_cap(max_chars);
-            let stdout_fut = read_stream_capped(child.stdout.take(), max_collect);
-            let stderr_fut = read_stream_capped(child.stderr.take(), max_collect);
+            let stdout_tail = runner_tail.clone();
+            let stderr_tail = runner_tail.clone();
+            let stdout_fut =
+                read_stream_capped(child.stdout.take(), max_collect, Some(stdout_tail));
+            let stderr_fut =
+                read_stream_capped(child.stderr.take(), max_collect, Some(stderr_tail));
             let run = async {
                 let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
                     tokio::join!(stdout_fut, stderr_fut);
@@ -441,6 +667,33 @@ impl BackgroundJobs {
                     me.mark_finished(&job_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
                 }
             }
+        }.instrument(job_span));
+
+        // Live-output preview emitter: while the job runs, periodically push
+        // the bounded tail of the combined stdout/stderr as `activity:output`
+        // events (only when it grew since the last tick). Stops as soon as
+        // the entry leaves the Running state (finished, cancelled, or reaped).
+        let emit_me = self.clone();
+        let emit_tail = tail;
+        tokio::spawn(async move {
+            let mut last_len = 0usize;
+            loop {
+                tokio::time::sleep(JOB_OUTPUT_EMIT_INTERVAL).await;
+                if emit_me.status(&emit_job_id).await["status"].as_str() != Some("running") {
+                    return;
+                }
+                let t = emit_tail.lock().unwrap();
+                let len = t.len();
+                if len != last_len {
+                    last_len = len;
+                    let output = t.clone();
+                    drop(t);
+                    emit_me.emit(
+                        "activity:output",
+                        json!({ "job_id": emit_job_id, "output": output }),
+                    );
+                }
+            }
         });
 
         Ok(id)
@@ -453,12 +706,13 @@ impl BackgroundJobs {
             return json!({"job_id": job_id, "status": "not_found"});
         };
         match &entry.state {
-            JobState::Running { started_at } => json!({
-                "job_id": job_id,
-                "status": "running",
-                "started_at": started_at,
-                "hint": "The job is still running. Its result is pushed back to your task automatically when it finishes — no polling needed. Use the jobs tool to see all background jobs at once.",
-            }),
+            JobState::Running { .. } => {
+                let mut v = running_status_json(job_id, entry);
+                v["hint"] = json!(
+                    "The job is still running. Its result is pushed back to your task automatically when it finishes — no polling needed. Use the jobs tool to see all background jobs at once."
+                );
+                v
+            }
             _ => render_status_json(job_id, &entry.state),
         }
     }
@@ -476,8 +730,22 @@ impl BackgroundJobs {
         let mut jobs = self.jobs.write().await;
         if let Some(entry) = jobs.get_mut(job_id) {
             entry.task_id = Some(task_id.to_string());
+            self.emit(
+                "activity:updated",
+                json!({
+                    "job_id": job_id,
+                    "task_id": task_id,
+                }),
+            );
+            // Record the owning task in the persisted row too, so terminal
+            // history keeps its owner (spawn rows start with task_id NULL).
+            if let Some(db) = self.db.read().await.clone()
+                && let Err(e) = db.update_job_task(job_id, task_id)
+            {
+                tracing::warn!(job_id = %job_id, "failed to persist job task binding: {e}");
+            }
             if entry.state.is_terminal() {
-                self.notify_completion(job_id, entry);
+                self.notify_completion(job_id, entry).await;
             }
         }
     }
@@ -516,6 +784,7 @@ impl BackgroundJobs {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn mark_finished(
         &self,
         id: &str,
@@ -532,6 +801,7 @@ impl BackgroundJobs {
             return;
         };
         entry.kill = None;
+        entry.tail = None;
         let finished_at = chrono::Utc::now().to_rfc3339();
         entry.state = if success {
             JobState::Completed {
@@ -540,8 +810,11 @@ impl BackgroundJobs {
                 truncated,
                 // When the collected output was capped, the log file keeps
                 // the full transcript for inspection.
-                log_path: truncated
-                    .then(|| write_output_log("job-logs", id, &combined).to_string_lossy().into_owned()),
+                log_path: truncated.then(|| {
+                    write_output_log("job-logs", id, &combined)
+                        .to_string_lossy()
+                        .into_owned()
+                }),
                 started_at: started_at.to_string(),
                 finished_at,
             }
@@ -566,7 +839,7 @@ impl BackgroundJobs {
                 finished_at,
             }
         };
-        self.notify_completion(id, entry);
+        self.notify_completion(id, entry).await;
     }
 
     async fn mark_cancelled(&self, id: &str, started_at: &str) {
@@ -575,12 +848,47 @@ impl BackgroundJobs {
             return;
         };
         entry.kill = None;
+        entry.tail = None;
         entry.state = JobState::Cancelled {
             started_at: started_at.to_string(),
             finished_at: chrono::Utc::now().to_rfc3339(),
         };
-        self.notify_completion(id, entry);
+        self.notify_completion(id, entry).await;
     }
+}
+
+/// Attach a bounded `preview` (first 200 chars of output, else error) to a
+/// status row. Shared by the board and scoped-list views.
+fn attach_preview(row: &mut Value) {
+    let preview = row
+        .get("output")
+        .and_then(|v| v.as_str())
+        .or_else(|| row.get("error").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    row["preview"] = json!(preview.chars().take(200).collect::<String>());
+}
+
+/// Render the running-state row for a job: the command line it is executing
+/// and the bounded live-output tail, so the agent sees what the job is doing
+/// right now instead of only "running". `output` is omitted while empty (the
+/// command has not produced anything yet).
+fn running_status_json(job_id: &str, entry: &JobEntry) -> Value {
+    let mut v = json!({
+        "job_id": job_id,
+        "status": "running",
+        "command": entry.command,
+        "shell": entry.shell,
+    });
+    if let JobState::Running { started_at } = &entry.state {
+        v["started_at"] = json!(started_at);
+    }
+    if let Some(tail) = &entry.tail {
+        let out = tail.lock().unwrap();
+        if !out.is_empty() {
+            v["output"] = json!(out.as_str());
+        }
+    }
+    v
 }
 
 /// Render the terminal status JSON for a job (mirrors `status()` output for
@@ -785,7 +1093,8 @@ pub fn append_windows_diagnostics(shell: &str, command: &str, text: &str) -> Str
         }
         // `&&` is a parse error in PowerShell ("The token '&&' is not a valid
         // statement separator" / 标记“&&”不是此版本中的有效语句分隔符).
-        if lower.contains("not a valid statement separator") || lower.contains("有效语句分隔符") {
+        if lower.contains("not a valid statement separator") || lower.contains("有效语句分隔符")
+        {
             hints.push("`&&` is not valid in PowerShell — use `;` instead (or pass shell: cmd).");
         }
         // .ps1 scripts are blocked by the execution policy.
@@ -812,12 +1121,15 @@ pub fn append_windows_diagnostics(shell: &str, command: &str, text: &str) -> Str
             "Windows 脚本执行策略拦截了 .ps1 —— 改用 .cmd 包装（如 npm.cmd）或先执行 Set-ExecutionPolicy -Scope Process Bypass",
         );
     }
-    if lower.contains("不是内部或外部命令") || lower.contains("not recognized as an internal or external command") {
+    if lower.contains("不是内部或外部命令")
+        || lower.contains("not recognized as an internal or external command")
+    {
         hints.push(
             "Command not found — check PATH or use the full path (e.g. C:\\Users\\<name>\\AppData\\Roaming\\npm\\npm.cmd).",
         );
     }
-    if lower.contains("%1 不是有效的 win32") || lower.contains("not a valid win32 application") {
+    if lower.contains("%1 不是有效的 win32") || lower.contains("not a valid win32 application")
+    {
         hints.push(
             "'not a valid Win32 application' usually means a script without a launcher — invoke it via its interpreter (node/python) with the full script path, or use its .cmd wrapper.",
         );
@@ -853,12 +1165,38 @@ async fn kill_process_tree(pid: u32) {
     let _ = pid;
 }
 
+/// Append a decoded chunk to the shared live-output tail, keeping it bounded
+/// to the last `JOB_TAIL_MAX_CHARS` characters (dropping from the front).
+fn append_tail(tail: &Mutex<String>, chunk: &[u8]) {
+    let text = haven_common::encoding::decode_lossy(chunk);
+    if text.is_empty() {
+        return;
+    }
+    let mut t = tail.lock().unwrap();
+    t.push_str(&text);
+    while t.len() > JOB_TAIL_MAX_CHARS {
+        let overflow = t.len() - JOB_TAIL_MAX_CHARS;
+        let cut = t
+            .char_indices()
+            .nth(overflow)
+            .map(|(i, _)| i)
+            .unwrap_or(t.len());
+        t.drain(..cut);
+    }
+}
+
 /// Read a child stdout/stderr stream into a String, capping at `max_bytes`
 /// so runaway output cannot exhaust memory. After the cap is reached the
 /// remaining bytes are still read and discarded: closing the pipe read end
 /// early can make the child fail writes (broken pipe) and flip its exit code.
+/// When `tail` is given, every decoded chunk is also appended to the shared
+/// bounded live-output tail (for `activity:output` preview events).
 /// Returns `(text, overflowed)`.
-pub(crate) async fn read_stream_capped<R>(stdout: Option<R>, max_bytes: usize) -> (String, bool)
+pub(crate) async fn read_stream_capped<R>(
+    stdout: Option<R>,
+    max_bytes: usize,
+    tail: Option<Arc<Mutex<String>>>,
+) -> (String, bool)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -873,6 +1211,9 @@ where
         match stream.read(&mut tmp).await {
             Ok(0) => break,
             Ok(n) => {
+                if let Some(t) = &tail {
+                    append_tail(t, &tmp[..n]);
+                }
                 let room = max_bytes.saturating_sub(buf.len());
                 if room == 0 {
                     // Cap reached: keep draining until EOF so the child can
@@ -909,6 +1250,22 @@ mod tests {
         }
     }
 
+    /// Spawn the two fixture echo jobs (`job-a` / `job-b`) and attach them to
+    /// `task-1` / `task-2`. Shared by the board and scoped-list tests.
+    async fn spawn_two_echo_jobs(jobs: &Arc<BackgroundJobs>) -> (String, String) {
+        let id_a = jobs
+            .spawn_shell("echo job-a", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        let id_b = jobs
+            .spawn_shell("echo job-b", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        jobs.attach_task(&id_a, "task-1").await;
+        jobs.attach_task(&id_b, "task-2").await;
+        (id_a, id_b)
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn test_completion_notified_on_finish() {
@@ -936,6 +1293,50 @@ mod tests {
                 .unwrap()
                 .contains("done")
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_job_result_persisted_to_db() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
+        let jobs = Arc::new(BackgroundJobs::new());
+        jobs.set_db(Some(db.clone())).await;
+
+        let id = jobs
+            .spawn_shell(
+                "echo live-line & ping -n 4 127.0.0.1 >nul",
+                "cmd",
+                20_000,
+                None,
+            )
+            .await
+            .unwrap();
+        jobs.attach_task(&id, "task-DB").await;
+        let v = wait_terminal(&jobs, &id, 10).await;
+        assert_eq!(v["status"], "completed");
+
+        // The status flips to completed before the terminal row is persisted
+        // (mark_finished → notify_completion → persist_terminal); poll the
+        // DB instead of reading it immediately.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let row = loop {
+            let rows = db.list_activities(Some("job")).unwrap();
+            if let Some(row) = rows.iter().find(|r| r.id == id) {
+                break row.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "job row never persisted"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(row.kind, "job");
+        assert_eq!(row.status.as_deref(), Some("completed"));
+        assert_eq!(row.task_id.as_deref(), Some("task-DB"));
+        assert!(row.output.as_deref().unwrap().contains("live-line"));
+        assert_eq!(row.exit_code, Some(0));
+        assert!(row.finished_at.is_some());
     }
 
     #[cfg(windows)]
@@ -987,6 +1388,47 @@ mod tests {
         assert_eq!(v["status"], "completed", "got: {}", v);
         assert!(v["output"].as_str().unwrap().contains("bg-hello"));
         assert!(v["finished_at"].as_str().is_some());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_running_status_includes_command_and_live_output() {
+        let jobs = Arc::new(BackgroundJobs::new());
+        let id = jobs
+            .spawn_shell(
+                "echo live-line & ping -n 3 127.0.0.1 >nul",
+                "cmd",
+                20_000,
+                None,
+            )
+            .await
+            .unwrap();
+        // While the job runs, status must carry the command line it executes.
+        let v = jobs.status(&id).await;
+        assert_eq!(v["status"], "running", "got: {}", v);
+        assert_eq!(v["shell"], "cmd");
+        assert!(
+            v["command"].as_str().unwrap().contains("live-line"),
+            "running status must include the command: {v}"
+        );
+        // And the live output tail once the command has produced something.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let v = jobs.status(&id).await;
+            if v["output"].as_str().unwrap_or("").contains("live-line") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "live output never arrived: {v}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // The running row of the board carries the same command + output.
+        let board = jobs.board().await;
+        let row = board.iter().find(|r| r["job_id"] == id).expect("on board");
+        assert!(row["command"].as_str().unwrap().contains("live-line"));
+        assert!(row["preview"].as_str().unwrap_or("").contains("live-line"));
     }
 
     #[cfg(windows)]
@@ -1062,14 +1504,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_stream_capped_under_cap() {
-        let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192).await;
+        let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None).await;
         assert_eq!(text, "hello");
         assert!(!overflowed);
     }
 
     #[tokio::test]
     async fn test_read_stream_capped_none() {
-        let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192).await;
+        let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None).await;
         assert_eq!(text, "");
         assert!(!overflowed);
     }
@@ -1077,9 +1519,76 @@ mod tests {
     #[tokio::test]
     async fn test_read_stream_capped_over_cap() {
         let data = vec![b'x'; 1000];
-        let (text, overflowed) = read_stream_capped(Some(&data[..]), 100).await;
+        let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None).await;
         assert_eq!(text.len(), 100);
         assert!(overflowed);
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_capped_appends_tail() {
+        let tail = Arc::new(Mutex::new(String::new()));
+        let (text, _) =
+            read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
+        assert_eq!(text, "hello tail");
+        assert_eq!(*tail.lock().unwrap(), "hello tail");
+        // A second chunk appends (multi-chunk tee).
+        read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
+        assert_eq!(*tail.lock().unwrap(), "hello tail more");
+    }
+
+    #[test]
+    fn test_append_tail_bounded() {
+        let tail = Mutex::new(String::new());
+        // A single oversized chunk is truncated to the last max chars.
+        let big = "x".repeat(JOB_TAIL_MAX_CHARS + 500);
+        append_tail(&tail, big.as_bytes());
+        assert_eq!(tail.lock().unwrap().len(), JOB_TAIL_MAX_CHARS);
+        // Subsequent chunks drop the front.
+        append_tail(&tail, "tail-end".as_bytes());
+        let t = tail.lock().unwrap();
+        assert!(
+            t.ends_with("tail-end"),
+            "got tail: {}",
+            &t[t.len().saturating_sub(40)..]
+        );
+    }
+
+    #[test]
+    fn test_terminal_entry_stale_ttl() {
+        let now = chrono::Utc::now();
+        let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| JobEntry {
+            task_id: None,
+            state: if running {
+                JobState::Running {
+                    started_at: now.to_rfc3339(),
+                }
+            } else {
+                JobState::Completed {
+                    output: String::new(),
+                    exit_code: None,
+                    truncated: false,
+                    log_path: None,
+                    started_at: now.to_rfc3339(),
+                    finished_at: finished.to_rfc3339(),
+                }
+            },
+            kill: None,
+            tail: None,
+            command: String::new(),
+            shell: "cmd".into(),
+        };
+        assert!(
+            terminal_entry_stale(&entry(now - chrono::Duration::minutes(20), false)),
+            "20-minute-old terminal job must be stale"
+        );
+        assert!(
+            !terminal_entry_stale(&entry(now - chrono::Duration::minutes(5), false)),
+            "fresh terminal job must be kept"
+        );
+        assert!(
+            !terminal_entry_stale(&entry(now, true)),
+            "running job is never stale"
+        );
     }
 
     // ── sanitize_shell_output ─────────────────────────────────────────────
@@ -1121,9 +1630,8 @@ mod tests {
     #[test]
     fn test_sanitize_shell_output_strips_clixml_wrapper() {
         // pwsh 7 serializes native stderr as CLIXML.
-        let text = format!(
-            "#< CLIXML\n\u{1f}<Objs V=\"1\" S=\"Err\"><S S=\"Error\">boom: connection refused</S></Objs>"
-        );
+        let text = "#< CLIXML\n\u{1f}<Objs V=\"1\" S=\"Err\"><S S=\"Error\">boom: connection refused</S></Objs>"
+            .to_string();
         let out = sanitize_shell_output(&text, "powershell");
         assert!(
             out.contains("boom: connection refused"),
@@ -1145,12 +1653,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_windows_diagnostics_curl_alias() {
-        let out = append_windows_diagnostics("powershell", "curl https://example.com", "curl.exe : Invoke-WebRequest failed");
+        let out = append_windows_diagnostics(
+            "powershell",
+            "curl https://example.com",
+            "curl.exe : Invoke-WebRequest failed",
+        );
         assert!(
             out.contains("Windows trap"),
             "a hint must be appended, got: {out}"
         );
-        assert!(out.contains("curl.exe"), "hint must name curl.exe, got: {out}");
+        assert!(
+            out.contains("curl.exe"),
+            "hint must name curl.exe, got: {out}"
+        );
     }
 
     #[cfg(windows)]
@@ -1165,7 +1680,10 @@ mod tests {
     fn test_windows_diagnostics_cmd_syntax_error_cn() {
         let out = append_windows_diagnostics("cmd", "dir /q \\x", "该命令的语法不正确。");
         assert!(out.contains("Windows trap"), "got: {out}");
-        assert!(out.contains("syntax"), "hint must explain quoting, got: {out}");
+        assert!(
+            out.contains("syntax"),
+            "hint must explain quoting, got: {out}"
+        );
     }
 
     #[cfg(windows)]
@@ -1187,7 +1705,10 @@ mod tests {
             "npm install",
             "npm : 无法加载文件 npm.ps1，因为在此系统上禁止运行脚本",
         );
-        assert!(out.contains("npm.cmd"), "hint must suggest the .cmd wrapper, got: {out}");
+        assert!(
+            out.contains("npm.cmd"),
+            "hint must suggest the .cmd wrapper, got: {out}"
+        );
     }
 
     // ── summarize_error ───────────────────────────────────────────────────
@@ -1235,18 +1756,104 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn test_event_sink_receives_lifecycle() {
+        let jobs = Arc::new(BackgroundJobs::new());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        jobs.set_event_sink(Arc::new(move |name, payload| {
+            sink_events.lock().unwrap().push((name, payload));
+        }));
+        let id = jobs
+            .spawn_shell("echo bg-event", "cmd", 20_000, None)
+            .await
+            .unwrap();
+        jobs.attach_task(&id, "task-evt").await;
+        wait_terminal(&jobs, &id, 10).await;
+
+        let evs = events.lock().unwrap();
+        let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"activity:created"), "got: {names:?}");
+        assert!(names.contains(&"activity:updated"), "got: {names:?}");
+        assert!(names.contains(&"activity:finished"), "got: {names:?}");
+        let term = evs
+            .iter()
+            .find(|(n, _)| n == "activity:finished")
+            .expect("terminal event");
+        assert_eq!(term.1["status"], "completed");
+        assert_eq!(term.1["job_id"], id);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_board_lists_all_jobs_with_task() {
+        let jobs = Arc::new(BackgroundJobs::new());
+        let (id_a, id_b) = spawn_two_echo_jobs(&jobs).await;
+        wait_terminal(&jobs, &id_a, 10).await;
+        wait_terminal(&jobs, &id_b, 10).await;
+
+        let rows = jobs.board().await;
+        assert_eq!(rows.len(), 2, "all jobs on board: {rows:?}");
+        let by_id: HashMap<_, _> = rows
+            .iter()
+            .map(|r| (r["job_id"].as_str().unwrap(), r))
+            .collect();
+        assert_eq!(by_id[&id_a.as_str()]["task_id"], "task-1");
+        assert_eq!(by_id[&id_b.as_str()]["task_id"], "task-2");
+        assert_eq!(by_id[&id_a.as_str()]["status"], "completed");
+        assert!(
+            by_id[&id_a.as_str()]["preview"]
+                .as_str()
+                .unwrap()
+                .contains("job-a"),
+            "preview expected, got: {rows:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_job_output_preview_emitted() {
+        let jobs = Arc::new(BackgroundJobs::new());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        jobs.set_event_sink(Arc::new(move |name, payload| {
+            sink_events.lock().unwrap().push((name, payload));
+        }));
+        // A job that keeps running past one emit interval while producing
+        // output (ping lasts ~3s), so the preview event has time to fire.
+        let id = jobs
+            .spawn_shell(
+                "echo preview-line-123 && ping -n 4 127.0.0.1 > nul",
+                "cmd",
+                20_000,
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        {
+            let evs = events.lock().unwrap();
+            let output_evt = evs
+                .iter()
+                .find(|(n, _)| n == "activity:output")
+                .expect("activity:output event must be emitted while running");
+            assert_eq!(output_evt.1["job_id"], id);
+            assert!(
+                output_evt.1["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("preview-line-123"),
+                "preview must carry the echoed line, got: {:?}",
+                output_evt.1["output"]
+            );
+        }
+        let _ = jobs.cancel(&id).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn test_list_for_task_scopes_to_owning_task() {
         let jobs = Arc::new(BackgroundJobs::new());
-        let id_a = jobs
-            .spawn_shell("echo job-a", "cmd", 20_000, None)
-            .await
-            .unwrap();
-        let id_b = jobs
-            .spawn_shell("echo job-b", "cmd", 20_000, None)
-            .await
-            .unwrap();
-        jobs.attach_task(&id_a, "task-1").await;
-        jobs.attach_task(&id_b, "task-2").await;
+        let (id_a, id_b) = spawn_two_echo_jobs(&jobs).await;
         wait_terminal(&jobs, &id_a, 10).await;
         wait_terminal(&jobs, &id_b, 10).await;
 

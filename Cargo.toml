@@ -23,9 +23,9 @@ thiserror = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+flate2 = "1"
 cpal = "0.15"
 tract-onnx = "0.21"
-ndarray = "0.16"
 base64 = "0.22"
 async-trait = "0.1"
 tokio-util = "0.7"

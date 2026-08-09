@@ -1,8 +1,7 @@
 use crate::db::Database;
 use crate::repositories::messages::Message;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use std::collections::HashMap;
-use uuid::Uuid;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fact {
@@ -23,6 +22,16 @@ pub struct Fact {
     /// The conversation message this fact was extracted from, if known.
     #[serde(default)]
     pub source_ref: Option<FactSourceRef>,
+    /// 0..1 rating of how long this fact stays useful. Scales the effective
+    /// confidence used for prompt ranking and pruning, so transient facts
+    /// (low durability) die out fast while stable ones keep full weight.
+    /// User-stated facts and identity predicates never decay regardless.
+    #[serde(default = "default_durability")]
+    pub durability: f64,
+}
+
+fn default_durability() -> f64 {
+    1.0
 }
 
 /// Reference back to the conversation message a fact was extracted from.
@@ -54,6 +63,9 @@ pub struct InferredFact {
     pub object: String,
     pub confidence: f64,
     pub tags: Vec<String>,
+    /// 0..1 durability rating assigned by the rule (identity rules are
+    /// durable, transient preference rules less so).
+    pub durability: f64,
     pub source_ref: Option<FactSourceRef>,
 }
 
@@ -82,7 +94,17 @@ fn serialize_tags(tags: &[&str]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
 }
 
-/// Map a rusqlite Row (with the standard 11-column SELECT order) to a Fact.
+/// Canonical SELECT column list for the facts table, in the exact positional
+/// order `fact_from_row` maps (index 0..11). Single source of truth: every
+/// facts SELECT is built from this const so a column add/remove cannot drift
+/// a query away from the row mapper (mirrors `EMBED_COLS` in embeddings.rs).
+const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref, durability";
+
+/// Aliased variant for queries that prefix columns with a table alias
+/// (FTS join).
+const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.source_ref, f.durability";
+
+/// Map a rusqlite Row (with the standard 12-column SELECT order) to a Fact.
 /// Shared by all query methods to avoid drift when columns change.
 fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
     let tags_str: String = row.get(6)?;
@@ -98,6 +120,7 @@ fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
         mention_count: row.get(8)?,
         last_seen_at: row.get(9)?,
         source_ref: parse_source_ref(row.get::<_, Option<String>>(10)?),
+        durability: row.get(11)?,
     })
 }
 
@@ -171,13 +194,15 @@ fn fact_age_days(fact: &Fact) -> f64 {
     (Utc::now() - parse_fact_time(ts)).num_days() as f64
 }
 
-/// Effective confidence after recency decay. Identity facts never decay, and
-/// neither do explicitly user-stated facts (`source="user"`, e.g. added via
-/// the settings UI — the user can remove those, time should not). Volatile
-/// facts decay with a 90-day half-life; everything else (preferences etc.)
-/// with a 365-day half-life. Old inferred facts that stop being re-confirmed
-/// sink below the flush threshold and get pruned, while freshly confirmed
-/// facts keep their full weight.
+/// Effective confidence after recency decay and durability. Identity facts
+/// never decay, and neither do explicitly user-stated facts (`source="user"`,
+/// e.g. added via the settings UI — the user can remove those, time should
+/// not). Volatile facts decay with a 90-day half-life; everything else
+/// (preferences etc.) with a 365-day half-life. `durability` scales the
+/// result (1.0 = full weight, 0.3 = a third), so low-durability facts sink
+/// below the flush threshold and get pruned even when freshly extracted,
+/// while durable facts keep their weight. Old inferred facts that stop being
+/// re-confirmed decay the same way and get pruned.
 pub fn fact_effective_confidence(fact: &Fact) -> f64 {
     if is_identity_predicate(&fact.predicate) || fact.source == "user" {
         return fact.confidence;
@@ -187,7 +212,9 @@ pub fn fact_effective_confidence(fact: &Fact) -> f64 {
     } else {
         365.0
     };
-    fact.confidence * 0.5_f64.powf(fact_age_days(fact) / half_life_days)
+    fact.confidence
+        * fact.durability.clamp(0.0, 1.0)
+        * 0.5_f64.powf(fact_age_days(fact) / half_life_days)
 }
 
 /// Stable sort for prompt/UI display: effective confidence first, then newest
@@ -270,6 +297,11 @@ pub fn is_sensitive_object(object: &str) -> bool {
         || o.contains("apikey=")
 }
 
+/// Batch existence result for fact inference: the exact
+/// (subject, predicate, object) triples and the (subject, predicate) pairs
+/// already stored for a batch of subjects.
+pub type FactPresence = (HashSet<(String, String, String)>, HashSet<(String, String)>);
+
 impl Database {
     pub fn insert_fact(
         &self,
@@ -280,10 +312,13 @@ impl Database {
         confidence: f64,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
-        self.insert_fact_with_source_ref(subject, predicate, object, source, confidence, tags, None)
+        self.insert_fact_with_source_ref(
+            subject, predicate, object, source, confidence, tags, None, 1.0,
+        )
     }
 
-    /// Insert a fact with an optional reference to the message it came from.
+    /// Insert a fact with an optional reference to the message it came from
+    /// and an explicit durability rating (0..1).
     #[allow(clippy::too_many_arguments)]
     pub fn insert_fact_with_source_ref(
         &self,
@@ -294,15 +329,16 @@ impl Database {
         confidence: f64,
         tags: &[&str],
         source_ref: Option<&FactSourceRef>,
+        durability: f64,
     ) -> anyhow::Result<Fact> {
-        let id = Uuid::new_v4().to_string();
+        let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
         let source_ref_json = serialize_source_ref(source_ref);
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at, tags, mention_count, last_seen_at, source_ref)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)",
+            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at, tags, mention_count, last_seen_at, source_ref, durability)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)",
             rusqlite::params![
                 id,
                 subject,
@@ -313,7 +349,8 @@ impl Database {
                 now,
                 tags_json,
                 now,
-                source_ref_json
+                source_ref_json,
+                durability
             ],
         )?;
         self.cache_invalidate_facts(subject);
@@ -329,6 +366,7 @@ impl Database {
             mention_count: 0,
             last_seen_at: Some(now),
             source_ref: source_ref.cloned(),
+            durability,
         })
     }
 
@@ -345,6 +383,10 @@ impl Database {
     ///   first, so the new statement strictly replaces the old one.
     /// - Multi-valued predicates (likes, uses, ...) → plain insert; the
     ///   new value coexists with the existing ones.
+    ///
+    /// The connection guard is scoped per statement: `insert_fact` (and any
+    /// other `&self` method) re-locks `self.conn`, and `std::sync::Mutex` is
+    /// not reentrant — holding the guard across the call would deadlock.
     pub fn set_user_fact(
         &self,
         subject: &str,
@@ -352,48 +394,61 @@ impl Database {
         object: &str,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
-        let conn = self.conn();
-        let triple_exists: Option<Fact> = conn
-            .query_row(
-                "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-                 FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+        let triple_exists: Option<Fact> = {
+            let conn = self.conn();
+            conn.query_row(
+                &format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
                 rusqlite::params![subject, predicate, object],
                 fact_from_row,
             )
-            .ok();
+            .ok()
+        };
         if let Some(existing) = triple_exists {
             if existing.source == "user" {
                 // Reinforcement: re-confirmed by the user, confidence maxed.
-                conn.execute(
-                    "UPDATE facts
-                     SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0
-                     WHERE id = ?2",
-                    rusqlite::params![Utc::now().to_rfc3339(), existing.id],
-                )?;
+                {
+                    let conn = self.conn();
+                    conn.execute(
+                        "UPDATE facts
+                         SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
+                             durability = 1.0
+                         WHERE id = ?2",
+                        rusqlite::params![Utc::now().to_rfc3339(), existing.id],
+                    )?;
+                }
                 self.cache_invalidate_facts(subject);
+                self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
                 let mut fact = existing;
                 fact.confidence = 1.0;
+                fact.durability = 1.0;
                 fact.mention_count += 1;
                 fact.last_seen_at = Some(Utc::now().to_rfc3339());
                 return Ok(fact);
             }
             // Upgrade an inferred row to user-stated.
-            conn.execute(
-                "UPDATE facts SET source = 'user', confidence = 1.0, last_seen_at = ?1 WHERE id = ?2",
-                rusqlite::params![Utc::now().to_rfc3339(), existing.id],
-            )?;
+            {
+                let conn = self.conn();
+                conn.execute(
+                    "UPDATE facts SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0 WHERE id = ?2",
+                    rusqlite::params![Utc::now().to_rfc3339(), existing.id],
+                )?;
+            }
             self.cache_invalidate_facts(subject);
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
             let mut fact = existing;
             fact.source = "user".into();
             fact.confidence = 1.0;
+            fact.durability = 1.0;
             fact.last_seen_at = Some(Utc::now().to_rfc3339());
             return Ok(fact);
         }
         if is_single_valued_predicate(predicate) {
+            let conn = self.conn();
             conn.execute(
                 "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
                 rusqlite::params![subject, predicate],
             )?;
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
         self.insert_fact(subject, predicate, object, "user", 1.0, tags)
     }
@@ -420,6 +475,7 @@ impl Database {
             )?,
         };
         self.cache_invalidate_facts(subject);
+        self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(deleted as u64)
     }
 
@@ -438,8 +494,7 @@ impl Database {
         let existing: Option<Fact> = {
             let conn = self.conn();
             conn.query_row(
-                "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-                 FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                &format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
                 rusqlite::params![subject, predicate, object],
                 fact_from_row,
             )
@@ -464,7 +519,9 @@ impl Database {
     /// - Otherwise → plain insert.
     ///
     /// `source_ref` points at the supporting conversation message; on
-    /// reinforcement it replaces the stored reference when provided.
+    /// reinforcement it replaces the stored reference when provided. The
+    /// durability variant additionally records the incoming 0..1 durability
+    /// rating (reinforcement keeps the higher of the two).
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_fact(
         &self,
@@ -476,14 +533,39 @@ impl Database {
         tags: &[&str],
         source_ref: Option<&FactSourceRef>,
     ) -> anyhow::Result<UpsertOutcome> {
+        self.upsert_fact_with_durability(
+            subject, predicate, object, source, confidence, tags, source_ref, 1.0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_fact_with_durability(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        source: &str,
+        confidence: f64,
+        tags: &[&str],
+        source_ref: Option<&FactSourceRef>,
+        durability: f64,
+    ) -> anyhow::Result<UpsertOutcome> {
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
+        // §P2: polarity conflict — "likes X" and "dislikes X" contradict each
+        // other; the newest observation demotes the opposite-polarity fact so
+        // the prompt never shows both. User-stated facts always win: an
+        // inferred fact never demotes a user-stated opposite.
+        let opposite = match predicate.to_ascii_lowercase().as_str() {
+            "likes" => Some("dislikes"),
+            "dislikes" => Some("likes"),
+            _ => None,
+        };
         {
             let conn = self.conn();
             let existing: Option<Fact> = conn
                 .query_row(
-                    "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-                     FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    &format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
                     rusqlite::params![subject, predicate, object],
                     fact_from_row,
                 )
@@ -491,7 +573,10 @@ impl Database {
             if let Some(existing) = existing {
                 // Reinforcement: repeated confirmation keeps a fact alive and
                 // nudges its confidence up (capped at 1.0, never below incoming).
+                // Durability merges upward: a re-confirmed durable fact stays
+                // durable, and a re-extraction that raises durability keeps it.
                 let boosted = (existing.confidence * 1.05).min(1.0).max(confidence);
+                let merged_durability = existing.durability.max(durability).clamp(0.0, 1.0);
                 let merged_ref = source_ref.or(existing.source_ref.as_ref());
                 // Merge any newly attached tags into the stored set so a
                 // re-extraction that re-tags a fact does not lose the tag.
@@ -505,17 +590,19 @@ impl Database {
                 conn.execute(
                     "UPDATE facts
                      SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
-                         source_ref = ?3, tags = ?4
-                     WHERE id = ?5",
+                         source_ref = ?3, tags = ?4, durability = ?5
+                     WHERE id = ?6",
                     rusqlite::params![
                         now,
                         boosted,
                         serialize_source_ref(merged_ref),
                         serialize_tags(&tag_refs),
+                        merged_durability,
                         existing.id
                     ],
                 )?;
                 self.cache_invalidate_facts(subject);
+                self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
                 return Ok(UpsertOutcome::Reinforced);
             }
 
@@ -541,15 +628,6 @@ impl Database {
                 corrected = n > 0;
             }
 
-            // §P2: polarity conflict — "likes X" and "dislikes X" contradict
-            // each other; the newest observation demotes the opposite-polarity
-            // fact so the prompt never shows both. User-stated facts always
-            // win: an inferred fact never demotes a user-stated opposite.
-            let opposite = match predicate.to_ascii_lowercase().as_str() {
-                "likes" => Some("dislikes"),
-                "dislikes" => Some("likes"),
-                _ => None,
-            };
             if let Some(opp) = opposite {
                 let incoming_is_user = (source == "user") as i32;
                 let _ = conn.execute(
@@ -560,8 +638,14 @@ impl Database {
                 )?;
             }
         }
+        // The demotion UPDATEs above fire the facts_embed_upd trigger (the
+        // only other non-insert path, reinforcement, returned early above).
+        // Invalidate the embeddings list cache accordingly.
+        if corrected || opposite.is_some() {
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+        }
         let _ = self.insert_fact_with_source_ref(
-            subject, predicate, object, source, confidence, tags, source_ref,
+            subject, predicate, object, source, confidence, tags, source_ref, durability,
         )?;
         Ok(if corrected {
             UpsertOutcome::Corrected
@@ -577,10 +661,8 @@ impl Database {
         let key = format!("_facts_{}", subject);
         let cache_gen = self.cache_generation(&key);
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-             FROM facts WHERE subject = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![subject], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -591,27 +673,93 @@ impl Database {
         Ok(facts)
     }
 
-    pub fn list_facts(&self) -> anyhow::Result<Vec<Fact>> {
+    /// Whether an exact (subject, predicate, object) triple is already
+    /// stored. Used to distinguish a re-confirmation of an existing fact
+    /// (which must reinforce it regardless of the incoming confidence) from a
+    /// brand-new fact (which is subject to the persist confidence floor).
+    pub fn fact_triple_exists(&self, subject: &str, predicate: &str, object: &str) -> bool {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-             FROM facts",
-        )?;
+        conn.query_row(
+            "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3 LIMIT 1",
+            rusqlite::params![subject, predicate, object],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    /// Whether any fact is already stored for a (subject, predicate) pair,
+    /// regardless of the object value. Used to recognize a single-valued
+    /// UPDATE: the user changed the value, so the new triple does not match
+    /// [`Self::fact_triple_exists`], but a stored value for the predicate
+    /// means the extraction is a correction that must replace it rather than
+    /// being subject to the new-fact confidence floor.
+    pub fn fact_predicate_exists(&self, subject: &str, predicate: &str) -> bool {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 LIMIT 1",
+            rusqlite::params![subject, predicate],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    /// Batch existence check for fact inference: one query returns (a) the
+    /// exact (subject, predicate, object) triples already stored for the
+    /// given subjects and (b) the (subject, predicate) pairs present — the
+    /// inputs of [`Self::fact_triple_exists`] / [`Self::fact_predicate_exists`]
+    /// for an entire batch. Lets `persist_fact_batch` resolve new-fact vs
+    /// single-valued-update in one round trip instead of two per fact.
+    pub fn facts_exist_batch(&self, subjects: &[&str]) -> anyhow::Result<FactPresence> {
+        if subjects.is_empty() {
+            return Ok((HashSet::new(), HashSet::new()));
+        }
+        let placeholders = vec!["?"; subjects.len()].join(",");
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(subjects.iter().copied()), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut triples = HashSet::new();
+        let mut pairs = HashSet::new();
+        for row in rows {
+            let (subject, predicate, object) = row?;
+            triples.insert((subject.clone(), predicate.clone(), object));
+            pairs.insert((subject, predicate));
+        }
+        Ok((triples, pairs))
+    }
+
+    /// All facts in effective-confidence order. Cached (generation-guarded,
+    /// same policy as `get_facts`) because it is a per-extraction hot path
+    /// (`load_known_facts`) — an uncached full-table scan + JSON decode per
+    /// call would be wasteful. Invalidated together with the subject caches
+    /// on any fact mutation.
+    pub fn list_facts(&self) -> anyhow::Result<Vec<Fact>> {
+        if let Some(cached) = self.cache_get_facts_all() {
+            return Ok(cached);
+        }
+        let cache_gen = self.cache_generation("_facts_all");
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
         let rows = stmt.query_map([], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
             facts.push(row?);
         }
         sort_facts_effective(&mut facts);
+        self.cache_put_facts_all(facts.clone(), 60, cache_gen);
         Ok(facts)
     }
 
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-             FROM facts WHERE source = ?1",
-        )?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE source = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![source], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -643,12 +791,14 @@ impl Database {
         }
         let match_expr = Self::build_fts_query(&terms);
         let conn = self.conn();
-        let fts_sql = "SELECT f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.source_ref
-                       FROM facts f
-                       JOIN facts_fts ON f.rowid = facts_fts.rowid
-                       WHERE facts_fts MATCH ?1
-                       ORDER BY bm25(facts_fts)";
-        if let Ok(mut stmt) = conn.prepare(fts_sql)
+        let fts_sql = format!(
+            "SELECT {FACT_COLS_ALIASED}
+                               FROM facts f
+                               JOIN facts_fts ON f.rowid = facts_fts.rowid
+                               WHERE facts_fts MATCH ?1
+                               ORDER BY bm25(facts_fts)"
+        );
+        if let Ok(mut stmt) = conn.prepare(&fts_sql)
             && let Ok(rows) = stmt.query_map(rusqlite::params![match_expr], fact_from_row)
         {
             let mut facts = Vec::new();
@@ -673,11 +823,10 @@ impl Database {
             }
         }
         let pattern = format!("%{}%", query);
-        let mut stmt = conn.prepare(
-            "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-             FROM facts
-             WHERE subject LIKE ?1 OR predicate LIKE ?1 OR object LIKE ?1 OR tags LIKE ?1",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE subject LIKE ?1 OR predicate LIKE ?1 OR object LIKE ?1 OR tags LIKE ?1"
+        ))?;
         let rows = stmt.query_map(rusqlite::params![pattern], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -695,11 +844,10 @@ impl Database {
     /// text contains the quoted needle).
     pub fn get_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-             FROM facts
-             WHERE EXISTS (SELECT 1 FROM json_each(facts.tags) AS te WHERE te.value = ?1)",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE EXISTS (SELECT 1 FROM json_each(facts.tags) AS te WHERE te.value = ?1)"
+        ))?;
         let rows = stmt.query_map(rusqlite::params![tag], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -723,6 +871,7 @@ impl Database {
         if let Some(s) = subject {
             self.cache_invalidate_facts(&s);
         }
+        self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(())
     }
 
@@ -732,10 +881,7 @@ impl Database {
         // empty) tag set. The previous tag-sensitive grouping let repeated
         // re-extraction pile up duplicates — e.g. 379 rows of `name=Xtopia`.
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref
-             FROM facts",
-        )?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
         let rows = stmt.query_map([], fact_from_row)?;
         let mut groups: HashMap<(String, String, String), Vec<Fact>> = HashMap::new();
         for row in rows {
@@ -799,6 +945,7 @@ impl Database {
             )?;
         }
         self.cache_invalidate_facts("user");
+        self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(deleted)
     }
 
@@ -828,11 +975,19 @@ impl Database {
     /// the threshold. Stale volatile facts that stopped being re-confirmed
     /// sink below the bar and are pruned; freshly confirmed or identity facts
     /// keep their weight.
+    ///
+    /// Facts observed within the last day are exempt: without the grace
+    /// period, a brand-new fact that passes the persist floor but carries a
+    /// low durability rating (effective confidence = confidence × durability
+    /// < threshold) would be written and pruned in the same maintenance pass,
+    /// voiding the persist floor and wasting the extraction. The grace window
+    /// gives every persisted fact at least one full recall cycle; decay and
+    /// durability still prune it from the second day on.
     pub fn flush_low_confidence(&self, threshold: f64) -> anyhow::Result<u64> {
         let facts = self.list_facts()?;
         let mut stale_ids: Vec<String> = Vec::new();
         for fact in &facts {
-            if fact_effective_confidence(fact) < threshold {
+            if fact_effective_confidence(fact) < threshold && fact_age_days(fact) >= 1.0 {
                 stale_ids.push(fact.id.clone());
             }
         }
@@ -849,6 +1004,7 @@ impl Database {
             rusqlite::params_from_iter(stale_ids.iter().map(|s| s.as_str())),
         )? as u64;
         self.cache_invalidate_facts("user");
+        self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(count)
     }
 
@@ -963,6 +1119,7 @@ impl Database {
                         object: obj,
                         confidence: 0.9,
                         tags: tags_for_predicate("likes"),
+                        durability: 0.5,
                         source_ref: source_ref(),
                     });
                 }
@@ -979,6 +1136,7 @@ impl Database {
                         object: obj,
                         confidence: 0.8,
                         tags: tags_for_predicate("dislikes"),
+                        durability: 0.5,
                         source_ref: source_ref(),
                     });
                 }
@@ -1002,6 +1160,7 @@ impl Database {
                         object: obj,
                         confidence: 0.7,
                         tags: tags_for_predicate("project_path"),
+                        durability: 0.7,
                         source_ref: source_ref(),
                     });
                 }
@@ -1033,6 +1192,7 @@ impl Database {
                                 object: obj,
                                 confidence: 0.85,
                                 tags: tags_for_predicate("name"),
+                                durability: 1.0,
                                 source_ref: source_ref(),
                             });
                         }
@@ -1050,6 +1210,7 @@ impl Database {
                     object: obj,
                     confidence: 0.7,
                     tags: tags_for_predicate("uses"),
+                    durability: 0.6,
                     source_ref: source_ref(),
                 });
             }
@@ -1066,6 +1227,7 @@ impl Database {
                         object: obj,
                         confidence: 0.75,
                         tags: tags_for_predicate("works_at"),
+                        durability: 0.7,
                         source_ref: source_ref(),
                     });
                 }
@@ -1085,6 +1247,7 @@ impl Database {
                         object: obj,
                         confidence: 0.75,
                         tags: tags_for_predicate("language"),
+                        durability: 0.8,
                         source_ref: source_ref(),
                     });
                 }
@@ -1101,6 +1264,7 @@ impl Database {
                     object: "concise".into(),
                     confidence: 0.6,
                     tags: tags_for_predicate("verbosity"),
+                    durability: 0.8,
                     source_ref: source_ref(),
                 });
             }
@@ -1114,6 +1278,7 @@ impl Database {
                     object: "detailed".into(),
                     confidence: 0.6,
                     tags: tags_for_predicate("verbosity"),
+                    durability: 0.8,
                     source_ref: source_ref(),
                 });
             }
@@ -1128,6 +1293,12 @@ impl Database {
                     rusqlite::params![pred],
                 );
             }
+            // The raw UPDATEs above bypass the repository methods: invalidate
+            // the text caches (the demoted confidence must be reflected in
+            // prompts/recall) and the embeddings list cache (each UPDATE
+            // fires facts_embed_upd, which deletes the embedding rows).
+            self.cache_invalidate_facts("user");
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
 
         facts
@@ -1138,6 +1309,7 @@ impl Database {
 mod tests {
     use super::{FactSourceRef, UpsertOutcome, fact_effective_confidence};
     use crate::Database;
+    use crate::embeddings::entity_kind;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
@@ -1614,6 +1786,24 @@ mod tests {
         assert_eq!(remaining.len(), 2);
     }
 
+    /// Age every fact past the 1-day flush grace period so decay/flush
+    /// thresholds apply (fresh facts are exempt by design). The raw SQL write
+    /// bypasses the repository methods (and fires the facts_embed_upd
+    /// trigger), so both caches are invalidated here too — otherwise the next
+    /// list_facts would keep serving the fresh rows.
+    fn age_facts(db: &Database, days: i64) {
+        let old = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
+            rusqlite::params![old],
+        )
+        .unwrap();
+        drop(conn);
+        db.cache_invalidate_facts("user");
+        db.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+    }
+
     #[test]
     fn test_flush_low_confidence() {
         let db = create_db();
@@ -1623,6 +1813,7 @@ mod tests {
             .unwrap();
         db.insert_fact("user", "dislikes", "Java", "inferred", 0.3, &[])
             .unwrap();
+        age_facts(&db, 2);
 
         let count = db.flush_low_confidence(0.6).unwrap();
         assert_eq!(count, 2);
@@ -1636,6 +1827,7 @@ mod tests {
         let db = create_db();
         db.insert_fact("user", "likes", "Rust", "user", 0.9, &[])
             .unwrap();
+        age_facts(&db, 2);
 
         let count = db.flush_low_confidence(0.5).unwrap();
         assert_eq!(count, 0);
@@ -1650,11 +1842,37 @@ mod tests {
             .unwrap();
         db.insert_fact("user", "likes", "B", "inferred", 0.2, &[])
             .unwrap();
+        age_facts(&db, 2);
 
         let count = db.flush_low_confidence(1.0).unwrap();
         assert_eq!(count, 2);
         let remaining = db.list_facts().unwrap();
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_flush_exempts_facts_within_grace_period() {
+        let db = create_db();
+        // A brand-new low-durability fact below the flush bar: the grace
+        // period must keep it (a fresh extraction must never be written and
+        // pruned in the same maintenance pass).
+        db.upsert_fact_with_durability(
+            "user",
+            "likes",
+            "Transient",
+            "inferred",
+            0.55,
+            &["preference"],
+            None,
+            0.5,
+        )
+        .unwrap();
+        assert_eq!(db.flush_low_confidence(0.3).unwrap(), 0);
+        assert_eq!(db.list_facts().unwrap().len(), 1);
+        // Once observed long ago, the same fact sinks and is pruned.
+        age_facts(&db, 2);
+        assert_eq!(db.flush_low_confidence(0.3).unwrap(), 1);
+        assert!(db.list_facts().unwrap().is_empty());
     }
 
     #[test]
@@ -1945,6 +2163,40 @@ mod tests {
                 assert!(f.confidence < 0.9, "confidence should be lowered");
             }
         }
+    }
+
+    #[test]
+    fn test_rule_correction_demotion_invalidates_caches() {
+        let db = create_db();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
+            .unwrap();
+        let fact = db.get_facts("user").unwrap().remove(0);
+        db.save_embedding(entity_kind::FACT, &fact.id, "m", &[1.0], "x")
+            .unwrap();
+        // Warm both caches.
+        let _ = db.list_facts().unwrap();
+        let _ = db.list_embeddings(entity_kind::FACT).unwrap();
+
+        // Rule 4 fires (actually + want) but no extraction rule matches, so
+        // the batch is empty — the demotion UPDATE is the only mutation and
+        // must invalidate the caches on its own.
+        let msg = make_message("Actually I want a different tool.");
+        let inferred = db.infer_facts_from_messages(std::slice::from_ref(&msg));
+        assert!(
+            inferred.is_empty(),
+            "correction-only message emits no facts"
+        );
+
+        let facts = db.list_facts().unwrap();
+        assert!(
+            (facts[0].confidence - 0.45).abs() < 1e-9,
+            "demoted confidence must be visible (no stale _facts_all cache), got {}",
+            facts[0].confidence
+        );
+        assert!(
+            db.list_embeddings(entity_kind::FACT).unwrap().is_empty(),
+            "demotion UPDATE fires facts_embed_upd; the list cache must not keep serving the deleted vector"
+        );
     }
 
     #[test]
@@ -2426,5 +2678,124 @@ mod tests {
         assert_eq!(results[0].object, "VSCode");
         let results = db.search_facts("VSCode Coffee").unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_insert_fact_defaults_durability_one() {
+        let db = create_db();
+        let fact = db
+            .insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
+            .unwrap();
+        assert_eq!(fact.durability, 1.0);
+        // Round-trips through the DB.
+        let loaded = db.get_facts("user").unwrap();
+        assert_eq!(loaded[0].durability, 1.0);
+    }
+
+    #[test]
+    fn test_upsert_with_durability_stores_and_merges_max() {
+        let db = create_db();
+        // New fact with a low durability rating (transient observation).
+        db.upsert_fact_with_durability(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.9,
+            &["preference"],
+            None,
+            0.3,
+        )
+        .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts[0].durability, 0.3);
+        // Re-confirmation with a higher durability merges upward.
+        db.upsert_fact_with_durability(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.95,
+            &["preference"],
+            None,
+            0.9,
+        )
+        .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts[0].durability, 0.9);
+        assert_eq!(facts[0].mention_count, 1);
+        // A lower durability never drags an existing durable fact down.
+        db.upsert_fact_with_durability(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.8,
+            &["preference"],
+            None,
+            0.2,
+        )
+        .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts[0].durability, 0.9);
+    }
+
+    #[test]
+    fn test_effective_confidence_scaled_by_durability() {
+        let db = create_db();
+        db.upsert_fact_with_durability(
+            "user",
+            "likes",
+            "Durable",
+            "inferred",
+            0.9,
+            &["preference"],
+            None,
+            1.0,
+        )
+        .unwrap();
+        db.upsert_fact_with_durability(
+            "user",
+            "likes",
+            "Transient",
+            "inferred",
+            0.9,
+            &["preference"],
+            None,
+            0.2,
+        )
+        .unwrap();
+        let facts = db.list_facts().unwrap();
+        let durable = facts.iter().find(|f| f.object == "Durable").unwrap();
+        let transient = facts.iter().find(|f| f.object == "Transient").unwrap();
+        // Same raw confidence, same age — durability alone decides the weight.
+        assert!(
+            (fact_effective_confidence(durable) - 0.9).abs() < 1e-9,
+            "durability 1.0 keeps full weight"
+        );
+        assert!(
+            (fact_effective_confidence(transient) - 0.18).abs() < 1e-9,
+            "durability 0.2 scales the effective confidence to 0.18"
+        );
+        // A low-durability fact sinks below the flush bar while its durable
+        // twin survives. Both facts are aged past the grace period first so
+        // decay-based pruning applies to them.
+        age_facts(&db, 2);
+        let deleted = db.flush_low_confidence(0.3).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining = db.list_facts().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].object, "Durable");
+    }
+
+    #[test]
+    fn test_rule_extraction_carries_durability() {
+        let db = create_db();
+        let msg = make_message("My name is Alice. I like Rust.");
+        let inferred = db.infer_facts_from_messages(std::slice::from_ref(&msg));
+        let name = inferred.iter().find(|f| f.predicate == "name").unwrap();
+        let likes = inferred.iter().find(|f| f.predicate == "likes").unwrap();
+        assert_eq!(name.durability, 1.0);
+        assert_eq!(likes.durability, 0.5);
     }
 }

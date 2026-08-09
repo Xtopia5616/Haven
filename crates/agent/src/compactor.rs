@@ -25,6 +25,14 @@ pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
                 ContentPart::Audio { .. } => total += 500, // rough audio token cost
             }
         }
+        // Reasoning (thinking-mode) is echoed back to the provider on every
+        // request and can dwarf the message text itself (a single turn's
+        // reasoning routinely reaches 10k chars). It must count toward the
+        // context budget or compaction never triggers on reasoning-heavy
+        // conversations, the request body explodes, and providers stall.
+        if let Some(r) = &msg.reasoning {
+            total += estimate_tokens(r);
+        }
         if msg.tool_calls.is_some() {
             total += 50;
         }
@@ -120,9 +128,7 @@ impl ContextCompactor {
     /// Build a summarization prompt from the oldest messages (up to `max_summary_messages`).
     fn build_summary_prompt(prefix: &[CanonicalMessage]) -> String {
         use std::fmt::Write as _;
-        let mut text = String::with_capacity(
-            prefix.len() * 64 + CONVERSATION_SUMMARY_PROMPT.len(),
-        );
+        let mut text = String::with_capacity(prefix.len() * 64 + CONVERSATION_SUMMARY_PROMPT.len());
         text.push_str(CONVERSATION_SUMMARY_PROMPT);
         for msg in prefix {
             let role = match msg.role {
@@ -133,7 +139,7 @@ impl ContextCompactor {
             };
             for part in &msg.content {
                 if let ContentPart::Text(t) = part {
-                    let _ = write!(text, "[{}] {}\n", role, t);
+                    let _ = writeln!(text, "[{}] {}", role, t);
                 }
             }
         }
@@ -208,7 +214,8 @@ impl ContextCompactor {
                 compacted.extend_from_slice(&messages[..system_count]);
                 compacted.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(format!(
-                        "[Compacted summary of previous messages]: {}",
+                        "{} {}",
+                        haven_common::prompts::COMPACTED_SUMMARY_PREFIX,
                         summary
                     ))],
                     None,

@@ -2,26 +2,104 @@ import { writable } from 'svelte/store';
 import { invoke } from './tauri.js';
 import logger from '$lib/logger.js';
 
-export const recordingStore = writable({
-	isRecording: false,
-	isToggle: false,
-	duration: 0,
-});
-
 export const taskStore = writable([]);
 
-export const settingsStore = writable({
-	llm: {
-		small_model: { provider: 'openai', model: 'gpt-4o-mini', temperature: 0 },
-		default_model: { provider: 'anthropic', model: 'claude-sonnet-4-20250514', temperature: 0.7 },
-		balanced_model: { provider: 'local', model: 'llama3', temperature: 0.7 },
-		image_model: { provider: 'openai', model: 'gpt-4o', temperature: 0.2 },
-		audio_model: { provider: 'openai', model: 'gpt-4o-audio-preview', temperature: 0 },
-		embedding_model: { provider: 'openai', model: 'text-embedding-3-small', temperature: 0 },
-	},
-	hotkey: { key_binding: 'Ctrl+Shift+Space', mode: 'toggle', mute_hotkey: null },
-	autostart: false,
-});
+/**
+ * Activity registry (background jobs + pending reminders): `{ [id]: Activity }`
+ * where each entry mirrors a row from the backend's `list_activities`:
+ *   { id, kind: 'job'|'reminder', task_id?, status?, started_at?,
+ *     finished_at?, due_at?, preview?, output?, error?, title?, body?, ... }
+ * Job rows keep `job_id` and status fields; reminder rows keep `id` and
+ * due_at. `id` is normalized to the entry key for both.
+ * Kept in sync by the `activity:created` / `activity:updated` /
+ * `activity:output` / `activity:finished` events (registered in
+ * +layout.svelte, hydrated via `refreshActivities`).
+ */
+export const activityStore = writable({});
+
+/** Cap terminal entries so a long session cannot grow the store unbounded. */
+const ACTIVITY_STORE_MAX = 64;
+
+function activityKey(payload) {
+	return payload?.id || payload?.job_id || null;
+}
+
+export function upsertActivity(payload) {
+	const key = activityKey(payload);
+	if (!key) return;
+	activityStore.update((m) => {
+		const prev = m[key] || {};
+		const next = { ...prev, ...payload, id: key, kind: payload.kind || prev.kind || (payload.job_id ? 'job' : 'reminder') };
+		// Terminal entries keep their full payload (output/error) so the
+		// panel can show the result; only the store size is bounded below.
+		const entries = { ...m, [key]: next };
+		const ids = Object.keys(entries);
+		if (ids.length > ACTIVITY_STORE_MAX) {
+			const excess = ids.length - ACTIVITY_STORE_MAX;
+			for (const id of ids.slice(0, excess)) delete entries[id];
+		}
+		return entries;
+	});
+}
+
+/** Drop an activity (fired or cancelled reminder, job removed server-side). */
+export function removeActivity(id) {
+	if (!id) return;
+	activityStore.update((m) => {
+		if (!(id in m)) return m;
+		const next = { ...m };
+		delete next[id];
+		return next;
+	});
+}
+
+export async function refreshActivities() {
+	try {
+		const rows = await invoke('list_activities');
+		if (!Array.isArray(rows)) return;
+		// Replace the registry: entries missing from the board were removed
+		// server-side (a task ending cancels its jobs without terminal
+		// events, fired reminders leave the pending list), so they must not
+		// linger as stale rows.
+		activityStore.update((m) => {
+			const next = {};
+			for (const row of rows) {
+				const key = activityKey(row);
+				if (key) next[key] = { ...(m[key] || {}), ...row, id: key };
+			}
+			return next;
+		});
+	} catch (e) {
+		logger.warn('stores', 'refreshActivities failed', e);
+	}
+}
+
+export async function cancelActivity(id, kind = 'job') {
+	return invoke('cancel_activity', { activityId: id, kind });
+}
+
+/**
+ * Fired-reminder history (and terminal job history) from the persisted
+ * activity table, newest first. Returns the raw rows for the panel's history
+ * tab; the caller owns the list (no store backing — it is fetched on demand).
+ * @param {string} [kind]
+ * @param {number} [limit]
+ * @returns {Promise<Array>}
+ */
+export async function refreshActivityHistory(kind = 'reminder', limit = 50) {
+	try {
+		const rows = await invoke('list_activity_history', { kind, limit });
+		return Array.isArray(rows) ? rows : [];
+	} catch (e) {
+		logger.warn('stores', 'refreshActivityHistory failed', e);
+		return [];
+	}
+}
+
+/** Delete a persisted activity row (history cleanup) by id. */
+export async function deleteActivity(id) {
+	return invoke('delete_activity', { activityId: id });
+}
 
 export const notificationStore = writable([]);
 
@@ -161,7 +239,22 @@ function _moveMessages(m, fromKey, toKey) {
 	if (!list || list.length === 0) return m;
 	const next = { ...m };
 	next[fromKey] = [];
-	next[toKey] = [...(next[toKey] || []), ...list];
+	// Migrated messages (adoptDraftMessages / moveTaskMessages) are the user
+	// input that CREATED the target task, so they logically precede any agent
+	// content already in `toKey`. The backend can stream the first
+	// "Thinking…" reasoning block before the task:created handler migrates the
+	// optimistic user bubble; appending (old behavior) then renders the user's
+	// opening message AFTER the reasoning. Prepend instead so the user input
+	// always leads the conversation.
+	//
+	// The task was created because the agent accepted this input, so the
+	// migrated user message(s) are already "received": mark them so the ✓
+	// shows on the very first bubble too (the `agent:supplement` event only
+	// covers mid-turn steering, never the opening message).
+	next[toKey] = [
+		...list.map((x) => (x.role === 'user' ? { ...x, received: true } : x)),
+		...(next[toKey] || []),
+	];
 	return next;
 }
 
@@ -189,6 +282,22 @@ export const reviewTargetStore = writable(null);
 // Active task ID that persists across SvelteKit page navigations so the
 // send handler and voice recording can supplement the same task.
 export const activeTaskIdStore = writable(null);
+
+// localStorage key recording an explicit "start a fresh conversation" intent
+// that survives app restarts (set by the new-task button, cleared when the
+// intent is fulfilled or abandoned). Mirrored into `newTaskIntentStore` for
+// the live session.
+export const NEW_TASK_INTENT_KEY = 'haven.no_auto_restore';
+
+/**
+ * Sticky intent flag: the user explicitly asked for a NEW task (new-task
+ * button). While set, NO event-driven path may auto-assign an existing task
+ * to `activeTaskId` (loadTasks auto-assign, task:created, auto-restore) —
+ * otherwise the next message would append to the old conversation. Cleared
+ * only when the intent is fulfilled (a new task was created by the user's
+ * own submission) or abandoned (explicit switch to another task).
+ */
+export const newTaskIntentStore = writable(false);
 
 /**
  * Per-task token usage + cost reported by the agent. Keyed by task id.
@@ -384,17 +493,4 @@ export function updateModelState(state, { idleTimeoutMs } = /** @type {{ idleTim
 export function clearModelStateTimer() {
 	if (modelStateTimer) clearTimeout(modelStateTimer);
 	modelStateTimer = null;
-}
-
-// Skills store for the tools page skills tab.
-export const skillsStore = writable([]);
-
-export async function refreshSkills() {
-	try {
-		const result = await invoke('list_skills');
-		skillsStore.set(result || []);
-	} catch (e) {
-		console.warn('[stores] refreshSkills error:', e);
-		skillsStore.set([]);
-	}
 }

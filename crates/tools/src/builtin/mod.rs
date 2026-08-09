@@ -37,7 +37,11 @@ pub use reminder::{ReminderCenter, ReminderFired, ReminderMode, ReminderTool};
 pub use self_tool::{SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
-/// when set, else the global `context_limits.max_tool_output_chars`.
+/// when set, else the global observation budget
+/// `context_limits.max_observation_chars`. The observation budget is the
+/// ONLY output limit: tools truncate their own output to it, and the loop
+/// applies the same budget as a safety net for adapters, so there is no
+/// double truncation with different values.
 fn tool_output_cap(
     settings: &HashMap<String, haven_common::config::ToolConfig>,
     name: &str,
@@ -69,7 +73,7 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(ask::AskTool));
     tools.push(Arc::new(file::FilesTool::new(
         router,
-        tool_output_cap(settings, "files", limits.max_tool_output_chars),
+        tool_output_cap(settings, "files", limits.max_observation_chars),
         limits.file_read_max_chars,
         limits.file_line_span,
         limits.file_max_line_chars,
@@ -86,18 +90,18 @@ pub async fn register_builtin_tools(
         ),
     )));
     tools.push(Arc::new(process::ProcessTool {
-        max_output_chars: tool_output_cap(settings, "process", limits.max_tool_output_chars),
+        max_output_chars: tool_output_cap(settings, "process", limits.max_observation_chars),
     }));
     tools.push(Arc::new(clipboard::ClipboardTool::new(
         clipboard_history,
-        tool_output_cap(settings, "clipboard", limits.max_tool_output_chars),
+        tool_output_cap(settings, "clipboard", limits.max_observation_chars),
         limits.clipboard_history_entries,
         limits.clipboard_history_max_entries,
         limits.clipboard_entry_max_chars,
     )));
     tools.push(Arc::new(shell::ShellTool {
         jobs: background_jobs.clone(),
-        max_output_chars: tool_output_cap(settings, "shell", limits.max_tool_output_chars),
+        max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
     }));
     tools.push(Arc::new(job_status::JobStatusTool {
         jobs: background_jobs.clone(),
@@ -106,10 +110,15 @@ pub async fn register_builtin_tools(
         jobs: background_jobs,
     }));
     tools.push(Arc::new(input::InputTool));
-    tools.push(Arc::new(reminder::ReminderTool { center: reminders }));
+    tools.push(Arc::new(reminder::ReminderTool {
+        center: reminders,
+        // Weak registry probe so `set` can validate tool_name / risk at
+        // schedule time; taken before `registry` is moved into SelfTool.
+        registry: Some(registry.probe()),
+    }));
     tools.push(Arc::new(system::SystemInfoTool));
     tools.push(Arc::new(env_var::EnvTool {
-        max_output_chars: tool_output_cap(settings, "env", limits.max_tool_output_chars),
+        max_output_chars: tool_output_cap(settings, "env", limits.max_observation_chars),
     }));
     tools.push(Arc::new(window::WindowTool));
     tools.push(Arc::new(registry::RegistryTool));
@@ -163,16 +172,16 @@ mod tests {
 
     #[test]
     fn tool_output_cap_falls_back_to_global_default() {
-        assert_eq!(tool_output_cap(&HashMap::new(), "shell", 20_000), 20_000);
+        assert_eq!(tool_output_cap(&HashMap::new(), "shell", 8_000), 8_000);
         assert_eq!(tool_output_cap(&HashMap::new(), "files", 5_000), 5_000);
     }
 
     #[test]
     fn tool_output_cap_prefers_per_tool_override() {
         let settings = settings_with("shell", Some(1_000));
-        assert_eq!(tool_output_cap(&settings, "shell", 20_000), 1_000);
+        assert_eq!(tool_output_cap(&settings, "shell", 8_000), 1_000);
         // Tools without a settings entry still get the global default.
-        assert_eq!(tool_output_cap(&settings, "files", 20_000), 20_000);
+        assert_eq!(tool_output_cap(&settings, "files", 8_000), 8_000);
     }
 
     #[test]

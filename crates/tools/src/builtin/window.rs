@@ -105,6 +105,27 @@ mod imp {
     use windows_sys::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+    /// Read a window's visible title text, or None if the window is not
+    /// visible or has no title. Shared by window enumeration and search.
+    /// Callers must be inside an `unsafe` context.
+    fn visible_window_title(hwnd: HWND) -> Option<String> {
+        unsafe {
+            if IsWindowVisible(hwnd) == FALSE {
+                return None;
+            }
+            let mut title_buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 512);
+            if len == 0 {
+                return None;
+            }
+            Some(
+                OsString::from_wide(&title_buf[..len as usize])
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        }
+    }
+
     pub fn enumerate_windows(filter_pid: Option<u32>) -> anyhow::Result<Vec<Value>> {
         let mut windows: Vec<Value> = Vec::new();
 
@@ -112,18 +133,9 @@ mod imp {
             unsafe {
                 let windows = &mut *(lparam as *mut Vec<Value>);
 
-                if IsWindowVisible(hwnd) == FALSE {
+                let Some(title) = visible_window_title(hwnd) else {
                     return TRUE;
-                }
-
-                let mut title_buf = [0u16; 512];
-                let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 512);
-                if len == 0 {
-                    return TRUE;
-                }
-                let title = OsString::from_wide(&title_buf[..len as usize])
-                    .to_string_lossy()
-                    .to_string();
+                };
 
                 let mut pid: u32 = 0;
                 GetWindowThreadProcessId(hwnd, &mut pid);
@@ -207,17 +219,9 @@ mod imp {
         extern "system" fn search_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
             unsafe {
                 let (found_ptr, substr_ptr) = *(lparam as *mut (*mut HWND, *const u16));
-                if IsWindowVisible(hwnd) == FALSE {
+                let Some(title) = visible_window_title(hwnd) else {
                     return TRUE;
-                }
-                let mut title_buf = [0u16; 512];
-                let len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), 512);
-                if len == 0 {
-                    return TRUE;
-                }
-                let title = OsString::from_wide(&title_buf[..len as usize])
-                    .to_string_lossy()
-                    .to_string();
+                };
 
                 let substr = String::from_utf16_lossy(std::slice::from_raw_parts(substr_ptr, {
                     let mut i = 0;

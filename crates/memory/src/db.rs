@@ -1,8 +1,151 @@
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+/// Pooled SQLite connections for a file-backed database (WAL mode: one
+/// writer + many readers can proceed concurrently). Sized comfortably above
+/// the task concurrency ceiling plus the direct (non-`run_blocking`) DB
+/// callers (tools, Tauri commands), so a busy step rarely blocks on
+/// checkout while other connections are still doing real work.
+const FILE_POOL_MAX_CONNECTIONS: usize = 16;
+
+/// A tiny bounded pool of rusqlite connections. The previous design wrapped a
+/// SINGLE connection in a `Mutex`, which serialized every DB access across all
+/// concurrent tasks (and background jobs / title generation / memory
+/// maintenance) on one global lock. SQLite in WAL mode supports one writer
+/// plus several concurrent readers, so a small pool lets parallel tasks' reads
+/// (message history, step lists, snapshots) run side-by-side instead of
+/// queueing on the mutex.
+///
+/// `PooledConnection` hands a checked-out connection back to the pool on drop;
+/// `get()` blocks (condvar) when the pool is exhausted, which is fine because
+/// `Database::run_blocking` already moves DB work off the async runtime, and
+/// per-task DB use is short-lived.
+struct ConnectionPool {
+    state: Mutex<PoolState>,
+    cv: Condvar,
+    max: usize,
+    opener: Box<dyn Fn() -> anyhow::Result<Connection> + Send + Sync>,
+}
+
+struct PoolState {
+    idle: Vec<Connection>,
+    active: usize,
+}
+
+impl ConnectionPool {
+    /// Build a pool with an already-open connection (the bootstrap connection
+    /// that ran migrations). Required for in-memory databases: a shared-cache
+    /// `mode=memory` database is destroyed when its LAST connection closes,
+    /// so dropping the bootstrap before the pool opened its own would delete
+    /// the migrated schema. For file databases the bootstrap is simply the
+    /// first pooled connection.
+    fn with_initial(
+        max: usize,
+        opener: Box<dyn Fn() -> anyhow::Result<Connection> + Send + Sync>,
+        initial: Option<Connection>,
+    ) -> Self {
+        let mut idle = Vec::new();
+        if let Some(conn) = initial {
+            idle.push(conn);
+        }
+        Self {
+            state: Mutex::new(PoolState { idle, active: 0 }),
+            cv: Condvar::new(),
+            max,
+            opener,
+        }
+    }
+
+    fn get(&self) -> anyhow::Result<PooledConnection<'_>> {
+        let mut st = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database pool lock poisoned"))?;
+        loop {
+            if let Some(conn) = st.idle.pop() {
+                st.active += 1;
+                return Ok(PooledConnection {
+                    pool: self,
+                    conn: Some(conn),
+                });
+            }
+            if st.active < self.max {
+                st.active += 1;
+                drop(st);
+                let conn = match (self.opener)() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let mut st = self
+                            .state
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("database pool lock poisoned"))?;
+                        st.active -= 1;
+                        self.cv.notify_one();
+                        return Err(e);
+                    }
+                };
+                return Ok(PooledConnection {
+                    pool: self,
+                    conn: Some(conn),
+                });
+            }
+            // All connections are checked out. Some callers reach `conn()`
+            // directly from async runtime threads (tools, commands), so a
+            // long wait here occupies a tokio worker; log once per 30s to
+            // keep the stall observable instead of silently hanging.
+            let (new_st, timeout) = self
+                .cv
+                .wait_timeout(st, Duration::from_secs(30))
+                .map_err(|_| anyhow::anyhow!("database pool lock poisoned"))?;
+            st = new_st;
+            if timeout.timed_out() {
+                tracing::warn!(
+                    "database pool exhausted ({} connections in use) for 30s; \
+                     the waiting caller is stalled on a runtime thread",
+                    self.max
+                );
+            }
+        }
+    }
+}
+
+/// A checked-out pool connection. Returns itself to the pool on drop so the
+/// connection (and its prepared-statement caches) is reused, not reopened.
+pub struct PooledConnection<'p> {
+    pool: &'p ConnectionPool,
+    conn: Option<Connection>,
+}
+
+impl Deref for PooledConnection<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn
+            .as_ref()
+            .expect("pooled connection already returned")
+    }
+}
+
+impl Drop for PooledConnection<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            // Defensive rollback: a caller whose transaction failed midway
+            // (e.g. `clear_tasks` propagates errors without ROLLBACK) would
+            // otherwise re-pool a connection with a write transaction still
+            // open — subsequent statements would run inside the abandoned
+            // transaction and the held write lock would block the other
+            // pooled connections. Fails silently when no transaction is open.
+            let _ = conn.execute_batch("ROLLBACK");
+            let mut st = self.pool.state.lock().unwrap();
+            st.idle.push(conn);
+            st.active -= 1;
+            self.pool.cv.notify_one();
+        }
+    }
+}
 
 #[derive(Clone)]
 struct CacheEntry<T: Clone> {
@@ -15,6 +158,7 @@ struct QueryCache {
     messages: Option<CacheEntry<Vec<crate::repositories::messages::Message>>>,
     tasks: Option<CacheEntry<Vec<crate::repositories::tasks::Task>>>,
     facts: Option<CacheEntry<Vec<crate::repositories::facts::Fact>>>,
+    embeddings: Option<CacheEntry<Vec<crate::embeddings::EmbeddedText>>>,
     // Bumped on every cache_invalidate_* so a stale cache_put_* (whose DB
     // query ran before an invalidation) can detect it was superseded and
     // skip the write instead of overwriting fresh state with stale data.
@@ -22,18 +166,35 @@ struct QueryCache {
 }
 
 pub struct Database {
-    conn: Mutex<Connection>,
+    pool: ConnectionPool,
     cache: Mutex<HashMap<String, QueryCache>>,
 }
 
 impl Database {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         tracing::info!("opening database at {}", path.display());
-        let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        crate::migrations::run_migrations(&conn)?;
+        // Bootstrap connection: set WAL and run migrations exactly once (the
+        // schema is versioned via `PRAGMA user_version`, so every pooled
+        // connection later sees an already-migrated database). The bootstrap
+        // is seeded into the pool and is its most-reused connection, so it
+        // gets the same 30s busy timeout as the opener connections.
+        let bootstrap = Connection::open(path)?;
+        bootstrap.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        bootstrap.busy_timeout(Duration::from_secs(30))?;
+        crate::migrations::run_migrations(&bootstrap)?;
+        let path = path.to_path_buf();
+        let pool = ConnectionPool::with_initial(
+            FILE_POOL_MAX_CONNECTIONS,
+            Box::new(move || {
+                let conn = Connection::open(&path)?;
+                conn.busy_timeout(Duration::from_secs(30))?;
+                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                Ok(conn)
+            }),
+            Some(bootstrap),
+        );
         Ok(Self {
-            conn: Mutex::new(conn),
+            pool,
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -41,17 +202,48 @@ impl Database {
     #[cfg(test)]
     pub fn open_in_memory() -> anyhow::Result<Self> {
         tracing::debug!("opening in-memory database");
-        let conn = Connection::open_in_memory()?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        crate::migrations::run_migrations(&conn)?;
+        // Shared-cache URI so every pooled connection sees the SAME in-memory
+        // database (a plain `:memory:` would give each connection its own
+        // empty DB — migrations on the bootstrap connection would be invisible
+        // to the pooled one). The unique name keeps parallel tests from
+        // sharing a database.
+        let uri = format!(
+            "file:hvnmem-{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4()
+        );
+        let flags = rusqlite::OpenFlags::SQLITE_OPEN_URI
+            | rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_CREATE;
+        let bootstrap = Connection::open_with_flags(&uri, flags)?;
+        bootstrap.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        bootstrap.busy_timeout(Duration::from_secs(30))?;
+        crate::migrations::run_migrations(&bootstrap)?;
+        // In-memory shared-cache databases use a single-writer locking model
+        // where a second writer fails with SQLITE_LOCKED (not BUSY, which
+        // busy_timeout handles), so cap the pool at one connection — tests get
+        // the same serialized semantics as the pre-pool era, while the
+        // file-backed path (production) gets real read concurrency.
+        let uri2 = uri.clone();
+        let pool = ConnectionPool::with_initial(
+            1,
+            Box::new(move || {
+                let conn = Connection::open_with_flags(&uri2, flags)?;
+                conn.busy_timeout(Duration::from_secs(30))?;
+                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                Ok(conn)
+            }),
+            Some(bootstrap),
+        );
         Ok(Self {
-            conn: Mutex::new(conn),
+            pool,
             cache: Mutex::new(HashMap::new()),
         })
     }
 
-    pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().expect("database lock poisoned")
+    pub fn conn(&self) -> PooledConnection<'_> {
+        self.pool
+            .get()
+            .expect("database connection checkout failed")
     }
 
     /// Run a blocking DB closure on the tokio blocking thread pool. Keeps
@@ -92,6 +284,39 @@ impl Database {
             .unwrap_or(0)
     }
 
+    /// Shared write path for every `cache_put_*`: upsert the key's
+    /// `QueryCache` entry, skip the write if the generation moved (a
+    /// concurrent invalidation superseded this query's result), then store
+    /// `data` into the slot chosen by `set`.
+    fn cache_put<T: Clone + Send>(
+        &self,
+        key: String,
+        data: T,
+        ttl_secs: u64,
+        expected_gen: u64,
+        set: impl FnOnce(&mut QueryCache, CacheEntry<T>),
+    ) {
+        if let Ok(mut cache) = self.cache.lock() {
+            let qc = cache.entry(key).or_insert(QueryCache {
+                messages: None,
+                tasks: None,
+                facts: None,
+                embeddings: None,
+                generation: expected_gen,
+            });
+            if qc.generation != expected_gen {
+                return;
+            }
+            set(
+                qc,
+                CacheEntry {
+                    expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
+                    data,
+                },
+            );
+        }
+    }
+
     pub fn cache_put_messages(
         &self,
         task_id: &str,
@@ -99,21 +324,13 @@ impl Database {
         ttl_secs: u64,
         expected_gen: u64,
     ) {
-        if let Ok(mut cache) = self.cache.lock() {
-            let qc = cache.entry(task_id.to_string()).or_insert(QueryCache {
-                messages: None,
-                tasks: None,
-                facts: None,
-                generation: expected_gen,
-            });
-            if qc.generation != expected_gen {
-                return;
-            }
-            qc.messages = Some(CacheEntry {
-                expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
-                data,
-            });
-        }
+        self.cache_put(
+            task_id.to_string(),
+            data,
+            ttl_secs,
+            expected_gen,
+            |qc, entry| qc.messages = Some(entry),
+        );
     }
 
     pub fn cache_get_tasks(&self) -> Option<Vec<crate::repositories::tasks::Task>> {
@@ -132,21 +349,13 @@ impl Database {
         ttl_secs: u64,
         expected_gen: u64,
     ) {
-        if let Ok(mut cache) = self.cache.lock() {
-            let qc = cache.entry("_tasks".to_string()).or_insert(QueryCache {
-                messages: None,
-                tasks: None,
-                facts: None,
-                generation: expected_gen,
-            });
-            if qc.generation != expected_gen {
-                return;
-            }
-            qc.tasks = Some(CacheEntry {
-                expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
-                data,
-            });
-        }
+        self.cache_put(
+            "_tasks".to_string(),
+            data,
+            ttl_secs,
+            expected_gen,
+            |qc, entry| qc.tasks = Some(entry),
+        );
     }
 
     pub fn cache_get_facts(&self, subject: &str) -> Option<Vec<crate::repositories::facts::Fact>> {
@@ -167,22 +376,13 @@ impl Database {
         ttl_secs: u64,
         expected_gen: u64,
     ) {
-        if let Ok(mut cache) = self.cache.lock() {
-            let key = format!("_facts_{}", subject);
-            let qc = cache.entry(key).or_insert(QueryCache {
-                messages: None,
-                tasks: None,
-                facts: None,
-                generation: expected_gen,
-            });
-            if qc.generation != expected_gen {
-                return;
-            }
-            qc.facts = Some(CacheEntry {
-                expiry: Instant::now() + std::time::Duration::from_secs(ttl_secs),
-                data,
-            });
-        }
+        self.cache_put(
+            format!("_facts_{}", subject),
+            data,
+            ttl_secs,
+            expected_gen,
+            |qc, entry| qc.facts = Some(entry),
+        );
     }
 
     pub fn cache_invalidate_messages(&self, task_id: &str) {
@@ -203,11 +403,97 @@ impl Database {
         }
     }
 
+    /// Cached copy of the full facts table (`list_facts`), keyed separately
+    /// from the per-subject cache. Invalidated together with the subject
+    /// cache on any fact mutation, so the global list cannot drift from the
+    /// subject views.
+    pub fn cache_get_facts_all(&self) -> Option<Vec<crate::repositories::facts::Fact>> {
+        let cache = self.cache.lock().ok()?;
+        let entry = cache.get("_facts_all")?.facts.as_ref()?;
+        if entry.expiry > Instant::now() {
+            Some(entry.data.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn cache_put_facts_all(
+        &self,
+        data: Vec<crate::repositories::facts::Fact>,
+        ttl_secs: u64,
+        expected_gen: u64,
+    ) {
+        self.cache_put(
+            "_facts_all".to_string(),
+            data,
+            ttl_secs,
+            expected_gen,
+            |qc, entry| qc.facts = Some(entry),
+        );
+    }
+
     pub fn cache_invalidate_facts(&self, subject: &str) {
         if let Ok(mut cache) = self.cache.lock() {
+            // The subject view...
             let key = format!("_facts_{}", subject);
             if let Some(qc) = cache.get_mut(&key) {
                 qc.facts = None;
+                qc.generation = qc.generation.wrapping_add(1);
+            }
+            // ...and the all-subjects list: a mutation to ANY subject makes
+            // the global list stale too.
+            if let Some(qc) = cache.get_mut("_facts_all") {
+                qc.facts = None;
+                qc.generation = qc.generation.wrapping_add(1);
+            }
+        }
+    }
+
+    /// Cached copy of one memory domain's embedding list (`list_embeddings`).
+    /// Keyed by entity_type so vector recall skips the full-table read + blob
+    /// decode on every query; invalidated on any embedding write.
+    pub fn cache_get_embeddings(
+        &self,
+        entity_type: &str,
+    ) -> Option<Vec<crate::embeddings::EmbeddedText>> {
+        let cache = self.cache.lock().ok()?;
+        let key = format!("_embeddings_{}", entity_type);
+        let entry = cache.get(&key)?.embeddings.as_ref()?;
+        if entry.expiry > Instant::now() {
+            Some(entry.data.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn cache_put_embeddings(
+        &self,
+        entity_type: &str,
+        data: Vec<crate::embeddings::EmbeddedText>,
+        ttl_secs: u64,
+        expected_gen: u64,
+    ) {
+        self.cache_put(
+            format!("_embeddings_{}", entity_type),
+            data,
+            ttl_secs,
+            expected_gen,
+            |qc, entry| qc.embeddings = Some(entry),
+        );
+    }
+
+    /// Invalidate one domain's embeddings list cache. Called from the fact
+    /// UPDATE/DELETE paths (the facts_embed_del/upd triggers delete embedding
+    /// rows directly in SQL) and from every embedding write — without this
+    /// the cached list would keep serving removed/stale vectors (with old
+    /// surface text) for the whole TTL. Deliberately NOT called on plain fact
+    /// INSERTs — those fire no trigger and leave the embedding rows
+    /// untouched, so invalidating would only thrash the cache.
+    pub fn cache_invalidate_embeddings(&self, entity_type: &str) {
+        if let Ok(mut cache) = self.cache.lock() {
+            let key = format!("_embeddings_{}", entity_type);
+            if let Some(qc) = cache.get_mut(&key) {
+                qc.embeddings = None;
                 qc.generation = qc.generation.wrapping_add(1);
             }
         }
@@ -260,6 +546,7 @@ mod tests {
             mention_count: 0,
             last_seen_at: Some("2026-01-01T00:00:00Z".into()),
             source_ref: None,
+            durability: 1.0,
         }
     }
 

@@ -9,9 +9,12 @@ pub use openai::OpenAiAdapter;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
 use haven_common::config::ModelEndpoint;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::client::LlmClient;
+use crate::client::{LlmClient, http_status_to_error};
+use crate::types::{LlmError, StreamChunk};
 
 /// Resolve the wire protocol style for an endpoint. An explicit `api_style`
 /// wins; otherwise the style is derived from `provider`.
@@ -46,6 +49,152 @@ pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
             endpoint.clone(),
         )),
         _ => Box::new(openai::OpenAiAdapter::new(endpoint.clone())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared HTTP plumbing for every provider adapter
+// ---------------------------------------------------------------------------
+
+/// Build the reqwest client with proxy support (§2.5) and connection-pool
+/// tuning (§5.5). Identical for every adapter.
+pub(crate) fn build_client(endpoint: &ModelEndpoint) -> reqwest::Client {
+    let mut builder = crate::client::http_client_builder();
+
+    // §2.5: proxy support
+    if let Some(ref proxy_url) = endpoint.proxy_url
+        && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
+    {
+        if let Some(ref no_proxy) = endpoint.no_proxy {
+            let proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy));
+            builder = builder.proxy(proxy);
+        } else {
+            builder = builder.proxy(proxy);
+        }
+    }
+
+    // §5.5: connection pool tuning
+    builder = builder
+        .pool_max_idle_per_host(5)
+        .pool_idle_timeout(Duration::from_secs(90));
+
+    builder.build().unwrap_or_default()
+}
+
+/// Shared JSON request headers plus provider auth.
+///
+/// `default_header` / `default_uses_prefix` describe the provider's default
+/// auth scheme, used when the endpoint does not customize
+/// `auth_header_name`/`auth_header_prefix`:
+/// - Anthropic: `x-api-key: <key>` (no prefix)
+/// - Gemini: `x-goog-api-key: <key>` (no prefix)
+/// - OpenAI-style: `Authorization: Bearer <key>` (prefix)
+///
+/// A customized scheme always wins and sends `<prefix> <key>` under the
+/// custom header name (§2.15).
+pub(crate) fn build_headers(
+    endpoint: &ModelEndpoint,
+    default_header: &str,
+    default_uses_prefix: bool,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if endpoint.api_key.is_empty() {
+        return headers;
+    }
+    let customized = endpoint.auth_header_name != "Authorization"
+        || endpoint.auth_header_prefix != "Bearer";
+    if customized {
+        let auth = format!(
+            "{} {}",
+            endpoint.auth_header_prefix, endpoint.api_key
+        );
+        if let Ok(v) = HeaderValue::from_str(&auth) {
+            let name = endpoint
+                .auth_header_name
+                .parse::<reqwest::header::HeaderName>()
+                .unwrap_or(reqwest::header::AUTHORIZATION);
+            headers.insert(name, v);
+        }
+    } else {
+        let value = if default_uses_prefix {
+            format!("Bearer {}", endpoint.api_key)
+        } else {
+            endpoint.api_key.clone()
+        };
+        if let Ok(v) = HeaderValue::from_str(&value)
+            && let Ok(name) = default_header.parse::<reqwest::header::HeaderName>()
+        {
+            headers.insert(name, v);
+        }
+    }
+    headers
+}
+
+/// Send a prepared request and turn non-success statuses into a structured
+/// `LlmError`, extracting `Retry-After` (§2.3) before consuming the body.
+/// Returns the response for the caller to parse on success.
+pub(crate) async fn send_request(
+    req: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, LlmError> {
+    let resp = req.send().await.map_err(LlmError::from)?;
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    // §2.3: extract Retry-After header before consuming body
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            // Try seconds first, then HTTP-date
+            s.parse::<u64>().ok().or_else(|| {
+                // HTTP-date: not commonly used; log and fall back to None
+                tracing::warn!("Retry-After as HTTP-date not yet supported: {}", s);
+                None
+            })
+            .map(Duration::from_secs)
+        });
+    let txt = resp.text().await.unwrap_or_default();
+    Err(http_status_to_error(status, &txt, retry_after))
+}
+
+/// Shared health check: GET the models URL and classify the status.
+pub(crate) async fn health_check_request(
+    client: &reqwest::Client,
+    url: &str,
+    headers: HeaderMap,
+    timeout_secs: u64,
+) -> Result<(), LlmError> {
+    let resp = client
+        .get(url)
+        .headers(headers)
+        .timeout(Duration::from_secs(timeout_secs.min(7)))
+        .send()
+        .await
+        .map_err(LlmError::from)?;
+    if resp.status().is_success() {
+        Ok(())
+    } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
+        Err(LlmError::Auth(format!("status {}", resp.status())))
+    } else {
+        Err(LlmError::ServerError(format!("status {}", resp.status())))
+    }
+}
+
+/// An empty `StreamChunk` — the "no payload" baseline emitted by every
+/// adapter's stream unfolding.
+pub(crate) fn empty_chunk() -> StreamChunk {
+    StreamChunk {
+        text: None,
+        tool_calls: Vec::new(),
+        finish_reason: None,
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
     }
 }
 

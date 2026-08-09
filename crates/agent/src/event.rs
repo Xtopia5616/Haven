@@ -123,6 +123,42 @@ pub trait AgentEventEmitter: Send + Sync {
     async fn emit(&self, event: AgentEvent);
 }
 
+/// Bounded-channel emitter wrapper: `emit` becomes a `try_send` into an
+/// in-memory queue drained by a dedicated consumer task, so producers (the
+/// ReAct loop, chunk batchers, job/reminder consumers) never await the
+/// subscriber chain (Tauri IPC, toast logic, log writers). The queue is sized
+/// far above the per-step event volume and chunk deltas are already
+/// micro-batched upstream, so drops are a logged last resort, not a normal
+/// path. Ordering within one producer is preserved (mpsc FIFO); concurrent
+/// producers interleave, exactly as with direct awaited emits.
+pub struct BufferedEmitter {
+    tx: tokio::sync::mpsc::Sender<AgentEvent>,
+}
+
+impl BufferedEmitter {
+    pub fn new(capacity: usize, inner: Arc<dyn AgentEventEmitter>) -> Arc<Self> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(capacity);
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                inner.emit(ev).await;
+            }
+        });
+        Arc::new(Self { tx })
+    }
+}
+
+#[async_trait]
+impl AgentEventEmitter for BufferedEmitter {
+    async fn emit(&self, event: AgentEvent) {
+        if self.tx.try_send(event).is_err() {
+            tracing::warn!(
+                "event buffer full (capacity {}), dropping event",
+                self.tx.capacity()
+            );
+        }
+    }
+}
+
 /// Multi-subscriber fan-out for `AgentEventEmitter`. Itself implements
 /// `AgentEventEmitter`, so a single bus can be installed via
 /// `EventDispatcher::set_emitter` while any number of independent subscribers
@@ -567,11 +603,19 @@ mod tests {
         }
     }
 
+    fn collector_emitter() -> Arc<CollectorEmitter> {
+        Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn collector_emitters() -> (Arc<CollectorEmitter>, Arc<CollectorEmitter>) {
+        (collector_emitter(), collector_emitter())
+    }
+
     #[tokio::test]
     async fn batcher_aggregates_into_fewer_emits_and_preserves_content() {
-        let emitter: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
-            events: Mutex::new(Vec::new()),
-        });
+        let emitter = collector_emitter();
         let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
@@ -648,9 +692,7 @@ mod tests {
 
     #[tokio::test]
     async fn batcher_flushes_on_max_bytes_threshold() {
-        let emitter: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
-            events: Mutex::new(Vec::new()),
-        });
+        let emitter = collector_emitter();
         let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
@@ -674,12 +716,7 @@ mod tests {
     #[tokio::test]
     async fn event_bus_fans_out_to_all_subscribers() {
         let bus = Arc::new(EventBus::new());
-        let a: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
-            events: Mutex::new(Vec::new()),
-        });
-        let b: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
-            events: Mutex::new(Vec::new()),
-        });
+        let (a, b) = collector_emitters();
         bus.subscribe("a", a.clone()).await;
         bus.subscribe("b", b.clone()).await;
 
@@ -718,12 +755,7 @@ mod tests {
     #[tokio::test]
     async fn event_bus_subscribe_replaces_existing_id() {
         let bus = Arc::new(EventBus::new());
-        let a: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
-            events: Mutex::new(Vec::new()),
-        });
-        let b: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
-            events: Mutex::new(Vec::new()),
-        });
+        let (a, b) = collector_emitters();
         bus.subscribe("a", a.clone()).await;
         let prev = bus.subscribe("a", b.clone()).await;
         assert!(prev.is_some());
@@ -760,5 +792,80 @@ mod tests {
             collector.events.lock().unwrap()[0],
             AgentEvent::Thought { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn buffered_emitter_delivers_asynchronously_in_order() {
+        let collector: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        let buffered = BufferedEmitter::new(16, collector.clone() as Arc<dyn AgentEventEmitter>);
+
+        // emit() returns immediately (try_send); the consumer task drains.
+        for i in 0..5u32 {
+            buffered
+                .emit(AgentEvent::TaskUpdated {
+                    task_id: format!("task-{i}"),
+                    status: "running".into(),
+                })
+                .await;
+        }
+        // The consumer delivers asynchronously; wait briefly for the drain.
+        for _ in 0..100 {
+            if collector.events.lock().unwrap().len() == 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let events = collector.events.lock().unwrap().clone();
+        assert_eq!(events.len(), 5, "all events must eventually arrive");
+        // FIFO order preserved within the single producer.
+        for (i, e) in events.iter().enumerate() {
+            match e {
+                AgentEvent::TaskUpdated { task_id, .. } => {
+                    assert_eq!(task_id, &format!("task-{i}"))
+                }
+                other => panic!("unexpected event: {:?}", other),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_emitter_drops_events_when_channel_full() {
+        let collector: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+            events: Mutex::new(Vec::new()),
+        });
+        // Capacity 1 and a slow subscriber: the second try_send must fail
+        // (drop) instead of blocking the producer.
+        struct SlowEmitter;
+        #[async_trait]
+        impl AgentEventEmitter for SlowEmitter {
+            async fn emit(&self, _: AgentEvent) {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        let slow: Arc<dyn AgentEventEmitter> = Arc::new(SlowEmitter);
+        let buffered = BufferedEmitter::new(1, slow);
+        buffered
+            .emit(AgentEvent::TaskUpdated {
+                task_id: "one".into(),
+                status: "running".into(),
+            })
+            .await;
+        // Channel full: this emit is dropped, but the producer is not blocked.
+        let t0 = std::time::Instant::now();
+        buffered
+            .emit(AgentEvent::TaskUpdated {
+                task_id: "two".into(),
+                status: "running".into(),
+            })
+            .await;
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(30),
+            "emit must not block when the buffer is full"
+        );
+        // Slow consumer finishes the first event; no further delivery matters
+        // here — the point is the producer never awaits the subscriber.
+        let _ = collector;
     }
 }

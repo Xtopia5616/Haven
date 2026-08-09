@@ -49,33 +49,58 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{task}` — current task description
 /// - `{context}` — additional conversation context block, or empty
 /// - `{history}` — "Steps so far" block, or empty
+/// - `{failure_diagnosis}` — shared tool-failure guidance
+///   ([`TOOL_FAILURE_DIAGNOSIS`])
+/// - `{tool_notes}` — per-tool supplementary usage notes
+///   ([`TOOL_USAGE_NOTES`])
 pub const MAIN_SYSTEM_PROMPT: &str = "\
 You are Haven, a PC agent. You help users accomplish tasks using available tools. \
 Stay interactive: when the goal is unclear, a decision matters, or you keep trying on your own, \
 use `ask` to consult the user instead of guessing.\n\
 \n\
-Available builtin tools:\n\
 You have access to the following built-in tools:\n\
 \n\
 {tools}{skills}{mcps}{facts}\n\
 Guidelines:\n\
+General:\n\
 1. Think step by step. Decide what to do, then call the right tool.\n\
 2. After each tool call you will receive the result. Use it to decide next.\n\
-3. When the task is complete, respond with a summary of what was done.\n\
+3. When the task is complete, respond with a concise summary of what was done, in the same language the user is using.\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
+Shell & background jobs:\n\
 6. shell(background: true) returns a job_id immediately; the job's final output is delivered back to you automatically as context when it finishes — do not poll it with `status`. Use `jobs` to see all background jobs at once. The user also gets a push notification when a background job finishes.\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
+Interaction & notifications:\n\
 8. Calling ask pauses the task until the user replies; their answer is injected as context for the next step.\n\
 9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the task. Use it to alert them about background progress or something they should check.\n\
-10. Prefer MCP servers over built-in tools when the server's tools are more capable for the task. The 'Available MCP servers' list below shows each server's tools — if a task matches one of them, call `load_mcp` with that server name to activate its tools, then use them. Built-in tools are basic; MCP servers typically provide the powerful, specialized functionality.\n\
-11. Skills installed via `load_skill` work the same way: when a skill in the list below fits the task, activate it with `load_skill` before using its tools.\n\
-12. When a tool call fails, first diagnose the cause: is it an environment problem (missing command, wrong shell syntax — `&&` only works in cmd, PowerShell uses `;` — network/proxy, wrong path) or a logic problem? Fix the cause and retry the same approach, switching tools (e.g. curl -> aria2) if the environment requires it. Only switch to a completely different approach when the method itself is wrong.\n\
+Tool selection:\n\
+10. Simple, quick tasks: use built-in tools — they are fast, lightweight, and always available.\n\
+11. Complex, comprehensive tasks: prefer MCP servers and Skills — if the task matches a server or a skill in the lists above, call `load_mcp` with that server name or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
+Failure handling:\n\
+12. {failure_diagnosis}\n\
 \n\
+{tool_notes}\n\
 Current task: {task}\n\
 \n\
 {context}{history}\n\
 What is your next step?\n";
+
+/// Canonical tool-failure diagnosis guidance, shared by the main system
+/// prompt (guideline 12, injected via the `{failure_diagnosis}` placeholder)
+/// and the per-step retry nudge in the ReAct loop, so the model-visible
+/// advice cannot drift between the two.
+pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose the cause: is it an environment problem (missing command, wrong shell syntax, network/proxy, wrong path) or a logic problem? Fix the cause and retry the same approach, switching tools (e.g. curl -> aria2) if the environment requires it. Only switch to a completely different approach when the method itself is wrong.";
+
+/// Per-tool supplementary usage guidance, rendered as a dedicated block of the
+/// main system prompt (via the `{tool_notes}` placeholder). Kept separate from
+/// the one-line tool index so each tool can carry richer "when to use / when
+/// not to use" advice without bloating the list.
+pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
+- ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own.\n\
+- network: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
+- shell: Never run interactive commands that block waiting for input (interactive prompts, REPLs, editors, pagers, wizards) — they will hang forever because no one is there to answer. Use non-interactive flags (e.g. -y, --yes, -n) or supply all input up front instead.\n\
+- shell (background jobs): After launching a background job, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the job's output when it finishes.";
 
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";
@@ -83,12 +108,34 @@ pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a con
 /// User fact extraction (balanced_model). Expects a JSON array in response.
 /// The user content lists already-stored facts and a numbered conversation
 /// transcript (`[N] ...`); facts reference the supporting message by number.
-pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "Extract factual information about the user from the conversation. Return a JSON array where each element has: \"subject\" (always \"user\"), \"predicate\" (short key: name, likes, dislikes, uses, works_at, project_path, language, verbosity, etc.), \"object\" (the value), \"tags\" (array of: identity, preference, workspace, project), \"confidence\" (0.5-1.0), \"message_index\" (the number of the message in the conversation that supports this fact; omit only if no message clearly supports it). Only extract clear, explicit facts the user stated. If no facts found, return []. The conversation messages are numbered as [N]; the \"Known user facts\" list shows what is already stored — re-confirming one is fine (raise confidence), and for single-valued attributes (name, project_path, works_at, language, verbosity, etc.) output the latest value the user stated even if it differs from what is stored. Raise confidence when the user re-confirms something they mentioned earlier. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
+pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable, generalizable facts about the user from a conversation. Return a JSON array. Each element has these fields:\n\
+- \"subject\": the entity the fact is about. Use \"user\" for facts about the person using Haven (their name, preferences, projects, tools). Use a specific entity name (project name, tool name, file path, organization) when the fact is about that entity rather than about the person — e.g. \"haven\" for \"the haven project lives at D:/Workspace/Haven\". Default to \"user\" when unsure.\n\
+- \"predicate\": a short, stable key naming the attribute. Reuse keys already present in the \"Known user facts\" list (name, birthday, email, city, timezone, works_at, project_path, language, likes, dislikes, uses, verbosity, shell, os, location, etc.). One key per concept, never one key per value: use a single \"likes\" for every liked thing — never \"likes_rust\", \"likes_pizza\". Prefer an existing key over inventing a new one; only create a new key when no existing key fits.\n\
+- \"object\": the value, kept short and clean. Trim surrounding whitespace and trailing fluff (\"very much\", \"as well\", \"actually\"); do not copy whole sentences.\n\
+- \"tags\": use ONLY from this set — identity (stable personal attributes), preference (likes, dislikes, wants, and output habits like language/verbosity), workspace (paths, project locations, environment, tools), project (project-specific context). Default to \"preference\" when unsure; at most 2 tags per fact.\n\
+- \"confidence\": a number from 0.5 to 1.0. Start at 0.6 for one explicit statement; raise toward 0.9-1.0 when the user re-confirms or states it emphatically; use 0.5 for weak or indirect signals. Brand-new facts below about 0.55 are dropped, so keep this honest.\n\
+- \"durability\": a number from 0.1 to 1.0 rating how long this fact stays useful. 0.9-1.0 for stable identity and long-term context that will matter for months (name, city, workplace, core project setup); 0.5-0.7 for ongoing preferences and habits that may change over time; 0.2-0.4 for facts that are useful only in the near term or tied to a specific situation. Default to 0.5 when unsure.\n\
+- \"message_index\": the [N] number of the conversation message supporting this fact; omit only when no message clearly supports it.\n\
+\n\
+Only extract facts that will still be true and useful weeks later, in unrelated conversations: stable identity attributes, ongoing preferences, and long-term context (projects, workspace layout, tools). Reject everything transient or one-off: current moods and busy states (\"I am busy today\", \"I love this right now\"), complaints or observations about a single task (\"the build is slow\", \"this error is annoying\"), details that only matter for the current conversation, and trivial tastes stated without intent to last (\"this font looks nice\"). When in doubt whether a fact will matter later, do not extract it.\n\
+\n\
+Only extract clear, explicit facts the user stated. The \"Known user facts\" list shows what is already stored:\n\
+- The user re-confirms an existing fact: output it again with the same key and a higher confidence — do not invent a new key.\n\
+- A single-valued attribute (name, project_path, works_at, language, verbosity, email, city, etc.) has changed: output the latest value under the same key.\n\
+- An existing fact that is unchanged and not re-confirmed: do not output it again.\n\
+\n\
+If no facts found, return []. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
 
 /// Conversation compaction summary prefix (default_model). The transcript
 /// is appended after this text.
 pub const CONVERSATION_SUMMARY_PROMPT: &str =
     "Summarize this conversation. Keep key facts, decisions, and context:\n\n";
+
+/// Prefix marker of compaction summary assistant messages persisted into the
+/// message stream. Shared by the compactor (which writes it), the react loop
+/// (which recognizes summary messages), and the memory crate (which indexes
+/// summaries as episodes) so the three cannot drift.
+pub const COMPACTED_SUMMARY_PREFIX: &str = "[Compacted summary of previous messages]:";
 
 /// LLM speech-to-text transcription (audio_model).
 pub const STT_SYSTEM_PROMPT: &str = "You are a speech-to-text engine. Transcribe the audio verbatim in the speaker's language. Output only the transcription text, no commentary.";
@@ -133,11 +180,13 @@ mod tests {
                 ("facts", ""),
                 ("context", ""),
                 ("history", ""),
+                ("tool_notes", TOOL_USAGE_NOTES),
             ],
         );
         assert!(out.contains("You are Haven"));
-        assert!(out.contains("Available builtin tools:"));
+        assert!(out.contains("You have access to the following built-in tools:"));
         assert!(out.contains("- read_file: read a file"));
+        assert!(out.contains("Tool usage notes:"));
         assert!(out.contains("Current task: test task"));
         assert!(out.ends_with("What is your next step?\n"));
     }

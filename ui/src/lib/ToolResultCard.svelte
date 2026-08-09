@@ -10,7 +10,7 @@
 		file_search: '文件搜索',
 		process: '进程列表',
 		window: '窗口列表',
-		status: '后台任务',
+		status: '后台作业',
 		reminder: '提醒',
 		env: '环境变量',
 		file: '文件操作',

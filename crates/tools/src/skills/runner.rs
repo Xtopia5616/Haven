@@ -114,6 +114,7 @@ impl SkillRunner {
                         pid_label, self.config.timeout_secs
                     )),
                     truncated: false,
+                    signals: crate::tool::ToolSignals::default(),
                 });
             }
         };
@@ -124,6 +125,7 @@ impl SkillRunner {
                 output: Value::Null,
                 error: Some(format!("skill '{}' cancelled by user", pid_label)),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             });
         }
 
@@ -155,6 +157,7 @@ impl SkillRunner {
                     pid_label, exit_code, err_text
                 )),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             })
         } else {
             let output: Value = serde_json::from_str(&out_text)

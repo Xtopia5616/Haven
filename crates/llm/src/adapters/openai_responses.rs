@@ -1,14 +1,17 @@
 use async_trait::async_trait;
 use futures_util::Stream;
 use futures_util::StreamExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::adapters::{LineMode, spawn_line_reader};
-use crate::client::{LlmClient, http_status_to_error};
+use crate::adapters::{
+    LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
+    spawn_line_reader,
+};
+use crate::client::LlmClient;
 use crate::types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
     ToolDefinition, Usage, WebSearchPhase,
@@ -149,6 +152,13 @@ struct ResponsesResponse {
 enum ResponsesStreamEvent {
     #[serde(rename = "response.output_text.delta")]
     OutputTextDelta { delta: Option<String> },
+    /// DeepSeek's thinking-mode compat layer streams the assistant's
+    /// reasoning via this event. It must be accumulated and echoed back in
+    /// the next request's input (see `convert_input`), or the provider
+    /// rejects tool-call history with a 400 ("The `reasoning_text` in the
+    /// thinking mode must be passed back to the API.").
+    #[serde(rename = "response.reasoning_text.delta")]
+    ReasoningTextDelta { delta: Option<String> },
     #[serde(rename = "response.function_call_arguments.delta")]
     FunctionCallArgsDelta {
         item_id: Option<String>,
@@ -198,26 +208,7 @@ pub struct OpenAiResponsesAdapter {
 
 impl OpenAiResponsesAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
-        let mut builder = crate::client::http_client_builder();
-
-        // §2.5: proxy support
-        if let Some(ref proxy_url) = endpoint.proxy_url
-            && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
-        {
-            if let Some(ref no_proxy) = endpoint.no_proxy {
-                let proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy));
-                builder = builder.proxy(proxy);
-            } else {
-                builder = builder.proxy(proxy);
-            }
-        }
-
-        // §5.5: connection pool tuning
-        builder = builder
-            .pool_max_idle_per_host(5)
-            .pool_idle_timeout(Duration::from_secs(90));
-
-        let client = builder.build().unwrap_or_default();
+        let client = build_client(&endpoint);
         let web_search_mode = resolve_web_search_mode(&endpoint);
         Self {
             endpoint,
@@ -227,24 +218,7 @@ impl OpenAiResponsesAdapter {
     }
 
     fn build_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if !self.endpoint.api_key.is_empty() {
-            // §2.15: customizable auth header name and prefix
-            let auth = format!(
-                "{} {}",
-                self.endpoint.auth_header_prefix, self.endpoint.api_key
-            );
-            if let Ok(v) = HeaderValue::from_str(&auth) {
-                let name = self
-                    .endpoint
-                    .auth_header_name
-                    .parse::<reqwest::header::HeaderName>()
-                    .unwrap_or(AUTHORIZATION);
-                headers.insert(name, v);
-            }
-        }
-        headers
+        build_headers(&self.endpoint, "Authorization", true)
     }
 
     fn responses_url(&self) -> String {
@@ -255,6 +229,11 @@ impl OpenAiResponsesAdapter {
             format!("{}/v1/responses", base)
         }
     }
+
+    /// Cap for the per-turn reasoning echo in `convert_input`. Full reasoning
+    /// (10k+ chars per turn) makes request bodies balloon and providers stall
+    /// mid-inference; the tail of each turn preserves the conclusions.
+    const MAX_REASONING_ECHO_CHARS: usize = 3000;
 
     fn text_content(parts: &[ContentPart]) -> String {
         parts
@@ -319,6 +298,47 @@ impl OpenAiResponsesAdapter {
                         items.push(json!({
                             "role": "assistant",
                             "content": [{"type": "output_text", "text": text}]
+                        }));
+                    }
+                    // DeepSeek's thinking-mode Responses compat layer REQUIRES
+                    // the reasoning_text of previous assistant turns to be
+                    // passed back whenever the input carries tool-call history;
+                    // omitting it returns 400 ("The `reasoning_text` in the
+                    // thinking mode must be passed back to the API.") or — on
+                    // the streaming path — a silent empty/truncated stream.
+                    // `reasoning` was persisted on the assistant message for
+                    // exactly this purpose.
+                    //
+                    // The echo is capped: full reasoning (10k+ chars per turn
+                    // is routine) makes the request body balloon to 150-200KB,
+                    // and providers then stall/truncate the stream mid-inference
+                    // (observed as repeated empty responses on large contexts).
+                    // Keeping the TAIL of each turn's reasoning preserves the
+                    // conclusions while bounding the request; the provider
+                    // validates presence, not length.
+                    if let Some(r) = m
+                        .reasoning
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty())
+                    {
+                        let text: String = if r.len() > Self::MAX_REASONING_ECHO_CHARS {
+                            // Last `MAX_REASONING_ECHO_CHARS` chars: the tail
+                            // carries the turn's conclusions, which the next
+                            // inference round depends on.
+                            r.chars()
+                                .rev()
+                                .take(Self::MAX_REASONING_ECHO_CHARS)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect()
+                        } else {
+                            r.to_string()
+                        };
+                        items.push(json!({
+                            "type": "reasoning",
+                            "content": [{"type": "reasoning_text", "text": text}]
                         }));
                     }
                     // `web_search_call` items are passed back verbatim: the
@@ -528,19 +548,7 @@ impl OpenAiResponsesAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = req.send().await.map_err(LlmError::from)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // §2.3: extract Retry-After header before consuming body
-            let retry_after = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok().map(Duration::from_secs));
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(http_status_to_error(status, &txt, retry_after));
-        }
+        let resp = send_request(req).await?;
 
         let json: ResponsesResponse = resp
             .json()
@@ -577,18 +585,7 @@ impl OpenAiResponsesAdapter {
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
             req = req.timeout(Duration::from_secs(timeout));
         }
-        let resp = req.send().await.map_err(LlmError::from)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let retry_after = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok().map(Duration::from_secs));
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(http_status_to_error(status, &txt, retry_after));
-        }
+        let resp = send_request(req).await?;
 
         use tokio::sync::mpsc;
 
@@ -601,6 +598,11 @@ impl OpenAiResponsesAdapter {
             /// Function calls accumulated per item id; flushed in the final chunk.
             tool_calls: Vec<(String, ToolCall)>,
             accumulated_text: String,
+            /// Reasoning (thinking-mode) deltas, accumulated across
+            /// `response.reasoning_text.delta` events. Flushed on the final
+            /// chunk so the response can echo it back to the provider (see
+            /// `convert_input`).
+            accumulated_reasoning: String,
             last_model: Option<String>,
             finish_reason: Option<FinishReason>,
             usage: Option<Usage>,
@@ -610,16 +612,7 @@ impl OpenAiResponsesAdapter {
             web_search_calls: Vec<Value>,
         }
 
-        let empty_chunk = || StreamChunk {
-            text: None,
-            tool_calls: Vec::new(),
-            finish_reason: None,
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-        };
+        let empty_chunk = empty_chunk;
 
         let mapped = futures_util::stream::unfold(
             UnfoldState {
@@ -627,6 +620,7 @@ impl OpenAiResponsesAdapter {
                 done: false,
                 tool_calls: Vec::new(),
                 accumulated_text: String::new(),
+                accumulated_reasoning: String::new(),
                 last_model: None,
                 finish_reason: None,
                 usage: None,
@@ -643,13 +637,18 @@ impl OpenAiResponsesAdapter {
                         let chunk = if !state.saw_completed && !state.accumulated_text.is_empty() {
                             Err(LlmError::StreamTruncated)
                         } else {
+                            let reasoning = if state.accumulated_reasoning.is_empty() {
+                                None
+                            } else {
+                                Some(state.accumulated_reasoning.clone())
+                            };
                             Ok(StreamChunk {
                                 text: None,
                                 tool_calls: state.tool_calls.drain(..).map(|(_, tc)| tc).collect(),
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
-                                reasoning: None,
+                                reasoning,
                                 web_search: None,
                                 web_search_calls: state.web_search_calls.drain(..).collect(),
                             })
@@ -667,6 +666,14 @@ impl OpenAiResponsesAdapter {
                             state.accumulated_text.push_str(&d);
                             chunk.text = Some(d);
                         }
+                        Some((Ok(chunk), state))
+                    }
+                    Ok(ResponsesStreamEvent::ReasoningTextDelta { delta }) => {
+                        if let Some(d) = delta {
+                            state.accumulated_reasoning.push_str(&d);
+                        }
+                        let mut chunk = empty_chunk();
+                        chunk.model = state.last_model.clone();
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::FunctionCallArgsDelta { item_id, delta }) => {
@@ -754,6 +761,11 @@ impl OpenAiResponsesAdapter {
                             }
                         }
                         state.done = true;
+                        let reasoning = if state.accumulated_reasoning.is_empty() {
+                            None
+                        } else {
+                            Some(state.accumulated_reasoning.clone())
+                        };
                         Some((
                             Ok(StreamChunk {
                                 text: None,
@@ -761,7 +773,7 @@ impl OpenAiResponsesAdapter {
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
-                                reasoning: None,
+                                reasoning,
                                 web_search: None,
                                 web_search_calls: state.web_search_calls.drain(..).collect(),
                             }),
@@ -839,21 +851,13 @@ impl LlmClient for OpenAiResponsesAdapter {
         } else {
             format!("{}/v1/models", base)
         };
-        let resp = self
-            .client
-            .get(&url)
-            .headers(self.build_headers())
-            .timeout(Duration::from_secs(self.endpoint.timeout_secs.min(7)))
-            .send()
-            .await
-            .map_err(LlmError::from)?;
-        if resp.status().is_success() {
-            Ok(())
-        } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
-            Err(LlmError::Auth(format!("status {}", resp.status())))
-        } else {
-            Err(LlmError::ServerError(format!("status {}", resp.status())))
-        }
+        health_check_request(
+            &self.client,
+            &url,
+            self.build_headers(),
+            self.endpoint.timeout_secs,
+        )
+        .await
     }
 }
 
@@ -865,6 +869,22 @@ impl LlmClient for OpenAiResponsesAdapter {
 mod tests {
     use super::*;
     use crate::ToolFunction;
+
+    #[test]
+    fn stream_event_parses_reasoning_text_delta() {
+        // DeepSeek streams thinking-mode reasoning via this event; it must be
+        // parsed (not fall through to Other) so it can be echoed back.
+        let ev: ResponsesStreamEvent = serde_json::from_str(
+            r#"{"type":"response.reasoning_text.delta","content_index":0,"delta":"We need","item_id":"rs_1","output_index":0,"sequence_number":4}"#,
+        )
+        .unwrap();
+        match ev {
+            ResponsesStreamEvent::ReasoningTextDelta { delta } => {
+                assert_eq!(delta.as_deref(), Some("We need"));
+            }
+            other => panic!("unexpected variant: {:?}", other),
+        }
+    }
 
     #[test]
     fn responses_url_handles_v1_suffix() {
@@ -951,6 +971,97 @@ mod tests {
         assert_eq!(items[2]["type"], "function_call_output");
         assert_eq!(items[2]["call_id"], "call_1");
         assert_eq!(items[2]["output"], "result body");
+    }
+
+    #[test]
+    fn convert_input_echoes_reasoning_for_thinking_mode() {
+        // DeepSeek's thinking-mode compat layer rejects tool-call history
+        // without the assistant's reasoning_text passed back (400). The
+        // reasoning item must be emitted before the function_call item, in
+        // the same position the provider produced it.
+        let msgs = vec![
+            LlmMessage {
+                role: LlmRole::Assistant,
+                content: vec![ContentPart::text("let me check")],
+                tool_call_id: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "file".into(),
+                    arguments: r#"{"operation":"read"}"#.into(),
+                }]),
+                reasoning: Some("  I should read the file first.  ".into()),
+                web_search_calls: Vec::new(),
+            },
+            LlmMessage {
+                role: LlmRole::Tool,
+                content: vec![ContentPart::text("result body")],
+                tool_call_id: Some("call_1".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            },
+        ];
+        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0]["role"], "assistant");
+        assert_eq!(items[0]["content"][0]["type"], "output_text");
+        assert_eq!(items[1]["type"], "reasoning");
+        assert_eq!(
+            items[1]["content"][0]["text"],
+            "I should read the file first."
+        );
+        assert_eq!(items[2]["type"], "function_call");
+        assert_eq!(items[3]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn convert_input_truncates_oversized_reasoning_to_tail() {
+        // Full reasoning echo (10k+ chars per turn) balloons the request body
+        // and providers stall/truncate mid-inference. Oversized reasoning must
+        // keep its TAIL (the conclusions), trimmed of whitespace.
+        let long = format!(
+            "{}END-MARKER",
+            "thinking step. ".repeat(OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS + 500)
+        );
+        let msgs = vec![LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![ContentPart::text("ok")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: Some(long.clone()),
+            web_search_calls: Vec::new(),
+        }];
+        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        assert_eq!(items.len(), 2);
+        let echoed = items[1]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            echoed.len(),
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS
+        );
+        assert!(
+            echoed.ends_with("END-MARKER"),
+            "the tail (conclusions) must be preserved, got: ...{}",
+            &echoed[echoed.len().saturating_sub(40)..]
+        );
+        assert!(
+            !echoed.starts_with("thinking step. "),
+            "the head must be trimmed"
+        );
+    }
+
+    #[test]
+    fn convert_input_skips_blank_reasoning() {
+        let msgs = vec![LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![ContentPart::text("hi")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: Some("   ".into()),
+            web_search_calls: Vec::new(),
+        }];
+        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["role"], "assistant");
     }
 
     #[test]

@@ -19,9 +19,13 @@ pub fn haven_user_agent() -> String {
 
 /// Shared HTTP client defaults for every provider adapter: connection-pool
 /// tuning plus the Haven User-Agent so all LLM/STT/embedding traffic carries
-/// the same identifying header.
+/// the same identifying header. The connect timeout bounds TCP/TLS setup so a
+/// half-reachable endpoint fails fast (and can be retried / failed over)
+/// instead of blocking the caller until the router-level total timeout.
 pub fn http_client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().user_agent(haven_user_agent())
+    reqwest::Client::builder()
+        .user_agent(haven_user_agent())
+        .connect_timeout(Duration::from_secs(10))
 }
 
 /// Unified interface implemented by every provider adapter. Adapters convert

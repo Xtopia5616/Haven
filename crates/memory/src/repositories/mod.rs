@@ -1,3 +1,4 @@
+pub mod episodes;
 pub mod facts;
 pub mod kv_store;
 pub mod messages;

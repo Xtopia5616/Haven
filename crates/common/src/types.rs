@@ -1,13 +1,96 @@
 use serde::{Deserialize, Serialize};
 
-/// Unique identifier for a task.
-pub type TaskId = String;
+// ---------------------------------------------------------------------------
+// Entity identifiers
+// ---------------------------------------------------------------------------
+//
+// Unified ID convention (see AGENTS.md §ID 规范):
+//   - Every persisted entity id is a `{prefix}-{uuid32}` string (hyphen +
+//     lowercase-hex simple UUID), e.g. `task-3f9a...`.
+//   - Prefixes: `task-` (tasks), `msg-` (messages and memory episodes —
+//     memory_episodes shares the message id space), `step-` (task_steps),
+//     `fact-` (facts), `act-` (activities — unified background jobs and
+//     reminders; the legacy `job-`/`rem-` prefixes were merged into it),
+//     `conf-` (safety-gateway confirmations),
+//     `rec-` (voice recording sessions), `file-` (temporary files),
+//     `call-` (locally synthesized tool-call ids when the provider sends an
+//     empty one).
+//   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
+//     keep their provider formats; `run_id`/`gen_id` are in-process u64
+//     run/generation counters, not persisted entity ids.
+//   - Generate ids with `new_id(prefix)` — never build them by hand.
+//   - Rust/DB/event fields use snake_case `xxx_id`; the frontend maps to
+//     camelCase `xxxId` at the boundary.
 
-/// Unique identifier for a recording/confirmation request.
-pub type ConfirmId = String;
+/// Generate an entity id in the canonical `{prefix}-{uuid32}` format.
+/// Every persisted entity id must come from here (see the module docs above),
+/// then be converted into its newtype with `.into()`.
+pub fn new_id(prefix: &str) -> String {
+    format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
+}
 
-/// Unique identifier for a session.
-pub type SessionId = String;
+/// Defines an entity-id newtype: `pub struct $name(pub String)` with the
+/// standard derives plus the conversions/accessors the rest of the codebase
+/// relies on. Serializes as the plain `{prefix}-{uuid32}` string on the wire,
+/// so the frontend and the DB (which store ids as text) are unaffected.
+macro_rules! id_newtype {
+    ($(#[$attr:meta])* $name:ident) => {
+        $(#[$attr])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub struct $name(pub String);
+
+        impl $name {
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(s: String) -> Self {
+                Self(s)
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(s: &str) -> Self {
+                Self(s.to_string())
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+    };
+}
+
+id_newtype! {
+    /// Unique identifier for a safety-gateway confirmation request
+    /// (`conf-{uuid32}`). Ephemeral: lives only in the `confirm:requested`
+    /// event payload and the executor's pending-wait map.
+    ConfirmId
+}
+
+id_newtype! {
+    /// Unique identifier for a voice-recording session (`rec-{uuid32}`).
+    /// Ephemeral: one id per recording, generated at `recording:started` and
+    /// shared by the `transcription:result`/`transcription:error` events of the
+    /// same recording (held in `AppState.recording_session` between the two).
+    SessionId
+}
 
 /// MCP transport type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -379,6 +462,27 @@ mod tests {
         );
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
         assert_eq!(msg.reasoning.as_deref(), Some("chain of thought"));
+    }
+
+    #[test]
+    fn id_newtype_conversions() {
+        let confirm: ConfirmId = new_id("conf").into();
+        assert!(confirm.as_str().starts_with("conf-"));
+        assert_eq!(confirm.to_string(), confirm.0);
+        assert_eq!(AsRef::<str>::as_ref(&confirm), confirm.as_str());
+        let restored: String = confirm.clone().into();
+        assert_eq!(restored, confirm.0);
+        let from_str: SessionId = "rec-abc".into();
+        assert_eq!(from_str.0, "rec-abc");
+    }
+
+    #[test]
+    fn id_newtype_serde_roundtrip() {
+        let id: ConfirmId = "conf-1234".into();
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"conf-1234\"");
+        let decoded: ConfirmId = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, id);
     }
 
     #[test]

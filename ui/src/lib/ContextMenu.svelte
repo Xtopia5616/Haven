@@ -99,7 +99,9 @@
 		bind:this={menuEl}
 		style="left: {pos.x}px; top: {pos.y}px;"
 		role="menu"
+		tabindex="0"
 		onclick={(e) => e.stopPropagation()}
+		onkeydown={(e) => e.stopPropagation()}
 	>
 		{#each items as item (item.id ?? item.label)}
 			{#if item.separator}

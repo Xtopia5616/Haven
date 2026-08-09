@@ -279,7 +279,10 @@ mod tests {
             tool.risk_level(&json!({"operation": "search", "query": "x"})),
             RiskLevel::Safe
         );
-        assert_eq!(tool.risk_level(&json!({"operation": "list"})), RiskLevel::Safe);
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "list"})),
+            RiskLevel::Safe
+        );
     }
 
     #[test]
@@ -474,7 +477,10 @@ mod tests {
         let (_, db, _dir) = db_with_facts();
         let tool = FactsTool::new(Some(db.clone()));
         let result = tool
-            .execute(json!({"operation": "forget", "predicate": "likes"}), CancellationToken::new())
+            .execute(
+                json!({"operation": "forget", "predicate": "likes"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(result.output["deleted"], 2);

@@ -304,6 +304,30 @@ fn process_chunk<T: Sample>(
 mod tests {
     use super::*;
 
+    /// Fixture for `process_chunk` tests: ring, signals, resampler, diag and
+    /// the output buffers, all freshly constructed.
+    struct ChunkFixture {
+        ring: Arc<StdMutex<RingBuffer>>,
+        signals: CaptureSignals,
+        resampler: Resampler,
+        diag: CallbackDiag,
+        mono: Vec<f32>,
+        resampled: Vec<f32>,
+    }
+
+    impl ChunkFixture {
+        fn new() -> Self {
+            Self {
+                ring: Arc::new(StdMutex::new(RingBuffer::new(1024))),
+                signals: CaptureSignals::new(),
+                resampler: Resampler::new(16000.0, 16000.0),
+                diag: CallbackDiag::new(),
+                mono: Vec::new(),
+                resampled: Vec::new(),
+            }
+        }
+    }
+
     #[test]
     fn signal_floor_detects_digital_silence() {
         assert!(0.0f32.abs() <= SIGNAL_FLOOR);
@@ -340,74 +364,59 @@ mod tests {
 
     #[test]
     fn process_chunk_stereo_f32_downmixes_to_mono() {
-        let ring = Arc::new(StdMutex::new(RingBuffer::new(1024)));
-        let signals = CaptureSignals::new();
-        let mut resampler = Resampler::new(16000.0, 16000.0);
-        let mut diag = CallbackDiag::new();
-        let mut mono = Vec::new();
-        let mut resampled = Vec::new();
+        let mut f = ChunkFixture::new();
         process_chunk(
             &[0.5f32, 0.3, 0.1, 0.9],
             2,
-            &mut resampler,
-            &mut mono,
-            &mut resampled,
-            &ring,
-            &signals,
-            &mut diag,
+            &mut f.resampler,
+            &mut f.mono,
+            &mut f.resampled,
+            &f.ring,
+            &f.signals,
+            &mut f.diag,
         );
-        let mono = ring.lock().unwrap().drain();
+        let mono = f.ring.lock().unwrap().drain();
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 0.4).abs() < 1e-6);
         assert!((mono[1] - 0.5).abs() < 1e-6);
-        assert!(signals.has_signal.load(Ordering::SeqCst));
+        assert!(f.signals.has_signal.load(Ordering::SeqCst));
     }
 
     #[test]
     fn process_chunk_i16_converts_and_detects_signal() {
-        let ring = Arc::new(StdMutex::new(RingBuffer::new(1024)));
-        let signals = CaptureSignals::new();
-        let mut resampler = Resampler::new(16000.0, 16000.0);
-        let mut diag = CallbackDiag::new();
-        let mut mono = Vec::new();
-        let mut resampled = Vec::new();
+        let mut f = ChunkFixture::new();
         process_chunk(
             &[i16::MAX, i16::MIN],
             1,
-            &mut resampler,
-            &mut mono,
-            &mut resampled,
-            &ring,
-            &signals,
-            &mut diag,
+            &mut f.resampler,
+            &mut f.mono,
+            &mut f.resampled,
+            &f.ring,
+            &f.signals,
+            &mut f.diag,
         );
-        let mono = ring.lock().unwrap().drain();
+        let mono = f.ring.lock().unwrap().drain();
         assert_eq!(mono.len(), 2);
         assert!((mono[0] - 32767.0 / 32768.0).abs() < 1e-5);
         assert!((mono[1] + 1.0).abs() < 1e-5);
-        assert!(signals.has_signal.load(Ordering::SeqCst));
+        assert!(f.signals.has_signal.load(Ordering::SeqCst));
     }
 
     #[test]
     fn process_chunk_silence_does_not_set_signal() {
-        let ring = Arc::new(StdMutex::new(RingBuffer::new(1024)));
-        let signals = CaptureSignals::new();
-        let mut resampler = Resampler::new(16000.0, 16000.0);
-        let mut diag = CallbackDiag::new();
-        let mut mono = Vec::new();
-        let mut resampled = Vec::new();
+        let mut f = ChunkFixture::new();
         process_chunk(
             &[0.0f32, 0.0, 0.0, 0.0],
             2,
-            &mut resampler,
-            &mut mono,
-            &mut resampled,
-            &ring,
-            &signals,
-            &mut diag,
+            &mut f.resampler,
+            &mut f.mono,
+            &mut f.resampled,
+            &f.ring,
+            &f.signals,
+            &mut f.diag,
         );
-        assert!(!signals.has_signal.load(Ordering::SeqCst));
-        assert_eq!(ring.lock().unwrap().len(), 2);
+        assert!(!f.signals.has_signal.load(Ordering::SeqCst));
+        assert_eq!(f.ring.lock().unwrap().len(), 2);
     }
 
     #[test]

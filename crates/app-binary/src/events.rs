@@ -4,7 +4,7 @@ use serde::Serialize;
 pub struct RecordingEvent {
     pub is_recording: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    pub session_id: Option<haven_common::types::SessionId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -19,7 +19,7 @@ pub struct VadStatusEvent {
 
 #[derive(Clone, Serialize)]
 pub struct TranscriptionResultEvent {
-    pub session_id: String,
+    pub session_id: haven_common::types::SessionId,
     pub text: String,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -28,7 +28,7 @@ pub struct TranscriptionResultEvent {
 
 #[derive(Clone, Serialize)]
 pub struct TranscriptionErrorEvent {
-    pub session_id: String,
+    pub session_id: haven_common::types::SessionId,
     pub error: String,
 }
 

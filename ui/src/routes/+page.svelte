@@ -49,7 +49,10 @@
 		pruneSeq,
 		updateModelState,
 		modelStateStore,
+		refreshActivities,
 		DRAFT_KEY,
+		NEW_TASK_INTENT_KEY,
+		newTaskIntentStore,
 	} from '$lib/stores.js';
 	import { submitTranscript } from '$lib/submit.js';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.js';
@@ -75,7 +78,13 @@
 	});
 	let messages = $state([]);
 	let tasks = $state([]);
-	let confirmDialog = $state({ stepId: null, toolName: '', taskId: '', riskLevel: 'medium' });
+	let confirmDialog = $state({
+		stepId: null,
+		toolName: '',
+		taskId: '',
+		taskTitle: '',
+		riskLevel: 'medium',
+	});
 	let activeTaskId = $state(get(activeTaskIdStore));
 	let rollbackDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
 	let rollbackLoading = $state(false);
@@ -177,12 +186,25 @@
 	const parallelTasks = $derived(
 		tasks.filter((t) => t.status === 'running' || t.status === 'pending'),
 	);
-	const showTaskMenu = $derived(parallelTasks.length >= 2);
+	// Menu source: parallel tasks plus paused ones — a paused task is
+	// otherwise invisible in the chat view (its conversation is not shown).
+	const menuTasks = $derived(
+		tasks.filter((t) =>
+			['running', 'pending', 'paused'].includes(t.status),
+		),
+	);
+	const showTaskMenu = $derived(menuTasks.length >= 2);
 
 	function buildTokenTooltip(/** @type {TaskTokenStats} */ s) {
 		const parts = [];
-		parts.push(`本轮 ${s.promptTokens || 0} → ${s.completionTokens || 0} tokens`);
+		parts.push(
+			`上传 ${s.promptTokens || 0} → 生成 ${s.completionTokens || 0} tokens`,
+		);
 		parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
+		if (s.cumulativePromptTokens != null)
+			parts.push(
+				`累计上传 ${s.cumulativePromptTokens} → 累计生成 ${s.cumulativeCompletionTokens} tokens`,
+			);
 		if (s.model) parts.push(`模型 ${s.model}`);
 		if (s.contextWindow) {
 			const pct =
@@ -359,7 +381,7 @@
 	}
 
 	$effect(() => {
-		if (taskMenuOpen && parallelTasks.length < 2) taskMenuOpen = false;
+		if (taskMenuOpen && menuTasks.length < 2) taskMenuOpen = false;
 	});
 
 	// Merged into existing onMount/onDestroy below
@@ -376,6 +398,12 @@
 					targetStep: stepNumber,
 					pause: true,
 					targetMessageId: msgId,
+					// Live-view message ids are locally generated and never
+					// match the DB ids; the backend falls back to matching by
+					// this content when the id misses (the clicked message may
+					// not be the newest user message, so the id-only guess
+					// would leave it in the task).
+					targetContent: content,
 				});
 				clearSeqMap(activeTaskId);
 				// The backend is the source of truth for what the rollback
@@ -392,6 +420,7 @@
 					targetStep: stepNumber,
 					pause: false,
 					targetMessageId: msgId,
+					targetContent: content,
 				});
 				clearSeqMap(activeTaskId);
 				await resyncTaskMessages(activeTaskId);
@@ -413,8 +442,16 @@
 		try {
 			const result = await invoke('get_task_for_review', { taskId });
 			const dbMessages = buildReviewMessages(result);
+			// Rollback rebuilds the timeline from the truncated DB state, so the
+			// pre-rollback live messages in `existing` are STALE: their content
+			// was truncated out of the DB, so mergeLiveStreaming's content-dedup
+			// would keep the old reasoning/thought blocks and append them —
+			// resurrecting old "Thinking…" and pushing the re-run's fresh
+			// thinking to the wrong position. Keep only live messages that are
+			// STILL STREAMING (the re-run's in-flight output); everything
+			// finalized is replaced by the authoritative DB copy.
 			updateTaskMessages(taskId, (existing) =>
-				mergeLiveStreaming(dbMessages, existing),
+				mergeLiveStreaming(dbMessages, existing.filter((m) => m.streaming)),
 			);
 			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
 		} catch (e) {
@@ -427,35 +464,48 @@
 			clearTaskMessages(activeTaskId);
 			clearTaskTokenStats(activeTaskId);
 		}
-		suppressAutoTask = true;
+		// 新对话 = explicit fresh start. While `newTaskIntentStore` is set, no
+		// event-driven path may auto-assign an existing task (loadTasks
+		// auto-assign, task:created, auto-restore), otherwise the next message
+		// would append to the old conversation instead of starting a new task.
+		// The intent is cleared only when the user's own submission creates a
+		// task (submit.js) or they explicitly switch to another task. Also
+		// persisted to localStorage so the next app launch skips restoring the
+		// previous conversation.
+		newTaskIntentStore.set(true);
+		if (browser) localStorage.setItem(NEW_TASK_INTENT_KEY, '1');
 		activeTaskId = null;
 		activeTaskIdStore.set(null);
-		// 新对话 = explicit fresh start: don't auto-restore the previous
-		// conversation on the next app launch (cleared when a new task is
-		// actually created).
-		if (browser) localStorage.setItem('haven.no_auto_restore', '1');
 		taskMenuOpen = false;
-		if (parallelTasks.length === 0) {
-			// Nothing running that could hijack the draft: allow loadTasks
-			// auto-assign after the current call stack unwinds (e.g. a task
-			// created by a voice transcript).
-			setTimeout(() => {
-				suppressAutoTask = false;
-			}, 0);
-		} else {
-			// A task is still running in the background: stay on the fresh
-			// draft until a new task is actually created, otherwise a task
-			// event would auto-assign back to the running task and the next
-			// message would be appended to it instead of starting a new one.
-			suppressAutoTask = true;
-		}
 	}
 
 	// Switch the chat view to another parallel task. Merges the persisted
 	// DB messages with any in-memory streaming messages that arrived
 	// concurrently (the task may still be running).
+	// A terminal task has no more streaming events: drop its in-memory
+	// message list, token stats and seq bookkeeping (switchToTask reloads
+	// everything from the DB on demand). Keeps parallel-conversation memory
+	// bounded across a long session. Never evicts the active conversation.
+	function evictTerminalTaskMemory(taskId) {
+		if (!taskId || (activeTaskId && taskId === activeTaskId)) return;
+		clearTaskMessages(taskId);
+		clearTaskTokenStats(taskId);
+		clearSeqMap(taskId);
+	}
+
 	async function switchToTask(taskId) {
 		taskMenuOpen = false;
+		// The previously active task is about to be deactivated: if it is
+		// already terminal (completed/error — it never evicted while it was
+		// being watched), reclaim its memory now; switchToTask below reloads
+		// from the DB when it is re-opened.
+		const prevActive = activeTaskId;
+		if (prevActive && prevActive !== taskId) {
+			const prevTask = tasks.find((x) => x.id === prevActive);
+			if (prevTask && (prevTask.status === 'completed' || prevTask.status === 'error')) {
+				evictTerminalTaskMemory(prevActive);
+			}
+		}
 		try {
 			const result = await invoke('get_task_for_review', { taskId });
 			const dbMessages = buildReviewMessages(result);
@@ -467,7 +517,11 @@
 				mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true }),
 			);
 			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
-			suppressAutoTask = false;
+			// An explicit switch abandons the fresh-start intent: the chosen
+			// task becomes the active conversation (and may be auto-restored
+			// on the next app launch).
+			newTaskIntentStore.set(false);
+			if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
 			activeTaskId = taskId;
 			activeTaskIdStore.set(taskId);
 			const t = tasks.find((x) => x.id === taskId);
@@ -479,7 +533,8 @@
 
 	async function endTask() {
 		if (!activeTaskId) return;
-		suppressAutoTask = true;
+		// While the end is in flight, no event may resurrect the ended task.
+		newTaskIntentStore.set(true);
 		const endedId = activeTaskId;
 		try {
 			await invoke('end_task', { taskId: endedId });
@@ -490,7 +545,7 @@
 		}
 		activeTaskId = null;
 		activeTaskIdStore.set(null);
-		suppressAutoTask = false;
+		newTaskIntentStore.set(false);
 	}
 
 	async function handleContinue() {
@@ -562,9 +617,6 @@
 	let autoFollow = $state(true);
 	let scrollRafPending = false;
 	let dead = false;
-	// Suppresses loadTasks() auto-assigning activeTaskId during explicit
-	// end/new operations so a late task event doesn't resurrect an ended task.
-	let suppressAutoTask = false;
 	// Guards concurrent loadTasks() calls so a stale response can't overwrite
 	// a newer one.
 	let loadTasksSeq = 0;
@@ -626,6 +678,21 @@
 	$effect(() => {
 		activeTaskIdStore.set(activeTaskId);
 	});
+
+	// Follow external store writes back into the local state. The effect
+	// above mirrors state → store only; submit.js writes the store directly
+	// when a submission creates a fresh task (its `TaskCreated` result never
+	// passes through this page), and the view must follow the new task
+	// instead of staying on the blank draft. Guarded with `!activeTaskId`
+	// (never override a task the user is actively viewing) AND the
+	// fresh-start intent (while the intent is pending, a background task
+	// creation must not hijack the blank draft — the submission that
+	// fulfills the intent clears it before writing the store).
+	$effect(() =>
+		syncStore(activeTaskIdStore, (id) => {
+			if (id && !activeTaskId && !get(newTaskIntentStore)) activeTaskId = id;
+		}),
+	);
 
 	function scrollToBottom() {
 		if (!messagesEl || dead || scrollRafPending) return;
@@ -689,7 +756,12 @@
 			const sid = stepId(stepIdPrefix, tid, data.step_number, data.run_id);
 			const delta = data.delta || '';
 			const seq = data.seq;
-			updateModelState('streaming');
+			// The model-state chip reflects the ACTIVE conversation only:
+			// a background task streaming in parallel must not flip the
+			// active task's indicator to "streaming".
+			if (activeTaskId === tid) {
+				updateModelState('streaming');
+			}
 			if (seqLastSeen(sid, seq)) return;
 
 			// When the first text chunk arrives, the reasoning phase is
@@ -768,10 +840,24 @@
 	}
 
 	onMount(async () => {
+		// Hydrate the fresh-start intent from localStorage BEFORE any data
+		// load: the store is in-memory only, but the intent survives app
+		// restarts via `haven.no_auto_restore`. Without this, `loadTasks`
+		// auto-assign would re-select the old conversation on restart and the
+		// persisted intent would be silently defeated. The reviewTarget
+		// branch below (an explicit user choice) clears it again if needed.
+		if (browser && localStorage.getItem(NEW_TASK_INTENT_KEY)) {
+			newTaskIntentStore.set(true);
+		}
+
 		// Process review target first so loadTasks won't overwrite
 		// activeTaskId with a stale paused task whose messages are gone.
 		const reviewTarget = get(reviewTargetStore);
 		if (reviewTarget && reviewTarget.taskId) {
+			// Opening a reviewed conversation abandons any pending fresh-start
+			// intent (the user chose this conversation explicitly).
+			newTaskIntentStore.set(false);
+			if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
 			activeTaskId = reviewTarget.taskId;
 			activeTaskIdStore.set(activeTaskId);
 			// If this task was errored when reviewed, show the continue button.
@@ -799,12 +885,18 @@
 						// stream the chat view is not showing — visible only after
 						// re-entering the page (e.g. via history).
 						adoptDraftMessages(tid);
-						if (!suppressAutoTask) {
+						// Every `task:created` comes from a user submission
+						// (typed or voice) — the fresh-start intent is fulfilled
+						// by submit.js when that submission's invoke resolves.
+						// This guard only covers the in-flight window between the
+						// task creation event and the invoke resolution: a
+						// submission that started before the 新对话 click must
+						// not hijack the blank draft in that window.
+						if (!get(newTaskIntentStore)) {
 							activeTaskId = tid;
 							activeTaskIdStore.set(tid);
 						}
 					}
-					if (browser) localStorage.removeItem('haven.no_auto_restore');
 					loadTasks();
 				},
 				'task:updated': (event) => {
@@ -817,6 +909,26 @@
 					if (isActive && data.status === 'pending') {
 						clearAskAwaiting(data.task_id);
 					}
+					// A resumed task (pending/running) is no longer in the
+					// errored state the continue banner describes: dismiss a
+					// stale banner so it can't linger over a live generation
+					// (e.g. when the retry started before the continue-task
+					// invoke resolved, or a message resumed the task).
+					if (
+						data.task_id &&
+						taskErrorId === data.task_id &&
+						(data.status === 'pending' || data.status === 'running')
+					) {
+						taskErrorId = null;
+						activeTaskError = false;
+					}
+					// A background task reaching a terminal state has no more
+					// streaming events: evict its messages (switchToTask reloads
+					// from the DB on demand) so completed conversations don't
+					// accumulate in memory for the whole session.
+					if (data.status === 'completed' || data.status === 'error') {
+						evictTerminalTaskMemory(data.task_id);
+					}
 					loadTasks();
 				},
 				'task:completed': (event) => {
@@ -824,6 +936,7 @@
 					if (data.task_id && activeTaskId && data.task_id === activeTaskId) {
 						clearAskAwaiting(data.task_id);
 					}
+					evictTerminalTaskMemory(data.task_id);
 					loadTasks();
 				},
 				'task:error': (event) => {
@@ -840,6 +953,7 @@
 							m.map((x) => (x.streaming ? { ...x, streaming: false } : x))
 						);
 					}
+					evictTerminalTaskMemory(task_id);
 					loadTasks();
 				},
 				'task:title-updated': (event) => {
@@ -1013,21 +1127,33 @@
 				},
 				'confirm:requested': (event) => {
 					const data = event.payload;
-					if (data.task_id && activeTaskId && data.task_id !== activeTaskId) return;
-					// If a confirmation is already pending, auto-reject the previous
-					// one so the backend doesn't wait forever for a resolve_confirmation
-					// that the user will never see.
-					if (confirmDialog.stepId) {
+					// Security confirmations are modal and resolve by step id, so
+					// requests from background (non-active) tasks must still be
+					// surfaced — dropping them would leave the tool call waiting
+					// forever. The dialog shows which task the operation belongs
+					// to so an approval is never misattributed.
+					const tid = data.task_id || '';
+					// Auto-reject a superseded dialog ONLY when the new request
+					// belongs to the same task (a task firing a second
+					// confirmation has moved on from the first — the backend
+					// must not wait forever for a resolve it will never see).
+					// A different task's request must NOT deny the pending one:
+					// the user may have just approved it (the resolve races the
+					// auto-reject), and its wait is already bounded by the
+					// backend's fail-closed timeout.
+					if (confirmDialog.stepId && confirmDialog.taskId === tid) {
 						invoke('resolve_confirmation', {
 							stepId: confirmDialog.stepId,
 							confirmed: false,
 							trustSession: false,
 						}).catch(() => {});
 					}
+					const task = tasks.find((t) => t.id === tid);
 					confirmDialog = {
 						stepId: data.step_id,
 						toolName: data.tool_name,
-						taskId: data.task_id,
+						taskId: tid,
+						taskTitle: task?.title || (tid || ''),
 						riskLevel: data.risk_level || 'medium',
 					};
 				},
@@ -1153,7 +1279,7 @@
 					activeTaskId = null;
 					activeTaskIdStore.set(null);
 				}
-				if (!activeTaskId && !suppressAutoTask) {
+				if (!activeTaskId && !get(newTaskIntentStore)) {
 					const firstActive = tasks.find(
 						(t) =>
 							t.status === 'running' ||
@@ -1165,6 +1291,11 @@
 					}
 				}
 			}
+			// Task lifecycle changes may have reaped background jobs (a task
+			// ending cancels its jobs without terminal events): re-sync the
+			// activity board so the panel drops entries that no longer exist.
+			// Same for reminders: fired ones are gone from the pending list.
+			refreshActivities();
 		})().catch((e) => {
 			addNotification(`加载任务列表失败: ${e}`, 'error', 3000);
 		});
@@ -1181,7 +1312,13 @@
 	// this task instead of being dropped as a terminal-task supplement) runs
 	// afterwards without blocking the UI.
 	async function restoreLastConversation(reviewTarget) {
-		if (reviewTarget || (browser && localStorage.getItem('haven.no_auto_restore'))) return;
+		if (
+			reviewTarget ||
+			get(newTaskIntentStore) ||
+			(browser && localStorage.getItem(NEW_TASK_INTENT_KEY))
+		) {
+			return;
+		}
 		// Wait for the task list first so the stale-activeTaskId check below
 		// sees the real list (matches the previous sequential ordering) and a
 		// running/paused task auto-assigned by loadTasks wins over the restore.
@@ -1198,9 +1335,16 @@
 			logger.warn('+page', 'auto-restore conversation error', e);
 			return;
 		}
-		// A task event or a later loadTasks auto-assigned one meanwhile —
-		// don't clobber the live task with the restored conversation.
-		if (!last?.task || activeTaskId) return;
+		// A task event or a later loadTasks auto-assigned one meanwhile — or
+		// the user clicked the new-task button while the lookup was in flight
+		// — don't clobber the live task (or the fresh draft) with the restored
+		// conversation.
+		if (!last?.task || activeTaskId || get(newTaskIntentStore)) return;
+		// A completed conversation is history: the user already ended it, so
+		// restoring it into the window adds nothing (and reopens it as
+		// Paused, resurrecting an ended task). It stays reachable via the
+		// history page; the window starts blank instead.
+		if (last.task.status === 'completed') return;
 		const wasError = last.task.status === 'error' || last.task.status === 'failed';
 		updateTaskMessages(last.task.id, () => buildReviewMessages(last));
 		restoreTaskTokenStats(last.task.id, last.usage, last.usage_estimated);
@@ -1245,7 +1389,8 @@
 			if (result && result.TaskCreated) {
 				activeTaskId = result.TaskCreated;
 				activeTaskIdStore.set(activeTaskId);
-				suppressAutoTask = false;
+				// The submission itself created the task (submitTranscript
+				// already cleared the intent store): nothing to do here.
 			}
 			loadTasks();
 		} catch (e) {
@@ -1333,16 +1478,30 @@
 	}
 
 	async function handleConfirm({ stepId, approved, trustSession }) {
+		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
+		// If we only cleared it after `await invoke(...)`, a new
+		// `confirm:requested` for the same task arriving during that window
+		// would see the stale stepId and auto-reject (confirmed: false) the very
+		// step the user just approved — the two resolves race and the denial can
+		// win, so the user's Allow is reported as a rejection.
+		const resolvedStep = stepId;
+		confirmDialog = {
+			stepId: null,
+			toolName: '',
+			taskId: '',
+			taskTitle: '',
+			riskLevel: 'medium',
+		};
+		if (!resolvedStep) return;
 		try {
 			await invoke('resolve_confirmation', {
-				stepId,
+				stepId: resolvedStep,
 				confirmed: approved,
 				trustSession: trustSession || false,
 			});
 		} catch (e) {
 			addNotification(`确认失败: ${e}`, 'error', 3000);
 		}
-		confirmDialog = { stepId: null, toolName: '', taskId: '', riskLevel: 'medium' };
 	}
 </script>
 
@@ -1351,6 +1510,7 @@
 		stepId={confirmDialog.stepId}
 		toolName={confirmDialog.toolName}
 		taskId={confirmDialog.taskId}
+		taskTitle={confirmDialog.taskTitle}
 		riskLevel={confirmDialog.riskLevel}
 		onConfirm={handleConfirm}
 	/>
@@ -1505,25 +1665,33 @@
 								stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
 							>
 						{/if}
+						{#if parallelTasks.length > 0}
+							<span class="task-switch-badge">{parallelTasks.length}</span>
+						{/if}
 					</button>
 					{#if taskMenuOpen}
 						<div class="task-menu">
 							<div class="task-menu-title">正在执行的任务</div>
-							{#each parallelTasks as t}
+							{#each menuTasks as t}
 								<button
 									class="task-menu-item"
 									class:selected={t.id === activeTaskId}
 									onclick={() => switchToTask(t.id)}
 									type="button"
 								>
-									<span class="task-menu-item-title"
-										>{t.title || t.id.slice(0, 8)}</span
-									>
+									<span class="task-menu-item-main">
+										<span class="task-menu-item-title">{t.title}</span>
+										<span class="task-menu-item-id">{t.id}</span>
+									</span>
 									<span
 										class="task-menu-item-status"
 										class:running={t.status === 'running'}
 									>
-										{t.status === 'running' ? '运行中' : '等待中'}
+										{t.status === 'running'
+											? '运行中'
+											: t.status === 'paused'
+												? '已暂停'
+												: '等待中'}
 									</span>
 								</button>
 							{/each}
@@ -1596,16 +1764,10 @@
 							<path d="M4 6h16M4 12h10M4 18h16" />
 						</svg>
 						<div class="token-text">
-							<span class="token-cumulative"
-								>{tokenStats.estimated ? '约 ' : ''}{formatTokenCount(
-									tokenStats.cumulativeTotalTokens,
-								)}</span
+							<span class="token-context"
+								>{formatTokenCount(tokenStats.promptTokens || 0)}</span
 							>
-							{#if !tokenStats.estimated && tokenStats.cumulativeCostUsd != null}
-								<span class="token-cost"
-									>· {formatCostUsd(tokenStats.cumulativeCostUsd)}</span
-								>
-							{/if}
+							<span class="token-unit">ctx</span>
 						</div>
 						{#if contextBudget}
 							<div
@@ -1797,6 +1959,19 @@
 	.task-switch-caret {
 		flex-shrink: 0;
 	}
+	.task-switch-badge {
+		min-width: 18px;
+		height: 18px;
+		padding: 0 5px;
+		border-radius: 999px;
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+		font-size: 11px;
+		font-weight: 700;
+		line-height: 18px;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+	}
 	.end-task-btn {
 		display: inline-flex;
 		align-items: center;
@@ -1857,10 +2032,25 @@
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
 	}
+	.task-menu-item-main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+		flex: 1 1 auto;
+	}
 	.task-menu-item-title {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.task-menu-item-id {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		font-family: var(--md-sys-typescale-body-small-font-family, inherit);
 	}
 	.task-menu-item-status {
 		flex-shrink: 0;
@@ -1912,12 +2102,13 @@
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 	}
-	.token-cumulative {
+	.token-context {
 		font-weight: 600;
 		color: var(--md-sys-color-on-surface);
 	}
-	.token-cost {
-		opacity: 0.7;
+	.token-unit {
+		opacity: 0.6;
+		font-size: 10px;
 	}
 	.token-idle {
 		opacity: 0.5;

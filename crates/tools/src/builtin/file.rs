@@ -154,6 +154,7 @@ async fn understand_image(
                 output: serde_json::json!({"image": true, "path": path, "understand_error": true}),
                 error: Some(format!("vision call failed: {}", e)),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             });
         }
         Err(_) => {
@@ -165,6 +166,7 @@ async fn understand_image(
                     summary_timeout_secs
                 )),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             });
         }
     };
@@ -715,6 +717,7 @@ impl Tool for FilesTool {
                         }),
                         error: None,
                         truncated: false,
+                        signals: crate::tool::ToolSignals::default(),
                     });
                 }
                 let result = content.replace(old, new);
@@ -912,6 +915,7 @@ async fn summarize(
                 output: serde_json::json!({"summary_error": true, "path": path}),
                 error: Some(format!("summarizer call failed: {}", e)),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             });
         }
         Err(_) => {
@@ -923,6 +927,7 @@ async fn summarize(
                     summary_timeout_secs
                 )),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             });
         }
     };
@@ -1201,22 +1206,25 @@ mod tests {
         assert!(looks_like_binary(b"text with \x00 nul inside"));
     }
 
-    #[tokio::test]
-    async fn test_file_execute_read_too_large() {
-        let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("big.txt");
-        tokio::fs::write(&file, vec![b'a'; (128_000 + 1) as usize])
-            .await
-            .unwrap();
+    /// Write `content` to `<tmp>/<name>` and run a `read` operation on it,
+    /// returning the tool result. Shared by the too-large read tests.
+    async fn write_and_read(tmp: &TempDir, name: &str, content: impl AsRef<[u8]>) -> ToolResult {
+        let file = tmp.path().join(name);
+        tokio::fs::write(&file, content).await.unwrap();
         let path_str = file.to_string_lossy().to_string();
-
-        let result = FilesTool::default()
+        FilesTool::default()
             .execute(
                 json!({"operation": "read", "path": path_str}),
                 CancellationToken::new(),
             )
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_file_execute_read_too_large() {
+        let tmp = TempDir::new().unwrap();
+        let result = write_and_read(&tmp, "big.txt", vec![b'a'; (128_000 + 1) as usize]).await;
         assert!(result.success);
         assert!(result.output["too_large"].as_bool().unwrap());
         assert!(
@@ -1232,18 +1240,8 @@ mod tests {
         // The head read (max_chars * 4 bytes) ends mid-CJK-sequence; the
         // returned head must still decode as UTF-8, not as GBK mojibake.
         let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("big_cjk.txt");
         let content = "中".repeat(128_000 / 3 + 100);
-        tokio::fs::write(&file, &content).await.unwrap();
-        let path_str = file.to_string_lossy().to_string();
-
-        let result = FilesTool::default()
-            .execute(
-                json!({"operation": "read", "path": path_str}),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = write_and_read(&tmp, "big_cjk.txt", &content).await;
         assert!(result.success);
         assert!(result.output["too_large"].as_bool().unwrap());
         let head = result.output["content"].as_str().unwrap();
@@ -1263,22 +1261,12 @@ mod tests {
     async fn test_file_execute_read_too_large_gbk_head_still_decodes() {
         // GBK-encoded content must still fall back to GBK decoding for the head.
         let tmp = TempDir::new().unwrap();
-        let file = tmp.path().join("big_gbk.txt");
         let gbk_line = [0xC4, 0xE3, 0xBA, 0xC3]; // "你好" in GBK
         let mut content = Vec::with_capacity(128_000 + 4);
         while content.len() <= 128_000 {
             content.extend_from_slice(&gbk_line);
         }
-        tokio::fs::write(&file, &content).await.unwrap();
-        let path_str = file.to_string_lossy().to_string();
-
-        let result = FilesTool::default()
-            .execute(
-                json!({"operation": "read", "path": path_str}),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
+        let result = write_and_read(&tmp, "big_gbk.txt", &content).await;
         assert!(result.success);
         assert!(result.output["too_large"].as_bool().unwrap());
         let head = result.output["content"].as_str().unwrap();

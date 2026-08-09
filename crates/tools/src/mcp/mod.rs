@@ -832,6 +832,33 @@ impl McpClient {
         self.tools_cache.lock().await.clone().unwrap_or_default()
     }
 
+    /// Wait up to `timeout` for the server to finish connecting and populate
+    /// the tools cache, then return whatever is cached (possibly empty for a
+    /// connected server with zero tools). Returns immediately when the cache
+    /// is already populated. Gives up early on a definitive `Offline` failure
+    /// so a dead server cannot stall the caller for the whole timeout.
+    ///
+    /// Used by resume paths that re-register per-task MCP adapters after a
+    /// restart, where the background connect may still be in flight.
+    pub async fn wait_for_tools(&self, timeout: Duration) -> Vec<McpToolInfo> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(tools) = self.tools_cache.lock().await.clone() {
+                return tools;
+            }
+            if matches!(
+                &*self.status.lock().await,
+                McpClientStatus::Offline { .. }
+            ) {
+                return Vec::new();
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return self.tools_cache.lock().await.clone().unwrap_or_default();
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     pub async fn last_error(&self) -> Option<String> {
         self.last_error.lock().await.clone()
     }
@@ -894,8 +921,8 @@ impl McpClient {
             cmd
         };
 
-        let mut child = spawn_mcp_child(&self.name, &self.command, &self.args, &build)
-            .map_err(|e| {
+        let mut child =
+            spawn_mcp_child(&self.name, &self.command, &self.args, &build).map_err(|e| {
                 let hint = windows_spawn_hint(&self.command, &e);
                 anyhow::anyhow!("failed to spawn MCP server '{}': {}{}", self.name, e, hint)
             })?;
@@ -1027,8 +1054,7 @@ impl McpClient {
             );
             *self.last_diagnostic.lock().await = Some(format!(
                 "protocol version mismatch: server negotiated '{}', client supports '{}' — tool discovery may be limited or fail",
-                server_protocol,
-                PROTOCOL_VERSION
+                server_protocol, PROTOCOL_VERSION
             ));
         }
         tracing::info!(
@@ -1070,10 +1096,7 @@ impl McpClient {
                 if tools.is_empty() {
                     *self.last_diagnostic.lock().await = Some(format!(
                         "Connected, but tools/list returned 0 tools (server {} v{}, protocol {} vs client {}). Either the server exposes no tools, or the client/server protocols are incompatible — check the server's logs and its SDK protocol support.",
-                        server_name,
-                        server_version,
-                        server_protocol,
-                        PROTOCOL_VERSION
+                        server_name, server_version, server_protocol, PROTOCOL_VERSION
                     ));
                 }
             }
@@ -1227,6 +1250,7 @@ impl McpClient {
                 output,
                 error: Some(text),
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             })
         } else {
             Ok(ToolResult {
@@ -1234,6 +1258,7 @@ impl McpClient {
                 output,
                 error: None,
                 truncated: false,
+                signals: crate::tool::ToolSignals::default(),
             })
         }
     }

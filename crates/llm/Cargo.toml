@@ -10,13 +10,10 @@ tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
-chrono.workspace = true
 async-trait.workspace = true
-reqwest = { version = "0.12.28", features = ["json", "stream", "multipart"] }
+reqwest = { version = "0.13.4", features = ["json", "stream", "multipart"] }
 bytes = "1"
 futures-util.workspace = true
-eventsource-stream = "0.2"
 tokio-util.workspace = true
 regex = "1"
 base64.workspace = true

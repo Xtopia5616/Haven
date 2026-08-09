@@ -44,7 +44,14 @@ impl Tool for McpToolAdapter {
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
-        RiskLevel::Medium
+        // MCP tools run on external servers that can perform arbitrary
+        // actions (shell, file, network). Classifying them flat Medium would
+        // let them slip under a High/Critical confirmation threshold while
+        // the builtin `shell` tool stays gated — a prompt-injected agent
+        // could route all dangerous work through an adapter to bypass the
+        // gate. High keeps them gated at every threshold except "Critical
+        // only".
+        RiskLevel::High
     }
 
     fn input_schema(&self) -> Value {
@@ -86,7 +93,10 @@ impl Tool for SkillToolAdapter {
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
-        RiskLevel::Medium
+        // Skill tools execute arbitrary code (scripts) on the machine.
+        // Flat High keeps them gated at every threshold except "Critical
+        // only" — see McpToolAdapter::risk_level for the rationale.
+        RiskLevel::High
     }
 
     fn input_schema(&self) -> Value {
@@ -118,8 +128,8 @@ mod tests {
     use haven_common::config::SkillsExecConfig;
     use std::path::PathBuf;
 
-    #[tokio::test]
-    async fn mcp_adapter_qualified_name() {
+    /// A test MCP tool adapter backed by a mock client.
+    fn mcp_adapter(schema: serde_json::Value) -> McpToolAdapter {
         let client = McpClient::new(
             &haven_common::McpServerConfig {
                 name: "test-server".into(),
@@ -132,12 +142,17 @@ mod tests {
         let info = McpToolInfo {
             name: "greet".into(),
             description: "Greets the user".into(),
-            input_schema: serde_json::json!({}),
+            input_schema: schema,
         };
-        let adapter = McpToolAdapter::new(Arc::new(client), "test-server", info);
+        McpToolAdapter::new(Arc::new(client), "test-server", info)
+    }
+
+    #[tokio::test]
+    async fn mcp_adapter_qualified_name() {
+        let adapter = mcp_adapter(serde_json::json!({}));
         assert_eq!(adapter.name(), "mcp__test-server__greet");
         assert_eq!(adapter.description(), "Greets the user");
-        assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::Medium);
+        assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::High);
     }
 
     #[tokio::test]
@@ -159,26 +174,12 @@ mod tests {
         let adapter = SkillToolAdapter::new(skill, runner);
         assert_eq!(adapter.name(), "skill__echo");
         assert_eq!(adapter.description(), "Echoes input");
-        assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::Medium);
+        assert_eq!(adapter.risk_level(&Value::Null), RiskLevel::High);
     }
 
     #[tokio::test]
     async fn mcp_adapter_input_schema() {
-        let client = McpClient::new(
-            &haven_common::McpServerConfig {
-                name: "test-server".into(),
-                command: "echo".into(),
-                ..Default::default()
-            },
-            2 * 1024 * 1024,
-            2 * 1024 * 1024,
-        );
-        let info = McpToolInfo {
-            name: "greet".into(),
-            description: "Greets the user".into(),
-            input_schema: serde_json::json!({"type": "object"}),
-        };
-        let adapter = McpToolAdapter::new(Arc::new(client), "test-server", info);
+        let adapter = mcp_adapter(serde_json::json!({"type": "object"}));
         let schema = adapter.input_schema();
         assert_eq!(schema["type"], "object");
     }

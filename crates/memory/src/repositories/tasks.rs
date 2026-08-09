@@ -1,6 +1,11 @@
 use crate::db::Database;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
-use uuid::Uuid;
+
+/// WHERE clause shared by every task search query (list, count, paginated).
+/// Kept as one constant so search semantics cannot drift between queries.
+const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
+    OR EXISTS (SELECT 1 FROM messages
+               WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)";
 
 /// Map a row produced by a history-list query (8 columns, no react_state).
 fn map_task_list_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
@@ -21,11 +26,7 @@ fn map_task_list_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
 /// filtering by "today" matches what the user sees (the stored created_at is
 /// UTC). Returns None when the date is malformed.
 fn local_date_to_utc(date: &str) -> Option<String> {
-    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
-    let local_midnight = Local
-        .from_local_datetime(&day.and_hms_opt(0, 0, 0)?)
-        .earliest()?;
-    Some(local_midnight.with_timezone(&Utc).to_rfc3339())
+    local_date_to_utc_bound(date, false)
 }
 
 /// Convert a local `YYYY-MM-DD` date into the UTC instant of the *next* local
@@ -33,10 +34,14 @@ fn local_date_to_utc(date: &str) -> Option<String> {
 /// includes the whole of day X (the plain `YYYY-MM-DD <= created_at` string
 /// comparison would exclude every task created during the end day itself).
 fn local_date_to_utc_exclusive_end(date: &str) -> Option<String> {
+    local_date_to_utc_bound(date, true)
+}
+
+fn local_date_to_utc_bound(date: &str, exclusive_end: bool) -> Option<String> {
     let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
-    let next = day.succ_opt()?;
+    let day = if exclusive_end { day.succ_opt()? } else { day };
     let local_midnight = Local
-        .from_local_datetime(&next.and_hms_opt(0, 0, 0)?)
+        .from_local_datetime(&day.and_hms_opt(0, 0, 0)?)
         .earliest()?;
     Some(local_midnight.with_timezone(&Utc).to_rfc3339())
 }
@@ -55,7 +60,7 @@ pub struct Task {
 
 impl Database {
     pub fn create_task(&self, input_text: &str, transcript: &str) -> anyhow::Result<Task> {
-        let id = Uuid::new_v4().to_string();
+        let id = haven_common::types::new_id("task");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -146,13 +151,11 @@ impl Database {
     pub fn search_tasks(&self, query: &str) -> anyhow::Result<Vec<Task>> {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at, transcript 
-             FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
-                OR EXISTS (SELECT 1 FROM messages
-                           WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)
+             FROM tasks {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
-        )?;
+        ))?;
         let rows = stmt.query_map(rusqlite::params![pattern], map_task_list_row)?;
         let mut tasks = Vec::new();
         for row in rows {
@@ -170,9 +173,7 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
-                OR EXISTS (SELECT 1 FROM messages
-                           WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)",
+            &format!("SELECT COUNT(*) FROM tasks {SEARCH_WHERE}"),
             rusqlite::params![pattern],
             |r| r.get(0),
         )
@@ -187,13 +188,11 @@ impl Database {
     ) -> anyhow::Result<Vec<Task>> {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at, transcript 
-             FROM tasks WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
-                OR EXISTS (SELECT 1 FROM messages
-                           WHERE messages.task_id = tasks.id AND messages.content LIKE ?1)
+             FROM tasks {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
-        )?;
+        ))?;
         let rows = stmt.query_map(rusqlite::params![pattern, limit, offset], map_task_list_row)?;
         let mut tasks = Vec::new();
         for row in rows {
@@ -225,16 +224,32 @@ impl Database {
     pub fn clear_tasks(&self) -> anyhow::Result<usize> {
         let conn = self.conn();
         // Wrap both DELETEs in a transaction so readers don't see
-        // orphaned messages between the two operations.
+        // orphaned messages between the two operations. A mid-transaction
+        // failure rolls back explicitly — with a connection pool the
+        // checked-out connection is reused afterwards, and re-pooling with
+        // an open write transaction would poison it (later statements would
+        // run inside the abandoned transaction and the held write lock would
+        // block the other pooled connections).
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        // Delete all messages (session-level data) first.
-        conn.execute("DELETE FROM messages", [])?;
-        // CASCADE handles task_steps.
-        let count = conn.execute("DELETE FROM tasks", [])?;
-        conn.execute_batch("COMMIT")?;
-        drop(conn);
-        self.cache_invalidate_tasks();
-        Ok(count)
+        let result = (|| -> anyhow::Result<usize> {
+            // Delete all messages (session-level data) first.
+            conn.execute("DELETE FROM messages", [])?;
+            // CASCADE handles task_steps.
+            let count = conn.execute("DELETE FROM tasks", [])?;
+            Ok(count)
+        })();
+        match result {
+            Ok(count) => {
+                conn.execute_batch("COMMIT")?;
+                drop(conn);
+                self.cache_invalidate_tasks();
+                Ok(count)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// Mark every still-`running` task as `error`. Called once at app
@@ -243,8 +258,9 @@ impl Database {
     /// via the continue flow. `paused`/`pending` tasks are left untouched 鈥?
     /// they represent legitimately waiting work that should survive a
     /// restart. Checkpointed partial stream text is promoted into a real
-    /// assistant message so the user keeps what was already streamed before
-    /// the crash.
+    /// assistant message (same dedup as the task-end promote: a message
+    /// written after the last checkpoint is not duplicated) so the user
+    /// keeps what was already streamed before the crash.
     pub fn finalize_orphaned_running_tasks(&self) -> anyhow::Result<usize> {
         let now = Utc::now().to_rfc3339();
         let ids: Vec<String> = {
@@ -255,18 +271,7 @@ impl Database {
         };
         let count = self.set_running_status("error", &now, None)?;
         for id in ids {
-            if let Some(text) = self.take_partial_message(&id)
-                && !text.trim().is_empty()
-                && let Err(e) = self.add_message_full(
-                    &id,
-                    "assistant",
-                    text.trim(),
-                    Some("text"),
-                    None,
-                    &[],
-                    false,
-                )
-            {
+            if let Err(e) = self.promote_partial_message(&id) {
                 tracing::warn!(
                     "finalize_orphaned_running_tasks: failed to promote partial for task {}: {}",
                     id,
@@ -435,25 +440,64 @@ impl Database {
     }
 
     /// Save serialized ReAct state (canonical messages + history) for pause/resume.
+    ///
+    /// The snapshot is gzip-compressed before storage: every branch point
+    /// carries a full canonical + history copy, so a long task's snapshot
+    /// routinely reaches tens of MB of JSON (observed 53MB) and is rewritten
+    /// on every step boundary. Compression shrinks it ~5x (the JSON is
+    /// repetitive) and cuts both the DB size and per-step write cost.
     pub fn save_react_state(&self, task_id: &str, state_json: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
+        let compressed = compress_react_state(state_json)?;
         let conn = self.conn();
         conn.execute(
             "UPDATE tasks SET react_state = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![state_json, now, task_id],
+            rusqlite::params![compressed, now, task_id],
         )?;
         Ok(())
     }
 
-    /// Load serialized ReAct state for a paused task.
+    /// Load serialized ReAct state for a paused task. Transparently
+    /// decompresses snapshots written by `save_react_state`; legacy
+    /// uncompressed rows (older versions, stored as TEXT) are returned as-is.
     pub fn get_react_state(&self, task_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
-        conn.query_row(
-            "SELECT react_state FROM tasks WHERE id = ?1",
-            rusqlite::params![task_id],
-            |row| row.get(0),
-        )
-        .map_err(Into::into)
+        let value: Option<rusqlite::types::Value> = conn
+            .query_row(
+                "SELECT react_state FROM tasks WHERE id = ?1",
+                rusqlite::params![task_id],
+                |row| row.get(0),
+            )
+            .map_err(anyhow::Error::from)?;
+        match value {
+            Some(rusqlite::types::Value::Blob(b)) => decompress_react_state(&b).map(Some),
+            // Legacy row written before compression (plain TEXT JSON).
+            Some(rusqlite::types::Value::Text(t)) => Ok(Some(t)),
+            _ => Ok(None),
+        }
+    }
+}
+
+/// gzip-compress a JSON snapshot. Writes a leading gzip magic, which
+/// `decompress_react_state` uses to distinguish compressed from legacy rows.
+fn compress_react_state(json: &str) -> anyhow::Result<Vec<u8>> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(json.as_bytes())?;
+    Ok(enc.finish()?)
+}
+
+/// Decompress a stored snapshot; returns the input unchanged when it is not
+/// gzip (legacy uncompressed row written by an older build).
+fn decompress_react_state(blob: &[u8]) -> anyhow::Result<String> {
+    if blob.len() >= 2 && blob[0] == 0x1f && blob[1] == 0x8b {
+        use std::io::Read;
+        let mut dec = flate2::read::GzDecoder::new(blob);
+        let mut out = String::new();
+        dec.read_to_string(&mut out)?;
+        Ok(out)
+    } else {
+        String::from_utf8(blob.to_vec()).map_err(Into::into)
     }
 }
 
@@ -888,5 +932,51 @@ mod tests {
 
         let loaded = db.get_react_state(&task.id).unwrap().unwrap();
         assert_eq!(loaded, r#"{"v":2}"#);
+    }
+
+    #[test]
+    fn test_react_state_roundtrip_compresses() {
+        let db = create_db();
+        let task = db.create_task("input", "").unwrap();
+        let big = format!(
+            r#"{{"canonical":[{}]}}"#,
+            (0..500)
+                .map(|i| format!(r#"{{"role":"user","content":[{{"type":"text","text":"message {} 中文内容"}}]}}"#, i))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        db.save_react_state(&task.id, &big).unwrap();
+        let loaded = db.get_react_state(&task.id).unwrap().unwrap();
+        assert_eq!(loaded, big);
+        // The stored column must actually be compressed (not the raw JSON).
+        let raw_len: i64 = db
+            .conn()
+            .query_row(
+                "SELECT length(react_state) FROM tasks WHERE id = ?1",
+                [&task.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (raw_len as usize) < (big.len() / 2),
+            "snapshot should be compressed, raw {} vs stored {}",
+            big.len(),
+            raw_len
+        );
+    }
+
+    #[test]
+    fn test_react_state_legacy_uncompressed_still_reads() {
+        let db = create_db();
+        let task = db.create_task("input", "").unwrap();
+        // Simulate a row written by an older build (plain TEXT, no gzip magic).
+        db.conn()
+            .execute(
+                "UPDATE tasks SET react_state = ?1 WHERE id = ?2",
+                rusqlite::params![r#"{"legacy":true}"#, task.id],
+            )
+            .unwrap();
+        let loaded = db.get_react_state(&task.id).unwrap().unwrap();
+        assert_eq!(loaded, r#"{"legacy":true}"#);
     }
 }

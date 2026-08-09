@@ -85,6 +85,17 @@ impl Tool for AskTool {
             "hint": "The task is paused. The user's next message will be used as the answer and the task will resume.",
         })))
     }
+
+    /// Declare the question signal so the ReAct loop pauses the task without
+    /// name-matching "ask" or re-parsing the output.
+    fn signals(&self, output: &Value) -> crate::tool::ToolSignals {
+        let (question, options) = crate::extract_ask_signal(output);
+        crate::tool::ToolSignals {
+            ask_question: question,
+            ask_options: options,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

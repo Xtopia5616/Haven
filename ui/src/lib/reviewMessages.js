@@ -191,8 +191,8 @@ export function buildReviewMessages(data) {
 			time: formatMessageTime(step.created_at),
 			_ts: Date.parse(step.created_at) || 0,
 			streaming: false,
-			stepNumber: step.step_index,
-		});
+		stepNumber: step.step_number,
+	});
 		continue;
 	}
 	items.push({
@@ -205,11 +205,11 @@ export function buildReviewMessages(data) {
 		time: formatMessageTime(step.created_at),
 		_ts: Date.parse(step.created_at) || 0,
 		streaming: false,
-		stepNumber: step.step_index,
+		stepNumber: step.step_number,
 	});
 }
 	// Thought-only steps are not added as separate items (their text is in
-	// session messages), but we still need their step_index for stepNumber
+	// session messages), but we still need their step_number for stepNumber
 	// inference — otherwise tasks with no tool steps (e.g. errored on the
 	// first LLM call) leave all messages without a stepNumber, breaking
 	// rollback. Match by content (trimmed) to the corresponding session
@@ -225,7 +225,7 @@ export function buildReviewMessages(data) {
 		for (const item of items) {
 			if ((item.role === 'assistant' || item.role === 'user') && item.stepNumber == null
 				&& item.content.trim() === thoughtTrimmed) {
-				item.stepNumber = step.step_index;
+				item.stepNumber = step.step_number;
 				break;
 			}
 		}

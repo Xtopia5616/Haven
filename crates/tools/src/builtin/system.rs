@@ -121,7 +121,7 @@ fn cpu_info_from(system: &sysinfo::System) -> Value {
         .unwrap_or_default();
     serde_json::json!({
         "brand": brand,
-        "cores": system.physical_core_count().unwrap_or(0),
+        "cores": sysinfo::System::physical_core_count().unwrap_or(0),
         "logical_cpus": system.cpus().len(),
         "usage_pct": system.global_cpu_usage(),
     })

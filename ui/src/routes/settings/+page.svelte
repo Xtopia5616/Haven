@@ -26,6 +26,7 @@
 		role_models: {},
 		stt_use_audio_model: true,
 		vision_use_image_model: true,
+		max_concurrent_requests: 2,
 	});
 
 	let keyConfigured = $state({
@@ -298,7 +299,6 @@
 		compaction_reserve_tokens: 4096,
 		default_context_window: 128000,
 		max_observation_chars: 8000,
-		max_tool_output_chars: 20000,
 		max_transcript_chars: 4000,
 		max_attachment_images: 4,
 		max_attachment_files: 5,
@@ -356,13 +356,12 @@
 				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'tokens', danger: true, hint: '端点未配置 context_window 且模型不在内置目录时的回退窗口。调高会增大每次请求的成本与溢出风险。' },
 				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
 				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
-				{ key: 'max_observation_chars', label: '工具观察字符上限', unit: 'chars', danger: true, hint: '工具结果进入对话的最大字符数。调大直接推高 token 成本。' },
-				{ key: 'max_tool_output_chars', label: '工具输出默认上限', unit: 'chars', danger: true, hint: 'shell/file/process 等工具输出截断上限（per-tool 可覆盖）。调大 = 更多 token 与内存。' },
-				{ key: 'max_transcript_chars', label: '记忆提取转录上限', unit: 'chars', danger: true, hint: '事实/偏好提取时发送给模型的转录长度。' },
+				{ key: 'max_observation_chars', label: '工具观察字符上限', unit: 'chars', danger: true, hint: '工具结果进入对话的最大字符数，也是 shell/file/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。' },
+				{ key: 'max_transcript_chars', label: '记忆提取转录上限', unit: 'chars', danger: true, hint: '事实提取时发送给模型的转录长度。' },
 				{ key: 'notification_summary_chars', label: '通知摘要字符上限', unit: 'chars', danger: false },
 				{ key: 'partial_checkpoint_min_chars', label: '流式检查点最小增量', unit: 'chars', danger: false, hint: '部分回复累计新增多少字符后落盘一次（崩溃恢复粒度）。' },
 				{ key: 'partial_checkpoint_interval_secs', label: '流式检查点间隔', unit: 'secs', danger: false },
-				{ key: 'fact_infer_interval_steps', label: '事实推断间隔', unit: 'steps', danger: false, hint: '长任务每多少步重新做一次事实/偏好提取。调小增加调用成本。' },
+				{ key: 'fact_infer_interval_steps', label: '事实推断间隔', unit: 'steps', danger: false, hint: '长任务每多少步重新做一次事实提取。调小增加调用成本。' },
 				{ key: 'max_known_facts', label: '提示中已知事实数', unit: 'count', danger: false },
 				{ key: 'sanitize_field_max_chars', label: '事实字段消毒长度', unit: 'chars', danger: true, hint: '事实字段注入到系统提示前的截断长度。调大 = 更大提示注入面。' },
 			],
@@ -408,7 +407,7 @@
 			title: '资源上限',
 			hint: '并发与内存资源保护。调大可能造成 CPU/内存/进程占用失控。',
 			fields: [
-				{ key: 'background_max_jobs', label: '后台任务并发上限', unit: 'count', danger: true, hint: '同时运行的 background shell 任务数。调大 = 子进程失控风险。' },
+				{ key: 'background_max_jobs', label: '后台作业并发上限', unit: 'count', danger: true, hint: '同时运行的 background shell 作业数。调大 = 子进程失控风险。' },
 				{ key: 'reminders_max', label: '提醒数量上限', unit: 'count', danger: true },
 				{ key: 'reminders_due_horizon_secs', label: '提醒最远排期', unit: 'days', days: true, danger: false },
 				{ key: 'clipboard_history_entries', label: '剪贴板历史默认条数', unit: 'count', danger: false },
@@ -450,7 +449,7 @@
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let memoryRecall = $state({ query: '', kind: 'fact', results: [], loading: false });
 	let memoryMaintenance = $state({ running: false, lastCount: null });
-	let security = $state({ confirmation_mode: 'always', min_risk_level: 'low' });
+	let security = $state({ confirmation_mode: 'always', min_risk_level: 'medium' });
 
 	let stt = $state({
 		provider: 'mcp',
@@ -464,14 +463,54 @@
 		task_created: { in_app: true, windows: false },
 		task_completed: { in_app: true, windows: true },
 		task_paused: { in_app: true, windows: false },
+		task_resumed: { in_app: true, windows: false },
 		task_error: { in_app: true, windows: true },
 	});
 	let log = $state({ level: 'info', file_enabled: true });
 
-	let preferences = $state([]);
-	let prefLoaded = $state(false);
+	// Log viewer (Logging section): reads the tail of the current log file
+	// via get_log_info / read_log_tail and shows it in a dialog.
+	let logView = $state({ open: false, path: '', content: '', loading: false });
+	let logPreEl = $state(null);
+
+	async function openLogViewer() {
+		logView.loading = true;
+		try {
+			const info = await invoke('get_log_info');
+			if (!info?.enabled) {
+				addNotification('文件日志未启用，请先打开 File Logging', 'warning', 4000);
+				return;
+			}
+			await refreshLogs();
+			logView.open = true;
+		} catch (e) {
+			addNotification(e?.message || '无法读取日志', 'error', 4000);
+		} finally {
+			logView.loading = false;
+		}
+	}
+
+	async function refreshLogs() {
+		try {
+			const data = await invoke('read_log_tail', { maxLines: 300 });
+			logView.path = data.path;
+			logView.content = data.content;
+		} catch (e) {
+			addNotification(e?.message || '无法读取日志', 'error', 4000);
+		}
+	}
+
+	// Keep the viewer pinned to the newest lines whenever content changes.
+	$effect(() => {
+		if (logView.open && logPreEl) {
+			logPreEl.scrollTop = logPreEl.scrollHeight;
+		}
+	});
+
 	// Full facts management state (Memory section): every stored fact plus
 	// the manual-add form. Backed by list_facts / add_fact / delete_fact.
+	// Preferences live here too: they are facts tagged `preference` (single
+	// memory channel), so there is no separate Preferences list.
 	let facts = $state([]);
 	let factsLoaded = $state(false);
 	let newFact = $state({ predicate: '', object: '', tags: '' });
@@ -534,7 +573,7 @@
 				memory = settings.memory || memory;
 				security = {
 					confirmation_mode: settings.security?.confirmation_mode || 'always',
-					min_risk_level: settings.security?.min_risk_level || 'low',
+					min_risk_level: settings.security?.min_risk_level || 'medium',
 				};
 				stt = {
 					provider: settings.stt?.provider || 'mcp',
@@ -591,30 +630,8 @@
 		} catch (e) {
 			addNotification(`获取开机自启状态失败: ${e}`, 'error', 3000);
 		}
-		await loadPreferences();
 		await loadFacts();
 	});
-
-	async function loadPreferences() {
-		try {
-			const all = await invoke('list_facts');
-			// Preferences are facts tagged `preference` (single memory channel).
-			preferences = (all || []).filter((f) => (f.tags || []).includes('preference'));
-			prefLoaded = true;
-		} catch {
-			preferences = [];
-			logger.warn('settings', 'load preferences error');
-		}
-	}
-
-	async function deletePrefFact(factId) {
-		try {
-			await invoke('delete_fact', { factId });
-			preferences = preferences.filter((f) => f.id !== factId);
-		} catch (e) {
-			addNotification(`删除偏好失败: ${e}`, 'error', 3000);
-		}
-	}
 
 	async function loadFacts() {
 		try {
@@ -646,11 +663,6 @@
 				tags: tags.length ? tags : null,
 			});
 			facts = [created, ...facts];
-			// Keep the Preferences section in sync when the new fact carries
-			// the preference tag.
-			if ((created.tags || []).includes('preference')) {
-				preferences = [created, ...preferences];
-			}
 			newFact = { predicate: '', object: '', tags: '' };
 			addNotification('事实已保存', 'success', 2500);
 		} catch (e) {
@@ -663,11 +675,7 @@
 	async function deleteFact(factId) {
 		try {
 			await invoke('delete_fact', { factId });
-			const removed = facts.find((f) => f.id === factId);
 			facts = facts.filter((f) => f.id !== factId);
-			if (removed && (removed.tags || []).includes('preference')) {
-				preferences = preferences.filter((f) => f.id !== factId);
-			}
 		} catch (e) {
 			addNotification(`删除事实失败: ${e}`, 'error', 3000);
 		}
@@ -745,6 +753,7 @@
 						task_created: { in_app: notification.task_created.in_app, windows: notification.task_created.windows },
 						task_completed: { in_app: notification.task_completed.in_app, windows: notification.task_completed.windows },
 						task_paused: { in_app: notification.task_paused.in_app, windows: notification.task_paused.windows },
+						task_resumed: { in_app: notification.task_resumed.in_app, windows: notification.task_resumed.windows },
 						task_error: { in_app: notification.task_error.in_app, windows: notification.task_error.windows },
 					},
 			log: {
@@ -1006,10 +1015,15 @@
 	</div>
 
 	<div class="section">
-		<h2>Task</h2>
+		<h2>Task &amp; Concurrency</h2>
+		<p class="model-hint">Max Concurrent 控制同时运行的任务数；LLM Per-Endpoint Concurrency 限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个任务同时请求同一服务商触发限流（429）。</p>
 		<div class="form-row">
 			<label for="task-max-concurrent">Max Concurrent</label>
 			<MaterialNumberField id="task-max-concurrent" value={task.max_concurrent} min={1} max={10} onChange={(v) => { task.max_concurrent = v; }} />
+		</div>
+		<div class="form-row">
+			<label for="llm-max-concurrent-requests">LLM Per-Endpoint Concurrency</label>
+			<MaterialNumberField id="llm-max-concurrent-requests" value={llmConfig.max_concurrent_requests} min={1} max={16} onChange={(v) => { llmConfig.max_concurrent_requests = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="task-max-steps">Max Steps</label>
@@ -1100,17 +1114,17 @@
 			</button>
 		</div>
 		{#if factsLoaded && facts.length > 0}
-			<div class="pref-list">
+			<div class="fact-list">
 				{#each facts as fact}
-					<div class="pref-row">
-						<span class="pref-key">
+					<div class="fact-row">
+						<span class="fact-key">
 							{#if fact.subject !== 'user'}{fact.subject}:{/if}{fact.predicate}
 						</span>
-						<span class="pref-value">
+						<span class="fact-value">
 							{#if fact.source === 'inferred'}
-								<span class="pref-tag pref-tag--inf">inferred</span>
+								<span class="fact-tag fact-tag--inf">inferred</span>
 							{:else}
-								<span class="pref-tag pref-tag--user">user</span>
+								<span class="fact-tag fact-tag--user">user</span>
 							{/if}
 							{fact.object}
 						</span>
@@ -1191,33 +1205,6 @@
 		</div>
 	</div>
 
-	<div class="section pref-section">
-		<h2>Preferences</h2>
-		<p class="model-hint" style="margin-bottom: var(--md-sys-space-md)">Learned preferences from your interactions, stored as memory facts. User-set values take priority over inferred values.</p>
-		{#if prefLoaded && preferences.length > 0}
-			<div class="pref-list">
-				{#each preferences as fact}
-					<div class="pref-row">
-						<span class="pref-key">{fact.predicate}</span>
-						<span class="pref-value">
-							{#if fact.source === 'inferred'}
-								<span class="pref-tag pref-tag--inf">inferred</span>
-							{:else}
-								<span class="pref-tag pref-tag--user">user</span>
-							{/if}
-							{fact.object}
-						</span>
-						<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deletePrefFact(fact.id)} title="Delete preference">
-							&times;
-						</button>
-					</div>
-				{/each}
-			</div>
-		{:else if prefLoaded}
-			<p class="model-hint">No preferences recorded yet. They will appear here as you use Haven.</p>
-		{/if}
-	</div>
-
 	<div class="section">
 		<h2>Security</h2>
 		<div class="form-row">
@@ -1244,6 +1231,7 @@
 			{ key: 'task_created', label: 'Task Start' },
 			{ key: 'task_completed', label: 'Task Complete' },
 			{ key: 'task_paused', label: 'Task Paused' },
+			{ key: 'task_resumed', label: 'Task Resumed' },
 			{ key: 'task_error', label: 'Task Error' },
 		] as ev (ev.key)}
 			<div class="notify-grid-row">
@@ -1255,7 +1243,10 @@
 	</div>
 
 	<div class="section log-section">
-		<h2>Logging</h2>
+		<div class="llm-head">
+			<h2>Logging</h2>
+			<button class="md-btn md-btn--outlined" onclick={openLogViewer} disabled={logView.loading}>查看日志</button>
+		</div>
 		<div class="form-row switch-row">
 			<span class="switch-label">File Logging</span>
 			<MaterialSwitch checked={log.file_enabled} onChange={(v) => { log.file_enabled = v; }} />
@@ -1692,6 +1683,26 @@
 	{/snippet}
 </MaterialDialog>
 
+{#if logView.open}
+<MaterialDialog
+	open={true}
+	title="日志查看"
+	dialogClass="md-dialog--wide"
+	onClose={() => { logView.open = false; }}
+>
+	{#snippet children()}
+		{#if logView.path}
+			<p class="log-path" title={logView.path}>{logView.path}</p>
+		{/if}
+		<pre class="log-viewer" bind:this={logPreEl}>{logView.content || '（暂无日志内容）'}</pre>
+	{/snippet}
+	{#snippet footer()}
+		<button class="md-btn md-btn--outlined" onclick={refreshLogs} disabled={logView.loading}>刷新</button>
+		<button class="md-btn" onclick={() => { logView.open = false; }}>关闭</button>
+	{/snippet}
+</MaterialDialog>
+{/if}
+
 <style>
 	.settings-page { max-width: var(--md-sys-content-max-width); }
 	.settings-tabs { margin-bottom: var(--md-sys-space-xl); }
@@ -2089,25 +2100,25 @@
 		line-height: 1.5;
 		margin-bottom: var(--md-sys-space-lg);
 	}
-	.pref-list {
+	.fact-list {
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
 	}
-	.pref-row {
+	.fact-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-xs) 0;
 	}
-	.pref-key {
+	.fact-key {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 13px;
 		font-weight: 500;
 		min-width: 140px;
 		flex-shrink: 0;
 	}
-	.pref-value {
+	.fact-value {
 		color: var(--md-sys-color-on-surface);
 		font-size: 13px;
 		flex: 1;
@@ -2115,7 +2126,7 @@
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 	}
-	.pref-tag {
+	.fact-tag {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -2128,16 +2139,13 @@
 		letter-spacing: 0.5px;
 		flex-shrink: 0;
 	}
-	.pref-tag--user {
+	.fact-tag--user {
 		background: var(--md-sys-color-primary-container);
 		color: var(--md-sys-color-on-primary-container);
 	}
-	.pref-tag--inf {
+	.fact-tag--inf {
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
-	}
-	.pref-section .model-hint {
-		font-size: 12px;
 	}
 	.theme-toggle-row {
 		display: flex;
@@ -2168,5 +2176,30 @@
 	.custom-hex-input::placeholder {
 		color: var(--md-sys-color-on-surface-variant);
 		opacity: 0.6;
+	}
+	/* Log viewer dialog */
+	:global(.md-dialog--wide) {
+		width: min(760px, 92vw);
+	}
+	.log-path {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		margin: 0 0 var(--md-sys-space-sm);
+		word-break: break-all;
+	}
+	.log-viewer {
+		box-sizing: border-box;
+		max-height: 60vh;
+		overflow: auto;
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface);
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 12px;
+		line-height: 1.5;
+		padding: var(--md-sys-space-md);
+		border-radius: var(--md-sys-shape-small);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		margin: 0;
+		white-space: pre;
 	}
 </style>

@@ -29,7 +29,7 @@
 		return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 	});
 
-	// Breathing intensity scales with VAD state: speech active => brighter/larger.
+	// Waveform energy scales with VAD state: speech active => taller/faster.
 	const speaking = $derived(vadState === 'speech' && isRecording && !processing);
 
 	function handleEsc(e) {
@@ -45,7 +45,7 @@
 
 <svelte:window onkeydown={handleEsc} />
 
-	{#if isRecording || processing}
+{#if isRecording || processing}
 	<div
 		class="overlay"
 		class:speaking
@@ -53,6 +53,7 @@
 		role="status"
 		aria-live="assertive"
 		aria-label={processing ? 'transcribing' : 'recording'}
+		title={isRecording && !processing && onCancel ? 'Esc 取消' : undefined}
 		in:dropIn
 	>
 		<div class="mic-badge" class:speaking class:processing aria-hidden="true">
@@ -63,7 +64,12 @@
 			</svg>
 			{#if processing}
 				<span class="spinner-ring"></span>
+			{:else}
+				<span class="ripple"></span>
 			{/if}
+		</div>
+		<div class="eq" aria-hidden="true">
+			<span></span><span></span><span></span><span></span><span></span>
 		</div>
 		<div class="content">
 			<div class="top-row">
@@ -74,9 +80,6 @@
 						{speaking ? '正在聆听…' : '请说话'}
 					{/if}
 				</span>
-				{#if onCancel && isRecording && !processing}
-					<span class="hint">Esc 取消</span>
-				{/if}
 				<span class="timer">{display}</span>
 			</div>
 			{#if isRecording && !processing && reason}
@@ -95,11 +98,11 @@
 		z-index: var(--md-sys-z-overlay, 998);
 		display: flex;
 		align-items: center;
-		gap: var(--md-sys-space-md);
-		min-width: clamp(280px, 55vw, 400px);
-		max-width: min(92vw, 560px);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-lg) var(--md-sys-space-sm)
-			var(--md-sys-space-sm);
+		gap: var(--md-sys-space-sm);
+		min-width: clamp(176px, 32vw, 224px);
+		max-width: min(88vw, 300px);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-md) var(--md-sys-space-xs)
+			var(--md-sys-space-xs);
 		background: var(--md-sys-color-surface-container-high);
 		border-radius: var(--md-sys-shape-full);
 		box-shadow: var(--md-sys-elevation-3);
@@ -109,29 +112,26 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 40px;
-		height: 40px;
+		width: 36px;
+		height: 36px;
 		border-radius: 50%;
 		flex-shrink: 0;
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
-		animation: mic-breathe 2s var(--md-sys-motion-easing-emphasized) infinite;
 		transition: background-color var(--md-sys-motion-duration-medium)
 			var(--md-sys-motion-easing-standard);
 	}
 	.mic-badge svg {
-		width: 22px;
-		height: 22px;
+		width: 18px;
+		height: 18px;
 	}
 	.mic-badge.speaking {
 		background: var(--md-sys-color-error);
 		color: var(--md-sys-color-on-error);
-		animation-duration: 1s;
 	}
 	.mic-badge.processing {
 		background: var(--md-sys-color-primary-container);
 		color: var(--md-sys-color-on-primary-container);
-		animation: none;
 	}
 	.spinner-ring {
 		position: absolute;
@@ -141,15 +141,25 @@
 		border-top-color: var(--md-sys-color-primary);
 		animation: spin 1s linear infinite;
 	}
-	@keyframes mic-breathe {
-		0%,
-		100% {
+	.ripple {
+		position: absolute;
+		inset: 0;
+		border-radius: 50%;
+		border: 2px solid var(--md-sys-color-error);
+		opacity: 0;
+		pointer-events: none;
+	}
+	.overlay.speaking .ripple {
+		animation: ripple 1.6s var(--md-sys-motion-easing-emphasized) infinite;
+	}
+	@keyframes ripple {
+		0% {
 			transform: scale(1);
-			box-shadow: 0 0 0 0 color-mix(in srgb, var(--md-sys-color-error) 30%, transparent);
+			opacity: 0.5;
 		}
-		50% {
-			transform: scale(1.08);
-			box-shadow: 0 0 0 6px transparent;
+		100% {
+			transform: scale(2);
+			opacity: 0;
 		}
 	}
 	@keyframes spin {
@@ -158,6 +168,61 @@
 		}
 		to {
 			transform: rotate(360deg);
+		}
+	}
+	.eq {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		height: 26px;
+		flex-shrink: 0;
+	}
+	.eq span {
+		width: 3px;
+		height: 16px;
+		border-radius: 2px;
+		background: var(--md-sys-color-error);
+		opacity: 0.55;
+		transform-origin: center;
+		animation: eq-bounce 1.8s ease-in-out infinite;
+		transition: height var(--md-sys-motion-duration-medium)
+				var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-medium)
+				var(--md-sys-motion-easing-standard),
+			opacity var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
+	}
+	.overlay.speaking .eq span {
+		height: 26px;
+		opacity: 1;
+		animation-duration: 0.9s;
+	}
+	.eq span:nth-child(1) {
+		animation-delay: -0.1s;
+	}
+	.eq span:nth-child(2) {
+		animation-delay: -0.4s;
+	}
+	.eq span:nth-child(3) {
+		animation-delay: -0.2s;
+	}
+	.eq span:nth-child(4) {
+		animation-delay: -0.55s;
+	}
+	.eq span:nth-child(5) {
+		animation-delay: -0.3s;
+	}
+	.overlay.processing .eq span {
+		height: 14px;
+		opacity: 0.5;
+		background: var(--md-sys-color-primary);
+	}
+	@keyframes eq-bounce {
+		0%,
+		100% {
+			transform: scaleY(0.3);
+		}
+		50% {
+			transform: scaleY(1);
 		}
 	}
 	.content {
@@ -169,14 +234,15 @@
 	}
 	.top-row {
 		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-md);
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--md-sys-space-sm);
 		min-width: 0;
 	}
 	.state-label {
 		flex-shrink: 0;
 		white-space: nowrap;
-		font-size: 14px;
+		font-size: 13px;
 		font-weight: 500;
 		color: var(--md-sys-color-on-surface);
 	}
@@ -187,19 +253,12 @@
 		flex-shrink: 0;
 		white-space: nowrap;
 		font-family: var(--md-sys-typescale-mono);
-		font-size: 13px;
+		font-size: 12px;
 		font-weight: 700;
 		color: var(--md-sys-color-error);
 	}
 	.overlay.processing .timer {
 		color: var(--md-sys-color-primary);
-	}
-	.hint {
-		flex-shrink: 0;
-		margin-left: auto;
-		white-space: nowrap;
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.reason {
 		overflow: hidden;

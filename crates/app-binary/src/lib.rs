@@ -369,6 +369,41 @@ impl TauriEmitter {
                         .show();
                 }
             }
+            AgentEvent::TaskUpdated { task_id, status } if status == "pending" => {
+                // A transition to Pending after a Paused/Error state is a
+                // resume (continue flow, ask answer, job-completion wake).
+                // Surface it as a Windows toast when enabled so the user
+                // knows the task is running again without checking the app.
+                let notify = self
+                    .handle
+                    .state::<Arc<AppState>>()
+                    .config_loader
+                    .lock()
+                    .map(|c| c.config().notification.task_resumed.windows)
+                    .unwrap_or(false);
+                if notify {
+                    let display = self
+                        .handle
+                        .state::<Arc<AppState>>()
+                        .db
+                        .get_task(task_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|t| {
+                            t.title
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| (!t.input_text.is_empty()).then_some(t.input_text))
+                        })
+                        .unwrap_or_else(|| task_id.clone());
+                    let _ = self
+                        .handle
+                        .notification()
+                        .builder()
+                        .title("Haven")
+                        .body(format!("Task resumed: {}", display))
+                        .show();
+                }
+            }
             AgentEvent::Notification {
                 task_id: _,
                 title,
@@ -416,7 +451,9 @@ impl desktop::ShellHandler for HavenShellHandler {
             );
             return;
         }
-        crate::commands::emit_recording_started(&self.app_h);
+        let state = self.app_h.state::<Arc<AppState>>();
+        let session_id = crate::commands::begin_recording_session(&state);
+        crate::commands::emit_recording_started(&self.app_h, &session_id);
     }
 
     async fn on_recording_stop(&self) {
@@ -595,10 +632,37 @@ pub fn run() {
                 handle: handle.clone(),
                 chunk_seq: AtomicU64::new(0),
             });
+            // Decouple the agent loops from the Tauri IPC subscriber chain:
+            // emits become bounded-channel sends drained by a consumer task,
+            // so a slow webview or toast notification can never stall agent
+            // progress (previously every event was awaited end-to-end).
+            let buffered = haven_agent::BufferedEmitter::new(1024, emitter);
             tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
-                rt.block_on(bus.subscribe("tauri", emitter));
+                rt.block_on(bus.subscribe("tauri", buffered));
             });
+
+            // Forward activity lifecycle to the frontend (`activity:created`
+            // / `activity:updated` / `activity:output` / `activity:finished`)
+            // so the activity panel stays live while tasks run in the
+            // background. Emits are fire-and-forget like every other Tauri
+            // event. Jobs (`job_id` payloads) and reminders (`id` payloads)
+            // share this sink.
+            let job_sink_handle = handle.clone();
+            state.tools.background_jobs.set_event_sink(Arc::new(
+                move |event: String, payload: serde_json::Value| {
+                    let _ = job_sink_handle.emit(&event, payload);
+                },
+            ));
+
+            // Same for reminders, so the pending list in the activity panel
+            // stays live and fired reminders can be acknowledged.
+            let reminder_sink_handle = handle.clone();
+            state.tools.reminders.set_event_sink(Arc::new(
+                move |event: String, payload: serde_json::Value| {
+                    let _ = reminder_sink_handle.emit(&event, payload);
+                },
+            ));
 
             let cfg = state.config_loader.lock().unwrap();
             let is_hold = cfg.config().hotkey.mode == haven_common::types::HotkeyMode::Hold;
@@ -712,25 +776,43 @@ pub fn run() {
                 {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
-                    let st_arc2 = st_arc.clone();
                     rt.block_on(async {
-                        *st_arc.executor.on_confirm_request.lock().await = Some(Box::new(move |step_id: String, tool_name: String, risk_level: haven_common::types::RiskLevel| {
-                            let task_id = tokio::task::block_in_place(|| {
-                                let rt = tokio::runtime::Handle::current();
-                                rt.block_on(async {
-                                    let tasks = st_arc2.executor.list_tasks().await;
-                                    tasks.iter()
-                                        .find(|t| t.steps.iter().any(|s| s.id == step_id))
-                                        .map(|t| t.id.clone())
-                                        .unwrap_or_default()
-                                })
-                            });
+                        *st_arc.executor.on_confirm_request.lock().await = Some(Box::new(move |step_id: haven_common::types::ConfirmId, task_id: String, tool_name: String, risk_level: haven_common::types::RiskLevel| {
                             let _ = app_h.emit("confirm:requested", serde_json::json!({
                                 "step_id": step_id,
                                 "tool_name": tool_name,
                                 "risk_level": risk_level,
                                 "task_id": task_id,
                             }));
+                        }));
+                    });
+                }
+
+                // Wire up the terminal-failure callback: the dispatcher's
+                // panic/abort path marks the task Error without going through
+                // the ReAct loop's event emission, so the UI would never learn
+                // about the transition (stuck busy chip, stale task list).
+                // Emit both channels in the same shapes the loop uses.
+                {
+                    let app_h = handle.clone();
+                    let st_arc = state.inner().clone();
+                    rt.block_on(async {
+                        *st_arc.executor.on_task_error.lock().await = Some(Box::new(move |task_id: String, reason: String| {
+                            let _ = app_h.emit(
+                                "task:error",
+                                serde_json::json!({
+                                    "task_id": task_id,
+                                    "error": reason,
+                                }),
+                            );
+                            let _ = app_h.emit(
+                                "task:updated",
+                                serde_json::json!({
+                                    "task_id": task_id,
+                                    "status": "error",
+                                    "title": "",
+                                }),
+                            );
                         }));
                     });
                 }
@@ -808,6 +890,10 @@ pub fn run() {
             commands::reopen_task,
             commands::get_last_conversation,
             commands::get_tasks,
+            commands::list_activities,
+            commands::cancel_activity,
+            commands::list_activity_history,
+            commands::delete_activity,
             commands::end_task,
             commands::resolve_confirmation,
             commands::get_tools,
@@ -855,6 +941,8 @@ pub fn run() {
             commands::rollback_task,
             commands::continue_task,
             commands::update_task_title,
+            commands::get_log_info,
+            commands::read_log_tail,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Haven app")
@@ -1016,6 +1104,7 @@ fn degraded_app_state(
         shell,
         log_filter_handles: filter_handles,
         config_loader: config_loader_arc,
+        recording_session: Arc::new(std::sync::Mutex::new(None)),
     }
 }
 

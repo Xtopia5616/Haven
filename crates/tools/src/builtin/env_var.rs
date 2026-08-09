@@ -68,6 +68,7 @@ impl Tool for EnvTool {
                         output: serde_json::json!({"name": name, "value": null}),
                         error: None,
                         truncated: false,
+                        signals: crate::tool::ToolSignals::default(),
                     }),
                     Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
                 }

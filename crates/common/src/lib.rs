@@ -1,6 +1,7 @@
 pub mod config;
 pub mod encoding;
 pub mod prompts;
+pub mod text;
 pub mod types;
 
 pub use config::{

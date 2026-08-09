@@ -201,6 +201,25 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		const out = accumulateStreamChunk(m, { ...base, delta: '不匹配的增量' });
 		expect(out).toBe(m);
 	});
+
+	it('inserts a late reasoning block in front of the thought, not below it', () => {
+		// Interleaved providers may emit text first and reasoning after.
+		// The reasoning must sit ABOVE the answer from the first chunk —
+		// appending it at the end would show Thinking... below the content
+		// until the snap reorders it.
+		let m = chunk([], '回答文字。');
+		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
+		m = accumulateStreamChunk(m, { ...base, delta: '迟到的推理' });
+		expect(m.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+		expect(m[0]).toMatchObject({ id: REASONING_ID, content: '迟到的推理', streaming: true });
+	});
+
+	it('appends a reasoning block when no thought segment exists yet', () => {
+		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
+		const m = accumulateStreamChunk([], { ...base, delta: '先推理' });
+		expect(m).toHaveLength(1);
+		expect(m[0].id).toBe(REASONING_ID);
+	});
 });
 
 describe('applyThoughtSnap', () => {
@@ -292,6 +311,47 @@ describe('applyThoughtSnap', () => {
 		m = chunk(m, '回答文字。');
 		const out = snap(m, '回答文字。');
 		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+	});
+
+	it('keeps the user question before the reasoning (does not jump above it)', () => {
+		// Reported bug: with [user, reasoning, thought-seg], the off-by-one
+		// insertion pushed thinking ABOVE the user question.
+		const user = { id: 'user-1', role: 'user', content: '问题' };
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '思考中',
+			streaming: true,
+		};
+		let m = [user, reasoning];
+		m = chunk(m, '回答。');
+		const out = snap(m, '回答。');
+		expect(out.map((x) => x.id)).toEqual(['user-1', REASONING_ID, STEP_ID]);
+	});
+
+	it('keeps a tool card in order when collapsing a later step', () => {
+		// A prior tool card must not sink below the merged thought/reasoning
+		// when a subsequent step's segments are collapsed.
+		const user = { id: 'user-1', role: 'user', content: '问题' };
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '先查一下',
+			streaming: true,
+		};
+		const tool = {
+			id: 'tool-t-1-0-1',
+			role: 'assistant',
+			type: 'tool',
+			content: '观察结果',
+			streaming: false,
+			stepNumber: 1,
+		};
+		let m = [user, reasoning];
+		m = chunk(m, '我先查一下。');
+		m = [...m, tool];
+		const out = snap(m, '我先查一下。');
+		expect(out.map((x) => x.id)).toEqual(['user-1', REASONING_ID, STEP_ID, tool.id]);
 	});
 });
 

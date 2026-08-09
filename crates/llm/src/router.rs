@@ -72,6 +72,28 @@ impl EndpointRole {
 // §2.6: Circuit Breaker state
 // ---------------------------------------------------------------------------
 
+/// Stream wrapper that holds a role's concurrency permit until the stream is
+/// dropped, so a raw `chat_stream` result cannot bypass the per-endpoint
+/// in-flight cap once the caller starts consuming it.
+struct PermitStream<S> {
+    inner: S,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl<S> futures_util::Stream for PermitStream<S>
+where
+    S: futures_util::Stream + Unpin,
+{
+    type Item = S::Item;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum CircuitState {
     Closed,   // normal operation
@@ -200,6 +222,15 @@ impl EndpointHealth {
     }
 }
 
+/// The mutable runtime state every `LlmRouter` constructor initializes the
+/// same way (health trackers, stream rules, semaphores, rate-limit cooldowns).
+type RuntimeStateParts = (
+    RwLock<[EndpointHealth; 6]>,
+    RwLock<Vec<StreamRule>>,
+    StdMutex<[Arc<tokio::sync::Semaphore>; 6]>,
+    RwLock<[Option<Instant>; 6]>,
+);
+
 pub struct LlmRouter {
     config: Arc<RwLock<LlmConfig>>,
     pub small_model: Arc<dyn LlmClient>,
@@ -213,16 +244,48 @@ pub struct LlmRouter {
     health: RwLock<[EndpointHealth; 6]>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
+    /// Per-role concurrency limit: at most `llm.max_concurrent_requests`
+    /// requests may be in flight per endpoint role. Parallel tasks hitting
+    /// the same provider queue here instead of piling onto the provider
+    /// (which would produce 429 storms and thundering-herd retries).
+    /// Semaphores are created from the config at construction; a settings
+    /// save rebuilds the router (`hot_swap_router`), so the limit is
+    /// applied to new requests immediately. The mutex is only held to clone
+    /// an `Arc<Semaphore>` (never across an await), so it adds no contention.
+    semaphores: StdMutex<[Arc<tokio::sync::Semaphore>; 6]>,
+    /// Shared rate-limit cooldown per role: when a request ends with a 429
+    /// (RateLimit), subsequent callers to the same role wait until the
+    /// deadline before dispatching, so a burst of parallel tasks does not
+    /// retry simultaneously and amplify the load.
+    rate_limited: RwLock<[Option<Instant>; 6]>,
 }
 
 impl LlmRouter {
     pub fn new(config: LlmConfig) -> Self {
+        // Failover sanity check: when the balanced slot points at the same
+        // endpoint+model as the primary, any primary failure (timeout, empty
+        // response, provider outage) will fail identically on failover — the
+        // fallback is a copy, not a fallback. Warn loudly so the misconfig is
+        // visible (the user's "对话不回复" reports all traced back to this).
+        if config.balanced_model.base_url == config.default_model.base_url
+            && config.balanced_model.model_name == config.default_model.model_name
+        {
+            tracing::warn!(
+                "balanced_model points at the same endpoint+model as default_model ({} | {}) — \
+                 failover will not help when the primary fails. Configure a different provider \
+                 for the balanced slot.",
+                config.default_model.base_url,
+                config.default_model.model_name
+            );
+        }
         let small_model = Arc::from(adapter_for(&config.small_model));
         let default_model = Arc::from(adapter_for(&config.default_model));
         let balanced_model = Arc::from(adapter_for(&config.balanced_model));
         let image_model = Arc::from(adapter_for(&config.image_model));
         let audio_model = Arc::from(adapter_for(&config.audio_model));
         let embedding_model = Arc::from(adapter_for(&config.embedding_model));
+        let request_limit = Self::request_limit(&config);
+        let (health, stream_rules, semaphores, rate_limited) = Self::runtime_state(request_limit);
         Self {
             config: Arc::new(RwLock::new(config)),
             small_model,
@@ -232,7 +295,27 @@ impl LlmRouter {
             audio_model,
             embedding_model,
             balanced_model_active: AtomicBool::new(false),
-            health: RwLock::new([
+            health,
+            stream_rules,
+            semaphores,
+            rate_limited,
+        }
+    }
+
+    /// Config-driven per-role request limit. Clamped to >= 1 so a hand-edited
+    /// 0 (or a config without the new field) can never deadlock the router on
+    /// an unacquirable permit.
+    fn request_limit(config: &LlmConfig) -> usize {
+        config.max_concurrent_requests.max(1)
+    }
+
+    /// Default runtime state shared by every constructor: per-role health
+    /// trackers, stream rules, concurrency semaphores, and rate-limit flags.
+    fn runtime_state(
+        request_limit: usize,
+    ) -> RuntimeStateParts {
+        (
+            RwLock::new([
                 EndpointHealth::new(),
                 EndpointHealth::new(),
                 EndpointHealth::new(),
@@ -240,8 +323,113 @@ impl LlmRouter {
                 EndpointHealth::new(),
                 EndpointHealth::new(),
             ]),
-            stream_rules: RwLock::new(Vec::new()),
+            RwLock::new(Vec::new()),
+            StdMutex::new(Self::make_semaphores(request_limit)),
+            RwLock::new([None, None, None, None, None, None]),
+        )
+    }
+
+    /// Clone the concurrency permit for a role (the mutex is released before
+    /// any await; the Arc clone is cheap).
+    fn role_permit(&self, idx: usize) -> Arc<tokio::sync::Semaphore> {
+        self.semaphores.lock().unwrap()[idx].clone()
+    }
+
+    fn make_semaphores(limit: usize) -> [Arc<tokio::sync::Semaphore>; 6] {
+        [
+            Arc::new(tokio::sync::Semaphore::new(limit)),
+            Arc::new(tokio::sync::Semaphore::new(limit)),
+            Arc::new(tokio::sync::Semaphore::new(limit)),
+            Arc::new(tokio::sync::Semaphore::new(limit)),
+            Arc::new(tokio::sync::Semaphore::new(limit)),
+            Arc::new(tokio::sync::Semaphore::new(limit)),
+        ]
+    }
+
+    /// Wait out the shared rate-limit cooldown for a role (if any).
+    async fn wait_rate_limit_cooldown(&self, role: &EndpointRole) {
+        let idx = Self::health_index(role);
+        let cooldown_until = self.rate_limited.read().await[idx];
+        if let Some(until) = cooldown_until {
+            let now = Instant::now();
+            if until > now {
+                tracing::debug!(
+                    "router role {:?} rate-limited, waiting {:?} before dispatch",
+                    role,
+                    until - now
+                );
+                tokio::time::sleep(until - now).await;
+            }
         }
+    }
+
+    /// Extend the shared cooldown for a role after a RateLimit result, so a
+    /// burst of parallel tasks queues behind the longest wait instead of
+    /// re-hammering the provider simultaneously.
+    ///
+    /// The wait is CLAMPED: `Retry-After` comes from the (possibly hostile or
+    /// misbehaving) provider, and the cooldown blocks the whole role while
+    /// holding a semaphore permit — an unbounded value would freeze every
+    /// agent/embedding/STT request through that endpoint.
+    async fn record_rate_limit(&self, role: &EndpointRole, retry_after: Option<Duration>) {
+        let idx = Self::health_index(role);
+        // Cap at 30s: long enough to ride out a provider-side rate window,
+        // short enough that a hostile endpoint cannot pin the role.
+        let wait = retry_after
+            .unwrap_or(Duration::from_secs(5))
+            .min(Duration::from_secs(30));
+        let until = Instant::now() + wait;
+        let mut rl = self.rate_limited.write().await;
+        if rl[idx].is_none_or(|c| c < until) {
+            rl[idx] = Some(until);
+        }
+    }
+
+    /// Run `f` under the role's concurrency permit, waiting out any shared
+    /// rate-limit cooldown first. The permit is held across the WHOLE call
+    /// (including retries and stream consumption), so the concurrency cap is
+    /// real provider load, not just request starts.
+    ///
+    /// After a RateLimit result, the role's cooldown is extended so other
+    /// tasks queue behind this one instead of re-hammering the provider —
+    /// `with_retry` already waits per-request, this paces the herd.
+    async fn with_endpoint_permit<T, F, Fut>(
+        &self,
+        role: &EndpointRole,
+        f: F,
+    ) -> Result<T, LlmError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, LlmError>>,
+    {
+        let idx = Self::health_index(role);
+        let permit = self
+            .role_permit(idx)
+            .acquire_owned()
+            .await
+            .map_err(|_| LlmError::ServerError("router semaphore closed".into()))?;
+        self.wait_rate_limit_cooldown(role).await;
+        let result = f().await;
+        if let Err(LlmError::RateLimit { retry_after }) = &result {
+            self.record_rate_limit(role, *retry_after).await;
+        }
+        drop(permit);
+        result
+    }
+
+    /// Test utility: replace the per-role semaphores with a new limit, to
+    /// exercise the concurrency cap without rebuilding the router with real
+    /// HTTP adapters. Production limits come from `llm.max_concurrent_requests`
+    /// at construction (and are refreshed by `hot_swap_router` on save).
+    #[doc(hidden)]
+    pub fn set_request_limit_for_test(&self, limit: usize) {
+        *self.semaphores.lock().unwrap() = Self::make_semaphores(limit.max(1));
+    }
+
+    /// Test utility: read the current rate-limit cooldown deadline for a role.
+    #[doc(hidden)]
+    pub async fn rate_limit_deadline_for_test(&self, role: &EndpointRole) -> Option<Instant> {
+        self.rate_limited.read().await[Self::health_index(role)]
     }
 
     pub fn new_with_clients(
@@ -271,6 +459,7 @@ impl LlmRouter {
         audio_model: Arc<dyn LlmClient>,
         embedding_model: Arc<dyn LlmClient>,
     ) -> Self {
+        let (health, stream_rules, semaphores, rate_limited) = Self::runtime_state(64);
         Self {
             config: Arc::new(RwLock::new(LlmConfig::default())),
             small_model,
@@ -280,15 +469,13 @@ impl LlmRouter {
             audio_model,
             embedding_model,
             balanced_model_active: AtomicBool::new(false),
-            health: RwLock::new([
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-                EndpointHealth::new(),
-            ]),
-            stream_rules: RwLock::new(Vec::new()),
+            health,
+            stream_rules,
+            // Test constructors bypass the config, so use a high per-role
+            // limit: the semaphore is meant to pace real provider traffic,
+            // not to serialize mock-based tests.
+            semaphores,
+            rate_limited,
         }
     }
 
@@ -487,6 +674,11 @@ impl LlmRouter {
             Err(primary_err) => {
                 // §2.13: preserve primary error
                 self.record_failure(role).await;
+                // Record the shared cooldown at the source: the error is about
+                // to be wrapped into AllEndpointsFailed, losing its type.
+                if let LlmError::RateLimit { retry_after } = &primary_err {
+                    self.record_rate_limit(role, *retry_after).await;
+                }
                 let primary_msg = primary_err.to_string();
                 tracing::warn!(
                     "primary endpoint failed: {}, attempting balanced model",
@@ -512,6 +704,9 @@ impl LlmRouter {
                 match balanced_result {
                     Ok(v) => Ok(v),
                     Err(balanced_err) => {
+                        if let LlmError::RateLimit { retry_after } = &balanced_err {
+                            self.record_rate_limit(role, *retry_after).await;
+                        }
                         let balanced_msg = balanced_err.to_string();
                         Err(LlmError::AllEndpointsFailed(primary_msg, balanced_msg))
                     }
@@ -525,11 +720,14 @@ impl LlmRouter {
         role: EndpointRole,
         messages: Vec<LlmMessage>,
     ) -> Result<LlmResponse, LlmError> {
-        self.check_circuit(&role).await?;
-        let primary = self.select_endpoint(role);
-        self.with_total_timeout(|| async {
-            self.call_with_retry_and_balanced_model(primary, messages, Vec::new(), &role)
-                .await
+        self.with_endpoint_permit(&role, || async {
+            self.check_circuit(&role).await?;
+            let primary = self.select_endpoint(role);
+            self.with_total_timeout(|| async {
+                self.call_with_retry_and_balanced_model(primary, messages, Vec::new(), &role)
+                    .await
+            })
+            .await
         })
         .await
     }
@@ -579,41 +777,44 @@ impl LlmRouter {
             });
         }
         let role = EndpointRole::EmbeddingModel;
-        self.check_circuit(&role).await?;
-        let primary = self.select_endpoint(role);
-        let cfg = self.config.read().await;
-        let base = cfg.retry_base_secs;
-        let factor = cfg.retry_factor;
-        let max_secs = cfg.retry_max_secs;
-        let jitter = cfg.retry_jitter;
-        let max_dur = cfg.max_total_duration_secs;
-        drop(cfg);
+        self.with_endpoint_permit(&role, || async {
+            self.check_circuit(&role).await?;
+            let primary = self.select_endpoint(role);
+            let cfg = self.config.read().await;
+            let base = cfg.retry_base_secs;
+            let factor = cfg.retry_factor;
+            let max_secs = cfg.retry_max_secs;
+            let jitter = cfg.retry_jitter;
+            let max_dur = cfg.max_total_duration_secs;
+            drop(cfg);
 
-        let result = tokio::time::timeout(Duration::from_secs(max_dur), async {
-            with_retry(3, base, factor, max_secs, jitter, None, || {
-                primary.embed(input.clone())
+            let result = tokio::time::timeout(Duration::from_secs(max_dur), async {
+                with_retry(3, base, factor, max_secs, jitter, None, || {
+                    primary.embed(input.clone())
+                })
+                .await
             })
-            .await
-        })
-        .await;
+            .await;
 
-        match result {
-            Ok(Ok(v)) => {
-                self.record_success(&role).await;
-                Ok(v)
+            match result {
+                Ok(Ok(v)) => {
+                    self.record_success(&role).await;
+                    Ok(v)
+                }
+                Ok(Err(e)) => {
+                    self.record_failure(&role).await;
+                    Err(e)
+                }
+                Err(_) => {
+                    self.record_failure(&role).await;
+                    Err(LlmError::Timeout(format!(
+                        "embedding total timeout after {}s",
+                        max_dur
+                    )))
+                }
             }
-            Ok(Err(e)) => {
-                self.record_failure(&role).await;
-                Err(e)
-            }
-            Err(_) => {
-                self.record_failure(&role).await;
-                Err(LlmError::Timeout(format!(
-                    "embedding total timeout after {}s",
-                    max_dur
-                )))
-            }
-        }
+        })
+        .await
     }
 
     /// Convenience wrapper for single-text embedding.
@@ -628,11 +829,14 @@ impl LlmRouter {
         messages: Vec<LlmMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
-        self.check_circuit(&role).await?;
-        let primary = self.select_endpoint(role);
-        self.with_total_timeout(|| async {
-            self.call_with_retry_and_balanced_model(primary, messages, tools, &role)
-                .await
+        self.with_endpoint_permit(&role, || async {
+            self.check_circuit(&role).await?;
+            let primary = self.select_endpoint(role);
+            self.with_total_timeout(|| async {
+                self.call_with_retry_and_balanced_model(primary, messages, tools, &role)
+                    .await
+            })
+            .await
         })
         .await
     }
@@ -649,13 +853,23 @@ impl LlmRouter {
         >,
         LlmError,
     > {
+        let idx = Self::health_index(&role);
+        let permit = self
+            .role_permit(idx)
+            .acquire_owned()
+            .await
+            .map_err(|_| LlmError::ServerError("router semaphore closed".into()))?;
+        self.wait_rate_limit_cooldown(&role).await;
         self.check_circuit(&role).await?;
         let primary = self.select_endpoint(role);
         match primary.chat_stream(messages.clone()).await {
             Ok(stream) => {
                 self.record_success(&role).await;
                 self.balanced_model_active.store(false, Ordering::SeqCst);
-                Ok(stream)
+                Ok(Box::pin(PermitStream {
+                    inner: stream,
+                    _permit: Some(permit),
+                }))
             }
             Err(e) => {
                 self.record_failure(&role).await;
@@ -664,7 +878,11 @@ impl LlmRouter {
                     e
                 );
                 self.balanced_model_active.store(true, Ordering::SeqCst);
-                self.balanced_model.chat_stream(messages).await
+                let stream = self.balanced_model.chat_stream(messages).await?;
+                Ok(Box::pin(PermitStream {
+                    inner: stream,
+                    _permit: Some(permit),
+                }))
             }
         }
     }
@@ -696,7 +914,78 @@ impl LlmRouter {
     /// Applies `max_total_duration_secs` as an overall deadline (§2.12).
     /// Each endpoint is tried at most once (no retry) to avoid duplicating
     /// thought/reasoning chunks in the shared `on_chunk` callback.
+    ///
+    /// Runs under the role's concurrency permit (see
+    /// [`Self::with_endpoint_permit`]): the permit covers the whole stream —
+    /// retries, failover and chunk consumption — so parallel tasks cannot
+    /// exceed the configured per-endpoint in-flight request cap.
     pub async fn chat_stream_with_tools_aggregated_cancellable(
+        &self,
+        role: EndpointRole,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
+        cancel: CancellationToken,
+    ) -> Result<LlmResponse, LlmError> {
+        self.with_endpoint_permit(&role, || async {
+            self.chat_stream_with_tools_aggregated_cancellable_inner(
+                role, messages, tools, on_chunk, cancel,
+            )
+            .await
+        })
+        .await
+    }
+
+    /// Re-run a stream on the primary endpoint after a stream rule aborted it,
+    /// injecting the rule's guidance as a trailing user message. Shared by the
+    /// single-attempt and balanced-failover streaming paths. `err` must be a
+    /// `StreamAborted` variant.
+    async fn retry_stream_with_guidance(
+        &self,
+        primary: &Arc<dyn LlmClient>,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        on_chunk: &Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
+        cancel: CancellationToken,
+        err: LlmError,
+    ) -> Result<LlmResponse, LlmError> {
+        let LlmError::StreamAborted(rule_name, inject) = err else {
+            return Err(err);
+        };
+        tracing::warn!(
+            "stream aborted by rule '{}', injecting guidance and retrying with primary",
+            rule_name
+        );
+        // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
+        // time out instantly, disabling all model replies.
+        let idle_dur = Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1));
+        let mut retry_msgs = messages.to_vec();
+        // The guidance is appended AFTER the assistant's partial
+        // turn. A trailing System message breaks OpenAI-compatible
+        // providers (system must lead the request) and is merged
+        // into the top-level system field by Anthropic/Gemini,
+        // losing its position. A User message is legal anywhere.
+        retry_msgs.push(LlmMessage {
+            role: LlmRole::User,
+            content: vec![ContentPart::text(inject)],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+        });
+        Self::aggregate_stream_cancellable(
+            primary.clone(),
+            retry_msgs,
+            tools.to_vec(),
+            on_chunk.clone(),
+            cancel,
+            &self.stream_rules,
+            idle_dur,
+        )
+        .await
+    }
+
+    async fn chat_stream_with_tools_aggregated_cancellable_inner(
         &self,
         role: EndpointRole,
         messages: &[LlmMessage],
@@ -716,6 +1005,9 @@ impl LlmRouter {
 
         let cfg = self.config.read().await;
         let max_dur = cfg.max_total_duration_secs;
+        // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
+        // time out instantly, disabling all model replies.
+        let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
 
         match tokio::time::timeout(Duration::from_secs(max_dur), async {
@@ -727,6 +1019,7 @@ impl LlmRouter {
                 on_chunk.clone(),
                 cancel.clone(),
                 &self.stream_rules,
+                idle_dur,
             )
             .await;
 
@@ -736,32 +1029,14 @@ impl LlmRouter {
                     self.balanced_model_active.store(false, Ordering::SeqCst);
                     Ok(resp)
                 }
-                Err(LlmError::StreamAborted(rule_name, inject)) => {
-                    tracing::warn!(
-                        "stream aborted by rule '{}', injecting guidance and retrying with primary",
-                        rule_name
-                    );
-                    let mut retry_msgs = messages.to_vec();
-                    // The guidance is appended AFTER the assistant's partial
-                    // turn. A trailing System message breaks OpenAI-compatible
-                    // providers (system must lead the request) and is merged
-                    // into the top-level system field by Anthropic/Gemini,
-                    // losing its position. A User message is legal anywhere.
-                    retry_msgs.push(LlmMessage {
-                        role: LlmRole::User,
-                        content: vec![ContentPart::text(inject)],
-                        tool_call_id: None,
-                        tool_calls: None,
-                        reasoning: None,
-                        web_search_calls: Vec::new(),
-                    });
-                    Self::aggregate_stream_cancellable(
-                        primary,
-                        retry_msgs,
-                        tools.to_vec(),
-                        on_chunk,
-                        cancel,
-                        &self.stream_rules,
+                Err(err @ LlmError::StreamAborted(_, _)) => {
+                    self.retry_stream_with_guidance(
+                        &primary,
+                        messages,
+                        tools,
+                        &on_chunk,
+                        cancel.clone(),
+                        err,
                     )
                     .await
                 }
@@ -769,48 +1044,117 @@ impl LlmRouter {
                     if cancel.is_cancelled() {
                         return Err(LlmError::Cancelled);
                     }
+                    // Record the shared cooldown at the source: the error is
+                    // about to be wrapped/retried, losing its type (mirrors
+                    // `call_with_retry_and_balanced_model`).
+                    if let LlmError::RateLimit { retry_after } = &e {
+                        self.record_rate_limit(&role, *retry_after).await;
+                    }
                     if !e.is_retryable() {
                         return Err(e);
                     }
                     self.record_failure(&role).await;
                     tracing::debug!(
-                        "primary stream failed: {}, waiting before balanced model",
+                        "primary stream failed: {}, retrying primary once before balanced model",
                         e
                     );
 
-                    // Delay before balanced model to allow transient issues to settle
+                    // Delay before the retry to allow transient issues to
+                    // settle; honor the provider's Retry-After when present
+                    // (a 429's wait is longer than the generic backoff).
                     let cfg = self.config.read().await;
                     let base = cfg.retry_base_secs;
                     let jitter = cfg.retry_jitter;
                     drop(cfg);
-                    let jitter_ms = (base as f32 * jitter * 1000.0) as u64;
+                    let retry_after = match &e {
+                        LlmError::RateLimit { retry_after } => *retry_after,
+                        _ => None,
+                    };
+                    let wait_base =
+                        retry_after.map(|d| d.as_secs()).unwrap_or(base).max(base);
+                    let jitter_ms = (wait_base as f32 * jitter * 1000.0) as u64;
                     tokio::time::sleep(
-                        Duration::from_secs(base) + Duration::from_millis(jitter_ms),
+                        Duration::from_secs(wait_base) + Duration::from_millis(jitter_ms),
                     )
                     .await;
 
                     if cancel.is_cancelled() {
                         return Err(LlmError::Cancelled);
                     }
-                    self.balanced_model_active.store(true, Ordering::SeqCst);
-
-                    // Balanced model: single attempt with cancellation
-                    let fb_result = Self::aggregate_stream_cancellable(
-                        self.balanced_model.clone(),
+                    // Retry the PRIMARY once before failing over: transient
+                    // connection/stream failures (connect refused, reset,
+                    // provider hiccup) usually clear within seconds, and the
+                    // balanced slot frequently points at the same provider —
+                    // failing over immediately would double the failure
+                    // probability instead of giving the primary a second
+                    // chance. Only after the primary retry fails do we switch.
+                    let retry_result = Self::aggregate_stream_cancellable(
+                        primary.clone(),
                         messages.to_vec(),
                         tools.to_vec(),
-                        on_chunk,
-                        cancel,
+                        on_chunk.clone(),
+                        cancel.clone(),
                         &self.stream_rules,
+                        idle_dur,
                     )
                     .await;
 
-                    match fb_result {
-                        Ok(resp) => Ok(resp),
-                        Err(fb_err) => Err(LlmError::AllEndpointsFailed(
-                            e.to_string(),
-                            fb_err.to_string(),
-                        )),
+                    match retry_result {
+                        Ok(resp) => {
+                            self.record_success(&role).await;
+                            self.balanced_model_active.store(false, Ordering::SeqCst);
+                            Ok(resp)
+                        }
+                        Err(err @ LlmError::StreamAborted(_, _)) => {
+                            self.retry_stream_with_guidance(
+                                &primary,
+                                messages,
+                                tools,
+                                &on_chunk,
+                                cancel.clone(),
+                                err,
+                            )
+                            .await
+                        }
+                        Err(retry_err) => {
+                            if cancel.is_cancelled() {
+                                return Err(LlmError::Cancelled);
+                            }
+                            if let LlmError::RateLimit { retry_after } = &retry_err {
+                                self.record_rate_limit(&role, *retry_after).await;
+                            }
+                            self.record_failure(&role).await;
+                            tracing::debug!(
+                                "primary retry failed: {}, switching to balanced model",
+                                retry_err
+                            );
+                            self.balanced_model_active.store(true, Ordering::SeqCst);
+
+                            // Balanced model: single attempt with cancellation
+                            let fb_result = Self::aggregate_stream_cancellable(
+                                self.balanced_model.clone(),
+                                messages.to_vec(),
+                                tools.to_vec(),
+                                on_chunk,
+                                cancel,
+                                &self.stream_rules,
+                                idle_dur,
+                            )
+                            .await;
+
+                            match fb_result {
+                                Ok(resp) => Ok(resp),
+                                Err(fb_err) => {
+                                    if let LlmError::RateLimit { retry_after } = &fb_err {
+                                        self.record_rate_limit(&role, *retry_after).await;
+                                    }
+                                    Err(LlmError::AllEndpointsFailed(
+                                        e.to_string(),
+                                        fb_err.to_string(),
+                                    ))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -832,6 +1176,7 @@ impl LlmRouter {
         on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
         cancel: CancellationToken,
         stream_rules: &RwLock<Vec<StreamRule>>,
+        idle_timeout: Duration,
     ) -> Result<LlmResponse, LlmError> {
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
         tracing::debug!("aggregate_stream_cancellable start");
@@ -860,8 +1205,27 @@ impl LlmRouter {
                 _ = cancel.cancelled() => {
                     return Err(LlmError::Cancelled);
                 }
-                item = stream.next() => {
-                    match item {
+                item = tokio::time::timeout(idle_timeout, stream.next()) => {
+                    let stream_item = match item {
+                        Ok(v) => v,
+                        Err(_) => {
+                            // No chunk arrived within the idle window: the server
+                            // accepted the request but the body is stalled (half-open
+                            // connection, provider-side hang). Abort as a retryable
+                            // timeout instead of blocking until the overall
+                            // `max_total_duration_secs` deadline — a hung stream
+                            // must surface within the idle window, not minutes later.
+                            tracing::warn!(
+                                "stream idle timeout after {}s with no chunk; aborting stream",
+                                idle_timeout.as_secs()
+                            );
+                            return Err(LlmError::Timeout(format!(
+                                "stream idle timeout after {}s with no data",
+                                idle_timeout.as_secs()
+                            )));
+                        }
+                    };
+                    match stream_item {
                         Some(Ok(chunk)) => {
                             if let Some(ref delta) = chunk.text {
                                 text.push_str(delta);
@@ -1345,16 +1709,11 @@ mod tests {
         let seen_text = StdArc::new(StdMutex::new(String::new()));
         let seen_clone = seen_text.clone();
         let resp = router
-            .chat_stream_with_tools_aggregated(
-                EndpointRole::DefaultModel,
-                &[],
-                &[],
-                move |c| {
-                    if let Some(t) = &c.text {
-                        seen_clone.lock().unwrap().push_str(t);
-                    }
-                },
-            )
+            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], move |c| {
+                if let Some(t) = &c.text {
+                    seen_clone.lock().unwrap().push_str(t);
+                }
+            })
             .await
             .expect("aggregation succeeds");
 
@@ -1441,16 +1800,11 @@ mod tests {
         let phases = StdArc::new(StdMutex::new(Vec::new()));
         let phases_clone = phases.clone();
         let resp = router
-            .chat_stream_with_tools_aggregated(
-                EndpointRole::DefaultModel,
-                &[],
-                &[],
-                move |c| {
-                    if let Some(p) = c.web_search {
-                        phases_clone.lock().unwrap().push(p.as_str().to_string());
-                    }
-                },
-            )
+            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], move |c| {
+                if let Some(p) = c.web_search {
+                    phases_clone.lock().unwrap().push(p.as_str().to_string());
+                }
+            })
             .await
             .expect("aggregation succeeds");
 
@@ -1861,5 +2215,179 @@ mod tests {
         let result = router.chat_stream(EndpointRole::DefaultModel, vec![]).await;
         assert!(result.is_ok());
         assert!(!router.balanced_model_active());
+    }
+
+    /// Mock that tracks how many calls are in flight concurrently and stalls
+    /// briefly, so the per-role semaphore's serialization is observable.
+    struct ConcurrencyProbe {
+        concurrent: Arc<std::sync::atomic::AtomicUsize>,
+        max_seen: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LlmClient for ConcurrencyProbe {
+        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+            let now = self
+                .concurrent
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.max_seen
+                .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            self.concurrent
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(LlmResponse {
+                text: "probe".into(),
+                tool_calls: Vec::new(),
+                finish_reason: Some(FinishReason::Stop),
+                usage: Usage::default(),
+                model: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+            })
+        }
+        async fn chat_stream(
+            &self,
+            _: Vec<LlmMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown("probe: no stream".into()))
+        }
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn per_role_semaphore_caps_concurrent_requests() {
+        let concurrent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe: Arc<dyn LlmClient> = Arc::new(ConcurrencyProbe {
+            concurrent: concurrent.clone(),
+            max_seen: max_seen.clone(),
+        });
+        let router = LlmRouter::new_with_clients(
+            probe.clone(),
+            probe.clone(),
+            probe.clone(),
+            probe.clone(),
+            probe,
+        );
+        // Cap the default-model role at 1 in-flight request.
+        router.set_request_limit_for_test(1);
+
+        let router = Arc::new(router);
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let router = router.clone();
+            handles.push(tokio::spawn(async move {
+                router
+                    .chat(EndpointRole::DefaultModel, vec![])
+                    .await
+                    .unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert_eq!(
+            max_seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "per-role limit 1 must serialize concurrent calls to the same role"
+        );
+        // Different roles have independent permits: small_model can proceed
+        // while default_model is capped.
+        router.set_request_limit_for_test(1);
+        let _ = router.chat(EndpointRole::SmallModel, vec![]).await.unwrap();
+        assert_eq!(max_seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Mock that ALWAYS returns RateLimit (with Retry-After), so the shared
+    /// cooldown's effect on subsequent callers is observable.
+    struct AlwaysRateLimited;
+
+    #[async_trait]
+    impl LlmClient for AlwaysRateLimited {
+        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::RateLimit {
+                retry_after: Some(Duration::from_millis(300)),
+            })
+        }
+        async fn chat_stream(
+            &self,
+            _: Vec<LlmMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::RateLimit {
+                retry_after: Some(Duration::from_millis(300)),
+            })
+        }
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_sets_shared_cooldown_for_role() {
+        let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        // Fast retry pacing so the RateLimit error surfaces immediately.
+        let cfg = LlmConfig {
+            retry_base_secs: 0,
+            retry_factor: 1,
+            retry_max_secs: 0,
+            retry_jitter: 0.0,
+            ..Default::default()
+        };
+        *router.config.write().await = cfg;
+
+        let role = EndpointRole::DefaultModel;
+        let err = router.chat(role, vec![]).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LlmError::RateLimit { .. } | LlmError::AllEndpointsFailed(..)
+            ),
+            "first call must surface the RateLimit failure: {}",
+            err
+        );
+        // The cooldown deadline was recorded (at the source, before the
+        // AllEndpointsFailed wrap): subsequent callers wait it out.
+        let deadline = router.rate_limit_deadline_for_test(&role).await;
+        assert!(
+            deadline.is_some_and(|d| d > Instant::now()),
+            "cooldown deadline must be set in the future"
+        );
+        // A second call (a different task) paces behind the cooldown instead
+        // of firing immediately: it must take at least the Retry-After before
+        // dispatching (it fails again, but only after the shared wait).
+        let t0 = Instant::now();
+        let err2 = router.chat(role, vec![]).await.unwrap_err();
+        assert!(matches!(
+            err2,
+            LlmError::RateLimit { .. } | LlmError::AllEndpointsFailed(..)
+        ));
+        assert!(
+            t0.elapsed() >= Duration::from_millis(250),
+            "second call must wait out the shared cooldown (elapsed {:?})",
+            t0.elapsed()
+        );
+        // A third caller starting later re-uses the (still running) cooldown
+        // window: the deadline only moves forward, never backward.
+        let deadline2 = router.rate_limit_deadline_for_test(&role).await;
+        assert!(
+            deadline2.unwrap() >= deadline.unwrap(),
+            "cooldown deadline must never shrink"
+        );
     }
 }

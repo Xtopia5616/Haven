@@ -92,6 +92,7 @@ impl Database {
              DO UPDATE SET vector = excluded.vector, text = excluded.text, updated_at = excluded.updated_at",
             rusqlite::params![entity_type, entity_id, model, blob, text, now],
         )?;
+        self.cache_invalidate_embeddings(entity_type);
         Ok(())
     }
 
@@ -111,8 +112,15 @@ impl Database {
         }
     }
 
-    /// All stored embeddings of one domain, newest first.
+    /// All stored embeddings of one domain, newest first. Cached per domain
+    /// (the vector index is small and read far more often than written), so
+    /// brute-force recall does not re-read + decode the whole table per query.
     pub fn list_embeddings(&self, entity_type: &str) -> anyhow::Result<Vec<EmbeddedText>> {
+        if let Some(cached) = self.cache_get_embeddings(entity_type) {
+            return Ok(cached);
+        }
+        let key = format!("_embeddings_{}", entity_type);
+        let cache_gen = self.cache_generation(&key);
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {EMBED_COLS} FROM memory_embeddings WHERE entity_type = ?1
@@ -123,6 +131,7 @@ impl Database {
         for row in rows {
             out.push(row?);
         }
+        self.cache_put_embeddings(entity_type, out.clone(), 60, cache_gen);
         Ok(out)
     }
 
@@ -144,16 +153,31 @@ impl Database {
                 Ok(out)
             }
             entity_kind::EPISODE => {
-                // Episodes are user messages. A message only becomes an
-                // episode once indexed, so track the candidates explicitly.
+                // Episodes are user messages plus persisted compaction
+                // summaries (memory_episodes rows). A message/episode only
+                // becomes an index entry once embedded, so track the
+                // candidates explicitly. Both queries run on the SAME
+                // connection guard (a second `self.conn()` while the guard is
+                // held would deadlock — the mutex is not reentrant).
+                let mut out: Vec<String> = Vec::new();
                 let mut stmt = conn.prepare(
-                    "SELECT id FROM messages WHERE role = 'user'
-                     AND id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)",
+                    "SELECT id FROM messages
+                     WHERE role = 'user'
+                       AND id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)",
                 )?;
                 let rows =
                     stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
-                let mut out = Vec::new();
                 for row in rows {
+                    out.push(row?);
+                }
+                let mut ep_stmt = conn.prepare(
+                    "SELECT id FROM memory_episodes
+                     WHERE id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)
+                     ORDER BY created_at DESC LIMIT 1000",
+                )?;
+                let ep_rows =
+                    ep_stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
+                for row in ep_rows {
                     out.push(row?);
                 }
                 Ok(out)
@@ -175,7 +199,8 @@ impl Database {
         Ok(text)
     }
 
-    /// Source text for an episode entity: the user message content.
+    /// Source text for an episode entity: the user message content, or the
+    /// compaction summary when the id belongs to a `memory_episodes` row.
     pub fn episode_text(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
         if let Ok(Some(content)) = conn
@@ -187,6 +212,16 @@ impl Database {
             .map(Some)
         {
             return Ok(Some(content));
+        }
+        if let Ok(Some(summary)) = conn
+            .query_row(
+                "SELECT summary FROM memory_episodes WHERE id = ?1",
+                rusqlite::params![entity_id],
+                |r| r.get::<_, String>(0),
+            )
+            .map(Some)
+        {
+            return Ok(Some(summary));
         }
         Ok(None)
     }
@@ -215,7 +250,7 @@ impl Database {
     }
 
     /// Keyword search over the event-stream memory (user messages plus
-    /// compaction summaries), independent of the vector index — so
+    /// persisted compaction summaries), independent of the vector index — so
     /// cross-task recall works even when no `embedding_model` is configured.
     /// Terms are matched as case-insensitive substrings; results are ranked by
     /// the number of distinct terms matched, then recency.
@@ -230,10 +265,13 @@ impl Database {
         }
         let conn = self.conn();
         // Candidate pool is bounded to the most recent episodes (the oldest
-        // 1000 by creation time), matching how the vector index behaves.
+        // 1000 user messages by creation time, plus every stored compaction
+        // summary), matching how the vector index behaves.
         let mut stmt = conn.prepare(
             "SELECT content, created_at FROM (
                  SELECT content, created_at FROM messages WHERE role = 'user'
+                 UNION ALL
+                 SELECT summary, created_at FROM memory_episodes
              )
              ORDER BY created_at DESC LIMIT 1000",
         )?;
@@ -262,6 +300,7 @@ impl Database {
             "DELETE FROM memory_embeddings WHERE entity_type = ?1 AND entity_id = ?2",
             rusqlite::params![entity_type, entity_id],
         )?;
+        self.cache_invalidate_embeddings(entity_type);
         Ok(())
     }
 
@@ -279,7 +318,10 @@ impl Database {
     /// from scratch on the next embedding pass.
     pub fn clear_embeddings(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
-        Ok(conn.execute("DELETE FROM memory_embeddings", [])? as u64)
+        let deleted = conn.execute("DELETE FROM memory_embeddings", [])? as u64;
+        self.cache_invalidate_embeddings(entity_kind::FACT);
+        self.cache_invalidate_embeddings(entity_kind::EPISODE);
+        Ok(deleted)
     }
 
     /// Remove embeddings whose owning entity no longer exists (facts deleted,
@@ -291,9 +333,14 @@ impl Database {
             "DELETE FROM memory_embeddings WHERE
                 (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM facts))
              OR (entity_type = 'episode'
-                 AND entity_id NOT IN (SELECT id FROM messages))",
+                 AND entity_id NOT IN (SELECT id FROM messages)
+                 AND entity_id NOT IN (SELECT id FROM memory_episodes))",
             [],
         )? as u64;
+        if deleted > 0 {
+            self.cache_invalidate_embeddings(entity_kind::FACT);
+            self.cache_invalidate_embeddings(entity_kind::EPISODE);
+        }
         Ok(deleted)
     }
 }
@@ -519,5 +566,134 @@ mod tests {
         db.add_message(&task.id, "user", "hello world", Some("text"), None)
             .unwrap();
         assert!(db.search_episodes_by_keywords(&[], 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn episodes_include_compaction_summaries() {
+        let db = db();
+        let task = db.create_task("t", "").unwrap();
+        db.add_message(&task.id, "user", "plain message", Some("text"), None)
+            .unwrap();
+        let ep = db
+            .add_episode(&task.id, "user prefers the dark theme everywhere")
+            .unwrap();
+
+        // Summaries are missing-index candidates and resolve their text.
+        let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
+        assert!(missing.contains(&ep));
+        assert!(missing.iter().any(|m| m != &ep));
+        assert_eq!(
+            db.episode_text(&ep).unwrap().as_deref(),
+            Some("user prefers the dark theme everywhere")
+        );
+
+        // Keyword search surfaces the summary text.
+        let hits = db
+            .search_episodes_by_keywords(&["dark", "theme"], 5)
+            .unwrap();
+        assert!(hits.iter().any(|h| h.contains("dark theme")));
+
+        // Indexing the episode removes it from the missing set and pruning
+        // does not treat it as orphaned.
+        db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0, 0.0], "x")
+            .unwrap();
+        let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
+        assert!(!missing.contains(&ep));
+        assert_eq!(db.prune_orphaned_embeddings().unwrap(), 0);
+    }
+
+    #[test]
+    fn embedding_list_is_cached_and_invalidated_on_write() {
+        let db = db();
+        assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
+        // First read caches; second read hits the cache (still correct).
+        assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
+        // A write invalidates the cache so the next read sees the new row.
+        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0], "x")
+            .unwrap();
+        let all = db.list_embeddings(entity_kind::FACT).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].entity_id, "f1");
+        // Deletion invalidates again.
+        db.delete_embedding(entity_kind::FACT, "f1").unwrap();
+        assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fact_embedding_invalidated_by_fact_update_and_delete() {
+        let db = db();
+        let fact = db
+            .insert_fact(
+                "user",
+                "language",
+                "English",
+                "inferred",
+                0.9,
+                &["preference"],
+            )
+            .unwrap();
+        db.save_embedding(
+            entity_kind::FACT,
+            &fact.id,
+            "m",
+            &[1.0],
+            "user language English",
+        )
+        .unwrap();
+        // Single-valued correction: the old row is demoted by an UPDATE,
+        // which must drop its stale vector.
+        db.upsert_fact_with_durability(
+            "user",
+            "language",
+            "Chinese",
+            "inferred",
+            0.9,
+            &["preference"],
+            None,
+            1.0,
+        )
+        .unwrap();
+        assert!(
+            db.get_embedding(entity_kind::FACT, &fact.id)
+                .unwrap()
+                .is_none(),
+            "corrected fact must lose its stale embedding"
+        );
+        // Re-embed, then DELETE drops it again.
+        db.save_embedding(
+            entity_kind::FACT,
+            &fact.id,
+            "m",
+            &[1.0],
+            "user language English",
+        )
+        .unwrap();
+        db.delete_fact(&fact.id).unwrap();
+        assert!(
+            db.get_embedding(entity_kind::FACT, &fact.id)
+                .unwrap()
+                .is_none(),
+            "deleted fact must lose its embedding"
+        );
+    }
+
+    #[test]
+    fn embedding_list_cache_invalidated_by_fact_mutation() {
+        let db = db();
+        let fact = db
+            .insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
+            .unwrap();
+        db.save_embedding(entity_kind::FACT, &fact.id, "m", &[1.0], "x")
+            .unwrap();
+        // Warm the embeddings list cache.
+        assert_eq!(db.list_embeddings(entity_kind::FACT).unwrap().len(), 1);
+        // The facts_embed_del trigger deletes the embedding row directly in
+        // SQL; the cache must be invalidated too, or recall keeps serving the
+        // stale vector for the whole TTL.
+        db.delete_fact(&fact.id).unwrap();
+        assert!(
+            db.list_embeddings(entity_kind::FACT).unwrap().is_empty(),
+            "fact mutation must invalidate the embeddings list cache"
+        );
     }
 }

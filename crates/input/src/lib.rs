@@ -682,11 +682,7 @@ impl VadWorker {
     /// Run one inference; returns 0.0 when the worker is gone (VAD disabled).
     async fn infer(&self, frame: Vec<f32>) -> f32 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        if self
-            .cmd_tx
-            .send(VadCmd::Infer { seq, frame })
-            .is_err()
-        {
+        if self.cmd_tx.send(VadCmd::Infer { seq, frame }).is_err() {
             return 0.0;
         }
         let mut rx = self.prob_rx.lock().await;
@@ -718,11 +714,11 @@ fn vad_worker_loop(
                 // A panicking inference must not kill the worker: degrade to
                 // silence for that frame instead (the reply channel closing
                 // would strand the recording loop on its await).
-                let prob = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    match engine.as_mut() {
-                        Some(e) => e.infer(&frame),
-                        None => 0.0,
-                    }
+                let prob = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match engine
+                    .as_mut()
+                {
+                    Some(e) => e.infer(&frame),
+                    None => 0.0,
                 }))
                 .unwrap_or(0.0);
                 if prob_tx.send((seq, prob)).is_err() {

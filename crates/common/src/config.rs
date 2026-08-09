@@ -154,20 +154,11 @@ impl Default for ModelEndpoint {
 /// definition; `name` is the unique id referenced by role selection in the
 /// settings UI. Roles are materialized copies of an entry's endpoint, so the
 /// agent/router continue to read role fields directly.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ModelEntry {
     pub name: String,
     pub endpoint: ModelEndpoint,
-}
-
-impl Default for ModelEntry {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            endpoint: ModelEndpoint::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -190,6 +181,12 @@ pub struct LlmConfig {
     pub role_models: HashMap<String, String>,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
+    /// Streaming idle timeout: a stream that delivers no chunk for this long
+    /// (headers received, body stalled) is aborted as a timeout instead of
+    /// blocking until `max_total_duration_secs`. Providers occasionally hang
+    /// with the connection half-open; without this the UI waits minutes for
+    /// a reply that never comes.
+    pub stream_idle_timeout_secs: u64,
     // §2.3/5.1: retry backoff parameters
     pub retry_base_secs: u64,
     pub retry_factor: u32,
@@ -203,6 +200,13 @@ pub struct LlmConfig {
     /// through the dedicated `image_model` endpoint. When false, the default
     /// model handles images.
     pub vision_use_image_model: bool,
+    /// Per-endpoint (role) cap on concurrent LLM requests, applied by the
+    /// router with a semaphore per role. Prevents N parallel tasks from
+    /// hammering the same provider simultaneously (thundering-herd retries on
+    /// 429). A task whose LLM call is queued behind this limit waits; its
+    /// slot in `task.max_concurrent` is still held, so set it below the task
+    /// concurrency when the provider is rate-limit sensitive.
+    pub max_concurrent_requests: usize,
 }
 
 impl Default for LlmConfig {
@@ -217,12 +221,14 @@ impl Default for LlmConfig {
             models: Vec::new(),
             role_models: HashMap::new(),
             max_total_duration_secs: 180,
+            stream_idle_timeout_secs: 45,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,
             retry_jitter: 0.2,
             stt_use_audio_model: true,
             vision_use_image_model: true,
+            max_concurrent_requests: 2,
         }
     }
 }
@@ -230,12 +236,18 @@ impl Default for LlmConfig {
 impl LlmConfig {
     /// Look up a model-library entry by its unique name.
     pub fn model_by_name(&self, name: &str) -> Option<&ModelEndpoint> {
-        self.models.iter().find(|m| m.name == name).map(|m| &m.endpoint)
+        self.models
+            .iter()
+            .find(|m| m.name == name)
+            .map(|m| &m.endpoint)
     }
 
     /// Mutably look up a model-library entry by its unique name.
     pub fn model_by_name_mut(&mut self, name: &str) -> Option<&mut ModelEndpoint> {
-        self.models.iter_mut().find(|m| m.name == name).map(|m| &mut m.endpoint)
+        self.models
+            .iter_mut()
+            .find(|m| m.name == name)
+            .map(|m| &mut m.endpoint)
     }
 }
 
@@ -296,11 +308,11 @@ pub struct ContextLimitsConfig {
     /// `context_window` and the model id is not in the builtin catalog.
     pub default_context_window: u32,
     /// Maximum characters of a tool observation fed back into the
-    /// conversation.
+    /// conversation. Also the default cap (in chars) builtin tools apply to
+    /// their own output — the observation budget is the only limit, so tools
+    /// never produce output the loop would immediately truncate again.
+    /// Per-tool `tool_settings.*.max_output_chars` overrides it.
     pub max_observation_chars: usize,
-    /// Default cap (in chars) for tool outputs. Tools without a per-tool
-    /// `tool_settings.*.max_output_chars` use this value.
-    pub max_tool_output_chars: usize,
     /// Cap (in chars) for transcripts built for memory fact inference.
     pub max_transcript_chars: usize,
     // —— user input attachments ——
@@ -345,6 +357,10 @@ pub struct ContextLimitsConfig {
     // —— agent text limits ——
     /// Max chars in notification summary text.
     pub notification_summary_chars: usize,
+    /// Max chars of a background-job result injected into the owning task's
+    /// context when the job finishes (the full output stays in the log file,
+    /// whose path is appended so the model can read more on demand).
+    pub job_result_context_chars: usize,
     /// Min chars of partial output before an interim checkpoint is persisted.
     pub partial_checkpoint_min_chars: usize,
     /// Min wall-clock seconds between partial-stream checkpoints.
@@ -409,7 +425,6 @@ impl Default for ContextLimitsConfig {
             compaction_reserve_tokens: 4_096,
             default_context_window: 128_000,
             max_observation_chars: 8_000,
-            max_tool_output_chars: 20_000,
             max_transcript_chars: 4_000,
             max_attachment_images: 4,
             max_attachment_files: 5,
@@ -429,6 +444,7 @@ impl Default for ContextLimitsConfig {
             search_max_file_size_bytes: 100 * 1024 * 1024,
             search_window_bytes: 16 * 1024 * 1024,
             notification_summary_chars: 800,
+            job_result_context_chars: 4_000,
             partial_checkpoint_min_chars: 1_000,
             partial_checkpoint_interval_secs: 2,
             fact_infer_interval_steps: 25,
@@ -476,7 +492,7 @@ impl Default for MemoryConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(default)]
 pub struct SecurityConfig {
     pub confirmation_mode: ConfirmationMode,
@@ -484,11 +500,45 @@ pub struct SecurityConfig {
     pub encrypt_sensitive: bool,
 }
 
+impl<'de> serde::Deserialize<'de> for SecurityConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Field-presence probe: an existing config whose `[security]` table
+        // omits `min_risk_level` must keep the pre-Medium-default behavior
+        // (Low) instead of silently broadening auto-approval on upgrade.
+        // Brand-new configs (no `[security]` table at all) still get the
+        // Medium default via `Default` below.
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct Raw {
+            confirmation_mode: ConfirmationMode,
+            min_risk_level: Option<RiskLevel>,
+            encrypt_sensitive: bool,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(Self {
+            confirmation_mode: raw.confirmation_mode,
+            // Legacy fallback: configs written before this field existed
+            // deserialized to `Low` (the old `SecurityConfig::default()`).
+            min_risk_level: raw.min_risk_level.unwrap_or(RiskLevel::Low),
+            encrypt_sensitive: raw.encrypt_sensitive,
+        })
+    }
+}
+
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             confirmation_mode: ConfirmationMode::Always,
-            min_risk_level: RiskLevel::Low,
+            // Medium: Safe and Low operations (file reads, window listing,
+            // clipboard reads, ...) auto-approve in the agent loop, while
+            // anything that mutates state (file edits, network, env vars,
+            // MCP/skill tools, shell) still requires confirmation. A Low
+            // default would gate virtually every non-Safe step and flip
+            // existing autonomous tasks into per-step confirmation dialogs.
+            min_risk_level: RiskLevel::Medium,
             encrypt_sensitive: true,
         }
     }
@@ -615,7 +665,7 @@ pub struct ToolConfig {
     pub enabled: bool,
     pub timeout_secs: u64,
     /// Per-tool output cap override (chars). `None` inherits the global
-    /// `context_limits.max_tool_output_chars`.
+    /// `context_limits.max_observation_chars` (the observation budget).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_chars: Option<usize>,
     pub max_retries: u32,
@@ -743,6 +793,7 @@ pub struct NotificationConfig {
     pub task_created: NotifyChannels,
     pub task_completed: NotifyChannels,
     pub task_paused: NotifyChannels,
+    pub task_resumed: NotifyChannels,
     pub task_error: NotifyChannels,
 }
 
@@ -774,6 +825,10 @@ impl Default for NotificationConfig {
                 windows: true,
             },
             task_paused: NotifyChannels {
+                in_app: true,
+                windows: false,
+            },
+            task_resumed: NotifyChannels {
                 in_app: true,
                 windows: false,
             },
@@ -1028,12 +1083,14 @@ impl ConfigLoader {
         self.config.llm.models = incoming.models.clone();
         self.config.llm.role_models = incoming.role_models.clone();
         self.config.llm.max_total_duration_secs = incoming.max_total_duration_secs;
+        self.config.llm.stream_idle_timeout_secs = incoming.stream_idle_timeout_secs;
         self.config.llm.retry_base_secs = incoming.retry_base_secs;
         self.config.llm.retry_factor = incoming.retry_factor;
         self.config.llm.retry_max_secs = incoming.retry_max_secs;
         self.config.llm.retry_jitter = incoming.retry_jitter;
         self.config.llm.stt_use_audio_model = incoming.stt_use_audio_model;
         self.config.llm.vision_use_image_model = incoming.vision_use_image_model;
+        self.config.llm.max_concurrent_requests = incoming.max_concurrent_requests;
 
         if settings.llm.small_model.api_key.is_empty() {
             self.config.llm.small_model.api_key = prev_small_key;
@@ -1065,10 +1122,10 @@ impl ConfigLoader {
                 .collect();
             self.config.llm.models = settings.llm.models.clone();
             for entry in self.config.llm.models.iter_mut() {
-                if entry.endpoint.api_key.is_empty() {
-                    if let Some((_, k)) = prev_keys.iter().find(|(n, _)| *n == entry.name) {
-                        entry.endpoint.api_key = k.clone();
-                    }
+                if entry.endpoint.api_key.is_empty()
+                    && let Some((_, k)) = prev_keys.iter().find(|(n, _)| *n == entry.name)
+                {
+                    entry.endpoint.api_key = k.clone();
                 }
             }
         }
@@ -1130,7 +1187,6 @@ mod tests {
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 4096);
         assert_eq!(cfg.context_limits.default_context_window, 128_000);
         assert_eq!(cfg.context_limits.max_observation_chars, 8_000);
-        assert_eq!(cfg.context_limits.max_tool_output_chars, 20_000);
         assert_eq!(cfg.context_limits.max_transcript_chars, 4_000);
         assert_eq!(cfg.context_limits.max_attachment_images, 4);
         assert_eq!(cfg.context_limits.max_attachment_files, 5);
@@ -1174,6 +1230,7 @@ mod tests {
         assert!(cfg.stt.base_url.is_empty());
         assert!(cfg.llm.stt_use_audio_model);
         assert!(cfg.llm.vision_use_image_model);
+        assert_eq!(cfg.llm.max_concurrent_requests, 2);
     }
 
     #[test]
@@ -1182,6 +1239,31 @@ mod tests {
         let s = toml::to_string_pretty(&cfg).unwrap();
         let parsed: AppConfig = toml::from_str(&s).unwrap();
         assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn security_missing_min_risk_level_keeps_legacy_low() {
+        // A config with a `[security]` table that predates the field must not
+        // silently flip the confirmation threshold on upgrade.
+        let parsed: SecurityConfig = toml::from_str(
+            r#"
+                confirmation_mode = "always"
+                encrypt_sensitive = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(parsed.min_risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn security_explicit_min_risk_level_wins() {
+        let parsed: SecurityConfig = toml::from_str(r#"min_risk_level = "medium""#).unwrap();
+        assert_eq!(parsed.min_risk_level, RiskLevel::Medium);
+    }
+
+    #[test]
+    fn security_missing_table_uses_medium_default() {
+        assert_eq!(SecurityConfig::default().min_risk_level, RiskLevel::Medium);
     }
 
     #[test]
@@ -1199,7 +1281,7 @@ mod tests {
         assert!(file.enabled);
         assert_eq!(file.timeout_secs, 60);
         // Per-tool output cap defaults to None → inherits the global
-        // `context_limits.max_tool_output_chars`.
+        // `context_limits.max_observation_chars`.
         assert_eq!(file.max_output_chars, None);
     }
 

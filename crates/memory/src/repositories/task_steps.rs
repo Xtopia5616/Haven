@@ -1,12 +1,11 @@
 use crate::db::Database;
 use chrono::Utc;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskStep {
     pub id: String,
     pub task_id: String,
-    pub step_index: i32,
+    pub step_number: i32,
     /// Raw thought text from the Reasoner (replaces old `tool_name = "thought"` hack)
     pub thought: Option<String>,
     /// Tool name when this step represents a tool call action
@@ -32,21 +31,21 @@ impl Database {
     pub fn create_thought_step(
         &self,
         task_id: &str,
-        step_index: i32,
+        step_number: i32,
         thought: &str,
     ) -> anyhow::Result<TaskStep> {
-        let id = Uuid::new_v4().to_string();
+        let id = haven_common::types::new_id("step");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO task_steps (id, task_id, step_index, tool_name, input, thought, status, is_high_risk, created_at)
+            "INSERT INTO task_steps (id, task_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
              VALUES (?1, ?2, ?3, 'thought', ?4, ?4, 'completed', 0, ?5)",
-            rusqlite::params![id, task_id, step_index, thought, now],
+            rusqlite::params![id, task_id, step_number, thought, now],
         )?;
         Ok(TaskStep {
             id,
             task_id: task_id.into(),
-            step_index,
+            step_number,
             thought: Some(thought.into()),
             action_tool: None,
             action_input: None,
@@ -62,34 +61,49 @@ impl Database {
     }
 
     /// Create an action step with the new schema fields directly.
+    /// `confirmed` records whether the operation passed the safety gateway
+    /// (Some(true)=approved, Some(false)=rejected, None=not gated) so the
+    /// decision is persisted on the actual step row at creation time.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_action_step(
         &self,
         task_id: &str,
-        step_index: i32,
+        step_number: i32,
         tool_name: &str,
         tool_input: &str,
         is_high_risk: bool,
         silent: bool,
+        confirmed: Option<bool>,
     ) -> anyhow::Result<TaskStep> {
-        let id = Uuid::new_v4().to_string();
+        let id = haven_common::types::new_id("step");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO task_steps (id, task_id, step_index, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8)",
-            rusqlite::params![id, task_id, step_index, tool_name, tool_input, is_high_risk as i32, now, silent as i32],
+            "INSERT INTO task_steps (id, task_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                id,
+                task_id,
+                step_number,
+                tool_name,
+                tool_input,
+                is_high_risk as i32,
+                now,
+                silent as i32,
+                confirmed.map(|c| c as i32)
+            ],
         )?;
         Ok(TaskStep {
             id,
             task_id: task_id.into(),
-            step_index,
+            step_number,
             thought: None,
             action_tool: Some(tool_name.into()),
             action_input: Some(tool_input.into()),
             observation: None,
             status: "pending".into(),
             is_high_risk,
-            confirmed: None,
+            confirmed,
             silent,
             started_at: None,
             completed_at: None,
@@ -114,21 +128,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn confirm_step(&self, id: &str, confirmed: bool) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "UPDATE task_steps SET confirmed = ?1 WHERE id = ?2",
-            rusqlite::params![confirmed as i32, id],
-        )?;
-        Ok(())
-    }
-
     pub fn get_task_steps(&self, task_id: &str) -> anyhow::Result<Vec<TaskStep>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, step_index, tool_name, input, output, thought, action_tool, action_input, observation,
+            "SELECT id, task_id, step_number, tool_name, input, output, thought, action_tool, action_input, observation,
                     status, is_high_risk, confirmed, started_at, completed_at, created_at, silent
-             FROM task_steps WHERE task_id = ?1 ORDER BY step_index ASC",
+             FROM task_steps WHERE task_id = ?1 ORDER BY step_number ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![task_id], |row| {
             let output: Option<String> = row.get(5)?;
@@ -136,7 +141,7 @@ impl Database {
             Ok(TaskStep {
                 id: row.get(0)?,
                 task_id: row.get(1)?,
-                step_index: row.get(2)?,
+                step_number: row.get(2)?,
                 thought: row.get(6)?,
                 action_tool: row.get(7)?,
                 action_input: row.get(8)?,
@@ -215,6 +220,7 @@ mod tests {
                 r#"{"path": "test.txt"}"#,
                 false,
                 false,
+                None,
             )
             .unwrap();
         assert_eq!(step.action_tool.as_deref(), Some("read_file"));
@@ -232,7 +238,7 @@ mod tests {
         let db = test_db();
         seed_task(&db, "task-1");
         let step = db
-            .create_action_step("task-1", 0, "read_file", "{}", false, false)
+            .create_action_step("task-1", 0, "read_file", "{}", false, false, None)
             .unwrap();
         db.complete_action_step(&step.id, "file content here", true)
             .unwrap();
@@ -246,49 +252,25 @@ mod tests {
         let db = test_db();
         seed_task(&db, "task-1");
         let visible = db
-            .create_action_step("task-1", 0, "shell", "{}", false, false)
+            .create_action_step("task-1", 0, "shell", "{}", false, false, None)
             .unwrap();
         assert!(!visible.silent);
         let silent = db
-            .create_action_step("task-1", 1, "shell", r#"{"silent": true}"#, false, true)
+            .create_action_step(
+                "task-1",
+                1,
+                "shell",
+                r#"{"silent": true}"#,
+                false,
+                true,
+                None,
+            )
             .unwrap();
         assert!(silent.silent);
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps.len(), 2);
-        assert_eq!(steps[0].silent, false);
-        assert_eq!(steps[1].silent, true);
-    }
-
-    #[test]
-    fn confirm_step_sets_confirmed_flag() {
-        let db = test_db();
-        seed_task(&db, "task-1");
-        let step = db
-            .create_action_step("task-1", 0, "rm_file", "{}", true, false)
-            .unwrap();
-        // initially unconfirmed
-        let steps = db.get_task_steps("task-1").unwrap();
-        assert_eq!(steps[0].confirmed, None);
-        // confirm true
-        db.confirm_step(&step.id, true).unwrap();
-        let steps = db.get_task_steps("task-1").unwrap();
-        assert_eq!(steps[0].confirmed, Some(true));
-        // confirm false
-        db.confirm_step(&step.id, false).unwrap();
-        let steps = db.get_task_steps("task-1").unwrap();
-        assert_eq!(steps[0].confirmed, Some(false));
-    }
-
-    #[test]
-    fn confirm_step_nonexistent_is_noop() {
-        let db = test_db();
-        // confirm_step on a non-existent step does not error (UPDATE affects 0 rows).
-        let result = db.confirm_step("no-such-step", true);
-        assert!(result.is_ok());
-        // Confirmed flag stays absent for any real step.
-        seed_task(&db, "task-1");
-        let steps = db.get_task_steps("task-1").unwrap();
-        assert!(steps.is_empty() || steps.iter().all(|s| s.confirmed.is_none()));
+        assert!(!steps[0].silent);
+        assert!(steps[1].silent);
     }
 
     #[test]
@@ -302,17 +284,17 @@ mod tests {
     fn get_task_steps_preserves_order_by_index() {
         let db = test_db();
         seed_task(&db, "task-1");
-        db.create_action_step("task-1", 2, "c", "{}", false, false)
+        db.create_action_step("task-1", 2, "c", "{}", false, false, None)
             .unwrap();
-        db.create_action_step("task-1", 0, "a", "{}", false, false)
+        db.create_action_step("task-1", 0, "a", "{}", false, false, None)
             .unwrap();
-        db.create_action_step("task-1", 1, "b", "{}", false, false)
+        db.create_action_step("task-1", 1, "b", "{}", false, false, None)
             .unwrap();
         let steps = db.get_task_steps("task-1").unwrap();
         assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0].step_index, 0);
-        assert_eq!(steps[1].step_index, 1);
-        assert_eq!(steps[2].step_index, 2);
+        assert_eq!(steps[0].step_number, 0);
+        assert_eq!(steps[1].step_number, 1);
+        assert_eq!(steps[2].step_number, 2);
         assert_eq!(steps[0].action_tool.as_deref(), Some("a"));
     }
 
