@@ -162,6 +162,30 @@ describe('accumulateStreamChunk (thought)', () => {
 			segmented: false,
 		});
 	});
+
+	it('keeps reasoning in front when collapsing segments over a cumulative echo', () => {
+		// Same index-mapping class as the original applyThoughtSnap bug: the
+		// collapse splices the merged message at an index computed against
+		// `messages`, applied to `rest` with the segments removed. A
+		// reasoning block sitting before the segments must stay above the
+		// merged answer, not sink below it.
+		let m = chunk([], '好的。');
+		const reasoning = {
+			id: REASONING_ID,
+			role: 'assistant',
+			content: '先想想',
+			streaming: true,
+		};
+		m = [reasoning, ...m];
+		m = chunk(m, '今天20度');
+		const out = chunk(m, '好的。今天20度。适合出门');
+		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
+		expect(out[1]).toMatchObject({
+			content: '好的。今天20度。适合出门',
+			streaming: true,
+			segmented: false,
+		});
+	});
 });
 
 describe('accumulateStreamChunk (reasoning)', () => {

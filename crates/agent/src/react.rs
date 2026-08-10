@@ -15,7 +15,7 @@ use haven_task::{TaskExecutor, TaskStatus};
 use haven_tools::is_silent_action;
 
 use crate::compactor::{ContextCompactor, estimate_message_tokens};
-use crate::event::{AgentEventEmitter, EventDispatcher, UsagePayload};
+use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, ReActStep};
 
 /// Convert a stored message attachment into a content part for the LLM.
@@ -103,6 +103,25 @@ const EMPTY_RESPONSE_MAX_RETRIES: u32 = 3;
 /// transient glitch time to clear.
 const EMPTY_RESPONSE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// Poll interval of the per-call stall watchdog (see `StreamForwarder`).
+const STALL_WATCHDOG_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A provider stream that delivers no chunk for this long is announced to the
+/// UI as `StreamStalled` — long before the router's idle timeout aborts the
+/// stream, so the user sees "still generating" feedback instead of a frozen
+/// conversation. Covers the first-chunk wait too (the anchor starts at the
+/// call's creation).
+const STALL_WARN_DELAY_MS: u64 = 10_000;
+
+/// Current wall-clock time in milliseconds since the Unix epoch. Used by the
+/// stall watchdog anchors (the chunk timestamps it compares against).
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Mid-run React-state snapshot writes are throttled to once per this many
 /// steps (`save_branch_point`). The in-memory canonical/history/branch-point
 /// map is always current (branch points are inserted every step regardless),
@@ -124,6 +143,53 @@ fn placeholder_for_schema_type(ty: Option<&str>) -> serde_json::Value {
         Some("array") => serde_json::Value::Array(Vec::new()),
         Some("object") => serde_json::Value::Object(Default::default()),
         _ => serde_json::Value::Null,
+    }
+}
+
+/// The fallback value for a schema property whose field is missing, null, or
+/// holds a value that violates the schema: the declared `default`, else the
+/// first enum value (enum-constrained discriminators like `action`/`operation`
+/// must stay within the enum), else a type-appropriate placeholder.
+fn schema_property_fallback(prop: &serde_json::Value) -> serde_json::Value {
+    prop.get("default")
+        .cloned()
+        .or_else(|| {
+            prop.get("enum")
+                .and_then(|e| e.as_array())
+                .and_then(|arr| arr.first().cloned())
+        })
+        .unwrap_or_else(|| placeholder_for_schema_type(prop.get("type").and_then(|t| t.as_str())))
+}
+
+/// Whether a value conforms to a schema property's type/enum constraints.
+/// Detects tool-call inputs a strict provider would reject with a 400
+/// ("Failed to deserialize the JSON body into the target type: input.<field>")
+/// even though the field is present — e.g. an `action` set to a value outside
+/// the declared enum, or a number where the schema declares a string.
+fn value_conforms_to_prop(prop: &serde_json::Value, value: &serde_json::Value) -> bool {
+    if let Some(enum_arr) = prop.get("enum").and_then(|e| e.as_array())
+        && !enum_arr.contains(value)
+    {
+        return false;
+    }
+    let Some(ty) = prop.get("type") else {
+        return true;
+    };
+    let matches = |t: &str| match t {
+        "string" => value.is_string(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        "null" => value.is_null(),
+        // Unknown schema types (e.g. formats): don't guess, leave the value.
+        _ => true,
+    };
+    match ty {
+        serde_json::Value::String(t) => matches(t),
+        serde_json::Value::Array(types) => types.iter().filter_map(|t| t.as_str()).any(matches),
+        _ => true,
     }
 }
 
@@ -867,13 +933,18 @@ impl ReActEngine {
                     // the retries mid-flight (the non-cancellable variant
                     // would also grant each attempt a fresh total-duration
                     // budget instead of sharing the step's cancellation).
-                    match router
-                        .chat_stream_with_tools_aggregated_cancellable(
+                    // Chunks are forwarded live so a recovering provider is
+                    // visible instead of freezing the UI for the whole budget.
+                    match self
+                        .stream_retry_step(
+                            &ctx,
+                            router.clone(),
                             role,
                             &llm_messages,
                             &tools,
-                            |_| {},
                             cancel_res.clone(),
+                            &partial_thought,
+                            &partial_reasoning,
                         )
                         .await
                     {
@@ -968,14 +1039,19 @@ impl ReActEngine {
                 // Cancellable so an interruption (rollback / end_task) aborts
                 // the retry promptly instead of letting its stream run to
                 // completion after the task was cancelled (the empty-response
-                // retry below uses the same cancellable variant).
-                match router
-                    .chat_stream_with_tools_aggregated_cancellable(
+                // retry below uses the same cancellable variant). Chunks are
+                // forwarded live like the primary call, so a resumed provider
+                // streams visibly instead of freezing the UI mid-step.
+                match self
+                    .stream_retry_step(
+                        &ctx,
+                        router.clone(),
                         role,
                         &retry_messages,
                         &tools,
-                        |_| {},
                         cancel_res.clone(),
+                        &partial_thought,
+                        &partial_reasoning,
                     )
                     .await
                 {
@@ -2076,15 +2152,18 @@ impl ReActEngine {
         FailureKind::Unknown
     }
 
-    /// Supplement missing required fields on a tool call's arguments before
+    /// Supplement missing or invalid fields on a tool call's arguments before
     /// they reach the provider / tool. The model sometimes returns a call whose
     /// `arguments` is valid JSON but omits a field the tool's input schema
     /// marks required (e.g. an `action` discriminator) — most often after an
-    /// interrupted/continued generation. Providers reject such a call with a
-    /// 400 when deserializing the request body, so the ReAct loop repairs the
-    /// arguments up front: a missing required field is filled from the
-    /// schema's `default` when declared, otherwise from a type-appropriate
-    /// placeholder. Returns the number of actions that were repaired.
+    /// interrupted/continued generation — or fills it with a value that
+    /// violates the schema (wrong type, or not in the declared enum).
+    /// Providers reject such a call with a 400 when deserializing the request
+    /// body, so the ReAct loop repairs the arguments up front: a missing/null
+    /// required field is filled from the schema's `default` when declared,
+    /// otherwise from a type-appropriate placeholder; a present but
+    /// schema-violating value is replaced the same way. Returns the number of
+    /// actions that were repaired.
     pub(crate) async fn supplement_missing_required_fields(
         &self,
         task_id: &str,
@@ -2104,52 +2183,66 @@ impl ReActEngine {
                 continue;
             };
             let schema = tool.input_schema();
-            let Some(required) = schema.get("required").and_then(|r| r.as_array()) else {
-                continue;
-            };
-            let props = schema.get("properties");
             // A truncated/interrupted generation often yields UNPARSEABLE
             // arguments (parse_default_model_response falls back to Null),
             // so the call arrives without any object to repair. Normalize it
-            // to an empty object so the required-field pass below can fill
-            // it — otherwise the bare Null reaches validate_input and fails
-            // with "MISSING REQUIRED FIELD(S)" for every required field.
+            // to an empty object before the schema checks so every non-object
+            // input is covered — otherwise the bare Null reaches
+            // validate_input and fails with "MISSING REQUIRED FIELD(S)" for
+            // every required field (or a type error when the schema declares
+            // none).
             if !action.tool_input.is_object() {
                 action.tool_input = serde_json::json!({});
             }
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            let props = schema.get("properties").and_then(|p| p.as_object());
             let Some(obj) = action.tool_input.as_object_mut() else {
                 continue;
             };
             let mut filled = 0usize;
-            for req in required {
-                let Some(field) = req.as_str() else {
-                    continue;
-                };
-                // A required field that is present but null is just as
-                // unusable as a missing one (the validator rejects null for
-                // typed fields), so fill it too.
+            // First pass: every declared property. Repair present-but-invalid
+            // values (wrong type / not in the enum / null for a typed field)
+            // so the provider can deserialize the echoed tool_use input — a
+            // 400 from a strict provider otherwise fails the whole step.
+            // `value_conforms_to_prop` already honors explicit nullability
+            // (`"type": ["string", "null"]`), so nulls are judged here, not
+            // blanket-skipped.
+            if let Some(props) = props {
+                for (field, prop) in props {
+                    let Some(value) = obj.get(field) else {
+                        continue;
+                    };
+                    if value_conforms_to_prop(prop, value) {
+                        continue;
+                    }
+                    let fallback = schema_property_fallback(prop);
+                    tracing::warn!(
+                        "repairing invalid value for field '{}' on tool call '{}': {:?} -> {:?}",
+                        field,
+                        action.tool_name,
+                        value,
+                        fallback
+                    );
+                    obj.insert(field.clone(), fallback);
+                    filled += 1;
+                }
+            }
+            // Second pass: required fields. A required field that is missing
+            // (or present but null — the validator rejects null for typed
+            // fields) is filled from the schema default / enum / placeholder.
+            for field in required {
                 let present = obj.get(field).is_some_and(|v| !v.is_null());
                 if present {
                     continue;
                 }
-                let prop = props.and_then(|p| p.get(field));
-                // Prefer the schema default; for enum-constrained fields
-                // (e.g. `operation` discriminators) fall back to the first
-                // declared value instead of a type placeholder, which would
-                // fail the enum constraint; otherwise a type placeholder.
-                let fallback = prop
-                    .and_then(|p| p.get("default"))
-                    .cloned()
-                    .or_else(|| {
-                        prop.and_then(|p| p.get("enum"))
-                            .and_then(|e| e.as_array())
-                            .and_then(|arr| arr.first().cloned())
-                    })
-                    .unwrap_or_else(|| {
-                        placeholder_for_schema_type(
-                            prop.and_then(|p| p.get("type")).and_then(|t| t.as_str()),
-                        )
-                    });
+                let fallback = props
+                    .and_then(|p| p.get(field))
+                    .map(schema_property_fallback)
+                    .unwrap_or(serde_json::Value::Null);
                 tracing::warn!(
                     "supplementing missing required field '{}' on tool call '{}' with {:?}",
                     field,
@@ -2433,127 +2526,64 @@ impl ReActEngine {
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
-        let (chunk_tx, reasoning_tx, consumer_handle) = EventDispatcher::spawn_chunk_consumer_raw(
-            &ctx.emitter,
+        let (forwarder, on_chunk) = StreamForwarder::new(
+            ctx,
             self.context_limits.event_chunk_batch_max_bytes,
+            partial_thought,
+            partial_reasoning,
+            self.executor.partials.clone(),
+            self.context_limits.partial_checkpoint_min_chars,
+            std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs),
+            cancel.clone(),
+            true,
         );
-        let chunk_tx_c = chunk_tx.clone();
-        let reasoning_tx_c = reasoning_tx.clone();
-        let task_id_c = ctx.task_id.clone();
-        let pt = partial_thought.clone();
-        let pr = partial_reasoning.clone();
-        // Crash/stop recovery: the accumulated thought text is checkpointed
-        // into the `partial_messages` scratch table while streaming so a
-        // crash, user stop, or app exit does not lose the whole reply. The
-        // first chunk checkpoints immediately; afterwards at most every 2s
-        // or every `partial_checkpoint_min_chars` new chars, and never while
-        // a write is in flight. All writes go through the executor's
-        // `PartialStore`, which serializes them against promote/discard and
-        // drops writes that land after the task was ended/rolled back.
-        let partial_store = self.executor.partials.clone();
-        let checkpoint_task = ctx.task_id.clone();
-        let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let partial_checkpoint_min_chars = self.context_limits.partial_checkpoint_min_chars;
-        let partial_checkpoint_interval =
-            std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs);
-        let mut checkpoint_at = std::time::Instant::now() - partial_checkpoint_interval;
-        let mut checkpoint_len = 0usize;
-        // Web search phases are emitted as discrete events (not deltas), so
-        // they bypass the chunk batcher through their own channel: the
-        // on_chunk callback is synchronous and cannot await the emitter.
-        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
-        let ws_tx_c = ws_tx.clone();
-        let em_ws = ctx.emitter.clone();
-        let ws_task = tokio::spawn(async move {
-            while let Some(event) = ws_rx.recv().await {
-                em_ws.emit(event).await;
-            }
-        });
-        let step_num = ctx.step_num;
-        let run_id = ctx.run_id;
         let result = router
             .chat_stream_with_tools_aggregated_cancellable(
                 role,
                 llm_messages,
                 tools,
-                move |c: &haven_llm::StreamChunk| {
-                    if let Some(t) = c.text.as_deref() {
-                        // Single lock scope per chunk: push, read the new
-                        // length and clone the checkpoint snapshot (when due)
-                        // under one guard instead of locking up to three times
-                        // per token.
-                        let checkpoint_snapshot = {
-                            let mut guard = pt.lock().unwrap();
-                            guard.push_str(t);
-                            let len = guard.len();
-                            let now = std::time::Instant::now();
-                            if !checkpoint_inflight.load(std::sync::atomic::Ordering::Relaxed)
-                                && (now.duration_since(checkpoint_at)
-                                    >= partial_checkpoint_interval
-                                    || len.saturating_sub(checkpoint_len)
-                                        >= partial_checkpoint_min_chars)
-                            {
-                                checkpoint_at = now;
-                                checkpoint_len = len;
-                                Some(guard.clone())
-                            } else {
-                                None
-                            }
-                        };
-                        if let Err(e) = chunk_tx_c.try_send((
-                            task_id_c.clone(),
-                            t.to_string(),
-                            step_num,
-                            run_id,
-                        )) {
-                            tracing::warn!("thought chunk channel full, dropping: {}", e);
-                        }
-                        if let Some(snapshot) = checkpoint_snapshot {
-                            // Generation captured BEFORE the write is spawned:
-                            // if a promote/discard bumps it while the write is
-                            // queued, the PartialStore drops the stale snapshot.
-                            let gen_id = partial_store.generation(&checkpoint_task);
-                            let store = partial_store.clone();
-                            let tid = checkpoint_task.clone();
-                            let flag = checkpoint_inflight.clone();
-                            tokio::spawn(async move {
-                                store.checkpoint(&tid, gen_id, &snapshot).await;
-                                flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                            });
-                        }
-                    }
-                    if let Some(r) = &c.reasoning {
-                        pr.lock().unwrap().push_str(r);
-                        if let Err(e) = reasoning_tx_c.try_send((
-                            task_id_c.clone(),
-                            r.clone(),
-                            step_num,
-                            run_id,
-                        )) {
-                            tracing::warn!("reasoning chunk channel full, dropping: {}", e);
-                        }
-                    }
-                    if let Some(phase) = c.web_search {
-                        let _ = ws_tx_c.send(crate::event::AgentEvent::WebSearch {
-                            task_id: task_id_c.clone(),
-                            phase: phase.as_str().to_string(),
-                            step_number: step_num,
-                            run_id,
-                        });
-                    }
-                },
+                on_chunk,
                 cancel,
             )
             .await;
-        // Drop the senders then drain the consumer so all streamed chunks
-        // reach the frontend before the caller continues (e.g. records usage).
-        drop(chunk_tx);
-        drop(reasoning_tx);
-        drop(ws_tx);
-        if let Some(handle) = consumer_handle {
-            let _ = handle.await;
-        }
-        let _ = ws_task.await;
+        forwarder.flush().await;
+        result
+    }
+
+    /// One empty-response / cut-off retry with live chunk forwarding: streamed
+    /// text is accumulated into the partial buffers (crash recovery) and
+    /// forwarded to the frontend, so a recovering provider never leaves the
+    /// UI frozen for the retry's whole budget. Reasoning is accumulated but
+    /// NOT forwarded (the UI block may already hold the primary generation's
+    /// reconciled text; a fresh reasoning pass would concatenate onto it).
+    /// The stall watchdog runs exactly like the primary call.
+    #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
+    async fn stream_retry_step(
+        &self,
+        ctx: &StepCtx,
+        router: Arc<LlmRouter>,
+        role: EndpointRole,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        cancel: tokio_util::sync::CancellationToken,
+        partial_thought: &Arc<std::sync::Mutex<String>>,
+        partial_reasoning: &Arc<std::sync::Mutex<String>>,
+    ) -> Result<LlmResponse, haven_llm::LlmError> {
+        let (forwarder, on_chunk) = StreamForwarder::new(
+            ctx,
+            self.context_limits.event_chunk_batch_max_bytes,
+            partial_thought,
+            partial_reasoning,
+            self.executor.partials.clone(),
+            self.context_limits.partial_checkpoint_min_chars,
+            std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs),
+            cancel.clone(),
+            false,
+        );
+        let result = router
+            .chat_stream_with_tools_aggregated_cancellable(role, messages, tools, on_chunk, cancel)
+            .await;
+        forwarder.flush().await;
         result
     }
 
@@ -3089,6 +3119,203 @@ impl ReActEngine {
         }
         EventDispatcher::emit_task_error_from(emitter, task_id, error).await;
         self.reset_cumulative_usage(task_id);
+    }
+}
+
+/// One LLM call's live-chunk forwarding bundle: micro-batched
+/// thought/reasoning channels (see `spawn_chunk_consumer_raw`), the
+/// web-search event task, and a stall watchdog that emits `StreamStalled`
+/// when the provider goes silent mid-call — the router only aborts at its
+/// idle timeout, so without the watchdog the UI would sit frozen with
+/// zero feedback during the whole stall window. `flush` drains the
+/// batchers and stops the watchdog.
+///
+/// The `on_chunk` callback accumulates into the partial buffers
+/// (checkpointed into `partial_messages` for crash recovery) and forwards
+/// text chunks to the frontend. Reasoning chunks are always accumulated
+/// but only forwarded when `forward_reasoning` is set: the UI reasoning
+/// block may already hold the primary generation's reconciled text, and a
+/// fresh reasoning pass from a retry would concatenate onto it.
+struct StreamForwarder {
+    chunk_tx: crate::event::ChunkSender,
+    reasoning_tx: crate::event::ChunkSender,
+    ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    consumer: crate::event::ConsumerHandle,
+    ws_task: tokio::task::JoinHandle<()>,
+    watchdog: tokio::task::JoinHandle<()>,
+}
+
+impl StreamForwarder {
+    #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
+    fn new(
+        ctx: &StepCtx,
+        max_batch_bytes: usize,
+        partial_thought: &Arc<std::sync::Mutex<String>>,
+        partial_reasoning: &Arc<std::sync::Mutex<String>>,
+        partial_store: Arc<haven_task::partial::PartialStore>,
+        checkpoint_min_chars: usize,
+        checkpoint_interval: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
+        forward_reasoning: bool,
+    ) -> (Self, impl FnMut(&haven_llm::StreamChunk) + Send + 'static) {
+        let (chunk_tx, reasoning_tx, consumer_handle) =
+            EventDispatcher::spawn_chunk_consumer_raw(&ctx.emitter, max_batch_bytes);
+        let chunk_tx_c = chunk_tx.clone();
+        let reasoning_tx_c = reasoning_tx.clone();
+        let task_id_c = ctx.task_id.clone();
+        let pt = partial_thought.clone();
+        let pr = partial_reasoning.clone();
+        let checkpoint_task = ctx.task_id.clone();
+        let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Crash/stop recovery: the accumulated thought text is checkpointed
+        // into the `partial_messages` scratch table while streaming so a
+        // crash, user stop, or app exit does not lose the whole reply. The
+        // first chunk checkpoints immediately; afterwards at most every
+        // `checkpoint_interval` or every `checkpoint_min_chars` new chars,
+        // and never while a write is in flight. All writes go through the
+        // executor's `PartialStore`, which serializes them against
+        // promote/discard and drops writes that land after the task was
+        // ended/rolled back.
+        let mut checkpoint_at = std::time::Instant::now() - checkpoint_interval;
+        let mut checkpoint_len = 0usize;
+        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+        let ws_tx_c = ws_tx.clone();
+        let em_ws = ctx.emitter.clone();
+        let ws_task = tokio::spawn(async move {
+            while let Some(event) = ws_rx.recv().await {
+                em_ws.emit(event).await;
+            }
+        });
+        let step_num = ctx.step_num;
+        let run_id = ctx.run_id;
+        let last_chunk_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let last_chunk_c = last_chunk_ms.clone();
+        let on_chunk = move |c: &haven_llm::StreamChunk| {
+            if let Some(t) = c.text.as_deref() {
+                // Single lock scope per chunk: push, read the new length
+                // and clone the checkpoint snapshot (when due) under one
+                // guard instead of locking up to three times per token.
+                let checkpoint_snapshot = {
+                    let mut guard = pt.lock().unwrap();
+                    guard.push_str(t);
+                    let len = guard.len();
+                    let now = std::time::Instant::now();
+                    if !checkpoint_inflight.load(std::sync::atomic::Ordering::Relaxed)
+                        && (now.duration_since(checkpoint_at) >= checkpoint_interval
+                            || len.saturating_sub(checkpoint_len) >= checkpoint_min_chars)
+                    {
+                        checkpoint_at = now;
+                        checkpoint_len = len;
+                        Some(guard.clone())
+                    } else {
+                        None
+                    }
+                };
+                if let Err(e) = chunk_tx_c.try_send((
+                    task_id_c.clone(),
+                    t.to_string(),
+                    step_num,
+                    run_id,
+                )) {
+                    tracing::warn!("thought chunk channel full, dropping: {}", e);
+                }
+                if let Some(snapshot) = checkpoint_snapshot {
+                    // Generation captured BEFORE the write is spawned: if a
+                    // promote/discard bumps it while the write is queued, the
+                    // PartialStore drops the stale snapshot.
+                    let gen_id = partial_store.generation(&checkpoint_task);
+                    let store = partial_store.clone();
+                    let tid = checkpoint_task.clone();
+                    let flag = checkpoint_inflight.clone();
+                    tokio::spawn(async move {
+                        store.checkpoint(&tid, gen_id, &snapshot).await;
+                        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
+                last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(r) = &c.reasoning {
+                pr.lock().unwrap().push_str(r);
+                if forward_reasoning
+                    && let Err(e) = reasoning_tx_c.try_send((
+                        task_id_c.clone(),
+                        r.clone(),
+                        step_num,
+                        run_id,
+                    ))
+                {
+                    tracing::warn!("reasoning chunk channel full, dropping: {}", e);
+                }
+                last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(phase) = c.web_search {
+                let _ = ws_tx_c.send(AgentEvent::WebSearch {
+                    task_id: task_id_c.clone(),
+                    phase: phase.as_str().to_string(),
+                    step_number: step_num,
+                    run_id,
+                });
+                last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+            }
+        };
+        // Stall watchdog: announce `StreamStalled` once per silent episode
+        // (a chunk anchor that produced no traffic for STALL_WARN_DELAY_MS).
+        // The anchor starts at creation so a slow first chunk is covered
+        // too; the emitted-anchor sentinel starts at MAX so the no-chunk
+        // case (anchor 0) announces exactly once. Aborted by `flush` and
+        // by task cancellation.
+        let watchdog = {
+            let em = ctx.emitter.clone();
+            let tid = ctx.task_id.clone();
+            let last = last_chunk_ms.clone();
+            let created_ms = now_millis();
+            let mut emitted_anchor: u64 = u64::MAX;
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = tokio::time::sleep(STALL_WATCHDOG_POLL) => {
+                            let last_ms = last.load(std::sync::atomic::Ordering::Relaxed);
+                            let base = if last_ms == 0 { created_ms } else { last_ms };
+                            if now_millis().saturating_sub(base) >= STALL_WARN_DELAY_MS
+                                && last_ms != emitted_anchor
+                            {
+                                emitted_anchor = last_ms;
+                                em.emit(AgentEvent::StreamStalled {
+                                    task_id: tid.clone(),
+                                })
+                                .await;
+                            }
+                        }
+                    }
+                }
+            })
+        };
+        (
+            Self {
+                chunk_tx,
+                reasoning_tx,
+                ws_tx,
+                consumer: consumer_handle,
+                ws_task,
+                watchdog,
+            },
+            on_chunk,
+        )
+    }
+
+    /// Drain every buffered chunk to the frontend (batchers flush on
+    /// channel close) and stop the watchdog. Must run once the router
+    /// call has returned so no straggler events survive the step.
+    async fn flush(self) {
+        self.watchdog.abort();
+        drop(self.chunk_tx);
+        drop(self.reasoning_tx);
+        drop(self.ws_tx);
+        if let Some(handle) = self.consumer {
+            let _ = handle.await;
+        }
+        let _ = self.ws_task.await;
     }
 }
 

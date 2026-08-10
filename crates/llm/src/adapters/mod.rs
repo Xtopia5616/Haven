@@ -183,6 +183,50 @@ pub(crate) async fn health_check_request(
     }
 }
 
+/// DeepSeek's web-search round-trip: a `web_search_call` item captured from
+/// the stream is echoed back verbatim into the next request's `input`.
+/// DeepSeek's Responses-compat layer deserializes the echoed item against a
+/// strict schema: the `action` field is an internally tagged enum
+/// (`WebSearchAction`) with variants `search` / `open_page` / `find_in_page`,
+/// and the `search` variant requires a `queries` string array. The
+/// `output_item.added` skeleton (only `type`/`id`/`status`) and the
+/// `web_search_call.*` status events lack `action` — echoing a bare skeleton
+/// 400s ("missing field `action`") — so the full `output_item.done` payload
+/// must be captured instead (see the adapter). As a last resort, fill the
+/// action when absent or malformed with `{"type": "search", "queries": []}`
+/// (verified accepted by DeepSeek); items that already carry a well-formed
+/// object `action` — e.g. an `output_item.done` payload — pass through
+/// untouched.
+pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_json::Value {
+    let mut item = item;
+    if !item.is_object() {
+        return item;
+    }
+    let has_valid_action = item.get("action").is_some_and(|a| a.is_object());
+    if !has_valid_action {
+        item["action"] = serde_json::json!({"type": "search", "queries": []});
+    }
+    item
+}
+
+/// Insert a captured `web_search_call` item into `calls`, replacing any
+/// earlier item with the same `id`. The `output_item.added` skeleton arrives
+/// first; a later `web_search_call.completed` payload — when the provider
+/// sends one — is the authoritative version. Both must never be echoed into
+/// the next request's input as duplicates.
+pub(crate) fn upsert_web_search_call(calls: &mut Vec<serde_json::Value>, item: serde_json::Value) {
+    let id = item.get("id").and_then(serde_json::Value::as_str);
+    if let Some(id) = id
+        && let Some(pos) = calls
+            .iter()
+            .position(|c| c.get("id").and_then(serde_json::Value::as_str) == Some(id))
+    {
+        calls[pos] = item;
+    } else {
+        calls.push(item);
+    }
+}
+
 /// An empty `StreamChunk` — the "no payload" baseline emitted by every
 /// adapter's stream unfolding.
 pub(crate) fn empty_chunk() -> StreamChunk {
@@ -387,6 +431,82 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(adapter_for(&llama).style(), "openai-chat");
+    }
+
+    #[test]
+    fn normalize_web_search_call_item_fills_missing_action() {
+        let skeleton = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "in_progress"
+        });
+        let out = normalize_web_search_call_item(skeleton);
+        // `action` is an internally tagged enum object; the `search` variant
+        // requires a `queries` array (verified against DeepSeek).
+        assert_eq!(
+            out["action"],
+            serde_json::json!({"type": "search", "queries": []})
+        );
+        assert_eq!(out["type"], "web_search_call");
+        assert_eq!(out["id"], "ws_1");
+        assert_eq!(out["status"], "in_progress");
+    }
+
+    #[test]
+    fn normalize_web_search_call_item_replaces_malformed_string_action() {
+        // A previous buggy fill wrote a bare string; DeepSeek rejects it
+        // ("invalid type: string, expected internally tagged enum
+        // WebSearchAction"), so it is replaced with the object form.
+        let skeleton = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "in_progress",
+            "action": "web_search"
+        });
+        let out = normalize_web_search_call_item(skeleton);
+        assert_eq!(
+            out["action"],
+            serde_json::json!({"type": "search", "queries": []})
+        );
+    }
+
+    #[test]
+    fn normalize_web_search_call_item_keeps_existing_action() {
+        let complete = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": {"type": "open_page", "url": "https://example.com"},
+            "query": "foo"
+        });
+        let out = normalize_web_search_call_item(complete.clone());
+        assert_eq!(out, complete);
+    }
+
+    #[test]
+    fn normalize_web_search_call_item_skips_non_objects() {
+        assert_eq!(normalize_web_search_call_item(serde_json::Value::Null), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn upsert_web_search_call_replaces_same_id_and_appends_new() {
+        use serde_json::json;
+        let mut calls = vec![json!({"type": "web_search_call", "id": "ws_1", "status": "in_progress"})];
+        // The completed payload replaces the in-progress skeleton by id.
+        upsert_web_search_call(
+            &mut calls,
+            json!({"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "queries": ["capital of France"]}}),
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["status"], "completed");
+        assert_eq!(calls[0]["action"], json!({"type": "search", "queries": ["capital of France"]}));
+        // A different id is appended.
+        upsert_web_search_call(
+            &mut calls,
+            json!({"type": "web_search_call", "id": "ws_2", "status": "in_progress"}),
+        );
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1]["id"], "ws_2");
     }
 
     #[tokio::test]

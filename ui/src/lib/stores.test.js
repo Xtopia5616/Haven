@@ -376,6 +376,17 @@ describe('updateModelState', () => {
 		vi.advanceTimersByTime(10000);
 		expect(get(modelStateStore)).toBe('waiting');
 	});
+
+	it('stalled persists until a later state supersedes it', () => {
+		// The stall indicator must NOT auto-revert: the provider may stay
+		// silent for the whole idle-timeout window, and only the next chunk
+		// (streaming) or a terminal task event (ready/error) clears it.
+		updateModelState('stalled');
+		vi.advanceTimersByTime(60000);
+		expect(get(modelStateStore)).toBe('stalled');
+		updateModelState('streaming');
+		expect(get(modelStateStore)).toBe('streaming');
+	});
 });
 
 describe('taskTokenStatsStore', () => {

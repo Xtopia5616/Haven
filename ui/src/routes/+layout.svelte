@@ -545,6 +545,16 @@
 				updateModelState('balanced_model');
 				addNotification(`Balanced Model: ${data.reason}`, 'warning');
 			},
+			'agent:stream_stalled': (event) => {
+				// The provider stream went silent (mid-step stall, retry wait,
+				// slow first chunk). Surface "still generating" feedback so the
+				// conversation never looks frozen; the next chunk (streaming)
+				// or a terminal task event (ready/error) clears it.
+				const data = event.payload || {};
+				const activeId = get(activeTaskIdStore);
+				if (data.task_id && activeId && data.task_id !== activeId) return;
+				updateModelState('stalled');
+			},
 			'notification:show': (event) => {
 				const data = event.payload || {};
 				const title = data.title || 'Haven';
@@ -659,6 +669,9 @@
 					{:else if modelState === 'streaming'}
 						<StatusDot color="primary" animate={true} />
 						<span class="status-text">输出中</span>
+					{:else if modelState === 'stalled'}
+						<StatusDot color="warning" animate={true} />
+						<span class="status-text">生成较慢</span>
 					{:else if modelState === 'tool'}
 						<StatusDot color="tertiary" animate={true} />
 						<span class="status-text">工具调用</span>

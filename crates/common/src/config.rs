@@ -185,7 +185,9 @@ pub struct LlmConfig {
     /// (headers received, body stalled) is aborted as a timeout instead of
     /// blocking until `max_total_duration_secs`. Providers occasionally hang
     /// with the connection half-open; without this the UI waits minutes for
-    /// a reply that never comes.
+    /// a reply that never comes. The router gives the FIRST chunk a longer
+    /// grace (provider-side "thinking" delays it), so this value only bounds
+    /// data gaps after the stream started flowing.
     pub stream_idle_timeout_secs: u64,
     // §2.3/5.1: retry backoff parameters
     pub retry_base_secs: u64,
@@ -221,7 +223,7 @@ impl Default for LlmConfig {
             models: Vec::new(),
             role_models: HashMap::new(),
             max_total_duration_secs: 180,
-            stream_idle_timeout_secs: 45,
+            stream_idle_timeout_secs: 20,
             retry_base_secs: 2,
             retry_factor: 2,
             retry_max_secs: 30,

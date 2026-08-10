@@ -2270,7 +2270,9 @@ pub async fn get_last_conversation(
 /// is set to Pending for immediate re-execution. `target_message_id` is the
 /// id of the exact message being rolled back; it lets the backend detect an
 /// orphan rollback (a user message that was never processed into the
-/// ReAct context).
+/// ReAct context). The id must resolve to a persisted task message when
+/// `pause` is true — an unresolvable id is an error, not a content-based
+/// guess.
 #[tauri::command]
 pub async fn rollback_task(
     state: State<'_, Arc<AppState>>,
@@ -2278,17 +2280,10 @@ pub async fn rollback_task(
     target_step: u32,
     pause: Option<bool>,
     target_message_id: Option<String>,
-    target_content: Option<String>,
 ) -> Result<(), String> {
     state
         .agent
-        .rollback_task(
-            &task_id,
-            target_step,
-            pause.unwrap_or(false),
-            target_message_id.as_deref(),
-            target_content.as_deref(),
-        )
+        .rollback_task(&task_id, target_step, pause.unwrap_or(false), target_message_id.as_deref())
         .await
         .map_err(|e| log_err("rollback_task", e))
 }

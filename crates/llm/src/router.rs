@@ -17,6 +17,13 @@ use futures_util::future::join_all;
 use haven_common::config::{LlmConfig, ModelEndpoint, compute_cost_usd};
 use tokio::sync::mpsc;
 
+/// Budget for the FIRST chunk of a stream, applied before any data has
+/// arrived: providers run server-side "thinking" and may delay the first
+/// delta well beyond the data-gap idle timeout. A stream that stays silent
+/// past this is treated as dead (the total-duration deadline still bounds
+/// everything).
+const FIRST_CHUNK_GRACE: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointRole {
     SmallModel,
@@ -1192,6 +1199,14 @@ impl LlmRouter {
             }
         });
 
+        // The first chunk may lag far behind the request (providers run
+        // server-side "thinking" before the first delta). A dead stream must
+        // still surface quickly, so the first chunk gets a longer budget than
+        // the data-gap idle timeout; after data starts flowing, `idle_timeout`
+        // applies to every subsequent gap.
+        let first_chunk_timeout = idle_timeout.max(FIRST_CHUNK_GRACE);
+        let mut received_any = false;
+
         let mut text = String::new();
         let mut tool_calls = Vec::new();
         let mut finish_reason: Option<FinishReason> = None;
@@ -1205,28 +1220,42 @@ impl LlmRouter {
                 _ = cancel.cancelled() => {
                     return Err(LlmError::Cancelled);
                 }
-                item = tokio::time::timeout(idle_timeout, stream.next()) => {
+                item = tokio::time::timeout(
+                    if received_any { idle_timeout } else { first_chunk_timeout },
+                    stream.next(),
+                ) => {
                     let stream_item = match item {
                         Ok(v) => v,
                         Err(_) => {
-                            // No chunk arrived within the idle window: the server
+                            // No chunk arrived within the window: the server
                             // accepted the request but the body is stalled (half-open
                             // connection, provider-side hang). Abort as a retryable
                             // timeout instead of blocking until the overall
                             // `max_total_duration_secs` deadline — a hung stream
                             // must surface within the idle window, not minutes later.
+                            if received_any {
+                                tracing::warn!(
+                                    "stream idle timeout after {}s with no chunk; aborting stream",
+                                    idle_timeout.as_secs()
+                                );
+                                return Err(LlmError::Timeout(format!(
+                                    "stream idle timeout after {}s with no data",
+                                    idle_timeout.as_secs()
+                                )));
+                            }
                             tracing::warn!(
-                                "stream idle timeout after {}s with no chunk; aborting stream",
-                                idle_timeout.as_secs()
+                                "stream first chunk timeout after {}s with no chunk; aborting stream",
+                                first_chunk_timeout.as_secs()
                             );
                             return Err(LlmError::Timeout(format!(
-                                "stream idle timeout after {}s with no data",
-                                idle_timeout.as_secs()
+                                "stream first chunk timeout after {}s with no data",
+                                first_chunk_timeout.as_secs()
                             )));
                         }
                     };
                     match stream_item {
                         Some(Ok(chunk)) => {
+                            received_any = true;
                             if let Some(ref delta) = chunk.text {
                                 text.push_str(delta);
                             }
@@ -1731,6 +1760,121 @@ mod tests {
             !router.balanced_model_active(),
             "primary succeeded, no balanced model"
         );
+    }
+
+    /// Mock whose stream sleeps `first_delay` before the first chunk and
+    /// `gap_delay` between the two text chunks, so the first-chunk grace and
+    /// the data-gap idle timeout can be exercised independently.
+    struct SlowStreamClient {
+        first_delay: Duration,
+        gap_delay: Duration,
+    }
+
+    #[async_trait]
+    impl LlmClient for SlowStreamClient {
+        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+            Err(Unknown("mock: no chat".into()))
+        }
+        async fn chat_with_tools(
+            &self,
+            _: Vec<LlmMessage>,
+            _: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, LlmError> {
+            Err(Unknown("mock: no chat_with_tools".into()))
+        }
+        async fn chat_stream(
+            &self,
+            _messages: Vec<LlmMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(Unknown("mock: no chat_stream".into()))
+        }
+        async fn chat_stream_with_tools(
+            &self,
+            _: Vec<LlmMessage>,
+            _: Vec<ToolDefinition>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            let first_delay = self.first_delay;
+            let gap_delay = self.gap_delay;
+            let mk = |text: &'static str| Ok(StreamChunk {
+                text: Some(text.into()),
+                tool_calls: Vec::new(),
+                finish_reason: None,
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            });
+            Ok(Box::pin(stream::unfold(0u8, move |i| async move {
+                match i {
+                    0 => {
+                        tokio::time::sleep(first_delay).await;
+                        Some((mk("hello"), 1))
+                    }
+                    1 => {
+                        tokio::time::sleep(gap_delay).await;
+                        Some((mk(" world"), 2))
+                    }
+                    _ => None,
+                }
+            })))
+        }
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    async fn aggregate_direct(
+        client: Arc<dyn LlmClient>,
+        idle_timeout: Duration,
+        on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
+    ) -> Result<LlmResponse, LlmError> {
+        let on_chunk = Arc::new(StdMutex::new(on_chunk));
+        let rules = RwLock::new(Vec::<StreamRule>::new());
+        LlmRouter::aggregate_stream_cancellable(
+            client,
+            Vec::new(),
+            Vec::new(),
+            on_chunk,
+            CancellationToken::new(),
+            &rules,
+            idle_timeout,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn stream_first_chunk_grace_tolerates_slow_start() {
+        // First chunk arrives at 3s — far beyond the 1s idle timeout, but
+        // within the 60s first-chunk grace: the slow start must NOT abort.
+        let client: Arc<dyn LlmClient> = Arc::new(SlowStreamClient {
+            first_delay: Duration::from_secs(3),
+            gap_delay: Duration::ZERO,
+        });
+        let resp = aggregate_direct(client, Duration::from_secs(1), |_| {})
+            .await
+            .expect("slow first chunk must be tolerated by the grace window");
+        assert_eq!(resp.text, "hello world");
+    }
+
+    #[tokio::test]
+    async fn stream_data_gap_idle_timeout_aborts_after_first_chunk() {
+        // First chunk arrives immediately; the second is 3s late — past the
+        // 1s idle timeout. Once data is flowing, gaps are bounded tightly.
+        let client: Arc<dyn LlmClient> = Arc::new(SlowStreamClient {
+            first_delay: Duration::ZERO,
+            gap_delay: Duration::from_secs(3),
+        });
+        let err = aggregate_direct(client, Duration::from_secs(1), |_| {})
+            .await
+            .expect_err("mid-stream gap past the idle timeout must abort");
+        assert!(err.to_string().contains("idle timeout"));
     }
 
     #[tokio::test]

@@ -32,13 +32,23 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
     #[cfg(windows)]
     let mut std_cmd = match shell {
         "powershell" => {
+            // Force UTF-8 for both the native-command pipe ($OutputEncoding) and
+            // PowerShell's own redirected output ([Console]::OutputEncoding) so
+            // command output arrives as UTF-8 instead of the OEM/ANSI code page.
             let mut c = std::process::Command::new("powershell");
-            c.args(["-NoProfile", "-Command", command]);
+            let ps = format!(
+                "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}"
+            );
+            c.args(["-NoProfile", "-Command", ps.as_str()]);
             c
         }
         _ => {
+            // chcp 65001 flips cmd's console code page to UTF-8. Byte output from
+            // children passes through the pipe unaltered, so tools that ignore
+            // the code page (still GBK) are decoded lossily by decode_lossy.
             let mut c = std::process::Command::new("cmd");
-            c.args(["/C", command]);
+            let cmdline = format!("chcp 65001 >nul 2>nul & {command}");
+            c.args(["/C", cmdline.as_str()]);
             c
         }
     };
@@ -1207,12 +1217,41 @@ where
     let mut buf = Vec::with_capacity(max_bytes.min(8192));
     let mut tmp = [0u8; 8192];
     let mut overflowed = false;
+    // Carry incomplete trailing UTF-8 bytes across read boundaries so a
+    // multi-byte char split between two chunks is not mojibake'd in the live
+    // tail preview. Non-UTF-8 streams (legacy GBK tools) are decoded lossily
+    // per chunk and the carry is reset, so it never grows unbounded.
+    let mut pending = Vec::new();
     loop {
         match stream.read(&mut tmp).await {
             Ok(0) => break,
             Ok(n) => {
                 if let Some(t) = &tail {
-                    append_tail(t, &tmp[..n]);
+                    pending.extend_from_slice(&tmp[..n]);
+                    match std::str::from_utf8(&pending) {
+                        Ok(s) => {
+                            if !s.is_empty() {
+                                append_tail(t, s.as_bytes());
+                            }
+                            pending.clear();
+                        }
+                        Err(e) => {
+                            let valid = e.valid_up_to();
+                            if e.error_len().is_none() && pending.len() - valid <= 3 {
+                                // Incomplete trailing sequence: flush the valid
+                                // prefix and keep the remnant for the next read.
+                                if valid > 0 {
+                                    append_tail(t, &pending[..valid]);
+                                }
+                                pending.drain(..valid);
+                            } else {
+                                // Not UTF-8 (e.g. GBK): decode the whole chunk
+                                // lossily and reset the carry.
+                                append_tail(t, &pending);
+                                pending.clear();
+                            }
+                        }
+                    }
                 }
                 let room = max_bytes.saturating_sub(buf.len());
                 if room == 0 {
@@ -1534,6 +1573,27 @@ mod tests {
         // A second chunk appends (multi-chunk tee).
         read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
         assert_eq!(*tail.lock().unwrap(), "hello tail more");
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_capped_tail_carries_split_multibyte() {
+        // 8191 ASCII + a 3-byte UTF-8 char: the first 8192-byte read splits the
+        // char (lead byte only), the second read finishes it. The live tail must
+        // still show the char intact, not GBK-fallback mojibake.
+        let tail = Arc::new(Mutex::new(String::new()));
+        let mut content = "a".repeat(8191);
+        content.push('中');
+        read_stream_capped(Some(&content.as_bytes()[..]), 10_000, Some(tail.clone())).await;
+        let t = tail.lock().unwrap();
+        assert!(
+            t.ends_with('中'),
+            "tail must keep the split char intact, got: {:?}",
+            &t[t.len().saturating_sub(40)..]
+        );
+        assert!(
+            !t.contains('\u{FFFD}'),
+            "no replacement chars in tail"
+        );
     }
 
     #[test]

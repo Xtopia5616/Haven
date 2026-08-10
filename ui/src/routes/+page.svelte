@@ -167,7 +167,9 @@
 			modelState = v;
 		}),
 	);
-	const isGenerating = $derived(modelState === 'streaming' || modelState === 'tool');
+	const isGenerating = $derived(
+		modelState === 'streaming' || modelState === 'tool' || modelState === 'stalled',
+	);
 	const taskRunning = $derived(
 		!!activeTaskId &&
 			tasks.some(
@@ -393,23 +395,18 @@
 			if (role === 'user') {
 				// User-message rollback: pause the task and put the message
 				// text back in the input box so the user can edit and re-send.
+				// The backend resolves targetMessageId against persisted task
+				// messages and errors when the id does not match (no more
+				// content-based guessing).
 				await invoke('rollback_task', {
 					taskId: activeTaskId,
 					targetStep: stepNumber,
 					pause: true,
 					targetMessageId: msgId,
-					// Live-view message ids are locally generated and never
-					// match the DB ids; the backend falls back to matching by
-					// this content when the id misses (the clicked message may
-					// not be the newest user message, so the id-only guess
-					// would leave it in the task).
-					targetContent: content,
 				});
 				clearSeqMap(activeTaskId);
 				// The backend is the source of truth for what the rollback
-				// deleted (target message + its whole discarded timeline).
-				// Live-view message ids are locally generated and never match
-				// the DB ids, so a client-side slice by msgId is unreliable;
+				// deleted (target message + its whole discarded timeline);
 				// rebuild from the DB instead.
 				await resyncTaskMessages(activeTaskId);
 				inputRouterRef?.setDraft(content);
@@ -420,7 +417,6 @@
 					targetStep: stepNumber,
 					pause: false,
 					targetMessageId: msgId,
-					targetContent: content,
 				});
 				clearSeqMap(activeTaskId);
 				await resyncTaskMessages(activeTaskId);

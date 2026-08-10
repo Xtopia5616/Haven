@@ -9,7 +9,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    build_client, build_headers, health_check_request, send_request,
+    build_client, build_headers, health_check_request, normalize_web_search_call_item,
+    send_request,
 };
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{
@@ -294,7 +295,15 @@ impl OpenAiAdapter {
                     tool_call_id: m.tool_call_id,
                     tool_calls,
                     reasoning_content: m.reasoning,
-                    web_search_call: m.web_search_calls,
+                    // `web_search_call` items are echoed back for the
+                    // stateless chat API to restore the search context, with
+                    // the `action` discriminator filled when the captured
+                    // skeleton lacks it (DeepSeek 400s otherwise).
+                    web_search_call: m
+                        .web_search_calls
+                        .into_iter()
+                        .map(normalize_web_search_call_item)
+                        .collect(),
                 }
             })
             .collect()
@@ -399,7 +408,13 @@ impl OpenAiAdapter {
         let web_search_calls = choice
             .message
             .as_ref()
-            .map(|m| m.web_search_call.clone())
+            .map(|m| {
+                m.web_search_call
+                    .iter()
+                    .cloned()
+                    .map(normalize_web_search_call_item)
+                    .collect()
+            })
             .unwrap_or_default();
 
         let usage = json
@@ -980,14 +995,21 @@ mod tests {
         let resp = adapter.parse_openai_response(json, None).unwrap();
         assert_eq!(resp.web_search_calls.len(), 1);
         assert_eq!(resp.web_search_calls[0]["type"], "web_search_call");
+        assert_eq!(
+            resp.web_search_calls[0]["action"],
+            serde_json::json!({"type": "search", "queries": []})
+        );
     }
 
     #[test]
     fn convert_messages_echoes_web_search_calls_verbatim() {
+        // A complete item (with `action`) is echoed back untouched.
         let ws = serde_json::json!({
             "type": "web_search_call",
             "id": "ws_9",
-            "status": "completed"
+            "status": "completed",
+            "action": {"type": "search", "queries": ["capital of France"]},
+            "query": "foo"
         });
         let msgs = vec![LlmMessage {
             role: LlmRole::Assistant,
@@ -1002,6 +1024,33 @@ mod tests {
         let body = client.build_request_body(msgs, Vec::new(), false);
         let out = body.messages[0].web_search_call.first().cloned().unwrap();
         assert_eq!(out, ws);
+    }
+
+    #[test]
+    fn convert_messages_supplies_missing_web_search_call_action() {
+        // The in-progress skeleton captured from the stream lacks `action`;
+        // echoing it back as-is 400s on DeepSeek, so the field is filled.
+        let ws = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_9",
+            "status": "in_progress"
+        });
+        let msgs = vec![LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![ContentPart::text("searched")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: vec![ws.clone()],
+        }];
+        let ep = ModelEndpoint::default();
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(msgs, Vec::new(), false);
+        let out = body.messages[0].web_search_call.first().cloned().unwrap();
+        assert_eq!(out["type"], "web_search_call");
+        assert_eq!(out["id"], "ws_9");
+        assert_eq!(out["status"], "in_progress");
+        assert_eq!(out["action"], serde_json::json!({"type": "search", "queries": []}));
     }
 
     #[test]

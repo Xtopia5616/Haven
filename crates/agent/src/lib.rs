@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod compactor;
@@ -24,6 +24,7 @@ use haven_memory::Database;
 use haven_memory::repositories::messages::{Message, MessageAttachment};
 use haven_tools::ReminderMode;
 use serde_json::Value;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::title::TitleGenerator;
@@ -199,6 +200,7 @@ pub struct AgentLayer {
     react_engine: Arc<ReActEngine>,
     inference: Arc<InferenceEngine>,
     title: Option<TitleGenerator>,
+    title_in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 /// A recent conversation message used to re-seed context when resuming a
@@ -253,6 +255,7 @@ impl AgentLayer {
             react_engine,
             inference,
             title,
+            title_in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -741,13 +744,16 @@ impl AgentLayer {
     /// to detect an orphan rollback: a user message persisted after the
     /// newest branch point was never processed into the ReAct canonical, so
     /// rolling it back must discard ONLY that message.
+    ///
+    /// For user-message rollback (`pause == true`) the id must resolve to a
+    /// persisted task message; an unresolvable id is an error, never a
+    /// content-based guess.
     pub async fn rollback_task(
         &self,
         task_id: &str,
         target_step: u32,
         pause: bool,
         target_message_id: Option<&str>,
-        target_content: Option<&str>,
     ) -> anyhow::Result<()> {
         // If the task is currently Running, cancel it first so the ReAct loop
         // exits cleanly. Otherwise the loop's in-memory canonical/history would
@@ -804,13 +810,32 @@ impl AgentLayer {
                     "rollback_task {}: no react_state ??falling back to message-only truncation",
                     task_id
                 );
-                let cutoff = self.db.last_user_message_ts(task_id);
-                if let Some(ref ts) = cutoff {
-                    if pause {
-                        let _ = self.db.delete_messages_from(task_id, ts);
-                    } else {
-                        let _ = self.db.delete_messages_after(task_id, ts);
-                    }
+                if pause {
+                    // User-message rollback needs the exact clicked message;
+                    // the "newest user message" guess is gone — an
+                    // unresolvable id is an error.
+                    let id = target_message_id.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "rollback_task {}: pause=true requires target_message_id",
+                            task_id
+                        )
+                    })?;
+                    let target = self
+                        .db
+                        .get_task_messages(task_id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|m| m.id == id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "rollback_task {}: target message '{}' not found in task messages",
+                                task_id,
+                                id
+                            )
+                        })?;
+                    let _ = self.db.delete_messages_from(task_id, &target.created_at);
+                } else if let Some(ts) = self.db.last_user_message_ts(task_id) {
+                    let _ = self.db.delete_messages_after(task_id, &ts);
                 }
                 // Reload into memory and set status.
                 self.executor.ensure_task_loaded(task_id).await?;
@@ -891,23 +916,33 @@ impl AgentLayer {
         // back to it must discard ONLY that message ??deleting from the
         // branch point's cutoff would wipe valid earlier history.
         let task_msgs = self.db.get_task_messages(task_id).unwrap_or_default();
-        // The chat page's live-view messages carry locally generated ids that
-        // never match DB ids, so `target_message_id` frequently misses — the
-        // backend would then have to guess the clicked message (falling back
-        // to "newest user message"), which leaves the actually-clicked message
-        // in the task. Match by content as a fallback: pick the LATEST message
-        // with that content (duplicates are common, the clicked one is the
-        // newest visible).
-        let target_msg = target_message_id
-            .and_then(|id| task_msgs.iter().find(|m| m.id == id))
-            .or_else(|| {
-                target_content.and_then(|content| {
-                    task_msgs
-                        .iter()
-                        .filter(|m| m.content == content)
-                        .max_by(|a, b| a.created_at.cmp(&b.created_at))
-                })
-            });
+        // User-message rollback (pause=true) needs the EXACT clicked
+        // message. The old fallbacks — matching by content when the id
+        // missed, or guessing the newest user message — could delete the
+        // wrong message, so an unresolvable id is now an error instead.
+        // Step rollbacks (pause=false) need no message id at all.
+        let target_msg = if pause {
+            let id = target_message_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "rollback_task {}: pause=true requires target_message_id",
+                    task_id
+                )
+            })?;
+            Some(
+                task_msgs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "rollback_task {}: target message '{}' not found in task messages",
+                            task_id,
+                            id
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let is_orphan_rollback = target_msg.is_some_and(|m| {
             m.role == "user"
                 && max_bp_ts
@@ -919,44 +954,16 @@ impl AgentLayer {
             if pause {
                 // User-message rollback: delete the user message itself too
                 // (inclusive), so the context is clean when the user re-sends
-                // an edited version.
-                //
-                // `ts` (bp.last_msg_at) is the timestamp of the last message
-                // persisted BEFORE the target step ran ??usually the step's
-                // thought, which is AFTER the user message. Deleting from
-                // `ts` alone would leave the rolled-back user input in the
-                // task, so it would reappear on the next review rebuild.
-                // Delete from the user message's own timestamp instead.
-                let user_ts = if is_orphan_rollback {
-                    target_msg.map(|m| m.created_at.clone())
-                } else if let Some(m) = target_msg {
-                    // Roll back the EXACT user message the user clicked, not
-                    // merely the newest user message at/before the branch
-                    // point. A steering interjection persisted between the
-                    // target message and the branch-point thought would
-                    // otherwise win the "latest user" race, leaving the
-                    // rolled-back message in the task.
-                    Some(m.created_at.clone())
-                } else {
-                    task_msgs
-                        .iter()
-                        .filter(|m| m.role == "user" && m.created_at.as_str() <= ts.as_str())
-                        .map(|m| m.created_at.clone())
-                        .max()
-                };
-                match user_ts {
-                    Some(u_ts) => {
-                        self.db.delete_messages_from(task_id, &u_ts)?;
-                        // Rollback overwrites: drop step rows recorded after
-                        // the user message too (they belong to the discarded
-                        // timeline).
-                        self.db.delete_task_steps_after(task_id, &u_ts)?;
-                    }
-                    None => {
-                        self.db.delete_messages_from(task_id, ts)?;
-                        self.db.delete_task_steps_after(task_id, ts)?;
-                    }
-                }
+                // an edited version. `target_msg` is guaranteed to resolve
+                // (validated above), so its own timestamp is authoritative —
+                // the "newest user message at/before the branch point" guess
+                // is gone.
+                let user_ts = target_msg.expect("pause target resolved above").created_at.clone();
+                self.db.delete_messages_from(task_id, &user_ts)?;
+                // Rollback overwrites: drop step rows recorded after
+                // the user message too (they belong to the discarded
+                // timeline).
+                self.db.delete_task_steps_after(task_id, &user_ts)?;
             } else {
                 // Strict `>` for both: the branch-point cutoff is the last
                 // message BEFORE the discarded step, so we keep the cutoff
@@ -982,8 +989,10 @@ impl AgentLayer {
         // (with their "Steering: — / "Additional context from user: —
         // prefixes). Trimming at the last User would leave the rolled-back
         // message in the canonical. Match the target by content instead
-        // (canonical stores the prefixed form, the DB the raw text), falling
-        // back to the last User entry when no match is found.
+        // (canonical stores the prefixed form, the DB the raw text). If the
+        // target cannot be located even with the known prefixes, that is a
+        // genuine inconsistency — error instead of guessing the last User
+        // entry (which could truncate a different message).
         if pause
             && !is_orphan_rollback
             && let Some(target) = target_msg
@@ -1008,17 +1017,15 @@ impl AgentLayer {
                             .iter()
                             .any(|p| matches!(p, ContentPart::Text(t) if matches_target(t)))
                 })
-                .or_else(|| {
-                    snapshot
-                        .canonical
-                        .iter()
-                        .rposition(|m| m.role == CanonicalRole::User)
-                });
-            if let Some(pos) = pos {
-                // Keep everything before the target user message. Drop the
-                // message and any assistant messages that followed it.
-                snapshot.canonical.truncate(pos);
-            }
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "rollback_task {}: target user message not found in the restored canonical",
+                        task_id
+                    )
+                })?;
+            // Keep everything before the target user message. Drop the
+            // message and any assistant messages that followed it.
+            snapshot.canonical.truncate(pos);
         }
 
         let json = serde_json::to_string(&snapshot)?;
@@ -1255,15 +1262,21 @@ impl AgentLayer {
             }
         };
 
-        // Generate title after first ReAct loop if not already set
-        if task.title.is_none() {
+        // Generate title after the ReAct loop if not already set. Only
+        // spawned when the run itself succeeded: a failed run (e.g. all LLM
+        // endpoints down) would burn the full title retry budget on the same
+        // dead endpoint and duplicate the conversation's own retry latency.
+        // A resumed task whose title was never generated gets its title
+        // attempt on the next successful run instead.
+        if task.title.is_none() && result.is_ok() {
             let db = self.db.clone();
             let executor = self.executor.clone();
             let title = self.title.clone();
             let events = self.events.clone();
+            let in_flight = self.title_in_flight.clone();
             let tid = task_id.to_string();
             tokio::spawn(async move {
-                Self::try_generate_title(db, executor, title, events, tid).await;
+                Self::try_generate_title(db, executor, title, events, in_flight, tid).await;
             });
         }
 
@@ -1276,17 +1289,41 @@ impl AgentLayer {
         self.react_engine.reset_cumulative_usage(task_id);
     }
 
-    /// Generate a short title using small_model after the first ReAct loop
-    /// completes. Spawned as a background task so it does not block the
-    /// dispatcher. Only runs once per task (when title is None).
+    /// Generate a short title using small_model after a successful ReAct
+    /// loop. Spawned as a background task so it does not block the
+    /// dispatcher. Only runs once per task (when title is None), and only
+    /// once at a time: overlapping dispatches of the same task (auto-reload
+    /// on app start plus a manual continue) must not fire concurrent title
+    /// calls.
     async fn try_generate_title(
         db: Arc<Database>,
         executor: Arc<TaskExecutor>,
         title: Option<TitleGenerator>,
         events: Arc<EventDispatcher>,
+        in_flight: Arc<Mutex<HashSet<String>>>,
         task_id: String,
     ) {
         let Some(generator) = title else { return };
+        // Claim the in-flight slot before the DB check so two concurrent
+        // spawns both pass the title check only once. Released after the
+        // generation attempt ends (success or failure).
+        {
+            let mut set = in_flight.lock().await;
+            if !set.insert(task_id.clone()) {
+                return;
+            }
+        }
+        Self::generate_title(db, executor, generator, events, task_id.clone()).await;
+        in_flight.lock().await.remove(&task_id);
+    }
+
+    async fn generate_title(
+        db: Arc<Database>,
+        executor: Arc<TaskExecutor>,
+        generator: TitleGenerator,
+        events: Arc<EventDispatcher>,
+        task_id: String,
+    ) {
         // Check if the task already has a title in the DB
         if let Ok(Some(task)) = db.get_task(&task_id)
             && task.title.is_some()
@@ -3636,7 +3673,6 @@ mod tests {
         assert_eq!(actions[0].tool_input["action"], "go");
         assert_eq!(actions[0].tool_input["query"], "");
     }
-
     /// A mock tool whose required field is enum-constrained with NO schema
     /// default, mirroring the `input` tool's `operation` discriminator.
     /// The type placeholder (`""`) would violate the enum, so the repair
@@ -3674,6 +3710,45 @@ mod tests {
         }
     }
 
+    /// A mock tool with an optional enum-constrained field: the value is
+    /// validated when present, but the field itself is not required.
+    struct EnumWithOptionalTool;
+    #[async_trait]
+    impl Tool for EnumWithOptionalTool {
+        fn name(&self) -> String {
+            "enum_with_optional".into()
+        }
+        fn description(&self) -> String {
+            "optional enum field".into()
+        }
+        fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["type", "key", "click"]
+                    },
+                    "optional": {
+                        "type": "string",
+                        "enum": ["a", "b", "c"]
+                    }
+                },
+                "required": ["operation"]
+            })
+        }
+        async fn execute(
+            &self,
+            _: serde_json::Value,
+            _: CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::ok(serde_json::json!({"ok": true})))
+        }
+    }
+
     #[tokio::test]
     async fn supplement_missing_required_fields_enum_field_gets_first_value() {
         let tools = Arc::new(ToolsManager::new());
@@ -3697,6 +3772,125 @@ mod tests {
             .await;
         assert_eq!(repaired, 1);
         assert_eq!(actions[0].tool_input["operation"], "type");
+    }
+
+    #[tokio::test]
+    async fn supplement_repairs_present_value_not_in_enum() {
+        // The `action` field is PRESENT but its value is not in the schema
+        // enum. Strict providers validate tool_use input against the declared
+        // schema and reject the request with a 400 ("Failed to deserialize
+        // the JSON body into the target type: input.action: ...") — the value
+        // must be replaced with the schema default before it reaches the
+        // provider, not just when the field is missing.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(ActionRequiredTool) as ToolBox)
+            .await;
+        let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+        let (agent, executor) = make_test_agent_with(client, tools);
+        let task = executor.create_task("do it").await.unwrap();
+
+        let mut actions = vec![Action {
+            tool_name: "action_required".into(),
+            tool_input: serde_json::json!({"action": "bogus", "query": "hi"}),
+            is_final: false,
+            tool_call_id: Some("call_1".into()),
+        }];
+        let repaired = agent
+            .react_engine
+            .supplement_missing_required_fields(&task.id, &mut actions)
+            .await;
+        assert_eq!(repaired, 1);
+        // `action` falls back to the schema default "go"; the valid `query`
+        // is left untouched.
+        assert_eq!(actions[0].tool_input["action"], "go");
+        assert_eq!(actions[0].tool_input["query"], "hi");
+    }
+
+    #[tokio::test]
+    async fn supplement_repairs_present_value_of_wrong_type() {
+        // Same provider 400 when a field's value type contradicts the schema
+        // (e.g. a number where the schema declares a string enum).
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(ActionRequiredTool) as ToolBox)
+            .await;
+        let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+        let (agent, executor) = make_test_agent_with(client, tools);
+        let task = executor.create_task("do it").await.unwrap();
+
+        let mut actions = vec![Action {
+            tool_name: "action_required".into(),
+            tool_input: serde_json::json!({"action": 42, "query": "hi"}),
+            is_final: false,
+            tool_call_id: Some("call_1".into()),
+        }];
+        let repaired = agent
+            .react_engine
+            .supplement_missing_required_fields(&task.id, &mut actions)
+            .await;
+        assert_eq!(repaired, 1);
+        assert_eq!(actions[0].tool_input["action"], "go");
+        assert_eq!(actions[0].tool_input["query"], "hi");
+    }
+
+    #[tokio::test]
+    async fn supplement_keeps_valid_enum_values_untouched() {
+        // A value that conforms to the schema (in the enum, correct type)
+        // must NOT be repaired.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(ActionRequiredTool) as ToolBox)
+            .await;
+        let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+        let (agent, executor) = make_test_agent_with(client, tools);
+        let task = executor.create_task("do it").await.unwrap();
+
+        let mut actions = vec![Action {
+            tool_name: "action_required".into(),
+            tool_input: serde_json::json!({"action": "stop", "query": "hi"}),
+            is_final: false,
+            tool_call_id: Some("call_1".into()),
+        }];
+        let repaired = agent
+            .react_engine
+            .supplement_missing_required_fields(&task.id, &mut actions)
+            .await;
+        assert_eq!(repaired, 0);
+        assert_eq!(actions[0].tool_input["action"], "stop");
+    }
+
+    #[tokio::test]
+    async fn supplement_repairs_invalid_optional_field() {
+        // Even a non-required property with an invalid value can trip the
+        // provider's deserialization (the input object is validated as a
+        // whole), so it is repaired too.
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(EnumWithOptionalTool) as ToolBox)
+            .await;
+        let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+        let (agent, executor) = make_test_agent_with(client, tools);
+        let task = executor.create_task("do it").await.unwrap();
+
+        let mut actions = vec![Action {
+            tool_name: "enum_with_optional".into(),
+            tool_input: serde_json::json!({"operation": "type", "optional": "nope"}),
+            is_final: false,
+            tool_call_id: Some("call_1".into()),
+        }];
+        let repaired = agent
+            .react_engine
+            .supplement_missing_required_fields(&task.id, &mut actions)
+            .await;
+        assert_eq!(repaired, 1);
+        assert_eq!(actions[0].tool_input["operation"], "type");
+        // Optional invalid enum field falls back to the first enum value.
+        assert_eq!(actions[0].tool_input["optional"], "a");
     }
 
     /// Scripted LlmClient that returns a pre-programmed sequence of responses
@@ -4981,10 +5175,18 @@ mod tests {
             .db
             .add_message(&task.id, "assistant", "partial", Some("text"), None)
             .unwrap();
+        let hello_id = agent
+            .db
+            .get_task_messages(&task.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.content == "hello")
+            .unwrap()
+            .id;
 
         // User-message rollback (pause=true) should truncate from the user msg.
         agent
-            .rollback_task(&task.id, 1, true, None, None)
+            .rollback_task(&task.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
@@ -5029,7 +5231,7 @@ mod tests {
 
         // Rollback to step 1 with pause=false (agent rollback).
         agent
-            .rollback_task(&task.id, 1, false, None, None)
+            .rollback_task(&task.id, 1, false, None)
             .await
             .unwrap();
         assert_eq!(
@@ -5058,6 +5260,12 @@ mod tests {
         // last_msg_at points at the thought that was persisted AFTER it (the
         // realistic shape saved by save_branch_point).
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let hello_id = msgs
+            .iter()
+            .find(|m| m.content == "hello")
+            .unwrap()
+            .id
+            .clone();
         let thought_ts = msgs
             .iter()
             .find(|m| m.role == "assistant")
@@ -5107,7 +5315,7 @@ mod tests {
         // the task (its text returns to the composer for editing) ??not
         // left behind to reappear on the next review rebuild.
         agent
-            .rollback_task(&task.id, 1, true, None, None)
+            .rollback_task(&task.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
@@ -5158,6 +5366,12 @@ mod tests {
             .unwrap()
             .created_at
             .clone();
+        let second_id = msgs
+            .iter()
+            .find(|m| m.content == "second")
+            .unwrap()
+            .id
+            .clone();
         // Snapshot with a branch point ONLY at step 1; the target step 2 has
         // no branch point (realistic: step 2's save_branch_point never ran).
         let canonical = vec![CanonicalMessage {
@@ -5189,10 +5403,10 @@ mod tests {
             .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        // The user clicked a message belonging to step 2, but the live-view
-        // msg id does not match any DB id (None here).
+        // The user clicked "second" (the newest user message, whose id
+        // resolves to a persisted row).
         agent
-            .rollback_task(&task.id, 2, true, None, None)
+            .rollback_task(&task.id, 2, true, Some(&second_id))
             .await
             .unwrap();
         assert_eq!(
@@ -5204,21 +5418,20 @@ mod tests {
         assert_eq!(
             contents,
             vec!["first", "reply1"],
-            "fallback must delete the newest user message and everything after it: {:?}",
+            "rollback must delete the clicked user message and everything after it: {:?}",
             contents
         );
     }
 
     #[tokio::test]
-    async fn rollback_matches_target_by_content_when_id_misses() {
-        // Regression: the chat page's live-view message ids never match DB
-        // ids. When the clicked message is NOT the newest user message, the
-        // old id-only matching fell back to "newest user message" and left
-        // the actually-clicked message (and everything between it and the
-        // newest user message) in the task. Content matching must locate the
-        // exact clicked message.
+    async fn rollback_errors_when_target_message_id_does_not_match() {
+        // Regression: user-message rollback used to fall back to matching by
+        // content when the clicked message's id missed, and to guessing the
+        // newest user message when even that failed. Both guesses could
+        // delete the wrong message; an unresolvable id is now a direct error
+        // and the task is left untouched.
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("content rollback").await.unwrap();
+        let task = executor.create_task("strict rollback").await.unwrap();
         agent
             .db
             .add_message(&task.id, "user", "first question", Some("text"), None)
@@ -5272,26 +5485,19 @@ mod tests {
             .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        // The user clicked "first question" — NOT the newest user message
-        // ("second question" came later). The frontend's live id does not
-        // match any DB id, only the content is passed. Rollback must delete
-        // the clicked message and everything after it. (The old id-only
-        // matching fell back to the newest user message, leaving "first
-        // question" in the task.)
-        agent
-            .rollback_task(&task.id, 1, true, None, Some("first question"))
+        // The live-view id never matches a DB id and no content fallback
+        // exists anymore: rollback must error and delete nothing.
+        let err = agent
+            .rollback_task(&task.id, 1, true, Some("live-view-local-id"))
             .await
-            .unwrap();
-        assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not found in task messages"),
+            "unexpected error: {}",
+            err
         );
         let msgs = agent.db.get_task_messages(&task.id).unwrap();
-        assert!(
-            msgs.is_empty(),
-            "clicked message and everything after it must be deleted: {:?}",
-            msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
-        );
+        assert_eq!(msgs.len(), 4, "no message may be deleted on error");
     }
 
     /// Seed the common rollback-test fixture: messages `hello` / `thinking` /
@@ -5377,7 +5583,7 @@ mod tests {
             .id
             .clone();
         agent
-            .rollback_task(&task.id, 1, true, Some(&interrupt_id), None)
+            .rollback_task(&task.id, 1, true, Some(&interrupt_id))
             .await
             .unwrap();
         assert_eq!(
@@ -5423,7 +5629,7 @@ mod tests {
             .id
             .clone();
         agent
-            .rollback_task(&task.id, 1, true, Some(&hello_id), None)
+            .rollback_task(&task.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
@@ -5524,7 +5730,7 @@ mod tests {
         // Roll back "hello" specifically —the steering interjection must
         // NOT keep "hello" alive.
         agent
-            .rollback_task(&task.id, 1, true, Some(&hello_id), None)
+            .rollback_task(&task.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
@@ -5633,7 +5839,7 @@ mod tests {
             .unwrap();
 
         agent
-            .rollback_task(&task.id, 2, true, Some(&steering_id), None)
+            .rollback_task(&task.id, 2, true, Some(&steering_id))
             .await
             .unwrap();
         assert_eq!(

@@ -8,8 +8,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
-    spawn_line_reader,
+    LineMode, build_client, build_headers, empty_chunk, health_check_request,
+    normalize_web_search_call_item, send_request, spawn_line_reader, upsert_web_search_call,
 };
 use crate::client::LlmClient;
 use crate::types::{
@@ -166,6 +166,15 @@ enum ResponsesStreamEvent {
     },
     #[serde(rename = "response.output_item.added")]
     OutputItemAdded { item: Option<ResponsesItem> },
+    /// DeepSeek streams the complete output item here: for a
+    /// `web_search_call` this is the ONLY event that carries the full
+    /// payload (`action` with `queries`, `status: "completed"`) — the
+    /// `output_item.added` skeleton and the `web_search_call.*` status
+    /// events lack it, and echoing the bare skeleton back 400s ("missing
+    /// field `action`"). The full item must replace the skeleton (by id)
+    /// before the round-trip.
+    #[serde(rename = "response.output_item.done")]
+    OutputItemDone { item: Option<ResponsesItem> },
     #[serde(rename = "response.web_search_call.in_progress")]
     WebSearchInProgress,
     #[serde(rename = "response.web_search_call.searching")]
@@ -343,9 +352,12 @@ impl OpenAiResponsesAdapter {
                     }
                     // `web_search_call` items are passed back verbatim: the
                     // server restores the search context from them. Never
-                    // parsed or rewritten (deepseek docs: 原样回传).
+                    // parsed or rewritten (deepseek docs: 原样回传) — except
+                    // that the `action` discriminator is filled when the
+                    // captured skeleton lacks it (DeepSeek rejects an
+                    // `action`-less item with a 400).
                     for ws in &m.web_search_calls {
-                        items.push(ws.clone());
+                        items.push(normalize_web_search_call_item(ws.clone()));
                     }
                     if let Some(calls) = m.tool_calls {
                         for tc in calls {
@@ -493,9 +505,12 @@ impl OpenAiResponsesAdapter {
                 }
                 // Server-side web search (DeepSeek built-in): not a local
                 // tool. Keep the raw item so it can be passed back verbatim
-                // in the next request's input.
+                // in the next request's input (with the `action`
+                // discriminator normalized in).
                 Some("web_search_call") => {
-                    web_search_calls.push(serde_json::to_value(&item).unwrap_or_default());
+                    web_search_calls.push(normalize_web_search_call_item(
+                        serde_json::to_value(&item).unwrap_or_default(),
+                    ));
                 }
                 _ => {}
             }
@@ -705,11 +720,35 @@ impl OpenAiResponsesAdapter {
                                     }
                                 }
                                 "web_search_call" => {
-                                    state
-                                        .web_search_calls
-                                        .push(serde_json::to_value(&item).unwrap_or_default());
+                                    upsert_web_search_call(
+                                        &mut state.web_search_calls,
+                                        normalize_web_search_call_item(
+                                            serde_json::to_value(&item).unwrap_or_default(),
+                                        ),
+                                    );
                                 }
                                 _ => {}
+                            }
+                        }
+                        let mut chunk = empty_chunk();
+                        chunk.model = state.last_model.clone();
+                        Some((Ok(chunk), state))
+                    }
+                    Ok(ResponsesStreamEvent::OutputItemDone { item }) => {
+                        if let Some(item) = item
+                            && let Some(item_type) = item.item_type.as_deref()
+                        {
+                            // The authoritative `web_search_call` payload
+                            // (`action`/`queries`): replace the in-progress
+                            // skeleton captured from `output_item.added`, or
+                            // record the item when no skeleton arrived.
+                            if item_type == "web_search_call" {
+                                upsert_web_search_call(
+                                    &mut state.web_search_calls,
+                                    normalize_web_search_call_item(
+                                        serde_json::to_value(&item).unwrap_or_default(),
+                                    ),
+                                );
                             }
                         }
                         let mut chunk = empty_chunk();
@@ -732,9 +771,12 @@ impl OpenAiResponsesAdapter {
                         if let Some(item) = item
                             && item.item_type.as_deref() == Some("web_search_call")
                         {
-                            state
-                                .web_search_calls
-                                .push(serde_json::to_value(&item).unwrap_or_default());
+                            upsert_web_search_call(
+                                &mut state.web_search_calls,
+                                normalize_web_search_call_item(
+                                    serde_json::to_value(&item).unwrap_or_default(),
+                                ),
+                            );
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
@@ -1217,7 +1259,11 @@ mod tests {
     }
 
     #[test]
-    fn convert_input_round_trips_web_search_calls_verbatim() {
+    fn convert_input_supplies_missing_web_search_call_action() {
+        // DeepSeek rejects an `action`-less web_search_call input item with a
+        // 400 ("missing field `action`"): the stream's output_item.added
+        // skeleton only carries type/id/status, so the fallback fills the
+        // internally-tagged-enum action object (search variant + queries).
         let msgs = vec![LlmMessage {
             role: LlmRole::Assistant,
             content: vec![ContentPart::text("let me search")],
@@ -1227,21 +1273,45 @@ mod tests {
             web_search_calls: vec![serde_json::json!({
                 "type": "web_search_call",
                 "id": "ws_1",
-                "status": "completed"
+                "status": "in_progress"
             })],
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "assistant");
-        // The raw item is passed back as-is (never parsed/rewritten).
         assert_eq!(
             items[1],
             serde_json::json!({
                 "type": "web_search_call",
                 "id": "ws_1",
-                "status": "completed"
+                "status": "in_progress",
+                "action": {"type": "search", "queries": []}
             })
         );
+    }
+
+    #[test]
+    fn convert_input_round_trips_complete_web_search_call_verbatim() {
+        // An item that already carries a well-formed object `action`
+        // (e.g. a completed payload) is passed back untouched.
+        let ws = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_1",
+            "status": "completed",
+            "action": {"type": "open_page", "url": "https://example.com"},
+            "query": "foo"
+        });
+        let msgs = vec![LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![ContentPart::text("let me search")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: vec![ws.clone()],
+        }];
+        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1], ws);
     }
 
     #[test]
@@ -1289,6 +1359,10 @@ mod tests {
         assert_eq!(item["type"], "web_search_call");
         assert_eq!(item["id"], "ws_1");
         assert_eq!(item["status"], "completed");
+        assert_eq!(
+            item["action"],
+            serde_json::json!({"type": "search", "queries": []})
+        );
     }
 
     #[test]
@@ -1434,6 +1508,23 @@ mod tests {
             raw,
             serde_json::json!({"type": "web_search_call", "id": "ws_1", "status": "completed"})
         );
+
+        // `output_item.done` carries the FULL web_search_call payload
+        // (action + queries) that the skeleton lacks; this is the event the
+        // round-trip must keep.
+        let done: ResponsesStreamEvent = serde_json::from_str(
+            r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","queries":["capital of France","ws_call_id=ws_1"]}}}"#,
+        )
+        .unwrap();
+        if let ResponsesStreamEvent::OutputItemDone { item: Some(item) } = done {
+            assert_eq!(item.item_type.as_deref(), Some("web_search_call"));
+            assert_eq!(item.id.as_deref(), Some("ws_1"));
+            let action = item.extra.get("action").unwrap();
+            assert_eq!(action["type"], "search");
+            assert_eq!(action["queries"][0], "capital of France");
+        } else {
+            panic!("expected output_item.done with web_search_call item");
+        }
     }
 
     fn completed_parse() -> ResponsesStreamEvent {

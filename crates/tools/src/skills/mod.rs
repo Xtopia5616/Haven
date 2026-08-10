@@ -355,8 +355,8 @@ pub fn scan_dir(
             continue;
         }
 
-        let content = match std::fs::read_to_string(&skill_md) {
-            Ok(c) => c,
+        let content = match std::fs::read(&skill_md) {
+            Ok(bytes) => haven_common::encoding::decode_lossy(&bytes),
             Err(e) => {
                 tracing::warn!("Skipping unreadable SKILL.md at {}: {e}", p.display());
                 continue;

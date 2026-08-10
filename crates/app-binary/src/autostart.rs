@@ -37,8 +37,8 @@ fn run_schtasks(args: &[&str]) -> Result<std::process::Output, String> {
 
 #[cfg(target_os = "windows")]
 fn schtasks_error(out: &std::process::Output, action: &str) -> String {
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = haven_common::encoding::decode_lossy(&out.stderr).trim().to_string();
+    let stdout = haven_common::encoding::decode_lossy(&out.stdout).trim().to_string();
     let detail = if !stderr.is_empty() {
         stderr
     } else if !stdout.is_empty() {

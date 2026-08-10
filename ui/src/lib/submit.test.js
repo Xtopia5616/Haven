@@ -37,6 +37,36 @@ describe('submitTranscript', () => {
 		expect(list[0].voice).toBe(false);
 	});
 
+	it('drops the review placeholder when a real message is submitted', async () => {
+		invokeMock.mockResolvedValue({});
+		activeTaskIdStore.set('task-a');
+		// A rolled-back conversation: the DB is empty, so the review rebuild
+		// showed a display-only placeholder carrying the task input text.
+		taskMessagesStore.set({
+			'task-a': [{ id: 'placeholder-task-a', role: 'user', content: '第一条消息' }],
+		});
+		await submitTranscript('第一条消息', { voice: false });
+
+		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-a']);
+		expect(list).toHaveLength(1);
+		expect(list[0].id).not.toBe('placeholder-task-a');
+		expect(list[0].content).toBe('第一条消息');
+	});
+
+	it('keeps the placeholder-less conversation untouched when submitting', async () => {
+		invokeMock.mockResolvedValue({});
+		activeTaskIdStore.set('task-a');
+		taskMessagesStore.set({
+			'task-a': [{ id: 'msg-1', role: 'user', content: '第一条消息' }],
+		});
+		await submitTranscript('第二条消息', { voice: false });
+
+		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-a']);
+		expect(list).toHaveLength(2);
+		expect(list[0].id).toBe('msg-1');
+		expect(list[1].content).toBe('第二条消息');
+	});
+
 	it('appends under _draft when there is no active task', async () => {
 		invokeMock.mockResolvedValue({});
 		await submitTranscript('orphan', { voice: true });

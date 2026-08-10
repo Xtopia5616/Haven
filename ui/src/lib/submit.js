@@ -61,6 +61,15 @@ export async function submitTranscript(text, { images = null, files = null, voic
 		...(hasAttachments ? { attachments, idPrefix: 'u' } : {}),
 	});
 	addTaskMessage(taskId, msg);
+	// A reviewed conversation with no persisted messages yet (e.g. after
+	// rolling back the very first user message) is rebuilt with a
+	// display-only `placeholder-*` bubble carrying the task input text.
+	// The submitted message is the real start of the conversation: drop
+	// the stand-in so the original input is never shown twice.
+	updateTaskMessages(taskId, (list) => {
+		if (!list.some((m) => m.id.startsWith('placeholder-'))) return list;
+		return list.filter((m) => !m.id.startsWith('placeholder-'));
+	});
 	try {
 		const result = await invoke('process_transcript', {
 			transcript: text,

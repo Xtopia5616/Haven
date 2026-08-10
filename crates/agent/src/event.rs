@@ -69,6 +69,14 @@ pub enum AgentEvent {
         step_number: u32,
         run_id: u64,
     },
+    /// The provider stream went silent (no chunk for several seconds) while
+    /// the step is still in flight. Emitted by a per-call watchdog so the UI
+    /// can surface "still generating, be patient" feedback instead of looking
+    /// frozen; the stream itself is only aborted at the router's idle
+    /// timeout. Re-emitted when the stream resumes and stalls again.
+    StreamStalled {
+        task_id: String,
+    },
     Supplement {
         task_id: String,
         additional_context: String,
@@ -227,8 +235,8 @@ impl AgentEventEmitter for EventBus {
     }
 }
 
-type ChunkSender = tokio::sync::mpsc::Sender<(String, String, u32, u64)>;
-type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
+pub(crate) type ChunkSender = tokio::sync::mpsc::Sender<(String, String, u32, u64)>;
+pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 
 /// Per-chunk micro-batching parameters. Incoming per-token chunks are aggregated
 /// for at most this duration before a single `ThoughtChunk`/`ReasoningChunk` with

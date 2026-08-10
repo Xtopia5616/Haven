@@ -117,6 +117,7 @@ impl TauriEmitter {
             AgentEvent::ThoughtChunk { .. } => "agent:thought_chunk",
             AgentEvent::ReasoningChunk { .. } => "agent:reasoning_chunk",
             AgentEvent::WebSearch { .. } => "agent:web_search",
+            AgentEvent::StreamStalled { .. } => "agent:stream_stalled",
             AgentEvent::Supplement { .. } => "agent:supplement",
             AgentEvent::Compaction { .. } => "agent:compaction",
             AgentEvent::Usage { .. } => "agent:usage",
@@ -1251,6 +1252,12 @@ mod tests {
                     run_id: 1,
                 },
                 "agent:web_search",
+            ),
+            (
+                AgentEvent::StreamStalled {
+                    task_id: "t".into(),
+                },
+                "agent:stream_stalled",
             ),
             (
                 AgentEvent::Supplement {

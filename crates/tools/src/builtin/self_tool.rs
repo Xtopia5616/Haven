@@ -849,8 +849,8 @@ impl SelfTool {
             .log_path
             .clone()
             .unwrap_or_else(LogConfigDefaultPath::path);
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
+        let content = match tokio::fs::read(&path).await {
+            Ok(b) => haven_common::encoding::decode_lossy(&b),
             Err(e) => {
                 return Ok(serde_json::json!({
                     "path": path.to_string_lossy(),
