@@ -3,14 +3,14 @@ import { get } from 'svelte/store';
 import {
 	notificationStore,
 	addNotification,
-	taskMessagesStore,
-	setTaskMessages,
-	addTaskMessage,
-	updateTaskMessages,
-	truncateTaskMessages,
+	sessionMessagesStore,
+	setSessionMessages,
+	addSessionMessage,
+	updateSessionMessages,
+	truncateSessionMessages,
 	adoptDraftMessages,
-	moveTaskMessages,
-	clearTaskMessages,
+	moveSessionMessages,
+	clearSessionMessages,
 	seqLastSeen,
 	pruneSeq,
 	clearSeqMap,
@@ -18,10 +18,10 @@ import {
 	modelStateStore,
 	updateModelState,
 	clearModelStateTimer,
-	taskTokenStatsStore,
-	updateTaskTokenStats,
-	clearTaskTokenStats,
-	restoreTaskTokenStats,
+	sessionTokenStatsStore,
+	updateSessionTokenStats,
+	clearSessionTokenStats,
+	restoreSessionTokenStats,
 	formatTokenCount,
 	formatCostUsd,
 } from './stores.js';
@@ -84,71 +84,71 @@ describe('addNotification', () => {
 	});
 });
 
-describe('task message store', () => {
+describe('session message store', () => {
 	/** @returns {any} */
-	const storeMap = () => get(taskMessagesStore);
+	const storeMap = () => get(sessionMessagesStore);
 
 	beforeEach(() => {
-		taskMessagesStore.set({});
+		sessionMessagesStore.set({});
 	});
 
-	it('setTaskMessages replaces the list for a task', () => {
+	it('setSessionMessages replaces the list for a session', () => {
 		const msgs = [{ id: '1' }];
-		setTaskMessages('t1', msgs);
+		setSessionMessages('t1', msgs);
 		expect(storeMap().t1).toBe(msgs);
 	});
 
-	it('addTaskMessage appends and preserves other tasks', () => {
-		setTaskMessages('t1', [{ id: '1' }]);
-		addTaskMessage('t1', { id: '2' });
-		addTaskMessage('t2', { id: 'a' });
+	it('addSessionMessage appends and preserves other sessions', () => {
+		setSessionMessages('t1', [{ id: '1' }]);
+		addSessionMessage('t1', { id: '2' });
+		addSessionMessage('t2', { id: 'a' });
 		const m = storeMap();
 		expect(m.t1.map((x) => x.id)).toEqual(['1', '2']);
 		expect(m.t2.map((x) => x.id)).toEqual(['a']);
 	});
 
-	it('updateTaskMessages maps existing list', () => {
-		setTaskMessages('t1', [{ id: '1', done: false }]);
-		updateTaskMessages('t1', (list) => list.map((x) => ({ ...x, done: true })));
+	it('updateSessionMessages maps existing list', () => {
+		setSessionMessages('t1', [{ id: '1', done: false }]);
+		updateSessionMessages('t1', (list) => list.map((x) => ({ ...x, done: true })));
 		expect(storeMap().t1[0].done).toBe(true);
 	});
 
-	it('updateTaskMessages starts from empty list when absent', () => {
-		updateTaskMessages('t9', (list) => [...list, { id: 'x' }]);
+	it('updateSessionMessages starts from empty list when absent', () => {
+		updateSessionMessages('t9', (list) => [...list, { id: 'x' }]);
 		expect(storeMap().t9.map((x) => x.id)).toEqual(['x']);
 	});
 
-	it('updateTaskMessages skips the write when the updater returns the same list', () => {
-		setTaskMessages('t1', [{ id: '1' }]);
+	it('updateSessionMessages skips the write when the updater returns the same list', () => {
+		setSessionMessages('t1', [{ id: '1' }]);
 		const before = storeMap();
 		// No-op updater (same array reference) must not replace the store map,
 		// otherwise the reference-based skip would be invisible to subscribers.
-		updateTaskMessages('t1', (list) => list);
+		updateSessionMessages('t1', (list) => list);
 		expect(storeMap()).toBe(before);
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['1']);
 	});
 
-	it('updateTaskMessages still writes when the updater returns a new list', () => {
-		setTaskMessages('t1', [{ id: '1' }]);
-		updateTaskMessages('t1', (list) => [...list, { id: '2' }]);
+	it('updateSessionMessages still writes when the updater returns a new list', () => {
+		setSessionMessages('t1', [{ id: '1' }]);
+		updateSessionMessages('t1', (list) => [...list, { id: '2' }]);
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['1', '2']);
 	});
 
-	it('clearTaskMessages removes the task and its seq tracking', () => {
-		setTaskMessages('t1', [{ id: '1' }]);
+	it('clearSessionMessages removes the session and its seq tracking', () => {
+		setSessionMessages('t1', [{ id: '1' }]);
 		seqLastSeen('t1-s1', 1);
-		clearTaskMessages('t1');
+		clearSessionMessages('t1');
 		expect(storeMap().t1).toBeUndefined();
 		expect(seqLastSeen('t1-s1', 1)).toBe(false);
 	});
 });
 
-describe('truncateTaskMessages', () => {
+describe('truncateSessionMessages', () => {
 	/** @returns {any} */
-	const storeMap = () => get(taskMessagesStore);
+	const storeMap = () => get(sessionMessagesStore);
 
 	beforeEach(() => {
-		taskMessagesStore.set({});
+		sessionMessagesStore.set({});
 	});
 
 	const msgs = () => [
@@ -160,14 +160,14 @@ describe('truncateTaskMessages', () => {
 	];
 
 	it('drops messages at and after the target step', () => {
-		setTaskMessages('t1', msgs());
-		truncateTaskMessages('t1', 3);
+		setSessionMessages('t1', msgs());
+		truncateSessionMessages('t1', 3);
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['a', 'b', 'c']);
 	});
 
 	it('keeps everything when no message reaches the target step', () => {
-		setTaskMessages('t1', msgs());
-		truncateTaskMessages('t1', 99);
+		setSessionMessages('t1', msgs());
+		truncateSessionMessages('t1', 99);
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
 	});
 
@@ -178,44 +178,44 @@ describe('truncateTaskMessages', () => {
 		// persisted before the branch point). The cut lands on the first
 		// non-user message at/after the target step; user messages before the
 		// cut are kept, those after it belong to the discarded timeline.
-		setTaskMessages('t1', [
+		setSessionMessages('t1', [
 			{ id: 'u1', role: 'user', stepNumber: 1 },
 			{ id: 't1', stepNumber: 1 },
 			{ id: 'o1', stepNumber: 1 },
 			{ id: 'u2', role: 'user', stepNumber: 2 },
 			{ id: 't2', stepNumber: 2 },
 		]);
-		truncateTaskMessages('t1', 2);
+		truncateSessionMessages('t1', 2);
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['u1', 't1', 'o1', 'u2']);
 	});
 
 	it('keeps the first user message when rolling back to step 1', () => {
-		setTaskMessages('t1', [
+		setSessionMessages('t1', [
 			{ id: 'u1', role: 'user', stepNumber: 1 },
 			{ id: 't1', stepNumber: 1 },
 		]);
-		truncateTaskMessages('t1', 1);
+		truncateSessionMessages('t1', 1);
 		expect(storeMap().t1.map((x) => x.id)).toEqual(['u1']);
 	});
 
-	it('is a no-op for a missing task', () => {
-		setTaskMessages('t1', msgs());
-		truncateTaskMessages('nope', 3);
+	it('is a no-op for a missing session', () => {
+		setSessionMessages('t1', msgs());
+		truncateSessionMessages('nope', 3);
 		expect(storeMap().t1).toHaveLength(5);
 	});
 });
 
 describe('adoptDraftMessages', () => {
 	/** @returns {any} */
-	const storeMap = () => get(taskMessagesStore);
+	const storeMap = () => get(sessionMessagesStore);
 
 	beforeEach(() => {
-		taskMessagesStore.set({});
+		sessionMessagesStore.set({});
 	});
 
-	it('prepends draft messages into the new task before any agent streaming', () => {
-		addTaskMessage('_draft', { id: 'd1', role: 'user' });
-		setTaskMessages('t1', [{ id: 'e1' }]);
+	it('prepends draft messages into the new session before any agent streaming', () => {
+		addSessionMessage('_draft', { id: 'd1', role: 'user' });
+		setSessionMessages('t1', [{ id: 'e1' }]);
 		adoptDraftMessages('t1');
 		const m = storeMap();
 		expect(m.t1.map((x) => x.id)).toEqual(['d1', 'e1']);
@@ -224,34 +224,34 @@ describe('adoptDraftMessages', () => {
 	});
 
 	it('leaves the store untouched when there is no draft', () => {
-		setTaskMessages('t1', [{ id: 'e1' }]);
+		setSessionMessages('t1', [{ id: 'e1' }]);
 		adoptDraftMessages('t1');
 		expect(storeMap().t1).toHaveLength(1);
 		expect(storeMap()._draft).toBeUndefined();
 	});
 });
 
-describe('moveTaskMessages', () => {
+describe('moveSessionMessages', () => {
 	/** @returns {any} */
-	const storeMap = () => get(taskMessagesStore);
+	const storeMap = () => get(sessionMessagesStore);
 
 	beforeEach(() => {
-		taskMessagesStore.set({});
+		sessionMessagesStore.set({});
 	});
 
-	it('prepends messages from a stale task into a newly created one', () => {
-		setTaskMessages('stale', [{ id: 's1', role: 'user' }, { id: 's2', role: 'user' }]);
-		setTaskMessages('new', [{ id: 'n1' }]);
-		moveTaskMessages('stale', 'new');
+	it('prepends messages from a stale session into a newly created one', () => {
+		setSessionMessages('stale', [{ id: 's1', role: 'user' }, { id: 's2', role: 'user' }]);
+		setSessionMessages('new', [{ id: 'n1' }]);
+		moveSessionMessages('stale', 'new');
 		const m = storeMap();
 		expect(m.new.map((x) => x.id)).toEqual(['s1', 's2', 'n1']);
 		expect(m.new.every((x) => x.role !== 'user' || x.received)).toBe(true);
 		expect(m.stale).toEqual([]);
 	});
 
-	it('moves draft messages into a new task', () => {
-		addTaskMessage('_draft', { id: 'd1', role: 'user' });
-		moveTaskMessages('_draft', 't9');
+	it('moves draft messages into a new session', () => {
+		addSessionMessage('_draft', { id: 'd1', role: 'user' });
+		moveSessionMessages('_draft', 't9');
 		const m = storeMap();
 		expect(m.t9.map((x) => x.id)).toEqual(['d1']);
 		expect(m.t9[0].received).toBe(true);
@@ -259,8 +259,8 @@ describe('moveTaskMessages', () => {
 	});
 
 	it('is a no-op for same-key or empty sources', () => {
-		moveTaskMessages('a', 'a');
-		moveTaskMessages('a', 'b');
+		moveSessionMessages('a', 'a');
+		moveSessionMessages('a', 'b');
 		expect(storeMap()).toEqual({});
 	});
 });
@@ -288,7 +288,7 @@ describe('seqLastSeen / pruneSeq / clearSeqMap', () => {
 		expect(seqLastSeen('t-s1', 3)).toBe(false);
 	});
 
-	it('clearSeqMap only removes keys containing the task id', () => {
+	it('clearSeqMap only removes keys containing the session id', () => {
 		seqLastSeen('t-s1', 1);
 		seqLastSeen('aaa-s1', 1);
 		clearSeqMap('t');
@@ -380,7 +380,7 @@ describe('updateModelState', () => {
 	it('stalled persists until a later state supersedes it', () => {
 		// The stall indicator must NOT auto-revert: the provider may stay
 		// silent for the whole idle-timeout window, and only the next chunk
-		// (streaming) or a terminal task event (ready/error) clears it.
+		// (streaming) or a terminal session event (ready/error) clears it.
 		updateModelState('stalled');
 		vi.advanceTimersByTime(60000);
 		expect(get(modelStateStore)).toBe('stalled');
@@ -389,55 +389,55 @@ describe('updateModelState', () => {
 	});
 });
 
-describe('taskTokenStatsStore', () => {
+describe('sessionTokenStatsStore', () => {
 	/** @returns {any} */
-	const statsMap = () => get(taskTokenStatsStore);
+	const statsMap = () => get(sessionTokenStatsStore);
 
 	beforeEach(() => {
-		taskTokenStatsStore.set({});
+		sessionTokenStatsStore.set({});
 	});
 
-	it('updateTaskTokenStats inserts a new task entry', () => {
-		updateTaskTokenStats('t1', { totalTokens: 5 });
+	it('updateSessionTokenStats inserts a new session entry', () => {
+		updateSessionTokenStats('t1', { totalTokens: 5 });
 		expect(statsMap().t1.totalTokens).toBe(5);
 		expect(statsMap().t1.lastUpdated).toBeGreaterThan(0);
 	});
 
-	it('updateTaskTokenStats merges over the existing entry', () => {
-		updateTaskTokenStats('t1', { promptTokens: 1 });
-		updateTaskTokenStats('t1', { completionTokens: 2 });
+	it('updateSessionTokenStats merges over the existing entry', () => {
+		updateSessionTokenStats('t1', { promptTokens: 1 });
+		updateSessionTokenStats('t1', { completionTokens: 2 });
 		expect(statsMap().t1.promptTokens).toBe(1);
 		expect(statsMap().t1.completionTokens).toBe(2);
 	});
 
-	it('updateTaskTokenStats isolates different tasks', () => {
-		updateTaskTokenStats('t1', { totalTokens: 10 });
-		updateTaskTokenStats('t2', { totalTokens: 20 });
+	it('updateSessionTokenStats isolates different sessions', () => {
+		updateSessionTokenStats('t1', { totalTokens: 10 });
+		updateSessionTokenStats('t2', { totalTokens: 20 });
 		expect(statsMap().t1.totalTokens).toBe(10);
 		expect(statsMap().t2.totalTokens).toBe(20);
 	});
 
-	it('clearTaskTokenStats removes only the target task', () => {
-		updateTaskTokenStats('t1', { totalTokens: 10 });
-		updateTaskTokenStats('t2', { totalTokens: 20 });
-		clearTaskTokenStats('t1');
+	it('clearSessionTokenStats removes only the target session', () => {
+		updateSessionTokenStats('t1', { totalTokens: 10 });
+		updateSessionTokenStats('t2', { totalTokens: 20 });
+		clearSessionTokenStats('t1');
 		expect(statsMap().t1).toBeUndefined();
 		expect(statsMap().t2.totalTokens).toBe(20);
 	});
 
-	it('clearTaskTokenStats is a no-op for unknown tasks', () => {
-		updateTaskTokenStats('t1', { totalTokens: 10 });
-		clearTaskTokenStats('nope');
+	it('clearSessionTokenStats is a no-op for unknown sessions', () => {
+		updateSessionTokenStats('t1', { totalTokens: 10 });
+		clearSessionTokenStats('nope');
 		expect(statsMap().t1.totalTokens).toBe(10);
 	});
 
-	it('updateTaskTokenStats ignores a missing task id', () => {
-		updateTaskTokenStats('', { totalTokens: 10 });
+	it('updateSessionTokenStats ignores a missing session id', () => {
+		updateSessionTokenStats('', { totalTokens: 10 });
 		expect(statsMap()).toEqual({});
 	});
 
-	it('restoreTaskTokenStats restores cumulative counters without cost', () => {
-		restoreTaskTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.25, has_cost: true });
+	it('restoreSessionTokenStats restores cumulative counters without cost', () => {
+		restoreSessionTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.25, has_cost: true });
 		const e = statsMap().t1;
 		expect(e.cumulativePromptTokens).toBe(100);
 		expect(e.cumulativeCompletionTokens).toBe(50);
@@ -445,18 +445,19 @@ describe('taskTokenStatsStore', () => {
 		expect(e.cumulativeCostUsd).toBe(0.25);
 		expect(e.costUsd).toBeNull();
 		expect(e.estimated).toBe(false);
+		expect(e.restored).toBe(true);
 	});
 
-	it('restoreTaskTokenStats flags estimated totals and drops cost', () => {
-		restoreTaskTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.0, has_cost: false }, true);
+	it('restoreSessionTokenStats flags estimated totals and drops cost', () => {
+		restoreSessionTokenStats('t1', { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cost_usd: 0.0, has_cost: false }, true);
 		const e = statsMap().t1;
 		expect(e.cumulativeTotalTokens).toBe(150);
 		expect(e.estimated).toBe(true);
 		expect(e.cumulativeCostUsd).toBeNull();
 	});
 
-	it('restoreTaskTokenStats no-ops without usage', () => {
-		restoreTaskTokenStats('t1', null);
+	it('restoreSessionTokenStats no-ops without usage', () => {
+		restoreSessionTokenStats('t1', null);
 		expect(statsMap().t1).toBeUndefined();
 	});
 });

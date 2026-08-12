@@ -22,7 +22,7 @@ pub struct SelfToolContext {
     /// Shared config loader (persists to `config.toml`). Falls back to a
     /// fresh `ConfigLoader::load()` when absent.
     pub config_loader: Option<Arc<std::sync::Mutex<ConfigLoader>>>,
-    /// Database handle for task/session introspection.
+    /// Database handle for session/session introspection.
     pub db: Option<Arc<Database>>,
     /// LLM router for endpoint health checks.
     pub router: Option<Arc<LlmRouter>>,
@@ -51,7 +51,7 @@ const OPERATIONS: &[&str] = &[
     "mcp_reload",
     "logs_tail",
     "logs_level",
-    "tasks",
+    "sessions",
     "errors",
 ];
 
@@ -62,7 +62,7 @@ const READ_ONLY_OPS: &[&str] = &[
     "skills_list",
     "mcp_list",
     "logs_tail",
-    "tasks",
+    "sessions",
     "errors",
 ];
 
@@ -77,7 +77,7 @@ fn live_appliable(path: &str) -> bool {
 }
 
 /// The `self` management tool: lets the assistant inspect and update Haven's
-/// own configuration, skills, MCP servers, logs, and task state, and diagnose
+/// own configuration, skills, MCP servers, logs, and session state, and diagnose
 /// its own errors.
 pub struct SelfTool {
     context: SelfToolContext,
@@ -211,18 +211,18 @@ impl SelfTool {
             .collect();
         out["skills"] = Value::Array(skills);
 
-        // Recent task counts.
+        // Recent session counts.
         if let Some(db) = &self.context.db {
             let mut counts: HashMap<String, usize> = HashMap::new();
-            if let Ok(tasks) = db.list_tasks(50, 0) {
-                for t in &tasks {
+            if let Ok(sessions) = db.list_sessions(50, 0) {
+                for t in &sessions {
                     *counts.entry(t.status.clone()).or_default() += 1;
                 }
             }
-            let total = db.count_tasks().unwrap_or(0);
-            out["tasks"] = serde_json::json!({ "total": total, "recent_50_by_status": counts });
+            let total = db.count_sessions().unwrap_or(0);
+            out["sessions"] = serde_json::json!({ "total": total, "recent_50_by_status": counts });
         } else {
-            out["tasks"] = serde_json::json!({ "unavailable": true });
+            out["sessions"] = serde_json::json!({ "unavailable": true });
         }
 
         // Logging info.
@@ -892,22 +892,22 @@ impl SelfTool {
         Ok(serde_json::json!({ "level": level, "saved": true }))
     }
 
-    /// Parse the `limit` arg and list tasks from the attached DB. Shared by
-    /// `op_tasks` / `op_errors`; returns `None` when no DB is attached.
+    /// Parse the `limit` arg and list sessions from the attached DB. Shared by
+    /// `op_sessions` / `op_errors`; returns `None` when no DB is attached.
     fn list_tasks_for_op(
         &self,
         input: &Value,
-    ) -> anyhow::Result<Option<(i64, Vec<haven_memory::repositories::tasks::Task>)>> {
+    ) -> anyhow::Result<Option<(i64, Vec<haven_memory::repositories::sessions::Session>)>> {
         let limit = input["limit"].as_i64().unwrap_or(10).clamp(1, 50);
         let Some(db) = &self.context.db else {
             return Ok(None);
         };
-        let tasks = db.list_tasks(limit, 0)?;
-        Ok(Some((limit, tasks)))
+        let sessions = db.list_sessions(limit, 0)?;
+        Ok(Some((limit, sessions)))
     }
 
-    /// Truncate a task's input text to 200 chars for display.
-    fn task_input_preview(input_text: &str) -> String {
+    /// Truncate a session's input text to 200 chars for display.
+    fn session_input_preview(input_text: &str) -> String {
         if input_text.chars().count() > 200 {
             let cut = input_text.floor_char_boundary(200);
             format!("{}…", &input_text[..cut])
@@ -916,31 +916,31 @@ impl SelfTool {
         }
     }
 
-    async fn op_tasks(&self, input: &Value) -> anyhow::Result<Value> {
-        let Some((_limit, tasks)) = self.list_tasks_for_op(input)? else {
+    async fn op_sessions(&self, input: &Value) -> anyhow::Result<Value> {
+        let Some((_limit, sessions)) = self.list_tasks_for_op(input)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
-        let rows: Vec<Value> = tasks
+        let rows: Vec<Value> = sessions
             .into_iter()
             .map(|t| {
                 serde_json::json!({
                     "id": t.id,
                     "status": t.status,
                     "title": t.title,
-                    "input": Self::task_input_preview(&t.input_text),
+                    "input": Self::session_input_preview(&t.input_text),
                     "created_at": t.created_at,
                     "updated_at": t.updated_at,
                 })
             })
             .collect();
-        Ok(serde_json::json!({ "tasks": rows }))
+        Ok(serde_json::json!({ "sessions": rows }))
     }
 
     async fn op_errors(&self, input: &Value) -> anyhow::Result<Value> {
-        let Some((_limit, tasks)) = self.list_tasks_for_op(input)? else {
+        let Some((_limit, sessions)) = self.list_tasks_for_op(input)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
-        let rows: Vec<Value> = tasks
+        let rows: Vec<Value> = sessions
             .into_iter()
             .filter(|t| t.status == "error")
             .map(|t| {
@@ -961,7 +961,7 @@ impl SelfTool {
                 serde_json::json!({
                     "id": t.id,
                     "title": t.title,
-                    "input": Self::task_input_preview(&t.input_text),
+                    "input": Self::session_input_preview(&t.input_text),
                     "created_at": t.created_at,
                     "transcript_tail": transcript,
                 })
@@ -1135,7 +1135,7 @@ impl Tool for SelfTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Dotted config path, e.g. task.max_concurrent or llm.default_model.model_name"
+                    "description": "Dotted config path, e.g. session.max_concurrent or llm.default_model.model_name"
                 },
                 "value": {
                     "description": "New JSON value for config_set"
@@ -1226,7 +1226,7 @@ impl Tool for SelfTool {
             "mcp_reload" => self.op_mcp_reload().await?,
             "logs_tail" => self.op_logs_tail(&input).await?,
             "logs_level" => self.op_logs_level(&input).await?,
-            "tasks" => self.op_tasks(&input).await?,
+            "sessions" => self.op_sessions(&input).await?,
             "errors" => self.op_errors(&input).await?,
             _ => anyhow::bail!("unknown operation '{}'", op),
         };
@@ -1324,21 +1324,21 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["llm"]["default_model"]["api_key"], "");
-        assert_eq!(result.output["task"]["max_concurrent"], 3);
+        assert_eq!(result.output["session"]["max_concurrent"], 3);
     }
 
     #[tokio::test]
     async fn test_config_get_by_path_and_masking() {
         let (tool, _dir) = make_tool();
         tool.mutate_config(|l| {
-            l.config_mut().task.max_concurrent = 7;
+            l.config_mut().session.max_concurrent = 7;
             Ok(())
         })
         .unwrap();
 
         let result = tool
             .execute(
-                json!({"operation": "config_get", "path": "task.max_concurrent"}),
+                json!({"operation": "config_get", "path": "session.max_concurrent"}),
                 CancellationToken::new(),
             )
             .await
@@ -1401,7 +1401,7 @@ mod tests {
         let (tool, _dir) = make_tool();
         let result = tool
             .execute(
-                json!({"operation": "config_set", "path": "task.max_concurrent", "value": 7}),
+                json!({"operation": "config_set", "path": "session.max_concurrent", "value": 7}),
                 CancellationToken::new(),
             )
             .await
@@ -1412,7 +1412,7 @@ mod tests {
 
         // Reloaded from disk.
         let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().task.max_concurrent, 7);
+        assert_eq!(loader.config().session.max_concurrent, 7);
     }
 
     #[tokio::test]
@@ -1420,7 +1420,7 @@ mod tests {
         let (tool, _dir) = make_tool();
         let err = tool
             .execute(
-                json!({"operation": "config_set", "path": "task.max_concurrent", "value": "lots"}),
+                json!({"operation": "config_set", "path": "session.max_concurrent", "value": "lots"}),
                 CancellationToken::new(),
             )
             .await
@@ -1428,7 +1428,7 @@ mod tests {
         assert!(err.to_string().contains("invalid value"));
         // Config unchanged.
         let loader = tool.read_config().unwrap();
-        assert_eq!(loader.config().task.max_concurrent, 3);
+        assert_eq!(loader.config().session.max_concurrent, 3);
     }
 
     #[tokio::test]
@@ -2378,7 +2378,7 @@ mod tests {
     async fn test_tasks_and_errors_unavailable_without_db() {
         let (tool, _dir) = make_tool();
         let result = tool
-            .execute(json!({"operation": "tasks"}), CancellationToken::new())
+            .execute(json!({"operation": "sessions"}), CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(result.output["unavailable"], json!(true));

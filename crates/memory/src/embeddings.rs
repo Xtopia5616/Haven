@@ -251,7 +251,7 @@ impl Database {
 
     /// Keyword search over the event-stream memory (user messages plus
     /// persisted compaction summaries), independent of the vector index — so
-    /// cross-task recall works even when no `embedding_model` is configured.
+    /// cross-session recall works even when no `embedding_model` is configured.
     /// Terms are matched as case-insensitive substrings; results are ranked by
     /// the number of distinct terms matched, then recency.
     pub fn search_episodes_by_keywords(
@@ -455,9 +455,9 @@ mod tests {
     #[test]
     fn missing_embedding_ids_episodes() {
         let db = db();
-        let task = db.create_task("t", "").unwrap();
+        let session = db.create_session("t", "").unwrap();
         let msg = db
-            .add_message(&task.id, "user", "hello world", Some("text"), None)
+            .add_message(&session.id, "user", "hello world", Some("text"), None)
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
         assert_eq!(missing.len(), 1);
@@ -471,9 +471,9 @@ mod tests {
     #[test]
     fn episode_text_resolves_message() {
         let db = db();
-        let task = db.create_task("t", "").unwrap();
+        let session = db.create_session("t", "").unwrap();
         let msg = db
-            .add_message(&task.id, "user", "remember this", Some("text"), None)
+            .add_message(&session.id, "user", "remember this", Some("text"), None)
             .unwrap();
         assert_eq!(
             db.episode_text(&msg.id).unwrap(),
@@ -485,9 +485,9 @@ mod tests {
     #[test]
     fn prune_removes_orphaned() {
         let db = db();
-        let task = db.create_task("t", "").unwrap();
+        let session = db.create_session("t", "").unwrap();
         let msg = db
-            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
         db.save_embedding(entity_kind::EPISODE, &msg.id, "m", &[1.0], "hello")
             .unwrap();
@@ -535,9 +535,9 @@ mod tests {
     #[test]
     fn search_episodes_by_keywords_ranks_matches() {
         let db = db();
-        let task = db.create_task("t", "").unwrap();
+        let session = db.create_session("t", "").unwrap();
         db.add_message(
-            &task.id,
+            &session.id,
             "user",
             "I discussed the dark theme preference earlier",
             Some("text"),
@@ -545,7 +545,7 @@ mod tests {
         )
         .unwrap();
         db.add_message(
-            &task.id,
+            &session.id,
             "user",
             "unrelated note about groceries",
             Some("text"),
@@ -562,8 +562,8 @@ mod tests {
     #[test]
     fn search_episodes_by_keywords_empty_terms_returns_nothing() {
         let db = db();
-        let task = db.create_task("t", "").unwrap();
-        db.add_message(&task.id, "user", "hello world", Some("text"), None)
+        let session = db.create_session("t", "").unwrap();
+        db.add_message(&session.id, "user", "hello world", Some("text"), None)
             .unwrap();
         assert!(db.search_episodes_by_keywords(&[], 5).unwrap().is_empty());
     }
@@ -571,11 +571,11 @@ mod tests {
     #[test]
     fn episodes_include_compaction_summaries() {
         let db = db();
-        let task = db.create_task("t", "").unwrap();
-        db.add_message(&task.id, "user", "plain message", Some("text"), None)
+        let session = db.create_session("t", "").unwrap();
+        db.add_message(&session.id, "user", "plain message", Some("text"), None)
             .unwrap();
         let ep = db
-            .add_episode(&task.id, "user prefers the dark theme everywhere")
+            .add_episode(&session.id, "user prefers the dark theme everywhere")
             .unwrap();
 
         // Summaries are missing-index candidates and resolve their text.

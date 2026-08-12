@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::{self, BackgroundJobs};
+use crate::bg::{self, BackgroundTasks};
 use crate::{Tool, ToolResult};
 
 pub struct ShellTool {
-    /// Registry of background jobs for `background: true` invocations.
-    pub jobs: Arc<BackgroundJobs>,
+    /// Registry of background tasks for `background: true` invocations.
+    pub tasks: Arc<BackgroundTasks>,
     /// Output cap (chars) for command output.
     pub max_output_chars: usize,
 }
@@ -18,7 +18,7 @@ pub struct ShellTool {
 impl Default for ShellTool {
     fn default() -> Self {
         Self {
-            jobs: Arc::new(BackgroundJobs::new()),
+            tasks: Arc::new(BackgroundTasks::new()),
             max_output_chars: 20_000,
         }
     }
@@ -73,7 +73,7 @@ impl Tool for ShellTool {
                 "command": { "type": "string", "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: powershell on Windows, sh on POSIX). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a job_id immediately. The result is pushed back to you automatically when the job finishes; list all jobs with the jobs tool.", "default": false },
+                "background": { "type": "boolean", "description": "Run the command in the background and return a task_id immediately. The result is pushed back to you automatically when the task finishes; list all tasks with the tasks tool.", "default": false },
                 "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
             },
             "required": ["command"]
@@ -93,17 +93,17 @@ impl Tool for ShellTool {
             anyhow::bail!("cancelled");
         }
 
-        // Background mode: hand the command to the job registry and return
-        // immediately. The result is pushed back to the task automatically on
-        // completion; the agent can list all jobs with the `jobs` tool.
+        // Background mode: hand the command to the task registry and return
+        // immediately. The result is pushed back to the session automatically on
+        // completion; the agent can list all tasks with the `tasks` tool.
         if input["background"].as_bool().unwrap_or(false) {
-            let job_id = self.jobs.spawn_shell(cmd, shell, max_chars, cwd).await?;
+            let task_id = self.tasks.spawn_shell(cmd, shell, max_chars, cwd).await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
-                "job_id": job_id,
+                "task_id": task_id,
                 "shell": shell,
                 "status": "running",
-                "hint": "The command is running in the background. Its output is pushed back to you automatically when it finishes — no need to poll. Use the jobs tool to see all background jobs at once, or the status tool with the job_id to inspect this one.",
+                "hint": "The command is running in the background. Its output is pushed back to you automatically when it finishes — no need to poll. Use the tasks tool to see all background tasks at once, or the status tool with the task_id to inspect this one.",
             })));
         }
 
@@ -229,10 +229,10 @@ impl Tool for ShellTool {
         }
     }
 
-    /// Re-run a timed-out foreground command as a background job so the task
+    /// Re-run a timed-out foreground command as a background task so the session
     /// is not blocked by long-running work (git clone, npm install, build
-    /// scripts). Uses the same job registry as `background: true`, so the
-    /// result is pushed back to the task automatically on completion.
+    /// scripts). Uses the same task registry as `background: true`, so the
+    /// result is pushed back to the session automatically on completion.
     async fn timeout_fallback(&self, input: &Value) -> Option<ToolResult> {
         let cmd = input["command"].as_str().unwrap_or("");
         if cmd.trim().is_empty() {
@@ -240,32 +240,32 @@ impl Tool for ShellTool {
         }
         let (shell, cwd) = Self::resolve_shell_and_cwd(input);
         let max_chars = self.max_output_chars;
-        let job_id = self
-            .jobs
+        let task_id = self
+            .tasks
             .spawn_shell(cmd, shell, max_chars, cwd)
             .await
             .ok()?;
         Some(ToolResult::ok(serde_json::json!({
             "background": true,
-            "job_id": job_id,
+            "task_id": task_id,
             "shell": shell,
             "status": "running",
-            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this job's result.",
+            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this task's result.",
         })))
     }
 
-    /// Declare the background-job binding for `background: true` invocations
+    /// Declare the background-task binding for `background: true` invocations
     /// (and the timeout-fallback result above) so the executor attaches the
-    /// job to this task without name-matching "shell".
+    /// task to this session without name-matching "shell".
     fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
         if output.get("background").and_then(|v| v.as_bool()) != Some(true) {
             return Vec::new();
         }
         output
-            .get("job_id")
+            .get("task_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(|job_id| vec![crate::tool::ToolRegistration::Activity(job_id.to_string())])
+            .map(|task_id| vec![crate::tool::ToolRegistration::Task(task_id.to_string())])
             .unwrap_or_default()
     }
 }
@@ -456,6 +456,133 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn test_shell_powershell_echo_chinese() {
+        // Non-ASCII input/output through the real -EncodedCommand pipeline:
+        // the command text and PowerShell cmdlet output must survive as UTF-8.
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "Write-Output 你好", "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        let out = result.output["output"].as_str().unwrap();
+        assert!(
+            out.contains("你好"),
+            "chinese cmdlet output must survive: {out:?}"
+        );
+        assert!(!out.contains('\u{FFFD}'), "no replacement chars: {out:?}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_echo_chinese_in_quotes() {
+        // The command contains quotes, semicolons and % alongside Chinese —
+        // exactly what -Command re-parsing used to break.
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "Write-Output \"值 100%; 你好\"", "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        let out = result.output["output"].as_str().unwrap();
+        assert!(out.contains("你好"), "got: {out:?}");
+        assert!(out.contains("100%"), "got: {out:?}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_cmd_echo_chinese() {
+        // cmd passes the command as a UTF-16 argument; chcp 65001 makes cmd
+        // output UTF-8. Chinese text must survive both directions.
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "echo 你好", "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        assert!(
+            result.output["output"].as_str().unwrap().contains("你好"),
+            "got: {:?}",
+            result.output["output"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_cmd_captures_gbk_native_output() {
+        // A native tool that ignores the code page and writes raw GBK bytes
+        // (CP936: 你好 = C4 E3 BA C3) must be decoded via the GBK fallback,
+        // not mangled. This exercises decode_lossy's GBK path on cmd output.
+        let script = "import sys\nsys.stdout.buffer.write(b\"\\xc4\\xe3\\xba\\xc3\\n\")";
+        let py = std::env::var("PYTHON")
+            .or_else(|_| std::env::var("python"))
+            .unwrap_or_else(|_| "python".into());
+        let py = if py.is_empty() {
+            "python".to_string()
+        } else {
+            py
+        };
+        let script_path = haven_common::default_work_dir().join("gbk_emit_test.py");
+        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
+        std::fs::write(&script_path, script).unwrap();
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": format!("{} {}", py, script_path.display()), "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        let out = result.output["output"].as_str().unwrap();
+        assert!(
+            out.contains("你好"),
+            "GBK native output must be decoded: {out:?}"
+        );
+        let _ = std::fs::remove_file(&script_path);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_captures_gbk_native_output() {
+        // A native tool emitting raw GBK bytes under PowerShell: the forced
+        // [Console]::OutputEncoding=UTF8 must NOT corrupt the passthrough; the
+        // GBK bytes reach decode_lossy unchanged and are decoded via fallback.
+        let script = "import sys\nsys.stdout.buffer.write(b\"\\xc4\\xe3\\xba\\xc3\\n\")";
+        let py = std::env::var("PYTHON")
+            .or_else(|_| std::env::var("python"))
+            .unwrap_or_else(|_| "python".into());
+        let py = if py.is_empty() {
+            "python".to_string()
+        } else {
+            py
+        };
+        let script_path = haven_common::default_work_dir().join("gbk_emit_ps_test.py");
+        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
+        std::fs::write(&script_path, script).unwrap();
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": format!("{} {}", py, script_path.display()), "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        let out = result.output["output"].as_str().unwrap();
+        assert!(
+            out.contains("你好"),
+            "GBK native output must be decoded: {out:?}"
+        );
+        let _ = std::fs::remove_file(&script_path);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn test_shell_powershell_strips_native_command_error_noise() {
         // A successful PowerShell command whose stderr carries PS error-record
         // formatting must report the real message without the wrapper noise.
@@ -500,7 +627,7 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_shell_background_returns_job_id_and_completes() {
+    async fn test_shell_background_returns_task_id_and_completes() {
         let tool = ShellTool::default();
         let result = tool
             .execute(
@@ -512,13 +639,13 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["background"], true);
         assert_eq!(result.output["status"], "running");
-        let job_id = result.output["job_id"].as_str().unwrap().to_string();
-        assert!(!job_id.is_empty());
+        let task_id = result.output["task_id"].as_str().unwrap().to_string();
+        assert!(!task_id.is_empty());
 
-        // Poll the job registry until the job completes.
+        // Poll the task registry until the task completes.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let status = loop {
-            let v = tool.jobs.status(&job_id).await;
+            let v = tool.tasks.status(&task_id).await;
             if v["status"] != "running" || std::time::Instant::now() > deadline {
                 break v;
             }

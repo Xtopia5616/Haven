@@ -14,8 +14,6 @@ use std::path::Path;
 const TASK_NAME: &str = "Haven";
 /// 随任务启动参数，用于告知应用本次为开机自启，应隐藏主窗口。
 pub const AUTOSTART_ARG: &str = "--autostart";
-/// 旧版 tauri-plugin-autostart 写入的注册表 Run 键名，迁移时清理。
-const LEGACY_RUN_KEY_VALUES: [&str; 2] = ["Haven", "haven_app_binary"];
 
 /// 当前进程是否由计划任务以 `--autostart` 参数启动。
 pub fn is_autostart_launch() -> bool {
@@ -37,8 +35,12 @@ fn run_schtasks(args: &[&str]) -> Result<std::process::Output, String> {
 
 #[cfg(target_os = "windows")]
 fn schtasks_error(out: &std::process::Output, action: &str) -> String {
-    let stderr = haven_common::encoding::decode_lossy(&out.stderr).trim().to_string();
-    let stdout = haven_common::encoding::decode_lossy(&out.stdout).trim().to_string();
+    let stderr = haven_common::encoding::decode_lossy(&out.stderr)
+        .trim()
+        .to_string();
+    let stdout = haven_common::encoding::decode_lossy(&out.stdout)
+        .trim()
+        .to_string();
     let detail = if !stderr.is_empty() {
         stderr
     } else if !stdout.is_empty() {
@@ -49,29 +51,37 @@ fn schtasks_error(out: &std::process::Output, action: &str) -> String {
     format!("{action}失败: {detail}")
 }
 
-/// 清理旧版注册表 Run 键（tauri-plugin-autostart 写入），避免新旧方案并存。
+/// 创建开机自启计划任务：登录时运行 `<exe> --autostart`。
+/// 无需管理员权限；如被组策略禁止，返回带排查提示的错误。
 #[cfg(target_os = "windows")]
-fn remove_legacy_run_keys() {
-    for name in LEGACY_RUN_KEY_VALUES {
-        let _ = std::process::Command::new("reg")
-            .args([
-                "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                name,
-                "/f",
-            ])
-            .output();
+pub fn enable() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
+    let tr = build_tr_arg(&exe);
+    let out = run_schtasks(&[
+        "/Create", "/F", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON",
+    ])?;
+    if !out.status.success() {
+        return Err(format!(
+            "{}（如为权限不足，请以管理员身份运行 Haven 后重试，或检查组策略对任务计划程序的限制）",
+            schtasks_error(&out, "创建计划任务")
+        ));
     }
+    Ok(())
 }
 
-/// schtasks 重定向输出在中文系统上是 ANSI(GBK) 代码页（声明却写
-/// UTF-16）。先按 UTF-8 严格解码；失败时 lossy 解码，非 ASCII 路径会
-/// 变成替换字符（U+FFFD），此时路径比对自动退化为「任务存在」判断。
+/// 删除开机自启计划任务。
 #[cfg(target_os = "windows")]
-fn decode_output(bytes: &[u8]) -> String {
-    String::from_utf8(bytes.to_vec())
-        .unwrap_or_else(|_| String::from_utf8_lossy(bytes).into_owned())
+pub fn disable() -> Result<(), String> {
+    if is_enabled()? {
+        let out = run_schtasks(&["/Delete", "/F", "/TN", TASK_NAME])?;
+        if !out.status.success() {
+            return Err(format!(
+                "{}（如为权限不足，请以管理员身份运行 Haven 后重试）",
+                schtasks_error(&out, "删除计划任务")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 提取任务 XML 中 `<tag>...</tag>` 的首段内容。
@@ -100,6 +110,15 @@ fn xml_has_autostart_arg(xml: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// schtasks 重定向输出在中文系统上是 ANSI(GBK) 代码页（声明却写
+/// UTF-16）。统一用 decode_lossy：先按 UTF-8 解码，失败回退 GBK/CP936，
+/// 使中文路径可正确比对；若 GBK 也无法还原才退化为替换字符（U+FFFD），
+/// 此时路径比对自动退化为「任务存在」判断。
+#[cfg(target_os = "windows")]
+fn decode_output(bytes: &[u8]) -> String {
+    haven_common::encoding::decode_lossy(bytes)
+}
+
 /// 任务 XML 的 `<Command>` 是否与当前 exe 一致（Windows 大小写不敏感）。
 /// 非 ASCII 路径在 ANSI→UTF-8 转换失败时含替换字符，无法可靠比对，
 /// 返回 `None` 由调用方回退为「任务存在」判断。
@@ -111,41 +130,6 @@ fn xml_command_matches(xml: &str, exe: &Path) -> Option<bool> {
         return None;
     }
     Some(cmd.eq_ignore_ascii_case(&exe.to_string_lossy()))
-}
-
-/// 创建开机自启计划任务：登录时运行 `<exe> --autostart`。
-/// 无需管理员权限；如被组策略禁止，返回带排查提示的错误。
-#[cfg(target_os = "windows")]
-pub fn enable() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
-    let tr = build_tr_arg(&exe);
-    let out = run_schtasks(&[
-        "/Create", "/F", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON",
-    ])?;
-    if !out.status.success() {
-        return Err(format!(
-            "{}（如为权限不足，请以管理员身份运行 Haven 后重试，或检查组策略对任务计划程序的限制）",
-            schtasks_error(&out, "创建计划任务")
-        ));
-    }
-    remove_legacy_run_keys();
-    Ok(())
-}
-
-/// 删除开机自启计划任务，并清理旧版注册表 Run 键。
-#[cfg(target_os = "windows")]
-pub fn disable() -> Result<(), String> {
-    if is_enabled()? {
-        let out = run_schtasks(&["/Delete", "/F", "/TN", TASK_NAME])?;
-        if !out.status.success() {
-            return Err(format!(
-                "{}（如为权限不足，请以管理员身份运行 Haven 后重试）",
-                schtasks_error(&out, "删除计划任务")
-            ));
-        }
-    }
-    remove_legacy_run_keys();
-    Ok(())
 }
 
 /// 开机自启是否有效：任务存在，且 `<Command>` 指向当前 exe、
@@ -204,7 +188,7 @@ mod tests {
     #[test]
     fn test_xml_section_extracts_command_and_arguments() {
         let xml = r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task><Actions Context="Author"><Exec><Command>C:\Program Files\Haven\Haven.exe</Command><Arguments>--autostart</Arguments></Exec></Actions></Task>"#;
+<Session><Actions Context="Author"><Exec><Command>C:\Program Files\Haven\Haven.exe</Command><Arguments>--autostart</Arguments></Exec></Actions></Session>"#;
         assert_eq!(
             xml_section(xml, "Command").unwrap(),
             r"C:\Program Files\Haven\Haven.exe"

@@ -7,23 +7,23 @@ use std::time::{Duration, Instant};
 
 /// Pooled SQLite connections for a file-backed database (WAL mode: one
 /// writer + many readers can proceed concurrently). Sized comfortably above
-/// the task concurrency ceiling plus the direct (non-`run_blocking`) DB
+/// the session concurrency ceiling plus the direct (non-`run_blocking`) DB
 /// callers (tools, Tauri commands), so a busy step rarely blocks on
 /// checkout while other connections are still doing real work.
 const FILE_POOL_MAX_CONNECTIONS: usize = 16;
 
 /// A tiny bounded pool of rusqlite connections. The previous design wrapped a
 /// SINGLE connection in a `Mutex`, which serialized every DB access across all
-/// concurrent tasks (and background jobs / title generation / memory
+/// concurrent sessions (and background tasks / title generation / memory
 /// maintenance) on one global lock. SQLite in WAL mode supports one writer
-/// plus several concurrent readers, so a small pool lets parallel tasks' reads
+/// plus several concurrent readers, so a small pool lets parallel sessions' reads
 /// (message history, step lists, snapshots) run side-by-side instead of
 /// queueing on the mutex.
 ///
 /// `PooledConnection` hands a checked-out connection back to the pool on drop;
 /// `get()` blocks (condvar) when the pool is exhausted, which is fine because
 /// `Database::run_blocking` already moves DB work off the async runtime, and
-/// per-task DB use is short-lived.
+/// per-session DB use is short-lived.
 struct ConnectionPool {
     state: Mutex<PoolState>,
     cv: Condvar,
@@ -133,7 +133,7 @@ impl Drop for PooledConnection<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
             // Defensive rollback: a caller whose transaction failed midway
-            // (e.g. `clear_tasks` propagates errors without ROLLBACK) would
+            // (e.g. `clear_sessions` propagates errors without ROLLBACK) would
             // otherwise re-pool a connection with a write transaction still
             // open — subsequent statements would run inside the abandoned
             // transaction and the held write lock would block the other
@@ -156,7 +156,7 @@ struct CacheEntry<T: Clone> {
 #[derive(Clone)]
 struct QueryCache {
     messages: Option<CacheEntry<Vec<crate::repositories::messages::Message>>>,
-    tasks: Option<CacheEntry<Vec<crate::repositories::tasks::Task>>>,
+    sessions: Option<CacheEntry<Vec<crate::repositories::sessions::Session>>>,
     facts: Option<CacheEntry<Vec<crate::repositories::facts::Fact>>>,
     embeddings: Option<CacheEntry<Vec<crate::embeddings::EmbeddedText>>>,
     // Bumped on every cache_invalidate_* so a stale cache_put_* (whose DB
@@ -173,15 +173,15 @@ pub struct Database {
 impl Database {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         tracing::info!("opening database at {}", path.display());
-        // Bootstrap connection: set WAL and run migrations exactly once (the
-        // schema is versioned via `PRAGMA user_version`, so every pooled
-        // connection later sees an already-migrated database). The bootstrap
-        // is seeded into the pool and is its most-reused connection, so it
-        // gets the same 30s busy timeout as the opener connections.
+        // Bootstrap connection: set WAL and create the current schema exactly
+        // once (every pooled connection later sees an already-initialized
+        // database). The bootstrap is seeded into the pool and is its
+        // most-reused connection, so it gets the same 30s busy timeout as the
+        // opener connections.
         let bootstrap = Connection::open(path)?;
         bootstrap.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         bootstrap.busy_timeout(Duration::from_secs(30))?;
-        crate::migrations::run_migrations(&bootstrap)?;
+        crate::schema::init_schema(&bootstrap)?;
         let path = path.to_path_buf();
         let pool = ConnectionPool::with_initial(
             FILE_POOL_MAX_CONNECTIONS,
@@ -204,9 +204,9 @@ impl Database {
         tracing::debug!("opening in-memory database");
         // Shared-cache URI so every pooled connection sees the SAME in-memory
         // database (a plain `:memory:` would give each connection its own
-        // empty DB — migrations on the bootstrap connection would be invisible
-        // to the pooled one). The unique name keeps parallel tests from
-        // sharing a database.
+        // empty DB — schema setup on the bootstrap connection would be
+        // invisible to the pooled one). The unique name keeps parallel tests
+        // from sharing a database.
         let uri = format!(
             "file:hvnmem-{}?mode=memory&cache=shared",
             uuid::Uuid::new_v4()
@@ -217,7 +217,7 @@ impl Database {
         let bootstrap = Connection::open_with_flags(&uri, flags)?;
         bootstrap.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         bootstrap.busy_timeout(Duration::from_secs(30))?;
-        crate::migrations::run_migrations(&bootstrap)?;
+        crate::schema::init_schema(&bootstrap)?;
         // In-memory shared-cache databases use a single-writer locking model
         // where a second writer fails with SQLITE_LOCKED (not BUSY, which
         // busy_timeout handles), so cap the pool at one connection — tests get
@@ -248,7 +248,7 @@ impl Database {
 
     /// Run a blocking DB closure on the tokio blocking thread pool. Keeps
     /// synchronous SQLite work (including WAL fsyncs) off the async runtime
-    /// so a slow write cannot stall unrelated async tasks that don't touch
+    /// so a slow write cannot stall unrelated async sessions that don't touch
     /// the DB. The closure borrows `&Database`; owned arguments must be
     /// cloned into the closure by the caller (it is `'static`).
     pub async fn run_blocking<T, F>(self: &Arc<Self>, f: F) -> anyhow::Result<T>
@@ -262,10 +262,10 @@ impl Database {
 
     pub fn cache_get_messages(
         &self,
-        task_id: &str,
+        session_id: &str,
     ) -> Option<Vec<crate::repositories::messages::Message>> {
         let cache = self.cache.lock().ok()?;
-        let entry = cache.get(task_id)?.messages.as_ref()?;
+        let entry = cache.get(session_id)?.messages.as_ref()?;
         if entry.expiry > Instant::now() {
             Some(entry.data.clone())
         } else {
@@ -299,7 +299,7 @@ impl Database {
         if let Ok(mut cache) = self.cache.lock() {
             let qc = cache.entry(key).or_insert(QueryCache {
                 messages: None,
-                tasks: None,
+                sessions: None,
                 facts: None,
                 embeddings: None,
                 generation: expected_gen,
@@ -319,13 +319,13 @@ impl Database {
 
     pub fn cache_put_messages(
         &self,
-        task_id: &str,
+        session_id: &str,
         data: Vec<crate::repositories::messages::Message>,
         ttl_secs: u64,
         expected_gen: u64,
     ) {
         self.cache_put(
-            task_id.to_string(),
+            session_id.to_string(),
             data,
             ttl_secs,
             expected_gen,
@@ -333,9 +333,9 @@ impl Database {
         );
     }
 
-    pub fn cache_get_tasks(&self) -> Option<Vec<crate::repositories::tasks::Task>> {
+    pub fn cache_get_sessions(&self) -> Option<Vec<crate::repositories::sessions::Session>> {
         let cache = self.cache.lock().ok()?;
-        let entry = cache.get("_tasks")?.tasks.as_ref()?;
+        let entry = cache.get("_sessions")?.sessions.as_ref()?;
         if entry.expiry > Instant::now() {
             Some(entry.data.clone())
         } else {
@@ -343,18 +343,18 @@ impl Database {
         }
     }
 
-    pub fn cache_put_tasks(
+    pub fn cache_put_sessions(
         &self,
-        data: Vec<crate::repositories::tasks::Task>,
+        data: Vec<crate::repositories::sessions::Session>,
         ttl_secs: u64,
         expected_gen: u64,
     ) {
         self.cache_put(
-            "_tasks".to_string(),
+            "_sessions".to_string(),
             data,
             ttl_secs,
             expected_gen,
-            |qc, entry| qc.tasks = Some(entry),
+            |qc, entry| qc.sessions = Some(entry),
         );
     }
 
@@ -385,20 +385,20 @@ impl Database {
         );
     }
 
-    pub fn cache_invalidate_messages(&self, task_id: &str) {
+    pub fn cache_invalidate_messages(&self, session_id: &str) {
         if let Ok(mut cache) = self.cache.lock()
-            && let Some(qc) = cache.get_mut(task_id)
+            && let Some(qc) = cache.get_mut(session_id)
         {
             qc.messages = None;
             qc.generation = qc.generation.wrapping_add(1);
         }
     }
 
-    pub fn cache_invalidate_tasks(&self) {
+    pub fn cache_invalidate_sessions(&self) {
         if let Ok(mut cache) = self.cache.lock()
-            && let Some(qc) = cache.get_mut("_tasks")
+            && let Some(qc) = cache.get_mut("_sessions")
         {
-            qc.tasks = None;
+            qc.sessions = None;
             qc.generation = qc.generation.wrapping_add(1);
         }
     }
@@ -506,10 +506,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    fn make_msg(id: &str, task_id: &str) -> crate::repositories::messages::Message {
+    fn make_msg(id: &str, session_id: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
             id: id.into(),
-            task_id: task_id.into(),
+            session_id: session_id.into(),
             role: "user".into(),
             content: format!("content-{}", id),
             message_type: Some("text".into()),
@@ -520,8 +520,8 @@ mod tests {
         }
     }
 
-    fn make_task(id: &str) -> crate::repositories::tasks::Task {
-        crate::repositories::tasks::Task {
+    fn make_session(id: &str) -> crate::repositories::sessions::Session {
+        crate::repositories::sessions::Session {
             id: id.into(),
             input_text: format!("input-{}", id),
             title: None,
@@ -605,31 +605,31 @@ mod tests {
     #[test]
     fn test_cache_tasks_hit_and_miss() {
         let db = Database::open_in_memory().unwrap();
-        assert!(db.cache_get_tasks().is_none());
-        let tasks = vec![make_task("1"), make_task("2")];
-        db.cache_put_tasks(tasks.clone(), 60, 0);
-        let cached = db.cache_get_tasks().unwrap();
+        assert!(db.cache_get_sessions().is_none());
+        let sessions = vec![make_session("1"), make_session("2")];
+        db.cache_put_sessions(sessions.clone(), 60, 0);
+        let cached = db.cache_get_sessions().unwrap();
         assert_eq!(cached.len(), 2);
     }
 
     #[test]
     fn test_cache_tasks_ttl_expiry() {
         let db = Database::open_in_memory().unwrap();
-        let tasks = vec![make_task("1")];
-        db.cache_put_tasks(tasks, 1, 0);
-        assert!(db.cache_get_tasks().is_some());
+        let sessions = vec![make_session("1")];
+        db.cache_put_sessions(sessions, 1, 0);
+        assert!(db.cache_get_sessions().is_some());
         thread::sleep(Duration::from_secs(2));
-        assert!(db.cache_get_tasks().is_none());
+        assert!(db.cache_get_sessions().is_none());
     }
 
     #[test]
-    fn test_cache_invalidate_tasks() {
+    fn test_cache_invalidate_sessions() {
         let db = Database::open_in_memory().unwrap();
-        let tasks = vec![make_task("1")];
-        db.cache_put_tasks(tasks, 60, 0);
-        assert!(db.cache_get_tasks().is_some());
-        db.cache_invalidate_tasks();
-        assert!(db.cache_get_tasks().is_none());
+        let sessions = vec![make_session("1")];
+        db.cache_put_sessions(sessions, 60, 0);
+        assert!(db.cache_get_sessions().is_some());
+        db.cache_invalidate_sessions();
+        assert!(db.cache_get_sessions().is_none());
     }
 
     #[test]

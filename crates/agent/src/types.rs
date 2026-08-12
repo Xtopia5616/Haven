@@ -46,7 +46,7 @@ pub struct Action {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProcessResult {
-    TaskCreated(String),
+    SessionCreated(String),
     Supplemented,
 }
 
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn process_result_variants_roundtrip() {
         for result in [
-            ProcessResult::TaskCreated("task-1".into()),
+            ProcessResult::SessionCreated("ses-1".into()),
             ProcessResult::Supplemented,
         ] {
             let json = serde_json::to_string(&result).unwrap();

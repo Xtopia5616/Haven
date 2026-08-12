@@ -2,9 +2,9 @@ use crate::db::Database;
 use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TaskStep {
+pub struct SessionStep {
     pub id: String,
-    pub task_id: String,
+    pub session_id: String,
     pub step_number: i32,
     /// Raw thought text from the Reasoner (replaces old `tool_name = "thought"` hack)
     pub thought: Option<String>,
@@ -30,21 +30,21 @@ impl Database {
     /// Create a thought-only step using the new schema fields directly.
     pub fn create_thought_step(
         &self,
-        task_id: &str,
+        session_id: &str,
         step_number: i32,
         thought: &str,
-    ) -> anyhow::Result<TaskStep> {
+    ) -> anyhow::Result<SessionStep> {
         let id = haven_common::types::new_id("step");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO task_steps (id, task_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
+            "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
              VALUES (?1, ?2, ?3, 'thought', ?4, ?4, 'completed', 0, ?5)",
-            rusqlite::params![id, task_id, step_number, thought, now],
+            rusqlite::params![id, session_id, step_number, thought, now],
         )?;
-        Ok(TaskStep {
+        Ok(SessionStep {
             id,
-            task_id: task_id.into(),
+            session_id: session_id.into(),
             step_number,
             thought: Some(thought.into()),
             action_tool: None,
@@ -67,23 +67,23 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     pub fn create_action_step(
         &self,
-        task_id: &str,
+        session_id: &str,
         step_number: i32,
         tool_name: &str,
         tool_input: &str,
         is_high_risk: bool,
         silent: bool,
         confirmed: Option<bool>,
-    ) -> anyhow::Result<TaskStep> {
+    ) -> anyhow::Result<SessionStep> {
         let id = haven_common::types::new_id("step");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO task_steps (id, task_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
+            "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 id,
-                task_id,
+                session_id,
                 step_number,
                 tool_name,
                 tool_input,
@@ -93,9 +93,9 @@ impl Database {
                 confirmed.map(|c| c as i32)
             ],
         )?;
-        Ok(TaskStep {
+        Ok(SessionStep {
             id,
-            task_id: task_id.into(),
+            session_id: session_id.into(),
             step_number,
             thought: None,
             action_tool: Some(tool_name.into()),
@@ -122,25 +122,25 @@ impl Database {
         let status = if success { "completed" } else { "failed" };
         let conn = self.conn();
         conn.execute(
-            "UPDATE task_steps SET status = ?1, observation = ?2, completed_at = ?3 WHERE id = ?4",
+            "UPDATE session_steps SET status = ?1, observation = ?2, completed_at = ?3 WHERE id = ?4",
             rusqlite::params![status, observation, now, id],
         )?;
         Ok(())
     }
 
-    pub fn get_task_steps(&self, task_id: &str) -> anyhow::Result<Vec<TaskStep>> {
+    pub fn get_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, step_number, tool_name, input, output, thought, action_tool, action_input, observation,
+            "SELECT id, session_id, step_number, tool_name, input, output, thought, action_tool, action_input, observation,
                     status, is_high_risk, confirmed, started_at, completed_at, created_at, silent
-             FROM task_steps WHERE task_id = ?1 ORDER BY step_number ASC",
+             FROM session_steps WHERE session_id = ?1 ORDER BY step_number ASC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![task_id], |row| {
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
             let output: Option<String> = row.get(5)?;
             let obs: Option<String> = row.get(9)?;
-            Ok(TaskStep {
+            Ok(SessionStep {
                 id: row.get(0)?,
-                task_id: row.get(1)?,
+                session_id: row.get(1)?,
                 step_number: row.get(2)?,
                 thought: row.get(6)?,
                 action_tool: row.get(7)?,
@@ -166,11 +166,15 @@ impl Database {
     /// Used by retry/rollback: the re-run OVERWRITES the previous attempt's
     /// recorded steps instead of appending to them, so the review history
     /// stays linear — only branching creates separate timelines.
-    pub fn delete_task_steps_after(&self, task_id: &str, created_at: &str) -> anyhow::Result<()> {
+    pub fn delete_session_steps_after(
+        &self,
+        session_id: &str,
+        created_at: &str,
+    ) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
-            "DELETE FROM task_steps WHERE task_id = ?1 AND created_at > ?2",
-            rusqlite::params![task_id, created_at],
+            "DELETE FROM session_steps WHERE session_id = ?1 AND created_at > ?2",
+            rusqlite::params![session_id, created_at],
         )?;
         Ok(())
     }
@@ -184,37 +188,37 @@ mod tests {
         Database::open_in_memory().expect("create in-memory db")
     }
 
-    fn seed_task(db: &Database, task_id: &str) {
-        db.create_task("test", "test").unwrap();
+    fn seed_session(db: &Database, session_id: &str) {
+        db.create_session("test", "test").unwrap();
         // Override the id to match test expectations
         let conn = db.conn();
         let _ = conn.execute(
-            "UPDATE tasks SET id = ?1 WHERE id IN (SELECT id FROM tasks ORDER BY created_at DESC LIMIT 1)",
-            rusqlite::params![task_id],
+            "UPDATE sessions SET id = ?1 WHERE id IN (SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1)",
+            rusqlite::params![session_id],
         );
     }
 
     #[test]
     fn create_and_get_thought_step() {
         let db = test_db();
-        seed_task(&db, "task-1");
+        seed_session(&db, "ses-1");
         let step = db
-            .create_thought_step("task-1", 0, "I should check the file")
+            .create_thought_step("ses-1", 0, "I should check the file")
             .unwrap();
         assert_eq!(step.thought.as_deref(), Some("I should check the file"));
         assert!(step.action_tool.is_none());
         assert!(step.action_input.is_none());
-        let steps = db.get_task_steps("task-1").unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
     }
 
     #[test]
     fn create_and_get_action_step() {
         let db = test_db();
-        seed_task(&db, "task-1");
+        seed_session(&db, "ses-1");
         let step = db
             .create_action_step(
-                "task-1",
+                "ses-1",
                 0,
                 "read_file",
                 r#"{"path": "test.txt"}"#,
@@ -229,20 +233,20 @@ mod tests {
             Some(r#"{"path": "test.txt"}"#)
         );
         assert!(step.thought.is_none());
-        let steps = db.get_task_steps("task-1").unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
     }
 
     #[test]
     fn complete_action_step_sets_observation() {
         let db = test_db();
-        seed_task(&db, "task-1");
+        seed_session(&db, "ses-1");
         let step = db
-            .create_action_step("task-1", 0, "read_file", "{}", false, false, None)
+            .create_action_step("ses-1", 0, "read_file", "{}", false, false, None)
             .unwrap();
         db.complete_action_step(&step.id, "file content here", true)
             .unwrap();
-        let steps = db.get_task_steps("task-1").unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
         assert_eq!(steps[0].status, "completed");
     }
@@ -250,14 +254,14 @@ mod tests {
     #[test]
     fn create_action_step_persists_silent_flag() {
         let db = test_db();
-        seed_task(&db, "task-1");
+        seed_session(&db, "ses-1");
         let visible = db
-            .create_action_step("task-1", 0, "shell", "{}", false, false, None)
+            .create_action_step("ses-1", 0, "shell", "{}", false, false, None)
             .unwrap();
         assert!(!visible.silent);
         let silent = db
             .create_action_step(
-                "task-1",
+                "ses-1",
                 1,
                 "shell",
                 r#"{"silent": true}"#,
@@ -267,30 +271,30 @@ mod tests {
             )
             .unwrap();
         assert!(silent.silent);
-        let steps = db.get_task_steps("task-1").unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 2);
         assert!(!steps[0].silent);
         assert!(steps[1].silent);
     }
 
     #[test]
-    fn get_task_steps_returns_empty_for_unknown_task() {
+    fn get_session_steps_returns_empty_for_unknown_session() {
         let db = test_db();
-        let steps = db.get_task_steps("missing-task").unwrap();
+        let steps = db.get_session_steps("missing-session").unwrap();
         assert!(steps.is_empty());
     }
 
     #[test]
-    fn get_task_steps_preserves_order_by_index() {
+    fn get_session_steps_preserves_order_by_index() {
         let db = test_db();
-        seed_task(&db, "task-1");
-        db.create_action_step("task-1", 2, "c", "{}", false, false, None)
+        seed_session(&db, "ses-1");
+        db.create_action_step("ses-1", 2, "c", "{}", false, false, None)
             .unwrap();
-        db.create_action_step("task-1", 0, "a", "{}", false, false, None)
+        db.create_action_step("ses-1", 0, "a", "{}", false, false, None)
             .unwrap();
-        db.create_action_step("task-1", 1, "b", "{}", false, false, None)
+        db.create_action_step("ses-1", 1, "b", "{}", false, false, None)
             .unwrap();
-        let steps = db.get_task_steps("task-1").unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].step_number, 0);
         assert_eq!(steps[1].step_number, 1);
@@ -299,17 +303,17 @@ mod tests {
     }
 
     #[test]
-    fn delete_task_steps_after_removes_only_newer_rows() {
+    fn delete_session_steps_after_removes_only_newer_rows() {
         let db = test_db();
-        seed_task(&db, "task-1");
-        let first = db.create_thought_step("task-1", 1, "first").unwrap();
+        seed_session(&db, "ses-1");
+        let first = db.create_thought_step("ses-1", 1, "first").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let cutoff = chrono::Utc::now().to_rfc3339();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let second = db.create_thought_step("task-1", 2, "second").unwrap();
+        let second = db.create_thought_step("ses-1", 2, "second").unwrap();
 
-        db.delete_task_steps_after("task-1", &cutoff).unwrap();
-        let steps = db.get_task_steps("task-1").unwrap();
+        db.delete_session_steps_after("ses-1", &cutoff).unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(
             steps.len(),
             1,

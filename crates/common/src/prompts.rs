@@ -46,7 +46,7 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{skills}` — installable skills index, or empty
 /// - `{mcps}` — available MCP servers index, or empty
 /// - `{facts}` — user facts block, or empty
-/// - `{task}` — current task description
+/// - `{session}` — current session description
 /// - `{context}` — additional conversation context block, or empty
 /// - `{history}` — "Steps so far" block, or empty
 /// - `{failure_diagnosis}` — shared tool-failure guidance
@@ -54,7 +54,7 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{tool_notes}` — per-tool supplementary usage notes
 ///   ([`TOOL_USAGE_NOTES`])
 pub const MAIN_SYSTEM_PROMPT: &str = "\
-You are Haven, a PC agent. You help users accomplish tasks using available tools. \
+You are Haven, a PC agent. You help users accomplish sessions using available tools. \
 Stay interactive: when the goal is unclear, a decision matters, or you keep trying on your own, \
 use `ask` to consult the user instead of guessing.\n\
 \n\
@@ -65,23 +65,23 @@ Guidelines:\n\
 General:\n\
 1. Think step by step. Decide what to do, then call the right tool.\n\
 2. After each tool call you will receive the result. Use it to decide next.\n\
-3. When the task is complete, respond with a concise summary of what was done, in the same language the user is using.\n\
+3. When the session is complete, respond with a concise summary of what was done, in the same language the user is using.\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
-Shell & background jobs:\n\
-6. shell(background: true) returns a job_id immediately; the job's final output is delivered back to you automatically as context when it finishes — do not poll it with `status`. Use `jobs` to see all background jobs at once. The user also gets a push notification when a background job finishes.\n\
+Shell & background tasks:\n\
+6. shell(background: true) returns a task_id immediately; the task's final output is delivered back to you automatically as context when it finishes — do not poll it with `task_status`. Use `tasks` to see all background tasks at once. The user also gets a push notification when a background task finishes.\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
 Interaction & notifications:\n\
-8. Calling ask pauses the task until the user replies; their answer is injected as context for the next step.\n\
-9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the task. Use it to alert them about background progress or something they should check.\n\
+8. Calling ask pauses the session until the user replies; their answer is injected as context for the next step.\n\
+9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
 Tool selection:\n\
-10. Simple, quick tasks: use built-in tools — they are fast, lightweight, and always available.\n\
-11. Complex, comprehensive tasks: prefer MCP servers and Skills — if the task matches a server or a skill in the lists above, call `load_mcp` with that server name or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
+10. Simple, quick sessions: use built-in tools — they are fast, lightweight, and always available.\n\
+11. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists above, call `load_mcp` with that server name or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
 Failure handling:\n\
 12. {failure_diagnosis}\n\
 \n\
 {tool_notes}\n\
-Current task: {task}\n\
+Current session: {session}\n\
 \n\
 {context}{history}\n\
 What is your next step?\n";
@@ -100,7 +100,7 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own.\n\
 - network: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
 - shell: Never run interactive commands that block waiting for input (interactive prompts, REPLs, editors, pagers, wizards) — they will hang forever because no one is there to answer. Use non-interactive flags (e.g. -y, --yes, -n) or supply all input up front instead.\n\
-- shell (background jobs): After launching a background job, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the job's output when it finishes.";
+- shell (background tasks): After launching a background task, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the task's output when it finishes.";
 
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";
@@ -117,7 +117,7 @@ pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable, generaliza
 - \"durability\": a number from 0.1 to 1.0 rating how long this fact stays useful. 0.9-1.0 for stable identity and long-term context that will matter for months (name, city, workplace, core project setup); 0.5-0.7 for ongoing preferences and habits that may change over time; 0.2-0.4 for facts that are useful only in the near term or tied to a specific situation. Default to 0.5 when unsure.\n\
 - \"message_index\": the [N] number of the conversation message supporting this fact; omit only when no message clearly supports it.\n\
 \n\
-Only extract facts that will still be true and useful weeks later, in unrelated conversations: stable identity attributes, ongoing preferences, and long-term context (projects, workspace layout, tools). Reject everything transient or one-off: current moods and busy states (\"I am busy today\", \"I love this right now\"), complaints or observations about a single task (\"the build is slow\", \"this error is annoying\"), details that only matter for the current conversation, and trivial tastes stated without intent to last (\"this font looks nice\"). When in doubt whether a fact will matter later, do not extract it.\n\
+Only extract facts that will still be true and useful weeks later, in unrelated conversations: stable identity attributes, ongoing preferences, and long-term context (projects, workspace layout, tools). Reject everything transient or one-off: current moods and busy states (\"I am busy today\", \"I love this right now\"), complaints or observations about a single session (\"the build is slow\", \"this error is annoying\"), details that only matter for the current conversation, and trivial tastes stated without intent to last (\"this font looks nice\"). When in doubt whether a fact will matter later, do not extract it.\n\
 \n\
 Only extract clear, explicit facts the user stated. The \"Known user facts\" list shows what is already stored:\n\
 - The user re-confirms an existing fact: output it again with the same key and a higher confidence — do not invent a new key.\n\
@@ -174,7 +174,7 @@ mod tests {
             MAIN_SYSTEM_PROMPT,
             &[
                 ("tools", "- read_file: read a file\n"),
-                ("task", "test task"),
+                ("session", "test session"),
                 ("skills", ""),
                 ("mcps", ""),
                 ("facts", ""),
@@ -187,7 +187,7 @@ mod tests {
         assert!(out.contains("You have access to the following built-in tools:"));
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Tool usage notes:"));
-        assert!(out.contains("Current task: test task"));
+        assert!(out.contains("Current session: test session"));
         assert!(out.ends_with("What is your next step?\n"));
     }
 }

@@ -22,7 +22,7 @@ impl Tool for LoadMcpTool {
         "load_mcp".into()
     }
     fn description(&self) -> String {
-        "Load an MCP server's tools by server name, activating them for this task. Prefer this over weaker built-in tools when the server's tools fit the task.".into()
+        "Load an MCP server's tools by server name, activating them for this session. Prefer this over weaker built-in tools when the server's tools fit the session.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -111,7 +111,7 @@ impl Tool for LoadMcpTool {
         Ok(ToolResult::ok(result))
     }
 
-    /// Declare the per-task MCP adapter registration so the executor
+    /// Declare the per-session MCP adapter registration so the executor
     /// registers it without name-matching "load_mcp".
     fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
         output

@@ -33,14 +33,14 @@ describe('registerListeners', () => {
 		const handlerA = vi.fn();
 		const handlerB = vi.fn();
 		const regs = registerListeners({
-			'task:created': handlerA,
-			'task:updated': handlerB,
+			'session:created': handlerA,
+			'session:updated': handlerB,
 		});
 		await regs.ready;
 
 		expect(mocks.listen).toHaveBeenCalledTimes(2);
-		expect(mocks.listen).toHaveBeenNthCalledWith(1, 'task:created', handlerA);
-		expect(mocks.listen).toHaveBeenNthCalledWith(2, 'task:updated', handlerB);
+		expect(mocks.listen).toHaveBeenNthCalledWith(1, 'session:created', handlerA);
+		expect(mocks.listen).toHaveBeenNthCalledWith(2, 'session:updated', handlerB);
 
 		regs.dispose();
 		expect(unlisteners[0]).toHaveBeenCalledTimes(1);
@@ -50,12 +50,12 @@ describe('registerListeners', () => {
 	it('logs registration failures and never throws', async () => {
 		mocks.listen.mockRejectedValueOnce(new Error('boom'));
 
-		const regs = registerListeners({ 'task:created': vi.fn() }, { tag: '+page' });
+		const regs = registerListeners({ 'session:created': vi.fn() }, { tag: '+page' });
 		await regs.ready; // must not reject
 
 		expect(mocks.error).toHaveBeenCalledWith(
 			'+page',
-			expect.stringContaining('task:created'),
+			expect.stringContaining('session:created'),
 			expect.any(Error)
 		);
 		// dispose after a failed registration is a no-op, not a throw.
@@ -88,7 +88,7 @@ describe('registerOne', () => {
 		const unsub = vi.fn();
 		mocks.listen.mockResolvedValueOnce(unsub);
 
-		const reg = await registerOne('task:title-updated', vi.fn(), { tag: 'history' });
+		const reg = await registerOne('session:title-updated', vi.fn(), { tag: 'history' });
 		expect(mocks.listen).toHaveBeenCalledTimes(1);
 		reg.dispose();
 		expect(unsub).toHaveBeenCalledTimes(1);
@@ -105,7 +105,7 @@ describe('registerOne', () => {
 	it('forwards events to the handler', async () => {
 		const handler = vi.fn();
 		mocks.listen.mockResolvedValueOnce(vi.fn());
-		await registerOne('task:updated', handler);
+		await registerOne('session:updated', handler);
 		const captured = mocks.listen.mock.calls[0][1];
 		captured(event({ status: 'paused' }));
 		expect(handler).toHaveBeenCalledWith(expect.objectContaining({ payload: { status: 'paused' } }));

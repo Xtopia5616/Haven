@@ -2,50 +2,56 @@ import { writable } from 'svelte/store';
 import { invoke } from './tauri.js';
 import logger from '$lib/logger.js';
 
-export const taskStore = writable([]);
+export const sessionStore = writable([]);
 
 /**
- * Activity registry (background jobs + pending reminders): `{ [id]: Activity }`
- * where each entry mirrors a row from the backend's `list_activities`:
- *   { id, kind: 'job'|'reminder', task_id?, status?, started_at?,
+ * Task registry (background tasks + pending scheduled tasks):
+ * `{ [id]: Task }` where each entry mirrors a row from the backend's
+ * `list_tasks`:
+ *   { id, kind: 'background'|'scheduled', session_id?, status?, started_at?,
  *     finished_at?, due_at?, preview?, output?, error?, title?, body?, ... }
- * Job rows keep `job_id` and status fields; reminder rows keep `id` and
- * due_at. `id` is normalized to the entry key for both.
- * Kept in sync by the `activity:created` / `activity:updated` /
- * `activity:output` / `activity:finished` events (registered in
- * +layout.svelte, hydrated via `refreshActivities`).
+ * Background-task rows keep `task_id` and status fields; scheduled-task rows
+ * keep `id` and due_at. `id` is normalized to the entry key for both.
+ * Kept in sync by the `task:created` / `task:updated` / `task:output` /
+ * `task:finished` events (registered in +layout.svelte, hydrated via
+ * `refreshTasks`).
  */
-export const activityStore = writable({});
+export const taskStore = writable({});
 
 /** Cap terminal entries so a long session cannot grow the store unbounded. */
-const ACTIVITY_STORE_MAX = 64;
+const TASK_STORE_MAX = 64;
 
-function activityKey(payload) {
-	return payload?.id || payload?.job_id || null;
+function taskKey(payload) {
+	return payload?.id || payload?.task_id || null;
 }
 
-export function upsertActivity(payload) {
-	const key = activityKey(payload);
+export function upsertTask(payload) {
+	const key = taskKey(payload);
 	if (!key) return;
-	activityStore.update((m) => {
+	taskStore.update((m) => {
 		const prev = m[key] || {};
-		const next = { ...prev, ...payload, id: key, kind: payload.kind || prev.kind || (payload.job_id ? 'job' : 'reminder') };
+		const next = {
+			...prev,
+			...payload,
+			id: key,
+			kind: payload.kind || prev.kind || (payload.task_id ? 'background' : 'scheduled'),
+		};
 		// Terminal entries keep their full payload (output/error) so the
 		// panel can show the result; only the store size is bounded below.
 		const entries = { ...m, [key]: next };
 		const ids = Object.keys(entries);
-		if (ids.length > ACTIVITY_STORE_MAX) {
-			const excess = ids.length - ACTIVITY_STORE_MAX;
+		if (ids.length > TASK_STORE_MAX) {
+			const excess = ids.length - TASK_STORE_MAX;
 			for (const id of ids.slice(0, excess)) delete entries[id];
 		}
 		return entries;
 	});
 }
 
-/** Drop an activity (fired or cancelled reminder, job removed server-side). */
-export function removeActivity(id) {
+/** Drop a task (fired or cancelled scheduled task, task removed server-side). */
+export function removeTask(id) {
 	if (!id) return;
-	activityStore.update((m) => {
+	taskStore.update((m) => {
 		if (!(id in m)) return m;
 		const next = { ...m };
 		delete next[id];
@@ -53,52 +59,53 @@ export function removeActivity(id) {
 	});
 }
 
-export async function refreshActivities() {
+export async function refreshTasks() {
 	try {
-		const rows = await invoke('list_activities');
+		const rows = await invoke('list_tasks');
 		if (!Array.isArray(rows)) return;
 		// Replace the registry: entries missing from the board were removed
-		// server-side (a task ending cancels its jobs without terminal
-		// events, fired reminders leave the pending list), so they must not
-		// linger as stale rows.
-		activityStore.update((m) => {
+		// server-side (a session ending cancels its tasks without terminal
+		// events, fired scheduled tasks leave the pending list), so they must
+		// not linger as stale rows.
+		taskStore.update((m) => {
 			const next = {};
 			for (const row of rows) {
-				const key = activityKey(row);
+				const key = taskKey(row);
 				if (key) next[key] = { ...(m[key] || {}), ...row, id: key };
 			}
 			return next;
 		});
 	} catch (e) {
-		logger.warn('stores', 'refreshActivities failed', e);
+		logger.warn('stores', 'refreshTasks failed', e);
 	}
 }
 
-export async function cancelActivity(id, kind = 'job') {
-	return invoke('cancel_activity', { activityId: id, kind });
+export async function cancelTask(id, kind = 'background') {
+	return invoke('cancel_task', { taskId: id, kind });
 }
 
 /**
- * Fired-reminder history (and terminal job history) from the persisted
- * activity table, newest first. Returns the raw rows for the panel's history
- * tab; the caller owns the list (no store backing — it is fetched on demand).
+ * Fired-scheduled-task history (and terminal background-task history) from
+ * the persisted task table, newest first. Returns the raw rows for the
+ * panel's history tab; the caller owns the list (no store backing — it is
+ * fetched on demand).
  * @param {string} [kind]
  * @param {number} [limit]
  * @returns {Promise<Array>}
  */
-export async function refreshActivityHistory(kind = 'reminder', limit = 50) {
+export async function refreshTaskHistory(kind = 'scheduled', limit = 50) {
 	try {
-		const rows = await invoke('list_activity_history', { kind, limit });
+		const rows = await invoke('list_task_history', { kind, limit });
 		return Array.isArray(rows) ? rows : [];
 	} catch (e) {
-		logger.warn('stores', 'refreshActivityHistory failed', e);
+		logger.warn('stores', 'refreshTaskHistory failed', e);
 		return [];
 	}
 }
 
-/** Delete a persisted activity row (history cleanup) by id. */
-export async function deleteActivity(id) {
-	return invoke('delete_activity', { activityId: id });
+/** Delete a persisted task row (history cleanup) by id. */
+export async function deleteTask(id) {
+	return invoke('delete_task', { taskId: id });
 }
 
 export const notificationStore = writable([]);
@@ -126,33 +133,33 @@ export function addNotification(msg, type = 'info', duration = 3000) {
 	}
 }
 
-// Per-task message storage: { [taskId: string]: Message[] }
-// Special key '_draft' holds messages that haven't been assigned to a task yet
-// (e.g. transcribed text before the task is created).
-export const taskMessagesStore = writable({});
+// Per-session message storage: { [sessionId: string]: Message[] }
+// Special key '_draft' holds messages that haven't been assigned to a session yet
+// (e.g. transcribed text before the session is created).
+export const sessionMessagesStore = writable({});
 
 export const DRAFT_KEY = '_draft';
 
-export function setTaskMessages(taskId, messages) {
-	taskMessagesStore.update((m) => ({ ...m, [taskId]: messages }));
+export function setSessionMessages(sessionId, messages) {
+	sessionMessagesStore.update((m) => ({ ...m, [sessionId]: messages }));
 }
 
-export function addTaskMessage(taskId, msg) {
-	taskMessagesStore.update((m) => {
-		const list = m[taskId] || [];
-		return { ...m, [taskId]: [...list, msg] };
+export function addSessionMessage(sessionId, msg) {
+	sessionMessagesStore.update((m) => {
+		const list = m[sessionId] || [];
+		return { ...m, [sessionId]: [...list, msg] };
 	});
 }
 
-export function updateTaskMessages(taskId, fn) {
-	taskMessagesStore.update((m) => {
-		const list = m[taskId] || [];
+export function updateSessionMessages(sessionId, fn) {
+	sessionMessagesStore.update((m) => {
+		const list = m[sessionId] || [];
 		const nextList = fn(list);
 		// Skip the write when the updater returned the same array reference
 		// (a no-op): Svelte stores notify every subscriber on update, and the
 		// streaming path calls this once per chunk.
 		if (nextList === list) return m;
-		return { ...m, [taskId]: nextList };
+		return { ...m, [sessionId]: nextList };
 	});
 }
 
@@ -172,18 +179,18 @@ export function pruneSeq(stepId) {
 	seqMap.delete(stepId);
 }
 
-export function clearSeqMap(taskId) {
+export function clearSeqMap(sessionId) {
 	for (const key of seqMap.keys()) {
-		if (key.includes(taskId)) seqMap.delete(key);
+		if (key.includes(sessionId)) seqMap.delete(key);
 	}
 }
 
-export function clearTaskMessages(taskId) {
-	if (!taskId) return;
-	clearSeqMap(taskId);
-	taskMessagesStore.update((m) => {
+export function clearSessionMessages(sessionId) {
+	if (!sessionId) return;
+	clearSeqMap(sessionId);
+	sessionMessagesStore.update((m) => {
 		const next = { ...m };
-		delete next[taskId];
+		delete next[sessionId];
 		return next;
 	});
 }
@@ -200,7 +207,7 @@ function cutIndexForStep(list, targetStep) {
 }
 
 /**
- * Remove all messages at or after the given step number for a task.
+ * Remove all messages at or after the given step number for a session.
  * Used by rollback: the ReAct loop will re-execute from `targetStep`, so
  * any messages belonging to that step or later are stale and must be
  * dropped from the UI. User messages (no stepNumber) that appear after the
@@ -214,21 +221,21 @@ function cutIndexForStep(list, targetStep) {
  * though the backend kept it in the session (rollback only discards
  * messages persisted after the branch point).
  */
-export function truncateTaskMessages(taskId, targetStep) {
-	if (!taskId) return;
-	taskMessagesStore.update((m) => {
-		const list = m[taskId];
+export function truncateSessionMessages(sessionId, targetStep) {
+	if (!sessionId) return;
+	sessionMessagesStore.update((m) => {
+		const list = m[sessionId];
 		if (!list || list.length === 0) return m;
 		const cutIdx = cutIndexForStep(list, targetStep);
 		if (cutIdx === -1) return m;
 		const next = { ...m };
-		next[taskId] = list.slice(0, cutIdx);
+		next[sessionId] = list.slice(0, cutIdx);
 		return next;
 	});
-	// Clear all seq tracking for this task. Remaining messages (before the
+	// Clear all seq tracking for this session. Remaining messages (before the
 	// rollback point) are already finalized, so their seq entries are stale
 	// anyway. This avoids fragile key-string parsing for step numbers.
-	clearSeqMap(taskId);
+	clearSeqMap(sessionId);
 }
 
 // Move all messages from `fromKey` to `toKey` in a single store update.
@@ -239,15 +246,15 @@ function _moveMessages(m, fromKey, toKey) {
 	if (!list || list.length === 0) return m;
 	const next = { ...m };
 	next[fromKey] = [];
-	// Migrated messages (adoptDraftMessages / moveTaskMessages) are the user
-	// input that CREATED the target task, so they logically precede any agent
+	// Migrated messages (adoptDraftMessages / moveSessionMessages) are the user
+	// input that CREATED the target session, so they logically precede any agent
 	// content already in `toKey`. The backend can stream the first
-	// "Thinking…" reasoning block before the task:created handler migrates the
+	// "Thinking…" reasoning block before the session:created handler migrates the
 	// optimistic user bubble; appending (old behavior) then renders the user's
 	// opening message AFTER the reasoning. Prepend instead so the user input
 	// always leads the conversation.
 	//
-	// The task was created because the agent accepted this input, so the
+	// The session was created because the agent accepted this input, so the
 	// migrated user message(s) are already "received": mark them so the ✓
 	// shows on the very first bubble too (the `agent:supplement` event only
 	// covers mid-turn steering, never the opening message).
@@ -258,102 +265,104 @@ function _moveMessages(m, fromKey, toKey) {
 	return next;
 }
 
-// Move draft messages to a real task (called when task:created fires).
-export function adoptDraftMessages(taskId) {
-	taskMessagesStore.update((m) => _moveMessages(m, DRAFT_KEY, taskId));
+// Move draft messages to a real session (called when session:created fires).
+export function adoptDraftMessages(sessionId) {
+	sessionMessagesStore.update((m) => _moveMessages(m, DRAFT_KEY, sessionId));
 }
 
 /**
- * Move messages between task keys. Used when the backend reports
- * `TaskCreated` for a voice/typed submission whose messages were appended
- * under a different key — either `_draft` (no task was open) or a stale task
+ * Move messages between session keys. Used when the backend reports
+ * `SessionCreated` for a voice/typed submission whose messages were appended
+ * under a different key — either `_draft` (no session was open) or a stale session
  * id the UI auto-restored while STT was running. Without the move, the user's
- * message would stay hidden in the old key while the new task only shows the
+ * message would stay hidden in the old key while the new session only shows the
  * agent's reply.
  */
-export function moveTaskMessages(fromTaskId, toTaskId) {
-	taskMessagesStore.update((m) => _moveMessages(m, fromTaskId, toTaskId));
+export function moveSessionMessages(fromSessionId, toSessionId) {
+	sessionMessagesStore.update((m) => _moveMessages(m, fromSessionId, toSessionId));
 }
 
-// Review target for navigating from history to chat with a task context.
+// Review target for navigating from history to chat with a session context.
 // Set by history page before navigating to /, consumed by +page.svelte on mount.
 export const reviewTargetStore = writable(null);
 
-// Active task ID that persists across SvelteKit page navigations so the
-// send handler and voice recording can supplement the same task.
-export const activeTaskIdStore = writable(null);
+// Active session ID that persists across SvelteKit page navigations so the
+// send handler and voice recording can supplement the same session.
+export const activeSessionIdStore = writable(null);
 
 // localStorage key recording an explicit "start a fresh conversation" intent
-// that survives app restarts (set by the new-task button, cleared when the
-// intent is fulfilled or abandoned). Mirrored into `newTaskIntentStore` for
+// that survives app restarts (set by the new-session button, cleared when the
+// intent is fulfilled or abandoned). Mirrored into `newSessionIntentStore` for
 // the live session.
 export const NEW_TASK_INTENT_KEY = 'haven.no_auto_restore';
 
 /**
- * Sticky intent flag: the user explicitly asked for a NEW task (new-task
- * button). While set, NO event-driven path may auto-assign an existing task
- * to `activeTaskId` (loadTasks auto-assign, task:created, auto-restore) —
+ * Sticky intent flag: the user explicitly asked for a NEW session (new-session
+ * button). While set, NO event-driven path may auto-assign an existing session
+ * to `activeSessionId` (loadSessions auto-assign, session:created, auto-restore) —
  * otherwise the next message would append to the old conversation. Cleared
- * only when the intent is fulfilled (a new task was created by the user's
- * own submission) or abandoned (explicit switch to another task).
+ * only when the intent is fulfilled (a new session was created by the user's
+ * own submission) or abandoned (explicit switch to another session).
  */
-export const newTaskIntentStore = writable(false);
+export const newSessionIntentStore = writable(false);
 
 /**
- * Per-task token usage + cost reported by the agent. Keyed by task id.
+ * Per-session token usage + cost reported by the agent. Keyed by session id.
  * Updated on every `agent:usage` event so the chat toolbar can show
  * running totals and remaining context budget.
  *
- * Shape: { [taskId]: {
+ * Shape: { [sessionId]: {
  *   promptTokens, completionTokens, totalTokens,
  *   cumulativePromptTokens, cumulativeCompletionTokens, cumulativeTotalTokens,
  *   costUsd, cumulativeCostUsd, contextWindow, model,
  *   lastUpdated: number,
  * }}
  */
-export const taskTokenStatsStore = writable({});
+export const sessionTokenStatsStore = writable({});
 
 /**
- * Update (or insert) the token-stats entry for a task. Replaces the whole
- * task entry so stale fields don't accumulate across event variants.
- * @param {string} taskId
+ * Update (or insert) the token-stats entry for a session. Replaces the whole
+ * session entry so stale fields don't accumulate across event variants.
+ * @param {string} sessionId
  * @param {object} stats
  */
-export function updateTaskTokenStats(taskId, stats) {
-	if (!taskId) return;
-	taskTokenStatsStore.update((m) => ({
+export function updateSessionTokenStats(sessionId, stats) {
+	if (!sessionId) return;
+	sessionTokenStatsStore.update((m) => ({
 		...m,
-		[taskId]: { ...(m[taskId] || {}), ...stats, lastUpdated: Date.now() },
+		[sessionId]: { ...(m[sessionId] || {}), ...stats, lastUpdated: Date.now() },
 	}));
 }
 
-/** Clear token stats for a finished/reset task. */
-export function clearTaskTokenStats(taskId) {
-	if (!taskId) return;
-	taskTokenStatsStore.update((m) => {
-		if (!(taskId in m)) return m;
+/** Clear token stats for a finished/reset session. */
+export function clearSessionTokenStats(sessionId) {
+	if (!sessionId) return;
+	sessionTokenStatsStore.update((m) => {
+		if (!(sessionId in m)) return m;
 		const next = { ...m };
-		delete next[taskId];
+		delete next[sessionId];
 		return next;
 	});
 }
 
 /**
- * Restore token stats for a task from persisted backend usage counters
- * (returned by get_task_for_review / get_last_conversation). Cumulative
+ * Restore token stats for a session from persisted backend usage counters
+ * (returned by get_session_for_review / get_last_conversation). Cumulative
  * totals are the persisted running totals; per-step and budget fields stay
- * empty until the next `agent:usage` event. When the task predates usage
- * persistence, `estimated` marks the restored totals as a rough estimate
- * derived from the persisted conversation text (no cost), which the widget
- * renders with an "约" prefix.
- * @param {string} taskId
+ * empty until the next `agent:usage` event. `restored` marks the entry as
+ * coming from persistence (a review / reopened conversation): no further
+ * `agent:usage` events may arrive, so the widget falls back to showing the
+ * cumulative total instead of the per-step context count. When the session
+ * predates usage persistence, `estimated` marks the restored totals as a
+ * rough estimate derived from the persisted conversation text (no cost).
+ * @param {string} sessionId
  * @param {object} usage - { prompt_tokens, completion_tokens, total_tokens, cost_usd, has_cost }
  * @param {boolean} [estimated]
  */
-export function restoreTaskTokenStats(taskId, usage, estimated = false) {
-	if (!taskId || !usage) return;
+export function restoreSessionTokenStats(sessionId, usage, estimated = false) {
+	if (!sessionId || !usage) return;
 	const hasCost = !!usage.has_cost && usage.cost_usd != null;
-	updateTaskTokenStats(taskId, {
+	updateSessionTokenStats(sessionId, {
 		promptTokens: 0,
 		completionTokens: 0,
 		totalTokens: 0,
@@ -365,6 +374,43 @@ export function restoreTaskTokenStats(taskId, usage, estimated = false) {
 		contextWindow: null,
 		model: null,
 		estimated: !!estimated,
+		restored: true,
+	});
+}
+
+/**
+ * Per-session per-LLM-call usage detail (restored from get_session_for_review /
+ * get_last_conversation `llm_usage`), keyed by session id. Each entry is one
+ * model response: { step_number, role, model, prompt_tokens,
+ * completion_tokens, total_tokens, cost_usd, has_cost, duration_ms,
+ * created_at }.
+ * @type {import('svelte/store').Writable<Record<string, Array<object>>>}
+ */
+export const sessionLlmUsageStore = writable({});
+
+/**
+ * Restore the per-call usage-detail list for a session (from
+ * `get_session_for_review` / `get_last_conversation`). An EMPTY array overwrites
+ * too: after a rollback truncates the usage rows the backend returns `[]`,
+ * and the stale detail for discarded steps must not linger in the store
+ * (mirrors restoreSessionTokenStats's unconditional overwrite). Only `undefined`
+ * (backend predates the field) is ignored.
+ * @param {string} sessionId
+ * @param {Array<object>} [usageList]
+ */
+export function restoreSessionLlmUsage(sessionId, usageList) {
+	if (!sessionId || !Array.isArray(usageList)) return;
+	sessionLlmUsageStore.update((m) => ({ ...m, [sessionId]: usageList }));
+}
+
+/** Clear per-call usage detail for a finished/reset session. */
+export function clearSessionLlmUsage(sessionId) {
+	if (!sessionId) return;
+	sessionLlmUsageStore.update((m) => {
+		if (!(sessionId in m)) return m;
+		const next = { ...m };
+		delete next[sessionId];
+		return next;
 	});
 }
 

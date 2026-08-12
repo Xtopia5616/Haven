@@ -30,29 +30,32 @@
 	import { invoke } from '$lib/tauri.js';
 	import { registerListeners } from '$lib/events.js';
 	import {
-		taskMessagesStore,
-		taskStore,
+		sessionMessagesStore,
+		sessionStore,
 		addNotification,
-		updateTaskMessages,
+		updateSessionMessages,
 		adoptDraftMessages,
-		clearTaskMessages,
+		clearSessionMessages,
 		clearSeqMap,
 		reviewTargetStore,
-		activeTaskIdStore,
-		taskTokenStatsStore,
-		updateTaskTokenStats,
-		clearTaskTokenStats,
-		restoreTaskTokenStats,
+		activeSessionIdStore,
+		sessionTokenStatsStore,
+		updateSessionTokenStats,
+		clearSessionTokenStats,
+		restoreSessionTokenStats,
+		sessionLlmUsageStore,
+		restoreSessionLlmUsage,
+		clearSessionLlmUsage,
 		formatTokenCount,
 		formatCostUsd,
 		seqLastSeen,
 		pruneSeq,
 		updateModelState,
 		modelStateStore,
-		refreshActivities,
+		refreshTasks,
 		DRAFT_KEY,
 		NEW_TASK_INTENT_KEY,
-		newTaskIntentStore,
+		newSessionIntentStore,
 	} from '$lib/stores.js';
 	import { submitTranscript } from '$lib/submit.js';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.js';
@@ -77,22 +80,22 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let messages = $state([]);
-	let tasks = $state([]);
+	let sessions = $state([]);
 	let confirmDialog = $state({
 		stepId: null,
 		toolName: '',
-		taskId: '',
-		taskTitle: '',
+		sessionId: '',
+		sessionTitle: '',
 		riskLevel: 'medium',
 	});
-	let activeTaskId = $state(get(activeTaskIdStore));
+	let activeSessionId = $state(get(activeSessionIdStore));
 	let rollbackDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
 	let rollbackLoading = $state(false);
 
 	// Model switcher state: the registry catalog plus the current default
 	// model name, displayed on the toolbar button and filtered in the menu.
 	let modelMenuOpen = $state(false);
-	let taskMenuOpen = $state(false);
+	let sessionMenuOpen = $state(false);
 	let modelOptions = $state([]);
 	let currentModelName = $state('');
 	let currentModelId = $state('');
@@ -104,11 +107,11 @@
 	// in sync via `hotkey:rebind` so placeholders show the real value.
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
-	// Active task token stats (mirrored from taskTokenStatsStore so this page
-	// can render a compact budget widget). Cleared when the active task
+	// Active session token stats (mirrored from sessionTokenStatsStore so this page
+	// can render a compact budget widget). Cleared when the active session
 	// changes; updated on every `agent:usage` event.
 	/**
-	 * @typedef {object} TaskTokenStats
+	 * @typedef {object} SessionTokenStats
 	 * @property {number} promptTokens
 	 * @property {number} completionTokens
 	 * @property {number} totalTokens
@@ -120,30 +123,80 @@
 	 * @property {number|null} contextWindow
 	 * @property {string|null} model
 	 * @property {boolean} [estimated] - totals restored from a rough backend
-	 *   estimate (task predates usage persistence), not real recorded usage.
+	 *   estimate (session predates usage persistence), not real recorded usage.
+	 * @property {boolean} [restored] - entry came from persistence (review /
+	 *   reopened conversation) with no live `agent:usage` events expected:
+	 *   the widget shows the cumulative total instead of the per-step context.
 	 */
 
-	/** @type {TaskTokenStats | null} */
+	/** @type {SessionTokenStats | null} */
 	let tokenStats = $state(null);
 	$effect(() =>
-		syncStore(taskTokenStatsStore, (m) => {
-			tokenStats = activeTaskId
-				? /** @type {TaskTokenStats | undefined} */ (m[activeTaskId]) || null
+		syncStore(sessionTokenStatsStore, (m) => {
+			tokenStats = activeSessionId
+				? /** @type {SessionTokenStats | undefined} */ (m[activeSessionId]) || null
 				: null;
 		}),
 	);
-	// Clear per-task stats when the active task changes so a stale entry
-	// from a previous task doesn't bleed into the new task's display.
+	// Clear per-session stats when the active session changes so a stale entry
+	// from a previous session doesn't bleed into the new session's display.
 	$effect(() => {
-		const _ = activeTaskId;
+		const _ = activeSessionId;
 		// Subscribe so any store change refreshes; the actual filter is in
 		// the subscription above. This effect just guarantees an unsubscribed
-		// task is wiped when the user starts a fresh conversation.
-		if (!activeTaskId) tokenStats = null;
+		// session is wiped when the user starts a fresh conversation.
+		if (!activeSessionId) tokenStats = null;
+	});
+
+	// Per-LLM-call usage detail for the active session (restored from the
+	// persisted `llm_usage` when a review conversation opens). Used to render
+	// per-step token chips on tool cards and the widget's per-call tooltip.
+	/** @type {Array<object>} */
+	let llmUsage = $state([]);
+	$effect(() =>
+		syncStore(sessionLlmUsageStore, (m) => {
+			llmUsage = activeSessionId ? (m[activeSessionId] || []) : [];
+			stepUsageCache.clear();
+		}),
+	);
+	$effect(() => {
+		const _ = activeSessionId;
+		if (!activeSessionId) llmUsage = [];
 	});
 
 	/**
-	 * Context-window utilization for the active task. Returns
+	 * Aggregate the persisted usage-detail rows for one ReAct step (a step
+	 * can carry more than one call when a compaction retry re-ran it). Returns
+	 * null when the step has no recorded detail (or the session predates per-call
+	 * persistence). Memoized per step: the each-block calls this for every
+	 * tool bubble on every streaming flush, and a fresh object per call would
+	 * churn child component updates across the whole long conversation.
+	 * @param {number|null} stepNumber
+	 * @returns {{prompt: number, completion: number, total: number, cost: number, hasCost: boolean, durationMs: number, model: string|null, calls: number}|null}
+	 */
+	const stepUsageCache = new Map();
+	function stepUsage(stepNumber) {
+		if (stepNumber == null || llmUsage.length === 0) return null;
+		const cached = stepUsageCache.get(stepNumber);
+		if (cached !== undefined) return cached;
+		const calls = llmUsage.filter((u) => u.step_number === stepNumber);
+		if (calls.length === 0) return null;
+		const value = {
+			prompt: calls.reduce((s, u) => s + (u.prompt_tokens || 0), 0),
+			completion: calls.reduce((s, u) => s + (u.completion_tokens || 0), 0),
+			total: calls.reduce((s, u) => s + (u.total_tokens || 0), 0),
+			cost: calls.reduce((s, u) => s + (u.cost_usd || 0), 0),
+			hasCost: calls.some((u) => u.has_cost),
+			durationMs: calls.reduce((s, u) => s + (u.duration_ms || 0), 0),
+			model: calls.map((u) => u.model).filter(Boolean).at(-1) || null,
+			calls: calls.length,
+		};
+		stepUsageCache.set(stepNumber, value);
+		return value;
+	}
+
+	/**
+	 * Context-window utilization for the active session. Returns
 	 * `{ used, window, ratio }` where `used` is the last reported prompt
 	 * token count (per-step, not cumulative) and `window` is the model's
 	 * configured budget. Returns `null` when no data is available.
@@ -159,8 +212,8 @@
 
 	// Send/stop merged button: text takes priority (always send); with no
 	// text and the agent actively generating output the button becomes
-	// "stop task". Also mirrors the agent's model state so the button can
-	// distinguish "generating right now" from an idle running task.
+	// "stop session". Also mirrors the agent's model state so the button can
+	// distinguish "generating right now" from an idle running session.
 	let modelState = $state('ready');
 	$effect(() =>
 		syncStore(modelStateStore, (v) => {
@@ -170,43 +223,50 @@
 	const isGenerating = $derived(
 		modelState === 'streaming' || modelState === 'tool' || modelState === 'stalled',
 	);
-	const taskRunning = $derived(
-		!!activeTaskId &&
-			tasks.some(
-				(t) => t.id === activeTaskId && (t.status === 'running' || t.status === 'pending'),
+	const sessionRunning = $derived(
+		!!activeSessionId &&
+			sessions.some(
+				(t) => t.id === activeSessionId && (t.status === 'running' || t.status === 'pending'),
 			),
 	);
-	// Tooltip for the idle token widget. While the active task is still
+	// Tooltip for the idle token widget. While the active session is still
 	// running (streaming, tool-calling, or queued) more `agent:usage`
 	// events are expected, so "waiting" is accurate. A finished or
 	// history-opened conversation with no persisted usage will never
 	// receive events — show a neutral hint instead of waiting forever.
-	const tokenStatsHint = $derived(isGenerating || taskRunning ? '等待 LLM 统计' : '暂无统计');
-	// Tasks executing in parallel (running or waiting). When 2+ exist, the
-	// new-task button turns into a switcher menu: switch to a parallel task
+	const tokenStatsHint = $derived(isGenerating || sessionRunning ? '等待 LLM 统计' : '暂无统计');
+	// Sessions executing in parallel (running or waiting). When 2+ exist, the
+	// new-session button turns into a switcher menu: switch to a parallel session
 	// or start a new one. Otherwise the button keeps its default behavior.
-	const parallelTasks = $derived(
-		tasks.filter((t) => t.status === 'running' || t.status === 'pending'),
+	const parallelSessions = $derived(
+		sessions.filter((t) => t.status === 'running' || t.status === 'pending'),
 	);
-	// Menu source: parallel tasks plus paused ones — a paused task is
+	// Menu source: parallel sessions plus paused ones — a paused session is
 	// otherwise invisible in the chat view (its conversation is not shown).
-	const menuTasks = $derived(
-		tasks.filter((t) =>
+	const menuSessions = $derived(
+		sessions.filter((t) =>
 			['running', 'pending', 'paused'].includes(t.status),
 		),
 	);
-	const showTaskMenu = $derived(menuTasks.length >= 2);
+	const showSessionMenu = $derived(menuSessions.length >= 2);
 
-	function buildTokenTooltip(/** @type {TaskTokenStats} */ s) {
+	function buildTokenTooltip(/** @type {SessionTokenStats} */ s) {
 		const parts = [];
-		parts.push(
-			`上传 ${s.promptTokens || 0} → 生成 ${s.completionTokens || 0} tokens`,
-		);
-		parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
-		if (s.cumulativePromptTokens != null)
+		if (s.restored) {
 			parts.push(
-				`累计上传 ${s.cumulativePromptTokens} → 累计生成 ${s.cumulativeCompletionTokens} tokens`,
+				`累计上传 ${s.cumulativePromptTokens || 0} → 累计生成 ${s.cumulativeCompletionTokens || 0} tokens`,
 			);
+			parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
+		} else {
+			parts.push(
+				`上传 ${s.promptTokens || 0} → 生成 ${s.completionTokens || 0} tokens`,
+			);
+			parts.push(`累计 ${s.cumulativeTotalTokens || 0} tokens`);
+			if (s.cumulativePromptTokens != null)
+				parts.push(
+					`累计上传 ${s.cumulativePromptTokens} → 累计生成 ${s.cumulativeCompletionTokens} tokens`,
+				);
+		}
 		if (s.model) parts.push(`模型 ${s.model}`);
 		if (s.contextWindow) {
 			const pct =
@@ -217,6 +277,28 @@
 		}
 		if (s.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(s.cumulativeCostUsd)}`);
 		if (s.estimated) parts.push('估算值（历史对话，未计费）');
+		// Per-call breakdown from the persisted llm_usage detail (cap the
+		// list so a long session doesn't produce an unwieldy tooltip).
+		if (llmUsage.length > 0) {
+			parts.push(`— 每次调用 —`);
+			const shown = llmUsage.slice(-10);
+			for (const u of shown) {
+				const where = u.step_number != null ? `第${u.step_number}步` : '—';
+				let line = `${where} ${u.total_tokens || 0} tokens`;
+				if (u.prompt_tokens != null) {
+					line += ` (↑${u.prompt_tokens}→↓${u.completion_tokens || 0})`;
+				}
+				if (u.model) line += ` ${u.model}`;
+				if (u.duration_ms != null && u.duration_ms > 0) {
+					line += ` ${(u.duration_ms / 1000).toFixed(1)}s`;
+				}
+				if (u.has_cost && u.cost_usd != null) line += ` ${formatCostUsd(u.cost_usd)}`;
+				parts.push(line);
+			}
+			if (llmUsage.length > shown.length) {
+				parts.push(`…共 ${llmUsage.length} 次调用`);
+			}
+		}
 		return parts.join('\n');
 	}
 
@@ -304,7 +386,7 @@
 				if (next) return next.stepNumber;
 			}
 			// Fallback for an interrupted message that was never processed
-			// (no step row and nothing after it — sent while the task was
+			// (no step row and nothing after it — sent while the session was
 			// erroring, or the app closed before the steering drained).
 			// Target the step after the last completed one; the backend
 			// discards just this message when no branch point covers it.
@@ -373,17 +455,17 @@
 				modelMenuOpen = false;
 			}
 		}
-		if (taskMenuOpen) {
-			const menu = document.querySelector('.task-menu');
-			const btn = document.querySelector('.task-switch-btn');
+		if (sessionMenuOpen) {
+			const menu = document.querySelector('.session-menu');
+			const btn = document.querySelector('.session-switch-btn');
 			if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
-				taskMenuOpen = false;
+				sessionMenuOpen = false;
 			}
 		}
 	}
 
 	$effect(() => {
-		if (taskMenuOpen && menuTasks.length < 2) taskMenuOpen = false;
+		if (sessionMenuOpen && menuSessions.length < 2) sessionMenuOpen = false;
 	});
 
 	// Merged into existing onMount/onDestroy below
@@ -393,33 +475,33 @@
 		rollbackLoading = true;
 		try {
 			if (role === 'user') {
-				// User-message rollback: pause the task and put the message
+				// User-message rollback: pause the session and put the message
 				// text back in the input box so the user can edit and re-send.
-				// The backend resolves targetMessageId against persisted task
+				// The backend resolves targetMessageId against persisted session
 				// messages and errors when the id does not match (no more
 				// content-based guessing).
-				await invoke('rollback_task', {
-					taskId: activeTaskId,
+				await invoke('rollback_session', {
+					sessionId: activeSessionId,
 					targetStep: stepNumber,
 					pause: true,
 					targetMessageId: msgId,
 				});
-				clearSeqMap(activeTaskId);
+				clearSeqMap(activeSessionId);
 				// The backend is the source of truth for what the rollback
 				// deleted (target message + its whole discarded timeline);
 				// rebuild from the DB instead.
-				await resyncTaskMessages(activeTaskId);
+				await resyncSessionMessages(activeSessionId);
 				inputRouterRef?.setDraft(content);
 				addNotification('已回退，请编辑后重新发送', 'info', 3000);
 			} else {
-				await invoke('rollback_task', {
-					taskId: activeTaskId,
+				await invoke('rollback_session', {
+					sessionId: activeSessionId,
 					targetStep: stepNumber,
 					pause: false,
 					targetMessageId: msgId,
 				});
-				clearSeqMap(activeTaskId);
-				await resyncTaskMessages(activeTaskId);
+				clearSeqMap(activeSessionId);
+				await resyncSessionMessages(activeSessionId);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
 		} catch (e) {
@@ -427,16 +509,16 @@
 		}
 		rollbackLoading = false;
 		rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
-		await loadTasks();
+		await loadSessions();
 	}
 
-	// Rebuild a task's in-memory message list from the authoritative DB
+	// Rebuild a session's in-memory message list from the authoritative DB
 	// state. Used after rollback (and by handleContinue) so the UI cannot
 	// diverge from what the backend actually kept/deleted.
-	async function resyncTaskMessages(taskId) {
-		if (!taskId) return;
+	async function resyncSessionMessages(sessionId) {
+		if (!sessionId) return;
 		try {
-			const result = await invoke('get_task_for_review', { taskId });
+			const result = await invoke('get_session_for_review', { sessionId });
 			const dbMessages = buildReviewMessages(result);
 			// Rollback rebuilds the timeline from the truncated DB state, so the
 			// pre-rollback live messages in `existing` are STALE: their content
@@ -446,139 +528,144 @@
 			// thinking to the wrong position. Keep only live messages that are
 			// STILL STREAMING (the re-run's in-flight output); everything
 			// finalized is replaced by the authoritative DB copy.
-			updateTaskMessages(taskId, (existing) =>
+			updateSessionMessages(sessionId, (existing) =>
 				mergeLiveStreaming(dbMessages, existing.filter((m) => m.streaming)),
 			);
-			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
+			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
+			restoreSessionLlmUsage(sessionId, result.llm_usage);
 		} catch (e) {
 			addNotification(`同步消息失败: ${e}`, 'error', 3000);
 		}
 	}
 
-	function newTask() {
-		if (activeTaskId) {
-			clearTaskMessages(activeTaskId);
-			clearTaskTokenStats(activeTaskId);
+	function newSession() {
+		if (activeSessionId) {
+			clearSessionMessages(activeSessionId);
+			clearSessionTokenStats(activeSessionId);
+			clearSessionLlmUsage(activeSessionId);
 		}
-		// 新对话 = explicit fresh start. While `newTaskIntentStore` is set, no
-		// event-driven path may auto-assign an existing task (loadTasks
-		// auto-assign, task:created, auto-restore), otherwise the next message
-		// would append to the old conversation instead of starting a new task.
+		// 新对话 = explicit fresh start. While `newSessionIntentStore` is set, no
+		// event-driven path may auto-assign an existing session (loadSessions
+		// auto-assign, session:created, auto-restore), otherwise the next message
+		// would append to the old conversation instead of starting a new session.
 		// The intent is cleared only when the user's own submission creates a
-		// task (submit.js) or they explicitly switch to another task. Also
+		// session (submit.js) or they explicitly switch to another session. Also
 		// persisted to localStorage so the next app launch skips restoring the
 		// previous conversation.
-		newTaskIntentStore.set(true);
+		newSessionIntentStore.set(true);
 		if (browser) localStorage.setItem(NEW_TASK_INTENT_KEY, '1');
-		activeTaskId = null;
-		activeTaskIdStore.set(null);
-		taskMenuOpen = false;
+		activeSessionId = null;
+		activeSessionIdStore.set(null);
+		sessionMenuOpen = false;
 	}
 
-	// Switch the chat view to another parallel task. Merges the persisted
+	// Switch the chat view to another parallel session. Merges the persisted
 	// DB messages with any in-memory streaming messages that arrived
-	// concurrently (the task may still be running).
-	// A terminal task has no more streaming events: drop its in-memory
-	// message list, token stats and seq bookkeeping (switchToTask reloads
+	// concurrently (the session may still be running).
+	// A terminal session has no more streaming events: drop its in-memory
+	// message list, token stats and seq bookkeeping (switchToSession reloads
 	// everything from the DB on demand). Keeps parallel-conversation memory
 	// bounded across a long session. Never evicts the active conversation.
-	function evictTerminalTaskMemory(taskId) {
-		if (!taskId || (activeTaskId && taskId === activeTaskId)) return;
-		clearTaskMessages(taskId);
-		clearTaskTokenStats(taskId);
-		clearSeqMap(taskId);
+	function evictTerminalSessionMemory(sessionId) {
+		if (!sessionId || (activeSessionId && sessionId === activeSessionId)) return;
+		clearSessionMessages(sessionId);
+		clearSessionTokenStats(sessionId);
+		clearSessionLlmUsage(sessionId);
+		clearSeqMap(sessionId);
 	}
 
-	async function switchToTask(taskId) {
-		taskMenuOpen = false;
-		// The previously active task is about to be deactivated: if it is
+	async function switchToSession(sessionId) {
+		sessionMenuOpen = false;
+		// The previously active session is about to be deactivated: if it is
 		// already terminal (completed/error — it never evicted while it was
-		// being watched), reclaim its memory now; switchToTask below reloads
+		// being watched), reclaim its memory now; switchToSession below reloads
 		// from the DB when it is re-opened.
-		const prevActive = activeTaskId;
-		if (prevActive && prevActive !== taskId) {
-			const prevTask = tasks.find((x) => x.id === prevActive);
-			if (prevTask && (prevTask.status === 'completed' || prevTask.status === 'error')) {
-				evictTerminalTaskMemory(prevActive);
+		const prevActive = activeSessionId;
+		if (prevActive && prevActive !== sessionId) {
+			const prevSession = sessions.find((x) => x.id === prevActive);
+			if (prevSession && (prevSession.status === 'completed' || prevSession.status === 'error')) {
+				evictTerminalSessionMemory(prevActive);
 			}
 		}
 		try {
-			const result = await invoke('get_task_for_review', { taskId });
+			const result = await invoke('get_session_for_review', { sessionId });
 			const dbMessages = buildReviewMessages(result);
 			// Drop DB step badges for steps already represented by a live
-			// tool card (the running task may be mid-step): the live card
+			// tool card (the running session may be mid-step): the live card
 			// keeps streaming its observation. Their ids differ, so plain
 			// id dedup would leave both visible.
-			updateTaskMessages(taskId, (existing) =>
+			updateSessionMessages(sessionId, (existing) =>
 				mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true }),
 			);
-			restoreTaskTokenStats(taskId, result.usage, result.usage_estimated);
+			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
+			restoreSessionLlmUsage(sessionId, result.llm_usage);
 			// An explicit switch abandons the fresh-start intent: the chosen
-			// task becomes the active conversation (and may be auto-restored
+			// session becomes the active conversation (and may be auto-restored
 			// on the next app launch).
-			newTaskIntentStore.set(false);
+			newSessionIntentStore.set(false);
 			if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
-			activeTaskId = taskId;
-			activeTaskIdStore.set(taskId);
-			const t = tasks.find((x) => x.id === taskId);
-			addNotification(`已切换到：${t?.title || '任务'}`, 'info', 1500);
+			activeSessionId = sessionId;
+			activeSessionIdStore.set(sessionId);
+			const t = sessions.find((x) => x.id === sessionId);
+			addNotification(`已切换到：${t?.title || '会话'}`, 'info', 1500);
 		} catch (e) {
-			addNotification(`切换任务失败: ${e}`, 'error', 4000);
+			addNotification(`切换会话失败: ${e}`, 'error', 4000);
 		}
 	}
 
-	async function endTask() {
-		if (!activeTaskId) return;
-		// While the end is in flight, no event may resurrect the ended task.
-		newTaskIntentStore.set(true);
-		const endedId = activeTaskId;
+	async function endSession() {
+		if (!activeSessionId) return;
+		// While the end is in flight, no event may resurrect the ended session.
+		newSessionIntentStore.set(true);
+		const endedId = activeSessionId;
 		try {
-			await invoke('end_task', { taskId: endedId });
-			clearTaskMessages(endedId);
-			clearTaskTokenStats(endedId);
+			await invoke('end_session', { sessionId: endedId });
+			clearSessionMessages(endedId);
+			clearSessionTokenStats(endedId);
+			clearSessionLlmUsage(endedId);
 		} catch (e) {
-			addNotification(`结束任务失败: ${e}`, 'error', 3000);
+			addNotification(`结束会话失败: ${e}`, 'error', 3000);
 		}
-		activeTaskId = null;
-		activeTaskIdStore.set(null);
-		newTaskIntentStore.set(false);
+		activeSessionId = null;
+		activeSessionIdStore.set(null);
+		newSessionIntentStore.set(false);
 	}
 
 	async function handleContinue() {
-		if (!activeTaskId) return;
-		const tid = activeTaskId;
+		if (!activeSessionId) return;
+		const tid = activeSessionId;
 		// Capture the ids of the trailing assistant messages BEFORE invoking
-		// continue_task. These are the partial outputs from the interrupted
+		// continue_session. These are the partial outputs from the interrupted
 		// step that the backend will delete from the DB. We must remove them
 		// from the UI too, but only these — the dispatcher may start the retry
 		// before this function resumes and append NEW assistant messages
 		// (different run_id in their ids) that must NOT be dropped.
-		const currentMessages = get(taskMessagesStore)[tid] || [];
+		const currentMessages = get(sessionMessagesStore)[tid] || [];
 		let trailingIdx = currentMessages.length;
 		while (trailingIdx > 0 && currentMessages[trailingIdx - 1].role === 'assistant') {
 			trailingIdx--;
 		}
 		const partialIds = new Set(currentMessages.slice(trailingIdx).map((m) => m.id));
 		try {
-			// First unblock the errored task: continue_task truncates the
-			// partial output and sets the task to Pending so the "继续" user
+			// First unblock the errored session: continue_session truncates the
+			// partial output and sets the session to Pending so the "继续" user
 			// message below is accepted instead of being dropped as a
 			// terminal-state supplement.
-			await invoke('continue_task', { taskId: tid });
-			taskErrorId = null;
-			activeTaskError = false;
+			await invoke('continue_session', { sessionId: tid });
+			sessionErrorId = null;
+			activeSessionError = false;
 			// Re-sync from the authoritative post-truncate DB state instead of
 			// guessing which trailing messages to drop. Every streamed message
 			// (reasoning/thought/tool/final) carries role 'assistant', so a
 			// naive "drop trailing assistants" sweep would clear completed tool
-			// cards + observations that continue_task actually KEEPS — it only
+			// cards + observations that continue_session actually KEEPS — it only
 			// truncates the interrupted final answer. Rebuilding from the DB
 			// reproduces that exactly. Any NEW retry streaming that arrived
 			// during the await is merged in on top; the old captured partials
 			// are dropped from the existing store so they aren't re-added.
 			try {
-				const result = await invoke('get_task_for_review', { taskId: tid });
-				updateTaskMessages(tid, (existing) => {
+				const result = await invoke('get_session_for_review', { sessionId: tid });
+				updateSessionMessages(tid, (existing) => {
 					const dbMessages = buildReviewMessages(result);
 					const keptExisting = existing.filter((m) => !partialIds.has(m.id));
 					return mergeLiveStreaming(dbMessages, keptExisting);
@@ -587,7 +674,7 @@
 				// Fallback: if the resync fails, at least drop the captured
 				// partials so the stale interrupted output is removed.
 				if (partialIds.size > 0) {
-					updateTaskMessages(tid, (m) => {
+					updateSessionMessages(tid, (m) => {
 						const filtered = m.filter((x) => !partialIds.has(x.id));
 						return filtered.length !== m.length ? filtered : m;
 					});
@@ -599,7 +686,7 @@
 			// interjection, just like a typed or quick-reply message.
 			autoFollow = true;
 			submitMessage('继续', []);
-			await loadTasks();
+			await loadSessions();
 		} catch (e) {
 			addNotification(`继续失败: ${e}`, 'error', 5000);
 			// Keep the banner visible so the user can retry.
@@ -613,20 +700,20 @@
 	let autoFollow = $state(true);
 	let scrollRafPending = false;
 	let dead = false;
-	// Guards concurrent loadTasks() calls so a stale response can't overwrite
+	// Guards concurrent loadSessions() calls so a stale response can't overwrite
 	// a newer one.
-	let loadTasksSeq = 0;
+	let loadSessionsSeq = 0;
 
 	// Sync the Svelte store to a $state variable — $effect does NOT track
 	// get(store), so we must use .subscribe() to get reactive updates.
 	// Also read the current value once on mount via get(), otherwise values
 	// set before subscription (e.g. by history review) are never received.
-	let taskMessagesDict = $state({});
+	let sessionMessagesDict = $state({});
 	$effect(() =>
 		syncStoreImmediate(
-			taskMessagesStore,
+			sessionMessagesStore,
 			(v) => {
-				taskMessagesDict = v;
+				sessionMessagesDict = v;
 			},
 			get,
 		),
@@ -634,23 +721,23 @@
 
 	// Derive visible messages for the current view.
 	$effect(() => {
-		const dict = taskMessagesDict;
-		if (activeTaskId) {
-			messages = Array.isArray(dict[activeTaskId]) ? dict[activeTaskId] : [];
+		const dict = sessionMessagesDict;
+		if (activeSessionId) {
+			messages = Array.isArray(dict[activeSessionId]) ? dict[activeSessionId] : [];
 		} else {
 			messages = Array.isArray(dict[DRAFT_KEY]) ? dict[DRAFT_KEY] : [];
 		}
 	});
 
-	let activeTaskError = $state(false);
-	let taskErrorId = $state(null);
+	let activeSessionError = $state(false);
+	let sessionErrorId = $state(null);
 
-	// Clear error state when the active task changes.
+	// Clear error state when the active session changes.
 	$effect(() => {
-		const _ = activeTaskId;
-		if (taskErrorId && activeTaskId !== taskErrorId) {
-			taskErrorId = null;
-			activeTaskError = false;
+		const _ = activeSessionId;
+		if (sessionErrorId && activeSessionId !== sessionErrorId) {
+			sessionErrorId = null;
+			activeSessionError = false;
 		}
 	});
 
@@ -662,31 +749,31 @@
 		}
 	});
 
-	// When the active task changes (e.g. switching to a reviewed task or
-	// creating a new task), re-enable follow and scroll to the bottom.
+	// When the active session changes (e.g. switching to a reviewed session or
+	// creating a new session), re-enable follow and scroll to the bottom.
 	$effect(() => {
-		const _ = activeTaskId;
+		const _ = activeSessionId;
 		autoFollow = true;
 		scrollToBottom();
 	});
 
-	// Persist activeTaskId across page navigations via store.
+	// Persist activeSessionId across page navigations via store.
 	$effect(() => {
-		activeTaskIdStore.set(activeTaskId);
+		activeSessionIdStore.set(activeSessionId);
 	});
 
 	// Follow external store writes back into the local state. The effect
 	// above mirrors state → store only; submit.js writes the store directly
-	// when a submission creates a fresh task (its `TaskCreated` result never
-	// passes through this page), and the view must follow the new task
-	// instead of staying on the blank draft. Guarded with `!activeTaskId`
-	// (never override a task the user is actively viewing) AND the
-	// fresh-start intent (while the intent is pending, a background task
+	// when a submission creates a fresh session (its `SessionCreated` result never
+	// passes through this page), and the view must follow the new session
+	// instead of staying on the blank draft. Guarded with `!activeSessionId`
+	// (never override a session the user is actively viewing) AND the
+	// fresh-start intent (while the intent is pending, a background session
 	// creation must not hijack the blank draft — the submission that
 	// fulfills the intent clears it before writing the store).
 	$effect(() =>
-		syncStore(activeTaskIdStore, (id) => {
-			if (id && !activeTaskId && !get(newTaskIntentStore)) activeTaskId = id;
+		syncStore(activeSessionIdStore, (id) => {
+			if (id && !activeSessionId && !get(newSessionIntentStore)) activeSessionId = id;
 		}),
 	);
 
@@ -742,51 +829,120 @@
 		if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
 	}
 
+	// Streaming chunks are coalesced to ONE store flush per animation frame:
+	// a burst of chunk events (long answers, parallel streams) is applied to
+	// the message list in a single update, so the webview re-renders at most
+	// once per frame no matter how many chunks arrive. Without this, a fast
+	// stream saturates the webview main thread (every chunk re-renders the
+	// conversation), the Tauri IPC channel backs up, the backend's event
+	// buffer overflows and drops — and streaming visibly dies ("nothing, then
+	// a big dump"). Events that must see the flushed state (agent:thought
+	// snap, agent:action, agent:observation) flush synchronously first.
+	const pendingChunks = [];
+	let chunkFlushRaf = 0;
+	// Hard cap on queued chunks: if the webview is hidden/occluded,
+	// requestAnimationFrame can stall indefinitely, so an unbounded queue
+	// would grow for the whole stream. On overflow the OLDEST queued chunk is
+	// dropped — chunks are self-healing (the step's final snap/full-text
+	// reconcile replaces accumulated deltas), so evicting old ones loses
+	// nothing authoritative, mirroring the backend's event-buffer policy.
+	const PENDING_CHUNK_MAX = 2000;
+	let pendingChunkDrops = 0;
+
+	function flushPendingChunks() {
+		chunkFlushRaf = 0;
+		if (pendingChunks.length === 0) return;
+		const batch = pendingChunks.splice(0);
+		// Group by session preserving arrival order within each session.
+		const bySession = new Map();
+		for (const c of batch) {
+			let list = bySession.get(c.tid);
+			if (!list) bySession.set(c.tid, (list = []));
+			list.push(c);
+		}
+		for (const [tid, chunks] of bySession) {
+			updateSessionMessages(tid, (m) => {
+				let next = m;
+				for (const c of chunks) {
+					if (c.finalizeReasoning) {
+						const reasoningId = stepId('reasoning', c.tid, c.stepNumber, c.runId);
+						const rIdx = next.findIndex((x) => x.id === reasoningId && x.streaming);
+						if (rIdx >= 0) {
+							next = next.map((x) =>
+								x.id === reasoningId ? { ...x, streaming: false } : x,
+							);
+							pruneSeq(reasoningId);
+						}
+					}
+					if (c.delta) {
+						next = accumulateStreamChunk(next, {
+							stepId: c.sid,
+							stepIdPrefix: c.stepIdPrefix,
+							delta: c.delta,
+							msgType: c.msgType,
+							stepNumber: c.stepNumber,
+							time: c.time,
+						});
+					}
+				}
+				return next;
+			});
+		}
+	}
+
+	/** Flush pending chunks synchronously (before snap/action/observation). */
+	function flushChunksNow() {
+		if (chunkFlushRaf) {
+			cancelAnimationFrame(chunkFlushRaf);
+			chunkFlushRaf = 0;
+		}
+		flushPendingChunks();
+	}
+
 	// Streaming chunk handler factory: finalizes the preceding reasoning block
-	// on the first thought chunk, dedups by per-step seq, and accumulates the
-	// delta into the in-memory message list.
+	// on the first thought chunk, dedups by per-step seq, and queues the delta
+	// for the per-frame flush (see flushPendingChunks).
 	function chunkHandler(stepIdPrefix, msgType) {
 		return (event) => {
 			const data = event.payload;
-			const tid = data.task_id;
+			const tid = data.session_id;
 			const sid = stepId(stepIdPrefix, tid, data.step_number, data.run_id);
 			const delta = data.delta || '';
 			const seq = data.seq;
 			// The model-state chip reflects the ACTIVE conversation only:
-			// a background task streaming in parallel must not flip the
-			// active task's indicator to "streaming".
-			if (activeTaskId === tid) {
+			// a background session streaming in parallel must not flip the
+			// active session's indicator to "streaming".
+			if (activeSessionId === tid) {
 				updateModelState('streaming');
 			}
 			if (seqLastSeen(sid, seq)) return;
 
-			// When the first text chunk arrives, the reasoning phase is
-			// over — finalize any streaming reasoning block for this step.
-			// This runs BEFORE the empty-delta check so that even an empty
-			// transition chunk finalizes reasoning.
-			if (stepIdPrefix === 'thought') {
-				const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
-				let reasoningFinalized = false;
-				updateTaskMessages(tid, (m) => {
-					const rIdx = m.findIndex((x) => x.id === reasoningId && x.streaming);
-					if (rIdx < 0) return m;
-					reasoningFinalized = true;
-					return m.map((x) => (x.id === reasoningId ? { ...x, streaming: false } : x));
-				});
-				if (reasoningFinalized) pruneSeq(reasoningId);
+			// Queue the chunk; the reasoning finalize + accumulation run in
+			// order inside the flush, so per-event semantics are unchanged.
+			pendingChunks.push({
+				tid,
+				sid,
+				stepIdPrefix,
+				delta,
+				msgType,
+				stepNumber: data.step_number,
+				runId: data.run_id,
+				time: new Date().toLocaleTimeString(),
+				finalizeReasoning: stepIdPrefix === 'thought',
+			});
+			if (pendingChunks.length > PENDING_CHUNK_MAX) {
+				pendingChunks.shift();
+				pendingChunkDrops++;
+				if (pendingChunkDrops === 1) {
+					logger.warn(
+						'+page',
+						`chunk queue overflow (${PENDING_CHUNK_MAX}), evicting oldest chunks`,
+					);
+				}
 			}
-
-			if (!delta) return;
-			updateTaskMessages(tid, (m) =>
-				accumulateStreamChunk(m, {
-					stepId: sid,
-					stepIdPrefix,
-					delta,
-					msgType,
-					stepNumber: data.step_number,
-					time: new Date().toLocaleTimeString(),
-				}),
-			);
+			if (!chunkFlushRaf) {
+				chunkFlushRaf = requestAnimationFrame(flushPendingChunks);
+			}
 		};
 	}
 
@@ -838,124 +994,124 @@
 	onMount(async () => {
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
-		// restarts via `haven.no_auto_restore`. Without this, `loadTasks`
+		// restarts via `haven.no_auto_restore`. Without this, `loadSessions`
 		// auto-assign would re-select the old conversation on restart and the
 		// persisted intent would be silently defeated. The reviewTarget
 		// branch below (an explicit user choice) clears it again if needed.
 		if (browser && localStorage.getItem(NEW_TASK_INTENT_KEY)) {
-			newTaskIntentStore.set(true);
+			newSessionIntentStore.set(true);
 		}
 
-		// Process review target first so loadTasks won't overwrite
-		// activeTaskId with a stale paused task whose messages are gone.
+		// Process review target first so loadSessions won't overwrite
+		// activeSessionId with a stale paused session whose messages are gone.
 		const reviewTarget = get(reviewTargetStore);
-		if (reviewTarget && reviewTarget.taskId) {
+		if (reviewTarget && reviewTarget.sessionId) {
 			// Opening a reviewed conversation abandons any pending fresh-start
 			// intent (the user chose this conversation explicitly).
-			newTaskIntentStore.set(false);
+			newSessionIntentStore.set(false);
 			if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
-			activeTaskId = reviewTarget.taskId;
-			activeTaskIdStore.set(activeTaskId);
-			// If this task was errored when reviewed, show the continue button.
-			// reopen_task already set it to Paused, but we still want the user
+			activeSessionId = reviewTarget.sessionId;
+			activeSessionIdStore.set(activeSessionId);
+			// If this session was errored when reviewed, show the continue button.
+			// reopen_session already set it to Paused, but we still want the user
 			// to see the option to retry the failed step.
 			if (reviewTarget.wasError) {
-				taskErrorId = reviewTarget.taskId;
-				activeTaskError = true;
+				sessionErrorId = reviewTarget.sessionId;
+				activeSessionError = true;
 			}
 			// Defer clearing so it survives rapid remounts during init.
 			setTimeout(() => reviewTargetStore.set(null), 0);
 		}
 
-		// Register listeners BEFORE any async data load so task/streaming
+		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.
 		const registrations = registerListeners(
 			{
-				'task:created': (event) => {
-					const tid = event.payload?.task_id;
+				'session:created': (event) => {
+					const tid = event.payload?.session_id;
 					if (tid) {
 						// Voice input appends the transcript to `_draft` before the
-						// backend task exists; once it is created, migrate those
-						// draft messages into the task and focus it. Without this,
-						// the agent's response (ask card / answer) lands in a task
+						// backend session exists; once it is created, migrate those
+						// draft messages into the session and focus it. Without this,
+						// the agent's response (ask card / answer) lands in a session
 						// stream the chat view is not showing — visible only after
 						// re-entering the page (e.g. via history).
 						adoptDraftMessages(tid);
-						// Every `task:created` comes from a user submission
+						// Every `session:created` comes from a user submission
 						// (typed or voice) — the fresh-start intent is fulfilled
 						// by submit.js when that submission's invoke resolves.
 						// This guard only covers the in-flight window between the
-						// task creation event and the invoke resolution: a
+						// session creation event and the invoke resolution: a
 						// submission that started before the 新对话 click must
 						// not hijack the blank draft in that window.
-						if (!get(newTaskIntentStore)) {
-							activeTaskId = tid;
-							activeTaskIdStore.set(tid);
+						if (!get(newSessionIntentStore)) {
+							activeSessionId = tid;
+							activeSessionIdStore.set(tid);
 						}
 					}
-					loadTasks();
+					loadSessions();
 				},
-				'task:updated': (event) => {
+				'session:updated': (event) => {
 					const data = event.payload || {};
-					const isActive = data.task_id && activeTaskId && data.task_id === activeTaskId;
+					const isActive = data.session_id && activeSessionId && data.session_id === activeSessionId;
 					// A resume (pending) means the user's answer was received:
 					// stop showing the awaiting indicator on ask cards. Note the
 					// ask pause itself arrives as 'paused' right after the card is
 					// created, so that status must NOT clear the indicator.
 					if (isActive && data.status === 'pending') {
-						clearAskAwaiting(data.task_id);
+						clearAskAwaiting(data.session_id);
 					}
-					// A resumed task (pending/running) is no longer in the
+					// A resumed session (pending/running) is no longer in the
 					// errored state the continue banner describes: dismiss a
 					// stale banner so it can't linger over a live generation
-					// (e.g. when the retry started before the continue-task
-					// invoke resolved, or a message resumed the task).
+					// (e.g. when the retry started before the continue-session
+					// invoke resolved, or a message resumed the session).
 					if (
-						data.task_id &&
-						taskErrorId === data.task_id &&
+						data.session_id &&
+						sessionErrorId === data.session_id &&
 						(data.status === 'pending' || data.status === 'running')
 					) {
-						taskErrorId = null;
-						activeTaskError = false;
+						sessionErrorId = null;
+						activeSessionError = false;
 					}
-					// A background task reaching a terminal state has no more
-					// streaming events: evict its messages (switchToTask reloads
+					// A background session reaching a terminal state has no more
+					// streaming events: evict its messages (switchToSession reloads
 					// from the DB on demand) so completed conversations don't
 					// accumulate in memory for the whole session.
 					if (data.status === 'completed' || data.status === 'error') {
-						evictTerminalTaskMemory(data.task_id);
+						evictTerminalSessionMemory(data.session_id);
 					}
-					loadTasks();
+					loadSessions();
 				},
-				'task:completed': (event) => {
+				'session:completed': (event) => {
 					const data = event.payload || {};
-					if (data.task_id && activeTaskId && data.task_id === activeTaskId) {
-						clearAskAwaiting(data.task_id);
+					if (data.session_id && activeSessionId && data.session_id === activeSessionId) {
+						clearAskAwaiting(data.session_id);
 					}
-					evictTerminalTaskMemory(data.task_id);
-					loadTasks();
+					evictTerminalSessionMemory(data.session_id);
+					loadSessions();
 				},
-				'task:error': (event) => {
-					const { task_id } = event.payload;
-					if (task_id && task_id === activeTaskId) {
-						taskErrorId = task_id;
-						activeTaskError = true;
-						clearAskAwaiting(task_id);
-						// The task died mid-tool-call: every streaming block
+				'session:error': (event) => {
+					const { session_id } = event.payload;
+					if (session_id && session_id === activeSessionId) {
+						sessionErrorId = session_id;
+						activeSessionError = true;
+						clearAskAwaiting(session_id);
+						// The session died mid-tool-call: every streaming block
 						// (tool placeholder, reasoning, thought) would stay
 						// in its "expanded/streaming" state forever otherwise.
 						// Finalize them all so the UI reflects the stop.
-						updateTaskMessages(task_id, (m) =>
+						updateSessionMessages(session_id, (m) =>
 							m.map((x) => (x.streaming ? { ...x, streaming: false } : x))
 						);
 					}
-					evictTerminalTaskMemory(task_id);
-					loadTasks();
+					evictTerminalSessionMemory(session_id);
+					loadSessions();
 				},
-				'task:title-updated': (event) => {
-					const { task_id, title } = event.payload;
-					const idx = tasks.findIndex((t) => t.id === task_id);
-					if (idx >= 0) tasks[idx] = { ...tasks[idx], title };
+				'session:title-updated': (event) => {
+					const { session_id, title } = event.payload;
+					const idx = sessions.findIndex((t) => t.id === session_id);
+					if (idx >= 0) sessions[idx] = { ...sessions[idx], title };
 				},
 				'hotkey:rebind': (event) => {
 					const data = event.payload || {};
@@ -965,9 +1121,13 @@
 				},
 				'agent:thought': (event) => {
 					const data = event.payload;
-					const tid = data.task_id;
+					const tid = data.session_id;
 					const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
 					const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+					// The authoritative snap collapses the streamed segments:
+					// apply any queued chunks first so no delta is left to
+					// accumulate onto the collapsed message afterwards.
+					flushChunksNow();
 					pruneSeq(thoughtId);
 					pruneSeq(reasoningId);
 					// Deliberately no updateModelState here: the chunk handler
@@ -976,7 +1136,7 @@
 					// when the step continues with tool calls. The next event
 					// (agent:action -> tool, or pause/completion -> ready) owns
 					// the transition.
-					updateTaskMessages(tid, (m) =>
+					updateSessionMessages(tid, (m) =>
 						applyThoughtSnap(m, {
 							stepId: thoughtId,
 							reasoningId,
@@ -990,10 +1150,10 @@
 				'agent:reasoning_chunk': chunkHandler('reasoning', 'reasoning'),
 				'agent:web_search': (event) => {
 					const data = event.payload || {};
-					const tid = data.task_id;
-					if (!tid || (activeTaskId && tid !== activeTaskId)) return;
+					const tid = data.session_id;
+					if (!tid || (activeSessionId && tid !== activeSessionId)) return;
 					const wsId = toolId(tid, data.step_number, data.run_id, 'web_search');
-					updateTaskMessages(tid, (m) => {
+					updateSessionMessages(tid, (m) => {
 						const existing = m.find((x) => x.id === wsId);
 						if (data.phase === 'completed') {
 							if (!existing) return m;
@@ -1023,14 +1183,14 @@
 				},
 				'agent:supplement': (event) => {
 					// The agent injected a user message (mid-turn steering or a
-					// resumed-task supplement) into its context. Mark the matching
+					// resumed-session supplement) into its context. Mark the matching
 					// user bubble as received so the user knows their input was
 					// picked up mid-turn rather than deferred.
 					const data = event.payload || {};
-					const tid = data.task_id;
+					const tid = data.session_id;
 					const ctx = (data.additional_context || '').trim();
 					if (!tid || !ctx) return;
-					updateTaskMessages(tid, (m) => {
+					updateSessionMessages(tid, (m) => {
 						let marked = false;
 						const next = [...m];
 						for (let i = next.length - 1; i >= 0; i--) {
@@ -1050,7 +1210,10 @@
 				},
 				'agent:action': (event) => {
 					const data = event.payload;
-					const tid = data.task_id;
+					const tid = data.session_id;
+					// A tool action finalizes the step's streaming blocks:
+					// apply queued chunks first so the finalize is complete.
+					flushChunksNow();
 					updateModelState('tool');
 					const toolMsgId = toolId(
 						tid,
@@ -1065,12 +1228,12 @@
 					if (data.silent) {
 						// Silent tool: no card is shown, but the preceding text
 						// must still be finalized so it is inserted immediately.
-						updateTaskMessages(tid, (m) =>
+						updateSessionMessages(tid, (m) =>
 							finalizeStreamBlocks(m, reasoningId, thoughtId),
 						);
 						return;
 					}
-					updateTaskMessages(tid, (m) => {
+					updateSessionMessages(tid, (m) => {
 						// Finalize any streaming reasoning and thought blocks —
 						// a tool action means the text/reasoning phase is over.
 						// Clearing `segmented` drops straggler chunks that flush
@@ -1093,7 +1256,8 @@
 				'agent:observation': (event) => {
 					const data = event.payload;
 					if (data.silent) return;
-					const tid = data.task_id;
+					const tid = data.session_id;
+					flushChunksNow();
 					updateModelState('streaming');
 					const toolMsgId = toolId(
 						tid,
@@ -1101,7 +1265,7 @@
 						data.run_id,
 						data.tool_call_id || data.tool_name,
 					);
-					updateTaskMessages(tid, (m) => {
+					updateSessionMessages(tid, (m) => {
 						const idx = m.findIndex((x) => x.id === toolMsgId);
 						const msg = newToolMessage({
 							id: toolMsgId,
@@ -1124,40 +1288,40 @@
 				'confirm:requested': (event) => {
 					const data = event.payload;
 					// Security confirmations are modal and resolve by step id, so
-					// requests from background (non-active) tasks must still be
+					// requests from background (non-active) sessions must still be
 					// surfaced — dropping them would leave the tool call waiting
-					// forever. The dialog shows which task the operation belongs
+					// forever. The dialog shows which session the operation belongs
 					// to so an approval is never misattributed.
-					const tid = data.task_id || '';
+					const tid = data.session_id || '';
 					// Auto-reject a superseded dialog ONLY when the new request
-					// belongs to the same task (a task firing a second
+					// belongs to the same session (a session firing a second
 					// confirmation has moved on from the first — the backend
 					// must not wait forever for a resolve it will never see).
-					// A different task's request must NOT deny the pending one:
+					// A different session's request must NOT deny the pending one:
 					// the user may have just approved it (the resolve races the
 					// auto-reject), and its wait is already bounded by the
 					// backend's fail-closed timeout.
-					if (confirmDialog.stepId && confirmDialog.taskId === tid) {
+					if (confirmDialog.stepId && confirmDialog.sessionId === tid) {
 						invoke('resolve_confirmation', {
 							stepId: confirmDialog.stepId,
 							confirmed: false,
 							trustSession: false,
 						}).catch(() => {});
 					}
-					const task = tasks.find((t) => t.id === tid);
+					const session = sessions.find((t) => t.id === tid);
 					confirmDialog = {
 						stepId: data.step_id,
 						toolName: data.tool_name,
-						taskId: tid,
-						taskTitle: task?.title || (tid || ''),
+						sessionId: tid,
+						sessionTitle: session?.title || (tid || ''),
 						riskLevel: data.risk_level || 'medium',
 					};
 				},
 				// Token usage / cost stats — emitted after every LLM step.
 				'agent:usage': (event) => {
 					const d = event.payload || {};
-					if (!d.task_id) return;
-					updateTaskTokenStats(d.task_id, {
+					if (!d.session_id) return;
+					updateSessionTokenStats(d.session_id, {
 						promptTokens: d.prompt_tokens || 0,
 						completionTokens: d.completion_tokens || 0,
 						totalTokens: d.total_tokens || 0,
@@ -1170,6 +1334,9 @@
 						model: d.model ?? null,
 						// A real usage event supersedes any restored estimate.
 						estimated: false,
+						// A live event means the conversation is active again:
+						// the widget switches back to the per-step context view.
+						restored: false,
 					});
 				},
 				// Context compaction notice — summarize a portion of the history.
@@ -1222,19 +1389,19 @@
 				logger.warn('+page', 'get_settings error', e);
 			});
 
-		// Load the task list and auto-restore the last conversation in
+		// Load the session list and auto-restore the last conversation in
 		// parallel; the conversation renders as soon as its data arrives,
-		// without waiting for `reopen_task` (a second IPC round-trip that
-		// only makes the task resumable for follow-up messages).
-		const tasksP = loadTasks();
+		// without waiting for `reopen_session` (a second IPC round-trip that
+		// only makes the session resumable for follow-up messages).
+		const sessionsP = loadSessions();
 		const restoreP = restoreLastConversation(reviewTarget);
 
-		await Promise.all([tasksP, restoreP, readyP]);
+		await Promise.all([sessionsP, restoreP, readyP]);
 
 		// Conversation just opened (history review or auto-restore): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
 		// render first (see scrollToBottomAfterOpen).
-		if (activeTaskId) {
+		if (activeSessionId) {
 			await tick();
 			scrollToBottomAfterOpen();
 		}
@@ -1246,84 +1413,88 @@
 
 	onDestroy(() => {
 		dead = true;
+		// Flush any queued streaming chunks so the in-memory message store is
+		// complete before the listeners are disposed (a re-entry to this page
+		// merges the store with the DB copy).
+		flushChunksNow();
 		eventRegistrations?.dispose();
 		if (browser) {
 			window.removeEventListener('click', handleWindowClick);
 		}
 	});
 
-	// Tracks the most recent loadTasks() invocation so the auto-restore can
-	// order its decision after the task list without duplicating the
-	// stale-pointer cleanup. Never rejects (errors are handled in loadTasks).
-	let loadTasksSettled = Promise.resolve();
+	// Tracks the most recent loadSessions() invocation so the auto-restore can
+	// order its decision after the session list without duplicating the
+	// stale-pointer cleanup. Never rejects (errors are handled in loadSessions).
+	let loadSessionsSettled = Promise.resolve();
 
-	async function loadTasks() {
-		const seq = ++loadTasksSeq;
+	async function loadSessions() {
+		const seq = ++loadSessionsSeq;
 		const run = (async () => {
-			const result = await invoke('get_tasks');
-			// Stale response guard: a newer loadTasks call superseded this one.
-			if (seq !== loadTasksSeq) return;
-			if (result && result.tasks) {
-				tasks = result.tasks;
-				taskStore.set(tasks);
-				// The active task can be ended (removed from the executor) while
+			const result = await invoke('get_sessions');
+			// Stale response guard: a newer loadSessions call superseded this one.
+			if (seq !== loadSessionsSeq) return;
+			if (result && result.sessions) {
+				sessions = result.sessions;
+				sessionStore.set(sessions);
+				// The active session can be ended (removed from the executor) while
 				// this page is open — e.g. a follow-up message targeting a
-				// terminal task is dropped server-side. Drop the stale pointer
-				// so the next message starts a new task instead of hitting the
+				// terminal session is dropped server-side. Drop the stale pointer
+				// so the next message starts a new session instead of hitting the
 				// same terminal branch again.
-				if (activeTaskId && !tasks.some((t) => t.id === activeTaskId)) {
-					activeTaskId = null;
-					activeTaskIdStore.set(null);
+				if (activeSessionId && !sessions.some((t) => t.id === activeSessionId)) {
+					activeSessionId = null;
+					activeSessionIdStore.set(null);
 				}
-				if (!activeTaskId && !get(newTaskIntentStore)) {
-					const firstActive = tasks.find(
+				if (!activeSessionId && !get(newSessionIntentStore)) {
+					const firstActive = sessions.find(
 						(t) =>
 							t.status === 'running' ||
 							t.status === 'pending' ||
 							t.status === 'paused',
 					);
 					if (firstActive) {
-						activeTaskId = firstActive.id;
+						activeSessionId = firstActive.id;
 					}
 				}
 			}
-			// Task lifecycle changes may have reaped background jobs (a task
+			// Session lifecycle changes may have reaped background jobs (a session
 			// ending cancels its jobs without terminal events): re-sync the
-			// activity board so the panel drops entries that no longer exist.
+			// task board so the panel drops entries that no longer exist.
 			// Same for reminders: fired ones are gone from the pending list.
-			refreshActivities();
+			refreshTasks();
 		})().catch((e) => {
-			addNotification(`加载任务列表失败: ${e}`, 'error', 3000);
+			addNotification(`加载会话列表失败: ${e}`, 'error', 3000);
 		});
-		loadTasksSettled = run;
+		loadSessionsSettled = run;
 		return run;
 	}
 
 	// Auto-restore the last conversation from a previous run so reopening
 	// the app shows where you left off. Skipped when a review target is
-	// pending, a task is already active, or the user explicitly started a
-	// fresh conversation (新对话) and no new task has been created since.
+	// pending, a session is already active, or the user explicitly started a
+	// fresh conversation (新对话) and no new session has been created since.
 	// Messages render as soon as `get_last_conversation` returns; the
-	// follow-up `reopen_task` (which only lets follow-up messages continue
-	// this task instead of being dropped as a terminal-task supplement) runs
+	// follow-up `reopen_session` (which only lets follow-up messages continue
+	// this session instead of being dropped as a terminal-session supplement) runs
 	// afterwards without blocking the UI.
 	async function restoreLastConversation(reviewTarget) {
 		if (
 			reviewTarget ||
-			get(newTaskIntentStore) ||
+			get(newSessionIntentStore) ||
 			(browser && localStorage.getItem(NEW_TASK_INTENT_KEY))
 		) {
 			return;
 		}
-		// Wait for the task list first so the stale-activeTaskId check below
+		// Wait for the session list first so the stale-activeSessionId check below
 		// sees the real list (matches the previous sequential ordering) and a
-		// running/paused task auto-assigned by loadTasks wins over the restore.
-		await loadTasksSettled;
-		if (activeTaskId && !tasks.some((t) => t.id === activeTaskId)) {
-			activeTaskId = null;
-			activeTaskIdStore.set(null);
+		// running/paused session auto-assigned by loadSessions wins over the restore.
+		await loadSessionsSettled;
+		if (activeSessionId && !sessions.some((t) => t.id === activeSessionId)) {
+			activeSessionId = null;
+			activeSessionIdStore.set(null);
 		}
-		if (activeTaskId) return;
+		if (activeSessionId) return;
 		let last;
 		try {
 			last = await invoke('get_last_conversation');
@@ -1331,64 +1502,65 @@
 			logger.warn('+page', 'auto-restore conversation error', e);
 			return;
 		}
-		// A task event or a later loadTasks auto-assigned one meanwhile — or
-		// the user clicked the new-task button while the lookup was in flight
-		// — don't clobber the live task (or the fresh draft) with the restored
+		// A session event or a later loadSessions auto-assigned one meanwhile — or
+		// the user clicked the new-session button while the lookup was in flight
+		// — don't clobber the live session (or the fresh draft) with the restored
 		// conversation.
-		if (!last?.task || activeTaskId || get(newTaskIntentStore)) return;
+		if (!last?.session || activeSessionId || get(newSessionIntentStore)) return;
 		// A completed conversation is history: the user already ended it, so
 		// restoring it into the window adds nothing (and reopens it as
-		// Paused, resurrecting an ended task). It stays reachable via the
+		// Paused, resurrecting an ended session). It stays reachable via the
 		// history page; the window starts blank instead.
-		if (last.task.status === 'completed') return;
-		const wasError = last.task.status === 'error' || last.task.status === 'failed';
-		updateTaskMessages(last.task.id, () => buildReviewMessages(last));
-		restoreTaskTokenStats(last.task.id, last.usage, last.usage_estimated);
-		activeTaskId = last.task.id;
-		activeTaskIdStore.set(activeTaskId);
+		if (last.session.status === 'completed') return;
+		const wasError = last.session.status === 'error' || last.session.status === 'failed';
+		updateSessionMessages(last.session.id, () => buildReviewMessages(last));
+		restoreSessionTokenStats(last.session.id, last.usage, last.usage_estimated);
+		restoreSessionLlmUsage(last.session.id, last.llm_usage);
+		activeSessionId = last.session.id;
+		activeSessionIdStore.set(activeSessionId);
 		if (wasError) {
-			taskErrorId = last.task.id;
-			activeTaskError = true;
+			sessionErrorId = last.session.id;
+			activeSessionError = true;
 		}
 		try {
-			await invoke('reopen_task', { taskId: last.task.id });
+			await invoke('reopen_session', { sessionId: last.session.id });
 		} catch (e) {
-			logger.warn('+page', 'reopen_task error', e);
+			logger.warn('+page', 'reopen_session error', e);
 		}
-		await loadTasks();
+		await loadSessions();
 	}
 
 	// Deliver a user message to the backend. Shared by the normal send
 	// button and the queued follow-up flush (which sends a stashed message
 	// once the agent's current output completes).
-	// The agent's ask questions are "awaiting" only while the task is paused
-	// for the user's reply. Clear that state whenever the task resumes (the
+	// The agent's ask questions are "awaiting" only while the session is paused
+	// for the user's reply. Clear that state whenever the session resumes (the
 	// user answered — by quick reply, typing, or voice) or its turn ends
 	// (completed/error), so the "等待你的回答" indicator doesn't linger on
 	// answered or abandoned questions. The `resolved` label is cleared too:
-	// once the task resumes, any locally-chosen quick-reply answer that was
+	// once the session resumes, any locally-chosen quick-reply answer that was
 	// NOT part of the submitted message (e.g. the user typed their own reply
 	// instead) must not keep displaying as "已选择/已忽略" — the submitted
 	// user bubble is the record of what was actually sent.
-	function clearAskAwaiting(taskId) {
-		updateTaskMessages(taskId, (m) =>
+	function clearAskAwaiting(sessionId) {
+		updateSessionMessages(sessionId, (m) =>
 			m.map((x) => (x.type === 'ask' ? { ...x, awaiting: false, resolved: null } : x)),
 		);
 		// A resume/end also invalidates any locally-chosen quick-reply answers
 		// for the pending batch, so a later batch never inherits stale ones.
-		resolvedAskIds.delete(taskId);
+		resolvedAskIds.delete(sessionId);
 	}
 
 	async function submitMessage(text, images, files) {
 		try {
 			const result = await submitTranscript(text, { images, files });
-			if (result && result.TaskCreated) {
-				activeTaskId = result.TaskCreated;
-				activeTaskIdStore.set(activeTaskId);
-				// The submission itself created the task (submitTranscript
+			if (result && result.SessionCreated) {
+				activeSessionId = result.SessionCreated;
+				activeSessionIdStore.set(activeSessionId);
+				// The submission itself created the session (submitTranscript
 				// already cleared the intent store): nothing to do here.
 			}
-			loadTasks();
+			loadSessions();
 		} catch (e) {
 			addNotification(`发送失败: ${e}`, 'error', 5000);
 		}
@@ -1404,46 +1576,46 @@
 	}
 
 	// Quick-reply answers / ignores chosen for the CURRENT batch of pending
-	// ask questions, per task. When the agent asks several questions in one
-	// batch (multiple `ask` calls in a single step), the task must stay
+	// ask questions, per session. When the agent asks several questions in one
+	// batch (multiple `ask` calls in a single step), the session must stay
 	// paused until every question is resolved — answering only one would
-	// resume the task and silently discard the others. Once all are answered
+	// resume the session and silently discard the others. Once all are answered
 	// or ignored, a single composed reply is submitted. Typing a message in
 	// the input box bypasses this and resumes immediately.
-	let resolvedAskIds = new Map(); // taskId -> Set<msgId>
+	let resolvedAskIds = new Map(); // sessionId -> Set<msgId>
 
 	// Mark one pending ask card as resolved (answered via quick reply or
 	// ignored) and submit the composed answers once the batch is complete.
 	function resolveAsk(msgId, resolved) {
-		if (!activeTaskId || !msgId) return;
-		updateTaskMessages(activeTaskId, (m) =>
+		if (!activeSessionId || !msgId) return;
+		updateSessionMessages(activeSessionId, (m) =>
 			m.map((x) =>
 				x.id === msgId && x.type === 'ask' && x.awaiting
 					? { ...x, awaiting: false, resolved }
 					: x,
 			),
 		);
-		const ids = resolvedAskIds.get(activeTaskId) || new Set();
+		const ids = resolvedAskIds.get(activeSessionId) || new Set();
 		ids.add(msgId);
-		resolvedAskIds.set(activeTaskId, ids);
-		const remaining = (get(taskMessagesStore)[activeTaskId] || []).filter(
+		resolvedAskIds.set(activeSessionId, ids);
+		const remaining = (get(sessionMessagesStore)[activeSessionId] || []).filter(
 			(x) => x.type === 'ask' && x.awaiting,
 		);
 		if (remaining.length === 0) {
-			const submitted = resolvedAskIds.get(activeTaskId);
-			resolvedAskIds.delete(activeTaskId);
-			submitAskAnswers(activeTaskId, submitted);
+			const submitted = resolvedAskIds.get(activeSessionId);
+			resolvedAskIds.delete(activeSessionId);
+			submitAskAnswers(activeSessionId, submitted);
 		}
 	}
 
 	// Compose all answers chosen for the resolved batch into a single user
-	// message and deliver it, which resumes the paused task. A single
+	// message and deliver it, which resumes the paused session. A single
 	// question keeps the raw answer; multiple questions quote each one so the
 	// model can map answers back to its questions. Ignored questions are
 	// marked as 忽略.
-	function submitAskAnswers(taskId, resolvedIds) {
+	function submitAskAnswers(sessionId, resolvedIds) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
-		const asks = (get(taskMessagesStore)[taskId] || []).filter(
+		const asks = (get(sessionMessagesStore)[sessionId] || []).filter(
 			(x) => x.type === 'ask' && x.resolved && resolvedIds.has(x.id),
 		);
 		if (asks.length === 0) return;
@@ -1459,24 +1631,24 @@
 	}
 
 	// The agent asked a question and offered quick-reply buttons. The answer
-	// marks that question as resolved; the task resumes only when every
+	// marks that question as resolved; the session resumes only when every
 	// pending question in the batch is answered or ignored (see resolveAsk).
 	function handleQuickReply(msgId, answer) {
-		if (!activeTaskId || !answer) return;
+		if (!activeSessionId || !answer) return;
 		resolveAsk(msgId, { answer });
 	}
 
 	// The user chooses not to answer a pending question; counting as a
 	// resolution so the batch can resume once all questions are handled.
 	function handleIgnoreAsk(msgId) {
-		if (!activeTaskId) return;
+		if (!activeSessionId) return;
 		resolveAsk(msgId, { ignored: true });
 	}
 
 	async function handleConfirm({ stepId, approved, trustSession }) {
 		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
 		// If we only cleared it after `await invoke(...)`, a new
-		// `confirm:requested` for the same task arriving during that window
+		// `confirm:requested` for the same session arriving during that window
 		// would see the stale stepId and auto-reject (confirmed: false) the very
 		// step the user just approved — the two resolves race and the denial can
 		// win, so the user's Allow is reported as a rejection.
@@ -1484,8 +1656,8 @@
 		confirmDialog = {
 			stepId: null,
 			toolName: '',
-			taskId: '',
-			taskTitle: '',
+			sessionId: '',
+			sessionTitle: '',
 			riskLevel: 'medium',
 		};
 		if (!resolvedStep) return;
@@ -1505,8 +1677,8 @@
 	<ConfirmationDialog
 		stepId={confirmDialog.stepId}
 		toolName={confirmDialog.toolName}
-		taskId={confirmDialog.taskId}
-		taskTitle={confirmDialog.taskTitle}
+		sessionId={confirmDialog.sessionId}
+		sessionTitle={confirmDialog.sessionTitle}
 		riskLevel={confirmDialog.riskLevel}
 		onConfirm={handleConfirm}
 	/>
@@ -1553,6 +1725,7 @@
 							toolName={msg.toolName ?? ''}
 							messageId={msg.id}
 							stepNumber={msg.stepNumber}
+							usage={msg.type === 'tool' ? stepUsage(msg.stepNumber) : null}
 							attachments={msg.attachments}
 							options={msg.options ?? []}
 							awaiting={msg.awaiting ?? false}
@@ -1565,7 +1738,7 @@
 					{/each}
 				</div>
 			{/if}
-			{#if activeTaskError}
+			{#if activeSessionError}
 				<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
 					<button
 						class="md-btn md-btn--filled continue-btn"
@@ -1610,26 +1783,26 @@
 
 	<InputRouter
 		bind:this={inputRouterRef}
-		{activeTaskId}
+		{activeSessionId}
 		{hotkeyBinding}
 		{isGenerating}
-		{taskRunning}
+		{sessionRunning}
 		{...inputLimits}
 		onsubmit={handleInputSubmit}
-		onstop={endTask}
+		onstop={endSession}
 	>
 		{#snippet toolbarLeft()}
-			<div class="task-switch">
+			<div class="session-switch">
 				<button
-					class="md-btn md-btn--outlined task-switch-btn"
+					class="md-btn md-btn--outlined session-switch-btn"
 						onclick={() => {
-							if (showTaskMenu) {
-								taskMenuOpen = !taskMenuOpen;
+							if (showSessionMenu) {
+								sessionMenuOpen = !sessionMenuOpen;
 							} else {
-								newTask();
+								newSession();
 							}
 						}}
-						title={showTaskMenu ? '切换并行任务或开始新任务' : '开始一个新任务'}
+						title={showSessionMenu ? '切换并行会话或开始新会话' : '开始一个新会话'}
 						type="button"
 					>
 						<svg
@@ -1648,9 +1821,9 @@
 								y2="12"
 							/></svg
 						>
-						{#if showTaskMenu}
+						{#if showSessionMenu}
 							<svg
-								class="task-switch-caret"
+								class="session-switch-caret"
 								width="16"
 								height="16"
 								viewBox="0 0 24 24"
@@ -1661,26 +1834,26 @@
 								stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg
 							>
 						{/if}
-						{#if parallelTasks.length > 0}
-							<span class="task-switch-badge">{parallelTasks.length}</span>
+						{#if parallelSessions.length > 0}
+							<span class="session-switch-badge">{parallelSessions.length}</span>
 						{/if}
 					</button>
-					{#if taskMenuOpen}
-						<div class="task-menu">
-							<div class="task-menu-title">正在执行的任务</div>
-							{#each menuTasks as t}
+					{#if sessionMenuOpen}
+						<div class="session-menu">
+							<div class="session-menu-title">正在执行的会话</div>
+							{#each menuSessions as t}
 								<button
-									class="task-menu-item"
-									class:selected={t.id === activeTaskId}
-									onclick={() => switchToTask(t.id)}
+									class="session-menu-item"
+									class:selected={t.id === activeSessionId}
+									onclick={() => switchToSession(t.id)}
 									type="button"
 								>
-									<span class="task-menu-item-main">
-										<span class="task-menu-item-title">{t.title}</span>
-										<span class="task-menu-item-id">{t.id}</span>
+									<span class="session-menu-item-main">
+										<span class="session-menu-item-title">{t.title}</span>
+										<span class="session-menu-item-id">{t.id}</span>
 									</span>
 									<span
-										class="task-menu-item-status"
+										class="session-menu-item-status"
 										class:running={t.status === 'running'}
 									>
 										{t.status === 'running'
@@ -1691,10 +1864,10 @@
 									</span>
 								</button>
 							{/each}
-							<div class="task-menu-divider"></div>
+							<div class="session-menu-divider"></div>
 							<button
-								class="task-menu-item task-menu-new"
-								onclick={() => newTask()}
+								class="session-menu-item session-menu-new"
+								onclick={() => newSession()}
 								type="button"
 							>
 								<svg
@@ -1713,17 +1886,17 @@
 										y2="12"
 									/></svg
 								>
-								新建任务
+								新建会话
 							</button>
 						</div>
 					{/if}
 				</div>
-				{#if activeTaskId}
+				{#if activeSessionId}
 					<button
-						class="md-btn md-btn--outlined end-task-btn"
-						onclick={endTask}
-						aria-label="结束任务"
-						title="结束当前任务"
+						class="md-btn md-btn--outlined end-session-btn"
+						onclick={endSession}
+						aria-label="结束会话"
+						title="结束当前会话"
 						type="button"
 					>
 						<svg
@@ -1761,11 +1934,15 @@
 						</svg>
 						<div class="token-text">
 							<span class="token-context"
-								>{formatTokenCount(tokenStats.promptTokens || 0)}</span
+								>{formatTokenCount(
+									tokenStats.restored
+										? tokenStats.cumulativeTotalTokens || 0
+										: tokenStats.promptTokens || 0,
+								)}</span
 							>
-							<span class="token-unit">ctx</span>
+							<span class="token-unit">{tokenStats.restored ? 'tok' : 'ctx'}</span>
 						</div>
-						{#if contextBudget}
+						{#if contextBudget && !tokenStats.restored}
 							<div
 								class="token-budget"
 								class:warn={contextBudget.ratio >= 0.75}
@@ -1943,19 +2120,19 @@
 		gap: var(--md-sys-space-sm);
 	}
 
-	.task-switch {
+	.session-switch {
 		position: relative;
 		flex-shrink: 0;
 	}
-	.task-switch-btn {
+	.session-switch-btn {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 	}
-	.task-switch-caret {
+	.session-switch-caret {
 		flex-shrink: 0;
 	}
-	.task-switch-badge {
+	.session-switch-badge {
 		min-width: 18px;
 		height: 18px;
 		padding: 0 5px;
@@ -1968,7 +2145,7 @@
 		text-align: center;
 		font-variant-numeric: tabular-nums;
 	}
-	.end-task-btn {
+	.end-session-btn {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
@@ -1976,12 +2153,12 @@
 		color: var(--md-sys-color-error);
 		border-color: var(--md-sys-color-error);
 	}
-	.end-task-btn:hover {
+	.end-session-btn:hover {
 		background: var(--md-sys-color-error-container);
 		border-color: var(--md-sys-color-error);
 		color: var(--md-sys-color-on-error-container);
 	}
-	.task-menu {
+	.session-menu {
 		position: absolute;
 		left: 0;
 		bottom: calc(100% + 8px);
@@ -1996,7 +2173,7 @@
 		padding: var(--md-sys-space-xs);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	.task-menu-title {
+	.session-menu-title {
 		font-size: 11px;
 		font-weight: 600;
 		letter-spacing: 0.4px;
@@ -2004,7 +2181,7 @@
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
-	.task-menu-item {
+	.session-menu-item {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -2021,26 +2198,26 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.task-menu-item:hover {
+	.session-menu-item:hover {
 		background: var(--md-sys-color-surface-container-highest);
 	}
-	.task-menu-item.selected .task-menu-item-title {
+	.session-menu-item.selected .session-menu-item-title {
 		color: var(--md-sys-color-primary);
 		font-weight: 600;
 	}
-	.task-menu-item-main {
+	.session-menu-item-main {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
 		min-width: 0;
 		flex: 1 1 auto;
 	}
-	.task-menu-item-title {
+	.session-menu-item-title {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.task-menu-item-id {
+	.session-menu-item-id {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -2048,20 +2225,20 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-family: var(--md-sys-typescale-body-small-font-family, inherit);
 	}
-	.task-menu-item-status {
+	.session-menu-item-status {
 		flex-shrink: 0;
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.task-menu-item-status.running {
+	.session-menu-item-status.running {
 		color: var(--md-sys-color-primary);
 	}
-	.task-menu-divider {
+	.session-menu-divider {
 		height: 1px;
 		background: var(--md-sys-color-outline-variant);
 		margin: var(--md-sys-space-xs) 0;
 	}
-	.task-menu-new {
+	.session-menu-new {
 		justify-content: flex-start;
 		gap: var(--md-sys-space-sm);
 		color: var(--md-sys-color-primary);

@@ -11,13 +11,13 @@ impl Database {
     /// `episode` memory domain covers user messages and these summaries alike,
     /// and a single shared prefix keeps `entity_id` values unambiguous without
     /// a separate `epi-` prefix.
-    pub fn add_episode(&self, task_id: &str, summary: &str) -> anyhow::Result<String> {
+    pub fn add_episode(&self, session_id: &str, summary: &str) -> anyhow::Result<String> {
         let id = haven_common::types::new_id("msg");
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO memory_episodes (id, task_id, summary, created_at) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![id, task_id, summary, now],
+            "INSERT INTO memory_episodes (id, session_id, summary, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, session_id, summary, now],
         )?;
         self.cache_invalidate_embeddings(crate::embeddings::entity_kind::EPISODE);
         Ok(id)
@@ -31,18 +31,18 @@ mod tests {
     #[test]
     fn add_episode_persists_row() {
         let db = Database::open_in_memory().unwrap();
-        let task = db.create_task("t1", "").unwrap();
-        let id = db.add_episode(&task.id, "a compaction summary").unwrap();
+        let session = db.create_session("t1", "").unwrap();
+        let id = db.add_episode(&session.id, "a compaction summary").unwrap();
         assert!(id.starts_with("msg-"));
-        let (summary, task_id): (String, String) = db
+        let (summary, session_id): (String, String) = db
             .conn()
             .query_row(
-                "SELECT summary, task_id FROM memory_episodes WHERE id = ?1",
+                "SELECT summary, session_id FROM memory_episodes WHERE id = ?1",
                 rusqlite::params![id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!(summary, "a compaction summary");
-        assert_eq!(task_id, task.id);
+        assert_eq!(session_id, session.id);
     }
 }

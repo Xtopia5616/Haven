@@ -131,7 +131,7 @@ pub struct InferenceEngine {
     /// sanitization truncation).
     sanitize_max_chars: usize,
     /// Limits concurrent LLM fact-extraction calls to avoid overwhelming
-    /// the BalancedModel endpoint when multiple tasks complete in rapid
+    /// the BalancedModel endpoint when multiple sessions complete in rapid
     /// succession.
     inference_semaphore: Arc<Semaphore>,
 }
@@ -156,16 +156,16 @@ impl InferenceEngine {
         }
     }
 
-    /// Extract facts from the specified task's user messages.
+    /// Extract facts from the specified session's user messages.
     ///
-    /// Takes an explicit `task_id` so the fire-and-forget background task is
-    /// immune to any concurrent task switching.
+    /// Takes an explicit `session_id` so the fire-and-forget background session is
+    /// immune to any concurrent session switching.
     ///
-    /// Extraction is incremental: a per-task cursor (stored in the internal
-    /// kv_store as `fact_extraction.<task_id>` = last processed user-message
+    /// Extraction is incremental: a per-session cursor (stored in the internal
+    /// kv_store as `fact_extraction.<session_id>` = last processed user-message
     /// id) makes re-runs process only the messages that arrived since the previous
     /// extraction instead of re-scanning the whole conversation. This keeps
-    /// cost bounded on long tasks and makes fact decay meaningful 鈥?a fact's
+    /// cost bounded on long sessions and makes fact decay meaningful —a fact's
     /// `last_seen_at` refreshes only when it is actually re-observed, not when
     /// the same old messages are re-scanned.
     ///
@@ -174,12 +174,12 @@ impl InferenceEngine {
     /// to the rule-based extractor so inference is never silently skipped.
     /// An empty `Ok([])` from the LLM is treated as a valid "no facts found"
     /// response and does NOT trigger the fallback.
-    pub async fn infer_facts(&self, task_id: &str) {
+    pub async fn infer_facts(&self, session_id: &str) {
         let messages = {
             let db = self.db.clone();
-            let task_id = task_id.to_string();
+            let session_id = session_id.to_string();
             match db
-                .run_blocking(move |db| db.get_task_messages(&task_id))
+                .run_blocking(move |db| db.get_session_messages(&session_id))
                 .await
             {
                 Ok(m) => m,
@@ -203,7 +203,7 @@ impl InferenceEngine {
         }
 
         // Incremental window: only the messages after the last-processed one.
-        let cursor_key = format!("fact_extraction.{}", task_id);
+        let cursor_key = format!("fact_extraction.{}", session_id);
         let cursor = self
             .db
             .run_blocking({
@@ -233,7 +233,7 @@ impl InferenceEngine {
                 self.persist_facts(&facts, new_messages).await;
             }
             Ok(_) => {
-                tracing::debug!("LLM found no facts in task {}", task_id);
+                tracing::debug!("LLM found no facts in session {}", session_id);
             }
             Err(e) => {
                 tracing::warn!("LLM fact extraction failed ({}), falling back to rules", e);
@@ -517,7 +517,7 @@ impl InferenceEngine {
     /// drift: sensitivity filter, degenerate rejection, confidence floor for
     /// brand-new facts, field sanitization / predicate normalization / tag
     /// whitelist. Maintenance (dedup, sensitive purge, low-confidence flush)
-    /// is NOT inlined here — it runs once per task via `infer_all` →
+    /// is NOT inlined here — it runs once per session via `infer_all` →
     /// `run_memory_maintenance` (and on the app scheduler), so the same facts
     /// are never swept twice.
     async fn persist_fact_batch(&self, facts: Vec<FactDraft>) {
@@ -665,7 +665,7 @@ impl InferenceEngine {
         let json_str = extract_json_array(&response.text);
         let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|e| {
             let preview: String = response.text.chars().take(200).collect();
-            anyhow::anyhow!("failed to parse LLM fact JSON: {} 鈥?raw: {}", e, preview)
+            anyhow::anyhow!("failed to parse LLM fact JSON: {} —raw: {}", e, preview)
         })?;
 
         tracing::info!("LLM fact extraction: {} facts extracted", facts.len());
@@ -707,8 +707,8 @@ impl InferenceEngine {
     /// Run fact inference (the single memory channel — preferences are facts
     /// tagged `preference`), followed by the maintenance pass so stale facts
     /// are flushed even when extraction found nothing new.
-    pub async fn infer_all(&self, task_id: &str) {
-        self.infer_facts(task_id).await;
+    pub async fn infer_all(&self, session_id: &str) {
+        self.infer_facts(session_id).await;
         self.run_memory_maintenance().await;
     }
 }
@@ -716,7 +716,7 @@ impl InferenceEngine {
 /// Build a transcript string from user messages, truncated to `max_chars`
 /// to prevent unbounded token cost on long sessions. Recent messages take
 /// priority (the last N messages that fit within the limit). Each line is
-/// prefixed with its absolute index `[N]` in the input slice 鈥?truncation
+/// prefixed with its absolute index `[N]` in the input slice —truncation
 /// may drop old lines, but the numbering stays stable so the model's
 /// `message_index` values map straight back into the slice.
 fn build_truncated_transcript(
@@ -825,7 +825,7 @@ mod tests {
     fn make_message(content: &str) -> Message {
         Message {
             id: uuid::Uuid::new_v4().to_string(),
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             role: "user".into(),
             content: content.into(),
             message_type: Some("text".into()),
@@ -1013,44 +1013,52 @@ mod tests {
     #[tokio::test]
     async fn infer_facts_advances_cursor_once() {
         let db = temp_db();
-        let task = db.create_task("t1", "").unwrap();
+        let session = db.create_session("t1", "").unwrap();
         let _m1 = db
-            .add_message(&task.id, "user", "I like Rust.", Some("text"), None)
+            .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let m2 = db
-            .add_message(&task.id, "user", "I use VSCode.", Some("text"), None)
+            .add_message(&session.id, "user", "I use VSCode.", Some("text"), None)
             .unwrap();
         let engine = make_engine(db.clone());
-        engine.infer_facts(&task.id).await;
+        engine.infer_facts(&session.id).await;
 
         // Cursor should point at the last processed user message.
-        let cursor: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
+        let cursor: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
         assert_eq!(cursor.as_deref(), Some(m2.id.as_str()));
 
         // Re-running with no new messages must not change anything.
-        engine.infer_facts(&task.id).await;
-        let cursor2: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
+        engine.infer_facts(&session.id).await;
+        let cursor2: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
         assert_eq!(cursor2, cursor);
     }
 
     #[tokio::test]
     async fn infer_facts_processes_only_new_messages() {
         let db = temp_db();
-        let task = db.create_task("t1", "").unwrap();
+        let session = db.create_session("t1", "").unwrap();
         let m1 = db
-            .add_message(&task.id, "user", "first message", Some("text"), None)
+            .add_message(&session.id, "user", "first message", Some("text"), None)
             .unwrap();
         let engine = make_engine(db.clone());
-        engine.infer_facts(&task.id).await;
-        let cursor: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
+        engine.infer_facts(&session.id).await;
+        let cursor: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
         assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
 
         // A new message moves the cursor forward.
         let m2 = db
-            .add_message(&task.id, "user", "new signal only", Some("text"), None)
+            .add_message(&session.id, "user", "new signal only", Some("text"), None)
             .unwrap();
-        engine.infer_facts(&task.id).await;
-        let cursor2: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
+        engine.infer_facts(&session.id).await;
+        let cursor2: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
         assert_eq!(cursor2.as_deref(), Some(m2.id.as_str()));
     }
 
@@ -1059,9 +1067,9 @@ mod tests {
         // Balanced model reply is not valid JSON -> falls back to the rule
         // extractor, which must still persist facts.
         let db = temp_db();
-        let task = db.create_task("t1", "").unwrap();
+        let session = db.create_session("t1", "").unwrap();
         let _ = db
-            .add_message(&task.id, "user", "I like Rust.", Some("text"), None)
+            .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let engine = InferenceEngine {
             db: db.clone(),
@@ -1072,7 +1080,7 @@ mod tests {
             sanitize_max_chars: 256,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         };
-        engine.infer_facts(&task.id).await;
+        engine.infer_facts(&session.id).await;
         let facts = db.get_facts("user").unwrap();
         assert!(
             facts
@@ -1080,7 +1088,9 @@ mod tests {
                 .any(|f| f.predicate == "likes" && f.object == "Rust"),
             "rule fallback must extract likes=Rust"
         );
-        let cursor: Option<String> = db.get_kv(&format!("fact_extraction.{}", task.id)).unwrap();
+        let cursor: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
         assert!(cursor.is_some());
     }
 }

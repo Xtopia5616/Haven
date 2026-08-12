@@ -187,7 +187,10 @@ pub struct LlmConfig {
     /// with the connection half-open; without this the UI waits minutes for
     /// a reply that never comes. The router gives the FIRST chunk a longer
     /// grace (provider-side "thinking" delays it), so this value only bounds
-    /// data gaps after the stream started flowing.
+    /// data gaps after the stream started flowing. The effective window is
+    /// scaled UP with the request's prompt size (long contexts make
+    /// provider-side gaps slower), capped at 90s — see the router's
+    /// `scale_stream_idle`.
     pub stream_idle_timeout_secs: u64,
     // §2.3/5.1: retry backoff parameters
     pub retry_base_secs: u64,
@@ -203,10 +206,10 @@ pub struct LlmConfig {
     /// model handles images.
     pub vision_use_image_model: bool,
     /// Per-endpoint (role) cap on concurrent LLM requests, applied by the
-    /// router with a semaphore per role. Prevents N parallel tasks from
+    /// router with a semaphore per role. Prevents N parallel sessions from
     /// hammering the same provider simultaneously (thundering-herd retries on
-    /// 429). A task whose LLM call is queued behind this limit waits; its
-    /// slot in `task.max_concurrent` is still held, so set it below the task
+    /// 429). A session whose LLM call is queued behind this limit waits; its
+    /// slot in `session.max_concurrent` is still held, so set it below the session
     /// concurrency when the provider is rate-limit sensitive.
     pub max_concurrent_requests: usize,
 }
@@ -235,24 +238,6 @@ impl Default for LlmConfig {
     }
 }
 
-impl LlmConfig {
-    /// Look up a model-library entry by its unique name.
-    pub fn model_by_name(&self, name: &str) -> Option<&ModelEndpoint> {
-        self.models
-            .iter()
-            .find(|m| m.name == name)
-            .map(|m| &m.endpoint)
-    }
-
-    /// Mutably look up a model-library entry by its unique name.
-    pub fn model_by_name_mut(&mut self, name: &str) -> Option<&mut ModelEndpoint> {
-        self.models
-            .iter_mut()
-            .find(|m| m.name == name)
-            .map(|m| &mut m.endpoint)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct HotkeyConfig {
@@ -273,18 +258,18 @@ impl Default for HotkeyConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct TaskConfig {
+pub struct SessionConfig {
     pub max_concurrent: usize,
     pub max_steps: u32,
 }
 
-impl Default for TaskConfig {
+impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 3,
             // Per-run ReAct step budget (raised 30 → 200 so long multi-tool
-            // tasks don't hit the cap mid-run; see refactor-dedup.md A9
-            // review note). Resumes grant a fresh budget, so a task can run
+            // sessions don't hit the cap mid-run; see refactor-dedup.md A9
+            // review note). Resumes grant a fresh budget, so a session can run
             // well past this total across pause/resume cycles.
             max_steps: 500,
         }
@@ -359,15 +344,15 @@ pub struct ContextLimitsConfig {
     // —— agent text limits ——
     /// Max chars in notification summary text.
     pub notification_summary_chars: usize,
-    /// Max chars of a background-job result injected into the owning task's
-    /// context when the job finishes (the full output stays in the log file,
+    /// Max chars of a background-task result injected into the owning session's
+    /// context when the task finishes (the full output stays in the log file,
     /// whose path is appended so the model can read more on demand).
-    pub job_result_context_chars: usize,
+    pub task_result_context_chars: usize,
     /// Min chars of partial output before an interim checkpoint is persisted.
     pub partial_checkpoint_min_chars: usize,
     /// Min wall-clock seconds between partial-stream checkpoints.
     pub partial_checkpoint_interval_secs: u64,
-    /// Steps between mid-task fact re-inference runs.
+    /// Steps between mid-session fact re-inference runs.
     pub fact_infer_interval_steps: u32,
     /// Max known facts listed in the extraction prompt as context.
     pub max_known_facts: usize,
@@ -406,12 +391,12 @@ pub struct ContextLimitsConfig {
     pub clipboard_history_max_entries: usize,
     /// Per-entry content truncation for clipboard history dumps.
     pub clipboard_entry_max_chars: usize,
-    /// Max concurrent reminders.
-    pub reminders_max: usize,
-    /// Max reminder due horizon (secs ahead).
-    pub reminders_due_horizon_secs: i64,
-    /// Max concurrent background shell jobs.
-    pub background_max_jobs: usize,
+    /// Max concurrent scheduled_tasks.
+    pub scheduled_tasks_max: usize,
+    /// Max scheduled-task due horizon (secs ahead).
+    pub scheduled_tasks_due_horizon_secs: i64,
+    /// Max concurrent background shell tasks.
+    pub background_max_tasks: usize,
     /// Max bytes batched into one `agent:chunk` event.
     pub event_chunk_batch_max_bytes: usize,
     /// Audio ring buffer size in seconds (capture latency).
@@ -446,7 +431,7 @@ impl Default for ContextLimitsConfig {
             search_max_file_size_bytes: 100 * 1024 * 1024,
             search_window_bytes: 16 * 1024 * 1024,
             notification_summary_chars: 800,
-            job_result_context_chars: 4_000,
+            task_result_context_chars: 4_000,
             partial_checkpoint_min_chars: 1_000,
             partial_checkpoint_interval_secs: 2,
             fact_infer_interval_steps: 25,
@@ -466,9 +451,9 @@ impl Default for ContextLimitsConfig {
             clipboard_history_entries: 10,
             clipboard_history_max_entries: 100,
             clipboard_entry_max_chars: 2_000,
-            reminders_max: 32,
-            reminders_due_horizon_secs: 365 * 24 * 3600,
-            background_max_jobs: 64,
+            scheduled_tasks_max: 32,
+            scheduled_tasks_due_horizon_secs: 365 * 24 * 3600,
+            background_max_tasks: 64,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 64,
@@ -494,40 +479,12 @@ impl Default for MemoryConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SecurityConfig {
     pub confirmation_mode: ConfirmationMode,
     pub min_risk_level: RiskLevel,
     pub encrypt_sensitive: bool,
-}
-
-impl<'de> serde::Deserialize<'de> for SecurityConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // Field-presence probe: an existing config whose `[security]` table
-        // omits `min_risk_level` must keep the pre-Medium-default behavior
-        // (Low) instead of silently broadening auto-approval on upgrade.
-        // Brand-new configs (no `[security]` table at all) still get the
-        // Medium default via `Default` below.
-        #[derive(serde::Deserialize, Default)]
-        #[serde(default)]
-        struct Raw {
-            confirmation_mode: ConfirmationMode,
-            min_risk_level: Option<RiskLevel>,
-            encrypt_sensitive: bool,
-        }
-        let raw = Raw::deserialize(deserializer)?;
-        Ok(Self {
-            confirmation_mode: raw.confirmation_mode,
-            // Legacy fallback: configs written before this field existed
-            // deserialized to `Low` (the old `SecurityConfig::default()`).
-            min_risk_level: raw.min_risk_level.unwrap_or(RiskLevel::Low),
-            encrypt_sensitive: raw.encrypt_sensitive,
-        })
-    }
 }
 
 impl Default for SecurityConfig {
@@ -539,7 +496,7 @@ impl Default for SecurityConfig {
             // anything that mutates state (file edits, network, env vars,
             // MCP/skill tools, shell) still requires confirmation. A Low
             // default would gate virtually every non-Safe step and flip
-            // existing autonomous tasks into per-step confirmation dialogs.
+            // existing autonomous sessions into per-step confirmation dialogs.
             min_risk_level: RiskLevel::Medium,
             encrypt_sensitive: true,
         }
@@ -780,8 +737,11 @@ impl LogConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct AppearanceConfig {
+    /// UI theme: "light" or "dark". `None` means "no preference set" — the
+    /// frontend falls back to the OS color scheme.
+    pub theme: Option<String>,
     /// Accent color preset key: "blue", "green", "red", or `custom:#rrggbb`.
-    /// `None` means "no preference set" — frontend keeps its localStorage value.
+    /// `None` means "no preference set" — the frontend uses its default.
     pub accent_color: Option<String>,
 }
 
@@ -792,11 +752,11 @@ pub struct AppearanceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct NotificationConfig {
-    pub task_created: NotifyChannels,
-    pub task_completed: NotifyChannels,
-    pub task_paused: NotifyChannels,
-    pub task_resumed: NotifyChannels,
-    pub task_error: NotifyChannels,
+    pub session_created: NotifyChannels,
+    pub session_completed: NotifyChannels,
+    pub session_paused: NotifyChannels,
+    pub session_resumed: NotifyChannels,
+    pub session_error: NotifyChannels,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -818,23 +778,23 @@ impl Default for NotifyChannels {
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
-            task_created: NotifyChannels {
+            session_created: NotifyChannels {
                 in_app: true,
                 windows: false,
             },
-            task_completed: NotifyChannels {
+            session_completed: NotifyChannels {
                 in_app: true,
                 windows: true,
             },
-            task_paused: NotifyChannels {
+            session_paused: NotifyChannels {
                 in_app: true,
                 windows: false,
             },
-            task_resumed: NotifyChannels {
+            session_resumed: NotifyChannels {
                 in_app: true,
                 windows: false,
             },
-            task_error: NotifyChannels {
+            session_error: NotifyChannels {
                 in_app: true,
                 windows: true,
             },
@@ -884,7 +844,7 @@ pub struct AppConfig {
     pub audio: AudioConfig,
     pub llm: LlmConfig,
     pub hotkey: HotkeyConfig,
-    pub task: TaskConfig,
+    pub session: SessionConfig,
     pub context_limits: ContextLimitsConfig,
     pub memory: MemoryConfig,
     pub security: SecurityConfig,
@@ -909,7 +869,7 @@ pub struct Settings {
     pub audio: AudioConfig,
     pub llm: LlmConfig,
     pub hotkey: HotkeyConfig,
-    pub task: TaskConfig,
+    pub session: SessionConfig,
     pub context_limits: ContextLimitsConfig,
     pub memory: MemoryConfig,
     pub security: SecurityConfig,
@@ -942,7 +902,7 @@ impl From<&AppConfig> for Settings {
             audio: c.audio.clone(),
             llm,
             hotkey: c.hotkey.clone(),
-            task: c.task.clone(),
+            session: c.session.clone(),
             context_limits: c.context_limits.clone(),
             memory: c.memory.clone(),
             security: c.security.clone(),
@@ -1134,7 +1094,7 @@ impl ConfigLoader {
 
         self.config.audio = settings.audio.clone();
         self.config.hotkey = settings.hotkey.clone();
-        self.config.task = settings.task.clone();
+        self.config.session = settings.session.clone();
         // The settings form sends the full `context_limits` object (the
         // frontend keeps the loaded copy intact and only edits exposed
         // fields), so applying it here cannot wipe fields the UI does not
@@ -1183,8 +1143,8 @@ mod tests {
         let cfg = AppConfig::default();
         assert_eq!(cfg.audio.sample_rate, 16000);
         assert_eq!(cfg.hotkey.key_binding, "Ctrl+Shift+Space");
-        assert_eq!(cfg.task.max_concurrent, 3);
-        assert_eq!(cfg.task.max_steps, 500);
+        assert_eq!(cfg.session.max_concurrent, 3);
+        assert_eq!(cfg.session.max_steps, 500);
         assert_eq!(cfg.context_limits.compaction_ratio, 0.75);
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 4096);
         assert_eq!(cfg.context_limits.default_context_window, 128_000);
@@ -1214,8 +1174,8 @@ mod tests {
         assert_eq!(cfg.context_limits.network_max_retries, 2);
         assert_eq!(cfg.context_limits.network_max_body_bytes, 1024 * 1024);
         assert_eq!(cfg.context_limits.clipboard_history_max_entries, 100);
-        assert_eq!(cfg.context_limits.reminders_max, 32);
-        assert_eq!(cfg.context_limits.background_max_jobs, 64);
+        assert_eq!(cfg.context_limits.scheduled_tasks_max, 32);
+        assert_eq!(cfg.context_limits.background_max_tasks, 64);
         assert_eq!(cfg.context_limits.event_chunk_batch_max_bytes, 8 * 1024);
         assert_eq!(cfg.context_limits.input_ring_buffer_secs, 20);
         assert_eq!(cfg.context_limits.embedding_chunk_size, 64);
@@ -1244,9 +1204,9 @@ mod tests {
     }
 
     #[test]
-    fn security_missing_min_risk_level_keeps_legacy_low() {
-        // A config with a `[security]` table that predates the field must not
-        // silently flip the confirmation threshold on upgrade.
+    fn security_missing_min_risk_level_uses_medium_default() {
+        // A `[security]` table that omits the field falls back to the
+        // struct default (Medium) — there is no legacy-Low behavior.
         let parsed: SecurityConfig = toml::from_str(
             r#"
                 confirmation_mode = "always"
@@ -1254,7 +1214,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(parsed.min_risk_level, RiskLevel::Low);
+        assert_eq!(parsed.min_risk_level, RiskLevel::Medium);
     }
 
     #[test]
@@ -1285,24 +1245,6 @@ mod tests {
         // Per-tool output cap defaults to None → inherits the global
         // `context_limits.max_observation_chars`.
         assert_eq!(file.max_output_chars, None);
-    }
-
-    #[test]
-    fn legacy_task_max_observation_chars_moves_to_context_limits() {
-        // Config files written before the consolidation carried the observation
-        // cap under `[task]`. The field now lives in `[context_limits]`; the
-        // legacy key is ignored and the default (identical value) applies.
-        let toml_str = r#"
-            [task]
-            max_steps = 30
-            max_observation_chars = 40000
-
-            [context_limits]
-            max_observation_chars = 12345
-        "#;
-        let cfg: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.task.max_steps, 30);
-        assert_eq!(cfg.context_limits.max_observation_chars, 12_345);
     }
 
     #[test]
@@ -1388,7 +1330,7 @@ mod tests {
         settings.tool_settings = HashMap::new();
         settings.mcp_discovery = McpDiscoveryConfig::default();
         // A real edit still applies.
-        settings.task.max_concurrent = 5;
+        settings.session.max_concurrent = 5;
         // Context limits are managed by the settings form: the form sends the
         // full loaded object (only editing exposed fields), so config.toml
         // tuning carried in that object survives a save.
@@ -1412,7 +1354,7 @@ mod tests {
         );
         assert_eq!(loader.config().tool_settings.len(), 1);
         assert_eq!(loader.config().mcp_discovery.health_interval_secs, 99);
-        assert_eq!(loader.config().task.max_concurrent, 5);
+        assert_eq!(loader.config().session.max_concurrent, 5);
         // Context limits are managed by the settings form: the form sends the
         // full loaded object, so config.toml tuning survives a save.
         assert_eq!(loader.config().context_limits.max_transcript_chars, 9999);
@@ -1511,10 +1453,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         let path = dir.join("config.toml");
         let mut loader = ConfigLoader::load_from(&path).unwrap();
-        loader.config_mut().task.max_concurrent = 7;
+        loader.config_mut().session.max_concurrent = 7;
         loader.save().unwrap();
         let reloaded = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(reloaded.config().task.max_concurrent, 7);
+        assert_eq!(reloaded.config().session.max_concurrent, 7);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

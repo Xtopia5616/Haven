@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { activeTaskIdStore, taskMessagesStore } from './stores.js';
+import { activeSessionIdStore, sessionMessagesStore } from './stores.js';
 
 vi.mock('./tauri.js', () => ({
 	invoke: vi.fn(),
@@ -15,22 +15,22 @@ const invokeMock = /** @type {any} */ (invoke);
 describe('submitTranscript', () => {
 	beforeEach(() => {
 		invokeMock.mockReset();
-		activeTaskIdStore.set(null);
-		taskMessagesStore.set({});
+		activeSessionIdStore.set(null);
+		sessionMessagesStore.set({});
 	});
 
-	it('appends an optimistic user message under the active task id', async () => {
+	it('appends an optimistic user message under the active session id', async () => {
 		invokeMock.mockResolvedValue({});
-		activeTaskIdStore.set('task-a');
+		activeSessionIdStore.set('session-a');
 		await submitTranscript('hello', { voice: false });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'hello',
-			activeTaskId: 'task-a',
+			activeSessionId: 'session-a',
 			attachments: null,
 			voice: false,
 		});
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-a']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('hello');
 		expect(list[0].role).toBe('user');
@@ -39,140 +39,140 @@ describe('submitTranscript', () => {
 
 	it('drops the review placeholder when a real message is submitted', async () => {
 		invokeMock.mockResolvedValue({});
-		activeTaskIdStore.set('task-a');
+		activeSessionIdStore.set('session-a');
 		// A rolled-back conversation: the DB is empty, so the review rebuild
-		// showed a display-only placeholder carrying the task input text.
-		taskMessagesStore.set({
-			'task-a': [{ id: 'placeholder-task-a', role: 'user', content: '第一条消息' }],
+		// showed a display-only placeholder carrying the session input text.
+		sessionMessagesStore.set({
+			'session-a': [{ id: 'placeholder-session-a', role: 'user', content: '第一条消息' }],
 		});
 		await submitTranscript('第一条消息', { voice: false });
 
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-a']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
 		expect(list).toHaveLength(1);
-		expect(list[0].id).not.toBe('placeholder-task-a');
+		expect(list[0].id).not.toBe('placeholder-session-a');
 		expect(list[0].content).toBe('第一条消息');
 	});
 
 	it('keeps the placeholder-less conversation untouched when submitting', async () => {
 		invokeMock.mockResolvedValue({});
-		activeTaskIdStore.set('task-a');
-		taskMessagesStore.set({
-			'task-a': [{ id: 'msg-1', role: 'user', content: '第一条消息' }],
+		activeSessionIdStore.set('session-a');
+		sessionMessagesStore.set({
+			'session-a': [{ id: 'msg-1', role: 'user', content: '第一条消息' }],
 		});
 		await submitTranscript('第二条消息', { voice: false });
 
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-a']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
 		expect(list).toHaveLength(2);
 		expect(list[0].id).toBe('msg-1');
 		expect(list[1].content).toBe('第二条消息');
 	});
 
-	it('appends under _draft when there is no active task', async () => {
+	it('appends under _draft when there is no active session', async () => {
 		invokeMock.mockResolvedValue({});
 		await submitTranscript('orphan', { voice: true });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'orphan',
-			activeTaskId: null,
+			activeSessionId: null,
 			attachments: null,
 			voice: true,
 		});
-		const draft = /** @type {any[]} */ (get(taskMessagesStore)['_draft']);
+		const draft = /** @type {any[]} */ (get(sessionMessagesStore)['_draft']);
 		expect(draft).toHaveLength(1);
 		expect(draft[0].voice).toBe(true);
 	});
 
 	it('passes images through to process_transcript and tags the optimistic bubble', async () => {
 		invokeMock.mockResolvedValue({});
-		activeTaskIdStore.set('task-img');
+		activeSessionIdStore.set('session-img');
 		const images = [{ media_type: 'image/png', data: 'abc' }];
 		await submitTranscript('see pic', { images });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'see pic',
-			activeTaskId: 'task-img',
+			activeSessionId: 'session-img',
 			attachments: images,
 			voice: false,
 		});
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-img']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-img']);
 		expect(list[0].attachments).toEqual(images);
 		expect(list[0].id).toMatch(/-u-[a-z0-9]+$/);
 	});
 
 	it('combines images and files into one attachments payload', async () => {
 		invokeMock.mockResolvedValue({});
-		activeTaskIdStore.set('task-mix');
+		activeSessionIdStore.set('session-mix');
 		const images = [{ media_type: 'image/png', data: 'abc' }];
 		const files = [{ media_type: 'application/pdf', data: 'cGVvcGxl', filename: 'doc.pdf' }];
 		await submitTranscript('read these', { images, files });
 
 		expect(invoke).toHaveBeenCalledWith('process_transcript', {
 			transcript: 'read these',
-			activeTaskId: 'task-mix',
+			activeSessionId: 'session-mix',
 			attachments: [...images, ...files],
 			voice: false,
 		});
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-mix']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-mix']);
 		expect(list[0].attachments).toEqual([...images, ...files]);
 	});
 
 	it('coerces an empty image array to null on the wire', async () => {
 		invokeMock.mockResolvedValue({});
-		activeTaskIdStore.set('task-empty');
+		activeSessionIdStore.set('session-empty');
 		await submitTranscript('text only', { images: [] });
 
 		expect(invoke).toHaveBeenCalledWith(
 			'process_transcript',
 			expect.objectContaining({ attachments: null })
 		);
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-empty']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-empty']);
 		expect(list[0].attachments).toEqual([]);
 	});
 
-	it('migrates the optimistic bubble into the newly created task', async () => {
-		invokeMock.mockResolvedValue({ TaskCreated: 'task-new' });
+	it('migrates the optimistic bubble into the newly created session', async () => {
+		invokeMock.mockResolvedValue({ SessionCreated: 'session-new' });
 		await submitTranscript('hi', { voice: false });
 
-		expect(get(activeTaskIdStore)).toBe('task-new');
-		expect(get(taskMessagesStore)['_draft']).toEqual([]);
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-new']);
+		expect(get(activeSessionIdStore)).toBe('session-new');
+		expect(get(sessionMessagesStore)['_draft']).toEqual([]);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-new']);
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('hi');
 	});
 
-	it('migrates from a stale task id when TaskCreated differs', async () => {
-		invokeMock.mockResolvedValue({ TaskCreated: 'task-new' });
-		activeTaskIdStore.set('task-stale');
+	it('migrates from a stale session id when SessionCreated differs', async () => {
+		invokeMock.mockResolvedValue({ SessionCreated: 'session-new' });
+		activeSessionIdStore.set('session-stale');
 		await submitTranscript('hi', { voice: false });
 
-		expect(get(activeTaskIdStore)).toBe('task-new');
-		expect(get(taskMessagesStore)['task-stale']).toEqual([]);
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-new']);
+		expect(get(activeSessionIdStore)).toBe('session-new');
+		expect(get(sessionMessagesStore)['session-stale']).toEqual([]);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-new']);
 		expect(list).toHaveLength(1);
 	});
 
-	it('does not move messages when TaskCreated equals the current key', async () => {
-		invokeMock.mockResolvedValue({ TaskCreated: 'task-same' });
-		activeTaskIdStore.set('task-same');
+	it('does not move messages when SessionCreated equals the current key', async () => {
+		invokeMock.mockResolvedValue({ SessionCreated: 'session-same' });
+		activeSessionIdStore.set('session-same');
 		await submitTranscript('hi', { voice: false });
 
-		const list = /** @type {any[]} */ (get(taskMessagesStore)['task-same']);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-same']);
 		expect(list).toHaveLength(1);
 		expect(list[0].content).toBe('hi');
 	});
 
 	it('removes the optimistic bubble and rethrows when invoke rejects', async () => {
 		invokeMock.mockRejectedValue(new Error('boom'));
-		activeTaskIdStore.set('task-fail');
+		activeSessionIdStore.set('session-fail');
 		await expect(submitTranscript('oops')).rejects.toThrow('boom');
 
-		expect(get(taskMessagesStore)['task-fail']).toEqual([]);
+		expect(get(sessionMessagesStore)['session-fail']).toEqual([]);
 	});
 
-	it('uses the active task id at submission time, not the eventual TaskCreated', async () => {
-		invokeMock.mockResolvedValue({ TaskCreated: 'task-new' });
-		activeTaskIdStore.set('task-a');
+	it('uses the active session id at submission time, not the eventual SessionCreated', async () => {
+		invokeMock.mockResolvedValue({ SessionCreated: 'session-new' });
+		activeSessionIdStore.set('session-a');
 		await submitTranscript('hi');
-		expect(/** @type {any[]} */ (invokeMock.mock.calls)[0][1].activeTaskId).toBe('task-a');
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[0][1].activeSessionId).toBe('session-a');
 	});
 });

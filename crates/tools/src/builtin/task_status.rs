@@ -4,23 +4,23 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::BackgroundJobs;
+use crate::bg::BackgroundTasks;
 use crate::{Tool, ToolResult};
 
-/// Report the status of a background job (spawned with `shell` +
-/// `background: true`). The agent polls this tool with a job_id until the
+/// Report the status of a background task (spawned with `shell` +
+/// `background: true`). The agent polls this tool with a task_id until the
 /// result is ready, instead of blocking the ReAct loop on a long command.
-pub struct JobStatusTool {
-    pub jobs: Arc<BackgroundJobs>,
+pub struct TaskStatusTool {
+    pub tasks: Arc<BackgroundTasks>,
 }
 
 #[async_trait]
-impl Tool for JobStatusTool {
+impl Tool for TaskStatusTool {
     fn name(&self) -> String {
-        "status".into()
+        "task_status".into()
     }
     fn description(&self) -> String {
-        "Check a single background job's status by job_id. Results are also pushed back automatically on completion — for an overview of all jobs use `jobs` instead of polling one by one."
+        "Check a single background task's status by task_id. Results are also pushed back automatically on completion — for an overview of all tasks use `tasks` instead of polling one by one."
             .into()
     }
 
@@ -32,12 +32,12 @@ impl Tool for JobStatusTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "job_id": {
+                "task_id": {
                     "type": "string",
-                    "description": "The job id returned by a shell(background: true) call"
+                    "description": "The task id returned by a shell(background: true) call"
                 }
             },
-            "required": ["job_id"]
+            "required": ["task_id"]
         })
     }
 
@@ -45,10 +45,10 @@ impl Tool for JobStatusTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let job_id = input["job_id"]
+        let task_id = input["task_id"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("job_id is required for status"))?;
-        let status = self.jobs.status(job_id).await;
+            .ok_or_else(|| anyhow::anyhow!("task_id is required for status"))?;
+        let status = self.tasks.status(task_id).await;
         Ok(ToolResult::ok(status))
     }
 }
@@ -62,39 +62,39 @@ mod tests {
     #[test]
     fn test_status_name() {
         assert_eq!(
-            JobStatusTool {
-                jobs: Arc::new(BackgroundJobs::new())
+            TaskStatusTool {
+                tasks: Arc::new(BackgroundTasks::new())
             }
             .name(),
-            "status"
+            "task_status"
         );
     }
 
     #[test]
     fn test_status_risk_level() {
-        let tool = JobStatusTool {
-            jobs: Arc::new(BackgroundJobs::new()),
+        let tool = TaskStatusTool {
+            tasks: Arc::new(BackgroundTasks::new()),
         };
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::Safe);
     }
 
     #[test]
     fn test_status_schema() {
-        let tool = JobStatusTool {
-            jobs: Arc::new(BackgroundJobs::new()),
+        let tool = TaskStatusTool {
+            tasks: Arc::new(BackgroundTasks::new()),
         };
         let schema = tool.input_schema();
         let required = schema["required"].as_array().unwrap();
-        assert!(required.iter().any(|v| v == "job_id"));
+        assert!(required.iter().any(|v| v == "task_id"));
     }
 
     #[tokio::test]
-    async fn test_status_unknown_job() {
-        let tool = JobStatusTool {
-            jobs: Arc::new(BackgroundJobs::new()),
+    async fn test_status_unknown_task() {
+        let tool = TaskStatusTool {
+            tasks: Arc::new(BackgroundTasks::new()),
         };
         let result = tool
-            .execute(json!({"job_id": "job-nope"}), CancellationToken::new())
+            .execute(json!({"task_id": "task-nope"}), CancellationToken::new())
             .await
             .unwrap();
         assert!(result.success);
@@ -102,9 +102,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_status_requires_job_id() {
-        let tool = JobStatusTool {
-            jobs: Arc::new(BackgroundJobs::new()),
+    async fn test_status_requires_task_id() {
+        let tool = TaskStatusTool {
+            tasks: Arc::new(BackgroundTasks::new()),
         };
         let result = tool.execute(json!({}), CancellationToken::new()).await;
         assert!(result.is_err());
@@ -114,10 +114,10 @@ mod tests {
     async fn test_status_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let tool = JobStatusTool {
-            jobs: Arc::new(BackgroundJobs::new()),
+        let tool = TaskStatusTool {
+            tasks: Arc::new(BackgroundTasks::new()),
         };
-        let result = tool.execute(json!({"job_id": "job-x"}), cancel).await;
+        let result = tool.execute(json!({"task_id": "task-x"}), cancel).await;
         assert!(result.is_err());
     }
 }

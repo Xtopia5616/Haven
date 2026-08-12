@@ -11,7 +11,7 @@ mod types;
 
 pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
-pub use haven_task::{RunHandler, TaskExecutor, TaskInfo, TaskStatus};
+pub use haven_session::{RunHandler, SessionExecutor, SessionInfo, SessionStatus};
 pub use inference::InferenceEngine;
 pub use prompt::SystemPromptBuilder;
 pub use react::ReActEngine;
@@ -22,7 +22,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, Co
 use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::repositories::messages::{Message, MessageAttachment};
-use haven_tools::ReminderMode;
+use haven_tools::ScheduleMode;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -30,32 +30,32 @@ use tokio_util::sync::CancellationToken;
 use crate::title::TitleGenerator;
 
 /// The single persistence entry point for chat messages: insert a message
-/// into a task's message stream, dropping any checkpointed partial stream
+/// into a session's message stream, dropping any checkpointed partial stream
 /// text first (a real message supersedes it). Both user turns (AgentLayer)
 /// and assistant turns (ReActEngine) go through this one implementation so
 /// the two paths cannot drift apart. The partial discard goes through the
 /// executor's `PartialStore` so an in-flight stream checkpoint can never
 /// re-create the row after the real message landed.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn persist_task_message(
-    executor: &haven_task::TaskExecutor,
-    task_id: &str,
+pub(crate) async fn persist_session_message(
+    executor: &haven_session::SessionExecutor,
+    session_id: &str,
     role: &str,
     content: &str,
     message_type: Option<&str>,
     attachments: &[MessageAttachment],
     voice: bool,
 ) -> anyhow::Result<Message> {
-    executor.partials.discard(task_id).await;
+    executor.partials.discard(session_id).await;
     let db = executor.db().clone();
-    let task_id = task_id.to_string();
+    let session_id = session_id.to_string();
     let role = role.to_string();
     let content = content.to_string();
     let message_type = message_type.map(String::from);
     let attachments = attachments.to_vec();
     db.run_blocking(move |db| {
         db.add_message_full(
-            &task_id,
+            &session_id,
             &role,
             &content,
             message_type.as_deref(),
@@ -119,13 +119,29 @@ pub(crate) fn is_dangling_boundary(msg: &CanonicalMessage) -> bool {
 const INTERRUPTED_RESULT: &str =
     "Interrupted: the tool call was cut off before it returned a result.";
 
+/// Enrich the interrupted-result text with the tool name and the arguments
+/// that were attempted, so the model can see exactly which call was cut off
+/// and retry it with the same input instead of guessing. Used by both the
+/// live cancel path and the snapshot sanitize/repair path.
+pub(crate) fn interrupted_result_text(tool_name: &str, arguments: &Value) -> String {
+    if tool_name.is_empty() {
+        INTERRUPTED_RESULT.to_string()
+    } else {
+        format!(
+            "{} (tool: {}, arguments: {})",
+            INTERRUPTED_RESULT, tool_name, arguments
+        )
+    }
+}
+
 pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) {
     let mut out: Vec<CanonicalMessage> = Vec::with_capacity(canonical.len());
-    // Ids of the tool_calls declared by the most recent assistant that have
-    // not yet been answered by a tool result. Orphaned tool messages (this is
-    // empty) are dropped; every id left pending when a non-tool message (or
-    // the array end) arrives is repaired with an "Interrupted" result.
-    let mut pending_calls: Vec<String> = Vec::new();
+    // Tool_calls declared by the most recent assistant that have not yet been
+    // answered by a tool result. Orphaned tool messages (this is empty) are
+    // dropped; every call left pending when a non-tool message (or the array
+    // end) arrives is repaired with an "Interrupted" result carrying the call's
+    // own fields (id, name, arguments).
+    let mut pending_calls: Vec<CanonicalToolCall> = Vec::new();
     for m in canonical.drain(..) {
         match m.role {
             CanonicalRole::Tool => {
@@ -137,7 +153,7 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) {
                     continue;
                 }
                 if let Some(cid) = &m.tool_call_id {
-                    if let Some(pos) = pending_calls.iter().position(|c| c == cid) {
+                    if let Some(pos) = pending_calls.iter().position(|c| &c.id == cid) {
                         pending_calls.remove(pos);
                     } else {
                         // The id doesn't match any outstanding call (some
@@ -154,11 +170,7 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) {
                 // A new assistant supersedes the previous assistant's
                 // tool_calls: any still-unanswered ones were interrupted.
                 repair_interrupted_tool_calls(&mut out, &mut pending_calls);
-                pending_calls = m
-                    .tool_calls
-                    .as_ref()
-                    .map(|tc| tc.iter().map(|t| t.id.clone()).collect())
-                    .unwrap_or_default();
+                pending_calls = m.tool_calls.clone().unwrap_or_default();
                 out.push(m);
             }
             _ => {
@@ -176,23 +188,28 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) {
 /// still pending (declared by an assistant but never answered). This keeps the
 /// canonical array valid — providers reject an assistant tool_call with no
 /// following result as a 400 — while preserving the fact that the tool was
-/// attempted, so the model can retry it.
-fn repair_interrupted_tool_calls(out: &mut Vec<CanonicalMessage>, pending_calls: &mut Vec<String>) {
-    while let Some(call_id) = pending_calls.pop() {
+/// attempted, so the model can retry it. The result text carries the call's
+/// own name and arguments so the model sees exactly what was attempted.
+fn repair_interrupted_tool_calls(
+    out: &mut Vec<CanonicalMessage>,
+    pending_calls: &mut Vec<CanonicalToolCall>,
+) {
+    while let Some(call) = pending_calls.pop() {
         tracing::info!(
             "repairing interrupted tool_call {} with an Interrupted result",
-            call_id
+            call.id
         );
+        let text = interrupted_result_text(&call.name, &call.arguments);
         out.push(CanonicalMessage::tool(
-            vec![ContentPart::text(INTERRUPTED_RESULT)],
-            Some(call_id),
+            vec![ContentPart::text(text)],
+            Some(call.id),
         ));
     }
 }
 
 pub struct AgentLayer {
     db: Arc<Database>,
-    executor: Arc<TaskExecutor>,
+    executor: Arc<SessionExecutor>,
     conversation_window_size: usize,
     context_limits: ContextLimitsConfig,
     events: Arc<EventDispatcher>,
@@ -204,7 +221,7 @@ pub struct AgentLayer {
 }
 
 /// A recent conversation message used to re-seed context when resuming a
-/// task. Kept as (role, content) pairs so the resume path can deduplicate
+/// session. Kept as (role, content) pairs so the resume path can deduplicate
 /// against the restored canonical instead of blindly duplicating every turn.
 #[derive(Debug, Clone)]
 struct ConversationMessage {
@@ -215,7 +232,7 @@ struct ConversationMessage {
 impl AgentLayer {
     pub fn new(
         db: Arc<Database>,
-        executor: Arc<TaskExecutor>,
+        executor: Arc<SessionExecutor>,
         router: Arc<LlmRouter>,
         max_steps: u32,
         conversation_window_size: usize,
@@ -259,21 +276,21 @@ impl AgentLayer {
         }
     }
 
-    /// Persist a message into the task's message stream (conversation history).
+    /// Persist a message into the session's message stream (conversation history).
     /// Returns the persisted message so callers can roll it back precisely
-    /// (e.g. when the task turns out to be terminal right after).
+    /// (e.g. when the session turns out to be terminal right after).
     async fn persist_message_parts(
         &self,
-        task_id: &str,
+        session_id: &str,
         role: &str,
         content: &str,
         message_type: Option<&str>,
         attachments: &[haven_memory::repositories::messages::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
-        persist_task_message(
+        persist_session_message(
             &self.executor,
-            task_id,
+            session_id,
             role,
             content,
             message_type,
@@ -283,27 +300,33 @@ impl AgentLayer {
         .await
     }
 
-    /// Update a task's status in the executor and notify the frontend.
-    /// The status string always comes from `TaskStatus::as_str()` so the
+    /// Update a session's status in the executor and notify the frontend.
+    /// The status string always comes from `SessionStatus::as_str()` so the
     /// persisted value and the emitted event cannot drift. Shared
     /// implementation with the ReAct loop (`set_status_and_emit`); without a
     /// wired emitter (tests, degraded startup) only the executor is updated,
-    /// mirroring the old `emit_task_updated` no-op behavior.
-    async fn set_task_status(&self, task_id: &str, status: TaskStatus) -> anyhow::Result<()> {
+    /// mirroring the old `emit_session_updated` no-op behavior.
+    async fn set_session_status(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> anyhow::Result<()> {
         if let Some(emitter) = self.events.emitter_arc() {
-            crate::react::set_status_and_emit(&self.executor, &emitter, task_id, status).await
+            crate::react::set_status_and_emit(&self.executor, &emitter, session_id, status).await
         } else {
-            self.executor.update_task_status(task_id, status).await?;
+            self.executor
+                .update_session_status(session_id, status)
+                .await?;
             Ok(())
         }
     }
 
     /// Build the `infer` callback handed to the ReAct loop: spawns a
-    /// background inference pass over the task's transcript. Shared by the
+    /// background inference pass over the session's transcript. Shared by the
     /// fresh-start and resume paths.
-    fn spawn_infer(&self, task_id: &str) -> impl Fn() + Send + Sync + '_ {
+    fn spawn_infer(&self, session_id: &str) -> impl Fn() + Send + Sync + '_ {
         let inference = self.inference.clone();
-        let tid = task_id.to_string();
+        let tid = session_id.to_string();
         move || {
             let inference = inference.clone();
             let tid = tid.clone();
@@ -313,18 +336,19 @@ impl AgentLayer {
         }
     }
 
-    /// Reopen a terminal task to Paused state.
-    /// Used by the history review flow ??shows the task as active on the chat
+    /// Reopen a terminal session to Paused state.
+    /// Used by the history review flow ??shows the session as active on the chat
     /// page.  The dispatcher won't pick it up until the user sends a
-    /// follow-up message (which calls supplement_task ??Paused鈫扨ending).
-    pub async fn reopen_task(&self, task_id: &str) -> anyhow::Result<()> {
-        // Terminal tasks (Error/Completed) are removed from the in-memory
-        // list by unmark_running, so ensure_task_loaded is needed to bring
+    /// follow-up message (which calls supplement_session ??Paused鈫扨ending).
+    pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
+        // Terminal sessions (Error/Completed) are removed from the in-memory
+        // list by unmark_running, so ensure_session_loaded is needed to bring
         // them back before we can update their status.
-        self.executor.ensure_task_loaded(task_id).await?;
-        let state = self.executor.get_task_state(task_id).await;
-        if state == Some(TaskStatus::Completed) || state == Some(TaskStatus::Error) {
-            self.set_task_status(task_id, TaskStatus::Paused).await?;
+        self.executor.ensure_session_loaded(session_id).await?;
+        let state = self.executor.get_session_state(session_id).await;
+        if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
+            self.set_session_status(session_id, SessionStatus::Paused)
+                .await?;
         }
         Ok(())
     }
@@ -382,46 +406,46 @@ impl AgentLayer {
         self.react_engine.check_connection().await
     }
 
-    /// Spawn the TaskExecutor dispatcher with a runner wired to this
+    /// Spawn the SessionExecutor dispatcher with a runner wired to this
     /// AgentLayer. Must be called exactly once after construction.
     pub fn start(self: Arc<Self>) {
         let agent = self.clone();
         let executor = self.executor.clone();
-        let handler: RunHandler = Arc::new(move |task_id: String| {
+        let handler: RunHandler = Arc::new(move |session_id: String| {
             let agent = agent.clone();
-            Box::pin(async move { agent.run_task_from_id(&task_id).await.map(|_| ()) })
+            Box::pin(async move { agent.run_session_from_id(&session_id).await.map(|_| ()) })
         });
         executor.start_dispatcher(handler);
 
-        // Spawn a consumer for background-job completions. When a job
-        // finishes, inject the result into the owning task's context at the
-        // next ReAct step (via the job-completions buffer) and, if the task was
+        // Spawn a consumer for background-task completions. When a task
+        // finishes, inject the result into the owning session's context at the
+        // next ReAct step (via the task-completions buffer) and, if the session was
         // Paused for scheduling reasons, wake it to Pending so the dispatcher
         // resumes and the model processes the result no manual `status`
         // polling required.
         //
-        // A task Paused because the `ask` tool is awaiting a human reply is
+        // A session Paused because the `ask` tool is awaiting a human reply is
         // NOT woken: resuming it would let the agent continue (and run tools)
         // based on subprocess output before the user has answered. The result
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.background_jobs.take_completion_receiver() {
+        if let Some(mut rx) = tools.background_tasks.take_completion_receiver() {
             tokio::spawn(async move {
                 while let Some(comp) = rx.recv().await {
-                    // Skip cancellations: a cancelled job was killed
-                    // intentionally (end_task/rollback), so notifying would
-                    // risk resurrecting an ended task.
+                    // Skip cancellations: a cancelled task was killed
+                    // intentionally (end_session/rollback), so notifying would
+                    // risk resurrecting an ended session.
                     if comp.status == "cancelled" {
                         continue;
                     }
-                    let Some(tid) = comp.task_id else {
+                    let Some(tid) = comp.session_id else {
                         continue;
                     };
                     // Per-completion span so every log line in the consumer
-                    // (wake, injection, notification) carries both the job and
-                    // the owning task — parallel jobs stay distinguishable.
-                    let comp_span = tracing::info_span!("job_completion", job_id = %comp.job_id, task_id = %tid);
+                    // (wake, injection, notification) carries both the task and
+                    // the owning session — parallel tasks stay distinguishable.
+                    let comp_span = tracing::info_span!("task_completion", task_id = %comp.task_id, session_id = %tid);
                     let _comp_guard = comp_span.enter();
                     // Only completed/failed carry a useful payload.
                     let payload = match comp.status_json.get("output").and_then(|v| v.as_str()) {
@@ -433,7 +457,7 @@ impl AgentLayer {
                             .unwrap_or("")
                             .to_string(),
                     };
-                    // Failed jobs carry a pre-condensed reason (progress bars
+                    // Failed tasks carry a pre-condensed reason (progress bars
                     // stripped, tail kept) so the model and the notification
                     // see the real error, not a multi-KB progress dump. The
                     // injected context is capped either way: the model needs
@@ -449,15 +473,15 @@ impl AgentLayer {
                         payload
                     };
                     let mut msg = format!(
-                        "[Background job result]\njob_id: {}\nstatus: {}\n\n{}",
-                        comp.job_id,
+                        "[Background task result]\ntask_id: {}\nstatus: {}\n\n{}",
+                        comp.task_id,
                         comp.status,
                         truncate_notification(
                             &reason,
-                            agent.context_limits.job_result_context_chars
+                            agent.context_limits.task_result_context_chars
                         )
                     );
-                    // Failed jobs write the full output to a log file; point
+                    // Failed tasks write the full output to a log file; point
                     // the model at it so a condensed reason never hides the
                     // root cause.
                     if let Some(log_path) = comp
@@ -468,33 +492,33 @@ impl AgentLayer {
                     {
                         msg.push_str(&format!("\nFull log: {log_path}"));
                     }
-                    agent.executor.add_job_completion(&tid, &msg).await;
-                    let state = agent.executor.get_task_state(&tid).await;
+                    agent.executor.add_task_completion(&tid, &msg).await;
+                    let state = agent.executor.get_session_state(&tid).await;
                     // Awaiting-answer pauses must not be auto-woken by
-                    // background-job completions (the model is blocked on the
-                    // user, not on job results).
+                    // background-task completions (the model is blocked on the
+                    // user, not on task results).
                     let awaiting = matches!(&state, Some(s) if s.is_awaiting_answer());
-                    if state == Some(TaskStatus::Paused) && !awaiting {
+                    if state == Some(SessionStatus::Paused) && !awaiting {
                         if let Err(e) = agent
                             .executor
-                            .update_task_status(&tid, TaskStatus::Pending)
+                            .update_session_status(&tid, SessionStatus::Pending)
                             .await
                         {
-                            tracing::warn!("job-completion wake task {} failed: {}", tid, e);
+                            tracing::warn!("task-completion wake session {} failed: {}", tid, e);
                             continue;
                         }
-                        agent.events.emit_task_updated(&tid, "pending").await;
+                        agent.events.emit_session_updated(&tid, "pending").await;
                     }
-                    // A task that is no longer alive (completed, errored, or
+                    // A session that is no longer alive (completed, errored, or
                     // removed) has no ReAct loop left to inject the result
                     // into, so the buffered context above would be dropped.
-                    // Persist the result as a message in the task's history
-                    // instead — reopening the task shows what the background
-                    // job produced. (Live/paused tasks get the result via the
-                    // next ReAct step; awaiting-answer tasks keep it buffered
+                    // Persist the result as a message in the session's history
+                    // instead — reopening the session shows what the background
+                    // task produced. (Live/paused sessions get the result via the
+                    // next ReAct step; awaiting-answer sessions keep it buffered
                     // until the user replies.)
                     if (matches!(&state, Some(s) if s.is_terminal()) || state.is_none())
-                        && let Err(e) = crate::persist_task_message(
+                        && let Err(e) = crate::persist_session_message(
                             &agent.executor,
                             &tid,
                             "user",
@@ -506,7 +530,7 @@ impl AgentLayer {
                         .await
                     {
                         tracing::warn!(
-                            "job-completion persist for ended task {} failed: {}",
+                            "task-completion persist for ended session {} failed: {}",
                             tid,
                             e
                         );
@@ -514,49 +538,49 @@ impl AgentLayer {
                     // Active push so the user never has to poll for status:
                     // a toast (in-app + Windows) announces the transition.
                     let (title, status_label) = if comp.status == "completed" {
-                        ("后台作业已完成".to_string(), "已完成".to_string())
+                        ("后台任务已完成".to_string(), "已完成".to_string())
                     } else {
-                        ("后台作业失败".to_string(), "失败".to_string())
+                        ("后台任务失败".to_string(), "失败".to_string())
                     };
                     let summary = truncate_notification(
                         &reason,
                         agent.context_limits.notification_summary_chars,
                     );
                     let body = if summary.trim().is_empty() {
-                        format!("{} {}", comp.job_id, status_label)
+                        format!("{} {}", comp.task_id, status_label)
                     } else {
-                        format!("{} {}\n{}", comp.job_id, status_label, summary)
+                        format!("{} {}\n{}", comp.task_id, status_label, summary)
                     };
                     agent.events.emit_notification(&title, &body).await;
                 }
             });
         }
-        // Spawn a consumer for fired reminders: the fire behavior is chosen
-        // by the reminder's mode.
+        // Spawn a consumer for fired scheduled_tasks: the fire behavior is chosen
+        // by the scheduled task's mode.
         // - `notify`: surface it as a Notification event (in-app toast +
         //   Windows notification), exactly like the `notify` tool's signal.
         // - `tool`: execute the scheduled tool with its stored arguments
         //   (no LLM round-trip), then notify the user of the outcome.
-        // - `continue`: resume the task that scheduled the reminder ??the
-        //   reminder text is injected into that task's conversation and the
-        //   task is woken, so a scheduled "keep going at 3pm" continues the
-        //   same ReAct loop without anyone speaking. Legacy rows without a
-        //   task id fall back to running the text as a brand-new task.
+        // - `continue`: resume the session that scheduled the task ??the
+        //   scheduled task text is injected into that session's conversation and the
+        //   session is woken, so a scheduled "keep going at 3pm" continues the
+        //   same ReAct loop without anyone speaking. A continue-mode task
+        //   without a session id is an error (no fallback).
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.reminders.take_fired_receiver() {
+        if let Some(mut rx) = tools.scheduled_tasks.take_fired_receiver() {
             tokio::spawn(async move {
                 while let Some(fired) = rx.recv().await {
-                    // Per-reminder span so fire logs carry the reminder and
-                    // its owning task; parallel reminder fires stay distinct.
+                    // Per-scheduled-task span so fire logs carry the scheduled task and
+                    // its owning session; parallel scheduled-task fires stay distinct.
                     let fire_span = tracing::info_span!(
                         "reminder_fired",
-                        reminder_id = %fired.reminder_id,
-                        task_id = %fired.task_id.as_deref().unwrap_or("-")
+                        reminder_id = %fired.task_id,
+                        session_id = %fired.session_id.as_deref().unwrap_or("-")
                     );
                     let _fire_guard = fire_span.enter();
                     match fired.mode {
-                        ReminderMode::Tool => {
+                        ScheduleMode::Tool => {
                             let Some(tool_name) = fired.tool_name else {
                                 agent
                                     .events
@@ -572,7 +596,7 @@ impl AgentLayer {
                             let outcome = agent
                                 .executor
                                 .execute_gated(
-                                    fired.task_id.as_deref(),
+                                    fired.session_id.as_deref(),
                                     &tool_name,
                                     args,
                                     CancellationToken::new(),
@@ -604,7 +628,7 @@ impl AgentLayer {
                                         .events
                                         .emit_notification(
                                             &fired.title,
-                                            &format!("reminder tool '{tool_name}':\n{summary}"),
+                                            &format!("schedule tool '{tool_name}':\n{summary}"),
                                         )
                                         .await;
                                 }
@@ -613,42 +637,60 @@ impl AgentLayer {
                                         .events
                                         .emit_notification(
                                             &fired.title,
-                                            &format!("reminder tool '{tool_name}' failed: {e}"),
+                                            &format!("schedule tool '{tool_name}' failed: {e}"),
                                         )
                                         .await;
                                 }
                             }
                         }
-                        ReminderMode::Continue => {
+                        ScheduleMode::Continue => {
                             let message = fired
                                 .prompt
                                 .clone()
                                 .or_else(|| Some(fired.body.clone()))
                                 .map(|s| s.trim().to_string())
                                 .filter(|s| !s.is_empty())
-                                .unwrap_or_else(|| "Reminder fired: continue the task.".into());
+                                .unwrap_or_else(|| {
+                                    "ScheduledTask fired: continue the session.".into()
+                                });
+                            // A continue-mode task requires the session it
+                            // continues; without one it cannot run (there is
+                            // no fallback to a brand-new session).
+                            let Some(session_id) = fired.session_id.clone() else {
+                                agent
+                                    .events
+                                    .emit_notification(
+                                        &fired.title,
+                                        &format!(
+                                            "定时任务 '{title}' 无法继续：未关联会话。",
+                                            title = fired.title
+                                        ),
+                                    )
+                                    .await;
+                                continue;
+                            };
                             match agent
                                 .process_input_with_attachments(
                                     &message,
-                                    fired.task_id.clone(),
+                                    Some(session_id),
                                     &[],
                                     false,
                                 )
                                 .await
                             {
                                 Ok(result) => tracing::info!(
-                                    "reminder {} resumed task: {:?}",
-                                    fired.reminder_id,
+                                    "scheduled task {} resumed session: {:?}",
+                                    fired.task_id,
                                     result
                                 ),
                                 Err(e) => tracing::warn!(
-                                    "reminder {} failed to resume task: {}",
-                                    fired.reminder_id,
+                                    "scheduled task {} failed to resume session: {}",
+                                    fired.task_id,
                                     e
                                 ),
                             }
                             // Also surface the notification so the user sees
-                            // the reminder while the task continues.
+                            // the scheduled task while the session continues.
                             agent
                                 .events
                                 .emit_notification(&fired.title, &fired.body)
@@ -658,35 +700,38 @@ impl AgentLayer {
                 }
             });
         }
-        // Re-arm reminders persisted by a previous run: overdue ones (the app
+        // Re-arm scheduled_tasks persisted by a previous run: overdue ones (the app
         // was closed when they expired) fire immediately, future ones resume
         // their countdown. Runs in the background; the notification consumer
-        // spawned above delivers the overdue fires. Also clean up job rows a
+        // spawned above delivers the overdue fires. Also clean up task rows a
         // previous run left `running` (their child processes died with the
-        // app), so persisted activity history never shows stale live work.
+        // app), so persisted task history never shows stale live work.
         let restore_tools = self.executor.get_tools();
         tokio::spawn(async move {
-            let overdue = restore_tools.reminders.restore_pending().await;
+            let overdue = restore_tools.scheduled_tasks.restore_pending().await;
             if overdue > 0 {
-                tracing::info!("restored {} overdue reminder(s) from previous run", overdue);
+                tracing::info!(
+                    "restored {} overdue scheduled task(s) from previous run",
+                    overdue
+                );
             }
-            let interrupted = restore_tools.background_jobs.restore_after_restart().await;
+            let interrupted = restore_tools.background_tasks.restore_after_restart().await;
             if interrupted > 0 {
                 tracing::info!(
-                    "marked {} interrupted background job(s) as failed",
+                    "marked {} interrupted background task(s) as failed",
                     interrupted
                 );
             }
         });
     }
 
-    /// Load the most recent conversation messages for a task as (role,
+    /// Load the most recent conversation messages for a session as (role,
     /// content) pairs. The resume path deduplicates them against the
     /// restored canonical before injecting, so the fresh-run system-prompt
     /// path (`prompt_builder.build`) and the resume path share one source.
-    fn load_conversation_history(&self, task_id: &str) -> Vec<ConversationMessage> {
+    fn load_conversation_history(&self, session_id: &str) -> Vec<ConversationMessage> {
         self.db
-            .get_task_messages_limit(task_id, self.conversation_window_size)
+            .get_session_messages_limit(session_id, self.conversation_window_size)
             .ok()
             .unwrap_or_default()
             .into_iter()
@@ -697,20 +742,20 @@ impl AgentLayer {
             .collect()
     }
 
-    /// Rebuild per-task tool registrations from saved step history.
+    /// Rebuild per-session tool registrations from saved step history.
     ///
-    /// Per-task registrations (loaded via `load_skill`/`load_mcp`) live in
+    /// Per-session registrations (loaded via `load_skill`/`load_mcp`) live in
     /// memory and are lost on app restart or rollback. This method clears any
-    /// existing registrations for the task, then scans the history for
+    /// existing registrations for the session, then scans the history for
     /// `load_skill`/`load_mcp` actions and re-registers the corresponding
     /// adapters. Only steps present in the (possibly truncated) history are
     /// replayed, so rolling back to step N correctly drops tools loaded after
     /// step N.
-    async fn restore_per_task_tools(&self, task_id: &str, history: &[ReActStep]) {
+    async fn restore_per_session_tools(&self, session_id: &str, history: &[ReActStep]) {
         let tools = self.executor.get_tools();
         // Clear stale registrations first (e.g. tools loaded after a rollback
         // point, or leftover from a previous run before restart).
-        tools.unregister_task(task_id).await;
+        tools.unregister_session(session_id).await;
 
         for step in history {
             let Some(ref action) = step.action else {
@@ -719,12 +764,12 @@ impl AgentLayer {
             match action.tool_name.as_str() {
                 "load_skill" => {
                     if let Some(name) = action.tool_input["skill_name"].as_str() {
-                        tools.register_skill_for_task(task_id, name).await;
+                        tools.register_skill_for_session(session_id, name).await;
                     }
                 }
                 "load_mcp" => {
                     if let Some(name) = action.tool_input["server_name"].as_str() {
-                        tools.register_mcp_for_task(task_id, name).await;
+                        tools.register_mcp_for_session(session_id, name).await;
                     }
                 }
                 _ => {}
@@ -732,10 +777,10 @@ impl AgentLayer {
         }
     }
 
-    /// Roll back a task to a specific branch point. The task state is
+    /// Roll back a session to a specific branch point. The session state is
     /// replaced with the branch point snapshot, session messages persisted
     /// after that point are deleted, branch points created after the target
-    /// step are pruned. When `pause` is false the task is set to Pending for
+    /// step are pruned. When `pause` is false the session is set to Pending for
     /// immediate re-execution; when true it is set to Paused so the user can
     /// edit and re-send the message before the dispatcher picks it up.
     ///
@@ -746,25 +791,25 @@ impl AgentLayer {
     /// rolling it back must discard ONLY that message.
     ///
     /// For user-message rollback (`pause == true`) the id must resolve to a
-    /// persisted task message; an unresolvable id is an error, never a
+    /// persisted session message; an unresolvable id is an error, never a
     /// content-based guess.
-    pub async fn rollback_task(
+    pub async fn rollback_session(
         &self,
-        task_id: &str,
+        session_id: &str,
         target_step: u32,
         pause: bool,
         target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        // If the task is currently Running, cancel it first so the ReAct loop
+        // If the session is currently Running, cancel it first so the ReAct loop
         // exits cleanly. Otherwise the loop's in-memory canonical/history would
         // diverge from the restored snapshot and overwrite it on the next save.
         // The loop observes the token at every wait point (step top, LLM call,
         // tool batch drain) and exits without touching status, so no Error
         // marking is needed ??setting Error here would only emit a spurious
-        // "task interrupted" error event and trigger terminal cleanup.
-        let state = self.executor.get_task_state(task_id).await;
-        if state == Some(TaskStatus::Running) {
-            let cancel = self.executor.cancellation_token(task_id).await;
+        // "session interrupted" error event and trigger terminal cleanup.
+        let state = self.executor.get_session_state(session_id).await;
+        if state == Some(SessionStatus::Running) {
+            let cancel = self.executor.cancellation_token(session_id).await;
             cancel.cancel();
             // Wait until the loop handler releases the running slot.
             let mut waited = false;
@@ -773,7 +818,7 @@ impl AgentLayer {
                     .executor
                     .running_tasks_list()
                     .await
-                    .contains(&task_id.to_string())
+                    .contains(&session_id.to_string())
                 {
                     break;
                 }
@@ -785,30 +830,30 @@ impl AgentLayer {
                     .executor
                     .running_tasks_list()
                     .await
-                    .contains(&task_id.to_string())
+                    .contains(&session_id.to_string())
             {
                 tracing::warn!(
-                    "rollback_task {}: handler did not exit within 5s; proceeding with restore (late step writes are guarded by execute_step)",
-                    task_id
+                    "rollback_session {}: handler did not exit within 5s; proceeding with restore (late step writes are guarded by execute_step)",
+                    session_id
                 );
             }
         }
 
-        // Background jobs spawned before the rollback are stale relative to
+        // Background tasks spawned before the rollback are stale relative to
         // the restored snapshot: kill them so their children cannot leak.
-        self.executor.cancel_task_jobs(task_id).await;
+        self.executor.cancel_session_tasks(session_id).await;
 
-        let state_json = match self.db.get_react_state(task_id)? {
+        let state_json = match self.db.get_react_state(session_id)? {
             Some(s) => s,
             None => {
-                // No saved state at all ??this happens when a task errored
+                // No saved state at all ??this happens when a session errored
                 // before any snapshot was saved (e.g. first LLM call failed
                 // in an older version without Fix 1). We can't restore
                 // canonical, but we can still truncate session messages so
                 // the user can edit and re-send their input.
                 tracing::warn!(
-                    "rollback_task {}: no react_state ??falling back to message-only truncation",
-                    task_id
+                    "rollback_session {}: no react_state ??falling back to message-only truncation",
+                    session_id
                 );
                 if pause {
                     // User-message rollback needs the exact clicked message;
@@ -816,35 +861,35 @@ impl AgentLayer {
                     // unresolvable id is an error.
                     let id = target_message_id.ok_or_else(|| {
                         anyhow::anyhow!(
-                            "rollback_task {}: pause=true requires target_message_id",
-                            task_id
+                            "rollback_session {}: pause=true requires target_message_id",
+                            session_id
                         )
                     })?;
                     let target = self
                         .db
-                        .get_task_messages(task_id)
+                        .get_session_messages(session_id)
                         .unwrap_or_default()
                         .into_iter()
                         .find(|m| m.id == id)
                         .ok_or_else(|| {
                             anyhow::anyhow!(
-                                "rollback_task {}: target message '{}' not found in task messages",
-                                task_id,
+                                "rollback_session {}: target message '{}' not found in session messages",
+                                session_id,
                                 id
                             )
                         })?;
-                    let _ = self.db.delete_messages_from(task_id, &target.created_at);
-                } else if let Some(ts) = self.db.last_user_message_ts(task_id) {
-                    let _ = self.db.delete_messages_after(task_id, &ts);
+                    let _ = self.db.delete_messages_from(session_id, &target.created_at);
+                } else if let Some(ts) = self.db.last_user_message_ts(session_id) {
+                    let _ = self.db.delete_messages_after(session_id, &ts);
                 }
                 // Reload into memory and set status.
-                self.executor.ensure_task_loaded(task_id).await?;
-                self.set_task_status(
-                    task_id,
+                self.executor.ensure_session_loaded(session_id).await?;
+                self.set_session_status(
+                    session_id,
                     if pause {
-                        TaskStatus::Paused
+                        SessionStatus::Paused
                     } else {
-                        TaskStatus::Pending
+                        SessionStatus::Pending
                     },
                 )
                 .await?;
@@ -861,8 +906,8 @@ impl AgentLayer {
             bp
         } else {
             tracing::warn!(
-                "rollback_task {}: no branch_point at step {}, using snapshot state (step_number={})",
-                task_id,
+                "rollback_session {}: no branch_point at step {}, using snapshot state (step_number={})",
+                session_id,
                 target_step,
                 snapshot.step_number
             );
@@ -870,7 +915,7 @@ impl AgentLayer {
             // user message for user-rollback (pause=true), or the last user
             // message for agent-rollback too (delete the partial output after
             // it).
-            let cutoff_ts = self.db.last_user_message_ts(task_id);
+            let cutoff_ts = self.db.last_user_message_ts(session_id);
             BranchPoint {
                 canonical: snapshot.canonical.clone(),
                 history: snapshot.history.clone(),
@@ -905,17 +950,17 @@ impl AgentLayer {
         // timeline.
         snapshot.branch_points.retain(|&k, _| k <= target_step);
 
-        // Truncate task messages persisted after the branch point so the
+        // Truncate session messages persisted after the branch point so the
         // conversation context matches the restored snapshot.
         //
         // A user message may be persisted AFTER the newest branch point:
-        // an interjection sent while the task was erroring (its supplement
-        // was dropped as the task was terminal) or before the app closed
+        // an interjection sent while the session was erroring (its supplement
+        // was dropped as the session was terminal) or before the app closed
         // mid-generation (the steering queue is in-memory only and is lost).
         // Such a message was never added to the ReAct canonical, so rolling
         // back to it must discard ONLY that message ??deleting from the
         // branch point's cutoff would wipe valid earlier history.
-        let task_msgs = self.db.get_task_messages(task_id).unwrap_or_default();
+        let session_msgs = self.db.get_session_messages(session_id).unwrap_or_default();
         // User-message rollback (pause=true) needs the EXACT clicked
         // message. The old fallbacks — matching by content when the id
         // missed, or guessing the newest user message — could delete the
@@ -924,22 +969,17 @@ impl AgentLayer {
         let target_msg = if pause {
             let id = target_message_id.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "rollback_task {}: pause=true requires target_message_id",
-                    task_id
+                    "rollback_session {}: pause=true requires target_message_id",
+                    session_id
                 )
             })?;
-            Some(
-                task_msgs
-                    .iter()
-                    .find(|m| m.id == id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "rollback_task {}: target message '{}' not found in task messages",
-                            task_id,
-                            id
-                        )
-                    })?,
-            )
+            Some(session_msgs.iter().find(|m| m.id == id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "rollback_session {}: target message '{}' not found in session messages",
+                    session_id,
+                    id
+                )
+            })?)
         } else {
             None
         };
@@ -958,17 +998,20 @@ impl AgentLayer {
                 // (validated above), so its own timestamp is authoritative —
                 // the "newest user message at/before the branch point" guess
                 // is gone.
-                let user_ts = target_msg.expect("pause target resolved above").created_at.clone();
-                self.db.delete_messages_from(task_id, &user_ts)?;
+                let user_ts = target_msg
+                    .expect("pause target resolved above")
+                    .created_at
+                    .clone();
+                self.db.delete_messages_from(session_id, &user_ts)?;
                 // Rollback overwrites: drop step rows recorded after
                 // the user message too (they belong to the discarded
                 // timeline).
-                self.db.delete_task_steps_after(task_id, &user_ts)?;
+                self.db.delete_session_steps_after(session_id, &user_ts)?;
             } else {
                 // Strict `>` for both: the branch-point cutoff is the last
                 // message BEFORE the discarded step, so we keep the cutoff
-                // itself intact (truncate_task_after is non-inclusive).
-                self.db.truncate_task_after(task_id, ts, false)?;
+                // itself intact (truncate_session_after is non-inclusive).
+                self.db.truncate_session_after(session_id, ts, false)?;
             }
         }
 
@@ -976,10 +1019,10 @@ impl AgentLayer {
         // must not inherit a stale partial from the discarded run. Discard
         // goes through the executor's PartialStore so an in-flight stream
         // checkpoint cannot re-create the row afterwards.
-        self.executor.partials.discard(task_id).await;
+        self.executor.partials.discard(session_id).await;
 
         // For user-message rollback, also remove the user message from the
-        // restored canonical so the LLM doesn't see it when the task resumes.
+        // restored canonical so the LLM doesn't see it when the session resumes.
         // Skipped for orphan rollback: the orphaned message was never in the
         // canonical, so the last User entry there is a legitimately processed
         // message that must stay in the restored context.
@@ -1019,8 +1062,8 @@ impl AgentLayer {
                 })
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "rollback_task {}: target user message not found in the restored canonical",
-                        task_id
+                        "rollback_session {}: target user message not found in the restored canonical",
+                        session_id
                     )
                 })?;
             // Keep everything before the target user message. Drop the
@@ -1029,64 +1072,64 @@ impl AgentLayer {
         }
 
         let json = serde_json::to_string(&snapshot)?;
-        self.db.save_react_state(task_id, &json)?;
+        self.db.save_react_state(session_id, &json)?;
 
-        // Rebuild per-task tool registrations from the restored history so
+        // Rebuild per-session tool registrations from the restored history so
         // that tools loaded after the rollback point are dropped, and tools
         // loaded before it remain available.
-        self.restore_per_task_tools(task_id, &snapshot.history)
+        self.restore_per_session_tools(session_id, &snapshot.history)
             .await;
 
-        // Reload the task into executor memory (it may have been removed if we
-        // marked a Running task as Error above, or was never loaded after restart).
-        self.executor.ensure_task_loaded(task_id).await?;
+        // Reload the session into executor memory (it may have been removed if we
+        // marked a Running session as Error above, or was never loaded after restart).
+        self.executor.ensure_session_loaded(session_id).await?;
 
-        self.set_task_status(
-            task_id,
+        self.set_session_status(
+            session_id,
             if pause {
-                TaskStatus::Paused
+                SessionStatus::Paused
             } else {
-                TaskStatus::Pending
+                SessionStatus::Pending
             },
         )
         .await?;
         if pause {
             tracing::info!(
-                "rollback_task {} to step {}: task set to Paused (user-edit mode)",
-                task_id,
+                "rollback_session {} to step {}: session set to Paused (user-edit mode)",
+                session_id,
                 target_step
             );
         } else {
             tracing::info!(
-                "rollback_task {} to step {}: task set to Pending",
-                task_id,
+                "rollback_session {} to step {}: session set to Pending",
+                session_id,
                 target_step
             );
         }
         Ok(())
     }
 
-    /// Resume a task that errored mid-step. Removes any partial assistant
+    /// Resume a session that errored mid-step. Removes any partial assistant
     /// output that was persisted on error (so the retry produces a clean
-    /// message), then sets the task to Pending so the dispatcher picks it up
-    /// and `run_task_from_id` restores from the saved snapshot.
-    pub async fn continue_task(&self, task_id: &str) -> anyhow::Result<()> {
-        // Ensure the task is loaded in executor memory.
-        self.executor.ensure_task_loaded(task_id).await?;
+    /// message), then sets the session to Pending so the dispatcher picks it up
+    /// and `run_session_from_id` restores from the saved snapshot.
+    pub async fn continue_session(&self, session_id: &str) -> anyhow::Result<()> {
+        // Ensure the session is loaded in executor memory.
+        self.executor.ensure_session_loaded(session_id).await?;
 
-        let state = self.executor.get_task_state(task_id).await;
+        let state = self.executor.get_session_state(session_id).await;
         // Accept Error (directly after interruption), Paused (after
-        // reopen_task during review) and PausedAwaitingAnswer (blocked on an
-        // `ask` whose answer the user chose to skip). All indicate the task
+        // reopen_session during review) and PausedAwaitingAnswer (blocked on an
+        // `ask` whose answer the user chose to skip). All indicate the session
         // can be retried from its saved snapshot.
         if !matches!(
             state,
-            Some(TaskStatus::Error)
-                | Some(TaskStatus::Paused)
-                | Some(TaskStatus::PausedAwaitingAnswer)
+            Some(SessionStatus::Error)
+                | Some(SessionStatus::Paused)
+                | Some(SessionStatus::PausedAwaitingAnswer)
         ) {
             return Err(anyhow::anyhow!(
-                "task is not in a retryable state (current: {:?})",
+                "session is not in a retryable state (current: {:?})",
                 state
             ));
         }
@@ -1094,7 +1137,7 @@ impl AgentLayer {
         // Load the snapshot saved on error to find the branch point's
         // last_msg_at ??the timestamp of the last message BEFORE the partial
         // output. We delete everything after it so the retry starts clean.
-        if let Ok(Some(state_json)) = self.db.get_react_state(task_id)
+        if let Ok(Some(state_json)) = self.db.get_react_state(session_id)
             && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
         {
             // The snapshot's step_number is the step that failed. Try to
@@ -1105,13 +1148,13 @@ impl AgentLayer {
                 .branch_points
                 .get(&snapshot.step_number)
                 .and_then(|bp| bp.last_msg_at.clone())
-                .or_else(|| self.db.last_user_message_ts(task_id));
+                .or_else(|| self.db.last_user_message_ts(session_id));
             if let Some(ts) = cutoff {
                 // Retry OVERWRITES the previous attempt: drop both messages
                 // and step rows (tool badges, thought entries) after the
                 // branch point so the review history stays linear. Only
                 // branching creates separate timelines.
-                self.db.truncate_task_after(task_id, &ts, false)?;
+                self.db.truncate_session_after(session_id, &ts, false)?;
             }
         }
 
@@ -1119,12 +1162,16 @@ impl AgentLayer {
         // from scratch, so a crash during the retry must not promote the
         // pre-retry partial. Goes through the PartialStore so no in-flight
         // checkpoint can resurrect the row.
-        self.executor.partials.discard(task_id).await;
+        self.executor.partials.discard(session_id).await;
 
         // Set to Pending for the dispatcher to pick up.
-        self.set_task_status(task_id, TaskStatus::Pending).await?;
+        self.set_session_status(session_id, SessionStatus::Pending)
+            .await?;
 
-        tracing::info!("continue_task: task {} set to Pending for retry", task_id);
+        tracing::info!(
+            "continue_session: session {} set to Pending for retry",
+            session_id
+        );
         Ok(())
     }
 
@@ -1153,40 +1200,39 @@ impl AgentLayer {
         }
     }
 
-    /// Dispatcher entrypoint. Looks up the task by id, fills in the
+    /// Dispatcher entrypoint. Looks up the session by id, fills in the
     /// description and original transcript (context),
     /// loads conversation history, then runs the ReAct loop.
-    pub async fn run_task_from_id(&self, task_id: &str) -> anyhow::Result<Vec<ReActStep>> {
-        tracing::debug!("run_task_from_id: task_id={}", task_id);
-        let task = self
-            .executor
-            .get_task(task_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("task '{}' not found by dispatcher", task_id))?;
+    pub async fn run_session_from_id(&self, session_id: &str) -> anyhow::Result<Vec<ReActStep>> {
+        tracing::debug!("run_session_from_id: session_id={}", session_id);
+        let session =
+            self.executor.get_session(session_id).await.ok_or_else(|| {
+                anyhow::anyhow!("session '{}' not found by dispatcher", session_id)
+            })?;
 
         let run_id = self.react_engine.next_run_id();
 
-        let description = if task.summary.is_empty() {
-            task.input.clone()
+        let description = if session.summary.is_empty() {
+            session.input.clone()
         } else {
-            task.summary.clone()
+            session.summary.clone()
         };
-        let context = task.input.clone();
+        let context = session.input.clone();
 
-        // Conversation history and message persistence are keyed by the task
+        // Conversation history and message persistence are keyed by the session
         // itself ??there is no separate session indirection anymore.
-        let conv_history = self.load_conversation_history(task_id);
+        let conv_history = self.load_conversation_history(session_id);
 
         // Multimodal: carry the first user message's image attachments into
         // the initial canonical user message so the model sees them from the
         // first turn (they were persisted by process_input_with_attachments).
-        // The FIRST user message is always the task's own input; later image
+        // The FIRST user message is always the session's own input; later image
         // follow-ups are supplements (injected by the ReAct loop at step
         // start) and must NOT be attached to the initial turn or they would
         // be duplicated.
         let initial_attachments = self
             .db
-            .get_task_messages(task_id)
+            .get_session_messages(session_id)
             .ok()
             .and_then(|msgs| {
                 msgs.into_iter()
@@ -1196,23 +1242,23 @@ impl AgentLayer {
             })
             .unwrap_or_default();
 
-        let result = match self.db.get_react_state(task_id) {
+        let result = match self.db.get_react_state(session_id) {
             Ok(Some(state_json)) => match serde_json::from_str::<ReActSnapshot>(&state_json) {
                 Ok(mut snapshot) => {
                     tracing::info!(
-                        "restoring ReAct state for task {} ({} steps)",
-                        task_id,
+                        "restoring ReAct state for session {} ({} steps)",
+                        session_id,
                         snapshot.history.len()
                     );
                     // The snapshot may end with a dangling assistant tool_call
                     // message (saved before tool results were appended). Sending it
                     // to the LLM on resume triggers a 400 error, so trim it first.
                     Self::trim_dangling_tool_call(&mut snapshot.canonical, &mut snapshot.history);
-                    // Re-register per-task tools (skills/MCP) from saved history,
+                    // Re-register per-session tools (skills/MCP) from saved history,
                     // since in-memory registrations are lost on app restart.
-                    self.restore_per_task_tools(task_id, &snapshot.history)
+                    self.restore_per_session_tools(session_id, &snapshot.history)
                         .await;
-                    self.run_task_resumed(task_id, snapshot, &conv_history, run_id)
+                    self.run_session_resumed(session_id, snapshot, &conv_history, run_id)
                         .await
                 }
                 Err(e) => {
@@ -1221,12 +1267,12 @@ impl AgentLayer {
                     // execution context. Surface it so the loss is visible
                     // (and so a snapshot-format bug can't hide).
                     tracing::warn!(
-                        "react_state for task {} failed to parse ({}); falling back to fresh run",
-                        task_id,
+                        "react_state for session {} failed to parse ({}); falling back to fresh run",
+                        session_id,
                         e
                     );
-                    self.run_task(
-                        &task.id,
+                    self.run_session(
+                        &session.id,
                         &description,
                         &context,
                         &conv_history,
@@ -1236,8 +1282,8 @@ impl AgentLayer {
                 }
             },
             Ok(None) => {
-                self.run_task(
-                    &task.id,
+                self.run_session(
+                    &session.id,
                     &description,
                     &context,
                     &conv_history,
@@ -1247,12 +1293,12 @@ impl AgentLayer {
             }
             Err(e) => {
                 tracing::warn!(
-                    "failed to read react_state for task {} ({}); falling back to fresh run",
-                    task_id,
+                    "failed to read react_state for session {} ({}); falling back to fresh run",
+                    session_id,
                     e
                 );
-                self.run_task(
-                    &task.id,
+                self.run_session(
+                    &session.id,
                     &description,
                     &context,
                     &conv_history,
@@ -1266,15 +1312,15 @@ impl AgentLayer {
         // spawned when the run itself succeeded: a failed run (e.g. all LLM
         // endpoints down) would burn the full title retry budget on the same
         // dead endpoint and duplicate the conversation's own retry latency.
-        // A resumed task whose title was never generated gets its title
+        // A resumed session whose title was never generated gets its title
         // attempt on the next successful run instead.
-        if task.title.is_none() && result.is_ok() {
+        if session.title.is_none() && result.is_ok() {
             let db = self.db.clone();
             let executor = self.executor.clone();
             let title = self.title.clone();
             let events = self.events.clone();
             let in_flight = self.title_in_flight.clone();
-            let tid = task_id.to_string();
+            let tid = session_id.to_string();
             tokio::spawn(async move {
                 Self::try_generate_title(db, executor, title, events, in_flight, tid).await;
             });
@@ -1283,25 +1329,25 @@ impl AgentLayer {
         result
     }
 
-    pub async fn emit_task_completed(&self, task_id: &str, title: &str) {
-        self.events.emit_task_completed(task_id, title).await;
-        // Drop cumulative token counters for the finished task.
-        self.react_engine.reset_cumulative_usage(task_id);
+    pub async fn emit_session_completed(&self, session_id: &str, title: &str) {
+        self.events.emit_session_completed(session_id, title).await;
+        // Drop cumulative token counters for the finished session.
+        self.react_engine.reset_cumulative_usage(session_id);
     }
 
     /// Generate a short title using small_model after a successful ReAct
-    /// loop. Spawned as a background task so it does not block the
-    /// dispatcher. Only runs once per task (when title is None), and only
-    /// once at a time: overlapping dispatches of the same task (auto-reload
+    /// loop. Spawned as a background session so it does not block the
+    /// dispatcher. Only runs once per session (when title is None), and only
+    /// once at a time: overlapping dispatches of the same session (auto-reload
     /// on app start plus a manual continue) must not fire concurrent title
     /// calls.
     async fn try_generate_title(
         db: Arc<Database>,
-        executor: Arc<TaskExecutor>,
+        executor: Arc<SessionExecutor>,
         title: Option<TitleGenerator>,
         events: Arc<EventDispatcher>,
         in_flight: Arc<Mutex<HashSet<String>>>,
-        task_id: String,
+        session_id: String,
     ) {
         let Some(generator) = title else { return };
         // Claim the in-flight slot before the DB check so two concurrent
@@ -1309,30 +1355,32 @@ impl AgentLayer {
         // generation attempt ends (success or failure).
         {
             let mut set = in_flight.lock().await;
-            if !set.insert(task_id.clone()) {
+            if !set.insert(session_id.clone()) {
                 return;
             }
         }
-        Self::generate_title(db, executor, generator, events, task_id.clone()).await;
-        in_flight.lock().await.remove(&task_id);
+        Self::generate_title(db, executor, generator, events, session_id.clone()).await;
+        in_flight.lock().await.remove(&session_id);
     }
 
     async fn generate_title(
         db: Arc<Database>,
-        executor: Arc<TaskExecutor>,
+        executor: Arc<SessionExecutor>,
         generator: TitleGenerator,
         events: Arc<EventDispatcher>,
-        task_id: String,
+        session_id: String,
     ) {
-        // Check if the task already has a title in the DB
-        if let Ok(Some(task)) = db.get_task(&task_id)
-            && task.title.is_some()
+        // Check if the session already has a title in the DB
+        if let Ok(Some(session)) = db.get_session(&session_id)
+            && session.title.is_some()
         {
             return;
         }
         // Build conversation context from user messages only. The agent's
         // replies (assistant/tool) are excluded to keep the prompt small ??        // a title only needs to reflect what the user asked for.
-        let messages = db.get_task_messages_limit(&task_id, 10).unwrap_or_default();
+        let messages = db
+            .get_session_messages_limit(&session_id, 10)
+            .unwrap_or_default();
         let user_lines: Vec<String> = messages
             .iter()
             .filter(|m| m.role == "user")
@@ -1346,20 +1394,20 @@ impl AgentLayer {
             None => return,
         };
         // Save to DB
-        if let Err(e) = db.update_task_title(&task_id, &title) {
+        if let Err(e) = db.update_session_title(&session_id, &title) {
             tracing::warn!("failed to save generated title: {}", e);
             return;
         }
-        // Update in-memory TaskInfo in executor
-        executor.update_task_title(&task_id, &title).await;
+        // Update in-memory SessionInfo in executor
+        executor.update_session_title(&session_id, &title).await;
         // Notify frontend
-        events.emit_title_updated(&task_id, &title).await;
-        tracing::info!("generated title for task {}: {}", task_id, title);
+        events.emit_title_updated(&session_id, &title).await;
+        tracing::info!("generated title for session {}: {}", session_id, title);
     }
 
-    async fn run_task_resumed(
+    async fn run_session_resumed(
         &self,
-        task_id: &str,
+        session_id: &str,
         snapshot: ReActSnapshot,
         conversation_history: &[ConversationMessage],
         run_id: u64,
@@ -1403,7 +1451,7 @@ impl AgentLayer {
             });
             if compacted {
                 tracing::debug!(
-                    "run_task_resumed: canonical is compacted; skipping conversation re-seed"
+                    "run_session_resumed: canonical is compacted; skipping conversation re-seed"
                 );
             } else {
                 // Count occurrences instead of a plain membership set: two
@@ -1426,7 +1474,7 @@ impl AgentLayer {
                     // text: `[conversation] [role] content` (a previous
                     // resume's re-seed, stripped above for User but possibly
                     // still present for Assistant) and `  [role] content`
-                    // (history embedded in the system prompt by `run_task`,
+                    // (history embedded in the system prompt by `run_session`,
                     // indented under "Additional context:"). Both represent
                     // the same raw content, which must count as "already
                     // present" or every resume would duplicate the whole
@@ -1494,7 +1542,7 @@ impl AgentLayer {
                 }
                 if inserted > 0 {
                     tracing::debug!(
-                        "run_task_resumed: seeded {} conversation message(s) missing from canonical",
+                        "run_session_resumed: seeded {} conversation message(s) missing from canonical",
                         inserted
                     );
                 }
@@ -1505,10 +1553,10 @@ impl AgentLayer {
             Some(e) => e,
             None => return Ok(history),
         };
-        let infer = self.spawn_infer(task_id);
+        let infer = self.spawn_infer(session_id);
         self.react_engine
             .run_react_loop(
-                task_id,
+                session_id,
                 &mut canonical,
                 &mut history,
                 start_step,
@@ -1522,13 +1570,13 @@ impl AgentLayer {
     }
 
     /// Rebuild canonical tool-call/result pairs from the persisted
-    /// `task_steps` rows. Used only on the snapshot-less resume fallback
+    /// `session_steps` rows. Used only on the snapshot-less resume fallback
     /// (react_state missing or corrupt): without it the model forgets every
     /// tool it already ran and re-executes them.
     ///
     /// The DB message stream deliberately stores only text (user/assistant
-    /// content) —tool calls and results live exclusively in task_steps
-    /// (and the snapshot). `task_steps` is a plain sequence of rows with
+    /// content) —tool calls and results live exclusively in session_steps
+    /// (and the snapshot). `session_steps` is a plain sequence of rows with
     /// `action_tool`/`action_input`/`observation`; interleaving them back
     /// into the canonical yields:
     ///
@@ -1541,8 +1589,12 @@ impl AgentLayer {
     /// DB message stream re-seeded by the caller. Rows without an
     /// observation (an interrupted in-flight tool) are skipped too —the
     /// dangling assistant tool_call would be dropped by sanitize anyway.
-    fn rebuild_tool_chain_from_steps(&self, task_id: &str, canonical: &mut Vec<CanonicalMessage>) {
-        let Ok(steps) = self.db.get_task_steps(task_id) else {
+    fn rebuild_tool_chain_from_steps(
+        &self,
+        session_id: &str,
+        canonical: &mut Vec<CanonicalMessage>,
+    ) {
+        let Ok(steps) = self.db.get_session_steps(session_id) else {
             return;
         };
         let mut rebuilt = 0usize;
@@ -1579,24 +1631,24 @@ impl AgentLayer {
         }
         if rebuilt > 0 {
             tracing::info!(
-                "run_task: rebuilt {} tool step(s) from task_steps for task {}",
+                "run_session: rebuilt {} tool step(s) from session_steps for session {}",
                 rebuilt,
-                task_id
+                session_id
             );
         }
     }
 
-    pub(crate) async fn run_task(
+    pub(crate) async fn run_session(
         &self,
-        task_id: &str,
+        session_id: &str,
         description: &str,
         context: &str,
         conversation_history: &[ConversationMessage],
         initial_attachments: &[haven_memory::repositories::messages::MessageAttachment],
     ) -> anyhow::Result<Vec<ReActStep>> {
         tracing::debug!(
-            "run_task start: task_id={:?} context={:?} attachments={}",
-            task_id,
+            "run_session start: session_id={:?} context={:?} attachments={}",
+            session_id,
             context,
             initial_attachments.len()
         );
@@ -1609,7 +1661,7 @@ impl AgentLayer {
             .prompt_builder
             .build(description, &[], &history_lines)
             .await;
-        tracing::debug!("run_task: system_prompt {} chars", system_prompt.len());
+        tracing::debug!("run_session: system_prompt {} chars", system_prompt.len());
 
         let mut initial_content = vec![ContentPart::text(context.to_string())];
         initial_content.extend(
@@ -1626,21 +1678,21 @@ impl AgentLayer {
         // Snapshot-less resume fallback (react_state missing or unparsable):
         // the DB message stream holds only text turns, so the model would
         // lose every previously executed tool call and re-run them. The
-        // task_steps table retains the full action chain (tool name, input,
+        // session_steps table retains the full action chain (tool name, input,
         // observation); rebuild the canonical tool-call/result pairs from it
         // so the resumed context is as complete as the snapshot's would be.
-        self.rebuild_tool_chain_from_steps(task_id, &mut canonical);
+        self.rebuild_tool_chain_from_steps(session_id, &mut canonical);
 
         let mut branch_points: HashMap<u32, BranchPoint> = HashMap::new();
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
             None => return Ok(history),
         };
-        let infer = self.spawn_infer(task_id);
+        let infer = self.spawn_infer(session_id);
         let run_id = self.react_engine.next_run_id();
         self.react_engine
             .run_react_loop(
-                task_id,
+                session_id,
                 &mut canonical,
                 &mut history,
                 1,
@@ -1656,9 +1708,9 @@ impl AgentLayer {
     pub async fn process_input(
         &self,
         transcript: &str,
-        active_task_id: Option<String>,
+        active_session_id: Option<String>,
     ) -> anyhow::Result<ProcessResult> {
-        self.process_input_with_attachments(transcript, active_task_id, &[], false)
+        self.process_input_with_attachments(transcript, active_session_id, &[], false)
             .await
     }
 
@@ -1671,27 +1723,27 @@ impl AgentLayer {
     pub async fn process_input_with_attachments(
         &self,
         transcript: &str,
-        active_task_id: Option<String>,
+        active_session_id: Option<String>,
         attachments: &[haven_memory::repositories::messages::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
         tracing::debug!(
-            "process_input: text={:?} active_task_id={:?} attachments={} voice={}",
+            "process_input: text={:?} active_session_id={:?} attachments={} voice={}",
             transcript,
-            active_task_id,
+            active_session_id,
             attachments.len(),
             voice
         );
 
         // The message is persisted BEFORE the state check on purpose: the
         // steering/supplement fallback paths below rely on it being on disk.
-        // If the task turns out to be terminal, the persisted row is removed
+        // If the session turns out to be terminal, the persisted row is removed
         // again below so history never shows a ghost user message.
         let mut persisted_msg = None;
-        if let Some(task_id) = active_task_id {
+        if let Some(session_id) = active_session_id {
             match self
                 .persist_message_parts(
-                    &task_id,
+                    &session_id,
                     "user",
                     transcript,
                     Some("text"),
@@ -1703,33 +1755,33 @@ impl AgentLayer {
                 Ok(msg) => persisted_msg = Some(msg),
                 Err(e) => {
                     tracing::warn!(
-                        "process_input: failed to persist user message for task {}: {}",
-                        task_id,
+                        "process_input: failed to persist user message for session {}: {}",
+                        session_id,
                         e
                     );
                 }
             }
 
-            let state = self.executor.get_task_state(&task_id).await;
+            let state = self.executor.get_session_state(&session_id).await;
 
-            // Running tasks take the message as a steering interjection,
+            // Running sessions take the message as a steering interjection,
             // injected into the ReAct loop in the gap between tool calls and
-            // the final content. If the steering queue is unavailable (task
+            // the final content. If the steering queue is unavailable (session
             // vanished from memory between the state read and the enqueue),
             // fall through to the supplement path instead of failing: the
             // user message is already persisted, and the supplement path
-            // reloads the task / handles the terminal guard / wakes it.
-            let steering_delivered = state == Some(TaskStatus::Running)
+            // reloads the session / handles the terminal guard / wakes it.
+            let steering_delivered = state == Some(SessionStatus::Running)
                 && match self
                     .executor
-                    .add_steering_with_attachments(&task_id, transcript, attachments)
+                    .add_steering_with_attachments(&session_id, transcript, attachments)
                     .await
                 {
                     Ok(()) => true,
                     Err(e) => {
                         tracing::warn!(
-                            "process_input: steering failed for task {} ({}); falling back to supplement path",
-                            task_id,
+                            "process_input: steering failed for session {} ({}); falling back to supplement path",
+                            session_id,
                             e
                         );
                         false
@@ -1737,53 +1789,58 @@ impl AgentLayer {
                 };
 
             if !steering_delivered {
-                // A Paused task that is awaiting an `ask` answer: this
+                // A Paused session that is awaiting an `ask` answer: this
                 // message IS the reply to the pending question. Queue it as
                 // an answer so the loop injects a paired "Answer to your
                 // previous question" instead of generic context —otherwise
                 // the model sees the old question as still open and answers
                 // questions from long ago. The awaiting-answer flavor is
                 // carried by the status itself (`PausedAwaitingAnswer`), so
-                // it is read BEFORE set_task_status(Pending) below clears it.
+                // it is read BEFORE set_session_status(Pending) below clears it.
                 let is_answer = matches!(
                     &state,
                     Some(s) if s.is_awaiting_answer()
                 );
                 let was_in_memory = if is_answer {
                     self.executor
-                        .add_answer_with_attachments(&task_id, transcript, attachments)
+                        .add_answer_with_attachments(&session_id, transcript, attachments)
                         .await
                         .is_ok()
                 } else {
                     self.executor
-                        .add_supplement_with_attachments(&task_id, transcript, attachments)
+                        .add_supplement_with_attachments(&session_id, transcript, attachments)
                         .await
                         .is_ok()
                 };
                 if !was_in_memory {
-                    // Task may be stale/deleted ??fall back to creating a new task
-                    if self.executor.ensure_task_loaded(&task_id).await.is_err() {
-                        let task = self
-                            .create_task_with_first_message(transcript, attachments, voice)
+                    // Session may be stale/deleted ??fall back to creating a new session
+                    if self
+                        .executor
+                        .ensure_session_loaded(&session_id)
+                        .await
+                        .is_err()
+                    {
+                        let session = self
+                            .create_session_with_first_message(transcript, attachments, voice)
                             .await?;
-                        self.events.emit_task_created(&task).await;
-                        return Ok(ProcessResult::TaskCreated(task.id));
+                        self.events.emit_session_created(&session).await;
+                        return Ok(ProcessResult::SessionCreated(session.id));
                     }
-                    // Re-read state after ensure_task_loaded may have reloaded
-                    // the task from DB (M3/H10 TOCTOU: end_task may have ended
-                    // it between the get_task_state read above and the failed
-                    // add_supplement). Only non-terminal tasks may be
-                    // reactivated by a follow-up message; Completed/Error tasks
+                    // Re-read state after ensure_session_loaded may have reloaded
+                    // the session from DB (M3/H10 TOCTOU: end_session may have ended
+                    // it between the get_session_state read above and the failed
+                    // add_supplement). Only non-terminal sessions may be
+                    // reactivated by a follow-up message; Completed/Error sessions
                     // were ended on purpose and must be reopened explicitly via
                     // the review flow ??auto-converting them would resurrect a
-                    // ghost task.
-                    let fresh_state = self.executor.get_task_state(&task_id).await;
-                    if fresh_state == Some(TaskStatus::Completed)
-                        || fresh_state == Some(TaskStatus::Error)
+                    // ghost session.
+                    let fresh_state = self.executor.get_session_state(&session_id).await;
+                    if fresh_state == Some(SessionStatus::Completed)
+                        || fresh_state == Some(SessionStatus::Error)
                     {
                         tracing::warn!(
-                            "process_input: task {} is terminal ({:?}) despite active_task_id; dropping supplement to avoid resurrection",
-                            task_id,
+                            "process_input: session {} is terminal ({:?}) despite active_session_id; dropping supplement to avoid resurrection",
+                            session_id,
                             fresh_state
                         );
                         // Remove the just-persisted user message so history
@@ -1791,7 +1848,7 @@ impl AgentLayer {
                         // frontend is told to drop its copy below).
                         if let Some(msg) = persisted_msg.take() {
                             let db = self.db.clone();
-                            let tid = task_id.clone();
+                            let tid = session_id.clone();
                             let msg_id = msg.id.clone();
                             let tid_c = tid.clone();
                             let msg_id_c = msg_id.clone();
@@ -1800,7 +1857,7 @@ impl AgentLayer {
                                 .await
                             {
                                 tracing::warn!(
-                                    "process_input: failed to remove ghost user message {} for task {}: {}",
+                                    "process_input: failed to remove ghost user message {} for session {}: {}",
                                     msg_id,
                                     tid,
                                     e
@@ -1812,73 +1869,81 @@ impl AgentLayer {
                         // showing an orphaned bubble with no response.
                         let fresh_status =
                             fresh_state.as_ref().map(|s| s.as_str()).unwrap_or("error");
-                        self.events.emit_task_updated(&task_id, fresh_status).await;
-                        // Do not keep the reloaded terminal task in the working
+                        self.events
+                            .emit_session_updated(&session_id, fresh_status)
+                            .await;
+                        // Do not keep the reloaded terminal session in the working
                         // set ??it was ended and should not be dispatchable.
-                        self.executor.remove_task(&task_id).await;
+                        self.executor.remove_session(&session_id).await;
                     } else {
                         if is_answer {
                             self.executor
-                                .add_answer_with_attachments(&task_id, transcript, attachments)
+                                .add_answer_with_attachments(&session_id, transcript, attachments)
                                 .await?;
                         } else {
                             self.executor
-                                .add_supplement_with_attachments(&task_id, transcript, attachments)
+                                .add_supplement_with_attachments(
+                                    &session_id,
+                                    transcript,
+                                    attachments,
+                                )
                                 .await?;
                         }
                         if matches!(fresh_state, Some(s) if s.is_paused()) {
-                            self.set_task_status(&task_id, TaskStatus::Pending).await?;
+                            self.set_session_status(&session_id, SessionStatus::Pending)
+                                .await?;
                         }
                     }
                     return Ok(ProcessResult::Supplemented);
                 }
                 if matches!(state.as_ref(), Some(s) if s.is_paused()) {
-                    self.set_task_status(&task_id, TaskStatus::Pending).await?;
+                    self.set_session_status(&session_id, SessionStatus::Pending)
+                        .await?;
                 }
             }
             Ok(ProcessResult::Supplemented)
         } else {
-            let task = self
-                .create_task_with_first_message(transcript, attachments, voice)
+            let session = self
+                .create_session_with_first_message(transcript, attachments, voice)
                 .await?;
-            tracing::info!("process_input created task: id={:?}", task.id);
-            self.events.emit_task_created(&task).await;
-            Ok(ProcessResult::TaskCreated(task.id))
+            tracing::info!("process_input created session: id={:?}", session.id);
+            self.events.emit_session_created(&session).await;
+            Ok(ProcessResult::SessionCreated(session.id))
         }
     }
 
-    /// Create a new task and persist the triggering user message into it,
+    /// Create a new session and persist the triggering user message into it,
     /// in that order ??the message (and its attachments) must be on disk
-    /// BEFORE the task is registered with the executor, otherwise the
+    /// BEFORE the session is registered with the executor, otherwise the
     /// dispatcher could start the ReAct loop and miss the first user turn.
-    async fn create_task_with_first_message(
+    async fn create_session_with_first_message(
         &self,
         input: &str,
         attachments: &[haven_memory::repositories::messages::MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<haven_task::TaskInfo> {
-        let record = self.db.create_task(input, input)?;
+    ) -> anyhow::Result<haven_session::SessionInfo> {
+        let record = self.db.create_session(input, input)?;
         // The first user turn (and its attachments) must be on disk BEFORE
-        // the dispatcher can pick the task up; if persisting fails, remove
-        // the task row again so no input-less task ever gets dispatched.
+        // the dispatcher can pick the session up; if persisting fails, remove
+        // the session row again so no input-less session ever gets dispatched.
         if let Err(e) = self
             .persist_message_parts(&record.id, "user", input, Some("text"), attachments, voice)
             .await
         {
-            let _ = self.db.delete_task(&record.id);
+            let _ = self.db.delete_session(&record.id);
             return Err(e);
         }
-        self.executor.ensure_task_loaded(&record.id).await?;
+        self.executor.ensure_session_loaded(&record.id).await?;
         // Wake the dispatcher now that the message is persisted.
         self.executor
-            .update_task_status(&record.id, TaskStatus::Pending)
+            .update_session_status(&record.id, SessionStatus::Pending)
             .await?;
-        let task = self
+        let session = self
             .executor
-            .get_task(&record.id)
+            .get_session(&record.id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("task '{}' not registered", record.id))?;
-        Ok(task)
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not registered", record.id))?;
+        Ok(session)
     }
 }
 
@@ -1977,10 +2042,10 @@ mod tests {
                 AgentEvent::Thought { thought, .. } => {
                     self.thoughts.lock().unwrap().push(thought);
                 }
-                AgentEvent::TaskCompleted { .. } => {
+                AgentEvent::SessionCompleted { .. } => {
                     *self.completed.lock().unwrap() = true;
                 }
-                AgentEvent::TaskUpdated { .. } => {
+                AgentEvent::SessionUpdated { .. } => {
                     *self.completed.lock().unwrap() = true;
                 }
                 AgentEvent::Supplement {
@@ -1997,7 +2062,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_emits_supplement_when_additional_context_queued() {
+    async fn run_session_emits_supplement_when_additional_context_queued() {
         let tools = Arc::new(ToolsManager::new());
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
@@ -2010,38 +2075,38 @@ mod tests {
         });
         agent.set_emitter(recorder.clone());
 
-        let task = executor
-            .create_task_with_summary("do stuff", "do stuff summary")
+        let session = executor
+            .create_session_with_summary("do stuff", "do stuff summary")
             .await
             .unwrap();
         executor
-            .add_supplement(&task.id, "extra: remember path X")
+            .add_supplement(&session.id, "extra: remember path X")
             .await
             .unwrap();
 
-        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        let history = agent.run_session_from_id(&session.id).await.unwrap();
         assert!(!history.is_empty());
 
         let sups = recorder.supplements.lock().unwrap().clone();
         assert_eq!(sups.len(), 1, "exactly one supplement event expected");
         assert_eq!(sups[0], "extra: remember path X");
-        // With supplements, task pauses instead of completing (conversation mode)
-        let state = executor.get_task_state(&task.id).await;
+        // With supplements, session pauses instead of completing (conversation mode)
+        let state = executor.get_session_state(&session.id).await;
         assert_eq!(
             state,
-            Some(TaskStatus::Paused),
-            "task should be paused (not completed) when supplements were processed"
+            Some(SessionStatus::Paused),
+            "session should be paused (not completed) when supplements were processed"
         );
     }
 
     // 鈹€鈹€鈹€ Pure-logic and data-layer tests (no LLM required) 鈹€鈹€鈹€
 
-    fn make_test_agent() -> (Arc<AgentLayer>, Arc<TaskExecutor>) {
+    fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -2067,7 +2132,7 @@ mod tests {
         p.push(format!("haven_agent_new_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -2078,18 +2143,18 @@ mod tests {
         ));
         let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
         // Verify construction succeeded; no per-session indirection remains.
-        let task = agent.db.create_task("input", "transcript").unwrap();
-        assert!(!task.id.is_empty());
+        let session = agent.db.create_session("input", "transcript").unwrap();
+        assert!(!session.id.is_empty());
     }
 
     #[test]
     fn agent_constructs_without_session_machinery() {
         let (agent, _) = make_test_agent();
-        let task = agent.db.create_task("input", "").unwrap();
-        assert!(!task.id.is_empty());
-        // Two tasks never share message keys ??each owns its own stream.
-        let other = agent.db.create_task("input2", "").unwrap();
-        assert_ne!(task.id, other.id);
+        let session = agent.db.create_session("input", "").unwrap();
+        assert!(!session.id.is_empty());
+        // Two sessions never share message keys ??each owns its own stream.
+        let other = agent.db.create_session("input2", "").unwrap();
+        assert_ne!(session.id, other.id);
     }
 
     #[test]
@@ -2111,7 +2176,7 @@ mod tests {
         p.push(format!("haven_agent_router_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
         let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router_a = Arc::new(LlmRouter::new_with_clients(
             client_a.clone(),
@@ -2154,15 +2219,15 @@ mod tests {
         });
         agent.set_emitter(recorder.clone());
 
-        let task = executor.create_task("test").await.unwrap();
-        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("test").await.unwrap();
+        let history = agent.run_session_from_id(&session.id).await.unwrap();
         assert!(!history.is_empty());
     }
 
     #[tokio::test]
     async fn build_system_prompt_succeeds() {
         let (agent, _) = make_test_agent();
-        let prompt = agent.prompt_builder.build("test task", &[], &[]).await;
+        let prompt = agent.prompt_builder.build("test session", &[], &[]).await;
         assert!(prompt.contains("You have access to the following built-in tools"));
     }
 
@@ -2201,7 +2266,7 @@ mod tests {
 
         let tools = Arc::new(ToolsManager::new());
         let builder = SystemPromptBuilder::new(tools, db);
-        let prompt = builder.build("test task", &[], &[]).await;
+        let prompt = builder.build("test session", &[], &[]).await;
 
         assert!(prompt.contains("name=Xtopia"));
         assert!(prompt.contains("likes=Rust"));
@@ -2214,7 +2279,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_per_task_tools_rebuilds_from_history() {
+    async fn restore_per_session_tools_rebuilds_from_history() {
         // Create a skill on disk so SkillsEngine can discover it.
         let dir = std::env::temp_dir().join(format!("haven_restore_test_{}", uuid::Uuid::new_v4()));
         let skill_dir = dir.join("echo");
@@ -2238,7 +2303,7 @@ mod tests {
             .await
             .unwrap();
         tools.rebuild_catalog().await;
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools.clone(), 1));
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools.clone(), 1));
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -2269,21 +2334,21 @@ mod tests {
             observation: Some(r#"{"skill":{"name":"skill__echo"}}"#.into()),
         }];
 
-        // Before restore, no per-task tools.
-        let before = tools.list_schemas_for_task("task-x").await;
+        // Before restore, no per-session tools.
+        let before = tools.list_schemas_for_session("ses-x").await;
         assert!(!before.iter().any(|s| s["name"] == "skill__echo"));
 
-        agent.restore_per_task_tools("task-x", &history).await;
+        agent.restore_per_session_tools("ses-x", &history).await;
 
-        // After restore, the skill tool should be visible per-task.
-        let after = tools.list_schemas_for_task("task-x").await;
+        // After restore, the skill tool should be visible per-session.
+        let after = tools.list_schemas_for_session("ses-x").await;
         assert!(
             after.iter().any(|s| s["name"] == "skill__echo"),
-            "restored skill should appear in per-task schemas"
+            "restored skill should appear in per-session schemas"
         );
 
-        // Other tasks should NOT see it.
-        let other = tools.list_schemas_for_task("task-y").await;
+        // Other sessions should NOT see it.
+        let other = tools.list_schemas_for_session("ses-y").await;
         assert!(!other.iter().any(|s| s["name"] == "skill__echo"));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2292,15 +2357,22 @@ mod tests {
     #[tokio::test]
     async fn persist_message_adds_to_db() {
         let (agent, _) = make_test_agent();
-        let task = agent.db.create_task("input", "").unwrap();
+        let session = agent.db.create_session("input", "").unwrap();
         agent
-            .persist_message_parts(&task.id, "user", "test message", Some("text"), &[], false)
+            .persist_message_parts(
+                &session.id,
+                "user",
+                "test message",
+                Some("text"),
+                &[],
+                false,
+            )
             .await
             .unwrap();
         // Read back via db
         let agent_ref = agent.clone();
         let db = agent_ref.db.clone();
-        let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
+        let msgs = db.get_session_messages_limit(&session.id, 50).unwrap();
         // Messages may or may not be immediately flushed depending on cache
         // ??verify at minimum the message is retrievable
         let found = msgs
@@ -2312,12 +2384,12 @@ mod tests {
     #[tokio::test]
     async fn persist_message_with_attachments_roundtrips() {
         let (agent, _) = make_test_agent();
-        let task = agent.db.create_task("input", "").unwrap();
+        let session = agent.db.create_session("input", "").unwrap();
         let att =
             haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
             .persist_message_parts(
-                &task.id,
+                &session.id,
                 "user",
                 "看图",
                 Some("text"),
@@ -2328,7 +2400,7 @@ mod tests {
             .unwrap();
         let agent_ref = agent.clone();
         let db = agent_ref.db.clone();
-        let msgs = db.get_task_messages_limit(&task.id, 50).unwrap();
+        let msgs = db.get_session_messages_limit(&session.id, 50).unwrap();
         let found = msgs
             .iter()
             .find(|m| m.role == "user" && m.content == "看图");
@@ -2342,7 +2414,7 @@ mod tests {
     #[test]
     fn parse_default_model_response_final_answer_from_text() {
         let resp = LlmResponse {
-            text: "Task done.".into(),
+            text: "Session done.".into(),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Stop),
             usage: haven_llm::Usage {
@@ -2357,7 +2429,7 @@ mod tests {
             web_search_calls: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
-        assert_eq!(thought, Some("Task done.".into()));
+        assert_eq!(thought, Some("Session done.".into()));
         assert_eq!(actions.len(), 1);
         assert!(actions[0].is_final);
         assert_eq!(actions[0].tool_name, "final_answer");
@@ -2422,47 +2494,47 @@ mod tests {
         assert!(actions[0].is_final);
     }
 
-    /// M3/H10: a follow-up message must NOT resurrect a task that was ended.
-    /// Terminal tasks are only reactivated explicitly via `reopen_task`
+    /// M3/H10: a follow-up message must NOT resurrect a session that was ended.
+    /// Terminal sessions are only reactivated explicitly via `reopen_session`
     /// (Completed/Error ??Paused) in the review flow.
     #[tokio::test]
-    async fn process_input_does_not_resurrect_ended_task() {
+    async fn process_input_does_not_resurrect_ended_session() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("original").await.unwrap();
-        executor.end_task(&task.id).await.unwrap();
-        // end_task removes the task from the working set entirely.
-        assert_eq!(executor.get_task_state(&task.id).await, None);
+        let session = executor.create_session("original").await.unwrap();
+        executor.end_session(&session.id).await.unwrap();
+        // end_session removes the session from the working set entirely.
+        assert_eq!(executor.get_session_state(&session.id).await, None);
 
         let result = agent
-            .process_input("more context", Some(task.id.clone()))
+            .process_input("more context", Some(session.id.clone()))
             .await
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
-        // Task is not reloaded into the working set and never becomes Pending.
-        assert_eq!(executor.get_task_state(&task.id).await, None);
-        assert!(executor.get_supplements(&task.id).await.is_empty());
+        // Session is not reloaded into the working set and never becomes Pending.
+        assert_eq!(executor.get_session_state(&session.id).await, None);
+        assert!(executor.get_supplements(&session.id).await.is_empty());
     }
 
     #[tokio::test]
-    async fn process_input_reactivates_paused_task() {
+    async fn process_input_reactivates_paused_session() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("original").await.unwrap();
+        let session = executor.create_session("original").await.unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Paused)
+            .update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
 
         let result = agent
-            .process_input("more context", Some(task.id.clone()))
+            .process_input("more context", Some(session.id.clone()))
             .await
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Pending)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
         );
         let supps: Vec<String> = executor
-            .get_supplements(&task.id)
+            .get_supplements(&session.id)
             .await
             .into_iter()
             .map(|s| s.text)
@@ -2473,26 +2545,26 @@ mod tests {
     #[tokio::test]
     async fn process_input_marks_reply_as_answer_when_awaiting() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("original").await.unwrap();
+        let session = executor.create_session("original").await.unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Paused)
+            .update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::PausedAwaitingAnswer)
+            .update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
             .await
             .unwrap();
 
         let result = agent
-            .process_input("the answer", Some(task.id.clone()))
+            .process_input("the answer", Some(session.id.clone()))
             .await
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Pending)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
         );
-        let supps = executor.get_supplements(&task.id).await;
+        let supps = executor.get_supplements(&session.id).await;
         assert_eq!(supps.len(), 1);
         assert!(
             supps[0].is_answer,
@@ -2501,7 +2573,7 @@ mod tests {
         assert_eq!(supps[0].text, "the answer");
         assert!(
             !executor
-                .get_task_state(&task.id)
+                .get_session_state(&session.id)
                 .await
                 .is_some_and(|s| s.is_awaiting_answer()),
             "reactivation must clear the awaiting-answer gate"
@@ -2511,18 +2583,18 @@ mod tests {
     #[tokio::test]
     async fn process_input_paused_without_ask_is_plain_supplement() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("original").await.unwrap();
+        let session = executor.create_session("original").await.unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Paused)
+            .update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
 
         let result = agent
-            .process_input("follow up", Some(task.id.clone()))
+            .process_input("follow up", Some(session.id.clone()))
             .await
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
-        let supps = executor.get_supplements(&task.id).await;
+        let supps = executor.get_supplements(&session.id).await;
         assert_eq!(supps.len(), 1);
         assert!(
             !supps[0].is_answer,
@@ -2534,13 +2606,20 @@ mod tests {
     async fn resume_dedups_conversation_prefix_against_canonical() {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task("hello").await.unwrap();
+        let session = executor.create_session("hello").await.unwrap();
         agent
-            .persist_message_parts(&task.id, "user", "hello", Some("text"), &[], false)
+            .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
             .await
             .unwrap();
         agent
-            .persist_message_parts(&task.id, "assistant", "hi there", Some("text"), &[], false)
+            .persist_message_parts(
+                &session.id,
+                "assistant",
+                "hi there",
+                Some("text"),
+                &[],
+                false,
+            )
             .await
             .unwrap();
         // Snapshot whose canonical already carries the full transcript PLUS
@@ -2566,13 +2645,13 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         let saved: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let user_texts: Vec<String> = saved
             .canonical
             .iter()
@@ -2605,11 +2684,11 @@ mod tests {
         // model answer it again as a new question.
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task("hello").await.unwrap();
+        let session = executor.create_session("hello").await.unwrap();
         // DB stores the RAW user text (this is what process_input persists).
         agent
             .persist_message_parts(
-                &task.id,
+                &session.id,
                 "user",
                 "please be brief",
                 Some("text"),
@@ -2633,13 +2712,13 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         let saved: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let user_texts: Vec<String> = saved
             .canonical
             .iter()
@@ -2670,17 +2749,17 @@ mod tests {
         // be re-seeded instead of being silently dropped.
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task("hello").await.unwrap();
+        let session = executor.create_session("hello").await.unwrap();
         agent
-            .persist_message_parts(&task.id, "user", "好的", Some("text"), &[], false)
+            .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
             .await
             .unwrap();
         agent
-            .persist_message_parts(&task.id, "assistant", "好的", Some("text"), &[], false)
+            .persist_message_parts(&session.id, "assistant", "好的", Some("text"), &[], false)
             .await
             .unwrap();
         agent
-            .persist_message_parts(&task.id, "user", "好的", Some("text"), &[], false)
+            .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
             .await
             .unwrap();
         // Canonical holds only the first "好的" turn pair (the second user
@@ -2698,13 +2777,13 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         let saved: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let user_texts: Vec<String> = saved
             .canonical
             .iter()
@@ -2741,14 +2820,14 @@ mod tests {
         // compaction, so a compacted canonical must skip the re-seed.
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task("hello").await.unwrap();
+        let session = executor.create_session("hello").await.unwrap();
         agent
-            .persist_message_parts(&task.id, "user", "hello", Some("text"), &[], false)
+            .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
             .await
             .unwrap();
         agent
             .persist_message_parts(
-                &task.id,
+                &session.id,
                 "assistant",
                 "long ago answer",
                 Some("text"),
@@ -2776,13 +2855,13 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         let saved: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let user_texts: Vec<String> = saved
             .canonical
             .iter()
@@ -2821,7 +2900,7 @@ mod tests {
         )]));
         let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task("task").await.unwrap();
+        let session = executor.create_session("session").await.unwrap();
         let canonical = vec![
             CanonicalMessage::system(vec![ContentPart::text("sys")]),
             CanonicalMessage::user_text("help me"),
@@ -2850,24 +2929,24 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::PausedAwaitingAnswer),
-            "task must pause for the pending question instead of completing"
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer),
+            "session must pause for the pending question instead of completing"
         );
         assert!(
             executor
-                .get_task_state(&task.id)
+                .get_session_state(&session.id)
                 .await
                 .is_some_and(|s| s.is_awaiting_answer()),
             "pause must be flagged as awaiting the user's answer"
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(
             msgs.last().unwrap().content,
             "which file?",
@@ -2899,16 +2978,16 @@ mod tests {
         agent.set_max_steps(1);
         let recorder = make_recording_emitter();
         agent.set_emitter(recorder.clone());
-        let task = executor.create_task("task").await.unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("session").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused),
-            "budget exhaustion must pause the task as a checkpoint"
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused),
+            "budget exhaustion must pause the session as a checkpoint"
         );
         // The notice must NOT be persisted as an assistant chat message.
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert!(
             msgs.iter()
                 .all(|m| !m.content.contains("任务步骤上限已用尽")),
@@ -2954,15 +3033,15 @@ mod tests {
         ]));
         let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
         agent.set_emitter(make_recording_emitter());
-        let task = executor.create_task("task").await.unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("session").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused),
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused),
             "turn must end paused after the retried final"
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(
             msgs.last().unwrap().content,
             "Here is the complete answer.",
@@ -2980,22 +3059,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_from_id_attaches_first_user_message_images() {
+    async fn run_session_from_id_attaches_first_user_message_images() {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor
-            .create_task_with_summary("看图", "看图")
+        let session = executor
+            .create_session_with_summary("看图", "看图")
             .await
             .unwrap();
         let att =
             haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
-            .persist_message_parts(&task.id, "user", "看图", Some("text"), &[att], false)
+            .persist_message_parts(&session.id, "user", "看图", Some("text"), &[att], false)
             .await
             .unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
         let snapshot: crate::types::ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let user_msg = snapshot
             .canonical
             .iter()
@@ -3011,28 +3090,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_from_id_ignores_later_image_supplement() {
+    async fn run_session_from_id_ignores_later_image_supplement() {
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
-        let task = executor
-            .create_task_with_summary("plain task", "plain task")
+        let session = executor
+            .create_session_with_summary("plain session", "plain session")
             .await
             .unwrap();
         agent
-            .persist_message_parts(&task.id, "user", "plain task", Some("text"), &[], false)
+            .persist_message_parts(
+                &session.id,
+                "user",
+                "plain session",
+                Some("text"),
+                &[],
+                false,
+            )
             .await
             .unwrap();
-        // Image arrives AFTER the task input (a supplement) ??it must not be
+        // Image arrives AFTER the session input (a supplement) ??it must not be
         // attached to the initial user turn.
         let att =
             haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
-            .process_input_with_attachments("补充看图", Some(task.id.clone()), &[att], false)
+            .process_input_with_attachments("补充看图", Some(session.id.clone()), &[att], false)
             .await
             .unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
         let snapshot: crate::types::ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let first_user = snapshot
             .canonical
             .iter()
@@ -3056,7 +3142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_from_id_trims_dangling_tool_call_before_resume() {
+    async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         // Simulate a snapshot saved by save_branch_point right after the
         // assistant tool_call message but before tool results were appended
         // (e.g. the app was closed mid-tool-execution). Resuming must trim
@@ -3083,7 +3169,7 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("resume me").await.unwrap();
+        let session = executor.create_session("resume me").await.unwrap();
 
         let canonical = vec![
             CanonicalMessage {
@@ -3129,10 +3215,10 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
-        let result = agent.run_task_from_id(&task.id).await.unwrap();
+        let result = agent.run_session_from_id(&session.id).await.unwrap();
 
         // No batch sent to the LLM may end with a dangling assistant tool_call.
         {
@@ -3149,18 +3235,18 @@ mod tests {
         }
         assert!(!result.is_empty(), "resumed loop should produce history");
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused),
-            "final_answer should complete the resumed task"
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused),
+            "final_answer should complete the resumed session"
         );
     }
 
     #[tokio::test]
-    async fn run_task_rebuilds_tool_chain_from_steps_without_snapshot() {
+    async fn run_session_rebuilds_tool_chain_from_steps_without_snapshot() {
         // When react_state is missing (corrupt or schema-drifted), resume
         // falls back to a fresh run. The DB message stream holds only text,
         // so the rebuilt canonical must recover the tool-call/result pairs
-        // from task_steps —otherwise the model forgets every tool it ran
+        // from session_steps —otherwise the model forgets every tool it ran
         // and re-executes them.
         let tools = Arc::new(ToolsManager::new());
         tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
@@ -3183,23 +3269,23 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("resume me").await.unwrap();
+        let session = executor.create_session("resume me").await.unwrap();
         // Persisted text turns (what the DB message stream holds)—
         agent
-            .persist_message_parts(&task.id, "user", "resume me", Some("text"), &[], false)
+            .persist_message_parts(&session.id, "user", "resume me", Some("text"), &[], false)
             .await
             .unwrap();
-        // …plus the action chain in task_steps (what a snapshot-less resume
+        // …plus the action chain in session_steps (what a snapshot-less resume
         // must reconstruct). Use raw repo calls to avoid going through the
         // ReAct loop.
         agent
             .db
             .run_blocking({
-                let task_id = task.id.clone();
+                let session_id = session.id.clone();
                 move |db| {
-                    db.create_thought_step(&task_id, 1, "let me echo first")?;
+                    db.create_thought_step(&session_id, 1, "let me echo first")?;
                     let step = db.create_action_step(
-                        &task_id,
+                        &session_id,
                         2,
                         "echo",
                         r#"{"text":"hi"}"#,
@@ -3214,9 +3300,9 @@ mod tests {
             .await
             .unwrap();
         // NO react_state row: fallback path.
-        assert!(agent.db.get_react_state(&task.id).unwrap().is_none());
+        assert!(agent.db.get_react_state(&session.id).unwrap().is_none());
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         {
             let seen = mock.seen.lock().unwrap();
@@ -3239,7 +3325,7 @@ mod tests {
             });
             assert!(
                 rebuilt_tool,
-                "snapshot-less resume must rebuild the echo call from task_steps"
+                "snapshot-less resume must rebuild the echo call from session_steps"
             );
             let rebuilt_result = first.iter().any(|m| {
                 matches!(m.role, LlmRole::Tool)
@@ -3249,7 +3335,7 @@ mod tests {
             });
             assert!(
                 rebuilt_result,
-                "snapshot-less resume must rebuild the echo result from task_steps"
+                "snapshot-less resume must rebuild the echo result from session_steps"
             );
         }
     }
@@ -3287,7 +3373,7 @@ mod tests {
 
     #[test]
     fn sanitize_canonical_drops_orphaned_tool_messages_and_dangling_calls() {
-        // Mirrors the corruption found in a real interrupted task: a
+        // Mirrors the corruption found in a real interrupted session: a
         // compaction split the assistant(tool_calls)/tool-results pair, so
         // the summary assistant (no tool_calls) is followed by orphaned tool
         // messages. A valid pair and a dangling trailing assistant follow —
@@ -3360,7 +3446,8 @@ mod tests {
         assert_eq!(canonical[3].tool_call_id.as_deref(), Some("call_b"));
         assert!(canonical[3].content.iter().any(|p| matches!(
             p,
-            ContentPart::Text(t) if t.contains("Interrupted")
+            ContentPart::Text(t)
+                if t.contains("Interrupted") && t.contains("tool:") && t.contains("arguments")
         )));
     }
 
@@ -3419,12 +3506,12 @@ mod tests {
     #[tokio::test]
     async fn process_input_with_attachments_queues_and_persists_attachments() {
         let (agent, executor) = make_test_agent();
-        let task = executor
-            .create_task_with_summary("original", "original")
+        let session = executor
+            .create_session_with_summary("original", "original")
             .await
             .unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Paused)
+            .update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
 
@@ -3433,7 +3520,7 @@ mod tests {
         let result = agent
             .process_input_with_attachments(
                 "看图",
-                Some(task.id.clone()),
+                Some(session.id.clone()),
                 std::slice::from_ref(&att),
                 false,
             )
@@ -3441,16 +3528,16 @@ mod tests {
             .unwrap();
         assert_eq!(result, ProcessResult::Supplemented);
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Pending)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
         );
-        let supps = executor.get_supplements(&task.id).await;
+        let supps = executor.get_supplements(&session.id).await;
         assert_eq!(supps.len(), 1);
         assert_eq!(supps[0].text, "看图");
         assert_eq!(supps[0].attachments, vec![att]);
 
-        // Persisted with attachments in the task's message stream.
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        // Persisted with attachments in the session's message stream.
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let user_msg = msgs
             .iter()
             .find(|m| m.role == "user" && m.content == "看图")
@@ -3460,25 +3547,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_input_creates_new_task() {
+    async fn process_input_creates_new_session() {
         let (agent, executor) = make_test_agent();
         let result = agent.process_input("open notepad", None).await.unwrap();
         match result {
-            ProcessResult::TaskCreated(task_id) => {
-                assert!(!task_id.is_empty());
-                let state = executor.get_task_state(&task_id).await;
-                assert_eq!(state, Some(TaskStatus::Pending));
+            ProcessResult::SessionCreated(session_id) => {
+                assert!(!session_id.is_empty());
+                let state = executor.get_session_state(&session_id).await;
+                assert_eq!(state, Some(SessionStatus::Pending));
             }
-            ProcessResult::Supplemented => panic!("expected TaskCreated"),
+            ProcessResult::Supplemented => panic!("expected SessionCreated"),
         }
     }
 
     #[tokio::test]
     async fn run_fact_inference_does_not_panic() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("test").await.unwrap();
-        executor.end_task(&task.id).await.unwrap();
-        agent.inference.infer_facts(&task.id).await;
+        let session = executor.create_session("test").await.unwrap();
+        executor.end_session(&session.id).await.unwrap();
+        agent.inference.infer_facts(&session.id).await;
     }
 
     // 鈹€鈹€鈹€ Integration tests for the ReAct core loop (refine ??1) 鈹€鈹€鈹€
@@ -3486,11 +3573,11 @@ mod tests {
     fn make_test_agent_with(
         client: Arc<dyn LlmClient>,
         tools: Arc<ToolsManager>,
-    ) -> (Arc<AgentLayer>, Arc<TaskExecutor>) {
+    ) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
             client.clone(),
@@ -3556,7 +3643,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         // A call missing both required fields (`action` and `query`).
         let mut actions = vec![Action {
@@ -3567,7 +3654,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         let input = &actions[0].tool_input;
@@ -3586,7 +3673,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         // Complete call: nothing to supplement.
         let mut actions = vec![Action {
@@ -3597,7 +3684,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 0);
 
@@ -3610,7 +3697,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 0);
     }
@@ -3628,7 +3715,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "action_required".into(),
@@ -3638,7 +3725,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         assert!(actions[0].tool_input.is_object());
@@ -3657,7 +3744,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "action_required".into(),
@@ -3667,7 +3754,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         assert_eq!(actions[0].tool_input["action"], "go");
@@ -3758,7 +3845,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "enum_required".into(),
@@ -3768,7 +3855,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         assert_eq!(actions[0].tool_input["operation"], "type");
@@ -3789,7 +3876,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "action_required".into(),
@@ -3799,7 +3886,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         // `action` falls back to the schema default "go"; the valid `query`
@@ -3819,7 +3906,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "action_required".into(),
@@ -3829,7 +3916,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         assert_eq!(actions[0].tool_input["action"], "go");
@@ -3847,7 +3934,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "action_required".into(),
@@ -3857,7 +3944,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 0);
         assert_eq!(actions[0].tool_input["action"], "stop");
@@ -3875,7 +3962,7 @@ mod tests {
             .await;
         let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
         let (agent, executor) = make_test_agent_with(client, tools);
-        let task = executor.create_task("do it").await.unwrap();
+        let session = executor.create_session("do it").await.unwrap();
 
         let mut actions = vec![Action {
             tool_name: "enum_with_optional".into(),
@@ -3885,7 +3972,7 @@ mod tests {
         }];
         let repaired = agent
             .react_engine
-            .supplement_missing_required_fields(&task.id, &mut actions)
+            .supplement_missing_required_fields(&session.id, &mut actions)
             .await;
         assert_eq!(repaired, 1);
         assert_eq!(actions[0].tool_input["operation"], "type");
@@ -4016,6 +4103,24 @@ mod tests {
                 |e| matches!(e, AgentEvent::Observation { tool_name: tn, .. } if tn == tool_name),
             )
         }
+        fn interrupted_observations(&self) -> Vec<String> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|e| {
+                    if let AgentEvent::Observation { observation, .. } = e {
+                        if observation.contains("Interrupted") {
+                            Some(observation.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
         fn has_compaction(&self) -> bool {
             self.events
                 .lock()
@@ -4119,7 +4224,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_executes_tool_then_final_answer() {
+    async fn run_session_executes_tool_then_final_answer() {
         let tools = Arc::new(ToolsManager::new());
         tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
         let mock = Arc::new(ScriptedMock::new(vec![
@@ -4155,19 +4260,19 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("echo hello").await.unwrap();
-        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("echo hello").await.unwrap();
+        let history = agent.run_session_from_id(&session.id).await.unwrap();
         assert!(history.len() >= 2, "should have at least 2 steps");
         assert!(collector.has_action("echo"));
         assert!(collector.has_observation("echo"));
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
     }
 
     #[tokio::test]
-    async fn run_task_empty_tool_call_id_stays_consistent_in_canonical() {
+    async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
         // Some providers return an empty tool_call_id. The Action side
         // synthesizes a UUID; the canonical assistant declaration must echo
         // the SAME id (not the raw empty string), otherwise the tool result
@@ -4208,13 +4313,13 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("echo hello").await.unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("echo hello").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         // Inspect the saved snapshot's canonical: the assistant declaration
         // and the tool result must share the same (non-empty) id.
         let saved: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         let mut declared: Option<String> = None;
         for m in &saved.canonical {
             if let Some(calls) = &m.tool_calls {
@@ -4238,7 +4343,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_injects_mid_turn_steering_before_final_content() {
+    async fn run_session_injects_mid_turn_steering_before_final_content() {
         // A user message sent while the agent is generating its final answer
         // must be injected before the turn ends (between the tool calls and
         // the final content) instead of being deferred until after
@@ -4300,18 +4405,18 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("echo hello").await.unwrap();
+        let session = executor.create_session("echo hello").await.unwrap();
 
         let run = tokio::spawn({
             let agent = agent.clone();
-            let task_id = task.id.clone();
-            async move { agent.run_task_from_id(&task_id).await }
+            let session_id = session.id.clone();
+            async move { agent.run_session_from_id(&session_id).await }
         });
         // Wait until the echo step completed and the delayed final LLM call
         // is in flight, then deliver the user's mid-turn message.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         executor
-            .add_steering(&task.id, "stop and use French")
+            .add_steering(&session.id, "stop and use French")
             .await
             .unwrap();
         let history = run.await.unwrap().unwrap();
@@ -4334,13 +4439,13 @@ mod tests {
             "should have re-run after steering injection"
         );
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
     }
 
     #[tokio::test]
-    async fn run_task_injects_steering_between_tool_calls() {
+    async fn run_session_injects_steering_between_tool_calls() {
         // A user message sent while the agent is executing tools is drained
         // at the next step boundary ??between tool calls ??so the final
         // answer is generated with the new context.
@@ -4383,17 +4488,17 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("run tool").await.unwrap();
+        let session = executor.create_session("run tool").await.unwrap();
 
         let run = tokio::spawn({
             let agent = agent.clone();
-            let task_id = task.id.clone();
-            async move { agent.run_task_from_id(&task_id).await }
+            let session_id = session.id.clone();
+            async move { agent.run_session_from_id(&session_id).await }
         });
         // Deliver the message while delay_a (200ms) is still executing.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         executor
-            .add_steering(&task.id, "add more detail")
+            .add_steering(&session.id, "add more detail")
             .await
             .unwrap();
         let _ = run.await.unwrap().unwrap();
@@ -4415,15 +4520,15 @@ mod tests {
             );
         }
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
     }
 
     #[tokio::test]
-    async fn run_task_ask_tool_pauses_and_surfaces_question() {
+    async fn run_session_ask_tool_pauses_and_surfaces_question() {
         // The `ask` tool signals the ReAct loop to pause and wait for the
-        // user's reply (delivered as a supplement on resume). Verify the task
+        // user's reply (delivered as a supplement on resume). Verify the session
         // ends Paused and the question is persisted as an assistant message.
         let tools = Arc::new(ToolsManager::new());
         tools
@@ -4466,20 +4571,20 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("decide a path").await.unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("decide a path").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
-        // Task must be paused, awaiting the user's answer.
+        // Session must be paused, awaiting the user's answer.
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::PausedAwaitingAnswer),
-            "ask should pause the task"
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer),
+            "ask should pause the session"
         );
         assert!(collector.has_action("ask"));
         assert!(collector.has_observation("ask"));
 
         // The question must be persisted so the user can see and answer it.
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let found = msgs
             .iter()
             .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
@@ -4487,8 +4592,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_ask_resumes_after_user_answer() {
-        // After `ask` pauses the task, the user's reply arrives as a
+    async fn run_session_ask_resumes_after_user_answer() {
+        // After `ask` pauses the session, the user's reply arrives as a
         // supplement; the loop resumes and should reach final_answer.
         let tools = Arc::new(ToolsManager::new());
         tools
@@ -4530,32 +4635,32 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("pick a path").await.unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("pick a path").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::PausedAwaitingAnswer),
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer),
             "ask should pause"
         );
 
-        // User answers; the supplement flips the task back to Pending.
+        // User answers; the supplement flips the session back to Pending.
         executor
-            .add_supplement(&task.id, "Use option A.")
+            .add_supplement(&session.id, "Use option A.")
             .await
             .unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Pending)
+            .update_session_status(&session.id, SessionStatus::Pending)
             .await
             .unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused),
-            "task should pause again after final answer"
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused),
+            "session should pause again after final answer"
         );
         // The final answer text should be persisted, proving the loop resumed
         // past the `ask` step and reached final_answer.
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let answered = msgs
             .iter()
             .any(|m| m.role == "assistant" && m.content.contains("Going with A"));
@@ -4621,36 +4726,36 @@ mod tests {
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
         agent.set_emitter(Arc::new(EventCollector::new()));
-        let task = executor.create_task("ask retry").await.unwrap();
+        let session = executor.create_session("ask retry").await.unwrap();
 
-        // Turn 1: the ask pauses the task.
-        agent.run_task_from_id(&task.id).await.unwrap();
+        // Turn 1: the ask pauses the session.
+        agent.run_session_from_id(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::PausedAwaitingAnswer)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer)
         );
 
         // Turn 2: the user answers; the resumed step fails mid-stream.
-        executor.add_supplement(&task.id, "Yes").await.unwrap();
+        executor.add_supplement(&session.id, "Yes").await.unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Pending)
+            .update_session_status(&session.id, SessionStatus::Pending)
             .await
             .unwrap();
-        let _ = agent.run_task_from_id(&task.id).await;
-        // The failed run ended in Error; terminal cleanup removed the task
+        let _ = agent.run_session_from_id(&session.id).await;
+        // The failed run ended in Error; terminal cleanup removed the session
         // from the working set.
-        assert_eq!(executor.get_task_state(&task.id).await, None);
+        assert_eq!(executor.get_session_state(&session.id).await, None);
 
-        // Turn 3: retry via continue_task ??Pending ??re-run.
-        agent.continue_task(&task.id).await.unwrap();
+        // Turn 3: retry via continue_session ??Pending ??re-run.
+        agent.continue_session(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Pending)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
         );
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
-        let steps = agent.db.get_task_steps(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
+        let steps = agent.db.get_session_steps(&session.id).unwrap();
 
         // The failed attempt's partial text must be gone (overwritten).
         let partials: Vec<&str> = msgs
@@ -4702,10 +4807,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_notify_tool_emits_notification_without_pausing() {
+    async fn run_session_notify_tool_emits_notification_without_pausing() {
         // The `notify` tool signals the ReAct loop to emit a Notification
         // event (in-app toast + Windows). Unlike `ask`, it must NOT pause the
-        // task: the loop continues to the final answer.
+        // session: the loop continues to the final answer.
         let tools = Arc::new(ToolsManager::new());
         tools
             .registry
@@ -4744,8 +4849,8 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("build and notify").await.unwrap();
-        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("build and notify").await.unwrap();
+        let history = agent.run_session_from_id(&session.id).await.unwrap();
         assert!(history.len() >= 2, "should have at least 2 steps");
 
         // The Notification event must carry the tool's title/body.
@@ -4758,17 +4863,17 @@ mod tests {
         // The chat/review observation must be readable, not raw JSON.
         assert!(collector.has_observation("notify"));
 
-        // Unlike `ask`, notify must not pause the task mid-loop: the loop
+        // Unlike `ask`, notify must not pause the session mid-loop: the loop
         // continued past the notify step (history has 2 steps) and reached the
         // normal end state (Paused = conversation mode, waiting for follow-up).
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
     }
 
     #[tokio::test]
-    async fn run_task_multiple_asks_surface_all_questions() {
+    async fn run_session_multiple_asks_surface_all_questions() {
         // Two `ask` calls in one batch must both be surfaced (joined into one
         // assistant message), not just the first.
         let tools = Arc::new(ToolsManager::new());
@@ -4802,14 +4907,14 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("two questions").await.unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("two questions").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::PausedAwaitingAnswer),
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer),
             "ask should pause"
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let persisted: String = msgs
             .iter()
             .filter(|m| m.role == "assistant")
@@ -4829,7 +4934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_parallel_tool_execution() {
+    async fn run_session_parallel_tool_execution() {
         let tools = Arc::new(ToolsManager::new());
         let timing = Arc::new(TimingState::new());
         tools
@@ -4880,8 +4985,8 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("run parallel").await.unwrap();
-        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("run parallel").await.unwrap();
+        let history = agent.run_session_from_id(&session.id).await.unwrap();
         assert!(!history.is_empty());
         assert!(collector.has_action("delay_a"));
         assert!(collector.has_action("delay_b"));
@@ -4905,6 +5010,180 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
+        // A tool batch cancelled mid-flight must NOT silently drop the
+        // in-flight calls: each one is repaired with an "Interrupted"
+        // observation (so the UI shows it and the model can retry) and the
+        // snapshot canonical stays a valid assistant/tool chain.
+        let tools = Arc::new(ToolsManager::new());
+        let timing = Arc::new(TimingState::new());
+        tools
+            .registry
+            .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+            .await;
+        tools
+            .registry
+            .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Running both in parallel.".into()),
+                tool_calls: vec![
+                    ToolCall {
+                        id: "tc1".into(),
+                        name: "delay_a".into(),
+                        arguments: "{}".into(),
+                    },
+                    ToolCall {
+                        id: "tc2".into(),
+                        name: "delay_b".into(),
+                        arguments: "{}".into(),
+                    },
+                ],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let session = executor.create_session("run parallel").await.unwrap();
+
+        let run = tokio::spawn({
+            let agent = agent.clone();
+            let session_id = session.id.clone();
+            async move { agent.run_session_from_id(&session_id).await }
+        });
+        // Wait until both action events were emitted (the assistant message
+        // with tool_calls is in canonical and the drain loop is running), then
+        // cancel while both tools (200ms sleeps) are still in flight.
+        for _ in 0..50 {
+            if collector.has_action("delay_a") && collector.has_action("delay_b") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            collector.has_action("delay_a") && collector.has_action("delay_b"),
+            "batch must have started before the cancel"
+        );
+        // end_session registers a real cancellation token (entry().or_insert) and
+        // cancels it — the same path the frontend's "end session" button uses —
+        // so the in-flight tool batch observes the cancellation mid-drain.
+        executor.end_session(&session.id).await.unwrap();
+        let history = run.await.unwrap().unwrap();
+
+        // Every in-flight tool got an "Interrupted" observation emitted to
+        // the UI — the cancelled tools are not silently skipped.
+        let interrupted = collector.interrupted_observations();
+        assert_eq!(
+            interrupted.len(),
+            2,
+            "both in-flight tools must emit an Interrupted observation"
+        );
+        // The observation must carry the tool name and the attempted arguments
+        // (field supplementation), not a bare "Interrupted" marker, so the UI
+        // and the model can see exactly which call was cut off.
+        let all_text = interrupted.join("\n");
+        for tool in ["delay_a", "delay_b"] {
+            assert!(
+                all_text.contains(tool),
+                "interrupted observation must name tool '{}' (got: {})",
+                tool,
+                all_text
+            );
+        }
+        assert!(
+            all_text.contains("arguments"),
+            "interrupted observation must carry the attempted arguments (got: {})",
+            all_text
+        );
+        // The history recorded the interrupted steps so a resume keeps them.
+        let interrupted_steps = history
+            .iter()
+            .filter(|s| {
+                s.observation
+                    .as_deref()
+                    .is_some_and(|o| o.contains("Interrupted"))
+            })
+            .count();
+        assert_eq!(
+            interrupted_steps, 2,
+            "interrupted tool calls must be recorded in history"
+        );
+        // The history entries must also carry the enriched fields.
+        assert!(
+            history
+                .iter()
+                .all(|s| s.observation.as_deref().is_none_or(|o| {
+                    !o.contains("Interrupted") || (o.contains("tool:") && o.contains("arguments"))
+                })),
+            "interrupted history observations must carry tool name and arguments"
+        );
+        // The saved snapshot canonical stays a valid assistant/tool chain: no
+        // dangling assistant tool_calls without a following result (which
+        // providers would reject as a 400 on resume).
+        let state_json = agent
+            .db
+            .get_react_state(&session.id)
+            .unwrap()
+            .expect("exit snapshot must be saved after mid-batch cancel");
+        let snapshot: ReActSnapshot = serde_json::from_str(&state_json).unwrap();
+        let mut pending: Vec<String> = Vec::new();
+        let mut interrupted_with_fields = 0;
+        for m in &snapshot.canonical {
+            match m.role {
+                CanonicalRole::Tool => {
+                    if let Some(cid) = &m.tool_call_id {
+                        if let Some(pos) = pending.iter().position(|p| p == cid) {
+                            pending.remove(pos);
+                        }
+                    } else if let Some(cid) = pending.pop() {
+                        let _ = cid;
+                    }
+                    // The repaired Interrupted tool results must carry the
+                    // tool name and arguments so a resume sees what happened.
+                    if m.content
+                        .iter()
+                        .any(|p| matches!(p, ContentPart::Text(t) if t.contains("Interrupted")))
+                    {
+                        interrupted_with_fields += 1;
+                        assert!(
+                            m.content.iter().any(|p| matches!(
+                                p,
+                                ContentPart::Text(t) if t.contains("tool:") && t.contains("arguments")
+                            )),
+                            "repaired Interrupted result must include tool name and arguments: {:?}",
+                            m.content
+                        );
+                    }
+                }
+                CanonicalRole::Assistant => {
+                    pending = m
+                        .tool_calls
+                        .as_ref()
+                        .map(|tc| tc.iter().map(|t| t.id.clone()).collect())
+                        .unwrap_or_default();
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            interrupted_with_fields, 2,
+            "both interrupted tool results in the snapshot must carry fields"
+        );
+        assert!(
+            pending.is_empty(),
+            "snapshot canonical must not end with unanswered tool_calls (got {:?})",
+            pending
+        );
+    }
+
+    #[tokio::test]
     async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         // The pause snapshot must end with the agent's own final answer (not
         // right after the tool results), so a resume sees the completed
@@ -4912,7 +5191,7 @@ mod tests {
         // it at the transcript head, out of order.
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(TaskExecutor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("First answer.".into()),
@@ -4953,16 +5232,16 @@ mod tests {
         ));
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("question one").await.unwrap();
+        let session = executor.create_session("question one").await.unwrap();
 
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
 
         let state_json = db
-            .get_react_state(&task.id)
+            .get_react_state(&session.id)
             .unwrap()
             .expect("snapshot must exist after the pause");
         let snapshot: ReActSnapshot = serde_json::from_str(&state_json).unwrap();
@@ -4989,14 +5268,14 @@ mod tests {
         // own completed answer BEFORE the injected follow-up, so the model
         // answers with knowledge of what it already said.
         executor
-            .add_supplement(&task.id, "next question")
+            .add_supplement(&session.id, "next question")
             .await
             .unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Pending)
+            .update_session_status(&session.id, SessionStatus::Pending)
             .await
             .unwrap();
-        agent.run_task_from_id(&task.id).await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
 
         let seen = mock.seen.lock().unwrap();
         assert!(
@@ -5033,7 +5312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_task_compaction_retry_on_context_exceeded() {
+    async fn run_session_compaction_retry_on_context_exceeded() {
         let tools = Arc::new(ToolsManager::new());
         tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
         let mock = Arc::new(ScriptedMock::new(vec![
@@ -5070,21 +5349,21 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("test compaction").await.unwrap();
-        let history = agent.run_task_from_id(&task.id).await.unwrap();
+        let session = executor.create_session("test compaction").await.unwrap();
+        let history = agent.run_session_from_id(&session.id).await.unwrap();
         assert!(!history.is_empty());
         assert!(
             collector.has_compaction(),
             "Compaction event should be emitted"
         );
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
     }
 
     #[tokio::test]
-    async fn run_task_context_exceeded_compaction_fails() {
+    async fn run_session_context_exceeded_compaction_fails() {
         let tools = Arc::new(ToolsManager::new());
         let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Err(
             LlmError::ContextLengthExceeded,
@@ -5092,21 +5371,24 @@ mod tests {
         let (agent, executor) = make_test_agent_with(mock, tools);
         let collector = Arc::new(EventCollector::new());
         agent.set_emitter(collector.clone());
-        let task = executor.create_task("compaction fail").await.unwrap();
-        let result = agent.run_task_from_id(&task.id).await;
+        let session = executor.create_session("compaction fail").await.unwrap();
+        let result = agent.run_session_from_id(&session.id).await;
         assert!(result.is_err(), "should error when compaction fails");
-        // Terminal cleanup removed the task from the working set.
-        assert_eq!(executor.get_task_state(&task.id).await, None);
+        // Terminal cleanup removed the session from the working set.
+        assert_eq!(executor.get_session_state(&session.id).await, None);
     }
 
     #[tokio::test]
-    async fn continue_task_resumes_errored_task() {
+    async fn continue_session_resumes_errored_session() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("test continue").await.unwrap();
-        // Simulate an errored task with a saved snapshot.
-        agent.db.update_task_status(&task.id, "error").unwrap();
+        let session = executor.create_session("test continue").await.unwrap();
+        // Simulate an errored session with a saved snapshot.
+        agent
+            .db
+            .update_session_status(&session.id, "error")
+            .unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Error)
+            .update_session_status(&session.id, SessionStatus::Error)
             .await
             .unwrap();
         let snapshot = ReActSnapshot {
@@ -5124,60 +5406,69 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
         // Add a partial assistant message that should be cleaned up.
         agent
             .db
-            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "partial output", Some("text"), None)
+            .add_message(
+                &session.id,
+                "assistant",
+                "partial output",
+                Some("text"),
+                None,
+            )
             .unwrap();
 
-        agent.continue_task(&task.id).await.unwrap();
+        agent.continue_session(&session.id).await.unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Pending)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
         );
         // The partial output should have been deleted (only the user message remains).
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
     }
 
     #[tokio::test]
-    async fn continue_task_non_error_fails() {
+    async fn continue_session_non_error_fails() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("not error").await.unwrap();
-        // Task is Pending, not Error ??should refuse.
-        let result = agent.continue_task(&task.id).await;
+        let session = executor.create_session("not error").await.unwrap();
+        // Session is Pending, not Error ??should refuse.
+        let result = agent.continue_session(&session.id).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn rollback_without_react_state_truncates_messages() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("no state").await.unwrap();
-        // No react_state saved ??simulate an old task that errored before
+        let session = executor.create_session("no state").await.unwrap();
+        // No react_state saved ??simulate an old session that errored before
         // snapshots were persisted.
-        agent.db.update_task_status(&task.id, "error").unwrap();
+        agent
+            .db
+            .update_session_status(&session.id, "error")
+            .unwrap();
         executor
-            .update_task_status(&task.id, TaskStatus::Error)
+            .update_session_status(&session.id, SessionStatus::Error)
             .await
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "partial", Some("text"), None)
+            .add_message(&session.id, "assistant", "partial", Some("text"), None)
             .unwrap();
         let hello_id = agent
             .db
-            .get_task_messages(&task.id)
+            .get_session_messages(&session.id)
             .unwrap()
             .into_iter()
             .find(|m| m.content == "hello")
@@ -5186,21 +5477,21 @@ mod tests {
 
         // User-message rollback (pause=true) should truncate from the user msg.
         agent
-            .rollback_task(&task.id, 1, true, Some(&hello_id))
+            .rollback_session(&session.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert!(msgs.is_empty(), "messages should be empty after rollback");
     }
 
     #[tokio::test]
     async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("no bp").await.unwrap();
+        let session = executor.create_session("no bp").await.unwrap();
         // Save a snapshot with no branch_points at the target step.
         let canonical = vec![CanonicalMessage {
             role: CanonicalRole::System,
@@ -5218,48 +5509,48 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "partial", Some("text"), None)
+            .add_message(&session.id, "assistant", "partial", Some("text"), None)
             .unwrap();
 
         // Rollback to step 1 with pause=false (agent rollback).
         agent
-            .rollback_task(&task.id, 1, false, None)
+            .rollback_session(&session.id, 1, false, None)
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Pending)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
         );
         // The partial assistant message should be deleted, user message kept.
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "hello");
     }
 
     #[tokio::test]
-    async fn rollback_pause_true_removes_user_message_from_task() {
+    async fn rollback_pause_true_removes_user_message_from_session() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("user rollback").await.unwrap();
+        let session = executor.create_session("user rollback").await.unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "thinking", Some("text"), None)
+            .add_message(&session.id, "assistant", "thinking", Some("text"), None)
             .unwrap();
         // Branch point at step 1: canonical ends at the user message, but
         // last_msg_at points at the thought that was persisted AFTER it (the
         // realistic shape saved by save_branch_point).
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let hello_id = msgs
             .iter()
             .find(|m| m.content == "hello")
@@ -5308,24 +5599,24 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
         // User-message rollback: the user message itself must be removed from
-        // the task (its text returns to the composer for editing) ??not
+        // the session (its text returns to the composer for editing) ??not
         // left behind to reappear on the next review rebuild.
         agent
-            .rollback_task(&task.id, 1, true, Some(&hello_id))
+            .rollback_session(&session.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert!(
             msgs.is_empty(),
-            "user message should be deleted from the task, got {:?}",
+            "user message should be deleted from the session, got {:?}",
             msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
     }
@@ -5339,27 +5630,27 @@ mod tests {
         // live-view id never matches a DB id, the backend can only guess the
         // target from the newest user message at/before the cutoff.
         let (agent, executor) = make_test_agent();
-        let task = executor
-            .create_task("fallback user rollback")
+        let session = executor
+            .create_session("fallback user rollback")
             .await
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "first", Some("text"), None)
+            .add_message(&session.id, "user", "first", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "reply1", Some("text"), None)
+            .add_message(&session.id, "assistant", "reply1", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "second", Some("text"), None)
+            .add_message(&session.id, "user", "second", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "reply2", Some("text"), None)
+            .add_message(&session.id, "assistant", "reply2", Some("text"), None)
             .unwrap();
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let reply1_ts = msgs
             .iter()
             .find(|m| m.role == "assistant" && m.content == "reply1")
@@ -5400,20 +5691,20 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
         // The user clicked "second" (the newest user message, whose id
         // resolves to a persisted row).
         agent
-            .rollback_task(&task.id, 2, true, Some(&second_id))
+            .rollback_session(&session.id, 2, true, Some(&second_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(
             contents,
@@ -5429,26 +5720,26 @@ mod tests {
         // content when the clicked message's id missed, and to guessing the
         // newest user message when even that failed. Both guesses could
         // delete the wrong message; an unresolvable id is now a direct error
-        // and the task is left untouched.
+        // and the session is left untouched.
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("strict rollback").await.unwrap();
+        let session = executor.create_session("strict rollback").await.unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "first question", Some("text"), None)
+            .add_message(&session.id, "user", "first question", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "reply A", Some("text"), None)
+            .add_message(&session.id, "assistant", "reply A", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "second question", Some("text"), None)
+            .add_message(&session.id, "user", "second question", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "reply B", Some("text"), None)
+            .add_message(&session.id, "assistant", "reply B", Some("text"), None)
             .unwrap();
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let reply_a_ts = msgs
             .iter()
             .find(|m| m.role == "assistant" && m.content == "reply A")
@@ -5482,21 +5773,21 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
         // The live-view id never matches a DB id and no content fallback
         // exists anymore: rollback must error and delete nothing.
         let err = agent
-            .rollback_task(&task.id, 1, true, Some("live-view-local-id"))
+            .rollback_session(&session.id, 1, true, Some("live-view-local-id"))
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("not found in task messages"),
+            err.to_string().contains("not found in session messages"),
             "unexpected error: {}",
             err
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(msgs.len(), 4, "no message may be deleted on error");
     }
 
@@ -5506,21 +5797,21 @@ mod tests {
     /// Returns the persisted messages so tests can resolve specific ids.
     fn seed_hello_snapshot(
         agent: &AgentLayer,
-        task_id: &str,
+        session_id: &str,
     ) -> Vec<haven_memory::repositories::messages::Message> {
         agent
             .db
-            .add_message(task_id, "user", "hello", Some("text"), None)
+            .add_message(session_id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(task_id, "assistant", "thinking", Some("text"), None)
+            .add_message(session_id, "assistant", "thinking", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(task_id, "user", "interrupt", Some("text"), None)
+            .add_message(session_id, "user", "interrupt", Some("text"), None)
             .unwrap();
-        let msgs = agent.db.get_task_messages(task_id).unwrap();
+        let msgs = agent.db.get_session_messages(session_id).unwrap();
         let thinking_ts = msgs
             .iter()
             .find(|m| m.role == "assistant")
@@ -5563,7 +5854,7 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(task_id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(session_id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
         msgs
     }
@@ -5571,8 +5862,8 @@ mod tests {
     #[tokio::test]
     async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("orphan rollback").await.unwrap();
-        let msgs = seed_hello_snapshot(&agent, &task.id);
+        let session = executor.create_session("orphan rollback").await.unwrap();
+        let msgs = seed_hello_snapshot(&agent, &session.id);
 
         // Roll back the interrupted message: only it must be discarded; the
         // earlier exchange ("hello" / "thinking") survives.
@@ -5583,14 +5874,14 @@ mod tests {
             .id
             .clone();
         agent
-            .rollback_task(&task.id, 1, true, Some(&interrupt_id))
+            .rollback_session(&session.id, 1, true, Some(&interrupt_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let contents: Vec<&str> = msgs.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(
             contents,
@@ -5601,7 +5892,7 @@ mod tests {
         // The canonical must NOT be truncated: "hello" is a legitimately
         // processed message and stays in the restored context.
         let restored: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         assert!(
             restored
                 .canonical
@@ -5619,8 +5910,8 @@ mod tests {
         // own timestamp also discards the later orphan (it belongs to the
         // discarded timeline), and the canonical IS truncated.
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("processed rollback").await.unwrap();
-        let msgs = seed_hello_snapshot(&agent, &task.id);
+        let session = executor.create_session("processed rollback").await.unwrap();
+        let msgs = seed_hello_snapshot(&agent, &session.id);
 
         let hello_id = msgs
             .iter()
@@ -5629,21 +5920,21 @@ mod tests {
             .id
             .clone();
         agent
-            .rollback_task(&task.id, 1, true, Some(&hello_id))
+            .rollback_session(&session.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert!(
             msgs.is_empty(),
             "rollback of the processed message must wipe the orphan too, got {:?}",
             msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
         let restored: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         assert!(
             !restored
                 .canonical
@@ -5659,23 +5950,29 @@ mod tests {
         // message and the branch point must NOT hijack the delete range: the
         // target message's own timestamp wins, so the target is removed too.
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("target ts").await.unwrap();
+        let session = executor.create_session("target ts").await.unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "hello", Some("text"), None)
+            .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "thinking", Some("text"), None)
+            .add_message(&session.id, "assistant", "thinking", Some("text"), None)
             .unwrap();
         // A steering interjection persisted after "hello" but BEFORE the
         // branch-point thought timestamp (the user typed while the agent was
         // working on the first step).
         agent
             .db
-            .add_message(&task.id, "user", "also check the time", Some("text"), None)
+            .add_message(
+                &session.id,
+                "user",
+                "also check the time",
+                Some("text"),
+                None,
+            )
             .unwrap();
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let hello_id = msgs
             .iter()
             .find(|m| m.content == "hello")
@@ -5724,27 +6021,27 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
         // Roll back "hello" specifically —the steering interjection must
         // NOT keep "hello" alive.
         agent
-            .rollback_task(&task.id, 1, true, Some(&hello_id))
+            .rollback_session(&session.id, 1, true, Some(&hello_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert!(
             msgs.is_empty(),
             "rolling back 'hello' must delete it (and the interjection), got {:?}",
             msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
         let restored: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         assert!(
             !restored
                 .canonical
@@ -5762,22 +6059,22 @@ mod tests {
         // prefixed canonical entry (not merely the last User), so the
         // message is removed from the restored context.
         let (agent, executor) = make_test_agent();
-        let task = executor.create_task("prefixed rollback").await.unwrap();
+        let session = executor.create_session("prefixed rollback").await.unwrap();
         agent
             .db
-            .add_message(&task.id, "user", "do it", Some("text"), None)
+            .add_message(&session.id, "user", "do it", Some("text"), None)
             .unwrap();
         // The steering is injected BEFORE the step's LLM call, so it is
         // persisted before the branch-point thought timestamp.
         agent
             .db
-            .add_message(&task.id, "user", "use French", Some("text"), None)
+            .add_message(&session.id, "user", "use French", Some("text"), None)
             .unwrap();
         agent
             .db
-            .add_message(&task.id, "assistant", "thinking", Some("text"), None)
+            .add_message(&session.id, "assistant", "thinking", Some("text"), None)
             .unwrap();
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         let steering_id = msgs
             .iter()
             .find(|m| m.content == "use French")
@@ -5835,18 +6132,18 @@ mod tests {
         };
         agent
             .db
-            .save_react_state(&task.id, &serde_json::to_string(&snapshot).unwrap())
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
             .unwrap();
 
         agent
-            .rollback_task(&task.id, 2, true, Some(&steering_id))
+            .rollback_session(&session.id, 2, true, Some(&steering_id))
             .await
             .unwrap();
         assert_eq!(
-            executor.get_task_state(&task.id).await,
-            Some(TaskStatus::Paused)
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
         );
-        let msgs = agent.db.get_task_messages(&task.id).unwrap();
+        let msgs = agent.db.get_session_messages(&session.id).unwrap();
         assert_eq!(
             msgs.len(),
             1,
@@ -5855,7 +6152,7 @@ mod tests {
         );
         assert_eq!(msgs[0].content, "do it");
         let restored: ReActSnapshot =
-            serde_json::from_str(&agent.db.get_react_state(&task.id).unwrap().unwrap()).unwrap();
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
         assert!(
             !restored
                 .canonical

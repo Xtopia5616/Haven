@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { buildReviewMessages, mergeLiveStreaming } from './reviewMessages.js';
 import { formatMessageTime } from './stores.js';
 
-const sampleTask = {
-	id: 'task-1',
+const sampleSession = {
+	id: 'session-1',
 	title: '打开记事本',
 	input_text: '打开记事本',
 	created_at: '2026-08-01T10:00:00.000Z',
@@ -12,7 +12,7 @@ const sampleTask = {
 describe('buildReviewMessages', () => {
 	it('converts session messages into chat bubble items', () => {
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm2', role: 'assistant', content: '已打开', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -26,7 +26,7 @@ describe('buildReviewMessages', () => {
 
 	it('preserves the voice flag from persisted messages', () => {
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'mv', role: 'user', content: '打开计算器', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [], voice: true },
 				{ id: 'mt', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
@@ -39,7 +39,7 @@ describe('buildReviewMessages', () => {
 
 	it('adds tool badges from steps with action_tool', () => {
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
@@ -55,7 +55,7 @@ describe('buildReviewMessages', () => {
 		// `"silent": true` on a tool input hides its card live; the review
 		// rebuild must not resurrect it as a tool badge.
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -73,7 +73,7 @@ describe('buildReviewMessages', () => {
 		// must resolve to the step via the matching thought step row so
 		// rollback targeting keeps working.
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm2', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -88,15 +88,15 @@ describe('buildReviewMessages', () => {
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
 	});
 
-	it('falls back to the task input text when there are no messages', () => {
-		const items = buildReviewMessages({ task: sampleTask, messages: [], steps: [] });
+	it('falls back to the session input text when there are no messages', () => {
+		const items = buildReviewMessages({ session: sampleSession, messages: [], steps: [] });
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({ role: 'user', content: '打开记事本' });
 	});
 
 	it('sorts items chronologically', () => {
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'late', role: 'assistant', content: 'later', message_type: 'text', created_at: '2026-08-01T10:05:00Z', attachments: [] },
 				{ id: 'early', role: 'user', content: 'first', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -111,7 +111,7 @@ describe('buildReviewMessages', () => {
 		// message and as a step observation. It must surface once, as an
 		// `ask`-type card (no "Calling ask / Result" duplicate).
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm2', role: 'assistant', content: '你想要怎么处理？A 还是 B？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -143,7 +143,7 @@ describe('buildReviewMessages', () => {
 		// the session message holds the readable question. The card must still
 		// match and render as ask (not a raw JSON tool badge).
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm2', role: 'assistant', content: '哪个文件？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -152,7 +152,7 @@ describe('buildReviewMessages', () => {
 				{
 					id: 's1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '哪个文件？', context: null, awaiting_answer: true, hint: 'The task is paused.' }),
+					observation: JSON.stringify({ ask: true, question: '哪个文件？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -166,11 +166,11 @@ describe('buildReviewMessages', () => {
 	});
 
 	it('renders a raw JSON ask observation as an ask card when no session message matches', () => {
-		// Old tasks may lack the persisted session message for the question.
+		// Old sessions may lack the persisted session message for the question.
 		// The step must still surface as an ask card with the extracted
 		// question, never as a raw JSON tool badge.
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
@@ -178,7 +178,7 @@ describe('buildReviewMessages', () => {
 				{
 					id: 's1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', context: null, awaiting_answer: true, hint: 'The task is paused.' }),
+					observation: JSON.stringify({ ask: true, question: '继续吗？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -203,7 +203,7 @@ describe('buildReviewMessages', () => {
 		// only its own question. Both should still render as ask cards with no
 		// raw tool badge or duplicated text.
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm2', role: 'assistant', content: 'Q1？\n\nQ2？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
@@ -221,12 +221,12 @@ describe('buildReviewMessages', () => {
 
 	it('matches an interrupted user message to its steering/supplement thought step', () => {
 		// A message sent mid-generation (steering) or as an answer to a paused
-		// task (supplement) is persisted as a thought step carrying the user's
+		// session (supplement) is persisted as a thought step carrying the user's
 		// own words. After reload the input must resolve to that step even
-		// when nothing follows it (e.g. the task errored right after), so
+		// when nothing follows it (e.g. the session errored right after), so
 		// rollback stays available.
 		const items = buildReviewMessages({
-			task: sampleTask,
+			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
@@ -238,12 +238,12 @@ describe('buildReviewMessages', () => {
 		expect(items.find((i) => i.id === 'm3').stepNumber).toBe(2);
 	});
 
-	it('restores ask options and awaiting from a paused task', () => {
-		// A task paused on an ask question must rebuild the card with its
+	it('restores ask options and awaiting from a paused session', () => {
+		// A session paused on an ask question must rebuild the card with its
 		// quick-reply options and awaiting state, otherwise the user cannot
 		// answer from the chat view after a switch/reload.
 		const items = buildReviewMessages({
-			task: { ...sampleTask, status: 'Paused' },
+			session: { ...sampleSession, status: 'Paused' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
@@ -267,9 +267,9 @@ describe('buildReviewMessages', () => {
 		});
 	});
 
-	it('keeps ask cards non-awaiting for non-paused tasks', () => {
+	it('keeps ask cards non-awaiting for non-paused sessions', () => {
 		const items = buildReviewMessages({
-			task: { ...sampleTask, status: 'Completed' },
+			session: { ...sampleSession, status: 'Completed' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],

@@ -2,15 +2,14 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use futures_util::Stream;
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap};
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    build_client, build_headers, health_check_request, normalize_web_search_call_item,
-    send_request,
+    build_client, build_headers, health_check_request, normalize_web_search_call_item, send_request,
 };
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{
@@ -1050,7 +1049,10 @@ mod tests {
         assert_eq!(out["type"], "web_search_call");
         assert_eq!(out["id"], "ws_9");
         assert_eq!(out["status"], "in_progress");
-        assert_eq!(out["action"], serde_json::json!({"type": "search", "queries": []}));
+        assert_eq!(
+            out["action"],
+            serde_json::json!({"type": "search", "queries": []})
+        );
     }
 
     #[test]

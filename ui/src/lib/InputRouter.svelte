@@ -6,10 +6,10 @@
 	import { syncStore } from '$lib/syncStore.js';
 
 	let {
-		activeTaskId = null,
+		activeSessionId = null,
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		isGenerating = false,
-		taskRunning = false,
+		sessionRunning = false,
 		onsubmit,
 		onstop,
 		toolbarLeft,
@@ -56,10 +56,10 @@
 	// to the backend: the agent injects it in the gap between tool calls and
 	// the final content, so it can steer the answer instead of waiting for
 	// the whole turn to finish.
-	// The merged send button becomes "stop task" only when there is no input
+	// The merged send button becomes "stop session" only when there is no input
 	// and the agent is actively working (generating output, a running/pending
-	// task). With fresh input present, it always stays a send button.
-	const stopMode = $derived(!hasInput && (isGenerating || taskRunning));
+	// session). With fresh input present, it always stays a send button.
+	const stopMode = $derived(!hasInput && (isGenerating || sessionRunning));
 
 	// Allow the host page to populate the draft box programmatically (e.g.
 	// restoring a message after rollback) via `bind:this`.
@@ -392,7 +392,7 @@
 		<textarea
 			bind:this={transcriptTextarea}
 			rows="1"
-			placeholder={activeTaskId
+			placeholder={activeSessionId
 				? '追加指令，Enter 发送，Shift+Enter 换行'
 				: `输入指令，Enter 发送，或按 ${hotkeyBinding} 录音`}
 			bind:value={transcriptInput}
@@ -477,9 +477,9 @@
 				class="md-icon-button send-btn"
 				class:stop-mode={stopMode}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
-				disabled={!hasInput && !isGenerating && !taskRunning}
-				aria-label={hasInput ? '发送' : stopMode ? '停止任务' : '发送'}
-				title={hasInput ? '发送' : stopMode ? '停止任务' : '发送'}
+				disabled={!hasInput && !isGenerating && !sessionRunning}
+				aria-label={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
+				title={hasInput ? '发送' : stopMode ? '停止会话' : '发送'}
 				type="button"
 			>
 				{#if hasInput}

@@ -7,7 +7,7 @@ use crate::{Tool, ToolResult};
 
 /// Let the agent ask the human a question when it is unsure how to proceed.
 ///
-/// When this tool runs, the ReAct loop pauses the task and surfaces the
+/// When this tool runs, the ReAct loop pauses the session and surfaces the
 /// question to the user as a chat observation. The user's next message arrives
 /// as a supplement (see `process_input` → `add_supplement` → Paused→Pending)
 /// and is injected into context on resume, so the model sees both the question
@@ -75,18 +75,18 @@ impl Tool for AskTool {
             .unwrap_or_default();
 
         // The `ask` flag is the signal the ReAct loop keys on to pause the
-        // task and wait for the user's reply (delivered as a supplement).
+        // session and wait for the user's reply (delivered as a supplement).
         Ok(ToolResult::ok(serde_json::json!({
             "ask": true,
             "question": question,
             "context": context,
             "options": options,
             "awaiting_answer": true,
-            "hint": "The task is paused. The user's next message will be used as the answer and the task will resume.",
+            "hint": "The session is paused. The user's next message will be used as the answer and the session will resume.",
         })))
     }
 
-    /// Declare the question signal so the ReAct loop pauses the task without
+    /// Declare the question signal so the ReAct loop pauses the session without
     /// name-matching "ask" or re-parsing the output.
     fn signals(&self, output: &Value) -> crate::tool::ToolSignals {
         let (question, options) = crate::extract_ask_signal(output);

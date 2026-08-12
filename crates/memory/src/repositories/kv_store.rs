@@ -5,7 +5,7 @@ use chrono::Utc;
 ///
 /// User-facing preferences live in the `facts` table (tag `preference`);
 /// this table holds only internal state such as the fact-extraction cursor
-/// (`fact_extraction.<task_id>`). Exposed as `kv_store` in the schema.
+/// (`fact_extraction.<session_id>`). Exposed as `kv_store` in the schema.
 impl Database {
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
@@ -38,8 +38,8 @@ impl Database {
         Ok(())
     }
 
-    /// Remove fact-extraction cursors whose task no longer exists (task rows
-    /// are deleted without going through `delete_task`, e.g. history purge or
+    /// Remove fact-extraction cursors whose session no longer exists (session rows
+    /// are deleted without going through `delete_session`, e.g. history purge or
     /// older deletions before cursor cleanup was added). Called during memory
     /// maintenance so the kv table does not grow without bound.
     pub fn cleanup_orphan_extraction_cursors(&self) -> anyhow::Result<u64> {
@@ -47,7 +47,7 @@ impl Database {
         let deleted = conn.execute(
             "DELETE FROM kv_store
              WHERE key LIKE 'fact_extraction.%'
-               AND NOT EXISTS (SELECT 1 FROM tasks WHERE id = substr(key, 17))",
+               AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = substr(key, 17))",
             [],
         )?;
         Ok(deleted as u64)
@@ -92,11 +92,11 @@ mod tests {
     #[test]
     fn cleanup_orphan_extraction_cursors_removes_stale_keys() {
         let db = test_db();
-        let task = db.create_task("", "").unwrap();
-        // Cursor for an existing task: kept.
-        db.set_kv(&format!("fact_extraction.{}", task.id), "msg-1")
+        let session = db.create_session("", "").unwrap();
+        // Cursor for an existing session: kept.
+        db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
             .unwrap();
-        // Orphan cursor (no task row) and non-cursor keys: the orphan is
+        // Orphan cursor (no session row) and non-cursor keys: the orphan is
         // removed, unrelated kv keys survive.
         db.set_kv("fact_extraction.gone", "msg-9").unwrap();
         db.set_kv("other.state", "keep").unwrap();
@@ -104,7 +104,7 @@ mod tests {
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
         assert_eq!(removed, 1);
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", task.id))
+            db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
                 .is_some()
         );
@@ -113,14 +113,14 @@ mod tests {
     }
 
     #[test]
-    fn delete_task_removes_extraction_cursor() {
+    fn delete_session_removes_extraction_cursor() {
         let db = test_db();
-        let task = db.create_task("t-cursor", "").unwrap();
-        db.set_kv(&format!("fact_extraction.{}", task.id), "msg-1")
+        let session = db.create_session("t-cursor", "").unwrap();
+        db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
             .unwrap();
-        db.delete_task(&task.id).unwrap();
+        db.delete_session(&session.id).unwrap();
         assert!(
-            db.get_kv(&format!("fact_extraction.{}", task.id))
+            db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
                 .is_none()
         );

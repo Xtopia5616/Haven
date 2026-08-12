@@ -6,8 +6,6 @@ pub mod facts;
 pub mod file;
 pub mod file_search;
 pub mod input;
-pub mod job_status;
-pub mod jobs;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod network;
@@ -15,10 +13,12 @@ pub mod notify;
 pub mod power;
 pub mod process;
 pub mod registry;
-pub mod reminder;
+pub mod scheduled_task;
 pub mod self_tool;
 pub mod shell;
 pub mod system;
+pub mod task_status;
+pub mod tasks;
 pub mod window;
 
 use std::collections::HashMap;
@@ -27,13 +27,13 @@ use tokio::sync::RwLock;
 
 use crate::ToolBox;
 use crate::ToolRegistry;
-use crate::bg::BackgroundJobs;
+use crate::bg::BackgroundTasks;
 use crate::mcp::McpManager;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 
 pub use facts::FactsTool;
-pub use reminder::{ReminderCenter, ReminderFired, ReminderMode, ReminderTool};
+pub use scheduled_task::{ScheduleMode, ScheduleTool, ScheduledTaskCenter, ScheduledTaskFired};
 pub use self_tool::{SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
@@ -61,8 +61,8 @@ pub async fn register_builtin_tools(
     mcp_manager: &Arc<McpManager>,
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     router: Option<Arc<haven_llm::LlmRouter>>,
-    background_jobs: Arc<BackgroundJobs>,
-    reminders: Arc<ReminderCenter>,
+    background_tasks: Arc<BackgroundTasks>,
+    scheduled_tasks: Arc<ScheduledTaskCenter>,
     self_context: Option<SelfToolContext>,
     registry: ToolRegistry,
     clipboard_history: Arc<clipboard::ClipboardHistory>,
@@ -100,18 +100,18 @@ pub async fn register_builtin_tools(
         limits.clipboard_entry_max_chars,
     )));
     tools.push(Arc::new(shell::ShellTool {
-        jobs: background_jobs.clone(),
+        tasks: background_tasks.clone(),
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
     }));
-    tools.push(Arc::new(job_status::JobStatusTool {
-        jobs: background_jobs.clone(),
+    tools.push(Arc::new(task_status::TaskStatusTool {
+        tasks: background_tasks.clone(),
     }));
-    tools.push(Arc::new(jobs::JobsTool {
-        jobs: background_jobs,
+    tools.push(Arc::new(tasks::TasksTool {
+        tasks: background_tasks,
     }));
     tools.push(Arc::new(input::InputTool));
-    tools.push(Arc::new(reminder::ReminderTool {
-        center: reminders,
+    tools.push(Arc::new(scheduled_task::ScheduleTool {
+        center: scheduled_tasks,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),

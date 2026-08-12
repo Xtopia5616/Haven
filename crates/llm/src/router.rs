@@ -24,6 +24,57 @@ use tokio::sync::mpsc;
 /// everything).
 const FIRST_CHUNK_GRACE: Duration = Duration::from_secs(60);
 
+/// Extra data-gap idle budget granted per ~1k estimated prompt tokens.
+/// Providers decode against the whole context: on long conversations the
+/// gap between deltas legitimately grows (server-side thinking, slow
+/// decode), so a fixed `stream_idle_timeout_secs` aborts slow-but-alive
+/// streams mid-answer — the router fails over, the step re-runs and the UI
+/// looks frozen ("streaming stuck"). The idle window is therefore scaled
+/// with the request size and capped so a genuinely dead stream still
+/// surfaces within a bounded window.
+const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
+
+/// Hard cap on the scaled data-gap idle window (base + context extra).
+const IDLE_SCALE_CAP_SECS: u64 = 90;
+
+/// Rough prompt-size estimate in tokens (text chars / 4, ~1k per image or
+/// audio part, tool-call arguments and echoed reasoning included). Only
+/// used to scale stream idle timeouts — exact counting is the provider's
+/// task.
+fn estimate_prompt_tokens(messages: &[LlmMessage]) -> u64 {
+    let mut total: u64 = 0;
+    for m in messages {
+        for part in &m.content {
+            match part {
+                ContentPart::Text(t) => total += (t.chars().count() as u64) / 4,
+                ContentPart::Image { .. } | ContentPart::Audio { .. } => total += 1_000,
+            }
+        }
+        if let Some(reasoning) = &m.reasoning {
+            total += (reasoning.chars().count() as u64) / 4;
+        }
+        if let Some(calls) = &m.tool_calls {
+            for c in calls {
+                total += (c.arguments.chars().count() as u64) / 4;
+            }
+        }
+    }
+    total
+}
+
+/// Scale a base stream idle timeout by the estimated prompt size of the
+/// request. Identity for small/empty prompts; grows 2s per ~1k tokens up to
+/// `IDLE_SCALE_CAP_SECS` total. The first-chunk grace already tolerates a
+/// slow prefill, so this targets the mid-stream data gaps that long
+/// contexts make slower.
+fn scale_stream_idle(base: Duration, messages: &[LlmMessage]) -> Duration {
+    let base_secs = base.as_secs();
+    let est_tokens = estimate_prompt_tokens(messages);
+    let extra_secs = (est_tokens / 1_000).saturating_mul(IDLE_EXTRA_SECS_PER_1K_TOKENS);
+    let cap_extra = IDLE_SCALE_CAP_SECS.saturating_sub(base_secs);
+    Duration::from_secs(base_secs.saturating_add(extra_secs.min(cap_extra)).max(1))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointRole {
     SmallModel,
@@ -252,7 +303,7 @@ pub struct LlmRouter {
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
     /// Per-role concurrency limit: at most `llm.max_concurrent_requests`
-    /// requests may be in flight per endpoint role. Parallel tasks hitting
+    /// requests may be in flight per endpoint role. Parallel sessions hitting
     /// the same provider queue here instead of piling onto the provider
     /// (which would produce 429 storms and thundering-herd retries).
     /// Semaphores are created from the config at construction; a settings
@@ -262,7 +313,7 @@ pub struct LlmRouter {
     semaphores: StdMutex<[Arc<tokio::sync::Semaphore>; 6]>,
     /// Shared rate-limit cooldown per role: when a request ends with a 429
     /// (RateLimit), subsequent callers to the same role wait until the
-    /// deadline before dispatching, so a burst of parallel tasks does not
+    /// deadline before dispatching, so a burst of parallel sessions does not
     /// retry simultaneously and amplify the load.
     rate_limited: RwLock<[Option<Instant>; 6]>,
 }
@@ -318,9 +369,7 @@ impl LlmRouter {
 
     /// Default runtime state shared by every constructor: per-role health
     /// trackers, stream rules, concurrency semaphores, and rate-limit flags.
-    fn runtime_state(
-        request_limit: usize,
-    ) -> RuntimeStateParts {
+    fn runtime_state(request_limit: usize) -> RuntimeStateParts {
         (
             RwLock::new([
                 EndpointHealth::new(),
@@ -371,7 +420,7 @@ impl LlmRouter {
     }
 
     /// Extend the shared cooldown for a role after a RateLimit result, so a
-    /// burst of parallel tasks queues behind the longest wait instead of
+    /// burst of parallel sessions queues behind the longest wait instead of
     /// re-hammering the provider simultaneously.
     ///
     /// The wait is CLAMPED: `Retry-After` comes from the (possibly hostile or
@@ -398,7 +447,7 @@ impl LlmRouter {
     /// real provider load, not just request starts.
     ///
     /// After a RateLimit result, the role's cooldown is extended so other
-    /// tasks queue behind this one instead of re-hammering the provider —
+    /// sessions queue behind this one instead of re-hammering the provider —
     /// `with_retry` already waits per-request, this paces the herd.
     async fn with_endpoint_permit<T, F, Fut>(
         &self,
@@ -589,14 +638,6 @@ impl LlmRouter {
         } else {
             EndpointRole::DefaultModel
         }
-    }
-
-    /// Whether image understanding should prefer the dedicated image_model
-    /// slot. Tools that maintain their own legacy fallback chains use this
-    /// instead of `vision_role`.
-    pub async fn vision_dedicated_enabled(&self) -> bool {
-        let cfg = self.config.read().await;
-        cfg.vision_use_image_model
     }
 
     // §2.6: check circuit breaker before dispatching
@@ -924,7 +965,7 @@ impl LlmRouter {
     ///
     /// Runs under the role's concurrency permit (see
     /// [`Self::with_endpoint_permit`]): the permit covers the whole stream —
-    /// retries, failover and chunk consumption — so parallel tasks cannot
+    /// retries, failover and chunk consumption — so parallel sessions cannot
     /// exceed the configured per-endpoint in-flight request cap.
     pub async fn chat_stream_with_tools_aggregated_cancellable(
         &self,
@@ -965,7 +1006,8 @@ impl LlmRouter {
         );
         // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
         // time out instantly, disabling all model replies.
-        let idle_dur = Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1));
+        let idle_dur =
+            Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1));
         let mut retry_msgs = messages.to_vec();
         // The guidance is appended AFTER the assistant's partial
         // turn. A trailing System message breaks OpenAI-compatible
@@ -1077,8 +1119,7 @@ impl LlmRouter {
                         LlmError::RateLimit { retry_after } => *retry_after,
                         _ => None,
                     };
-                    let wait_base =
-                        retry_after.map(|d| d.as_secs()).unwrap_or(base).max(base);
+                    let wait_base = retry_after.map(|d| d.as_secs()).unwrap_or(base).max(base);
                     let jitter_ms = (wait_base as f32 * jitter * 1000.0) as u64;
                     tokio::time::sleep(
                         Duration::from_secs(wait_base) + Duration::from_millis(jitter_ms),
@@ -1185,11 +1226,15 @@ impl LlmRouter {
         stream_rules: &RwLock<Vec<StreamRule>>,
         idle_timeout: Duration,
     ) -> Result<LlmResponse, LlmError> {
+        // Long contexts make providers slower between deltas; grant extra
+        // data-gap budget proportional to the request size so a slow-but-alive
+        // stream is not aborted mid-answer (see `scale_stream_idle`).
+        let idle_timeout = scale_stream_idle(idle_timeout, &messages);
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
         tracing::debug!("aggregate_stream_cancellable start");
 
         // Channel decouples the stream loop from callback execution.
-        // The consumer task (spawned below) calls on_chunk asynchronously;
+        // The consumer session (spawned below) calls on_chunk asynchronously;
         // the stream loop only does O(1) try_send and never blocks.
         let (chunk_tx, mut chunk_rx) = mpsc::channel::<StreamChunk>(128);
         let consumer = tokio::spawn(async move {
@@ -1277,7 +1322,7 @@ impl LlmRouter {
                             if chunk.model.is_some() {
                                 model = chunk.model.clone();
                             }
-                            // Non-blocking: consumer task calls on_chunk asynchronously
+                            // Non-blocking: consumer session calls on_chunk asynchronously
                             if let Err(e) = chunk_tx.try_send(chunk) {
                                 tracing::warn!("chunk consumer channel full, dropping chunk: {}", e);
                             }
@@ -1458,6 +1503,86 @@ mod tests {
     use async_trait::async_trait;
     use futures_util::stream;
     use std::pin::Pin;
+
+    fn llm_message(content: Vec<ContentPart>) -> LlmMessage {
+        LlmMessage {
+            role: LlmRole::User,
+            content,
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn scale_stream_idle_is_identity_for_empty_or_small_prompts() {
+        assert_eq!(
+            scale_stream_idle(Duration::from_secs(20), &[]),
+            Duration::from_secs(20)
+        );
+        // Under 1k estimated tokens: no extra budget.
+        let small = vec![llm_message(vec![ContentPart::Text("x".repeat(3_000))])];
+        assert_eq!(
+            scale_stream_idle(Duration::from_secs(20), &small),
+            Duration::from_secs(20)
+        );
+    }
+
+    #[test]
+    fn scale_stream_idle_grows_with_prompt_size() {
+        // 40k chars ≈ 10k tokens → +20s on top of the 20s base.
+        let msgs = vec![llm_message(vec![ContentPart::Text("x".repeat(40_000))])];
+        assert_eq!(
+            scale_stream_idle(Duration::from_secs(20), &msgs),
+            Duration::from_secs(40)
+        );
+        // The estimate covers every part across all messages.
+        let two = vec![
+            llm_message(vec![ContentPart::Text("y".repeat(20_000))]),
+            llm_message(vec![ContentPart::Text("z".repeat(20_000))]),
+        ];
+        assert_eq!(
+            scale_stream_idle(Duration::from_secs(20), &two),
+            Duration::from_secs(40)
+        );
+    }
+
+    #[test]
+    fn scale_stream_idle_is_capped_and_never_zero() {
+        // A huge prompt cannot push the window past IDLE_SCALE_CAP_SECS.
+        let huge = vec![llm_message(vec![ContentPart::Text("x".repeat(10_000_000))])];
+        assert_eq!(
+            scale_stream_idle(Duration::from_secs(20), &huge),
+            Duration::from_secs(IDLE_SCALE_CAP_SECS)
+        );
+        // A hand-edited 0 base stays clamped to >= 1s.
+        let msgs = vec![llm_message(vec![ContentPart::Text("x".repeat(8_000))])];
+        assert_eq!(
+            scale_stream_idle(Duration::ZERO, &msgs),
+            Duration::from_secs(4)
+        );
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_counts_images_audio_and_tool_arguments() {
+        let mut msg = llm_message(vec![ContentPart::Text("a".repeat(400))]);
+        msg.content.push(ContentPart::Image {
+            content_type: "image".into(),
+            media_type: "image/png".into(),
+            data: "base64".into(),
+        });
+        msg.tool_calls = Some(vec![ToolCall {
+            id: "call-1".into(),
+            name: "shell".into(),
+            arguments: "{\"cmd\":\"echo hi\"}".into(),
+        }]);
+        msg.reasoning = Some("reasoning text".repeat(100));
+        let tokens = estimate_prompt_tokens(&[msg]);
+        // 100 text chars ≈ 25 + 1k for the image + ~19 argument chars / 4 +
+        // 1300 reasoning chars / 4 ≈ 325.
+        assert!(tokens > 1_300, "estimated {} tokens", tokens);
+    }
 
     struct MockStreamClient {
         chunks: Vec<Result<StreamChunk, LlmError>>,
@@ -1801,16 +1926,18 @@ mod tests {
         > {
             let first_delay = self.first_delay;
             let gap_delay = self.gap_delay;
-            let mk = |text: &'static str| Ok(StreamChunk {
-                text: Some(text.into()),
-                tool_calls: Vec::new(),
-                finish_reason: None,
-                usage: None,
-                model: None,
-                reasoning: None,
-                web_search: None,
-                web_search_calls: Vec::new(),
-            });
+            let mk = |text: &'static str| {
+                Ok(StreamChunk {
+                    text: Some(text.into()),
+                    tool_calls: Vec::new(),
+                    finish_reason: None,
+                    usage: None,
+                    model: None,
+                    reasoning: None,
+                    web_search: None,
+                    web_search_calls: Vec::new(),
+                })
+            };
             Ok(Box::pin(stream::unfold(0u8, move |i| async move {
                 match i {
                     0 => {
@@ -2512,7 +2639,7 @@ mod tests {
             deadline.is_some_and(|d| d > Instant::now()),
             "cooldown deadline must be set in the future"
         );
-        // A second call (a different task) paces behind the cooldown instead
+        // A second call (a different session) paces behind the cooldown instead
         // of firing immediately: it must take at least the Retry-After before
         // dispatching (it fails again, but only after the shared wait).
         let t0 = Instant::now();

@@ -218,11 +218,28 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		expect(out[0].content).toBe('思考了一部分，还有更多');
 	});
 
+	it('accepts a full-text reconcile when intermediate chunks were dropped', () => {
+		// A dropped middle batch leaves the accumulated content a
+		// prefix-MISMATCHED partial of the authoritative text. The final
+		// full-text reconcile must still replace it (length-based), or the
+		// reasoning block is permanently truncated.
+		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
+		let m = accumulateStreamChunk([], { ...base, delta: '开头的思考' });
+		m = accumulateStreamChunk(m, { ...base, delta: '结尾' });
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = accumulateStreamChunk(m, {
+			...base,
+			delta: '开头的思考，中间被丢掉的内容，结尾',
+		});
+		expect(out).toHaveLength(1);
+		expect(out[0].content).toBe('开头的思考，中间被丢掉的内容，结尾');
+	});
+
 	it('rejects a stale incremental delta after finalization', () => {
 		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
 		m = m.map((x) => ({ ...x, streaming: false }));
-		const out = accumulateStreamChunk(m, { ...base, delta: '不匹配的增量' });
+		const out = accumulateStreamChunk(m, { ...base, delta: '多余' });
 		expect(out).toBe(m);
 	});
 

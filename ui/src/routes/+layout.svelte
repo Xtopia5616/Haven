@@ -1,8 +1,8 @@
 <script>
 	import '../app.css';
-	import { addNotification, recordingOverlay, activeTaskIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertActivity, removeActivity, refreshActivities, activityStore, taskStore, cancelActivity, refreshActivityHistory, deleteActivity, formatMessageTime } from '$lib/stores.js';
+	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertTask, removeTask, refreshTasks, taskStore, sessionStore, cancelTask, refreshTaskHistory, deleteTask, formatMessageTime } from '$lib/stores.js';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.js';
-	import { themeStore } from '$lib/themeStore.js';
+	import { themeStore, persistAppearance } from '$lib/themeStore.js';
 	import { invoke } from '$lib/tauri.js';
 	import logger from '$lib/logger.js';
 	import { registerListeners } from '$lib/events.js';
@@ -36,16 +36,16 @@
 	let durationTimer;
 	let processingTimer;
 	let modelState = $state('ready'); // synced from modelStateStore on mount
-	// Whether ANY task is busy (pending/running). The model-state events only
-	// fire while chunks flow; a task whose LLM call is stuck (idle timeout,
+	// Whether ANY session is busy (pending/running). The model-state events only
+	// fire while chunks flow; a session whose LLM call is stuck (idle timeout,
 	// empty-response retries, provider hang) emits nothing, and the 5s idle
-	// timer would flip the chip back to "就绪" mid-hang. taskBusy keeps the
-	// chip truthful: driven by task:created / task:updated transitions, which
+	// timer would flip the chip back to "就绪" mid-hang. sessionBusy keeps the
+	// chip truthful: driven by session:created / session:updated transitions, which
 	// the backend emits on every status change (pending/running on submission,
-	// paused/completed/error on termination). Tracked per task id so a
-	// parallel task completing does not clear the busy state of another.
-	let busyTasks = $state(new Set());
-	const taskBusy = $derived(busyTasks.size > 0);
+	// paused/completed/error on termination). Tracked per session id so a
+	// parallel session completing does not clear the busy state of another.
+	let busySessions = $state(new Set());
+	const sessionBusy = $derived(busySessions.size > 0);
 	// Probe state is declared BEFORE the subscribe below: the store's
 	// `subscribe` fires synchronously (SSR/mount) with the current value, and
 	// `probeLlmConnection` reads these bindings without awaiting first, so
@@ -93,11 +93,11 @@
 	}
 
 	let notifyCfg = $state({
-		task_created: { in_app: true },
-		task_completed: { in_app: true },
-		task_paused: { in_app: true },
-		task_resumed: { in_app: true },
-		task_error: { in_app: true },
+		session_created: { in_app: true },
+		session_completed: { in_app: true },
+		session_paused: { in_app: true },
+		session_resumed: { in_app: true },
+		session_error: { in_app: true },
 	});
 
 	// The configured recording hotkey binding (e.g. "Ctrl+Shift+Space"),
@@ -160,71 +160,74 @@
 	function toggleTheme() {
 		themeStore.toggle();
 		theme = themeStore.currentTheme;
+		persistAppearance();
 	}
 
-	// Activity registry (background jobs + reminders) mirrored from
-	// activityStore (kept live by the `activity:*` listeners above). Jobs
-	// sort newest-first; reminders sort soonest-first; both derive from one
-	// store keyed by the normalized activity id. The status chip in the
-	// titlebar opens a menu of these, replacing the old chat-toolbar button.
-	let jobMenuOpen = $state(false);
+	// Task registry (background tasks + scheduled tasks) mirrored from
+	// taskStore (kept live by the `task:*` listeners above). Background
+	// tasks sort newest-first; scheduled tasks sort soonest-first; both
+	// derive from one store keyed by the normalized task id. The status chip
+	// in the titlebar opens a menu of these, replacing the old chat-toolbar
+	// button.
+	let taskMenuOpen = $state(false);
 	let activities = $state({});
-	$effect(() => syncStore(activityStore, (v) => (activities = v)));
-	const activityEntries = $derived(Object.values(activities));
-	const jobEntries = $derived(
-		activityEntries
-			.filter((a) => a.kind === 'job')
+	$effect(() => syncStore(taskStore, (v) => (activities = v)));
+	const taskEntries = $derived(Object.values(activities));
+	const backgroundTaskEntries = $derived(
+		taskEntries
+			.filter((a) => a.kind === 'background')
 			.sort((a, b) =>
 				String(b.started_at || '').localeCompare(String(a.started_at || '')),
 			),
 	);
-	const pendingReminders = $derived(
-		activityEntries
-			.filter((a) => a.kind === 'reminder')
+	const pendingScheduledTasks = $derived(
+		taskEntries
+			.filter((a) => a.kind === 'scheduled')
 			.sort((a, b) => String(a.due_at || '').localeCompare(String(b.due_at || ''))),
 	);
-	const runningJobCount = $derived(
-		jobEntries.filter((j) => j.status === 'running').length,
+	const runningTaskCount = $derived(
+		backgroundTaskEntries.filter((j) => j.status === 'running').length,
 	);
 
-	// Panel tab filter: 'all' | 'job' | 'reminder' | 'history'.
-	let activityTab = $state('all');
+	// Panel tab filter: 'all' | 'background' | 'scheduled' | 'history'.
+	let taskTab = $state('all');
 
-	// Fired-reminder history (and terminal job rows past the in-memory TTL),
-	// fetched on demand when the history tab opens.
-	let activityHistory = $state([]);
+	// Fired-scheduled-task history (and terminal background-task rows past
+	// the in-memory TTL), fetched on demand when the history tab opens.
+	let taskHistory = $state([]);
 	let historyLoaded = $state(false);
 	$effect(() => {
-		if (!jobMenuOpen || activityTab !== 'history' || historyLoaded) return;
-		refreshActivityHistory('reminder', 50).then((rows) => {
-			activityHistory = rows;
+		if (!taskMenuOpen || taskTab !== 'history' || historyLoaded) return;
+		refreshTaskHistory('scheduled', 50).then((rows) => {
+			taskHistory = rows;
 			historyLoaded = true;
 		});
 	});
 
-	// Task titles for job rows; mirrored from the chat page's loadTasks().
-	let tasks = $state([]);
-	$effect(() => syncStore(taskStore, (v) => (tasks = v)));
+	// Session titles for background-task rows; mirrored from the chat page's
+	// loadSessions().
+	let sessions = $state([]);
+	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
 
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
 	$effect(() => {
-		if (!jobMenuOpen) return;
+		if (!taskMenuOpen) return;
 		const t = setInterval(() => (countdownTick += 1), 1000);
 		return () => clearInterval(t);
 	});
 
 	async function handleDeleteHistory(id) {
 		try {
-			await deleteActivity(id);
-			activityHistory = activityHistory.filter((h) => h.id !== id);
+			await deleteTask(id);
+			taskHistory = taskHistory.filter((h) => h.id !== id);
 			addNotification('已删除历史记录', 'success', 2000);
 		} catch (e) {
 			addNotification(`删除历史记录失败: ${e}`, 'error', 3000);
 		}
 	}
 
-	function jobStatusLabel(status) {
+	function taskStatusLabel(status) {
 		switch (status) {
 			case 'running':
 				return '运行中';
@@ -239,7 +242,7 @@
 		}
 	}
 
-	function jobStatusColor(status) {
+	function taskStatusColor(status) {
 		switch (status) {
 			case 'running':
 				return '#44cc44';
@@ -254,19 +257,19 @@
 		}
 	}
 
-	function taskTitleFor(job) {
-		if (!job.task_id) return '';
-		const t = tasks.find((x) => x.id === job.task_id);
-		return t?.title || t?.input || job.task_id;
+	function sessionTitleFor(task) {
+		if (!task.session_id) return '';
+		const t = sessions.find((x) => x.id === task.session_id);
+		return t?.title || t?.input || task.session_id;
 	}
 
-	function jobDuration(job) {
-		const start = new Date(job.started_at).getTime();
+	function taskDuration(task) {
+		const start = new Date(task.started_at).getTime();
 		if (isNaN(start)) return '';
 		const end =
-			job.status === 'running'
+			task.status === 'running'
 				? Date.now()
-				: new Date(job.finished_at || job.started_at).getTime();
+				: new Date(task.finished_at || task.started_at).getTime();
 		if (isNaN(end)) return '';
 		const secs = Math.floor((end - start) / 1000);
 		if (secs < 60) return `${secs}s`;
@@ -274,26 +277,26 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
-	async function handleCancelActivity(activityId, kind = 'job') {
+	async function handleCancelTask(taskId, kind = 'background') {
 		try {
-			const ok = await cancelActivity(activityId, kind);
+			const ok = await cancelTask(taskId, kind);
 			if (!ok) {
 				addNotification(
-					kind === 'reminder' ? '提醒已触发或不存在' : '后台作业已结束，无需停止',
+					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',
 					'warning',
 					2500,
 				);
 			}
 		} catch (e) {
 			addNotification(
-				`${kind === 'reminder' ? '取消提醒' : '停止后台作业'}失败: ${e}`,
+				`${kind === 'scheduled' ? '取消定时任务' : '停止后台任务'}失败: ${e}`,
 				'error',
 				3000,
 			);
 		}
 	}
 
-	function reminderCountdown(dueAt) {
+	function scheduledTaskCountdown(dueAt) {
 		const due = new Date(dueAt).getTime();
 		if (isNaN(due)) return '';
 		const diff = due - Date.now();
@@ -316,11 +319,11 @@
 	}
 
 	function handleWindowClick(e) {
-		if (jobMenuOpen) {
-			const menu = document.querySelector('.status-job-menu');
+		if (taskMenuOpen) {
+			const menu = document.querySelector('.status-task-menu');
 			const chip = document.querySelector('.status-chip-btn');
 			if (menu && chip && !menu.contains(e.target) && !chip.contains(e.target)) {
-				jobMenuOpen = false;
+				taskMenuOpen = false;
 			}
 		}
 	}
@@ -336,6 +339,13 @@
 			}
 			if (settings?.hotkey?.key_binding) {
 				hotkeyBinding = settings.hotkey.key_binding;
+			}
+			if (settings?.appearance?.theme) {
+				themeStore.setTheme(settings.appearance.theme);
+				theme = themeStore.currentTheme;
+			}
+			if (settings?.appearance?.accent_color) {
+				themeStore.setAccent(settings.appearance.accent_color);
 			}
 		}).catch((e) => {
 			logger.warn('+layout', 'get_settings error', e);
@@ -388,7 +398,7 @@
 				if (text) {
 					// Same path as a typed message (see `submitVoiceTranscript`):
 					// appends the voice message, submits with the current
-					// `activeTaskId`, and migrates the message into the task if
+					// `activeSessionId`, and migrates the message into the session if
 					// the backend created a fresh one.
 					submitVoiceTranscript(text).catch((e) =>
 						addNotification(`语音提交失败: ${e}`, 'error', 5000)
@@ -442,80 +452,80 @@
 					hotkeyBinding = data.new_binding;
 				}
 			},
-			'task:created': (event) => {
+			'session:created': (event) => {
 				const data = event.payload;
-				const title = data.title || data.task_id;
-				if (notifyCfg?.task_created?.in_app !== false) {
-					addNotification(`新任务: ${title}`, 'info', 4000);
+				const title = data.title || data.session_id;
+				if (notifyCfg?.session_created?.in_app !== false) {
+					addNotification(`新会话: ${title}`, 'info', 4000);
 				}
-				busyTasks = new Set(busyTasks).add(data.task_id);
+				busySessions = new Set(busySessions).add(data.session_id);
 				updateModelState('waiting', { idleTimeoutMs: 5000 });
 			},
-			'task:completed': (event) => {
+			'session:completed': (event) => {
 				const data = event.payload;
-				const title = data.title || data.task_id;
-				if (notifyCfg?.task_completed?.in_app !== false) {
-					addNotification(`任务已完成: ${title}`, 'success');
+				const title = data.title || data.session_id;
+				if (notifyCfg?.session_completed?.in_app !== false) {
+					addNotification(`会话已完成: ${title}`, 'success');
 				}
 				updateModelState('ready');
 			},
-			'task:deleted': (event) => {
-				// delete_task / clear_history remove tasks without any terminal
-				// `task:updated` (the task no longer exists), so release their
+			'session:deleted': (event) => {
+				// delete_session / clear_history remove sessions without any terminal
+				// `session:updated` (the session no longer exists), so release their
 				// ids from the busy set here — otherwise the chip would stay on
-				// "等待输出" for a task that is gone. `task_id: null` means all
-				// tasks were removed (clear_history).
+				// "等待输出" for a session that is gone. `session_id: null` means all
+				// sessions were removed (clear_history).
 				const data = event.payload || {};
-				if (data.task_id) {
-					busyTasks = new Set([...busyTasks].filter((t) => t !== data.task_id));
+				if (data.session_id) {
+					busySessions = new Set([...busySessions].filter((t) => t !== data.session_id));
 				} else {
-					busyTasks = new Set();
+					busySessions = new Set();
 				}
-				if (busyTasks.size === 0) {
+				if (busySessions.size === 0) {
 					clearModelStateTimer();
 					updateModelState('ready');
 				}
 			},
-			'task:error': (event) => {
+			'session:error': (event) => {
 				const data = event.payload;
-				const errMsg = data.error || data.task_id;
-				if (notifyCfg?.task_error?.in_app !== false) {
-					addNotification(`任务出错: ${errMsg}`, 'error', 5000);
+				const errMsg = data.error || data.session_id;
+				if (notifyCfg?.session_error?.in_app !== false) {
+					addNotification(`会话出错: ${errMsg}`, 'error', 5000);
 				}
 				clearModelStateTimer();
 				updateModelState('ready');
 			},
-			'task:updated': (event) => {
+			'session:updated': (event) => {
 				const data = event.payload;
-				const title = data.title || data.task_id;
-				const tid = data.task_id;
+				const title = data.title || data.session_id;
+				const tid = data.session_id;
 				if (data.status === 'running' || data.status === 'pending') {
 					// The backend flips Pending -> Running in memory without
 					// re-emitting, so treat both as busy. Any other status
-					// transition below removes the task from the busy set.
-					if (tid) busyTasks = new Set(busyTasks).add(tid);
+					// transition below removes the session from the busy set.
+					if (tid) busySessions = new Set(busySessions).add(tid);
 				}
 				if (data.status === 'paused') {
-					if (tid) busyTasks = new Set([...busyTasks].filter((t) => t !== tid));
-					if (notifyCfg?.task_paused?.in_app !== false) {
-						addNotification(`任务已暂停: ${title || '未知'}`, 'warning', 3000);
+					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
+					if (notifyCfg?.session_paused?.in_app !== false) {
+						addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
 					}
 					clearModelStateTimer();
 					updateModelState('ready');
 				}
 				if (data.status === 'pending') {
-					if (notifyCfg?.task_resumed?.in_app !== false) {
-						addNotification(`任务已恢复: ${title || '未知'}`, 'info', 3000);
+					if (notifyCfg?.session_resumed?.in_app !== false) {
+						addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
 					}
 					updateModelState('waiting', { idleTimeoutMs: 5000 });
 				}
 				if (data.status === 'completed') {
-					if (tid) busyTasks = new Set([...busyTasks].filter((t) => t !== tid));
+					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
 					clearModelStateTimer();
 					updateModelState('ready');
 				}
 				if (data.status === 'error') {
-					if (tid) busyTasks = new Set([...busyTasks].filter((t) => t !== tid));
+					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
 					clearModelStateTimer();
 					updateModelState('ready');
 				}
@@ -540,8 +550,8 @@
 			},
 			'agent:balanced_model': (event) => {
 				const data = event.payload;
-				const activeId = get(activeTaskIdStore);
-				if (data.task_id && activeId && data.task_id !== activeId) return;
+				const activeId = get(activeSessionIdStore);
+				if (data.session_id && activeId && data.session_id !== activeId) return;
 				updateModelState('balanced_model');
 				addNotification(`Balanced Model: ${data.reason}`, 'warning');
 			},
@@ -549,10 +559,10 @@
 				// The provider stream went silent (mid-step stall, retry wait,
 				// slow first chunk). Surface "still generating" feedback so the
 				// conversation never looks frozen; the next chunk (streaming)
-				// or a terminal task event (ready/error) clears it.
+				// or a terminal session event (ready/error) clears it.
 				const data = event.payload || {};
-				const activeId = get(activeTaskIdStore);
-				if (data.task_id && activeId && data.task_id !== activeId) return;
+				const activeId = get(activeSessionIdStore);
+				if (data.session_id && activeId && data.session_id !== activeId) return;
 				updateModelState('stalled');
 			},
 			'notification:show': (event) => {
@@ -563,60 +573,61 @@
 				// redundant — the toast itself already lives in the app.
 				addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
 			},
-			// Activity lifecycle (background jobs + reminders). Registered
-			// globally (not on the chat page) so activities stay tracked while
-			// the user visits other tabs. Job payloads carry `job_id`;
-			// reminder payloads carry `id` — the store normalizes both.
-			'activity:created': (event) => {
-				upsertActivity(event.payload || {});
+			// Task lifecycle (background tasks + scheduled tasks). Registered
+			// globally (not on the chat page) so tasks stay tracked while
+			// the user visits other tabs. Background-task payloads carry
+			// `task_id`; scheduled-task payloads carry `id` — the store
+			// normalizes both.
+			'task:created': (event) => {
+				upsertTask(event.payload || {});
 			},
-			// Job attached to a task (payload has job_id) or a reminder was
-			// cancelled (payload only has id).
-			'activity:updated': (event) => {
+			// Background task attached to a session (payload has task_id) or
+			// a scheduled task was cancelled (payload only has id).
+			'task:updated': (event) => {
 				const p = event.payload || {};
-				if (p.job_id) {
-					upsertActivity(p);
+				if (p.task_id) {
+					upsertTask(p);
 				} else {
-					removeActivity(p.id);
+					removeTask(p.id);
 				}
 			},
-			// Live output preview while a job runs (bounded tail).
-			'activity:output': (event) => {
-				upsertActivity(event.payload || {});
+			// Live output preview while a background task runs (bounded tail).
+			'task:output': (event) => {
+				upsertTask(event.payload || {});
 			},
-			'activity:finished': (event) => {
+			'task:finished': (event) => {
 				const p = event.payload || {};
-				if (p.job_id) {
-					upsertActivity(p);
-					// A background job finishing is only worth a toast when the
-					// user is not already watching its owning task (the result
-					// also lands in the task's conversation).
+				if (p.task_id) {
+					upsertTask(p);
+					// A background task finishing is only worth a toast when the
+					// user is not already watching its owning session (the result
+					// also lands in the session's conversation).
 					if (p.status === 'completed' || p.status === 'failed') {
-						const activeId = get(activeTaskIdStore);
-						if (!p.task_id || p.task_id !== activeId) {
+						const activeId = get(activeSessionIdStore);
+						if (!p.session_id || p.session_id !== activeId) {
 							const label = p.status === 'completed' ? '完成' : '失败';
 							addNotification(
-								`后台作业${label}: ${p.job_id || ''}`,
+								`后台任务${label}: ${p.task_id || ''}`,
 								p.status === 'completed' ? 'success' : 'error',
 								4000,
 							);
 						}
 					}
 				} else {
-					// Reminder fired: drop from the pending list. The toast is
-					// surfaced by the agent's `notification:show` (the fired
-					// consumer always notifies).
-					removeActivity(p.id);
+					// Scheduled task fired: drop from the pending list. The
+					// toast is surfaced by the agent's `notification:show` (the
+					// fired consumer always notifies).
+					removeTask(p.id);
 				}
 			},
 		}, { tag: '+layout' });
 		eventRegistrations = registrations;
 		await registrations.ready;
 
-		// Hydrate the activity registry for activities started before this
-		// mount (events only cover activities spawned after the listeners
-		// above; fired/cancelled while the UI was away are already gone).
-		refreshActivities();
+		// Hydrate the task registry for tasks started before this mount
+		// (events only cover tasks spawned after the listeners above;
+		// fired/cancelled while the UI was away are already gone).
+		refreshTasks();
 
 		probeLlmConnection();
 		scheduleLlmProbe();
@@ -651,13 +662,13 @@
 			<div class="status-switch">
 				<button
 					class="status-chip status-chip-btn"
-					onclick={() => (jobMenuOpen = !jobMenuOpen)}
+					onclick={() => (taskMenuOpen = !taskMenuOpen)}
 					title={
-						runningJobCount > 0 || pendingReminders.length > 0
-							? `活动${runningJobCount > 0 ? `（${runningJobCount} 个作业运行中）` : ''}${pendingReminders.length > 0 ? `· 提醒（${pendingReminders.length} 条）` : ''}`
-							: '活动：后台作业与提醒'
+						runningTaskCount > 0 || pendingScheduledTasks.length > 0
+							? `任务${runningTaskCount > 0 ? `（${runningTaskCount} 个后台任务运行中）` : ''}${pendingScheduledTasks.length > 0 ? `· 定时任务（${pendingScheduledTasks.length} 条）` : ''}`
+							: '任务：后台任务与定时任务'
 					}
-					aria-label="活动：后台作业与提醒"
+					aria-label="任务：后台任务与定时任务"
 					type="button"
 				>
 					{#if overlay.isRecording}
@@ -678,10 +689,10 @@
 					{:else if modelState === 'balanced_model'}
 						<StatusDot color="error" animate={true} />
 						<span class="status-text">备用模型</span>
-					{:else if modelState === 'waiting' || taskBusy}
+					{:else if modelState === 'waiting' || sessionBusy}
 						<StatusDot color="warning" animate={true} />
 						<span class="status-text"
-							>{taskBusy ? `${busyTasks.size} 个任务运行中` : '等待输出'}</span
+							>{sessionBusy ? `${busySessions.size} 个会话运行中` : '等待输出'}</span
 						>
 					{:else if llmConnected === false}
 						<StatusDot color="outline" />
@@ -690,81 +701,81 @@
 						<StatusDot color="success" />
 						<span class="status-text">就绪</span>
 					{/if}
-					{#if runningJobCount > 0 || pendingReminders.length > 0}
-						<span class="status-badge">{runningJobCount + pendingReminders.length}</span>
+					{#if runningTaskCount > 0 || pendingScheduledTasks.length > 0}
+						<span class="status-badge">{runningTaskCount + pendingScheduledTasks.length}</span>
 					{/if}
 				</button>
-				{#if jobMenuOpen}
-					<div class="status-job-menu job-menu">
-						<div class="job-menu-tabs">
+				{#if taskMenuOpen}
+					<div class="status-task-menu task-menu">
+						<div class="task-menu-tabs">
 							<button
-								class="job-menu-tab"
-								class:active={activityTab === 'all'}
-								onclick={() => (activityTab = 'all')}
+								class="task-menu-tab"
+								class:active={taskTab === 'all'}
+								onclick={() => (taskTab = 'all')}
 								type="button"
 								>全部</button
 							>
 							<button
-								class="job-menu-tab"
-								class:active={activityTab === 'job'}
-								onclick={() => (activityTab = 'job')}
+								class="task-menu-tab"
+								class:active={taskTab === 'background'}
+								onclick={() => (taskTab = 'background')}
 								type="button"
-								>后台作业</button
+								>后台任务</button
 							>
 							<button
-								class="job-menu-tab"
-								class:active={activityTab === 'reminder'}
-								onclick={() => (activityTab = 'reminder')}
+								class="task-menu-tab"
+								class:active={taskTab === 'scheduled'}
+								onclick={() => (taskTab = 'scheduled')}
 								type="button"
-								>提醒</button
+								>定时任务</button
 							>
 							<button
-								class="job-menu-tab"
-								class:active={activityTab === 'history'}
+								class="task-menu-tab"
+								class:active={taskTab === 'history'}
 								onclick={() => {
-									activityTab = 'history';
+									taskTab = 'history';
 									historyLoaded = false;
 								}}
 								type="button"
 								>历史</button
 							>
 						</div>
-						{#if activityTab !== 'reminder'}
-							<div class="job-menu-title">后台作业</div>
-							{#if jobEntries.length === 0}
-								<div class="job-menu-empty">暂无后台作业</div>
+						{#if taskTab !== 'scheduled'}
+							<div class="task-menu-title">后台任务</div>
+							{#if backgroundTaskEntries.length === 0}
+								<div class="task-menu-empty">暂无后台任务</div>
 							{:else}
-								{#each jobEntries as job}
-									<div class="job-item" class:job-item-running={job.status === 'running'}>
-										<span class="job-dot" style="color: {jobStatusColor(job.status)}"
+								{#each backgroundTaskEntries as task}
+									<div class="task-item" class:task-item-running={task.status === 'running'}>
+										<span class="task-dot" style="color: {taskStatusColor(task.status)}"
 											>&#9679;</span
 										>
-										<div class="job-item-main">
-											<div class="job-item-top">
-												<span class="job-id">{job.id}</span>
+										<div class="task-item-main">
+											<div class="task-item-top">
+												<span class="task-id">{task.id}</span>
 												<span
-													class="job-item-status"
-													class:running={job.status === 'running'}
-													>{jobStatusLabel(job.status)}</span
+													class="task-item-status"
+													class:running={task.status === 'running'}
+													>{taskStatusLabel(task.status)}</span
 												>
 											</div>
-											<div class="job-item-sub">
-												<span class="job-task">{taskTitleFor(job)}</span>
-												<span class="job-duration">{jobDuration(job)}</span>
+											<div class="task-item-sub">
+												<span class="task-session">{sessionTitleFor(task)}</span>
+												<span class="task-duration">{taskDuration(task)}</span>
 											</div>
-											{#if job.status === 'running' && job.output}
-												<div class="job-output">{job.output}</div>
+											{#if task.status === 'running' && task.output}
+												<div class="task-output">{task.output}</div>
 											{/if}
-											{#if job.status === 'failed' && job.error_reason}
-												<div class="job-error">{job.error_reason}</div>
+											{#if task.status === 'failed' && task.error_reason}
+												<div class="task-error">{task.error_reason}</div>
 											{/if}
 										</div>
-										{#if job.status === 'running'}
+										{#if task.status === 'running'}
 											<button
-												class="job-cancel"
-												onclick={() => handleCancelActivity(job.id, 'job')}
-												title="停止后台作业"
-												aria-label="停止后台作业"
+												class="task-cancel"
+												onclick={() => handleCancelTask(task.id, 'background')}
+												title="停止后台任务"
+												aria-label="停止后台任务"
 												type="button"
 												>&#x2715;</button
 											>
@@ -773,31 +784,31 @@
 								{/each}
 							{/if}
 						{/if}
-						{#if activityTab !== 'job'}
-							<div class="job-menu-title reminder-menu-title">提醒</div>
-							{#if pendingReminders.length === 0}
-								<div class="job-menu-empty">暂无提醒</div>
+						{#if taskTab !== 'background'}
+							<div class="task-menu-title scheduled-menu-title">定时任务</div>
+							{#if pendingScheduledTasks.length === 0}
+								<div class="task-menu-empty">暂无定时任务</div>
 							{:else}
-								{#each pendingReminders as r}
-									<div class="job-item reminder-item">
-										<span class="reminder-dot">&#9200;</span>
-										<div class="job-item-main">
-											<div class="job-item-top">
-												<span class="reminder-title-text">{r.title || r.body}</span>
-												<span class="job-item-status"
-													>{r.mode === 'continue' ? '续接任务' : '执行工具'}</span
+								{#each pendingScheduledTasks as r}
+									<div class="task-item scheduled-item">
+										<span class="scheduled-dot">&#9200;</span>
+										<div class="task-item-main">
+											<div class="task-item-top">
+												<span class="scheduled-title-text">{r.title || r.body}</span>
+												<span class="task-item-status"
+													>{r.mode === 'continue' ? '续接会话' : '执行工具'}</span
 												>
 											</div>
-											<div class="job-item-sub">
-												<span class="reminder-body">{r.body}</span>
-												<span class="job-duration">{reminderCountdown(r.due_at)}</span>
+											<div class="task-item-sub">
+												<span class="scheduled-body">{r.body}</span>
+												<span class="task-duration">{scheduledTaskCountdown(r.due_at)}</span>
 											</div>
 										</div>
 										<button
-											class="job-cancel"
-											onclick={() => handleCancelActivity(r.id, 'reminder')}
-											title="取消提醒"
-											aria-label="取消提醒"
+											class="task-cancel"
+											onclick={() => handleCancelTask(r.id, 'scheduled')}
+											title="取消定时任务"
+											aria-label="取消定时任务"
 											type="button"
 											>&#x2715;</button
 										>
@@ -805,28 +816,28 @@
 								{/each}
 							{/if}
 						{/if}
-						{#if activityTab === 'history'}
-							<div class="job-menu-title reminder-menu-title">已触发</div>
-							{#if activityHistory.length === 0}
-								<div class="job-menu-empty">暂无历史记录</div>
+						{#if taskTab === 'history'}
+							<div class="task-menu-title scheduled-menu-title">已触发</div>
+							{#if taskHistory.length === 0}
+								<div class="task-menu-empty">暂无历史记录</div>
 							{:else}
-								{#each activityHistory as h}
-									<div class="job-item reminder-item">
-										<span class="reminder-dot">&#9989;</span>
-										<div class="job-item-main">
-											<div class="job-item-top">
-												<span class="reminder-title-text">{h.title || h.body || '提醒'}</span>
-												<span class="job-item-status"
-													>{h.mode === 'continue' ? '已续接任务' : '已执行'}</span
+								{#each taskHistory as h}
+									<div class="task-item scheduled-item">
+										<span class="scheduled-dot">&#9989;</span>
+										<div class="task-item-main">
+											<div class="task-item-top">
+												<span class="scheduled-title-text">{h.title || h.body || '定时任务'}</span>
+												<span class="task-item-status"
+													>{h.mode === 'continue' ? '已续接会话' : '已执行'}</span
 												>
 											</div>
-											<div class="job-item-sub">
-												<span class="reminder-body">{h.body}</span>
-												<span class="job-duration">{formatHistoryTime(h)}</span>
+											<div class="task-item-sub">
+												<span class="scheduled-body">{h.body}</span>
+												<span class="task-duration">{formatHistoryTime(h)}</span>
 											</div>
 										</div>
 										<button
-											class="job-cancel"
+											class="task-cancel"
 											onclick={() => handleDeleteHistory(h.id)}
 											title="删除历史记录"
 											aria-label="删除历史记录"
@@ -969,7 +980,7 @@
 	.recording-text {
 		color: var(--md-sys-color-error);
 	}
-	.job-menu {
+	.task-menu {
 		position: absolute;
 		right: 0;
 		top: calc(100% + 8px);
@@ -984,12 +995,12 @@
 		padding: var(--md-sys-space-xs);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	.job-menu-tabs {
+	.task-menu-tabs {
 		display: flex;
 		gap: var(--md-sys-space-xs);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-xs) 0;
 	}
-	.job-menu-tab {
+	.task-menu-tab {
 		flex: 1;
 		font-size: 11px;
 		padding: 4px var(--md-sys-space-sm);
@@ -999,12 +1010,12 @@
 		color: var(--md-sys-color-on-surface-variant);
 		cursor: pointer;
 	}
-	.job-menu-tab.active {
+	.task-menu-tab.active {
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 		font-weight: 600;
 	}
-	.job-menu-title {
+	.task-menu-title {
 		font-size: 11px;
 		font-weight: 600;
 		letter-spacing: 0.4px;
@@ -1012,13 +1023,13 @@
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
-	.job-menu-empty {
+	.task-menu-empty {
 		padding: var(--md-sys-space-lg) var(--md-sys-space-md);
 		font-size: 12px;
 		color: var(--md-sys-color-on-surface-variant);
 		text-align: center;
 	}
-	.job-item {
+	.task-item {
 		display: flex;
 		align-items: flex-start;
 		gap: var(--md-sys-space-sm);
@@ -1026,61 +1037,61 @@
 		border-radius: var(--md-sys-shape-small);
 		opacity: 0.85;
 	}
-	.job-item-running {
+	.task-item-running {
 		opacity: 1;
 		background: var(--md-sys-color-surface-container);
 	}
-	.job-dot {
+	.task-dot {
 		font-size: 10px;
 		margin-top: 3px;
 		flex-shrink: 0;
 	}
-	.job-item-main {
+	.task-item-main {
 		flex: 1;
 		min-width: 0;
 	}
-	.job-item-top {
+	.task-item-top {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 	}
-	.job-id {
+	.task-id {
 		font-size: 11px;
 		font-family: var(--md-sys-typescale-mono);
 		color: var(--md-sys-color-on-surface);
 		font-weight: 600;
 	}
-	.job-item-status {
+	.task-item-status {
 		flex-shrink: 0;
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
 		margin-left: auto;
 	}
-	.job-item-status.running {
+	.task-item-status.running {
 		color: #44cc44;
 	}
-	.job-item-sub {
+	.task-item-sub {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		margin-top: 2px;
 		min-width: 0;
 	}
-	.job-task {
+	.task-session {
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.job-duration {
+	.task-duration {
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
 		margin-left: auto;
 		flex-shrink: 0;
 		font-family: var(--md-sys-typescale-mono);
 	}
-	.job-error {
+	.task-error {
 		margin-top: 4px;
 		font-size: 10px;
 		font-family: var(--md-sys-typescale-mono);
@@ -1089,7 +1100,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.job-output {
+	.task-output {
 		margin-top: 4px;
 		max-height: 64px;
 		overflow: hidden;
@@ -1101,18 +1112,18 @@
 		word-break: break-all;
 		opacity: 0.9;
 	}
-	.reminder-menu-title {
+	.scheduled-menu-title {
 		margin-top: var(--md-sys-space-xs);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: 0;
 	}
-	.reminder-dot {
+	.scheduled-dot {
 		font-size: 12px;
 		line-height: 1;
 		margin-top: 2px;
 		flex-shrink: 0;
 	}
-	.reminder-title-text {
+	.scheduled-title-text {
 		font-size: 12px;
 		font-weight: 600;
 		color: var(--md-sys-color-on-surface);
@@ -1120,14 +1131,14 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.reminder-body {
+	.scheduled-body {
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.job-cancel {
+	.task-cancel {
 		flex-shrink: 0;
 		width: 22px;
 		height: 22px;
@@ -1143,7 +1154,7 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.job-cancel:hover {
+	.task-cancel:hover {
 		background: var(--md-sys-color-error-container);
 	}
 	.theme-toggle {

@@ -1,6 +1,6 @@
 use crate::db::Database;
 use crate::repositories::messages::Message;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -166,7 +166,7 @@ pub fn is_single_valued_predicate(predicate: &str) -> bool {
                 | "works_at"
                 | "workspace"
                 | "company"
-                | "job"
+                | "task"
                 | "role"
                 | "shell"
                 | "os"
@@ -177,14 +177,12 @@ pub fn is_single_valued_predicate(predicate: &str) -> bool {
         )
 }
 
-/// Parse a fact timestamp that may be RFC3339 (inserted via code) or the
-/// SQLite `datetime('now')` format (legacy rows).
+/// Parse a fact timestamp (always RFC3339 — the repository writes
+/// `Utc::now().to_rfc3339()`). Unparseable timestamps (corrupt rows) fall
+/// back to "now" so recency math cannot panic or poison the sort.
 fn parse_fact_time(s: &str) -> DateTime<Utc> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return dt.with_timezone(&Utc);
-    }
-    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return DateTime::from_naive_utc_and_offset(naive, Utc);
     }
     Utc::now()
 }
@@ -1318,7 +1316,7 @@ mod tests {
     fn make_message(content: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
             id: uuid::Uuid::new_v4().to_string(),
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             role: "user".into(),
             content: content.into(),
             message_type: Some("text".into()),

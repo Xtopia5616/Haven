@@ -1,6 +1,6 @@
 pub mod db;
 pub mod embeddings;
-pub mod migrations;
 pub mod repositories;
+pub mod schema;
 
 pub use db::Database;

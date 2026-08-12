@@ -3,20 +3,20 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use haven_memory::Database;
-use haven_task::TaskInfo;
+use haven_session::SessionInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
     Thought {
-        task_id: String,
+        session_id: String,
         thought: String,
         step_number: u32,
         run_id: u64,
     },
     Action {
-        task_id: String,
+        session_id: String,
         tool_name: String,
         input: Value,
         step_number: u32,
@@ -24,7 +24,7 @@ pub enum AgentEvent {
         tool_call_id: Option<String>,
     },
     Observation {
-        task_id: String,
+        session_id: String,
         observation: String,
         tool_name: String,
         step_number: u32,
@@ -35,27 +35,27 @@ pub enum AgentEvent {
         /// `ask` tool, so the UI can render clickable answer buttons.
         ask_options: Vec<String>,
     },
-    TaskCreated(TaskInfo),
-    TaskCompleted {
-        task_id: String,
+    SessionCreated(SessionInfo),
+    SessionCompleted {
+        session_id: String,
         title: String,
     },
-    TaskError {
-        task_id: String,
+    SessionError {
+        session_id: String,
         error: String,
     },
     BalancedModelActivated {
-        task_id: String,
+        session_id: String,
         reason: String,
     },
     ThoughtChunk {
-        task_id: String,
+        session_id: String,
         delta: String,
         step_number: u32,
         run_id: u64,
     },
     ReasoningChunk {
-        task_id: String,
+        session_id: String,
         delta: String,
         step_number: u32,
         run_id: u64,
@@ -64,7 +64,7 @@ pub enum AgentEvent {
     /// the stream events (`in_progress` → `searching` → `completed`) so the
     /// UI can render the "正在联网搜索…" indicator.
     WebSearch {
-        task_id: String,
+        session_id: String,
         phase: String,
         step_number: u32,
         run_id: u64,
@@ -75,32 +75,32 @@ pub enum AgentEvent {
     /// frozen; the stream itself is only aborted at the router's idle
     /// timeout. Re-emitted when the stream resumes and stalls again.
     StreamStalled {
-        task_id: String,
+        session_id: String,
     },
     Supplement {
-        task_id: String,
+        session_id: String,
         additional_context: String,
         step_number: u32,
         run_id: u64,
     },
-    TaskUpdated {
-        task_id: String,
+    SessionUpdated {
+        session_id: String,
         status: String,
     },
     Compaction {
-        task_id: String,
+        session_id: String,
         summary: String,
         tokens_before: u32,
         tokens_after: u32,
     },
     TitleUpdated {
-        task_id: String,
+        session_id: String,
         title: String,
     },
     /// A user-facing notification requested by the agent (via the `notify`
     /// tool). Surfaced both in-app (toast) and as a Windows notification.
     Notification {
-        task_id: String,
+        session_id: String,
         title: String,
         body: String,
     },
@@ -109,13 +109,13 @@ pub enum AgentEvent {
     /// endpoint has pricing configured. Emitted after every ReAct step so
     /// the UI can display a running counter and remaining context budget.
     Usage {
-        task_id: String,
+        session_id: String,
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
         cost_usd: Option<f64>,
         model: Option<String>,
-        /// Cumulative totals across the entire task (incl. this step).
+        /// Cumulative totals across the entire session (incl. this step).
         cumulative_prompt_tokens: u32,
         cumulative_completion_tokens: u32,
         cumulative_total_tokens: u32,
@@ -131,39 +131,93 @@ pub trait AgentEventEmitter: Send + Sync {
     async fn emit(&self, event: AgentEvent);
 }
 
-/// Bounded-channel emitter wrapper: `emit` becomes a `try_send` into an
-/// in-memory queue drained by a dedicated consumer task, so producers (the
-/// ReAct loop, chunk batchers, job/reminder consumers) never await the
-/// subscriber chain (Tauri IPC, toast logic, log writers). The queue is sized
-/// far above the per-step event volume and chunk deltas are already
-/// micro-batched upstream, so drops are a logged last resort, not a normal
-/// path. Ordering within one producer is preserved (mpsc FIFO); concurrent
-/// producers interleave, exactly as with direct awaited emits.
+/// Bounded-queue emitter wrapper: `emit` becomes an enqueue into an in-memory
+/// queue drained by a dedicated consumer session, so producers (the ReAct loop,
+/// chunk batchers, task/scheduled-task consumers) never await the subscriber chain
+/// (Tauri IPC, toast logic, log writers). The queue is sized far above the
+/// per-step event volume and chunk deltas are already micro-batched upstream,
+/// so eviction is a logged last resort, not a normal path.
+///
+/// Overflow policy: the OLDEST queued chunk event (`ThoughtChunk` /
+/// `ReasoningChunk`) is evicted to make room for the new event — never the
+/// newest one. Chunk deltas are self-healing: the step's final
+/// `agent:thought` snap and the full-text reasoning reconcile replace the
+/// accumulated streamed text, so losing an old intermediate chunk is
+/// invisible in the end state. Dropping the newest event (or a non-chunk
+/// event like the snap, session status, completion, error) would lose
+/// authoritative state permanently — the very events that repair the stream.
+///
+/// Ordering within one producer is preserved (FIFO); concurrent producers
+/// interleave, exactly as with direct awaited emits.
 pub struct BufferedEmitter {
-    tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    queue: std::sync::Mutex<std::collections::VecDeque<AgentEvent>>,
+    notify: tokio::sync::Notify,
+    capacity: usize,
 }
 
 impl BufferedEmitter {
     pub fn new(capacity: usize, inner: Arc<dyn AgentEventEmitter>) -> Arc<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(capacity);
+        let this = Arc::new(Self {
+            queue: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            notify: tokio::sync::Notify::new(),
+            capacity,
+        });
+        let worker = this.clone();
         tokio::spawn(async move {
-            while let Some(ev) = rx.recv().await {
-                inner.emit(ev).await;
+            loop {
+                let ev = worker.queue.lock().unwrap().pop_front();
+                match ev {
+                    Some(ev) => inner.emit(ev).await,
+                    None => {
+                        // Register the waiter BEFORE re-checking the queue so
+                        // a push between the initial pop and the registration
+                        // cannot be missed (a notify_one with no registered
+                        // waiter would be lost, wedging the drain forever).
+                        let notified = worker.notify.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        if worker.queue.lock().unwrap().is_empty() {
+                            notified.await;
+                        }
+                    }
+                }
             }
         });
-        Arc::new(Self { tx })
+        this
     }
+}
+
+/// Whether an event is a streamed chunk delta (self-healing via the step's
+/// final snap / full-text reconcile, so the safest overflow eviction target).
+fn is_chunk_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. }
+    )
 }
 
 #[async_trait]
 impl AgentEventEmitter for BufferedEmitter {
     async fn emit(&self, event: AgentEvent) {
-        if self.tx.try_send(event).is_err() {
-            tracing::warn!(
-                "event buffer full (capacity {}), dropping event",
-                self.tx.capacity()
-            );
+        let mut queue = self.queue.lock().unwrap();
+        if queue.len() >= self.capacity {
+            if let Some(pos) = queue.iter().position(is_chunk_event) {
+                queue.remove(pos);
+                tracing::warn!(
+                    "event buffer full (capacity {}), evicting oldest queued chunk event",
+                    self.capacity
+                );
+            } else {
+                queue.pop_front();
+                tracing::warn!(
+                    "event buffer full (capacity {}), evicting oldest event",
+                    self.capacity
+                );
+            }
         }
+        queue.push_back(event);
+        drop(queue);
+        self.notify.notify_one();
     }
 }
 
@@ -243,10 +297,10 @@ pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 /// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
 const CHUNK_BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Runs a chunk batcher: aggregates incoming `(task_id, delta, step, run)` tuples
+/// Runs a chunk batcher: aggregates incoming `(session_id, delta, step, run)` tuples
 /// for up to `CHUNK_BATCH_INTERVAL` (or until `max_batch_bytes`), then emits
 /// a single `AgentEvent::ThoughtChunk`/`ReasoningChunk` with the concatenated delta.
-/// A batch boundary is also forced whenever the `(task_id, step, run)` key changes
+/// A batch boundary is also forced whenever the `(session_id, step, run)` key changes
 /// or the sender half is dropped (flush remainder then exit).
 async fn run_chunk_batcher(
     mut rx: tokio::sync::mpsc::Receiver<(String, String, u32, u64)>,
@@ -262,14 +316,14 @@ async fn run_chunk_batcher(
             }
             let event = if is_reasoning {
                 AgentEvent::ReasoningChunk {
-                    task_id: tid,
+                    session_id: tid,
                     delta,
                     step_number: sn,
                     run_id: rid,
                 }
             } else {
                 AgentEvent::ThoughtChunk {
-                    task_id: tid,
+                    session_id: tid,
                     delta,
                     step_number: sn,
                     run_id: rid,
@@ -294,11 +348,6 @@ async fn run_chunk_batcher(
         // Fresh deadline for this batch (fixed, not sliding — recreated each loop
         // iteration with the same value so it fires at the original deadline).
         let mut deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
-
-        if buf_bytes >= max_batch_bytes {
-            emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
-            continue;
-        }
 
         loop {
             tokio::select! {
@@ -338,6 +387,17 @@ async fn run_chunk_batcher(
                     emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
                     break;
                 }
+            }
+            // The `biased` select prefers the recv branch whenever a chunk is
+            // already queued, so under a continuous fast stream the timer above
+            // would never be polled as ready — batches would only flush when
+            // `max_batch_bytes` was crossed (a big silent pause followed by an
+            // 8KB dump). Check the fixed deadline after every received chunk:
+            // once it has passed the batch flushes on time no matter how hot
+            // the producer is, so the UI always receives smooth ~50ms updates.
+            if tokio::time::Instant::now() >= deadline {
+                emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                break;
             }
         }
     }
@@ -385,13 +445,13 @@ impl EventDispatcher {
         let (reasoning_tx, reasoning_rx) = tokio::sync::mpsc::channel(1024);
 
         let em_clone = emitter.clone();
-        let thought_task = tokio::spawn(run_chunk_batcher(
+        let thought_session = tokio::spawn(run_chunk_batcher(
             chunk_rx,
             em_clone.clone(),
             false,
             max_batch_bytes,
         ));
-        let reasoning_task = tokio::spawn(run_chunk_batcher(
+        let reasoning_session = tokio::spawn(run_chunk_batcher(
             reasoning_rx,
             em_clone,
             true,
@@ -400,69 +460,71 @@ impl EventDispatcher {
         // Join both batchers so awaiting this handle guarantees all buffered chunks
         // have been flushed (and emitted) before the caller proceeds.
         let consumer_handle = Some(tokio::spawn(async move {
-            let _ = thought_task.await;
-            let _ = reasoning_task.await;
+            let _ = thought_session.await;
+            let _ = reasoning_session.await;
         }));
 
         (chunk_tx, reasoning_tx, consumer_handle)
     }
 
-    pub async fn emit_task_created(&self, task: &TaskInfo) {
-        let emitter = self.emitter.lock().unwrap().clone();
-        if let Some(emitter) = emitter {
-            emitter.emit(AgentEvent::TaskCreated(task.clone())).await;
-        }
-    }
-
-    pub async fn emit_task_completed(&self, task_id: &str, title: &str) {
+    pub async fn emit_session_created(&self, session: &SessionInfo) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter
-                .emit(AgentEvent::TaskCompleted {
-                    task_id: task_id.into(),
+                .emit(AgentEvent::SessionCreated(session.clone()))
+                .await;
+        }
+    }
+
+    pub async fn emit_session_completed(&self, session_id: &str, title: &str) {
+        let emitter = self.emitter.lock().unwrap().clone();
+        if let Some(emitter) = emitter {
+            emitter
+                .emit(AgentEvent::SessionCompleted {
+                    session_id: session_id.into(),
                     title: title.into(),
                 })
                 .await;
         }
     }
 
-    pub async fn emit_task_updated(&self, task_id: &str, status: &str) {
+    pub async fn emit_session_updated(&self, session_id: &str, status: &str) {
         tracing::debug!(
-            "emit_task_updated event: task={} status={}",
-            task_id,
+            "emit_session_updated event: session={} status={}",
+            session_id,
             status
         );
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter
-                .emit(AgentEvent::TaskUpdated {
-                    task_id: task_id.into(),
+                .emit(AgentEvent::SessionUpdated {
+                    session_id: session_id.into(),
                     status: status.into(),
                 })
                 .await;
         }
     }
 
-    pub async fn emit_title_updated(&self, task_id: &str, title: &str) {
+    pub async fn emit_title_updated(&self, session_id: &str, title: &str) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::TitleUpdated {
-                    task_id: task_id.into(),
+                    session_id: session_id.into(),
                     title: title.into(),
                 })
                 .await;
         }
     }
 
-    /// Surface a user-facing notification (used by fired reminders, which are
-    /// not tied to a task). Same event the `notify` tool produces.
+    /// Surface a user-facing notification (used by fired scheduled_tasks, which are
+    /// not tied to a session). Same event the `notify` tool produces.
     pub async fn emit_notification(&self, title: &str, body: &str) {
         let emitter = self.emitter.lock().unwrap().clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::Notification {
-                    task_id: String::new(),
+                    session_id: String::new(),
                     title: title.into(),
                     body: body.into(),
                 })
@@ -474,23 +536,23 @@ impl EventDispatcher {
 
     pub async fn emit_thought_from(
         emitter: &Arc<dyn AgentEventEmitter>,
-        task_id: &str,
+        session_id: &str,
         thought: &str,
         step_number: u32,
         run_id: u64,
         db: &Database,
     ) {
         tracing::debug!(
-            "emit_thought: task={} step={} run={} thought_len={}",
-            task_id,
+            "emit_thought: session={} step={} run={} thought_len={}",
+            session_id,
             step_number,
             run_id,
             thought.len()
         );
-        let _ = db.create_thought_step(task_id, step_number as i32, thought);
+        let _ = db.create_thought_step(session_id, step_number as i32, thought);
         emitter
             .emit(AgentEvent::Thought {
-                task_id: task_id.into(),
+                session_id: session_id.into(),
                 thought: thought.into(),
                 step_number,
                 run_id,
@@ -500,12 +562,12 @@ impl EventDispatcher {
 
     pub async fn emit_balanced_model_activated_from(
         emitter: &Arc<dyn AgentEventEmitter>,
-        task_id: &str,
+        session_id: &str,
         reason: &str,
     ) {
         emitter
             .emit(AgentEvent::BalancedModelActivated {
-                task_id: task_id.into(),
+                session_id: session_id.into(),
                 reason: reason.into(),
             })
             .await;
@@ -513,14 +575,14 @@ impl EventDispatcher {
 
     pub async fn emit_compaction_from(
         emitter: &Arc<dyn AgentEventEmitter>,
-        task_id: &str,
+        session_id: &str,
         summary: &str,
         tokens_before: u32,
         tokens_after: u32,
     ) {
         emitter
             .emit(AgentEvent::Compaction {
-                task_id: task_id.into(),
+                session_id: session_id.into(),
                 summary: summary.into(),
                 tokens_before,
                 tokens_after,
@@ -528,14 +590,14 @@ impl EventDispatcher {
             .await;
     }
 
-    pub async fn emit_task_error_from(
+    pub async fn emit_session_error_from(
         emitter: &Arc<dyn AgentEventEmitter>,
-        task_id: &str,
+        session_id: &str,
         error: &str,
     ) {
         emitter
-            .emit(AgentEvent::TaskError {
-                task_id: task_id.into(),
+            .emit(AgentEvent::SessionError {
+                session_id: session_id.into(),
                 error: error.into(),
             })
             .await;
@@ -547,7 +609,7 @@ impl EventDispatcher {
     ) {
         emitter
             .emit(AgentEvent::Usage {
-                task_id: usage.task_id,
+                session_id: usage.session_id,
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
@@ -568,7 +630,7 @@ impl EventDispatcher {
 /// signature narrow.
 #[derive(Debug, Clone)]
 pub struct UsagePayload {
-    pub task_id: String,
+    pub session_id: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
@@ -729,7 +791,7 @@ mod tests {
         bus.subscribe("b", b.clone()).await;
 
         bus.emit(AgentEvent::ThoughtChunk {
-            task_id: "t".into(),
+            session_id: "t".into(),
             delta: "hi".into(),
             step_number: 1,
             run_id: 1,
@@ -751,7 +813,7 @@ mod tests {
         assert!(removed.is_some());
 
         bus.emit(AgentEvent::ThoughtChunk {
-            task_id: "t".into(),
+            session_id: "t".into(),
             delta: "x".into(),
             step_number: 1,
             run_id: 1,
@@ -769,7 +831,7 @@ mod tests {
         assert!(prev.is_some());
 
         bus.emit(AgentEvent::ThoughtChunk {
-            task_id: "t".into(),
+            session_id: "t".into(),
             delta: "x".into(),
             step_number: 1,
             run_id: 1,
@@ -809,11 +871,11 @@ mod tests {
         });
         let buffered = BufferedEmitter::new(16, collector.clone() as Arc<dyn AgentEventEmitter>);
 
-        // emit() returns immediately (try_send); the consumer task drains.
+        // emit() returns immediately (try_send); the consumer session drains.
         for i in 0..5u32 {
             buffered
-                .emit(AgentEvent::TaskUpdated {
-                    task_id: format!("task-{i}"),
+                .emit(AgentEvent::SessionUpdated {
+                    session_id: format!("ses-{i}"),
                     status: "running".into(),
                 })
                 .await;
@@ -830,50 +892,121 @@ mod tests {
         // FIFO order preserved within the single producer.
         for (i, e) in events.iter().enumerate() {
             match e {
-                AgentEvent::TaskUpdated { task_id, .. } => {
-                    assert_eq!(task_id, &format!("task-{i}"))
+                AgentEvent::SessionUpdated { session_id, .. } => {
+                    assert_eq!(session_id, &format!("ses-{i}"))
                 }
                 other => panic!("unexpected event: {:?}", other),
             }
         }
     }
 
+    /// Slow subscriber that ALSO collects delivered events (the plain
+    /// `SlowEmitter` below never touches a collector — events are delivered
+    /// to it, not to the test's collector).
+    struct SlowCollector {
+        events: Mutex<Vec<AgentEvent>>,
+    }
+    #[async_trait]
+    impl AgentEventEmitter for SlowCollector {
+        async fn emit(&self, event: AgentEvent) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
     #[tokio::test]
-    async fn buffered_emitter_drops_events_when_channel_full() {
-        let collector: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
+    async fn buffered_emitter_overflow_keeps_newest_chunk() {
+        let collector = Arc::new(SlowCollector {
             events: Mutex::new(Vec::new()),
         });
-        // Capacity 1 and a slow subscriber: the second try_send must fail
-        // (drop) instead of blocking the producer.
-        struct SlowEmitter;
-        #[async_trait]
-        impl AgentEventEmitter for SlowEmitter {
-            async fn emit(&self, _: AgentEvent) {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        }
-        let slow: Arc<dyn AgentEventEmitter> = Arc::new(SlowEmitter);
+        let slow: Arc<dyn AgentEventEmitter> = collector.clone();
         let buffered = BufferedEmitter::new(1, slow);
         buffered
-            .emit(AgentEvent::TaskUpdated {
-                task_id: "one".into(),
-                status: "running".into(),
+            .emit(AgentEvent::ThoughtChunk {
+                session_id: "t".into(),
+                delta: "old-chunk".into(),
+                step_number: 1,
+                run_id: 1,
             })
             .await;
-        // Channel full: this emit is dropped, but the producer is not blocked.
+        // Capacity 1 and a slow subscriber: the second emit must evict the
+        // oldest queued chunk instead of dropping the newest event or
+        // blocking the producer.
         let t0 = std::time::Instant::now();
         buffered
-            .emit(AgentEvent::TaskUpdated {
-                task_id: "two".into(),
-                status: "running".into(),
+            .emit(AgentEvent::ThoughtChunk {
+                session_id: "t".into(),
+                delta: "new-chunk".into(),
+                step_number: 1,
+                run_id: 1,
             })
             .await;
         assert!(
             t0.elapsed() < std::time::Duration::from_millis(30),
             "emit must not block when the buffer is full"
         );
-        // Slow consumer finishes the first event; no further delivery matters
-        // here — the point is the producer never awaits the subscriber.
-        let _ = collector;
+        // Whatever interleaving with the drain session occurred, the newest
+        // event always survives and is delivered.
+        for _ in 0..200 {
+            let has_new = collector.events.lock().unwrap().iter().any(
+                |e| matches!(e, AgentEvent::ThoughtChunk { delta, .. } if delta == "new-chunk"),
+            );
+            if has_new {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("newest chunk event was never delivered");
+    }
+
+    #[tokio::test]
+    async fn buffered_emitter_overflow_never_drops_authoritative_state() {
+        let collector = Arc::new(SlowCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        let slow: Arc<dyn AgentEventEmitter> = collector.clone();
+        let buffered = BufferedEmitter::new(2, slow);
+        // Fill the queue with a chunk + the step's authoritative snap, then
+        // overflow it with another chunk: whatever the drain interleaving,
+        // the snap and the newest chunk must be delivered — only the oldest
+        // chunk is ever evicted.
+        buffered
+            .emit(AgentEvent::ThoughtChunk {
+                session_id: "t".into(),
+                delta: "streamed-partial".into(),
+                step_number: 1,
+                run_id: 1,
+            })
+            .await;
+        buffered
+            .emit(AgentEvent::Thought {
+                session_id: "t".into(),
+                thought: "full authoritative text".into(),
+                step_number: 1,
+                run_id: 1,
+            })
+            .await;
+        buffered
+            .emit(AgentEvent::ThoughtChunk {
+                session_id: "t".into(),
+                delta: "straggler".into(),
+                step_number: 1,
+                run_id: 1,
+            })
+            .await;
+        for _ in 0..200 {
+            let events = collector.events.lock().unwrap().clone();
+            let has_snap = events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Thought { .. }));
+            let has_new = events.iter().any(
+                |e| matches!(e, AgentEvent::ThoughtChunk { delta, .. } if delta == "straggler"),
+            );
+            if has_snap && has_new {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("authoritative snap or newest chunk was never delivered");
     }
 }

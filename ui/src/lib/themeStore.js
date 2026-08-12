@@ -1,7 +1,6 @@
 import { writable } from 'svelte/store';
+import { invoke } from './tauri.js';
 
-const THEME_KEY = 'haven.theme';
-const ACCENT_KEY = 'haven.accent';
 const VALID_THEMES = ['light', 'dark'];
 
 const CUSTOM_PREFIX = 'custom:';
@@ -13,28 +12,20 @@ const ACCENT_PRESETS = {
 };
 
 function detectInitialTheme() {
-	if (typeof window === 'undefined') return 'dark';
+	if (typeof document === 'undefined') return 'dark';
 	const el = document.documentElement;
 	const existing = el.getAttribute('data-theme');
 	if (existing && VALID_THEMES.includes(existing)) return existing;
-	try {
-		const saved = window.localStorage.getItem(THEME_KEY);
-		if (saved && VALID_THEMES.includes(saved)) return saved;
-	} catch {}
 	const prefersDark =
 		typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 	return prefersDark ? 'dark' : 'light';
 }
 
 function detectInitialAccent() {
-	if (typeof window === 'undefined') return 'blue';
+	if (typeof document === 'undefined') return 'blue';
 	const el = document.documentElement;
 	const existing = el.getAttribute('data-accent');
 	if (existing && (ACCENT_PRESETS[existing] || existing.startsWith(CUSTOM_PREFIX))) return existing;
-	try {
-		const saved = window.localStorage.getItem(ACCENT_KEY);
-		if (saved && (ACCENT_PRESETS[saved] || saved.startsWith(CUSTOM_PREFIX))) return saved;
-	} catch {}
 	return 'blue';
 }
 
@@ -73,7 +64,6 @@ function createStore() {
 			if (!VALID_THEMES.includes(theme)) return;
 			currentTheme = theme;
 			applyTheme(theme);
-			try { window.localStorage.setItem(THEME_KEY, theme); } catch {}
 			set({ theme: currentTheme, accent: currentAccent });
 		},
 		setAccent(accent) {
@@ -84,7 +74,6 @@ function createStore() {
 				}
 				currentAccent = accent;
 				applyAccent(accent);
-				try { window.localStorage.setItem(ACCENT_KEY, accent); } catch {}
 				set({ theme: currentTheme, accent: currentAccent });
 			}
 		},
@@ -95,3 +84,13 @@ function createStore() {
 }
 
 export const themeStore = createStore();
+
+// Persist the current appearance to the backend config (single source of
+// truth). Fire-and-forget so a theme toggle never blocks the UI; in a
+// non-Tauri context (unit tests) it is a no-op.
+export function persistAppearance() {
+	invoke('set_appearance', {
+		theme: themeStore.currentTheme,
+		accent_color: themeStore.currentAccent,
+	}).catch(() => {});
+}

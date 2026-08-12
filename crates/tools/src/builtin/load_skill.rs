@@ -21,7 +21,7 @@ impl Tool for LoadSkillTool {
         "load_skill".into()
     }
     fn description(&self) -> String {
-        "Load a skill's tools by skill name, activating them for this task. Use the raw skill name shown in the skills list, not a `skill__`-prefixed tool name. Prefer this over weaker built-in tools when the skill fits the task.".into()
+        "Load a skill's tools by skill name, activating them for this session. Use the raw skill name shown in the skills list, not a `skill__`-prefixed tool name. Prefer this over weaker built-in tools when the skill fits the session.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -74,7 +74,7 @@ impl Tool for LoadSkillTool {
         ))
     }
 
-    /// Declare the per-task skill adapter registration so the executor
+    /// Declare the per-session skill adapter registration so the executor
     /// registers it without name-matching "load_skill".
     fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
         output

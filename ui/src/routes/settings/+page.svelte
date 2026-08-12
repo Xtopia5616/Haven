@@ -2,7 +2,7 @@
 	import logger from '$lib/logger.js';
 			import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.js';
-	import { themeStore } from '$lib/themeStore.js';
+	import { themeStore, persistAppearance } from '$lib/themeStore.js';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -293,7 +293,7 @@
 		vad_threshold: 0.5,
 	});
 
-	let task = $state({ max_concurrent: 3, max_steps: 30 });
+	let session = $state({ max_concurrent: 3, max_steps: 30 });
 	let contextLimits = $state({
 		compaction_ratio: 0.75,
 		compaction_reserve_tokens: 4096,
@@ -337,9 +337,9 @@
 		clipboard_history_entries: 10,
 		clipboard_history_max_entries: 100,
 		clipboard_entry_max_chars: 2000,
-		reminders_max: 32,
+		scheduled_tasks_max: 32,
 		reminders_due_horizon_secs: 365 * 24 * 3600,
-		background_max_jobs: 64,
+		background_max_tasks: 64,
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 64,
@@ -361,7 +361,7 @@
 				{ key: 'notification_summary_chars', label: '通知摘要字符上限', unit: 'chars', danger: false },
 				{ key: 'partial_checkpoint_min_chars', label: '流式检查点最小增量', unit: 'chars', danger: false, hint: '部分回复累计新增多少字符后落盘一次（崩溃恢复粒度）。' },
 				{ key: 'partial_checkpoint_interval_secs', label: '流式检查点间隔', unit: 'secs', danger: false },
-				{ key: 'fact_infer_interval_steps', label: '事实推断间隔', unit: 'steps', danger: false, hint: '长任务每多少步重新做一次事实提取。调小增加调用成本。' },
+				{ key: 'fact_infer_interval_steps', label: '事实推断间隔', unit: 'steps', danger: false, hint: '长会话每多少步重新做一次事实提取。调小增加调用成本。' },
 				{ key: 'max_known_facts', label: '提示中已知事实数', unit: 'count', danger: false },
 				{ key: 'sanitize_field_max_chars', label: '事实字段消毒长度', unit: 'chars', danger: true, hint: '事实字段注入到系统提示前的截断长度。调大 = 更大提示注入面。' },
 			],
@@ -407,9 +407,9 @@
 			title: '资源上限',
 			hint: '并发与内存资源保护。调大可能造成 CPU/内存/进程占用失控。',
 			fields: [
-				{ key: 'background_max_jobs', label: '后台作业并发上限', unit: 'count', danger: true, hint: '同时运行的 background shell 作业数。调大 = 子进程失控风险。' },
-				{ key: 'reminders_max', label: '提醒数量上限', unit: 'count', danger: true },
-				{ key: 'reminders_due_horizon_secs', label: '提醒最远排期', unit: 'days', days: true, danger: false },
+				{ key: 'background_max_tasks', label: '后台任务并发上限', unit: 'count', danger: true, hint: '同时运行的 background shell 任务数。调大 = 子进程失控风险。' },
+				{ key: 'scheduled_tasks_max', label: '定时任务数量上限', unit: 'count', danger: true },
+				{ key: 'scheduled_tasks_due_horizon_secs', label: '定时任务最远排期', unit: 'days', days: true, danger: false },
 				{ key: 'clipboard_history_entries', label: '剪贴板历史默认条数', unit: 'count', danger: false },
 				{ key: 'clipboard_history_max_entries', label: '剪贴板历史上限', unit: 'count', danger: true },
 				{ key: 'clipboard_entry_max_chars', label: '剪贴板条目截断', unit: 'chars', danger: false },
@@ -460,11 +460,11 @@
 		timeout_secs: 30,
 	});
 	let notification = $state({
-		task_created: { in_app: true, windows: false },
-		task_completed: { in_app: true, windows: true },
-		task_paused: { in_app: true, windows: false },
-		task_resumed: { in_app: true, windows: false },
-		task_error: { in_app: true, windows: true },
+		session_created: { in_app: true, windows: false },
+		session_completed: { in_app: true, windows: true },
+		session_paused: { in_app: true, windows: false },
+		session_resumed: { in_app: true, windows: false },
+		session_error: { in_app: true, windows: true },
 	});
 	let log = $state({ level: 'info', file_enabled: true });
 
@@ -568,7 +568,7 @@
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
 				audio = settings.audio || audio;
-				task = settings.task || task;
+				session = settings.session || session;
 				contextLimits = settings.context_limits || contextLimits;
 				memory = settings.memory || memory;
 				security = {
@@ -586,15 +586,10 @@
 				// Audio Model Provider selector reflects the STT provider when
 				// one is explicitly configured; `llm` maps back to the
 				// endpoint's LLM wire style (the "transcribe via audio_model"
-				// mode). A legacy `gemini` wire style is folded into the
-				// `stt:gemini` option — Gemini audio transcription is a
-				// single path now.
+				// mode).
 				const sttCfg = settings.stt;
 				let llmAudioStyle = settings.llm?.audio_model?.api_style || '';
-				if (llmAudioStyle === 'gemini') {
-					audioApiStyle = 'stt:gemini';
-					if (!sttCfg || sttCfg.provider === 'mcp') stt.provider = 'gemini';
-				} else if (sttCfg?.provider === 'llm') {
+				if (sttCfg?.provider === 'llm') {
 					audioApiStyle = llmAudioStyle || 'openai-chat';
 				} else if (sttCfg && (sttCfg.provider !== 'mcp' || sttCfg.mcp_server || sttCfg.api_key || sttCfg.model || sttCfg.base_url)) {
 					audioApiStyle = `stt:${sttCfg.provider}`;
@@ -604,6 +599,9 @@
 				mcpServerNames = (settings.mcp_servers || []).map((s) => s.name || '').filter(Boolean);
 			notification = settings.notification || notification;
 			log = settings.log || log;
+			if (settings.appearance?.theme) {
+				themeStore.setTheme(settings.appearance.theme);
+			}
 			if (settings.appearance?.accent_color) {
 				accent = settings.appearance.accent_color;
 				savedAccent = accent;
@@ -725,9 +723,9 @@
 						silence_timeout_ms: audio.silence_timeout_ms,
 						vad_threshold: audio.vad_threshold,
 					},
-				task: {
-					max_concurrent: task.max_concurrent,
-					max_steps: task.max_steps,
+				session: {
+					max_concurrent: session.max_concurrent,
+					max_steps: session.max_steps,
 				},
 					memory: {
 						session_window_size: memory.session_window_size,
@@ -750,11 +748,11 @@
 						timeout_secs: stt.timeout_secs,
 					},
 					notification: {
-						task_created: { in_app: notification.task_created.in_app, windows: notification.task_created.windows },
-						task_completed: { in_app: notification.task_completed.in_app, windows: notification.task_completed.windows },
-						task_paused: { in_app: notification.task_paused.in_app, windows: notification.task_paused.windows },
-						task_resumed: { in_app: notification.task_resumed.in_app, windows: notification.task_resumed.windows },
-						task_error: { in_app: notification.task_error.in_app, windows: notification.task_error.windows },
+						session_created: { in_app: notification.session_created.in_app, windows: notification.session_created.windows },
+						session_completed: { in_app: notification.session_completed.in_app, windows: notification.session_completed.windows },
+						session_paused: { in_app: notification.session_paused.in_app, windows: notification.session_paused.windows },
+						session_resumed: { in_app: notification.session_resumed.in_app, windows: notification.session_resumed.windows },
+						session_error: { in_app: notification.session_error.in_app, windows: notification.session_error.windows },
 					},
 			log: {
 				level: log.level,
@@ -762,6 +760,7 @@
 				file_path: null,
 			},
 			appearance: {
+				theme: themeStore.currentTheme,
 				accent_color: accent,
 			},
 				},
@@ -916,6 +915,17 @@
 				}
 			}
 		}
+		// Re-materialize every role that references this entry so the role
+		// endpoint (what the agent actually uses) never diverges from the
+		// library copy the UI shows.
+		for (const k of ROLE_KEYS) {
+			if (llmConfig.role_models[k] === name) {
+				llmConfig[k] = { ...endpoint };
+				if (k === 'audio_model') {
+					onApiStyleChange('audio_model', endpoint.api_style || 'openai-chat');
+				}
+			}
+		}
 		editingIdx = null;
 		libraryForm = null;
 		addNotification('模型已保存', 'success', 2000);
@@ -1015,19 +1025,19 @@
 	</div>
 
 	<div class="section">
-		<h2>Task &amp; Concurrency</h2>
-		<p class="model-hint">Max Concurrent 控制同时运行的任务数；LLM Per-Endpoint Concurrency 限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个任务同时请求同一服务商触发限流（429）。</p>
+		<h2>Session &amp; Concurrency</h2>
+		<p class="model-hint">Max Concurrent 控制同时运行的会话数；LLM Per-Endpoint Concurrency 限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个会话同时请求同一服务商触发限流（429）。</p>
 		<div class="form-row">
-			<label for="task-max-concurrent">Max Concurrent</label>
-			<MaterialNumberField id="task-max-concurrent" value={task.max_concurrent} min={1} max={10} onChange={(v) => { task.max_concurrent = v; }} />
+			<label for="session-max-concurrent">Max Concurrent</label>
+			<MaterialNumberField id="session-max-concurrent" value={session.max_concurrent} min={1} max={10} onChange={(v) => { session.max_concurrent = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="llm-max-concurrent-requests">LLM Per-Endpoint Concurrency</label>
 			<MaterialNumberField id="llm-max-concurrent-requests" value={llmConfig.max_concurrent_requests} min={1} max={16} onChange={(v) => { llmConfig.max_concurrent_requests = v; }} />
 		</div>
 		<div class="form-row">
-			<label for="task-max-steps">Max Steps</label>
-			<MaterialNumberField id="task-max-steps" value={task.max_steps} min={1} max={100} onChange={(v) => { task.max_steps = v; }} />
+			<label for="session-max-steps">Max Steps</label>
+			<MaterialNumberField id="session-max-steps" value={session.max_steps} min={1} max={100} onChange={(v) => { session.max_steps = v; }} />
 		</div>
 	</div>
 
@@ -1228,11 +1238,11 @@
 			<span class="switch-label">Windows</span>
 		</div>
 		{#each [
-			{ key: 'task_created', label: 'Task Start' },
-			{ key: 'task_completed', label: 'Task Complete' },
-			{ key: 'task_paused', label: 'Task Paused' },
-			{ key: 'task_resumed', label: 'Task Resumed' },
-			{ key: 'task_error', label: 'Task Error' },
+			{ key: 'session_created', label: 'Session Start' },
+			{ key: 'session_completed', label: 'Session Complete' },
+			{ key: 'session_paused', label: 'Session Paused' },
+			{ key: 'session_resumed', label: 'Session Resumed' },
+			{ key: 'session_error', label: 'Session Error' },
 		] as ev (ev.key)}
 			<div class="notify-grid-row">
 				<span class="switch-label">{ev.label}</span>

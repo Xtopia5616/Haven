@@ -11,18 +11,27 @@ use haven_llm::types::{LlmMessage, LlmRole};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
-use haven_task::{TaskExecutor, TaskStatus};
+use haven_session::{SessionExecutor, SessionStatus};
 use haven_tools::is_silent_action;
 
 use crate::compactor::{ContextCompactor, estimate_message_tokens};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, ReActStep};
 
+/// Stable identity for a tool call across the action/observation UI pairing,
+/// matching the frontend's `tool_call_id || tool_name` id so an interrupted
+/// observation lands on the same card the action event opened.
+fn tool_key(a: &Action) -> String {
+    a.tool_call_id
+        .clone()
+        .unwrap_or_else(|| a.tool_name.clone())
+}
+
 /// Convert a stored message attachment into a content part for the LLM.
 /// Images become vision content parts (base64 payload); non-image file
 /// attachments (persisted on disk with a `path`) become a short text
 /// reference so the agent knows the file exists and where to read it with
-/// the file tool 鈥?the raw bytes are never shipped to the model.
+/// the file tool —the raw bytes are never shipped to the model.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
     if att.is_image() {
         ContentPart::Image {
@@ -63,11 +72,11 @@ async fn choose_agent_role(router: &LlmRouter, has_image: bool) -> EndpointRole 
     }
 }
 
-/// Interval (in ReAct steps) at which long-running tasks re-run fact
-/// inference mid-task, so memory is refreshed before the task
+/// Interval (in ReAct steps) at which long-running sessions re-run fact
+/// inference mid-session, so memory is refreshed before the session
 /// ever pauses or completes.
 /// Message persisted when a run exhausts its step budget (`max_steps`). The
-/// task is intentionally paused as a checkpoint 鈥?the task is NOT finished,
+/// session is intentionally paused as a checkpoint —the session is NOT finished,
 /// and the next user message resumes it with a fresh budget. System notices
 /// like this must NOT land in the chat as an assistant bubble; they are
 /// surfaced as a notification (in-app toast + Windows) instead.
@@ -76,19 +85,19 @@ const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任�
 
 /// Nudge appended to the retry call when a text-only response looks cut off
 /// (truncated generation or text ending mid-sentence). The retry is private
-/// to the loop 鈥?the nudge is never persisted into the canonical, so the
+/// to the loop —the nudge is never persisted into the canonical, so the
 /// conversation stream stays clean if the retry succeeds or falls back.
 const CUT_OFF_RETRY_NUDGE: &str =
     "Your previous response was cut off before you finished. Please continue and complete it.";
 
-/// A stronger nudge for the mid-task retry. The model stopped with a text-only
+/// A stronger nudge for the mid-session retry. The model stopped with a text-only
 /// reply while a tool result is still pending (it described the next step but
 /// did not run it). The generic cut-off nudge ("continue and complete") does not
 /// push it to actually issue the tool call it was narrating, so this variant
-/// spells out that the task still needs a tool call.
-const MID_TASK_RETRY_NUDGE: &str = "The task is not finished: the last step ran a tool and its result is in context, but your reply only described the next step instead of doing it. If the task still needs a tool call or a follow-up action, make that tool call NOW instead of describing it. Do not repeat work already done. Continue and finish the actual task.";
+/// spells out that the session still needs a tool call.
+const MID_TASK_RETRY_NUDGE: &str = "The session is not finished: the last step ran a tool and its result is in context, but your reply only described the next step instead of doing it. If the session still needs a tool call or a follow-up action, make that tool call NOW instead of describing it. Do not repeat work already done. Continue and finish the actual session.";
 
-/// How many times a text-only response that looks cut off / mid-task is retried
+/// How many times a text-only response that looks cut off / mid-session is retried
 /// with a continuation nudge before it is accepted as a final answer. Bounded so
 /// a model that keeps refusing to call a tool cannot spin the loop forever.
 const MAX_CUT_OFF_RETRIES: u32 = 2;
@@ -195,24 +204,24 @@ fn value_conforms_to_prop(prop: &serde_json::Value, value: &serde_json::Value) -
 
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
-    executor: Arc<TaskExecutor>,
+    executor: Arc<SessionExecutor>,
     db: Arc<Database>,
     max_steps: Mutex<u32>,
     context_limits: ContextLimitsConfig,
     balanced_model_notified: Mutex<HashSet<String>>,
     run_counter: AtomicU64,
     current_run_id: AtomicU64,
-    /// Per-task cumulative token usage. Keyed by `task_id` so multiple
-    /// parallel tasks each track their own counters. Reset on task
-    /// completion to avoid leaking finished-task entries.
+    /// Per-session cumulative token usage. Keyed by `session_id` so multiple
+    /// parallel sessions each track their own counters. Reset on session
+    /// completion to avoid leaking finished-session entries.
     cumulative_usage: Mutex<HashMap<String, CumulativeUsage>>,
-    /// Reusable per-task serialization buffers for ReAct snapshots (see
+    /// Reusable per-session serialization buffers for ReAct snapshots (see
     /// `save_snapshot_with_branches`): avoids a fresh allocation for every
-    /// per-step snapshot write. Keyed by `task_id` so parallel tasks never
-    /// contend on one shared buffer (a long task's canonical+history can be
+    /// per-step snapshot write. Keyed by `session_id` so parallel sessions never
+    /// contend on one shared buffer (a long session's canonical+history can be
     /// sizable).
     snapshot_bufs: Mutex<HashMap<String, Vec<u8>>>,
-    /// Per-task incremental token-estimate cache (see
+    /// Per-session incremental token-estimate cache (see
     /// `estimate_canonical_tokens`): avoids re-tokenizing the whole canonical
     /// on every step.
     token_estimate_cache: Mutex<HashMap<String, TokenEstimate>>,
@@ -221,14 +230,14 @@ pub struct ReActEngine {
     /// full LlmConfig on every step (the router only changes via
     /// `replace_router`).
     context_window_cache: Mutex<(usize, HashMap<EndpointRole, u32>)>,
-    /// Per-task step number of the last DB snapshot write (see
+    /// Per-session step number of the last DB snapshot write (see
     /// `save_branch_point`): mid-run snapshot writes are throttled to every
     /// `SNAPSHOT_WRITE_INTERVAL` steps; pause/error/final and cancellation
     /// exit paths always write.
     last_snapshot_step: Mutex<HashMap<String, u32>>,
-    /// Per-task tool-definition cache keyed by the ToolsManager catalog
-    /// version (see `build_tool_definitions_for_task`): the definitions are
-    /// rebuilt only when a skill/MCP per-task registration or a catalog
+    /// Per-session tool-definition cache keyed by the ToolsManager catalog
+    /// version (see `build_tool_definitions_for_session`): the definitions are
+    /// rebuilt only when a skill/MCP per-session registration or a catalog
     /// rebuild bumps the version, instead of re-querying the registry on
     /// every step.
     tool_def_cache: Mutex<HashMap<String, (u64, Vec<ToolDefinition>)>>,
@@ -236,8 +245,8 @@ pub struct ReActEngine {
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
-/// canonical/history/branch_points (which accumulate to O(n虏) over a long
-/// task). Field names/shape match `ReActSnapshot` exactly so the persisted
+/// canonical/history/branch_points (which accumulate to O(n²) over a long
+/// session). Field names/shape match `ReActSnapshot` exactly so the persisted
 /// JSON stays wire-compatible.
 #[derive(serde::Serialize)]
 struct SnapshotView<'a> {
@@ -257,7 +266,7 @@ struct CumulativeUsage {
     has_cost: bool,
 }
 
-/// Incremental token estimate for a task's canonical message list (see
+/// Incremental token estimate for a session's canonical message list (see
 /// `ReActEngine::estimate_canonical_tokens`). `tokens` is the estimate at the
 /// last full tokenization pass, when the canonical had `msgs_len` messages.
 #[derive(Debug, Clone, Default)]
@@ -276,7 +285,7 @@ struct TokenEstimate {
 /// call.
 #[derive(Clone)]
 struct StepCtx {
-    task_id: String,
+    session_id: String,
     step_num: u32,
     run_id: u64,
     emitter: Arc<dyn AgentEventEmitter>,
@@ -287,26 +296,26 @@ struct StepCtx {
 enum StepCallOutcome {
     /// A usable response (possibly from the post-compaction retry).
     Response(LlmResponse),
-    /// Cancelled mid-call (end_task / rollback): exit silently.
+    /// Cancelled mid-call (end_session / rollback): exit silently.
     Cancelled,
     /// Persisted/emitted error already; the loop must propagate it.
     Fatal(String),
 }
 
-/// Update a task's status and emit the `TaskUpdated` event, in that order.
+/// Update a session's status and emit the `SessionUpdated` event, in that order.
 /// Shared by every status-transition path (pause, budget pause, agent layer)
 /// so the pair cannot drift.
 pub(crate) async fn set_status_and_emit(
-    executor: &TaskExecutor,
+    executor: &SessionExecutor,
     emitter: &Arc<dyn AgentEventEmitter>,
-    task_id: &str,
-    status: TaskStatus,
+    session_id: &str,
+    status: SessionStatus,
 ) -> anyhow::Result<()> {
     let status_str = status.as_str().to_string();
-    executor.update_task_status(task_id, status).await?;
+    executor.update_session_status(session_id, status).await?;
     emitter
-        .emit(crate::event::AgentEvent::TaskUpdated {
-            task_id: task_id.into(),
+        .emit(crate::event::AgentEvent::SessionUpdated {
+            session_id: session_id.into(),
             status: status_str,
         })
         .await;
@@ -325,8 +334,8 @@ enum FailureKind {
     Unknown,
 }
 
-impl From<haven_memory::repositories::usage::TaskUsage> for CumulativeUsage {
-    fn from(u: haven_memory::repositories::usage::TaskUsage) -> Self {
+impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
+    fn from(u: haven_memory::repositories::usage::SessionUsage) -> Self {
         Self {
             prompt_tokens: u.prompt_tokens,
             completion_tokens: u.completion_tokens,
@@ -341,7 +350,7 @@ impl ReActEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         router: Arc<LlmRouter>,
-        executor: Arc<TaskExecutor>,
+        executor: Arc<SessionExecutor>,
         db: Arc<Database>,
         max_steps: u32,
         context_limits: ContextLimitsConfig,
@@ -398,19 +407,19 @@ impl ReActEngine {
         self.router.read().unwrap().clone()
     }
 
-    /// Build the full tool-definition list for a task: global registry tools
-    /// plus per-task skill/MCP adapters registered via `load_skill`/`load_mcp`.
+    /// Build the full tool-definition list for a session: global registry tools
+    /// plus per-session skill/MCP adapters registered via `load_skill`/`load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
     ///
-    /// The result is cached per task against the ToolsManager catalog version:
-    /// the definitions only change when a per-task registration
+    /// The result is cached per session against the ToolsManager catalog version:
+    /// the definitions only change when a per-session registration
     /// (`load_skill`/`load_mcp`) or a catalog rebuild bumps the version, so
     /// the registry query + JSON mapping is skipped on the vast majority of
-    /// steps (the per-task registry query takes the global tools lock and
+    /// steps (the per-session registry query takes the global tools lock and
     /// rebuilds schema JSON on every step otherwise).
-    async fn build_tool_definitions_for_task(&self, task_id: &str) -> Vec<ToolDefinition> {
+    async fn build_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDefinition> {
         let version = self.executor.get_tools().catalog_version();
-        if let Some(cached) = self.tool_def_cache.lock().unwrap().get(task_id).cloned()
+        if let Some(cached) = self.tool_def_cache.lock().unwrap().get(session_id).cloned()
             && cached.0 == version
         {
             return cached.1;
@@ -418,7 +427,7 @@ impl ReActEngine {
         let schemas = self
             .executor
             .get_tools()
-            .list_schemas_for_task(task_id)
+            .list_schemas_for_session(session_id)
             .await;
         let defs: Vec<ToolDefinition> = schemas
             .iter()
@@ -439,18 +448,18 @@ impl ReActEngine {
         self.tool_def_cache
             .lock()
             .unwrap()
-            .insert(task_id.to_string(), (version, defs.clone()));
+            .insert(session_id.to_string(), (version, defs.clone()));
         defs
     }
 
     /// Drain user-facing context into the canonical message list: supplements
-    /// (paused-task replies), steering (mid-run user interjections) and
-    /// completed background-job results. Each becomes a `User` message so the
+    /// (paused-session replies), steering (mid-run user interjections) and
+    /// completed background-task results. Each becomes a `User` message so the
     /// agent sees it on the next LLM call.
     ///
     /// Returns `true` when at least one message was injected. Called at the
     /// top of every step, and again right before a step completes with final
-    /// content 鈥?a message that arrived while the LLM call was in flight is
+    /// content —a message that arrived while the LLM call was in flight is
     /// delivered there instead of being deferred until the turn ends.
     async fn inject_pending_context(
         &self,
@@ -460,9 +469,9 @@ impl ReActEngine {
         let mut injected = false;
 
         // One combined drain pass instead of three separate queue reads:
-        // the task-map lock is taken once per step instead of three times.
-        let (supplements, steering, job_results) =
-            self.executor.drain_pending_context(&ctx.task_id).await;
+        // the ses-map lock is taken once per step instead of three times.
+        let (supplements, steering, task_results) =
+            self.executor.drain_pending_context(&ctx.session_id).await;
         for supplement in &supplements {
             // A reply to a pending `ask` is injected as a paired answer so
             // the model sees the old question as resolved instead of treating
@@ -489,15 +498,15 @@ impl ReActEngine {
             injected = true;
         }
 
-        // Deliver completed background-job results as context. These are
-        // kept separate from the steering queue so job output is never
+        // Deliver completed background-task results as context. These are
+        // kept separate from the steering queue so task output is never
         // mistaken for a user reply (which would let the `ask` pause path
-        // resume the task without the user's answer). The payload text is
-        // self-labelling (`[Background job result] ... job_id ...`) and is
+        // resume the session without the user's answer). The payload text is
+        // self-labelling (`[Background task result] ... task_id ...`) and is
         // pushed as a User-role message because a mid-conversation System
         // message is rejected by some providers and a Tool message would need
         // a preceding assistant tool_call (see `is_dangling_boundary`).
-        for s in &job_results {
+        for s in &task_results {
             canonical.push(CanonicalMessage::user_text(s));
             injected = true;
         }
@@ -521,7 +530,7 @@ impl ReActEngine {
     ) {
         ctx.emitter
             .emit(crate::event::AgentEvent::Supplement {
-                task_id: ctx.task_id.clone(),
+                session_id: ctx.session_id.clone(),
                 additional_context: text.to_string(),
                 step_number: ctx.step_num,
                 run_id: ctx.run_id,
@@ -530,16 +539,16 @@ impl ReActEngine {
         let _ = self
             .db
             .run_blocking({
-                let task_id = ctx.task_id.clone();
+                let session_id = ctx.session_id.clone();
                 let text = text.to_string();
                 let step_num = ctx.step_num;
-                move |db| db.create_thought_step(&task_id, step_num as i32, &text)
+                move |db| db.create_thought_step(&session_id, step_num as i32, &text)
             })
             .await;
         let mut content = vec![ContentPart::text(format!("{prefix}: {text}"))];
         content.extend(attachments.iter().map(attachment_to_content_part));
         // Deduplicate repeated user inputs. Two failure modes to avoid:
-        // 1. Rapid repeat clicks (several "继续" while the task is paused or
+        // 1. Rapid repeat clicks (several "继续" while the session is paused or
         //    erroring) pile identical User messages into the canonical, and
         //    the model reads a stack of the same instruction as separate new
         //    questions.
@@ -593,16 +602,16 @@ impl ReActEngine {
     }
 
     /// Shared ReAct loop body. Runs from `start_step` through `max_steps`.
-    /// Called by both `run_task` (fresh) and `run_task_resumed` (resumed from
+    /// Called by both `run_session` (fresh) and `run_session_resumed` (resumed from
     /// snapshot).
     ///
     /// Tool definitions are rebuilt at the top of each step so that tools
-    /// loaded via `load_skill` / `load_mcp` (registered per-task) become
+    /// loaded via `load_skill` / `load_mcp` (registered per-session) become
     /// visible to the LLM on the very next step.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_react_loop(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &mut Vec<CanonicalMessage>,
         history: &mut Vec<ReActStep>,
         start_step: u32,
@@ -612,16 +621,16 @@ impl ReActEngine {
         run_id: u64,
     ) -> anyhow::Result<()> {
         let max_steps = *self.max_steps.lock().unwrap();
-        // When resuming past the configured cap (e.g. a task that used all
+        // When resuming past the configured cap (e.g. a session that used all
         // `max_steps` then paused for the user's next turn), give the loop
         // another full budget so the resume doesn't degenerate into an
         // immediate budget-exhaustion pause below. This intentionally
-        // re-budgets on every resume 鈥?a task can run `max_steps` per run,
-        // not once per task lifetime (documented in refactor-dedup.md A9).
+        // re-budgets on every resume —a session can run `max_steps` per run,
+        // not once per session lifetime (documented in refactor-dedup.md A9).
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
         // Cut-off retry counter: a text-only response that looks truncated (or
-        // is a mid-task narration that stopped without a tool call) is retried
+        // is a mid-session narration that stopped without a tool call) is retried
         // up to MAX_CUT_OFF_RETRIES times per run with a continuation nudge (the
         // nudge is not persisted into the canonical). Kept separate from the
         // empty response budget — the two heuristics address different failure
@@ -633,12 +642,12 @@ impl ReActEngine {
         // is never lost — the receiver's stored value moves and `changed()`
         // resolves immediately. No polling timeout is needed, and one
         // long-lived receiver avoids allocating a watch subscription (two
-        // task-map lock acquisitions) on every step.
-        let mut status_rx = self.executor.subscribe_status(task_id).await;
+        // ses-map lock acquisitions) on every step.
+        let mut status_rx = self.executor.subscribe_status(session_id).await;
 
         for step_num in start_step..=effective_max {
             last_step = step_num;
-            let cancel = self.executor.cancellation_token(task_id).await;
+            let cancel = self.executor.cancellation_token(session_id).await;
             // The paused-state snapshot is saved once per pause episode: the
             // canonical/history/branch points cannot change while paused, so
             // re-observing a still-paused state after a transition (e.g.
@@ -646,36 +655,43 @@ impl ReActEngine {
             // snapshot to disk.
             let mut paused_snapshot_saved = false;
             loop {
-                // Check cancellation first: end_task / rollback cancel the
+                // Check cancellation first: end_session / rollback cancel the
                 // token, so the loop must exit silently without touching
                 // status or emitting events. The state check below would
-                // otherwise observe the Error sentinel of a task that
-                // end_task already removed from memory and announce a
-                // spurious "task interrupted" error. A final snapshot is
+                // otherwise observe the Error sentinel of a session that
+                // end_session already removed from memory and announce a
+                // spurious "session interrupted" error. A final snapshot is
                 // written so the DB row is never left stale for the rollback
                 // that just cancelled us.
                 if cancel.is_cancelled() {
-                    self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
-                        .await;
+                    self.save_exit_snapshot(
+                        session_id,
+                        canonical,
+                        history,
+                        step_num,
+                        branch_points,
+                    )
+                    .await;
                     return Ok(());
                 }
-                let state = self.executor.get_task_state(task_id).await;
+                let state = self.executor.get_session_state(session_id).await;
                 match state {
-                    // Task vanished from the working set (end_task / terminal
+                    // Session vanished from the working set (end_session / terminal
                     // cleanup): exit silently.
                     None => return Ok(()),
-                    Some(TaskStatus::Completed) => return Ok(()),
-                    Some(TaskStatus::Error) => {
-                        // An external path marked the task Error while the
+                    Some(SessionStatus::Completed) => return Ok(()),
+                    Some(SessionStatus::Error) => {
+                        // An external path marked the session Error while the
                         // loop was alive: announce the interruption so the
                         // user sees why it stopped.
-                        self.emit_error(&emitter, task_id, "task interrupted").await;
+                        self.emit_error(&emitter, session_id, "session interrupted")
+                            .await;
                         return Ok(());
                     }
                     Some(s) if s.is_paused() => {
                         if !paused_snapshot_saved {
                             self.save_snapshot_with_branches(
-                                task_id,
+                                session_id,
                                 canonical,
                                 history,
                                 step_num,
@@ -694,10 +710,10 @@ impl ReActEngine {
                     biased;
                     _ = cancel.cancelled() => {
                         // Same final-write as the loop-head cancel above:
-                        // rollback/end_task must find the DB row current.
+                        // rollback/end_session must find the DB row current.
                         if !paused_snapshot_saved {
                             self.save_exit_snapshot(
-                                task_id,
+                                session_id,
                                 canonical,
                                 history,
                                 step_num,
@@ -708,7 +724,7 @@ impl ReActEngine {
                         return Ok(());
                     }
                     r = status_rx.changed() => {
-                        // `Err` means the sender was dropped (task cleaned
+                        // `Err` means the sender was dropped (session cleaned
                         // up): the state re-check at the loop head handles it.
                         let _ = r;
                     }
@@ -718,14 +734,14 @@ impl ReActEngine {
             // Per-step context shared by all helpers below (context injection,
             // streaming, error handling, final-answer delivery).
             let ctx = StepCtx {
-                task_id: task_id.to_string(),
+                session_id: session_id.to_string(),
                 step_num,
                 run_id,
                 emitter: emitter.clone(),
             };
 
             // Deliver user interjections (supplements, steering) and
-            // background-job results as context at the top of each step so
+            // background-task results as context at the top of each step so
             // they land in the gap between tool calls and the next LLM call.
             self.inject_pending_context(&ctx, canonical).await;
 
@@ -735,13 +751,13 @@ impl ReActEngine {
             // may summarize away the last image, so re-scan only when one ran.
             let mut has_image = canonical_has_image(canonical);
             if self
-                .maybe_compact(task_id, canonical, has_image, &emitter)
+                .maybe_compact(session_id, canonical, has_image, &emitter)
                 .await
             {
                 has_image = canonical_has_image(canonical);
             }
 
-            // Incremental fact inference on long-running tasks:
+            // Incremental fact inference on long-running sessions:
             // turns that never pause would otherwise only trigger extraction
             // at the very end. Every `context_limits.fact_infer_interval_steps`
             // steps we re-run inference; the upsert/known-facts machinery makes
@@ -758,9 +774,10 @@ impl ReActEngine {
             // mid-batch interruption can never poison a request.
             crate::sanitize_canonical(canonical);
 
-            // Rebuild tool definitions each step so that per-task tools
+            // Rebuild tool definitions each step so that per-session tools
             // registered by `load_skill` / `load_mcp` are visible to the LLM.
-            let tools: Vec<ToolDefinition> = self.build_tool_definitions_for_task(task_id).await;
+            let tools: Vec<ToolDefinition> =
+                self.build_tool_definitions_for_session(session_id).await;
 
             let router = self.router();
             // Same cancellation token as the loop-head wait above; one
@@ -815,25 +832,31 @@ impl ReActEngine {
                     // rollback/continue that cancelled the LLM call (the
                     // response was never parsed, so the saved state is the
                     // clean pre-step state).
-                    self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
-                        .await;
+                    self.save_exit_snapshot(
+                        session_id,
+                        canonical,
+                        history,
+                        step_num,
+                        branch_points,
+                    )
+                    .await;
                     return Ok(());
                 }
                 StepCallOutcome::Fatal(msg) => return Err(anyhow::anyhow!("{}", msg)),
             };
 
-            // L2/C2: a rollback or end_task may have cancelled the task while
+            // L2/C2: a rollback or end_session may have cancelled the session while
             // the LLM call was in flight (the HTTP call itself may not observe
             // the token promptly and can return well after the 5s rollback
             // wait). Re-check before persisting anything so a stale response
             // cannot overwrite the restored snapshot or push ghost steps.
             if cancel_res.is_cancelled() {
                 tracing::info!(
-                    "ReAct step {} task {} cancelled during LLM call; discarding response",
+                    "ReAct step {} session {} cancelled during LLM call; discarding response",
                     step_num,
-                    task_id
+                    session_id
                 );
-                self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                self.save_exit_snapshot(session_id, canonical, history, step_num, branch_points)
                     .await;
                 return Ok(());
             }
@@ -847,20 +870,20 @@ impl ReActEngine {
             );
 
             if let Some(ref reasoning) = response.reasoning {
-                self.persist_task_message(task_id, "assistant", reasoning, Some("reasoning"))
+                self.persist_session_message(session_id, "assistant", reasoning, Some("reasoning"))
                     .await;
                 // Reconcile the frontend's streamed reasoning with the
                 // authoritative complete text. The frontend builds reasoning
                 // only from batched deltas, so a dropped/delayed final chunk
                 // would permanently lose trailing characters. Emitting the
                 // complete reasoning as a final delta lets the frontend's
-                // cumulative-detection (delta.startsWith(curr) 閳?replace)
+                // cumulative-detection (delta.startsWith(curr) —replace)
                 // snap the content to the exact full text. This runs after the
                 // chunk batcher has flushed, so it is guaranteed to be the
                 // last reasoning event for this step.
                 emitter
                     .emit(crate::event::AgentEvent::ReasoningChunk {
-                        task_id: task_id.into(),
+                        session_id: session_id.into(),
                         delta: reasoning.clone(),
                         step_number: step_num,
                         run_id,
@@ -875,7 +898,7 @@ impl ReActEngine {
             // model response (no text, no reasoning, no tool calls) is almost
             // always a transient upstream glitch. Retry the same context up
             // to EMPTY_RESPONSE_MAX_RETRIES times before concluding the model
-            // decided nothing — otherwise the task would instantly "complete"
+            // decided nothing — otherwise the session would instantly "complete"
             // with a "No action decided." message and pause without answering.
             // Declared per step so an earlier empty response in this run
             // cannot starve a later incident of its retries; the exhausted
@@ -888,7 +911,7 @@ impl ReActEngine {
                     empty_retries_remaining -= 1;
                     if cancel_res.is_cancelled() {
                         self.save_exit_snapshot(
-                            task_id,
+                            session_id,
                             canonical,
                             history,
                             step_num,
@@ -899,14 +922,14 @@ impl ReActEngine {
                     }
                     // Settling delay between attempts: an upstream glitch that
                     // just produced an empty stream often clears within a
-                    // second or two. Cancellable: a user rollback / end_task
+                    // second or two. Cancellable: a user rollback / end_session
                     // during the delay must not wait out the whole sleep — the
                     // retry loop is exited as soon as the token fires, so the
                     // handler releases the running slot promptly instead of
                     // blocking the rollback's 5s wait.
                     tokio::select! {
                         _ = cancel_res.cancelled() => {
-                            self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
+                            self.save_exit_snapshot(session_id, canonical, history, step_num, branch_points)
                                 .await;
                             return Ok(());
                         }
@@ -914,7 +937,7 @@ impl ReActEngine {
                     }
                     if cancel_res.is_cancelled() {
                         self.save_exit_snapshot(
-                            task_id,
+                            session_id,
                             canonical,
                             history,
                             step_num,
@@ -924,12 +947,12 @@ impl ReActEngine {
                         return Ok(());
                     }
                     tracing::warn!(
-                        "ReAct step {} task {} model returned an empty response; retrying ({} left)",
+                        "ReAct step {} session {} model returned an empty response; retrying ({} left)",
                         step_num,
-                        task_id,
+                        session_id,
                         empty_retries_remaining
                     );
-                    // Cancellable: end_task / rollback must be able to abort
+                    // Cancellable: end_session / rollback must be able to abort
                     // the retries mid-flight (the non-cancellable variant
                     // would also grant each attempt a fresh total-duration
                     // budget instead of sharing the step's cancellation).
@@ -963,7 +986,7 @@ impl ReActEngine {
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
                             self.save_exit_snapshot(
-                                task_id,
+                                session_id,
                                 canonical,
                                 history,
                                 step_num,
@@ -986,10 +1009,10 @@ impl ReActEngine {
             // A text-only response that ends without an explicit tool call is
             // only trusted as a deliberate final answer when it looks
             // complete: the provider reported Stop AND the text does not end
-            // mid-sentence AND the agent is not still mid-task. Anything else
-            // 鈥?a truncated generation (Length / ContentFilter / unknown
-            // finish), text cut off mid-thought, or a mid-task narration that
-            // stopped without issuing the tool call it described 鈥?must not
+            // mid-sentence AND the agent is not still mid-session. Anything else
+            // —a truncated generation (Length / ContentFilter / unknown
+            // finish), text cut off mid-thought, or a mid-session narration that
+            // stopped without issuing the tool call it described —must not
             // end the turn presenting a partial answer as final.
             // Retry with a continuation nudge (never persisted into the
             // canonical), up to MAX_CUT_OFF_RETRIES times; if every retry is
@@ -1005,25 +1028,31 @@ impl ReActEngine {
             {
                 cut_off_retries += 1;
                 if cancel_res.is_cancelled() {
-                    self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
-                        .await;
+                    self.save_exit_snapshot(
+                        session_id,
+                        canonical,
+                        history,
+                        step_num,
+                        branch_points,
+                    )
+                    .await;
                     return Ok(());
                 }
-                // Mid-task narrations get a stronger nudge that explicitly asks
+                // Mid-session narrations get a stronger nudge that explicitly asks
                 // for the pending tool call; plain truncation gets the generic
                 // continuation nudge.
-                let mid_task = Self::canonical_has_pending_tool_context(canonical);
-                let nudge = if mid_task {
+                let mid_session = Self::canonical_has_pending_tool_context(canonical);
+                let nudge = if mid_session {
                     MID_TASK_RETRY_NUDGE
                 } else {
                     CUT_OFF_RETRY_NUDGE
                 };
                 tracing::warn!(
-                    "ReAct step {} task {} response looks cut off (finish={:?}, mid_task={}); retrying (attempt {}/{})",
+                    "ReAct step {} session {} response looks cut off (finish={:?}, mid_session={}); retrying (attempt {}/{})",
                     step_num,
-                    task_id,
+                    session_id,
                     response.finish_reason,
-                    mid_task,
+                    mid_session,
                     cut_off_retries,
                     MAX_CUT_OFF_RETRIES
                 );
@@ -1036,9 +1065,9 @@ impl ReActEngine {
                     reasoning: None,
                     web_search_calls: Vec::new(),
                 });
-                // Cancellable so an interruption (rollback / end_task) aborts
+                // Cancellable so an interruption (rollback / end_session) aborts
                 // the retry promptly instead of letting its stream run to
-                // completion after the task was cancelled (the empty-response
+                // completion after the session was cancelled (the empty-response
                 // retry below uses the same cancellable variant). Chunks are
                 // forwarded live like the primary call, so a resumed provider
                 // streams visibly instead of freezing the UI mid-step.
@@ -1069,8 +1098,14 @@ impl ReActEngine {
                         }
                     }
                     Err(haven_llm::LlmError::Cancelled) => {
-                        self.save_exit_snapshot(task_id, canonical, history, step_num, branch_points)
-                            .await;
+                        self.save_exit_snapshot(
+                            session_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                        )
+                        .await;
                         return Ok(());
                     }
                     Err(e) => {
@@ -1097,9 +1132,9 @@ impl ReActEngine {
                     .all(|a| a.is_final && a.tool_call_id.is_none())
             {
                 tracing::warn!(
-                    "ReAct step {} task {} stopped while an ask is pending; keeping the turn open",
+                    "ReAct step {} session {} stopped while an ask is pending; keeping the turn open",
                     step_num,
-                    task_id
+                    session_id
                 );
                 actions.clear();
             }
@@ -1112,13 +1147,13 @@ impl ReActEngine {
             // finalized actions so retry-replaced responses are covered too.
             if !actions.is_empty() {
                 let repaired = self
-                    .supplement_missing_required_fields(task_id, &mut actions)
+                    .supplement_missing_required_fields(session_id, &mut actions)
                     .await;
                 if repaired > 0 {
                     tracing::warn!(
-                        "ReAct step {} task {} repaired {} tool call(s) with missing required fields",
+                        "ReAct step {} session {} repaired {} tool call(s) with missing required fields",
                         step_num,
-                        task_id,
+                        session_id,
                         repaired
                     );
                 }
@@ -1140,7 +1175,7 @@ impl ReActEngine {
 
             if let Some(ref t) = thought {
                 EventDispatcher::emit_thought_from(
-                    &emitter, task_id, t, step_num, run_id, &self.db,
+                    &emitter, session_id, t, step_num, run_id, &self.db,
                 )
                 .await;
                 history.push(ReActStep {
@@ -1164,7 +1199,7 @@ impl ReActEngine {
                     .iter()
                     .all(|a| a.is_final && a.tool_call_id.is_none());
             if has_web_search && (actions.is_empty() || synthesized_final) {
-                // The text must match what `persist_task_message` stores
+                // The text must match what `persist_session_message` stores
                 // (trimmed thought) or the resume dedup fails on the leading
                 // whitespace and re-seeds the message as a [conversation] line.
                 let push_text = thought.as_deref().unwrap_or(&response.text);
@@ -1179,11 +1214,11 @@ impl ReActEngine {
                     // carries the search context and produces the answer.
                     // Keep the turn open and let the loop re-request.
                     if let Some(ref t) = thought {
-                        self.persist_task_message(task_id, "assistant", t, Some("text"))
+                        self.persist_session_message(session_id, "assistant", t, Some("text"))
                             .await;
                     }
                     self.save_branch_point(
-                        task_id,
+                        session_id,
                         canonical,
                         history,
                         step_num,
@@ -1192,15 +1227,15 @@ impl ReActEngine {
                     )
                     .await;
                     tracing::debug!(
-                        "ReAct step {} task {} server-side web search round ({} item(s)); continuing",
+                        "ReAct step {} session {} server-side web search round ({} item(s)); continuing",
                         step_num,
-                        task_id,
+                        session_id,
                         response.web_search_calls.len()
                     );
                     continue;
                 }
                 // synthesized_final: the answer arrived in the same response
-                // as the search call 鈥?fall through to the final-answer path,
+                // as the search call —fall through to the final-answer path,
                 // which ends the turn. The canonical push above keeps the
                 // search context alive for follow-up turns.
             }
@@ -1214,13 +1249,13 @@ impl ReActEngine {
                 if pending_ask {
                     let question = Self::extract_pending_ask_question(canonical);
                     self.pause_turn(
-                        task_id,
+                        session_id,
                         canonical,
                         history,
                         step_num + 1,
                         branch_points,
                         &emitter,
-                        TaskStatus::PausedAwaitingAnswer,
+                        SessionStatus::PausedAwaitingAnswer,
                         &question,
                         None,
                         infer,
@@ -1232,14 +1267,14 @@ impl ReActEngine {
                 // nothing (no text, no tool calls) on every attempt. Ending
                 // the turn with a fake "No action decided." answer would look
                 // like the assistant ignored the user — surface an explicit
-                // error instead so the user can retry the task, and the real
+                // error instead so the user can retry the session, and the real
                 // cause (upstream silent failure) is visible.
                 if thought.is_none() && empty_retries_remaining < EMPTY_RESPONSE_MAX_RETRIES {
                     let err_msg = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。"
                         .to_string();
-                    self.emit_error(&emitter, task_id, &err_msg).await;
+                    self.emit_error(&emitter, session_id, &err_msg).await;
                     self.executor
-                        .update_task_status(task_id, TaskStatus::Error)
+                        .update_session_status(session_id, SessionStatus::Error)
                         .await?;
                     return Err(anyhow::anyhow!("{}", err_msg));
                 }
@@ -1272,7 +1307,7 @@ impl ReActEngine {
                         observation: Some(msg.clone()),
                     });
                 }
-                // A user message (or background-job result) arrived while the
+                // A user message (or background-task result) arrived while the
                 // model was generating this answer: deliver it in the gap
                 // between the tool calls and the final content instead of
                 // deferring it until after the turn completes. The finished
@@ -1308,13 +1343,13 @@ impl ReActEngine {
                     Vec::new(),
                 ));
                 self.pause_turn(
-                    task_id,
+                    session_id,
                     canonical,
                     history,
                     step_num + 1,
                     branch_points,
                     &emitter,
-                    TaskStatus::Paused,
+                    SessionStatus::Paused,
                     &msg,
                     Some(step_num),
                     infer,
@@ -1324,7 +1359,7 @@ impl ReActEngine {
             }
 
             if let Some(final_action) = actions.iter().find(|a| a.is_final) {
-                let final_text = thought.unwrap_or_else(|| "Task completed.".into());
+                let final_text = thought.unwrap_or_else(|| "Session completed.".into());
                 // Same clobber guard as the empty-actions branch above.
                 if let Some(s) = history.last_mut().filter(|s| s.step_number == step_num) {
                     s.action = Some(final_action.clone());
@@ -1368,13 +1403,13 @@ impl ReActEngine {
                     ));
                 }
                 self.pause_turn(
-                    task_id,
+                    session_id,
                     canonical,
                     history,
                     step_num + 1,
                     branch_points,
                     &emitter,
-                    TaskStatus::Paused,
+                    SessionStatus::Paused,
                     &final_text,
                     Some(step_num),
                     infer,
@@ -1386,7 +1421,7 @@ impl ReActEngine {
             if let Some(ref t) = thought {
                 let text = t.trim();
                 if !text.is_empty() {
-                    self.persist_task_message(task_id, "assistant", text, Some("text"))
+                    self.persist_session_message(session_id, "assistant", text, Some("text"))
                         .await;
                 }
             }
@@ -1395,7 +1430,7 @@ impl ReActEngine {
             for action in &non_final {
                 emitter
                     .emit(crate::event::AgentEvent::Action {
-                        task_id: task_id.into(),
+                        session_id: session_id.into(),
                         tool_name: action.tool_name.clone(),
                         input: action.tool_input.clone(),
                         step_number: step_num,
@@ -1428,7 +1463,7 @@ impl ReActEngine {
                         })
                         .collect(),
                 );
-                // The text must match what `persist_task_message` stores
+                // The text must match what `persist_session_message` stores
                 // (trimmed thought) so resume dedup cannot fail; a
                 // retry-replaced response also must not echo the cut-off
                 // original text.
@@ -1445,14 +1480,21 @@ impl ReActEngine {
                 ));
             }
 
-            self.save_branch_point(task_id, canonical, history, step_num, branch_points, false)
-                .await;
+            self.save_branch_point(
+                session_id,
+                canonical,
+                history,
+                step_num,
+                branch_points,
+                false,
+            )
+            .await;
 
             use futures_util::StreamExt;
 
             let mut tool_futures = futures_util::stream::FuturesUnordered::new();
             for action in &non_final {
-                let task_id = task_id.to_string();
+                let session_id = session_id.to_string();
                 let tool_name = action.tool_name.clone();
                 let tool_input = action.tool_input.clone();
                 let action = (*action).clone();
@@ -1469,7 +1511,7 @@ impl ReActEngine {
                             .unwrap_or_default()
                     );
                     let result = executor
-                        .execute_step(&task_id, &tool_name, tool_input.clone(), step_num)
+                        .execute_step(&session_id, &tool_name, tool_input.clone(), step_num)
                         .await;
                     let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
                         match result {
@@ -1541,23 +1583,77 @@ impl ReActEngine {
             // the retry nudge — a broken proxy or a missing command must not
             // push the model to abandon a sound approach.
             let mut failure_signals: Vec<(String, String)> = Vec::new();
-            // If the agent invoked the `ask` tool, the task must pause and
+            // Tool calls in this batch that already produced a result, keyed
+            // by the same identity the action/observation pairing uses. When
+            // the batch is cancelled mid-flight, every `non_final` action NOT
+            // in this set was cut off — it must still be repaired with an
+            // "Interrupted" result and surfaced, not silently dropped.
+            let mut completed_tool_keys: HashSet<String> = HashSet::new();
+            // If the agent invoked the `ask` tool, the session must pause and
             // wait for the user's reply (delivered as a supplement). Collect
             // every question in the batch so all are surfaced.
             let mut asked_questions: Vec<String> = Vec::new();
             // Drain tool results while remaining responsive to cancellation.
             // Without select!, a cancel arriving mid-batch would only be
-            // detected at the next step boundary 閳?after all tools finish.
+            // detected at the next step boundary —after all tools finish.
             loop {
                 tokio::select! {
                     biased;
                     _ = cancel_res.cancelled() => {
                         tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
+                        // Tool calls still in flight were cut off, not skipped:
+                        // repair EACH one with an "Interrupted" result so the
+                        // model sees the tool was attempted (and may retry it),
+                        // and surface it in the UI as an interrupted
+                        // observation card rather than leaving a silent gap.
+                        let interrupted_keys: Vec<Action> = non_final
+                            .iter()
+                            .filter(|a| !completed_tool_keys.contains(&tool_key(a)))
+                            .map(|a| (*a).clone())
+                            .collect();
+                        for action in &interrupted_keys {
+                            let silent_action =
+                                is_silent_action(&action.tool_name, &action.tool_input);
+                            let interrupted_text = crate::interrupted_result_text(
+                                &action.tool_name,
+                                &action.tool_input,
+                            );
+                            emitter
+                                .emit(crate::event::AgentEvent::Observation {
+                                    session_id: session_id.into(),
+                                    observation: interrupted_text.clone(),
+                                    tool_name: action.tool_name.clone(),
+                                    step_number: step_num,
+                                    run_id,
+                                    silent: silent_action,
+                                    tool_call_id: action.tool_call_id.clone(),
+                                    ask_options: Vec::new(),
+                                })
+                                .await;
+                            canonical.push(CanonicalMessage::tool(
+                                vec![ContentPart::text(interrupted_text.clone())],
+                                action.tool_call_id.clone(),
+                            ));
+                            if let Some(step) = history
+                                .iter_mut()
+                                .find(|s| s.step_number == step_num && s.action.is_none())
+                            {
+                                step.action = Some(action.clone());
+                                step.observation = Some(interrupted_text);
+                            } else {
+                                history.push(ReActStep {
+                                    step_number: step_num,
+                                    thought: None,
+                                    action: Some(action.clone()),
+                                    observation: Some(interrupted_text),
+                                });
+                            }
+                        }
                         // A rollback that lands mid-batch must find the DB row
                         // at the pre-batch branch point (the response and
                         // partial tool results are discarded by the exit).
                         self.save_exit_snapshot(
-                            task_id,
+                            session_id,
                             canonical,
                             history,
                             step_num,
@@ -1593,7 +1689,7 @@ impl ReActEngine {
                         if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
                             emitter
                                 .emit(crate::event::AgentEvent::Notification {
-                                    task_id: task_id.into(),
+                                    session_id: session_id.into(),
                                     title: title.clone(),
                                     body: body.clone(),
                                 })
@@ -1601,12 +1697,12 @@ impl ReActEngine {
                         }
                         // Surface an `ask` result as a readable question rather
                         // than raw JSON. The user's reply arrives via
-                        // process_input 閳?supplement 閳?Paused閳墾ending resume.
+                        // process_input —supplement —Paused → Pending resume.
                         if let Some(q) = &ask_question {
                             asked_questions.push(q.clone());
                         }
                         // `ask` must never be silent: hiding the question
-                        // while the task pauses for an answer would leave the
+                        // while the session pauses for an answer would leave the
                         // user waiting on a question they can't see.
                         let silent = is_silent_action(&tool_name, &action.tool_input);
                         // For `ask`, the chat/review bubble shows the readable
@@ -1628,7 +1724,7 @@ impl ReActEngine {
                         };
                         emitter
                             .emit(crate::event::AgentEvent::Observation {
-                                task_id: task_id.into(),
+                                session_id: session_id.into(),
                                 observation: display_observation.clone(),
                                 tool_name: tool_name.clone(),
                                 step_number: step_num,
@@ -1656,7 +1752,7 @@ impl ReActEngine {
                             // could clobber the PREVIOUS step's entry when the
                             // response carried no thought), silently dropping
                             // every other tool from the step history — which
-                            // also made restore_per_task_tools miss parallel
+                            // also made restore_per_session_tools miss parallel
                             // load_skill/load_mcp registrations on restart.
                             history.push(ReActStep {
                                 step_number: step_num,
@@ -1670,6 +1766,7 @@ impl ReActEngine {
                             vec![ContentPart::text(step_result)],
                             action.tool_call_id.clone(),
                         ));
+                        completed_tool_keys.insert(tool_key(&action));
                     }
                 }
             }
@@ -1684,19 +1781,19 @@ impl ReActEngine {
             }
 
             // The agent asked the human a question: pause so the user can
-            // answer. Their reply arrives as a supplement and resumes the task
-            // (Paused 閳?Pending 閳?dispatcher re-enters the loop, injecting the
+            // answer. Their reply arrives as a supplement and resumes the session
+            // (Paused —Pending —dispatcher re-enters the loop, injecting the
             // answer as context at the top of the next step).
             if !asked_questions.is_empty() {
                 let question = asked_questions.join("\n\n");
                 // TOCTOU: a reply that arrived during the drain window went to
-                // the steering queue (task was still Running). Convert it to a
+                // the steering queue (session was still Running). Convert it to a
                 // supplement and, if present, resume immediately as Pending so
-                // the answer isn't stranded while the task sits Paused. The
-                // steering queue holds only user interjections now 閳?background
-                // job results are buffered separately 閳?so `has_answer` truly
+                // the answer isn't stranded while the session sits Paused. The
+                // steering queue holds only user interjections now —background
+                // task results are buffered separately —so `has_answer` truly
                 // reflects a human reply.
-                let steering = self.executor.get_steering(task_id).await;
+                let steering = self.executor.get_steering(session_id).await;
                 let has_answer = !steering.is_empty();
                 for s in &steering {
                     // The interjection is the user's reply to the pending
@@ -1704,19 +1801,19 @@ impl ReActEngine {
                     // not re-answer the old question on resume.
                     let _ = self
                         .executor
-                        .add_answer_with_attachments(task_id, &s.text, &s.attachments)
+                        .add_answer_with_attachments(session_id, &s.text, &s.attachments)
                         .await;
                 }
                 let status = if has_answer {
-                    TaskStatus::Pending
+                    SessionStatus::Pending
                 } else {
-                    // No reply arrived: the task pauses awaiting the user's
+                    // No reply arrived: the session pauses awaiting the user's
                     // answer (PausedAwaitingAnswer blocks auto-wake by
-                    // background-job completions).
-                    TaskStatus::PausedAwaitingAnswer
+                    // background-task completions).
+                    SessionStatus::PausedAwaitingAnswer
                 };
                 self.pause_turn(
-                    task_id,
+                    session_id,
                     canonical,
                     history,
                     step_num + 1,
@@ -1731,11 +1828,11 @@ impl ReActEngine {
                 return Ok(());
             }
 
-            let state = self.executor.get_task_state(task_id).await;
+            let state = self.executor.get_session_state(session_id).await;
             match state {
                 Some(s) if s.is_paused() => {
                     self.save_snapshot_with_branches(
-                        task_id,
+                        session_id,
                         canonical,
                         history,
                         step_num,
@@ -1744,14 +1841,14 @@ impl ReActEngine {
                     .await;
                     return Ok(());
                 }
-                // Task gone (end_task/terminal cleanup) or terminal: exit.
-                None | Some(TaskStatus::Error) | Some(TaskStatus::Completed) => return Ok(()),
+                // Session gone (end_session/terminal cleanup) or terminal: exit.
+                None | Some(SessionStatus::Error) | Some(SessionStatus::Completed) => return Ok(()),
                 _ => {}
             }
         }
 
         self.pause_turn_budget(
-            task_id,
+            session_id,
             canonical,
             history,
             last_step + 1,
@@ -1763,22 +1860,22 @@ impl ReActEngine {
         Ok(())
     }
 
-    /// Persist an assistant message into the task's message stream.
-    /// Delegates to the shared `crate::persist_task_message` so this path
+    /// Persist an assistant message into the session's message stream.
+    /// Delegates to the shared `crate::persist_session_message` so this path
     /// cannot drift from the user-turn persistence path (same trim, same
     /// error policy). Persistence failures are logged here instead of being
     /// silently swallowed: a dropped write would make the streamed content
     /// disappear after a reload while the UI keeps showing it.
-    async fn persist_task_message(
+    async fn persist_session_message(
         &self,
-        task_id: &str,
+        session_id: &str,
         role: &str,
         content: &str,
         message_type: Option<&str>,
     ) {
-        if let Err(e) = crate::persist_task_message(
+        if let Err(e) = crate::persist_session_message(
             &self.executor,
-            task_id,
+            session_id,
             role,
             content,
             message_type,
@@ -1788,9 +1885,9 @@ impl ReActEngine {
         .await
         {
             tracing::warn!(
-                "ReAct: failed to persist {} message for task {} (type={:?}): {}",
+                "ReAct: failed to persist {} message for session {} (type={:?}): {}",
                 role,
-                task_id,
+                session_id,
                 message_type,
                 e
             );
@@ -1799,85 +1896,91 @@ impl ReActEngine {
 
     /// Persist a compaction summary into episodic long-term memory
     /// (`memory_episodes`) so context that compaction summarized away stays
-    /// retrievable across tasks (embedding + keyword recall). Fire-and-forget:
-    /// a dropped write only loses the summary episode, never the task itself.
-    async fn persist_compaction_summary(&self, task_id: &str, summary: &str) {
+    /// retrievable across sessions (embedding + keyword recall). Fire-and-forget:
+    /// a dropped write only loses the summary episode, never the session itself.
+    async fn persist_compaction_summary(&self, session_id: &str, summary: &str) {
         let summary = summary.trim();
         if summary.is_empty() {
             return;
         }
         let db = self.db.clone();
-        let task_id = task_id.to_string();
+        let session_id = session_id.to_string();
         let summary = summary.to_string();
-        let task_id_owned = task_id.clone();
+        let session_id_owned = session_id.clone();
         if let Err(e) = db
             .run_blocking(move |db| {
-                db.add_episode(&task_id_owned, &summary)?;
+                db.add_episode(&session_id_owned, &summary)?;
                 Ok::<(), anyhow::Error>(())
             })
             .await
         {
             tracing::warn!(
-                "ReAct: failed to persist compaction summary for task {}: {}",
-                task_id,
+                "ReAct: failed to persist compaction summary for session {}: {}",
+                session_id,
                 e
             );
         }
     }
 
     /// Finalize a turn: persist the assistant text, save the branch point
-    /// (when requested), snapshot the ReAct state, then mark the task with
+    /// (when requested), snapshot the ReAct state, then mark the session with
     /// the given status and notify the frontend + inference. Shared by all
     /// pause/complete paths so the persist 鈫?branch-point 鈫?snapshot 鈫?
     /// status 鈫?event ordering cannot drift between them. The snapshot is
     /// taken after the branch point so it includes the newly added entry.
-    /// Callers pause with `TaskStatus::Paused` (scheduling) or
-    /// `TaskStatus::PausedAwaitingAnswer` (the `ask` tool is blocked on a
-    /// human reply — that flavor also blocks background-job auto-wake).
+    /// Callers pause with `SessionStatus::Paused` (scheduling) or
+    /// `SessionStatus::PausedAwaitingAnswer` (the `ask` tool is blocked on a
+    /// human reply — that flavor also blocks background-task auto-wake).
     /// The step-budget checkpoint uses `pause_turn_budget` instead, which
     /// skips the assistant-message persist (the notice is a notification).
     #[allow(clippy::too_many_arguments)]
     async fn pause_turn(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         snapshot_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
-        status: TaskStatus,
+        status: SessionStatus,
         final_text: &str,
         branch_point_step: Option<u32>,
         infer: &(dyn Fn() + Send + Sync),
     ) -> anyhow::Result<()> {
-        self.persist_task_message(task_id, "assistant", final_text, Some("text"))
+        self.persist_session_message(session_id, "assistant", final_text, Some("text"))
             .await;
         if let Some(step) = branch_point_step {
-            self.save_branch_point(task_id, canonical, history, step, branch_points, false)
+            self.save_branch_point(session_id, canonical, history, step, branch_points, false)
                 .await;
         }
-        self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
-            .await;
+        self.save_snapshot_with_branches(
+            session_id,
+            canonical,
+            history,
+            snapshot_step,
+            branch_points,
+        )
+        .await;
         // The status itself carries the awaiting-answer flavor
         // (`PausedAwaitingAnswer`), so the transition is atomic: a
-        // background-job completion landing concurrently reads the final
-        // state and cannot auto-wake an answer-blocked task.
-        set_status_and_emit(&self.executor, emitter, task_id, status).await?;
+        // background-task completion landing concurrently reads the final
+        // state and cannot auto-wake an answer-blocked session.
+        set_status_and_emit(&self.executor, emitter, session_id, status).await?;
         infer();
         Ok(())
     }
 
-    /// Pause the task because the run exhausted its step budget. Mirrors
+    /// Pause the session because the run exhausted its step budget. Mirrors
     /// `pause_turn`'s checkpoint side effects (snapshot, Paused status,
     /// infer) but does NOT persist an assistant chat message: system notices
     /// of this kind must not pollute the conversation stream as fake agent
-    /// replies 鈥?they are surfaced as a notification (in-app toast +
+    /// replies —they are surfaced as a notification (in-app toast +
     /// Windows) instead, so the user sees them without the chat pretending
     /// the turn produced an answer.
     #[allow(clippy::too_many_arguments)]
     async fn pause_turn_budget(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         snapshot_step: u32,
@@ -1885,12 +1988,18 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         infer: &(dyn Fn() + Send + Sync),
     ) -> anyhow::Result<()> {
-        self.save_snapshot_with_branches(task_id, canonical, history, snapshot_step, branch_points)
-            .await;
-        set_status_and_emit(&self.executor, emitter, task_id, TaskStatus::Paused).await?;
+        self.save_snapshot_with_branches(
+            session_id,
+            canonical,
+            history,
+            snapshot_step,
+            branch_points,
+        )
+        .await;
+        set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
         emitter
             .emit(crate::event::AgentEvent::Notification {
-                task_id: task_id.into(),
+                session_id: session_id.into(),
                 title: BUDGET_EXHAUSTED_TITLE.into(),
                 body: BUDGET_EXHAUSTED_BODY.into(),
             })
@@ -1953,7 +2062,7 @@ impl ReActEngine {
     /// True when a text-only response should not be trusted as a deliberate
     /// final answer: either the provider did not report Stop (truncated /
     /// filtered / unknown finish), the text itself ends mid-sentence (trailing
-    /// comma/connector/ellipsis 鈥?the generation was interrupted rather than
+    /// comma/connector/ellipsis —the generation was interrupted rather than
     /// concluded), or it ends on a planning/transition phrase (「接下来」「确认
     /// 一下」…) that signals the model was about to take a further action but
     /// stopped short of describing/issuing it.
@@ -2000,9 +2109,9 @@ impl ReActEngine {
     /// retried before ending the turn. Trusts explicit tool calls (final or
     /// not) and empty responses (handled by the empty-response retry); only
     /// a thought without actions is examined, and it must pass the
-    /// finish-reason, mid-sentence, and mid-task checks.
+    /// finish-reason, mid-sentence, and mid-session checks.
     ///
-    /// `canonical` supplies the mid-task signal: when the agent has pending
+    /// `canonical` supplies the mid-session signal: when the agent has pending
     /// tool context (the canonical ends in tool results with no user reply), a
     /// text-only Stop is far more likely to be "I'll do X next" narration than
     /// a deliberate final answer, so it is treated as suspect too.
@@ -2029,7 +2138,7 @@ impl ReActEngine {
         }
     }
 
-    /// True when the agent is mid-task: scanning back from the tail, the first
+    /// True when the agent is mid-session: scanning back from the tail, the first
     /// User message or Tool result decides. A Tool result before any User
     /// message means tool(s) ran this turn and the reply has not come yet, so
     /// a text-only Stop should not be trusted as final. A User message first
@@ -2166,7 +2275,7 @@ impl ReActEngine {
     /// actions that were repaired.
     pub(crate) async fn supplement_missing_required_fields(
         &self,
-        task_id: &str,
+        session_id: &str,
         actions: &mut [Action],
     ) -> usize {
         let mut repaired = 0usize;
@@ -2177,7 +2286,7 @@ impl ReActEngine {
             let Some(tool) = self
                 .executor
                 .get_tools()
-                .get_tool_for_task(Some(task_id), &action.tool_name)
+                .get_tool_for_session(Some(session_id), &action.tool_name)
                 .await
             else {
                 continue;
@@ -2279,14 +2388,9 @@ impl ReActEngine {
                 .map(|tc| {
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
-                    // `final_answer` is the canonical final tool name (used by
-                    // the synthesized finals and the tests). `answer`/`done`
-                    // are deliberate compatibility aliases: some providers
-                    // emit them for natural-language finals, and the alias is
-                    // cheaper than re-asking the model. Kept in one place so
-                    // the accepted names cannot drift.
-                    let is_final =
-                        tc.name == "final_answer" || tc.name == "answer" || tc.name == "done";
+                    // `final_answer` is the only name that marks a tool call
+                    // as the conversation's final answer.
+                    let is_final = tc.name == "final_answer";
                     Action {
                         tool_name: tc.name.clone(),
                         tool_input: args,
@@ -2317,32 +2421,38 @@ impl ReActEngine {
     }
 
     /// Persist one final snapshot before leaving the loop on a cancellation,
-    /// so the DB row is never stale when `rollback_task` / `continue_task`
+    /// so the DB row is never stale when `rollback_session` / `continue_session`
     /// read it after the handler exits. The mid-run throttle in
     /// `save_branch_point` may have skipped the last write, and the state at
     /// this point is always a clean step boundary (the cancelled response or
     /// partial tool results are discarded by the exit).
     async fn save_exit_snapshot(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
     ) {
-        self.save_snapshot_with_branches(task_id, canonical, history, step_number, branch_points)
-            .await;
+        self.save_snapshot_with_branches(
+            session_id,
+            canonical,
+            history,
+            step_number,
+            branch_points,
+        )
+        .await;
     }
 
     /// Save snapshot including branch points for tree-structured rollback (鎼?).
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
-    /// of canonical/history/branch_points 鈥?those clones were O(n虏) over a
-    /// long task) into a reusable buffer, then writes to SQLite on the
+    /// of canonical/history/branch_points —those clones were O(n²) over a
+    /// long session) into a reusable buffer, then writes to SQLite on the
     /// blocking thread pool so the WAL fsync never stalls the async runtime.
     async fn save_snapshot_with_branches(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         step_number: u32,
@@ -2354,12 +2464,12 @@ impl ReActEngine {
             step_number,
             branch_points,
         };
-        // Serialize into the task's own buffer inside a scoped block so the
+        // Serialize into the session's own buffer inside a scoped block so the
         // mutex guard is dropped before the await below (the guard is not
         // Send, so it must not be live across the spawn_blocking boundary).
         let bytes = {
             let mut bufs = self.snapshot_bufs.lock().unwrap();
-            let buf = bufs.entry(task_id.to_string()).or_default();
+            let buf = bufs.entry(session_id.to_string()).or_default();
             buf.clear();
             if serde_json::to_writer(&mut *buf, &view).is_err() {
                 return;
@@ -2368,9 +2478,9 @@ impl ReActEngine {
         };
         let json = String::from_utf8(bytes).unwrap_or_default();
         let db = self.db.clone();
-        let tid_owned = task_id.to_string();
+        let tid_owned = session_id.to_string();
         // Return ownership of the serialized bytes so the allocation is
-        // handed back to the task's buffer for reuse on the next snapshot.
+        // handed back to the session's buffer for reuse on the next snapshot.
         let back: String = db
             .run_blocking(move |db| {
                 let _ = db.save_react_state(&tid_owned, &json);
@@ -2379,10 +2489,10 @@ impl ReActEngine {
             .await
             .unwrap_or_default();
         if let Ok(mut bufs) = self.snapshot_bufs.lock() {
-            *bufs.entry(task_id.to_string()).or_default() = back.into_bytes();
+            *bufs.entry(session_id.to_string()).or_default() = back.into_bytes();
         }
     }
-    /// and save a snapshot so the task can be resumed via "continue" or
+    /// and save a snapshot so the session can be resumed via "continue" or
     /// rolled back. Without this, any text streamed before the error is lost
     /// on page refresh because it was only in the frontend's memory.
     async fn persist_partial_on_error(
@@ -2396,16 +2506,16 @@ impl ReActEngine {
     ) {
         // Save a branch point BEFORE persisting the partial output, so
         // last_msg_at captures the timestamp of the last message BEFORE the
-        // partial. This lets continue_task / rollback_task precisely delete
+        // partial. This lets continue_session / rollback_session precisely delete
         // only the partial output via delete_messages_after(last_msg_at).
         // The canonical/history here represent the state BEFORE the failed
         // LLM call (the response was never pushed to canonical), so resuming
         // will retry the step cleanly.
-        // FORCED write: continue_task / rollback_task locate this branch
+        // FORCED write: continue_session / rollback_session locate this branch
         // point in the DB snapshot; a throttled (stale) row would silently
         // skip their message truncation.
         self.save_branch_point(
-            &ctx.task_id,
+            &ctx.session_id,
             canonical,
             history,
             ctx.step_num,
@@ -2417,8 +2527,8 @@ impl ReActEngine {
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
         if !reasoning_text.trim().is_empty() {
-            self.persist_task_message(
-                &ctx.task_id,
+            self.persist_session_message(
+                &ctx.session_id,
                 "assistant",
                 reasoning_text.trim(),
                 Some("reasoning"),
@@ -2427,11 +2537,11 @@ impl ReActEngine {
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            self.persist_task_message(&ctx.task_id, "assistant", text, Some("text"))
+            self.persist_session_message(&ctx.session_id, "assistant", text, Some("text"))
                 .await;
             EventDispatcher::emit_thought_from(
                 &ctx.emitter,
-                &ctx.task_id,
+                &ctx.session_id,
                 text,
                 ctx.step_num,
                 ctx.run_id,
@@ -2440,11 +2550,11 @@ impl ReActEngine {
             .await;
         }
         // The stream text now lives in the message stream (persisted above),
-        // so any checkpointed partial row for this task is obsolete — and an
+        // so any checkpointed partial row for this session is obsolete — and an
         // in-flight checkpoint write must not re-create it. Discard goes
         // through the PartialStore, whose generation bump invalidates stale
         // writes.
-        self.executor.partials.discard(&ctx.task_id).await;
+        self.executor.partials.discard(&ctx.session_id).await;
     }
 
     /// Save a branch point at the current step before tool execution (鎼?).
@@ -2453,12 +2563,12 @@ impl ReActEngine {
     /// steps on the happy path (`force = false`): the in-memory branch-point
     /// map is always current, and every pause/error/final path plus every
     /// cancellation exit writes unconditionally. Error paths MUST pass
-    /// `force = true` (e.g. `persist_partial_on_error`): `continue_task` /
-    /// `rollback_task` locate the failed step's branch point in the DB
+    /// `force = true` (e.g. `persist_partial_on_error`): `continue_session` /
+    /// `rollback_session` locate the failed step's branch point in the DB
     /// snapshot, and a stale row would silently skip their message truncation.
     async fn save_branch_point(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &[CanonicalMessage],
         history: &[ReActStep],
         step_number: u32,
@@ -2468,9 +2578,9 @@ impl ReActEngine {
         // `get_last_message_created_at` is a blocking SQLite read; run it on
         // the blocking thread pool instead of the async runtime.
         let db = self.db.clone();
-        let task_id_owned = task_id.to_string();
+        let session_id_owned = session_id.to_string();
         let last_msg_at = db
-            .run_blocking(move |db| Ok(db.get_last_message_created_at(&task_id_owned)))
+            .run_blocking(move |db| Ok(db.get_last_message_created_at(&session_id_owned)))
             .await
             .ok()
             .flatten();
@@ -2488,17 +2598,17 @@ impl ReActEngine {
         let due = {
             let mut last_written = self.last_snapshot_step.lock().unwrap();
             let due = force
-                || last_written.get(task_id).is_none_or(|last| {
+                || last_written.get(session_id).is_none_or(|last| {
                     step_number.saturating_sub(*last) >= SNAPSHOT_WRITE_INTERVAL
                 });
             if due {
-                last_written.insert(task_id.to_string(), step_number);
+                last_written.insert(session_id.to_string(), step_number);
             }
             due
         };
         if due {
             self.save_snapshot_with_branches(
-                task_id,
+                session_id,
                 canonical,
                 history,
                 step_number,
@@ -2514,6 +2624,10 @@ impl ReActEngine {
     /// drain the consumer and return the aggregated response. Shared by the
     /// primary step call and the post-compaction retry so the two cannot
     /// drift. Error handling stays at the call site.
+    /// One step's primary LLM call: streamed with live chunk forwarding,
+    /// cancellation, the stall watchdog and partial-text recovery. Returns
+    /// the aggregated response plus the wall-clock duration of the API call
+    /// in milliseconds (persisted with the per-call usage detail).
     #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
     async fn stream_llm_step(
         &self,
@@ -2525,7 +2639,7 @@ impl ReActEngine {
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
-    ) -> Result<LlmResponse, haven_llm::LlmError> {
+    ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
             self.context_limits.event_chunk_batch_max_bytes,
@@ -2537,6 +2651,7 @@ impl ReActEngine {
             cancel.clone(),
             true,
         );
+        let started = std::time::Instant::now();
         let result = router
             .chat_stream_with_tools_aggregated_cancellable(
                 role,
@@ -2546,8 +2661,12 @@ impl ReActEngine {
                 cancel,
             )
             .await;
+        let duration_ms = started.elapsed().as_millis() as u64;
         forwarder.flush().await;
-        result
+        match result {
+            Ok(resp) => Ok((resp, duration_ms)),
+            Err(e) => Err(e),
+        }
     }
 
     /// One empty-response / cut-off retry with live chunk forwarding: streamed
@@ -2591,7 +2710,7 @@ impl ReActEngine {
     /// retry and all failure paths. The loop dispatches on the returned
     /// [`StepCallOutcome`] instead of inlining the error handling: a
     /// `Fatal` outcome has already persisted partial text, emitted the error
-    /// event and marked the task Error.
+    /// event and marked the session Error.
     #[allow(clippy::too_many_arguments)] // consolidates ~130 lines of inline error handling
     async fn call_step_llm(
         &self,
@@ -2620,23 +2739,30 @@ impl ReActEngine {
             )
             .await
         {
-            Ok(resp) => {
+            Ok((resp, duration_ms)) => {
                 if router.balanced_model_active() {
                     self.emit_balanced_model(
                         &ctx.emitter,
-                        &ctx.task_id,
+                        &ctx.session_id,
                         "switching to balanced model",
                     )
                     .await;
                 }
-                self.record_usage_and_emit(&ctx.task_id, role, &resp, &ctx.emitter)
-                    .await;
+                self.record_usage_and_emit(
+                    &ctx.session_id,
+                    role,
+                    &resp,
+                    ctx.step_num as i32,
+                    Some(duration_ms),
+                    &ctx.emitter,
+                )
+                .await;
                 StepCallOutcome::Response(resp)
             }
             Err(haven_llm::LlmError::ContextLengthExceeded) => {
                 tracing::warn!(
-                    "context length exceeded for task {}, forcing compaction",
-                    ctx.task_id
+                    "context length exceeded for session {}, forcing compaction",
+                    ctx.session_id
                 );
                 if let Some(result) = {
                     let compactor = self.context_compactor(role).await;
@@ -2660,13 +2786,13 @@ impl ReActEngine {
                     };
                     EventDispatcher::emit_compaction_from(
                         &ctx.emitter,
-                        &ctx.task_id,
+                        &ctx.session_id,
                         &result.summary,
                         result.tokens_before,
                         result.tokens_after,
                     )
                     .await;
-                    self.persist_compaction_summary(&ctx.task_id, &result.summary)
+                    self.persist_compaction_summary(&ctx.session_id, &result.summary)
                         .await;
                     // Reset the accumulators: the first attempt's partial
                     // text was based on pre-compaction context and should
@@ -2686,11 +2812,13 @@ impl ReActEngine {
                         )
                         .await
                     {
-                        Ok(retry_resp) => {
+                        Ok((retry_resp, retry_duration_ms)) => {
                             self.record_usage_and_emit(
-                                &ctx.task_id,
+                                &ctx.session_id,
                                 retry_role,
                                 &retry_resp,
+                                ctx.step_num as i32,
+                                Some(retry_duration_ms),
                                 &ctx.emitter,
                             )
                             .await;
@@ -2708,8 +2836,9 @@ impl ReActEngine {
                                 partial_reasoning,
                             )
                             .await;
-                            self.emit_error(&ctx.emitter, &ctx.task_id, &err_msg).await;
-                            self.mark_task_error(&ctx.task_id).await;
+                            self.emit_error(&ctx.emitter, &ctx.session_id, &err_msg)
+                                .await;
+                            self.mark_session_error(&ctx.session_id).await;
                             StepCallOutcome::Fatal(err_msg)
                         }
                     }
@@ -2724,9 +2853,13 @@ impl ReActEngine {
                         partial_reasoning,
                     )
                     .await;
-                    EventDispatcher::emit_task_error_from(&ctx.emitter, &ctx.task_id, &err_msg)
-                        .await;
-                    self.mark_task_error(&ctx.task_id).await;
+                    EventDispatcher::emit_session_error_from(
+                        &ctx.emitter,
+                        &ctx.session_id,
+                        &err_msg,
+                    )
+                    .await;
+                    self.mark_session_error(&ctx.session_id).await;
                     StepCallOutcome::Fatal(err_msg)
                 }
             }
@@ -2742,31 +2875,32 @@ impl ReActEngine {
                     partial_reasoning,
                 )
                 .await;
-                EventDispatcher::emit_task_error_from(&ctx.emitter, &ctx.task_id, &err_msg).await;
-                self.mark_task_error(&ctx.task_id).await;
+                EventDispatcher::emit_session_error_from(&ctx.emitter, &ctx.session_id, &err_msg)
+                    .await;
+                self.mark_session_error(&ctx.session_id).await;
                 StepCallOutcome::Fatal(err_msg)
             }
         }
     }
 
-    /// Mark the task Error without propagating DB failures (the loop is
+    /// Mark the session Error without propagating DB failures (the loop is
     /// already unwinding through the Fatal outcome).
-    async fn mark_task_error(&self, task_id: &str) {
+    async fn mark_session_error(&self, session_id: &str) {
         if let Err(e) = self
             .executor
-            .update_task_status(task_id, TaskStatus::Error)
+            .update_session_status(session_id, SessionStatus::Error)
             .await
         {
             tracing::warn!(
-                "ReAct: failed to mark task {} Error after a fatal step failure: {}",
-                task_id,
+                "ReAct: failed to mark session {} Error after a fatal step failure: {}",
+                session_id,
                 e
             );
         }
     }
 
     /// Shared tail of the two "final answer" branches when a user message or
-    /// background-job result arrived while the LLM was generating: persist
+    /// background-task result arrived while the LLM was generating: persist
     /// the finished answer, insert it BEFORE the injected messages (so the
     /// re-run's LLM call sees the completed answer followed by the
     /// interjection, instead of answering blind and duplicating the bubble),
@@ -2783,7 +2917,7 @@ impl ReActEngine {
         before_inject_len: usize,
         already_pushed: bool,
     ) {
-        self.persist_task_message(&ctx.task_id, "assistant", final_text, Some("text"))
+        self.persist_session_message(&ctx.session_id, "assistant", final_text, Some("text"))
             .await;
         if !already_pushed {
             canonical.insert(
@@ -2797,7 +2931,7 @@ impl ReActEngine {
             );
         }
         self.save_branch_point(
-            &ctx.task_id,
+            &ctx.session_id,
             canonical,
             history,
             ctx.step_num,
@@ -2807,20 +2941,25 @@ impl ReActEngine {
         .await;
     }
 
-    /// Update the per-task cumulative token counters and emit an
-    /// `AgentEvent::Usage` event so the UI can refresh its display.
+    /// Update the per-session cumulative token counters, persist one per-call
+    /// usage-detail row, and emit an `AgentEvent::Usage` event so the UI can
+    /// refresh its display.
     /// `role` is the endpoint that produced the response (used for cost
-    /// lookup); `response` carries the token counts and model name.
+    /// lookup); `response` carries the token counts and model name;
+    /// `step_number` is the ReAct step the call served and `duration_ms` its
+    /// wall-clock duration, both recorded with the detail row.
     async fn record_usage_and_emit(
         &self,
-        task_id: &str,
+        session_id: &str,
         role: EndpointRole,
         response: &LlmResponse,
+        step_number: i32,
+        duration_ms: Option<u64>,
         emitter: &Arc<dyn AgentEventEmitter>,
     ) {
         let usage = &response.usage;
         if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
-            // No usage reported by the provider 閳?nothing useful to surface.
+            // No usage reported by the provider —nothing useful to surface.
             return;
         }
 
@@ -2834,13 +2973,13 @@ impl ReActEngine {
 
         let (cum_prompt, cum_completion, cum_total, cum_cost_opt, has_cost) = {
             let mut map = self.cumulative_usage.lock().unwrap();
-            let entry = map.entry(task_id.to_string()).or_insert_with(|| {
-                // Seed from persisted counters when this task was resumed or
-                // reopened: the in-memory map is cleared on task completion
+            let entry = map.entry(session_id.to_string()).or_insert_with(|| {
+                // Seed from persisted counters when this session was resumed or
+                // reopened: the in-memory map is cleared on session completion
                 // (and lost on restart), but the DB row keeps the running
                 // totals so cumulative stats stay valid across sessions.
                 self.db
-                    .get_task_usage(task_id)
+                    .get_session_usage(session_id)
                     .ok()
                     .flatten()
                     .map(CumulativeUsage::from)
@@ -2869,9 +3008,12 @@ impl ReActEngine {
             )
         };
 
-        // Persist the cumulative counters so a resumed session (after task
-        // completion or app restart) restores the correct token-stats display
-        // instead of restarting from zero. Fire-and-forget on a blocking
+        let model = response.model.clone().or_else(|| usage.model_name.clone());
+
+        // Persist the cumulative counters AND one per-call detail row so a
+        // resumed session (after session completion or app restart) restores the
+        // correct token-stats display instead of restarting from zero, and
+        // keeps the granular history behind it. Fire-and-forget on a blocking
         // thread: the autocommit hits the disk/fsync path and awaiting it
         // would stall the agent step loop on every usage event (the previous
         // awaited variant serialized each step behind the disk write). A
@@ -2879,16 +3021,34 @@ impl ReActEngine {
         // hard kill — the next usage event rewrites the absolute totals, and
         // the in-memory map stays authoritative for the running session.
         let db = self.db.clone();
-        let task_id_for_persist = task_id.to_string();
+        let session_id_for_persist = session_id.to_string();
         let cum_cost = cum_cost_opt.unwrap_or(0.0);
+        let call_cost = step_cost.unwrap_or(0.0);
+        let call_has_cost = step_cost.is_some();
+        let model_for_persist = model.clone();
+        let usage_prompt = usage.prompt_tokens;
+        let usage_completion = usage.completion_tokens;
+        let usage_total = usage.total_tokens;
         let persist = tokio::task::spawn_blocking(move || {
-            let _ = db.update_task_usage(
-                &task_id_for_persist,
+            let _ = db.update_session_usage(
+                &session_id_for_persist,
                 cum_prompt,
                 cum_completion,
                 cum_total,
                 cum_cost,
                 has_cost,
+            );
+            let _ = db.record_llm_call_usage(
+                &session_id_for_persist,
+                Some(step_number),
+                role.as_str(),
+                model_for_persist.as_deref(),
+                usage_prompt,
+                usage_completion,
+                usage_total,
+                call_cost,
+                call_has_cost,
+                duration_ms,
             );
         });
         // Detach: the write completes on the blocking pool without the step
@@ -2898,12 +3058,12 @@ impl ReActEngine {
         EventDispatcher::emit_usage_from(
             emitter,
             UsagePayload {
-                task_id: task_id.to_string(),
+                session_id: session_id.to_string(),
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
                 cost_usd: step_cost,
-                model: response.model.clone().or_else(|| usage.model_name.clone()),
+                model,
                 cumulative_prompt_tokens: cum_prompt,
                 cumulative_completion_tokens: cum_completion,
                 cumulative_total_tokens: cum_total,
@@ -2916,20 +3076,20 @@ impl ReActEngine {
 
     /// Drop cumulative counters, the token-estimate cache, the snapshot
     /// buffer, the snapshot-throttle marker and the tool-definition cache for
-    /// a finished task so all per-task maps stay bounded across long-running
+    /// a finished session so all per-session maps stay bounded across long-running
     /// sessions.
-    pub fn reset_cumulative_usage(&self, task_id: &str) {
+    pub fn reset_cumulative_usage(&self, session_id: &str) {
         let mut map = self.cumulative_usage.lock().unwrap();
-        map.remove(task_id);
+        map.remove(session_id);
         drop(map);
-        self.reset_token_estimate(task_id);
-        self.last_snapshot_step.lock().unwrap().remove(task_id);
-        self.tool_def_cache.lock().unwrap().remove(task_id);
-        self.snapshot_bufs.lock().unwrap().remove(task_id);
+        self.reset_token_estimate(session_id);
+        self.last_snapshot_step.lock().unwrap().remove(session_id);
+        self.tool_def_cache.lock().unwrap().remove(session_id);
+        self.snapshot_bufs.lock().unwrap().remove(session_id);
     }
 
     /// Resolve the model's true context window for the endpoint used by
-    /// `role` 鈥?explicit `context_window` config, else the builtin catalog
+    /// `role` —explicit `context_window` config, else the builtin catalog
     /// (e.g. 1M for gpt-4.1-nano / Gemini 2.5 Flash), else a 128K default.
     /// This is the real input budget for the token-usage display, not the
     /// per-response output cap (`max_tokens`).
@@ -3001,21 +3161,21 @@ impl ReActEngine {
         )
     }
 
-    /// Incremental token estimate for a task's canonical message list.
+    /// Incremental token estimate for a session's canonical message list.
     ///
-    /// The estimate is cached per task: each step adds only the token count
+    /// The estimate is cached per session: each step adds only the token count
     /// of the messages appended since the last pass instead of re-tokenizing
-    /// the whole history (which is O(n) per step, O(n^2) over a long task).
+    /// the whole history (which is O(n) per step, O(n^2) over a long session).
     /// A full pass re-runs every `FULL_ESTIMATE_PASS_INTERVAL` calls and
     /// whenever the list shrank (sanitize drops, compaction), which bounds
     /// drift from mid-array inserts and from restored snapshots whose length
     /// coincidentally matches the cache. Under-counting by one message's
     /// worth of tokens is acceptable: the forced-compaction 400 retry remains
     /// the safety net for genuine overflow.
-    fn estimate_canonical_tokens(&self, task_id: &str, canonical: &[CanonicalMessage]) -> u32 {
+    fn estimate_canonical_tokens(&self, session_id: &str, canonical: &[CanonicalMessage]) -> u32 {
         const FULL_ESTIMATE_PASS_INTERVAL: u32 = 8;
         let mut cache = self.token_estimate_cache.lock().unwrap();
-        let entry = cache.entry(task_id.to_string()).or_default();
+        let entry = cache.entry(session_id.to_string()).or_default();
         let full_pass = entry.tokens == 0
             || entry.msgs_len > canonical.len()
             || entry.passes.is_multiple_of(FULL_ESTIMATE_PASS_INTERVAL);
@@ -3030,10 +3190,10 @@ impl ReActEngine {
         entry.tokens
     }
 
-    /// Drop the per-task token-estimate cache entry (called alongside
-    /// `reset_cumulative_usage` on task completion/error).
-    pub fn reset_token_estimate(&self, task_id: &str) {
-        self.token_estimate_cache.lock().unwrap().remove(task_id);
+    /// Drop the per-session token-estimate cache entry (called alongside
+    /// `reset_cumulative_usage` on session completion/error).
+    pub fn reset_token_estimate(&self, session_id: &str) {
+        self.token_estimate_cache.lock().unwrap().remove(session_id);
     }
 
     /// Check if context compaction is needed before the next LLM call.
@@ -3043,7 +3203,7 @@ impl ReActEngine {
     /// changes the endpoint routing).
     pub async fn maybe_compact(
         &self,
-        task_id: &str,
+        session_id: &str,
         canonical: &mut Vec<CanonicalMessage>,
         has_image: bool,
         emitter: &Arc<dyn AgentEventEmitter>,
@@ -3064,13 +3224,13 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        if self.estimate_canonical_tokens(task_id, canonical) <= compactor.threshold_tokens() {
+        if self.estimate_canonical_tokens(session_id, canonical) <= compactor.threshold_tokens() {
             return false;
         }
         if let Some(result) = compactor.compact(canonical, &router).await {
             tracing::info!(
-                "compaction for task {}: {} tokens -> {} tokens ({} msgs summarized)",
-                task_id,
+                "compaction for session {}: {} tokens -> {} tokens ({} msgs summarized)",
+                session_id,
                 result.tokens_before,
                 result.tokens_after,
                 result.summarized_count
@@ -3078,16 +3238,16 @@ impl ReActEngine {
             *canonical = result.compacted;
             // Compaction replaced the list wholesale: the incremental
             // estimate is stale, drop it so the next step does a full pass.
-            self.reset_token_estimate(task_id);
+            self.reset_token_estimate(session_id);
             EventDispatcher::emit_compaction_from(
                 emitter,
-                task_id,
+                session_id,
                 &result.summary,
                 result.tokens_before,
                 result.tokens_after,
             )
             .await;
-            self.persist_compaction_summary(task_id, &result.summary)
+            self.persist_compaction_summary(session_id, &result.summary)
                 .await;
             true
         } else {
@@ -3095,36 +3255,41 @@ impl ReActEngine {
         }
     }
 
-    /// Emit balanced model activated with per-task deduplication.
+    /// Emit balanced model activated with per-session deduplication.
     async fn emit_balanced_model(
         &self,
         emitter: &Arc<dyn AgentEventEmitter>,
-        task_id: &str,
+        session_id: &str,
         reason: &str,
     ) {
         let should_emit = {
             let mut notified = self.balanced_model_notified.lock().unwrap();
-            notified.insert(task_id.to_string())
+            notified.insert(session_id.to_string())
         };
         if should_emit {
-            EventDispatcher::emit_balanced_model_activated_from(emitter, task_id, reason).await;
+            EventDispatcher::emit_balanced_model_activated_from(emitter, session_id, reason).await;
         }
     }
 
-    /// Emit task error and clean up balanced model dedup state.
-    async fn emit_error(&self, emitter: &Arc<dyn AgentEventEmitter>, task_id: &str, error: &str) {
+    /// Emit session error and clean up balanced model dedup state.
+    async fn emit_error(
+        &self,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        session_id: &str,
+        error: &str,
+    ) {
         {
             let mut notified = self.balanced_model_notified.lock().unwrap();
-            notified.remove(task_id);
+            notified.remove(session_id);
         }
-        EventDispatcher::emit_task_error_from(emitter, task_id, error).await;
-        self.reset_cumulative_usage(task_id);
+        EventDispatcher::emit_session_error_from(emitter, session_id, error).await;
+        self.reset_cumulative_usage(session_id);
     }
 }
 
 /// One LLM call's live-chunk forwarding bundle: micro-batched
 /// thought/reasoning channels (see `spawn_chunk_consumer_raw`), the
-/// web-search event task, and a stall watchdog that emits `StreamStalled`
+/// web-search event session, and a stall watchdog that emits `StreamStalled`
 /// when the provider goes silent mid-call — the router only aborts at its
 /// idle timeout, so without the watchdog the UI would sit frozen with
 /// zero feedback during the whole stall window. `flush` drains the
@@ -3141,7 +3306,7 @@ struct StreamForwarder {
     reasoning_tx: crate::event::ChunkSender,
     ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     consumer: crate::event::ConsumerHandle,
-    ws_task: tokio::task::JoinHandle<()>,
+    ws_session: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
 }
 
@@ -3152,7 +3317,7 @@ impl StreamForwarder {
         max_batch_bytes: usize,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
-        partial_store: Arc<haven_task::partial::PartialStore>,
+        partial_store: Arc<haven_session::partial::PartialStore>,
         checkpoint_min_chars: usize,
         checkpoint_interval: std::time::Duration,
         cancel: tokio_util::sync::CancellationToken,
@@ -3162,10 +3327,10 @@ impl StreamForwarder {
             EventDispatcher::spawn_chunk_consumer_raw(&ctx.emitter, max_batch_bytes);
         let chunk_tx_c = chunk_tx.clone();
         let reasoning_tx_c = reasoning_tx.clone();
-        let task_id_c = ctx.task_id.clone();
+        let session_id_c = ctx.session_id.clone();
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
-        let checkpoint_task = ctx.task_id.clone();
+        let checkpoint_session = ctx.session_id.clone();
         let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Crash/stop recovery: the accumulated thought text is checkpointed
         // into the `partial_messages` scratch table while streaming so a
@@ -3174,14 +3339,14 @@ impl StreamForwarder {
         // `checkpoint_interval` or every `checkpoint_min_chars` new chars,
         // and never while a write is in flight. All writes go through the
         // executor's `PartialStore`, which serializes them against
-        // promote/discard and drops writes that land after the task was
+        // promote/discard and drops writes that land after the session was
         // ended/rolled back.
         let mut checkpoint_at = std::time::Instant::now() - checkpoint_interval;
         let mut checkpoint_len = 0usize;
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
         let ws_tx_c = ws_tx.clone();
         let em_ws = ctx.emitter.clone();
-        let ws_task = tokio::spawn(async move {
+        let ws_session = tokio::spawn(async move {
             while let Some(event) = ws_rx.recv().await {
                 em_ws.emit(event).await;
             }
@@ -3211,21 +3376,18 @@ impl StreamForwarder {
                         None
                     }
                 };
-                if let Err(e) = chunk_tx_c.try_send((
-                    task_id_c.clone(),
-                    t.to_string(),
-                    step_num,
-                    run_id,
-                )) {
+                if let Err(e) =
+                    chunk_tx_c.try_send((session_id_c.clone(), t.to_string(), step_num, run_id))
+                {
                     tracing::warn!("thought chunk channel full, dropping: {}", e);
                 }
                 if let Some(snapshot) = checkpoint_snapshot {
                     // Generation captured BEFORE the write is spawned: if a
                     // promote/discard bumps it while the write is queued, the
                     // PartialStore drops the stale snapshot.
-                    let gen_id = partial_store.generation(&checkpoint_task);
+                    let gen_id = partial_store.generation(&checkpoint_session);
                     let store = partial_store.clone();
-                    let tid = checkpoint_task.clone();
+                    let tid = checkpoint_session.clone();
                     let flag = checkpoint_inflight.clone();
                     tokio::spawn(async move {
                         store.checkpoint(&tid, gen_id, &snapshot).await;
@@ -3237,12 +3399,8 @@ impl StreamForwarder {
             if let Some(r) = &c.reasoning {
                 pr.lock().unwrap().push_str(r);
                 if forward_reasoning
-                    && let Err(e) = reasoning_tx_c.try_send((
-                        task_id_c.clone(),
-                        r.clone(),
-                        step_num,
-                        run_id,
-                    ))
+                    && let Err(e) =
+                        reasoning_tx_c.try_send((session_id_c.clone(), r.clone(), step_num, run_id))
                 {
                     tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                 }
@@ -3250,7 +3408,7 @@ impl StreamForwarder {
             }
             if let Some(phase) = c.web_search {
                 let _ = ws_tx_c.send(AgentEvent::WebSearch {
-                    task_id: task_id_c.clone(),
+                    session_id: session_id_c.clone(),
                     phase: phase.as_str().to_string(),
                     step_number: step_num,
                     run_id,
@@ -3263,10 +3421,10 @@ impl StreamForwarder {
         // The anchor starts at creation so a slow first chunk is covered
         // too; the emitted-anchor sentinel starts at MAX so the no-chunk
         // case (anchor 0) announces exactly once. Aborted by `flush` and
-        // by task cancellation.
+        // by session cancellation.
         let watchdog = {
             let em = ctx.emitter.clone();
-            let tid = ctx.task_id.clone();
+            let tid = ctx.session_id.clone();
             let last = last_chunk_ms.clone();
             let created_ms = now_millis();
             let mut emitted_anchor: u64 = u64::MAX;
@@ -3282,7 +3440,7 @@ impl StreamForwarder {
                             {
                                 emitted_anchor = last_ms;
                                 em.emit(AgentEvent::StreamStalled {
-                                    task_id: tid.clone(),
+                                    session_id: tid.clone(),
                                 })
                                 .await;
                             }
@@ -3297,7 +3455,7 @@ impl StreamForwarder {
                 reasoning_tx,
                 ws_tx,
                 consumer: consumer_handle,
-                ws_task,
+                ws_session,
                 watchdog,
             },
             on_chunk,
@@ -3315,7 +3473,7 @@ impl StreamForwarder {
         if let Some(handle) = self.consumer {
             let _ = handle.await;
         }
-        let _ = self.ws_task.await;
+        let _ = self.ws_session.await;
     }
 }
 
@@ -3666,7 +3824,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_answer_and_done_aliases_marked_final() {
+    fn parse_non_final_tool_calls_are_not_marked_final() {
+        // Only `final_answer` marks a tool call as final; provider-specific
+        // names like `answer`/`done` are ordinary tool calls now.
         for name in ["answer", "done"] {
             let tc = ToolCall {
                 id: String::new(),
@@ -3675,7 +3835,7 @@ mod tests {
             };
             let r = resp("t", vec![tc], Some(FinishReason::ToolCalls));
             let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-            assert!(actions[0].is_final, "{name} should be final");
+            assert!(!actions[0].is_final, "{name} must not be final");
         }
     }
 
@@ -3895,13 +4055,13 @@ mod tests {
     }
 
     #[test]
-    fn is_suspect_final_flags_mid_task_text_only_stop() {
+    fn is_suspect_final_flags_mid_session_text_only_stop() {
         // Tool result pending (no user message after it): a text-only Stop
         // must not be trusted as final even though the text is complete.
         let canonical = vec![
             CanonicalMessage::user_text("检查工具"),
             CanonicalMessage::assistant(
-                vec![ContentPart::text("接下来").into()],
+                vec![ContentPart::text("接下来")],
                 Some(vec![CanonicalToolCall {
                     id: "c1".into(),
                     name: "mcp_list".into(),
@@ -3938,7 +4098,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_has_pending_tool_context_detects_mid_task() {
+    fn canonical_has_pending_tool_context_detects_mid_session() {
         let mid = vec![
             CanonicalMessage::user_text("go"),
             CanonicalMessage::tool(vec![ContentPart::text("ok")], Some("c1".into())),

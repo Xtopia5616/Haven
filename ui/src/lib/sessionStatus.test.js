@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TASK_STATUSES, statusColor, statusVariant } from './taskStatus.js';
+import { TASK_STATUSES, statusColor, statusVariant } from './sessionStatus.js';
 
 describe('TASK_STATUSES', () => {
 	it('covers the canonical backend statuses', () => {

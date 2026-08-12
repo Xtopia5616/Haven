@@ -2,13 +2,13 @@
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
-	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/task/src/lib.rs):
+	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/session/src/lib.rs):
 	// after this many seconds an unanswered confirmation is treated as
 	// rejected. The frontend resolves first so the dialog closes promptly
 	// instead of hanging until the backend's fail-closed branch fires.
 	const TIMEOUT_SECONDS = 120;
 
-	let { stepId, toolName, taskId, taskTitle, riskLevel, onConfirm } = $props();
+	let { stepId, toolName, sessionId, sessionTitle, riskLevel, onConfirm } = $props();
 	let remaining = $state(TIMEOUT_SECONDS);
 
 	$effect(() => {
@@ -57,7 +57,7 @@
 		<div class="dialog" role="presentation" tabindex="-1" onclick={(e) => e.stopPropagation()} in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}>
 			<h3>High-Risk Operation</h3>
 			<div class="detail">
-				{#if taskTitle}<div><strong>Task:</strong> {taskTitle}</div>{/if}
+				{#if sessionTitle}<div><strong>Session:</strong> {sessionTitle}</div>{/if}
 				<div><strong>Tool:</strong> {toolName}</div>
 				<div>
 					<strong>Risk:</strong>

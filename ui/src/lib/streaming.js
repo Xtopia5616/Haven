@@ -12,16 +12,16 @@
 
 // ── Step / tool id factories ──────────────────────────────────────────────
 // Single source of truth for the streaming ids. Every event handler builds
-// the same id for the same (task, step, run) triple; a mismatch would split
+// the same id for the same (session, step, run) triple; a mismatch would split
 // one step into two message streams.
 
-/** `thought-<taskId>-<step>-<run>` / `reasoning-...` / `tool-...` */
-export const stepId = (prefix, taskId, stepNumber, runId) =>
-	`${prefix}-${taskId}-${stepNumber}-${runId ?? 0}`;
+/** `thought-<sessionId>-<step>-<run>` / `reasoning-...` / `tool-...` */
+export const stepId = (prefix, sessionId, stepNumber, runId) =>
+	`${prefix}-${sessionId}-${stepNumber}-${runId ?? 0}`;
 
-/** `tool-<taskId>-<step>-<run>-<callIdOrName>` */
-export const toolId = (taskId, stepNumber, runId, callIdOrName) =>
-	`${stepId('tool', taskId, stepNumber, runId)}-${callIdOrName}`;
+/** `tool-<sessionId>-<step>-<run>-<callIdOrName>` */
+export const toolId = (sessionId, stepNumber, runId, callIdOrName) =>
+	`${stepId('tool', sessionId, stepNumber, runId)}-${callIdOrName}`;
 
 /**
  * Finalize every streaming block belonging to a step: the reasoning block,
@@ -84,6 +84,18 @@ export function thoughtSegmentIds(messages, baseId) {
 		.map((x) => x.id);
 }
 
+// Streaming blocks always live at the tail of the conversation (or just in
+// front of the step's own thought segments), so scanning backwards finds a
+// unique step id in O(tail-distance) instead of O(whole list) — a full
+// forward scan per chunk would cost O(n) on every batched flush of a long
+// conversation. The id is unique, so direction never changes the result.
+function lastIndexById(messages, id) {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].id === id) return i;
+	}
+	return -1;
+}
+
 function newStreamMessage({
 	id,
 	content,
@@ -118,17 +130,21 @@ export function accumulateStreamChunk(messages, opts) {
 
 	if (stepIdPrefix !== 'thought') {
 		// Reasoning: one block per step, no sentence splitting.
-		const idx = messages.findIndex((x) => x.id === stepId);
+		const idx = lastIndexById(messages, stepId);
 		if (idx >= 0) {
 			const curr = messages[idx].content || '';
-			// Finalized reasoning (streaming === false) normally rejects new
-			// deltas — except the backend's authoritative reconciliation
-			// chunk, which carries the complete reasoning text so the UI can
-			// recover characters lost to batcher drops. It arrives AFTER the
-			// stream is finalized, so detect it by prefix: a cumulative
-			// full-text delta starts with the current content.
+			// Finalized reasoning normally rejects new deltas — except the
+			// backend's authoritative reconciliation chunk, which carries the
+			// complete reasoning text so the UI can recover characters lost
+			// to batcher drops. It arrives AFTER the stream is finalized (the
+			// backend guarantees it is the last reasoning event for the
+			// step), so detect it by length: a dropped intermediate batch
+			// makes `curr` a prefix-mismatched partial, so a longer full-text
+			// delta is accepted even without the `startsWith` prefix check.
+			// A straggler incremental partial (shorter than the accumulated
+			// text) is still rejected.
 			if (messages[idx].streaming === false) {
-				if (delta.startsWith(curr) && delta.length > curr.length) {
+				if (delta.length > curr.length && delta !== curr) {
 					const next = [...messages];
 					next[idx] = { ...next[idx], content: delta };
 					return next;
@@ -175,7 +191,7 @@ export function accumulateStreamChunk(messages, opts) {
 		];
 	}
 
-	const lastIdx = messages.findIndex((x) => x.id === segIds[segIds.length - 1]);
+	const lastIdx = lastIndexById(messages, segIds[segIds.length - 1]);
 	const last = messages[lastIdx];
 	const next = [...messages];
 

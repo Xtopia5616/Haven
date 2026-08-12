@@ -27,26 +27,18 @@ describe('themeStore', () => {
 		expect(themeStore.currentTheme).toBe('light');
 	});
 
-	it('prefers the saved localStorage theme over the OS preference', async () => {
-		localStorage.setItem('haven.theme', 'light');
-		const { themeStore } = await loadThemeStore();
-		expect(themeStore.currentTheme).toBe('light');
-	});
-
-	it('prefers the data-theme attribute over localStorage', async () => {
+	it('prefers the data-theme attribute over the OS preference', async () => {
 		document.documentElement.setAttribute('data-theme', 'light');
-		localStorage.setItem('haven.theme', 'dark');
 		const { themeStore } = await loadThemeStore();
 		expect(themeStore.currentTheme).toBe('light');
 	});
 
-	it('setTheme updates the store, attribute and localStorage', async () => {
+	it('setTheme updates the store and attribute', async () => {
 		const { themeStore } = await loadThemeStore();
 		themeStore.setTheme('light');
 		expect(themeStore.currentTheme).toBe('light');
 		expect(get(themeStore).theme).toBe('light');
 		expect(document.documentElement.getAttribute('data-theme')).toBe('light');
-		expect(localStorage.getItem('haven.theme')).toBe('light');
 	});
 
 	it('ignores invalid themes', async () => {
@@ -77,7 +69,6 @@ describe('themeStore', () => {
 		expect(themeStore.accentColor).toBe('#006548');
 		expect(document.documentElement.getAttribute('data-accent')).toBe('green');
 		expect(document.documentElement.style.getPropertyValue('--md-accent-hex')).toBe('#006548');
-		expect(localStorage.getItem('haven.accent')).toBe('green');
 	});
 
 	it('setAccent with a custom hex stores the custom: prefix', async () => {
@@ -86,7 +77,6 @@ describe('themeStore', () => {
 		expect(themeStore.currentAccent).toBe('custom:#ff0000');
 		expect(themeStore.accentColor).toBe('#ff0000');
 		expect(themeStore.isPreset).toBe(false);
-		expect(localStorage.getItem('haven.accent')).toBe('custom:#ff0000');
 	});
 
 	it('ignores invalid accents', async () => {
@@ -95,12 +85,5 @@ describe('themeStore', () => {
 		expect(themeStore.currentAccent).toBe('blue');
 		themeStore.setAccent('not-a-color');
 		expect(themeStore.currentAccent).toBe('blue');
-	});
-
-	it('restores a saved custom accent from localStorage', async () => {
-		localStorage.setItem('haven.accent', 'custom:#123abc');
-		const { themeStore } = await loadThemeStore();
-		expect(themeStore.currentAccent).toBe('custom:#123abc');
-		expect(themeStore.accentColor).toBe('#123abc');
 	});
 });

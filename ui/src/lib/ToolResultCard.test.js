@@ -19,9 +19,9 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('window', JSON.stringify({ windows: [{ title: 'x' }] }))).toBe(
 			true,
 		);
-		expect(canRenderToolResult('status', JSON.stringify({ status: 'running' }))).toBe(true);
-		expect(canRenderToolResult('reminder', JSON.stringify({ reminders: [] }))).toBe(true);
-		expect(canRenderToolResult('reminder', JSON.stringify({ id: 'r1', mode: 'notify' }))).toBe(
+		expect(canRenderToolResult('task_status', JSON.stringify({ status: 'running' }))).toBe(true);
+		expect(canRenderToolResult('schedule', JSON.stringify({ reminders: [] }))).toBe(true);
+		expect(canRenderToolResult('schedule', JSON.stringify({ id: 'r1', mode: 'notify' }))).toBe(
 			true,
 		);
 		expect(canRenderToolResult('env', JSON.stringify({ variables: [] }))).toBe(true);
@@ -62,11 +62,11 @@ describe('parseToolResult', () => {
 	});
 	it('classifies non-JSON text, arrays and primitives as raw', () => {
 		expect(parseToolResult('files', 'plain text')).toEqual({ kind: 'raw', data: null });
-		expect(parseToolResult('status', JSON.stringify([1, 2]))).toEqual({
+		expect(parseToolResult('task_status', JSON.stringify([1, 2]))).toEqual({
 			kind: 'raw',
 			data: [1, 2],
 		});
-		expect(parseToolResult('status', '42')).toEqual({ kind: 'raw', data: 42 });
+		expect(parseToolResult('task_status', '42')).toEqual({ kind: 'raw', data: 42 });
 	});
 });
 
@@ -206,7 +206,7 @@ describe('ToolResultCard raw', () => {
 
 	it('pretty-prints JSON array observations', () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'status',
+			toolName: 'task_status',
 			content: JSON.stringify([1, 2, { a: 'b' }]),
 		});
 		expect(container.querySelector('.content-preview').textContent).toContain('"a"');
@@ -381,7 +381,7 @@ describe('ToolResultCard process', () => {
 describe('ToolResultCard status', () => {
 	it('renders the job id with a completed badge', () => {
 		render(ToolResultCard, {
-			toolName: 'status',
+			toolName: 'task_status',
 			content: JSON.stringify({ job_id: 'job-1', status: 'completed', exit_code: 0 }),
 		});
 		expect(screen.getByText('job-1')).toBeTruthy();
@@ -430,12 +430,12 @@ describe('ToolResultCard network', () => {
 	});
 	it('renders a single reminder set result with id, mode and fires_at', () => {
 		render(ToolResultCard, {
-			toolName: 'reminder',
+			toolName: 'schedule',
 			content: JSON.stringify({
 				id: 'r42',
 				mode: 'tool',
 				fires_at: '2026-08-05T09:00:00+08:00',
-				wakes_task: true,
+				wakes_session: true,
 			}),
 		});
 		expect(screen.getByText('#r42')).toBeTruthy();

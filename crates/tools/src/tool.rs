@@ -28,7 +28,7 @@ pub struct ToolResult {
 /// which tool names carry which signals.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ToolSignals {
-    /// The `ask` tool's question: when present, the loop pauses the task
+    /// The `ask` tool's question: when present, the loop pauses the session
     /// and waits for the user's reply.
     pub ask_question: Option<String>,
     /// Quick-reply options for the pending `ask`, surfaced as buttons.
@@ -39,20 +39,20 @@ pub struct ToolSignals {
     pub notify_body: Option<String>,
 }
 
-/// Per-task side effects a tool declares through its result. The task
+/// Per-session side effects a tool declares through its result. The session
 /// executor applies them (registering skill/MCP adapters, attaching
-/// background jobs) without hard-coding tool names, so a new tool that needs
+/// background tasks) without hard-coding tool names, so a new tool that needs
 /// a side effect declares it here instead of adding a name check in the
 /// executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRegistration {
-    /// Load a skill (raw name) for the current task.
+    /// Load a skill (raw name) for the current session.
     Skill(String),
-    /// Load an MCP server (by name) for the current task.
+    /// Load an MCP server (by name) for the current session.
     McpServer(String),
-    /// Attach a background job (an activity of kind `job`) to the current
-    /// task (end/rollback cleanup).
-    Activity(String),
+    /// Attach a background task (an task of kind `task`) to the current
+    /// session (end/rollback cleanup).
+    Task(String),
 }
 
 impl ToolResult {
@@ -111,7 +111,7 @@ impl ToolResult {
 /// output does not carry a question. The signal must be read BEFORE any
 /// truncation: parsing truncated text would yield invalid JSON when the
 /// output exceeds the observation budget, silently dropping the question
-/// and never pausing the task.
+/// and never pausing the session.
 pub fn extract_ask_signal(output: &Value) -> (Option<String>, Vec<String>) {
     let question = output
         .get("question")
@@ -150,7 +150,7 @@ pub fn extract_notify_signal(output: &Value) -> (Option<String>, Option<String>)
 }
 
 /// Whether an action should be hidden from the chat UI. `ask` must never be
-/// silent: hiding the question while the task pauses for an answer would
+/// silent: hiding the question while the session pauses for an answer would
 /// leave the user waiting on a question they can't see.
 pub fn is_silent_action(tool_name: &str, input: &Value) -> bool {
     tool_name != "ask"
@@ -172,11 +172,11 @@ pub trait Tool: Send + Sync {
         30
     }
 
-    /// Whether this tool needs the private `_task_id` input field injected
-    /// before execution (e.g. `reminder`/`jobs` scope to the current task).
+    /// Whether this tool needs the private `_session_id` input field injected
+    /// before execution (e.g. `schedule`/`tasks` scope to the current session).
     /// The id is injected after the LLM-facing input was captured, so it
     /// never reaches the tool schema, the step history, or the LLM.
-    fn requires_task_id(&self) -> bool {
+    fn requires_session_id(&self) -> bool {
         false
     }
 
@@ -188,8 +188,8 @@ pub trait Tool: Send + Sync {
         ToolSignals::default()
     }
 
-    /// Per-task side effects to apply after a successful execution
-    /// (skill/MCP adapters, background-job attachment).
+    /// Per-session side effects to apply after a successful execution
+    /// (skill/MCP adapters, background-task attachment).
     fn registrations(&self, output: &Value) -> Vec<ToolRegistration> {
         let _ = output;
         Vec::new()
@@ -380,7 +380,7 @@ impl ToolRegistry {
 }
 
 /// Weak lookup handle into a [`ToolRegistry`] snapshot. Lets a tool (e.g.
-/// `reminder`) validate tool names / risk levels at call time without owning
+/// `schedule`) validate tool names / risk levels at call time without owning
 /// the registry — the snapshot is mutated in place by `rebuild`, so the weak
 /// handle always observes the current state. `find` returns `None` for
 /// unknown names or when the registry was dropped.
@@ -589,10 +589,10 @@ mod tests {
     fn test_extract_notify_signal() {
         let (title, body) = extract_notify_signal(&json!({
             "notify": true,
-            "title": "Reminder",
+            "title": "ScheduledTask",
             "body": "Take a break",
         }));
-        assert_eq!(title.as_deref(), Some("Reminder"));
+        assert_eq!(title.as_deref(), Some("ScheduledTask"));
         assert_eq!(body.as_deref(), Some("Take a break"));
     }
 
@@ -720,12 +720,8 @@ mod tests {
     #[tokio::test]
     async fn test_registry_list_multiple() {
         let registry = ToolRegistry::new();
-        registry
-            .register(Arc::new(MockTool::new("a")))
-            .await;
-        registry
-            .register(Arc::new(MockTool::new("b")))
-            .await;
+        registry.register(Arc::new(MockTool::new("a"))).await;
+        registry.register(Arc::new(MockTool::new("b"))).await;
 
         let tools = registry.list().await;
         assert_eq!(tools.len(), 2);
@@ -741,9 +737,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_list_schemas() {
         let registry = ToolRegistry::new();
-        registry
-            .register(Arc::new(MockTool::new("mock")))
-            .await;
+        registry.register(Arc::new(MockTool::new("mock"))).await;
 
         let schemas = registry.list_schemas().await;
         assert_eq!(schemas.len(), 1);

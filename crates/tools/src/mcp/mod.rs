@@ -588,7 +588,7 @@ async fn listen_sse(
     }
 }
 
-/// Background task that keeps an SSE notification stream open for an HTTP
+/// Background session that keeps an SSE notification stream open for an HTTP
 /// client, reconnecting with a short backoff when the stream drops.
 fn spawn_sse_listener(
     name: String,
@@ -838,7 +838,7 @@ impl McpClient {
     /// is already populated. Gives up early on a definitive `Offline` failure
     /// so a dead server cannot stall the caller for the whole timeout.
     ///
-    /// Used by resume paths that re-register per-task MCP adapters after a
+    /// Used by resume paths that re-register per-session MCP adapters after a
     /// restart, where the background connect may still be in flight.
     pub async fn wait_for_tools(&self, timeout: Duration) -> Vec<McpToolInfo> {
         let deadline = tokio::time::Instant::now() + timeout;
@@ -846,10 +846,7 @@ impl McpClient {
             if let Some(tools) = self.tools_cache.lock().await.clone() {
                 return tools;
             }
-            if matches!(
-                &*self.status.lock().await,
-                McpClientStatus::Offline { .. }
-            ) {
+            if matches!(&*self.status.lock().await, McpClientStatus::Offline { .. }) {
                 return Vec::new();
             }
             if tokio::time::Instant::now() >= deadline {
@@ -1232,7 +1229,7 @@ impl McpClient {
                 anyhow::bail!("MCP call '{}' cancelled (client shutting down)", tool_name);
             }
             _ = cancel.cancelled() => {
-                anyhow::bail!("MCP call '{}' cancelled (task cancellation)", tool_name);
+                anyhow::bail!("MCP call '{}' cancelled (session cancellation)", tool_name);
             }
         };
 
@@ -1291,7 +1288,7 @@ impl McpClient {
     }
 
     pub async fn reconnect(&self) -> anyhow::Result<()> {
-        // Cancel any ongoing monitor task and create a fresh token in a
+        // Cancel any ongoing monitor session and create a fresh token in a
         // single lock acquisition. Previously two separate lock() calls
         // left a window where a concurrent reader could observe the
         // already-cancelled old token but the new one wasn't set yet.
@@ -1318,15 +1315,15 @@ impl McpClient {
         Ok(())
     }
 
-    /// Spawn a background health-monitor + auto-reconnect task.
+    /// Spawn a background health-monitor + auto-reconnect session.
     ///
-    /// Every `health_interval` the task calls `is_alive()`. If the process is
+    /// Every `health_interval` the session calls `is_alive()`. If the process is
     /// dead it enters the reconnect loop (exponential backoff). The loop stops
     /// when the client's cancel token is cancelled (e.g. via `shutdown_all`).
     /// After `max_retries` consecutive failures the client remains `Offline`
     /// and waits for a manual `reconnect()` call.
     ///
-    /// The task terminates when the cancel token fires.
+    /// The session terminates when the cancel token fires.
     pub fn spawn_monitor(
         self: Arc<McpClient>,
         health_interval: Duration,
@@ -1569,7 +1566,7 @@ impl McpManager {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!("MCP connection task failed: {}", e);
+                    tracing::warn!("MCP connection session failed: {}", e);
                 }
             }
         }
@@ -1664,7 +1661,7 @@ impl McpManager {
         self.start_monitors(config).await;
     }
 
-    /// Shut down all clients and cancel their monitor tasks.
+    /// Shut down all clients and cancel their monitor sessions.
     pub async fn shutdown_all(&self) {
         let clients = self.clients.lock().await;
         for (name, client) in clients.iter() {

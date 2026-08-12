@@ -23,7 +23,7 @@ struct SchemaCache {
     mcp_server_index_section: String,
 }
 
-/// Terms too generic to carry task-relevance signal when scoring facts.
+/// Terms too generic to carry ses-relevance signal when scoring facts.
 const FACT_TERM_STOPWORDS: &[&str] = &[
     "the", "and", "for", "with", "this", "that", "you", "your", "please", "are", "was", "were",
     "not", "but", "from", "have", "has", "all", "any", "can", "could", "would", "should", "will",
@@ -41,7 +41,7 @@ impl SystemPromptBuilder {
 
     pub async fn build(
         &self,
-        task_description: &str,
+        session_description: &str,
         history: &[ReActStep],
         conversation_history: &[String],
     ) -> String {
@@ -67,16 +67,16 @@ impl SystemPromptBuilder {
 
         // User facts grouped by tag for readability. Sensitive facts
         // (api keys, tokens, ...) are never interpolated, duplicates are
-        // collapsed, and only the facts most relevant to the current task
+        // collapsed, and only the facts most relevant to the current session
         // (plus the freshest high-confidence ones) make the cut — instead of
         // always injecting the same top-15 by raw confidence.
         let mut facts_section = String::new();
         let mut episodes_section = String::new();
 
-        // Task keywords used for both cross-subject fact recall and episodic
+        // Session keywords used for both cross-subject fact recall and episodic
         // recall below. Computed up front so episode recall works even when
         // the user has no stored facts yet.
-        let task_terms: Vec<String> = task_description
+        let session_terms: Vec<String> = session_description
             .to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| t.len() >= 3 && !FACT_TERM_STOPWORDS.contains(t))
@@ -90,14 +90,14 @@ impl SystemPromptBuilder {
             use std::collections::BTreeMap;
 
             // Cross-subject recall: additionally pull facts that match the
-            // task's terms from any subject (entity memory — project paths,
+            // session's terms from any subject (entity memory — project paths,
             // file names, other entities), not just the "user" subject. Each
             // term is searched separately and merged so a fact only needs to
-            // match ONE task keyword to surface.
+            // match ONE session keyword to surface.
             let mut all_facts: Vec<haven_memory::repositories::facts::Fact> = facts;
             let mut seen_ids: std::collections::HashSet<String> =
                 all_facts.iter().map(|f| f.id.clone()).collect();
-            for term in task_terms.iter().take(6) {
+            for term in session_terms.iter().take(6) {
                 if let Ok(matches) = self.db.search_facts(term) {
                     for m in matches {
                         if seen_ids.insert(m.id.clone()) {
@@ -110,8 +110,8 @@ impl SystemPromptBuilder {
                 // No user facts and nothing relevant found — skip the section.
             } else {
                 // Score = effective confidence (raw confidence × recency decay)
-                // plus a bonus for every task keyword found in the fact. Facts
-                // matching the task win even at lower raw confidence; unrelated
+                // plus a bonus for every session keyword found in the fact. Facts
+                // matching the session win even at lower raw confidence; unrelated
                 // facts fall back to confidence-only ordering.
                 let mut scored: Vec<(f64, &haven_memory::repositories::facts::Fact)> = Vec::new();
                 for fact in all_facts.iter() {
@@ -122,7 +122,7 @@ impl SystemPromptBuilder {
                     let mut score = fact_effective_confidence(fact) * 10.0;
                     let obj = fact.object.to_lowercase();
                     let pred = fact.predicate.to_lowercase();
-                    for term in &task_terms {
+                    for term in &session_terms {
                         if obj.contains(term.as_str()) || pred.contains(term.as_str()) {
                             score += 20.0;
                         }
@@ -186,13 +186,13 @@ impl SystemPromptBuilder {
             }
         }
 
-        // Cross-task episodic recall: surface past user messages / compaction
+        // Cross-session episodic recall: surface past user messages / compaction
         // summaries that mention the same terms, so context from earlier
-        // conversations is available in the current task. Independent of the
+        // conversations is available in the current session. Independent of the
         // facts section (and of the embedding model — keyword recall works
         // out of the box).
         if let Ok(hits) = self.db.search_episodes_by_keywords(
-            &task_terms.iter().map(String::as_str).collect::<Vec<_>>(),
+            &session_terms.iter().map(String::as_str).collect::<Vec<_>>(),
             5,
         ) && !hits.is_empty()
         {
@@ -217,7 +217,7 @@ impl SystemPromptBuilder {
             }
             context_section.push('\n');
         }
-        // Cross-task episodic recall (filled above when the task terms match
+        // Cross-session episodic recall (filled above when the session terms match
         // stored episodes) rides along in the context section.
         if !episodes_section.is_empty() {
             context_section.push_str(&episodes_section);
@@ -257,7 +257,7 @@ impl SystemPromptBuilder {
                 ("skills", &skills_section),
                 ("mcps", &mcp_section),
                 ("facts", &facts_section),
-                ("task", task_description),
+                ("session", session_description),
                 ("context", &context_section),
                 ("history", &history_section),
                 (
@@ -292,7 +292,7 @@ impl SystemPromptBuilder {
             let name = s["name"].as_str().unwrap_or("");
             let desc = s["description"].as_str().unwrap_or("");
 
-            // Per-task skill__ and mcp__ tools are never in the global
+            // Per-session skill__ and mcp__ tools are never in the global
             // registry (progressive loading), so they won't appear here.
             if !name.starts_with("skill__") && !name.starts_with("mcp__") {
                 built_in.push_str(&format!("- {}: {}\n", name, desc));
@@ -352,11 +352,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn facts_section_prefers_task_relevant_facts() {
+    async fn facts_section_prefers_session_relevant_facts() {
         let dir =
             std::env::temp_dir().join(format!("haven_prompt_rank_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&dir).unwrap());
-        // 15 higher-confidence but task-irrelevant facts…
+        // 15 higher-confidence but ses-irrelevant facts…
         for i in 0..15 {
             db.insert_fact(
                 "user",
@@ -368,7 +368,7 @@ mod tests {
             )
             .unwrap();
         }
-        // …and one lower-confidence fact that matches the current task.
+        // …and one lower-confidence fact that matches the current session.
         db.insert_fact(
             "user",
             "likes",
@@ -383,7 +383,7 @@ mod tests {
         let builder = SystemPromptBuilder::new(tools, db);
         let prompt = builder.build("set up dark theme", &[], &[]).await;
 
-        // The task-relevant fact wins a slot despite its lower raw confidence.
+        // The ses-relevant fact wins a slot despite its lower raw confidence.
         assert!(prompt.contains("dark themes"));
         // The 15-fact budget means at least one irrelevant fact was dropped.
         let included_things = prompt.matches("Thing").count();
@@ -410,9 +410,9 @@ mod tests {
         )
         .unwrap();
         // An episode from a past conversation mentioning the same topic.
-        let task = db.create_task("past", "").unwrap();
+        let session = db.create_session("past", "").unwrap();
         db.add_message(
-            &task.id,
+            &session.id,
             "user",
             "I asked about the dark theme design last week",
             Some("text"),

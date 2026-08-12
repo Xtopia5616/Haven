@@ -8,27 +8,14 @@
 		<title>Haven</title>
 		<script>
 			(function() {
-				try {
-					var saved = localStorage.getItem('haven.theme');
-					var theme = (saved === 'dark' || saved === 'light')
-						? saved
-						: (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-				} catch(e) {
-					var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-				}
+				// First-paint fallback only: the persisted theme/accent live in
+				// config.toml (loaded via get_settings after mount). Until that
+				// arrives, use the OS color scheme so the first frame never
+				// flashes an unreadable page.
+				var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 				document.documentElement.setAttribute('data-theme', theme);
-				try {
-					var a = localStorage.getItem('haven.accent');
-					if (a) {
-						document.documentElement.setAttribute('data-accent', a);
-					}
-				} catch(e) {}
 				(function() {
-					var accentKey = document.documentElement.getAttribute('data-accent');
 					var hex = '#2C5090'; /* info蓝 default */
-					if (accentKey === 'green') hex = '#006548';
-					else if (accentKey === 'red') hex = '#C82910';
-					else if (accentKey && accentKey.indexOf('custom:') === 0) hex = accentKey.slice(7);
 					document.documentElement.style.setProperty('--md-accent-hex', hex);
 				})();
 			})();

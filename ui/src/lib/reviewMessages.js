@@ -1,4 +1,4 @@
-// Shared conversion of a task review payload (task + session messages +
+// Shared conversion of a session review payload (session + session messages +
 // steps) into the chat bubble message list used by the chat page and the
 // history review flow.
 
@@ -6,16 +6,16 @@ import { formatMessageTime } from '$lib/stores.js';
 
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that
- * arrived concurrently (e.g. a task still running while the user
+ * arrived concurrently (e.g. a session still running while the user
  * navigates back). Streams append only when the DB doesn't already have
  * a bubble with the same id.
  *
  * @param {Array<object>} dbMessages   buildReviewMessages() result
- * @param {Array<object>} existing     current taskMessages entry
+ * @param {Array<object>} existing     current sessionMessages entry
  * @param {{ dropToolSteps?: boolean }} [opts]
  *   dropToolSteps — when true, drop DB tool-step badges whose stepNumber
  *     is already represented by a live streaming tool card in `existing`.
- *     Used by switchToTask to avoid duplicate display while a task runs.
+ *     Used by switchToSession to avoid duplicate display while a session runs.
  */
 export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
 	const { dropToolSteps = false } = opts;
@@ -32,7 +32,7 @@ export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
 	const dbIds = new Set(filteredDb.map((m) => m.id));
 	// Reasoning: DB-persisted reasoning (id `msg.*`) and live streaming
 	// reasoning (id `reasoning-*`) carry DIFFERENT ids for the same step,
-	// so plain id dedup leaves two "Thinking…" bubbles after a task switch
+	// so plain id dedup leaves two "Thinking…" bubbles after a session switch
 	// mid-step. Dedup by content: the live block is kept only while its
 	// text is not already persisted in the DB (streaming or not yet
 	// reconciled). Same for thought text that the snap already finalized
@@ -67,7 +67,7 @@ export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
 		// by the DB copy; drop the live version.
 		return false;
 	});
-	// Ask cards: a task paused on an `ask` question loses its options and
+	// Ask cards: a session paused on an `ask` question loses its options and
 	// awaiting state when rebuilt from the DB (review builds `options: []`,
 	// `awaiting: false`). If a live ask card is still awaiting, prefer it
 	// over the DB card so the user can answer from the quick-reply buttons.
@@ -83,7 +83,7 @@ export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
 export function buildReviewMessages(data) {
 	const items = [];
 	const msgs = data.messages || [];
-	const task = data.task || {};
+	const session = data.session || {};
 
 	const msgIds = new Set();
 	for (const msg of msgs) {
@@ -140,11 +140,11 @@ export function buildReviewMessages(data) {
 					// Not JSON — keep the raw text as-is.
 				}
 			}
-			// The task pauses to wait for the user's answer, so a paused
-			// task's ask card is still awaiting a reply. Without this, a
-			// task switch / reload renders the card without quick-reply
+			// The session pauses to wait for the user's answer, so a paused
+			// session's ask card is still awaiting a reply. Without this, a
+			// session switch / reload renders the card without quick-reply
 			// buttons and the user cannot answer from the chat view.
-			const taskPaused = data.task?.status === 'Paused';
+			const sessionPaused = data.session?.status === 'Paused';
 			// When the model batches multiple ask calls into one step, the
 			// persisted assistant message joins the questions with "\n\n",
 			// while each step observes only its own question. Match either the
@@ -167,7 +167,7 @@ export function buildReviewMessages(data) {
 								type: 'ask',
 								toolName: 'ask',
 								options: askOptions,
-								awaiting: taskPaused,
+								awaiting: sessionPaused,
 							};
 						}
 						deduped = true;
@@ -176,7 +176,7 @@ export function buildReviewMessages(data) {
 				}
 			}
 			if (deduped) continue;
-			// No matching session message (e.g. an old task without the
+			// No matching session message (e.g. an old session without the
 			// persisted question): still surface the extracted question as an
 			// ask card instead of a raw JSON tool badge.
 		items.push({
@@ -186,7 +186,7 @@ export function buildReviewMessages(data) {
 			type: 'ask',
 			toolName: 'ask',
 			options: askOptions,
-			awaiting: taskPaused,
+			awaiting: sessionPaused,
 			voice: false,
 			time: formatMessageTime(step.created_at),
 			_ts: Date.parse(step.created_at) || 0,
@@ -210,13 +210,13 @@ export function buildReviewMessages(data) {
 }
 	// Thought-only steps are not added as separate items (their text is in
 	// session messages), but we still need their step_number for stepNumber
-	// inference — otherwise tasks with no tool steps (e.g. errored on the
+	// inference — otherwise sessions with no tool steps (e.g. errored on the
 	// first LLM call) leave all messages without a stepNumber, breaking
 	// rollback. Match by content (trimmed) to the corresponding session
 	// message. User items are matched too: interjections (steering) and
-	// answers to paused tasks (supplements) are persisted as thought steps
+	// answers to paused sessions (supplements) are persisted as thought steps
 	// carrying the user's own words, so the input must resolve to that step
-	// even when nothing follows it (e.g. the task errored right after).
+	// even when nothing follows it (e.g. the session errored right after).
 	for (const step of data.steps || []) {
 		if (step.action_tool) continue;
 		if (step.thought == null) continue;
@@ -231,16 +231,16 @@ export function buildReviewMessages(data) {
 		}
 	}
 	items.sort((a, b) => (a._ts || 0) - (b._ts || 0));
-	// Fallback: if no messages or steps exist, show the task input text
+	// Fallback: if no messages or steps exist, show the session input text
 	// so the review page is not completely empty.
-	if (items.length === 0 && task.input_text) {
+	if (items.length === 0 && session.input_text) {
 		items.push({
-			id: `placeholder-${task.id}`,
+			id: `placeholder-${session.id}`,
 			role: 'user',
-			content: task.input_text,
+			content: session.input_text,
 			voice: false,
-			time: formatMessageTime(task.created_at || new Date().toISOString()),
-			_ts: Date.parse(task.created_at || new Date().toISOString()) || 0,
+			time: formatMessageTime(session.created_at || new Date().toISOString()),
+			_ts: Date.parse(session.created_at || new Date().toISOString()) || 0,
 			streaming: false,
 		});
 	}

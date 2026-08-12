@@ -5,7 +5,7 @@ use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use haven_memory::Database;
-use haven_task::TaskExecutor;
+use haven_session::SessionExecutor;
 use haven_tools::ToolsManager;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
@@ -15,7 +15,7 @@ use tracing_subscriber::reload;
 pub struct AppState {
     pub db: Arc<Database>,
     pub tools: Arc<ToolsManager>,
-    pub executor: Arc<TaskExecutor>,
+    pub executor: Arc<SessionExecutor>,
     pub agent: Arc<AgentLayer>,
     pub pipeline: Arc<InputPipeline>,
     pub shell: Arc<DesktopShell>,
@@ -44,21 +44,24 @@ impl AppState {
 
         let db_finalize = db.clone();
         tokio::spawn(async move {
-            // The previous process is gone, so any task left `running` can
+            // The previous process is gone, so any session left `running` can
             // never resume — mark it errored immediately so the user sees the
             // interrupted state and can retry via the continue flow. This runs
-            // before any UI fetches the task list.
-            if let Ok(n) = db_finalize.finalize_orphaned_running_tasks()
+            // before any UI fetches the session list.
+            if let Ok(n) = db_finalize.finalize_orphaned_running_sessions()
                 && n > 0
             {
-                tracing::info!("finalized {} orphaned running task(s) from previous run", n);
+                tracing::info!(
+                    "finalized {} orphaned running session(s) from previous run",
+                    n
+                );
             }
         });
 
         let cfg = config_loader.config().clone();
         let llm_config = cfg.llm.clone();
         let router = Arc::new(LlmRouter::new(llm_config));
-        let max_steps = cfg.task.max_steps;
+        let max_steps = cfg.session.max_steps;
         let conversation_window_size = cfg.memory.session_window_size;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
@@ -81,10 +84,10 @@ impl AppState {
             .set_min_risk_level(cfg.security.min_risk_level)
             .await;
 
-        let executor = Arc::new(TaskExecutor::new(
+        let executor = Arc::new(SessionExecutor::new(
             db.clone(),
             tools.clone(),
-            cfg.task.max_concurrent.max(1),
+            cfg.session.max_concurrent.max(1),
         ));
 
         let agent = Arc::new(AgentLayer::new(
@@ -176,10 +179,10 @@ impl AppState {
             let db_retention = db.clone();
             let days = retention_days;
             tokio::spawn(async move {
-                if let Ok(n) = db_retention.delete_old_tasks(days)
+                if let Ok(n) = db_retention.delete_old_sessions(days)
                     && n > 0
                 {
-                    tracing::info!("cleaned up {} task(s) older than {} days", n, days);
+                    tracing::info!("cleaned up {} session(s) older than {} days", n, days);
                 }
             });
         }
@@ -192,19 +195,19 @@ impl AppState {
             loop {
                 interval.tick().await;
                 if retention > 0
-                    && let Ok(n) = db_clone.delete_old_tasks(retention)
+                    && let Ok(n) = db_clone.delete_old_sessions(retention)
                     && n > 0
                 {
-                    tracing::info!("background cleanup: removed {} old task(s)", n);
+                    tracing::info!("background cleanup: removed {} old session(s)", n);
                 }
             }
         });
 
         // Pre-warm LLM HTTP connection pools for all configured endpoints so
         // the first user message doesn't pay TCP+TLS handshake latency
-        // (~50-200ms) on whichever model slot it hits, then start the task
+        // (~50-200ms) on whichever model slot it hits, then start the session
         // dispatcher. Starting the dispatcher only after prewarm finishes means
-        // a resumed task's first chat request reuses a warm connection instead
+        // a resumed session's first chat request reuses a warm connection instead
         // of racing the prewarm; dispatch is never blocked on the model slot
         // cold start the prewarm cannot warm (the provider's model load still
         // happens on the first real request). AppState::new returns immediately;
@@ -213,16 +216,14 @@ impl AppState {
         let agent_start = agent.clone();
         tokio::spawn(async move {
             // Bound the prewarm gate: a slow/unreachable endpoint's health
-            // check (up to 7s per attempt, retried once) must not hold up task
+            // check (up to 7s per attempt, retried once) must not hold up session
             // dispatch for seconds. In the common case prewarm finishes in
             // ~200ms and the pool is warm before the first request; on timeout
             // the dispatcher still starts, leaving that endpoint to fail fast
             // (and retry) on its own.
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                router_warm.prewarm_all(),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(2), router_warm.prewarm_all())
+                    .await;
             agent_start.start();
         });
         tracing::debug!(
@@ -298,7 +299,7 @@ mod tests {
 
         // The default config is loaded and accessible via the mutex.
         let cfg = state.config_loader.lock().unwrap().config().clone();
-        assert!(cfg.task.max_steps > 0);
+        assert!(cfg.session.max_steps > 0);
         assert_eq!(cfg.stt.provider, "mcp");
     }
 
@@ -314,7 +315,7 @@ mod tests {
             .lock()
             .unwrap()
             .config_mut()
-            .task
+            .session
             .max_steps = 42;
         state.config_loader.lock().unwrap().save().unwrap();
         drop(state);
@@ -322,7 +323,13 @@ mod tests {
         let loader2 = ConfigLoader::load_from(&cfg_path).unwrap();
         let state2 = AppState::new(&db_path, vec![], loader2).await.unwrap();
         assert_eq!(
-            state2.config_loader.lock().unwrap().config().task.max_steps,
+            state2
+                .config_loader
+                .lock()
+                .unwrap()
+                .config()
+                .session
+                .max_steps,
             42
         );
     }

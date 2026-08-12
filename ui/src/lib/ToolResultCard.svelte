@@ -10,8 +10,8 @@
 		file_search: '文件搜索',
 		process: '进程列表',
 		window: '窗口列表',
-		status: '后台作业',
-		reminder: '提醒',
+		task_status: '后台任务',
+		schedule: '定时任务',
 		env: '环境变量',
 		file: '文件操作',
 		files: '文件与搜索',
@@ -142,10 +142,10 @@
 				return Array.isArray(data.processes) ? data : null;
 			case 'window':
 				return Array.isArray(data.windows) ? data : null;
-			case 'status':
+			case 'task_status':
 				return typeof data.status === 'string' ? data : null;
-			case 'reminder':
-				return Array.isArray(data.reminders) || (data.id && data.mode) ? data : null;
+			case 'schedule':
+				return Array.isArray(data.scheduled_tasks) || (data.id && data.mode) ? data : null;
 			case 'env':
 				return Array.isArray(data.variables) || data.name ? data : null;
 			case 'file':
@@ -487,7 +487,7 @@
 							d="M8 21h8M12 17v4"
 						/></svg
 					>
-				{:else if toolName === 'status'}
+				{:else if toolName === 'task_status'}
 					<svg
 						width="12"
 						height="12"
@@ -501,7 +501,7 @@
 							points="12 7 12 12 15.5 13.5"
 						/></svg
 					>
-				{:else if toolName === 'reminder'}
+				{:else if toolName === 'schedule'}
 					<svg
 						width="12"
 						height="12"
@@ -784,38 +784,38 @@
 				{:else}
 					<p class="tool-card-empty">没有可见窗口</p>
 				{/if}
-			{:else if toolName === 'status'}
-				<div class="job-row">
-					<span class="job-id">{data.job_id}</span>
+			{:else if toolName === 'task_status'}
+				<div class="task-row">
+					<span class="task-id">{data.job_id}</span>
 					<span class="status-badge status-{data.status}">{data.status}</span>
 				</div>
 				{#if data.exit_code != null}
 					<div class="tool-card-meta">退出码 {data.exit_code}</div>
 				{/if}
-			{:else if toolName === 'reminder'}
-				{#if Array.isArray(data.reminders)}
-					<div class="tool-card-count">{data.reminders.length} 条提醒</div>
-					{#if data.reminders.length > 0}
+			{:else if toolName === 'schedule'}
+				{#if Array.isArray(data.scheduled_tasks)}
+					<div class="tool-card-count">{data.scheduled_tasks.length} 条定时任务</div>
+					{#if data.scheduled_tasks.length > 0}
 						<div class="tool-card-list">
-							{#each data.reminders as r (r.id)}
-								<div class="reminder-row">
-									<span class="reminder-title">{r.title || r.body}</span>
+							{#each data.scheduled_tasks as r (r.id)}
+								<div class="scheduled-row">
+									<span class="scheduled-title">{r.title || r.body}</span>
 									{#if r.mode}
-										<span class="reminder-mode">{r.mode}</span>
+										<span class="scheduled-mode">{r.mode}</span>
 									{/if}
 									{#if r.fires_at}
-										<span class="reminder-time">{r.fires_at}</span>
+										<span class="scheduled-time">{r.fires_at}</span>
 									{/if}
 								</div>
 							{/each}
 						</div>
 					{:else}
-						<p class="tool-card-empty">没有待触发的提醒</p>
+						<p class="tool-card-empty">没有待触发的定时任务</p>
 					{/if}
 				{:else}
-					<div class="job-row">
-						<span class="job-id">#{data.id}</span>
-						<span class="reminder-mode">{data.mode}</span>
+					<div class="task-row">
+						<span class="task-id">#{data.id}</span>
+						<span class="scheduled-mode">{data.mode}</span>
 					</div>
 					{#if data.fires_at}
 						<div class="tool-card-meta">触发时间 {data.fires_at}</div>
@@ -929,7 +929,7 @@
 					{/if}
 				{/if}
 			{:else if toolName === 'network'}
-				<div class="job-row">
+				<div class="task-row">
 					<span
 						class="status-badge status-{data.status >= 200 && data.status < 300
 							? 'completed'
@@ -1172,7 +1172,7 @@
 	.window-row,
 	.env-row,
 	.file-row,
-	.reminder-row {
+	.scheduled-row {
 		display: flex;
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
@@ -1183,14 +1183,14 @@
 	.search-row:nth-child(odd),
 	.window-row:nth-child(odd),
 	.env-row:nth-child(odd),
-	.reminder-row:nth-child(odd) {
+	.scheduled-row:nth-child(odd) {
 		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
 	}
 	.search-path,
 	.file-path,
 	.env-name,
 	.window-title,
-	.reminder-title,
+	.scheduled-title,
 	.env-value {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
@@ -1265,7 +1265,7 @@
 		font-weight: 700;
 		color: var(--md-sys-color-secondary);
 	}
-	.reminder-mode {
+	.scheduled-mode {
 		flex: none;
 		font-size: 10px;
 		font-weight: 600;
@@ -1274,7 +1274,7 @@
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 	}
-	.reminder-time {
+	.scheduled-time {
 		flex: none;
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
@@ -1314,13 +1314,13 @@
 		font-family: var(--md-sys-typescale-mono);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.job-row {
+	.task-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 		font-size: 12px;
 	}
-	.job-id {
+	.task-id {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface);

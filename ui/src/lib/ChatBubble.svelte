@@ -2,7 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { imageDataUrl } from '$lib/stores.js';
+	import { imageDataUrl, formatTokenCount } from '$lib/stores.js';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.js';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 
@@ -16,6 +16,7 @@
 		toolName = '',
 		messageId = '',
 		stepNumber = null,
+		usage = null,
 		attachments = [],
 		options = [],
 		awaiting = false,
@@ -65,6 +66,14 @@
 	let rendererReady = false;
 	let rendererLoading = false;
 	let mdRafId = 0;
+	// Long-answer protection: the full accumulated text is re-parsed on every
+	// render, and markdown-it re-renders grow linearly with the answer. A
+	// frame-by-frame render (60/s) of a long answer saturates the webview main
+	// thread, starves Tauri IPC, and makes streaming appear frozen. Cap live
+	// previews to one render per MD_STREAM_RENDER_MS (~7/s — still visually
+	// live); the final render when streaming ends is always immediate.
+	const MD_STREAM_RENDER_MS = 150;
+	let lastMdRender = 0;
 
 	onDestroy(() => {
 		mounted = false;
@@ -213,13 +222,22 @@
 			return;
 		}
 		if (streaming) {
-			// Coalesce chunk updates: at most one markdown render per frame.
+			// Coalesce chunk updates: at most one markdown render per frame
+			// (rAF) and at most one per MD_STREAM_RENDER_MS (time throttle).
+			// A skipped render retries next frame instead of being dropped so
+			// the preview never lags more than one window behind the text.
 			if (mdRafId) return;
-			mdRafId = requestAnimationFrame(() => {
-				mdRafId = 0;
+			const tryRender = () => {
 				if (!mounted) return;
+				const now = performance.now();
+				if (now - lastMdRender < MD_STREAM_RENDER_MS) {
+					mdRafId = requestAnimationFrame(tryRender);
+					return;
+				}
+				mdRafId = 0;
 				renderNow();
-			});
+			};
+			mdRafId = requestAnimationFrame(tryRender);
 			return;
 		}
 		if (mdRafId) {
@@ -234,6 +252,7 @@
 	function renderNow() {
 		const text = content || '';
 		mdHtml = text ? renderMarkdown(text, !!streaming) : '';
+		lastMdRender = performance.now();
 	}
 </script>
 
@@ -273,7 +292,23 @@
 				</div>
 			</details>
 		{:else if msgType === 'tool'}
-			<div class="tool-call">&#9654; Calling {toolName}</div>
+			<div class="tool-call-row">
+				<span class="tool-call">&#9654; Calling {toolName}</span>
+				{#if usage}
+					<span
+						class="usage-chip"
+						title={[
+							usage.model ? `模型 ${usage.model}` : null,
+							`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
+							usage.durationMs > 0 ? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s` : null,
+							usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
+							usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
+						].filter(Boolean).join('\n')}
+					>
+						{formatTokenCount(usage.total)} tokens
+					</span>
+				{/if}
+			</div>
 			{#if content}
 				<ToolResultCard {toolName} {content} {streaming} />
 			{/if}
@@ -423,6 +458,27 @@
 		font-weight: 600;
 		display: inline-block;
 		margin-bottom: var(--md-sys-space-xs);
+	}
+	.tool-call-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		flex-wrap: wrap;
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.usage-chip {
+		display: inline-block;
+		padding: 1px 8px;
+		border-radius: var(--md-sys-shape-full);
+		background: color-mix(in srgb, var(--md-sys-color-tertiary) 14%, transparent);
+		color: var(--md-sys-color-on-surface-variant);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 30%, transparent);
+		font-size: 10px;
+		font-weight: 600;
+		font-family: var(--md-sys-typescale-mono);
+		line-height: 1.6;
+		white-space: nowrap;
+		cursor: default;
 	}
 	.supplement-badge {
 		background: var(--md-sys-color-warning-container);

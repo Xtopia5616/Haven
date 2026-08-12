@@ -11,7 +11,7 @@ use crate::{Tool, ToolResult};
 /// When this tool runs, the ReAct loop detects the `notify` signal in the
 /// structured output and emits an `AgentEvent::Notification`, which the app
 /// surfaces both in-app (chat toast) and as a native Windows notification.
-/// Unlike `ask`, this does not pause the task — the loop keeps running.
+/// Unlike `ask`, this does not pause the session — the loop keeps running.
 pub struct NotifyTool;
 
 #[async_trait]
@@ -21,7 +21,7 @@ impl Tool for NotifyTool {
     }
 
     fn description(&self) -> String {
-        "Send the user a notification without pausing the task — alert them about something worth checking".into()
+        "Send the user a notification without pausing the session — alert them about something worth checking".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

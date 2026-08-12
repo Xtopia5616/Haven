@@ -104,7 +104,7 @@ impl ContextCompactor {
     /// `context_window - reserve_tokens` (response headroom floor).
     ///
     /// Split out of `needs_compaction` so callers that already hold an
-    /// external estimate (e.g. the incremental per-task cache in
+    /// external estimate (e.g. the incremental per-session cache in
     /// `ReActEngine`) can compare without re-estimating the whole list.
     pub fn threshold_tokens(&self) -> u32 {
         let ratio_threshold = (self.context_window as f64 * self.trigger_ratio as f64) as u32;

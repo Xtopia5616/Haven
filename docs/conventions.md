@@ -63,31 +63,31 @@ command error: {e}
 
 **Panic**：全局 panic hook 已在 `lib.rs` 设置，自动输出 `PANIC at {file}:{line}: {msg}` + backtrace，业务代码无需自行处理 panic。
 
-### 1.3 ID 上下文（多任务 / 多活动并行可区分）
+### 1.3 ID 上下文（多会话 / 多任务并行可区分）
 
-凡是任务、活动（后台作业与提醒）等**并发实体**的日志，必须携带对应 ID（`task_id` / `job_id` / `reminder_id`），使并行日志可直观区分。两条机制配合：
+凡是会话、任务（后台任务与定时任务）等**并发实体**的日志，必须携带对应 ID（`session_id` / `task_id`），使并行日志可直观区分。两条机制配合：
 
-**a) 结构化字段**：日志宏中直接传 ID 字段，fmt 输出形如 `task_id=task-xxx msg`，可稳定 grep：
+**a) 结构化字段**：日志宏中直接传 ID 字段，fmt 输出形如 `session_id=ses-xxx msg`，可稳定 grep：
 
 ```rust
-tracing::info!(task_id = %task_id, "dispatcher spawning handler");
-tracing::warn!(job_id = %id, "failed to write output log {}: {e}", path.display());
+tracing::info!(session_id = %session_id, "dispatcher spawning handler");
+tracing::warn!(task_id = %id, "failed to write output log {}: {e}", path.display());
 ```
 
 **b) Span 上下文**（推荐）：在并发边界建立 `info_span!`，span 内的所有日志**自动**携带 ID 前缀，无需每个调用点手写。已在以下位置建立（新并发边界须照此办理）：
 
 | Span 名 | 字段 | 位置 | 覆盖范围 |
 |---|---|---|---|
-| `run_task` | `task_id` | `haven_task::TaskExecutor::start_dispatcher`（handler 处 `.instrument(span)`） | 整个 ReAct 循环：agent / react / compactor / title / inference 的所有嵌套日志 |
-| `bg_job` | `job_id` | `haven_tools::BackgroundJobs::spawn_shell`（runner future `.instrument(span)`） | job 运行 / 取消 / 输出日志写入 |
-| `job_completion` | `job_id`, `task_id` | `haven_agent::AgentLayer` job 完成 consumer | job 结果注入 / 任务唤醒 / 通知 |
-| `reminder_fired` | `reminder_id`, `task_id` | `haven_agent::AgentLayer` reminder consumer | 提醒执行与任务恢复 |
+| `run_session` | `session_id` | `haven_session::SessionExecutor::start_dispatcher`（handler 处 `.instrument(span)`） | 整个 ReAct 循环：agent / react / compactor / title / inference 的所有嵌套日志 |
+| `bg_task` | `task_id` | `haven_tools::BackgroundTasks::spawn_shell`（runner future `.instrument(span)`） | 后台任务运行 / 取消 / 输出日志写入 |
+| `task_completion` | `task_id`, `session_id` | `haven_agent::AgentLayer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
+| `scheduled_task_fired` | `task_id`, `session_id` | `haven_agent::AgentLayer` 定时任务 consumer | 定时任务执行与会话恢复 |
 
 规则：
 
 - 日志点所在函数**已有** ID 参数/变量时，优先结构化字段（a）；没有时依赖所在并发边界的 span（b）。
-- 已有文本内联 ID（如 `task {}`）的存量日志保留，新增/修改的日志优先结构化字段。
-- 禁止为日志引入新的参数传递（`task_id` 不可用时交给 span）；不要为了打日志改变函数签名。
+- 已有文本内联 ID（如 `session {}`）的存量日志保留，新增/修改的日志优先结构化字段。
+- 禁止为日志引入新的参数传递（`session_id` 不可用时交给 span）；不要为了打日志改变函数签名。
 - 全局性日志（初始化、统计、健康探测）不强制带 ID。
 
 ### 1.4 运行时调整
@@ -134,11 +134,11 @@ addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
 
 ### 2.3 后端事件流
 
-- **事件命名**：`domain:action`（`task:created`、`agent:thought`、`recording:error`、`notification:show` …），channel 映射的唯一事实来源是 `TauriEmitter::channel`（`lib.rs`）；新增 `AgentEvent` 变体必须在 `channel` 中登记并补测试。
-- **活动（activity）事件**：后台作业（job）与提醒（reminder）统一为「活动」，共用同一组事件 `activity:created` / `activity:updated` / `activity:output` / `activity:finished`。事件由 `haven_tools` 直接 emit（`bg.rs` / `builtin/reminder.rs` 的 `EventSink`），不走 `TauriEmitter::channel`。payload 区分：作业带 `job_id`，提醒带 `id`；前端 `activityStore` 统一归一化（`id = payload.id || payload.job_id`，条目带 `kind: 'job'|'reminder'`）。
-- **wire 载荷**：统一 snake_case JSON（`{task_id, status, title}`），前端在边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `TaskCreated` 的投影）。
+- **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …），channel 映射的唯一事实来源是 `TauriEmitter::channel`（`lib.rs`）；新增 `AgentEvent` 变体必须在 `channel` 中登记并补测试。
+- **任务（task）事件**：后台任务（kind=`background`）与定时任务（kind=`scheduled`）统一为「任务」，共用同一组事件 `task:created` / `task:updated` / `task:output` / `task:finished`。事件由 `haven_tools` 直接 emit（`bg.rs` / `builtin/scheduled_task.rs` 的 `EventSink`），不走 `TauriEmitter::channel`。payload 区分：后台任务带 `task_id`，定时任务带 `id`；前端 `taskStore` 统一归一化（`id = payload.id || payload.task_id`，条目带 `kind: 'background'|'scheduled'`）。
+- **wire 载荷**：统一 snake_case JSON（`{session_id, status, title}`），前端在边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `TauriEmitter::maybe_show_toast`，每个变体先查 `config.notification.{event}.windows` 再决定是否 `notification().builder()...show()`。`notify` 工具（`AgentEvent::Notification`）是 agent 显式请求，双通道默认全开。
-- **配置**：`NotificationConfig { in_app, windows }`（`haven_common::config`），事件维度 `task_created` / `task_completed` / `task_paused` / `task_error`。默认值见 `config.rs` 的 `Default` 实现；新增可通知事件必须同步扩展该结构与设置页。
+- **配置**：`NotificationConfig { in_app, windows }`（`haven_common::config`），事件维度 `session_created` / `session_completed` / `session_paused` / `session_error`。默认值见 `config.rs` 的 `Default` 实现；新增可通知事件必须同步扩展该结构与设置页。
 
 ### 2.4 新增通知事件流程模板
 
@@ -190,10 +190,10 @@ try {
 
 | 后端事件 / 错误 | 前端表现 |
 |---|---|
-| `task:created` | info toast（`新任务: ...`，受 `notifyCfg.task_created.in_app` 控制） |
-| `task:completed` | success toast（`任务已完成: ...`） |
-| `task:error` | error toast（`任务出错: ...`，5s） |
-| `task:updated` status=`paused` / `pending` | warning / info toast（`任务已暂停/恢复`） |
+| `session:created` | info toast（`新会话: ...`，受 `notifyCfg.session_created.in_app` 控制） |
+| `session:completed` | success toast（`会话已完成: ...`） |
+| `session:error` | error toast（`会话出错: ...`，5s） |
+| `session:updated` status=`paused` / `pending` | warning / info toast（`会话已暂停/恢复`） |
 | `notification:show` | info toast（title 为默认 `Haven` 时只显示 body） |
 | `mcp:status_change` | Connected→success / Disconnected→warning / Offline→error |
 | `hotkey:conflict` | error toast（5s） |

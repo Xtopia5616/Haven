@@ -1,7 +1,7 @@
-// Canonical task status vocabulary + UI style mapping. The backend
-// emits these strings via TaskStatus::as_str(); see crates/task/src/lib.rs.
+// Canonical session status vocabulary + UI style mapping. The backend
+// emits these strings via SessionStatus::as_str(); see crates/session/src/lib.rs.
 //
-// statusColor() returns a hex color for inline badges (TaskCard dot).
+// statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the history page.
 
 export const TASK_STATUSES = ['pending', 'running', 'paused', 'completed', 'failed', 'error'];

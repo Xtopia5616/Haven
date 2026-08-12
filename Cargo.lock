@@ -2047,7 +2047,7 @@ dependencies = [
  "haven-common",
  "haven-llm",
  "haven-memory",
- "haven-task",
+ "haven-session",
  "haven-tools",
  "serde",
  "serde_json",
@@ -2071,7 +2071,7 @@ dependencies = [
  "haven-input",
  "haven-llm",
  "haven-memory",
- "haven-task",
+ "haven-session",
  "haven-tools",
  "serde",
  "serde_json",
@@ -2156,7 +2156,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "haven-task"
+name = "haven-session"
 version = "0.1.0"
 dependencies = [
  "anyhow",

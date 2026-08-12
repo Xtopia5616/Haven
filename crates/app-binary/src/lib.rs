@@ -107,12 +107,12 @@ impl TauriEmitter {
             AgentEvent::Thought { .. } => "agent:thought",
             AgentEvent::Action { .. } => "agent:action",
             AgentEvent::Observation { .. } => "agent:observation",
-            AgentEvent::TaskCreated(_) => "task:created",
-            AgentEvent::TaskCompleted { .. } => "task:completed",
-            AgentEvent::TaskUpdated { .. } => "task:updated",
-            AgentEvent::TaskError { .. } => "task:error",
+            AgentEvent::SessionCreated(_) => "session:created",
+            AgentEvent::SessionCompleted { .. } => "session:completed",
+            AgentEvent::SessionUpdated { .. } => "session:updated",
+            AgentEvent::SessionError { .. } => "session:error",
             AgentEvent::Notification { .. } => "notification:show",
-            AgentEvent::TitleUpdated { .. } => "task:title-updated",
+            AgentEvent::TitleUpdated { .. } => "session:title-updated",
             AgentEvent::BalancedModelActivated { .. } => "agent:balanced_model",
             AgentEvent::ThoughtChunk { .. } => "agent:thought_chunk",
             AgentEvent::ReasoningChunk { .. } => "agent:reasoning_chunk",
@@ -137,32 +137,32 @@ impl TauriEmitter {
     }
 
     /// 构造 wire 载荷。`variant_payload` 之外的五个特例在构造时覆盖：
-    /// - `TaskCreated` 投影为 `{task_id, status, title}`，不泄漏 TaskInfo 内部的
+    /// - `SessionCreated` 投影为 `{session_id, status, title}`，不泄漏 SessionInfo 内部的
     ///   `id` / `input` / `summary` 等字段
-    /// - `TaskCompleted` 补 `status: "completed"`（变体本身没有该字段）
-    /// - `TaskUpdated` 补 `title: ""`（wire 上始终带 title 键）
+    /// - `SessionCompleted` 补 `status: "completed"`（变体本身没有该字段）
+    /// - `SessionUpdated` 补 `title: ""`（wire 上始终带 title 键）
     /// - `Action` 额外派生 `silent`
     /// - `ThoughtChunk` / `ReasoningChunk` 插入单调递增的 `seq`（调用方传入已
     ///   自增的值，本函数保持纯函数化以便单测）
     fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
         let mut payload = match event {
-            AgentEvent::TaskCreated(task) => {
+            AgentEvent::SessionCreated(session) => {
                 return serde_json::json!({
-                    "task_id": task.id,
-                    "status": task.status.as_str(),
-                    "title": task.title,
+                    "session_id": session.id,
+                    "status": session.status.as_str(),
+                    "title": session.title,
                 });
             }
-            AgentEvent::TaskCompleted { task_id, title } => {
+            AgentEvent::SessionCompleted { session_id, title } => {
                 return serde_json::json!({
-                    "task_id": task_id,
+                    "session_id": session_id,
                     "status": "completed",
                     "title": title,
                 });
             }
-            AgentEvent::TaskUpdated { task_id, status } => {
+            AgentEvent::SessionUpdated { session_id, status } => {
                 return serde_json::json!({
-                    "task_id": task_id,
+                    "session_id": session_id,
                     "status": status,
                     "title": "",
                 });
@@ -188,36 +188,36 @@ impl TauriEmitter {
     fn trace_event(&self, event: &AgentEvent) {
         match event {
             AgentEvent::Thought {
-                task_id,
+                session_id,
                 thought,
                 step_number,
                 run_id,
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_thought: task={} step={} run={} len={}",
-                    task_id,
+                    "TauriEmitter::on_thought: session={} step={} run={} len={}",
+                    session_id,
                     step_number,
                     run_id,
                     thought.len()
                 );
             }
             AgentEvent::Action {
-                task_id,
+                session_id,
                 tool_name,
                 step_number,
                 run_id,
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_action: task={} tool={} step={} run={}",
-                    task_id,
+                    "TauriEmitter::on_action: session={} tool={} step={} run={}",
+                    session_id,
                     tool_name,
                     step_number,
                     run_id
                 );
             }
             AgentEvent::Observation {
-                task_id,
+                session_id,
                 tool_name,
                 step_number,
                 run_id,
@@ -225,62 +225,62 @@ impl TauriEmitter {
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_observation: task={} tool={} step={} run={} silent={}",
-                    task_id,
+                    "TauriEmitter::on_observation: session={} tool={} step={} run={} silent={}",
+                    session_id,
                     tool_name,
                     step_number,
                     run_id,
                     silent
                 );
             }
-            AgentEvent::TaskCreated(task) => {
+            AgentEvent::SessionCreated(session) => {
                 tracing::info!(
-                    "TauriEmitter::on_task_created: task_id={} status={}",
-                    task.id,
-                    task.status.as_str()
+                    "TauriEmitter::on_session_created: session_id={} status={}",
+                    session.id,
+                    session.status.as_str()
                 );
             }
-            AgentEvent::TaskCompleted { task_id, title } => {
+            AgentEvent::SessionCompleted { session_id, title } => {
                 tracing::info!(
-                    "TauriEmitter::on_task_completed: task={} title={}",
-                    task_id,
+                    "TauriEmitter::on_session_completed: session={} title={}",
+                    session_id,
                     title
                 );
             }
-            AgentEvent::TaskUpdated { task_id, status } => {
+            AgentEvent::SessionUpdated { session_id, status } => {
                 tracing::info!(
-                    "TauriEmitter::on_task_updated: task={} status={}",
-                    task_id,
+                    "TauriEmitter::on_session_updated: session={} status={}",
+                    session_id,
                     status
                 );
                 if status == "paused" {
                     tracing::warn!(
-                        "TauriEmitter emitting task:updated with paused status for task {}",
-                        task_id
+                        "TauriEmitter emitting session:updated with paused status for session {}",
+                        session_id
                     );
                 }
             }
             AgentEvent::Notification {
-                task_id,
+                session_id,
                 title,
                 body,
             } => {
                 tracing::info!(
-                    "TauriEmitter::on_notification: task={} title={} body={}",
-                    task_id,
+                    "TauriEmitter::on_notification: session={} title={} body={}",
+                    session_id,
                     title,
                     body
                 );
             }
             AgentEvent::Compaction {
-                task_id,
+                session_id,
                 tokens_before,
                 tokens_after,
                 ..
             } => {
                 tracing::debug!(
-                    "TauriEmitter::on_compaction: task={} tokens {}→{}",
-                    task_id,
+                    "TauriEmitter::on_compaction: session={} tokens {}→{}",
+                    session_id,
                     tokens_before,
                     tokens_after
                 );
@@ -289,58 +289,61 @@ impl TauriEmitter {
         }
     }
 
-    /// `TaskCompleted` / `TaskError` 在 `task:updated` 上的副发。三条形状统一为
-    /// `{task_id, status, title}` —— `error` 字段只保留在 `task:error` 主通道。
+    /// `SessionCompleted` / `SessionError` 在 `session:updated` 上的副发。三条形状统一为
+    /// `{session_id, status, title}` —— `error` 字段只保留在 `session:error` 主通道。
     fn emit_secondary(&self, event: &AgentEvent) {
         let payload = match event {
-            AgentEvent::TaskCompleted { task_id, title } => serde_json::json!({
-                "task_id": task_id,
+            AgentEvent::SessionCompleted { session_id, title } => serde_json::json!({
+                "session_id": session_id,
                 "status": "completed",
                 "title": title,
             }),
-            AgentEvent::TaskError { task_id, .. } => serde_json::json!({
-                "task_id": task_id,
+            AgentEvent::SessionError { session_id, .. } => serde_json::json!({
+                "session_id": session_id,
                 "status": "error",
                 "title": "",
             }),
             _ => return,
         };
-        let _ = self.handle.emit("task:updated", payload);
+        let _ = self.handle.emit("session:updated", payload);
     }
 
     /// 四个通知变体的 Windows 桌面通知（其余变体直接返回）。
     fn maybe_show_toast(&self, event: &AgentEvent) {
         match event {
-            AgentEvent::TaskCreated(task) => {
+            AgentEvent::SessionCreated(session) => {
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
                     .config_loader
                     .lock()
-                    .map(|c| c.config().notification.task_created.windows)
+                    .map(|c| c.config().notification.session_created.windows)
                     .unwrap_or(false);
                 if notify {
-                    let display = if task.input.is_empty() {
-                        &task.id
+                    let display = if session.input.is_empty() {
+                        &session.id
                     } else {
-                        &task.input
+                        &session.input
                     };
                     let _ = self
                         .handle
                         .notification()
                         .builder()
                         .title("Haven")
-                        .body(format!("New task: {}", display))
+                        .body(format!("New session: {}", display))
                         .show();
                 }
             }
-            AgentEvent::TaskCompleted { task_id: _, title } => {
+            AgentEvent::SessionCompleted {
+                session_id: _,
+                title,
+            } => {
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
                     .config_loader
                     .lock()
-                    .map(|c| c.config().notification.task_completed.windows)
+                    .map(|c| c.config().notification.session_completed.windows)
                     .unwrap_or(true);
                 if notify {
                     let _ = self
@@ -348,17 +351,20 @@ impl TauriEmitter {
                         .notification()
                         .builder()
                         .title("Haven")
-                        .body(format!("Task completed: {}", title))
+                        .body(format!("Session completed: {}", title))
                         .show();
                 }
             }
-            AgentEvent::TaskError { task_id: _, error } => {
+            AgentEvent::SessionError {
+                session_id: _,
+                error,
+            } => {
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
                     .config_loader
                     .lock()
-                    .map(|c| c.config().notification.task_error.windows)
+                    .map(|c| c.config().notification.session_error.windows)
                     .unwrap_or(true);
                 if notify {
                     let _ = self
@@ -366,28 +372,28 @@ impl TauriEmitter {
                         .notification()
                         .builder()
                         .title("Haven - Error")
-                        .body(format!("Task error: {}", error))
+                        .body(format!("Session error: {}", error))
                         .show();
                 }
             }
-            AgentEvent::TaskUpdated { task_id, status } if status == "pending" => {
+            AgentEvent::SessionUpdated { session_id, status } if status == "pending" => {
                 // A transition to Pending after a Paused/Error state is a
-                // resume (continue flow, ask answer, job-completion wake).
+                // resume (continue flow, ask answer, task-completion wake).
                 // Surface it as a Windows toast when enabled so the user
-                // knows the task is running again without checking the app.
+                // knows the session is running again without checking the app.
                 let notify = self
                     .handle
                     .state::<Arc<AppState>>()
                     .config_loader
                     .lock()
-                    .map(|c| c.config().notification.task_resumed.windows)
+                    .map(|c| c.config().notification.session_resumed.windows)
                     .unwrap_or(false);
                 if notify {
                     let display = self
                         .handle
                         .state::<Arc<AppState>>()
                         .db
-                        .get_task(task_id)
+                        .get_session(session_id)
                         .ok()
                         .flatten()
                         .and_then(|t| {
@@ -395,18 +401,18 @@ impl TauriEmitter {
                                 .filter(|s| !s.is_empty())
                                 .or_else(|| (!t.input_text.is_empty()).then_some(t.input_text))
                         })
-                        .unwrap_or_else(|| task_id.clone());
+                        .unwrap_or_else(|| session_id.clone());
                     let _ = self
                         .handle
                         .notification()
                         .builder()
                         .title("Haven")
-                        .body(format!("Task resumed: {}", display))
+                        .body(format!("Session resumed: {}", display))
                         .show();
                 }
             }
             AgentEvent::Notification {
-                task_id: _,
+                session_id: _,
                 title,
                 body,
             } => {
@@ -634,7 +640,7 @@ pub fn run() {
                 chunk_seq: AtomicU64::new(0),
             });
             // Decouple the agent loops from the Tauri IPC subscriber chain:
-            // emits become bounded-channel sends drained by a consumer task,
+            // emits become bounded-channel sends drained by a consumer session,
             // so a slow webview or toast notification can never stall agent
             // progress (previously every event was awaited end-to-end).
             let buffered = haven_agent::BufferedEmitter::new(1024, emitter);
@@ -643,23 +649,23 @@ pub fn run() {
                 rt.block_on(bus.subscribe("tauri", buffered));
             });
 
-            // Forward activity lifecycle to the frontend (`activity:created`
-            // / `activity:updated` / `activity:output` / `activity:finished`)
-            // so the activity panel stays live while tasks run in the
+            // Forward task lifecycle to the frontend (`task:created`
+            // / `task:updated` / `task:output` / `task:finished`)
+            // so the task panel stays live while sessions run in the
             // background. Emits are fire-and-forget like every other Tauri
-            // event. Jobs (`job_id` payloads) and reminders (`id` payloads)
+            // event. Tasks (`task_id` payloads) and scheduled_tasks (`id` payloads)
             // share this sink.
-            let job_sink_handle = handle.clone();
-            state.tools.background_jobs.set_event_sink(Arc::new(
+            let task_sink_handle = handle.clone();
+            state.tools.background_tasks.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
-                    let _ = job_sink_handle.emit(&event, payload);
+                    let _ = task_sink_handle.emit(&event, payload);
                 },
             ));
 
-            // Same for reminders, so the pending list in the activity panel
-            // stays live and fired reminders can be acknowledged.
+            // Same for scheduled_tasks, so the pending list in the task panel
+            // stays live and fired scheduled_tasks can be acknowledged.
             let reminder_sink_handle = handle.clone();
-            state.tools.reminders.set_event_sink(Arc::new(
+            state.tools.scheduled_tasks.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     let _ = reminder_sink_handle.emit(&event, payload);
                 },
@@ -717,7 +723,7 @@ pub fn run() {
                             tracing::info!("Quit selected from system tray");
                             // Graceful exit instead of `std::process::exit`:
                             // `app.exit(0)` lets RunEvent::Exit run the cleanup
-                            // (pause running tasks, close the active session)
+                            // (pause running sessions, close the active session)
                             // and keeps the process exit code 0 so `tauri dev`
                             // treats it as a normal exit rather than an abrupt
                             // termination that can leave the dev session and
@@ -778,38 +784,38 @@ pub fn run() {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
                     rt.block_on(async {
-                        *st_arc.executor.on_confirm_request.lock().await = Some(Box::new(move |step_id: haven_common::types::ConfirmId, task_id: String, tool_name: String, risk_level: haven_common::types::RiskLevel| {
+                        *st_arc.executor.on_confirm_request.lock().await = Some(Box::new(move |step_id: haven_common::types::ConfirmId, session_id: String, tool_name: String, risk_level: haven_common::types::RiskLevel| {
                             let _ = app_h.emit("confirm:requested", serde_json::json!({
                                 "step_id": step_id,
                                 "tool_name": tool_name,
                                 "risk_level": risk_level,
-                                "task_id": task_id,
+                                "session_id": session_id,
                             }));
                         }));
                     });
                 }
 
                 // Wire up the terminal-failure callback: the dispatcher's
-                // panic/abort path marks the task Error without going through
+                // panic/abort path marks the session Error without going through
                 // the ReAct loop's event emission, so the UI would never learn
-                // about the transition (stuck busy chip, stale task list).
+                // about the transition (stuck busy chip, stale session list).
                 // Emit both channels in the same shapes the loop uses.
                 {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
                     rt.block_on(async {
-                        *st_arc.executor.on_task_error.lock().await = Some(Box::new(move |task_id: String, reason: String| {
+                        *st_arc.executor.on_session_error.lock().await = Some(Box::new(move |session_id: String, reason: String| {
                             let _ = app_h.emit(
-                                "task:error",
+                                "session:error",
                                 serde_json::json!({
-                                    "task_id": task_id,
+                                    "session_id": session_id,
                                     "error": reason,
                                 }),
                             );
                             let _ = app_h.emit(
-                                "task:updated",
+                                "session:updated",
                                 serde_json::json!({
-                                    "task_id": task_id,
+                                    "session_id": session_id,
                                     "status": "error",
                                     "title": "",
                                 }),
@@ -888,14 +894,14 @@ pub fn run() {
             commands::stop_recording,
             commands::cancel_recording,
             commands::process_transcript,
-            commands::reopen_task,
+            commands::reopen_session,
             commands::get_last_conversation,
-            commands::get_tasks,
-            commands::list_activities,
-            commands::cancel_activity,
-            commands::list_activity_history,
-            commands::delete_activity,
-            commands::end_task,
+            commands::get_sessions,
+            commands::list_tasks,
+            commands::cancel_task,
+            commands::list_task_history,
+            commands::delete_task,
+            commands::end_session,
             commands::resolve_confirmation,
             commands::get_tools,
             commands::get_recording_state,
@@ -905,7 +911,7 @@ pub fn run() {
             commands::search_history_filtered,
             commands::search_history_paginated,
             commands::count_history_search,
-            commands::delete_task,
+            commands::delete_session,
             commands::clear_history,
             commands::get_api_key_status,
             commands::check_llm_connection,
@@ -934,14 +940,15 @@ pub fn run() {
             commands::delete_fact,
             commands::get_settings,
             commands::update_settings,
+            commands::set_appearance,
             commands::export_history,
             commands::enable_autostart,
             commands::disable_autostart,
             commands::is_autostart_enabled,
-            commands::get_task_for_review,
-            commands::rollback_task,
-            commands::continue_task,
-            commands::update_task_title,
+            commands::get_session_for_review,
+            commands::rollback_session,
+            commands::continue_session,
+            commands::update_session_title,
             commands::get_log_info,
             commands::read_log_tail,
         ])
@@ -951,15 +958,15 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 tracing::info!("Haven app exit requested");
                 let state = app_handle.state::<Arc<AppState>>();
-                // Pause in-flight tasks so they survive a restart in a
-                // resumable state. Without this, every still-`running` task
+                // Pause in-flight sessions so they survive a restart in a
+                // resumable state. Without this, every still-`running` session
                 // would be flipped to `error` at the next startup by
-                // `finalize_orphaned_running_tasks` (which only intends to
+                // `finalize_orphaned_running_sessions` (which only intends to
                 // catch crash leftovers).
-                if let Ok(n) = state.db.pause_running_tasks()
+                if let Ok(n) = state.db.pause_running_sessions()
                     && n > 0
                 {
-                    tracing::info!("paused {} running task(s) on exit", n);
+                    tracing::info!("paused {} running session(s) on exit", n);
                 }
             }
         });
@@ -1057,56 +1064,13 @@ fn init_app_state(
     tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(AppState::new(&db_path, fh, config_loader))
     })
-    .unwrap_or_else(|e| degraded_app_state(e, &db_path, filter_handles))
-}
-
-/// Fallback state when `AppState::new` fails: a degraded but functional
-/// backend (empty DB, default config) so the app still opens instead of
-/// exiting.
-fn degraded_app_state(
-    error: anyhow::Error,
-    db_path: &std::path::Path,
-    filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
-) -> AppState {
-    tracing::error!("failed to initialize application state: {}", error);
-    let db = Arc::new(haven_memory::Database::open(db_path).unwrap_or_else(|_| {
+    .unwrap_or_else(|e| {
+        // No degraded fallback: a failed backend is not usable, so exit with
+        // a clear error (e.g. an old-version haven.db rejected by the schema
+        // check tells the user to delete the file and rebuild).
+        tracing::error!("failed to initialize application state: {}", e);
         std::process::exit(1);
-    }));
-    let tools = Arc::new(haven_tools::ToolsManager::new());
-    let executor = Arc::new(haven_task::TaskExecutor::new(db.clone(), tools.clone(), 3));
-    let router = Arc::new(haven_llm::LlmRouter::new(
-        haven_common::config::LlmConfig::default(),
-    ));
-    let agent = Arc::new(haven_agent::AgentLayer::new(
-        db.clone(),
-        executor.clone(),
-        router.clone(),
-        30,
-        50,
-        haven_common::config::ContextLimitsConfig::default(),
-    ));
-    let pipeline = Arc::new(haven_input::InputPipeline::new());
-    let shell = Arc::new(crate::desktop::DesktopShell::new());
-    agent.clone().start();
-    let config_loader_arc = Arc::new(std::sync::Mutex::new(
-        haven_common::config::ConfigLoader::load().unwrap_or_else(|_| {
-            haven_common::config::ConfigLoader::load_from(
-                &haven_common::config::ConfigLoader::default_path(),
-            )
-            .unwrap()
-        }),
-    ));
-    AppState {
-        db,
-        tools,
-        executor,
-        agent,
-        pipeline,
-        shell,
-        log_filter_handles: filter_handles,
-        config_loader: config_loader_arc,
-        recording_session: Arc::new(std::sync::Mutex::new(None)),
-    }
+    })
 }
 
 fn app_data_dir() -> std::path::PathBuf {
@@ -1128,16 +1092,16 @@ fn app_data_dir() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_task::{TaskInfo, TaskStatus};
+    use haven_session::{SessionInfo, SessionStatus};
     use serde_json::json;
 
-    fn test_task_info() -> TaskInfo {
-        TaskInfo {
-            id: "task-1".into(),
+    fn test_session_info() -> SessionInfo {
+        SessionInfo {
+            id: "ses-1".into(),
             input: "my input".into(),
             summary: "my summary".into(),
             title: Some("My Title".into()),
-            status: TaskStatus::Running,
+            status: SessionStatus::Running,
             steps: vec![],
             supplement_queue: vec![],
             steering_queue: vec![],
@@ -1151,7 +1115,7 @@ mod tests {
         let cases: Vec<(AgentEvent, &str)> = vec![
             (
                 AgentEvent::Thought {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     thought: "x".into(),
                     step_number: 1,
                     run_id: 1,
@@ -1160,7 +1124,7 @@ mod tests {
             ),
             (
                 AgentEvent::Action {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     tool_name: "read_file".into(),
                     input: json!({}),
                     step_number: 1,
@@ -1171,7 +1135,7 @@ mod tests {
             ),
             (
                 AgentEvent::Observation {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     observation: "o".into(),
                     tool_name: "read_file".into(),
                     step_number: 1,
@@ -1182,31 +1146,34 @@ mod tests {
                 },
                 "agent:observation",
             ),
-            (AgentEvent::TaskCreated(test_task_info()), "task:created"),
             (
-                AgentEvent::TaskCompleted {
-                    task_id: "t".into(),
+                AgentEvent::SessionCreated(test_session_info()),
+                "session:created",
+            ),
+            (
+                AgentEvent::SessionCompleted {
+                    session_id: "t".into(),
                     title: "x".into(),
                 },
-                "task:completed",
+                "session:completed",
             ),
             (
-                AgentEvent::TaskUpdated {
-                    task_id: "t".into(),
+                AgentEvent::SessionUpdated {
+                    session_id: "t".into(),
                     status: "paused".into(),
                 },
-                "task:updated",
+                "session:updated",
             ),
             (
-                AgentEvent::TaskError {
-                    task_id: "t".into(),
+                AgentEvent::SessionError {
+                    session_id: "t".into(),
                     error: "e".into(),
                 },
-                "task:error",
+                "session:error",
             ),
             (
                 AgentEvent::Notification {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     title: "x".into(),
                     body: "y".into(),
                 },
@@ -1214,21 +1181,21 @@ mod tests {
             ),
             (
                 AgentEvent::TitleUpdated {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     title: "x".into(),
                 },
-                "task:title-updated",
+                "session:title-updated",
             ),
             (
                 AgentEvent::BalancedModelActivated {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     reason: "r".into(),
                 },
                 "agent:balanced_model",
             ),
             (
                 AgentEvent::ThoughtChunk {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     delta: "d".into(),
                     step_number: 1,
                     run_id: 1,
@@ -1237,7 +1204,7 @@ mod tests {
             ),
             (
                 AgentEvent::ReasoningChunk {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     delta: "d".into(),
                     step_number: 1,
                     run_id: 1,
@@ -1246,7 +1213,7 @@ mod tests {
             ),
             (
                 AgentEvent::WebSearch {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     phase: "searching".into(),
                     step_number: 1,
                     run_id: 1,
@@ -1255,13 +1222,13 @@ mod tests {
             ),
             (
                 AgentEvent::StreamStalled {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                 },
                 "agent:stream_stalled",
             ),
             (
                 AgentEvent::Supplement {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     additional_context: "c".into(),
                     step_number: 1,
                     run_id: 1,
@@ -1270,7 +1237,7 @@ mod tests {
             ),
             (
                 AgentEvent::Compaction {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     summary: "s".into(),
                     tokens_before: 1,
                     tokens_after: 2,
@@ -1279,7 +1246,7 @@ mod tests {
             ),
             (
                 AgentEvent::Usage {
-                    task_id: "t".into(),
+                    session_id: "t".into(),
                     prompt_tokens: 1,
                     completion_tokens: 2,
                     total_tokens: 3,
@@ -1307,7 +1274,7 @@ mod tests {
     #[test]
     fn variant_payload_strips_enum_tag() {
         let event = AgentEvent::Thought {
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             thought: "hello".into(),
             step_number: 2,
             run_id: 7,
@@ -1315,7 +1282,7 @@ mod tests {
         assert_eq!(
             TauriEmitter::variant_payload(&event),
             json!({
-                "task_id": "t1",
+                "session_id": "t1",
                 "thought": "hello",
                 "step_number": 2,
                 "run_id": 7,
@@ -1326,7 +1293,7 @@ mod tests {
     #[test]
     fn payload_adds_silent_to_action() {
         let event = AgentEvent::Action {
-            task_id: "t".into(),
+            session_id: "t".into(),
             tool_name: "read_file".into(),
             input: json!({"silent": true, "path": "/tmp/x"}),
             step_number: 1,
@@ -1342,7 +1309,7 @@ mod tests {
     #[test]
     fn payload_never_silences_ask() {
         let event = AgentEvent::Action {
-            task_id: "t".into(),
+            session_id: "t".into(),
             tool_name: "ask".into(),
             input: json!({"silent": true}),
             step_number: 1,
@@ -1356,7 +1323,7 @@ mod tests {
     #[test]
     fn payload_injects_seq_for_chunk_variants() {
         let thought = AgentEvent::ThoughtChunk {
-            task_id: "t".into(),
+            session_id: "t".into(),
             delta: "d".into(),
             step_number: 1,
             run_id: 1,
@@ -1366,7 +1333,7 @@ mod tests {
         assert_eq!(payload["delta"], json!("d"));
 
         let reasoning = AgentEvent::ReasoningChunk {
-            task_id: "t".into(),
+            session_id: "t".into(),
             delta: "d".into(),
             step_number: 1,
             run_id: 1,
@@ -1376,48 +1343,48 @@ mod tests {
     }
 
     #[test]
-    fn payload_projects_task_created_without_leaking_internal_fields() {
-        let event = AgentEvent::TaskCreated(test_task_info());
+    fn payload_projects_session_created_without_leaking_internal_fields() {
+        let event = AgentEvent::SessionCreated(test_session_info());
         let payload = TauriEmitter::payload(&event, None);
         assert_eq!(
             payload,
             json!({
-                "task_id": "task-1",
+                "session_id": "ses-1",
                 "status": "running",
                 "title": "My Title",
             })
         );
-        assert!(payload.get("id").is_none(), "must not leak TaskInfo.id");
+        assert!(payload.get("id").is_none(), "must not leak SessionInfo.id");
         assert!(
             payload.get("input").is_none(),
-            "must not leak TaskInfo.input"
+            "must not leak SessionInfo.input"
         );
         assert!(
             payload.get("summary").is_none(),
-            "must not leak TaskInfo.summary"
+            "must not leak SessionInfo.summary"
         );
     }
 
     #[test]
-    fn payload_preserves_task_completed_and_updated_wire_shape() {
-        let completed = AgentEvent::TaskCompleted {
-            task_id: "t".into(),
+    fn payload_preserves_session_completed_and_updated_wire_shape() {
+        let completed = AgentEvent::SessionCompleted {
+            session_id: "t".into(),
             title: "X".into(),
         };
         let payload = TauriEmitter::payload(&completed, None);
         assert_eq!(
             payload,
-            json!({"task_id": "t", "status": "completed", "title": "X"})
+            json!({"session_id": "t", "status": "completed", "title": "X"})
         );
 
-        let updated = AgentEvent::TaskUpdated {
-            task_id: "t".into(),
+        let updated = AgentEvent::SessionUpdated {
+            session_id: "t".into(),
             status: "paused".into(),
         };
         let payload = TauriEmitter::payload(&updated, None);
         assert_eq!(
             payload,
-            json!({"task_id": "t", "status": "paused", "title": ""})
+            json!({"session_id": "t", "status": "paused", "title": ""})
         );
     }
 

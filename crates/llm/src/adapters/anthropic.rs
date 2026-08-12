@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::adapters::{LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request, spawn_line_reader};
+use crate::adapters::{
+    LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
+    spawn_line_reader,
+};
 use crate::client::LlmClient;
 use crate::types::{
     ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,

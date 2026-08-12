@@ -7,8 +7,8 @@ import logger from './logger.js';
  * swallowed so a failing registration never blocks the caller's mount.
  *
  *   const events = registerListeners({
- *     'task:created': (event) => { ... },
- *     'task:updated': (event) => { ... },
+ *     'session:created': (event) => { ... },
+ *     'session:updated': (event) => { ... },
  *   }, { tag: '+layout' });
  *   onMount(async () => { await events.ready; ... });
  *   onDestroy(() => events.dispose());

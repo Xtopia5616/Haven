@@ -9,7 +9,7 @@
  *
  * For convenience, `syncStoreImmediate` also assigns the current value
  * synchronously (some components need to seed from `get(store)` before
- * subscription fires — see taskMessagesStore mirror).
+ * subscription fires — see sessionMessagesStore mirror).
  */
 export function syncStore(store, apply) {
 	return store.subscribe(apply);

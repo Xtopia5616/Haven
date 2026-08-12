@@ -1,5 +1,5 @@
 <script>
-	let tasks = $state([]);
+	let sessions = $state([]);
 	let searchQuery = $state('');
 	let searchTimer;
 	let deleteTarget = $state(null);
@@ -18,11 +18,11 @@
 	let endDate = $state('');
 	let showDateFilter = $state(false);
 
-	let editingTitle = $state(null); // { taskId, value }
+	let editingTitle = $state(null); // { sessionId, value }
 	let renameValue = $state('');
 
 	// Right-click context menu on a history item (open / rename / export / delete)
-	let ctxMenu = $state({ open: false, x: 0, y: 0, task: null });
+	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
 
 	const todayISO = $derived.by(() => {
 		const n = new Date();
@@ -32,12 +32,12 @@
 	import logger from '$lib/logger.js';
 	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.js';
 	import { formatMessageTime } from '$lib/stores.js';
-	import { statusVariant } from '$lib/taskStatus.js';
+	import { statusVariant } from '$lib/sessionStatus.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.js';
-	import { taskMessagesStore, updateTaskMessages, clearTaskMessages, reviewTargetStore, activeTaskIdStore, restoreTaskTokenStats, addNotification } from '$lib/stores.js';
+	import { sessionMessagesStore, updateSessionMessages, clearSessionMessages, reviewTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.js';
 	import { registerOne } from '$lib/events.js';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -57,9 +57,9 @@
 
 	onMount(async () => {
 		await loadHistory();
-		const reg = await registerOne('task:title-updated', (event) => {
-			const { task_id, title } = event.payload;
-			tasks = tasks.map(t => t.id === task_id ? { ...t, title } : t);
+		const reg = await registerOne('session:title-updated', (event) => {
+			const { session_id, title } = event.payload;
+			sessions = sessions.map(t => t.id === session_id ? { ...t, title } : t);
 		}, { tag: 'history' });
 		unlistenTitleUpdate = reg;
 	});
@@ -86,13 +86,13 @@
 			const results = await invoke('search_history_filtered', filterParams({ limit: PAGE_SIZE, offset: 0 }));
 			// Stale response guard: a newer loadHistory call superseded this one.
 			if (seq !== loadHistorySeq) return;
-			tasks = results || [];
-			totalCount = tasks.length;
+			sessions = results || [];
+			totalCount = sessions.length;
 			offset = PAGE_SIZE;
-			hasMore = tasks.length >= PAGE_SIZE;
+			hasMore = sessions.length >= PAGE_SIZE;
 		} catch {
 			if (seq !== loadHistorySeq) return;
-			tasks = [];
+			sessions = [];
 			totalCount = 0;
 			hasMore = false;
 			addNotification('加载历史记录失败', 'error', 3000);
@@ -109,10 +109,10 @@
 			// Stale guard: a filter/search change superseded this page fetch.
 			if (seq !== loadHistorySeq) return;
 			if (more && more.length > 0) {
-				tasks = [...tasks, ...more];
+				sessions = [...sessions, ...more];
 				offset += more.length;
 				hasMore = more.length >= PAGE_SIZE;
-				totalCount = tasks.length;
+				totalCount = sessions.length;
 			} else {
 				hasMore = false;
 			}
@@ -133,37 +133,38 @@
 		loadHistory();
 	}
 
-	async function reviewTask(task) {
+	async function reviewSession(session) {
 		try {
-			await invoke('reopen_task', { taskId: task.id });
-			const result = await invoke('get_task_for_review', { taskId: task.id });
+			await invoke('reopen_session', { sessionId: session.id });
+			const result = await invoke('get_session_for_review', { sessionId: session.id });
 			const dbMessages = buildReviewMessages(result);
 			// Atomically merge DB messages with any in-memory streaming messages
-			// that arrived concurrently (e.g. from background task streaming).
-			updateTaskMessages(task.id, (existing) =>
+			// that arrived concurrently (e.g. from background session streaming).
+			updateSessionMessages(session.id, (existing) =>
 				mergeLiveStreaming(dbMessages, existing)
 			);
-			restoreTaskTokenStats(task.id, result.usage, result.usage_estimated);
-			reviewTargetStore.set({ taskId: task.id, summary: task.input_text, title: task.title, wasError: task.status === 'error' || task.status === 'failed' });
+			restoreSessionTokenStats(session.id, result.usage, result.usage_estimated);
+			restoreSessionLlmUsage(session.id, result.llm_usage);
+			reviewTargetStore.set({ sessionId: session.id, summary: session.input_text, title: session.title, wasError: session.status === 'error' || session.status === 'failed' });
 			await goto('/');
 		} catch (e) {
-			addNotification(`加载任务详情失败: ${e}`, 'error', 4000);
+			addNotification(`加载会话详情失败: ${e}`, 'error', 4000);
 		}
 	}
 
 
-	async function deleteTask(taskId) {
+	async function deleteSession(sessionId) {
 		try {
-			await invoke('delete_task', { taskId });
-			tasks = tasks.filter((t) => t.id !== taskId);
-			totalCount = tasks.length;
-			// If the deleted task was the active one, reset conversation state.
-			const current = get(activeTaskIdStore);
-			if (current === taskId) {
-				activeTaskIdStore.set(null);
-				clearTaskMessages(taskId);
+			await invoke('delete_session', { sessionId });
+			sessions = sessions.filter((t) => t.id !== sessionId);
+			totalCount = sessions.length;
+			// If the deleted session was the active one, reset conversation state.
+			const current = get(activeSessionIdStore);
+			if (current === sessionId) {
+				activeSessionIdStore.set(null);
+				clearSessionMessages(sessionId);
 			}
-			addNotification('任务已删除', 'success', 2000);
+			addNotification('会话已删除', 'success', 2000);
 		} catch (e) {
 			addNotification(`删除失败: ${e}`, 'error', 4000);
 		}
@@ -173,11 +174,11 @@
 	async function clearHistory() {
 		try {
 			const count = await invoke('clear_history');
-			tasks = [];
+			sessions = [];
 			totalCount = 0;
 			hasMore = false;
-			activeTaskIdStore.set(null);
-			taskMessagesStore.set({});
+			activeSessionIdStore.set(null);
+			sessionMessagesStore.set({});
 			addNotification(`已清空 ${count} 条历史记录`, 'success', 3000);
 		} catch {
 			addNotification('清空历史记录失败', 'error', 4000);
@@ -195,38 +196,38 @@
 		selectedIds = new Set();
 	}
 
-	function toggleSelect(taskId) {
+	function toggleSelect(sessionId) {
 		const next = new Set(selectedIds);
-		if (next.has(taskId)) {
-			next.delete(taskId);
+		if (next.has(sessionId)) {
+			next.delete(sessionId);
 		} else {
-			next.add(taskId);
+			next.add(sessionId);
 		}
 		selectedIds = next;
 	}
 
 	function toggleSelectAll() {
-		if (selectedIds.size === tasks.length) {
+		if (selectedIds.size === sessions.length) {
 			selectedIds = new Set();
 		} else {
-			selectedIds = new Set(tasks.map((t) => t.id));
+			selectedIds = new Set(sessions.map((t) => t.id));
 		}
 	}
 
 
-	function displayTitle(task) {
-		if (task.title) return task.title;
-		const text = task.input_text || '';
+	function displayTitle(session) {
+		if (session.title) return session.title;
+		const text = session.input_text || '';
 		const m = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
 		return (m ? m[0].trim() : text.trim()) || 'Untitled';
 	}
 
-	function startEdit(task) {
-		editingTitle = task.id;
-		if (task.title) {
-			renameValue = task.title;
+	function startEdit(session) {
+		editingTitle = session.id;
+		if (session.title) {
+			renameValue = session.title;
 		} else {
-			const text = task.input_text || '';
+			const text = session.input_text || '';
 			const m = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
 			renameValue = m ? m[0].trim() : text.trim();
 		}
@@ -237,12 +238,12 @@
 		renameValue = '';
 	}
 
-	async function saveTitle(taskId) {
+	async function saveTitle(sessionId) {
 		const value = renameValue.trim();
 		if (!value) { cancelEdit(); return; }
 		try {
-			await invoke('update_task_title', { taskId, title: value });
-			const t = tasks.find(t => t.id === taskId);
+			await invoke('update_session_title', { sessionId, title: value });
+			const t = sessions.find(t => t.id === sessionId);
 			if (t) t.title = value;
 		} catch (e) {
 			addNotification(`重命名失败: ${e}`, 'error', 3000);
@@ -250,17 +251,17 @@
 		cancelEdit();
 	}
 
-	function handleRenameKeydown(e, taskId) {
-		if (e.key === 'Enter') { e.preventDefault(); saveTitle(taskId); }
+	function handleRenameKeydown(e, sessionId) {
+		if (e.key === 'Enter') { e.preventDefault(); saveTitle(sessionId); }
 		else if (e.key === 'Escape') { cancelEdit(); }
 	}
 
-	function downloadTasks(tasksToExport) {
+	function downloadSessions(sessionsToExport) {
 		const json = JSON.stringify(
 			{
 				exported_at: new Date().toISOString(),
-				count: tasksToExport.length,
-				tasks: tasksToExport,
+				count: sessionsToExport.length,
+				sessions: sessionsToExport,
 			},
 			null,
 			2,
@@ -274,30 +275,30 @@
 		URL.revokeObjectURL(url);
 	}
 
-	function openCtxMenu(e, task) {
+	function openCtxMenu(e, session) {
 		e.preventDefault();
 		e.stopPropagation();
-		ctxMenu = { open: true, x: e.clientX, y: e.clientY, task };
+		ctxMenu = { open: true, x: e.clientX, y: e.clientY, session };
 	}
 
 	function closeCtxMenu() {
-		ctxMenu = { open: false, x: 0, y: 0, task: null };
+		ctxMenu = { open: false, x: 0, y: 0, session: null };
 	}
 
 	let ctxMenuItems = $derived.by(() => {
-		const task = ctxMenu.task;
-		if (!task) return [];
+		const session = ctxMenu.session;
+		if (!session) return [];
 		return [
-			{ id: 'open', label: '打开', icon: 'open', action: () => reviewTask(task) },
-			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(task) },
-			{ id: 'export', label: '导出', icon: 'export', action: () => downloadTasks([task]) },
-			{ id: 'delete', label: '删除', icon: 'delete', danger: true, action: () => (deleteTarget = task) },
+			{ id: 'open', label: '打开', icon: 'open', action: () => reviewSession(session) },
+			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(session) },
+			{ id: 'export', label: '导出', icon: 'export', action: () => downloadSessions([session]) },
+			{ id: 'delete', label: '删除', icon: 'delete', danger: true, action: () => (deleteTarget = session) },
 		];
 	});
 
 	function exportSelected() {
-		const selected = tasks.filter((t) => selectedIds.has(t.id));
-		downloadTasks(selected);
+		const selected = sessions.filter((t) => selectedIds.has(t.id));
+		downloadSessions(selected);
 		cancelSelectMode();
 	}
 
@@ -337,7 +338,7 @@
 				<button class="md-btn md-btn--text" onclick={cancelSelectMode}>Cancel</button>
 			{:else}
 				<button class="md-btn md-btn--outlined" onclick={enterSelectMode}>Export</button>
-				{#if tasks.length > 0}
+				{#if sessions.length > 0}
 					<button class="md-btn md-btn--danger" onclick={() => (showClearDialog = true)}>
 						Clear All
 					</button>
@@ -371,64 +372,64 @@
 		</div>
 	</div>
 
-	{#if selectMode && tasks.length > 0}
+	{#if selectMode && sessions.length > 0}
 		<div class="select-bar">
 			<button class="select-all-row" onclick={toggleSelectAll}>
-				<div class="md-checkbox-static" class:checked={selectedIds.size === tasks.length}></div>
-				<span>Select all ({tasks.length})</span>
+				<div class="md-checkbox-static" class:checked={selectedIds.size === sessions.length}></div>
+				<span>Select all ({sessions.length})</span>
 			</button>
 		</div>
 	{/if}
 
-	{#if tasks.length === 0}
-		<div class="empty-state">{loading ? 'Loading...' : 'No task history yet'}</div>
+	{#if sessions.length === 0}
+		<div class="empty-state">{loading ? 'Loading...' : 'No session history yet'}</div>
 	{:else}
 		<div class="history-list">
-			{#each tasks as task (task.id)}
+			{#each sessions as session (session.id)}
 			{#if selectMode}
 				<button
 					class="history-item history-item-btn"
-					class:selected={selectedIds.has(task.id)}
-					onclick={() => toggleSelect(task.id)}
+					class:selected={selectedIds.has(session.id)}
+					onclick={() => toggleSelect(session.id)}
 				>
 	<div class="history-item-main">
 		<div class="history-top-row">
 			<div class="select-checkbox">
-				<div class="md-checkbox-static" class:checked={selectedIds.has(task.id)}></div>
+				<div class="md-checkbox-static" class:checked={selectedIds.has(session.id)}></div>
 			</div>
 			<div class="history-title-row">
-				<span class="history-title">{displayTitle(task)}</span>
-				<MaterialBadge variant={statusVariant(task.status)} text={task.status} />
+				<span class="history-title">{displayTitle(session)}</span>
+				<MaterialBadge variant={statusVariant(session.status)} text={session.status} />
 			</div>
 		</div>
-		{#if task.transcript}
-			<div class="history-message">"{task.transcript}"</div>
+		{#if session.transcript}
+			<div class="history-message">"{session.transcript}"</div>
 		{/if}
 		<div class="history-meta">
-			<span class="meta-date">{formatMessageTime(task.created_at)}</span>
+			<span class="meta-date">{formatMessageTime(session.created_at)}</span>
 		</div>
 	</div>
 				</button>
 	{:else}
 			<div
 				class="history-item"
-				class:selected={selectedIds.has(task.id)}
+				class:selected={selectedIds.has(session.id)}
 				role="button"
 				tabindex="0"
-				onclick={() => reviewTask(task)}
-				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), reviewTask(task))}
-				oncontextmenu={(e) => openCtxMenu(e, task)}
+				onclick={() => reviewSession(session)}
+				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), reviewSession(session))}
+				oncontextmenu={(e) => openCtxMenu(e, session)}
 			>
 				<div class="history-item-main">
 					<div class="history-title-row">
-						{#if editingTitle === task.id}
+						{#if editingTitle === session.id}
 							<!-- svelte-ignore a11y_autofocus -->
 							<input
 								type="text"
 								class="md-input title-input"
 								bind:value={renameValue}
-								onkeydown={(e) => handleRenameKeydown(e, task.id)}
-								onblur={() => saveTitle(task.id)}
+								onkeydown={(e) => handleRenameKeydown(e, session.id)}
+								onblur={() => saveTitle(session.id)}
 								onclick={(e) => e.stopPropagation()}
 								autofocus
 								autocomplete="off"
@@ -436,27 +437,27 @@
 						{:else}
 							<span
 								class="history-title"
-								onclick={(e) => (e.stopPropagation(), startEdit(task))}
-								onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), startEdit(task))}
+								onclick={(e) => (e.stopPropagation(), startEdit(session))}
+								onkeydown={(e) => e.key === 'Enter' && (e.stopPropagation(), startEdit(session))}
 								role="button"
 								tabindex="0"
 							>
-								{displayTitle(task)}
+								{displayTitle(session)}
 								<svg class="title-edit-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 									<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
 								</svg>
 							</span>
 						{/if}
-						<MaterialBadge variant={statusVariant(task.status)} text={task.status} />
+						<MaterialBadge variant={statusVariant(session.status)} text={session.status} />
 					</div>
-					{#if task.transcript}
-						<div class="history-message">"{task.transcript}"</div>
+					{#if session.transcript}
+						<div class="history-message">"{session.transcript}"</div>
 					{/if}
 					<div class="history-meta">
-						<span class="meta-date">{formatMessageTime(task.created_at)}</span>
+						<span class="meta-date">{formatMessageTime(session.created_at)}</span>
 						<button
 							class="md-btn md-btn--xs md-btn--text delete-btn-meta"
-							onclick={(e) => (e.stopPropagation(), deleteTarget = task)}
+							onclick={(e) => (e.stopPropagation(), deleteTarget = session)}
 						>
 							Delete
 						</button>
@@ -534,7 +535,7 @@
 <MaterialDialog
 	open={deleteTarget !== null}
 	onClose={() => (deleteTarget = null)}
-	title="Delete Task"
+	title="Delete Session"
 >
 	{#snippet children()}
 		<p class="dialog-text">
@@ -543,7 +544,7 @@
 	{/snippet}
 	{#snippet footer()}
 		<button class="md-btn md-btn--text" onclick={() => (deleteTarget = null)}>Cancel</button>
-		<button class="md-btn md-btn--danger" onclick={() => deleteTask(deleteTarget.id)}>
+		<button class="md-btn md-btn--danger" onclick={() => deleteSession(deleteTarget.id)}>
 			Delete
 		</button>
 	{/snippet}
@@ -556,7 +557,7 @@
 >
 	{#snippet children()}
 		<p class="dialog-text">
-			This will permanently delete all task history. This action cannot be undone.
+			This will permanently delete all session history. This action cannot be undone.
 		</p>
 	{/snippet}
 	{#snippet footer()}

@@ -172,7 +172,7 @@ impl From<&Skill> for SkillInfo {
 /// ```
 ///
 /// The H1 line is parsed for `<name>` and the `name:` metadata field (if
-/// present) takes precedence 鈥?this lets a directory's `SKILL.md` carry a name
+/// present) takes precedence —this lets a directory's `SKILL.md` carry a name
 /// differing from its folder name without surprising the registry.
 ///
 /// **Safety:** The parser enforces a maximum line count and a maximum per-line
@@ -510,7 +510,7 @@ impl SkillsEngine {
                 {
                     list.push(name.to_string());
                 }
-                // None means all enabled 鈥?no change.
+                // None means all enabled —no change.
             }
             false => {
                 let all_names: Vec<String> = g.skills.keys().cloned().collect();

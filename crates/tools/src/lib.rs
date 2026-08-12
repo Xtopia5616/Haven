@@ -27,7 +27,7 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 }
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
-pub use builtin::{ReminderMode, SelfTool, SelfToolContext};
+pub use builtin::{ScheduleMode, SelfTool, SelfToolContext};
 pub use circuit::ToolCircuitRegistry;
 pub use mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
@@ -43,10 +43,10 @@ pub use tool::{
 /// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
 /// form accepted by tool-calling LLM APIs. OpenAI-compatible providers
 /// restrict tool names to `^[a-zA-Z0-9_-]+$` (DeepSeek rejects the `::`
-/// namespace separator with a 400, which permanently errors the task after a
+/// namespace separator with a 400, which permanently errors the session after a
 /// successful `load_mcp`); Anthropic additionally caps the length at 64.
 /// The transform is deterministic so the name advertised to the model in the
-/// tool definitions always equals the per-task registration key used for
+/// tool definitions always equals the per-session registration key used for
 /// execution lookup — no reverse mapping is needed.
 pub fn llm_tool_name(qualified: &str) -> String {
     let mut out: String = qualified
@@ -91,7 +91,7 @@ pub struct ToolsManager {
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
     all_builtin_tools: RwLock<Vec<ToolBox>>,
-    task_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
+    session_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
     tool_circuits: ToolCircuitRegistry,
     /// Shared LlmRouter. Tools that need a model (currently the file `summary`
     /// and image-understanding operations) call `router.chat(...)` — text
@@ -99,12 +99,12 @@ pub struct ToolsManager {
     /// ImageModel role; the router handles retries and the balanced-model
     /// fallback.
     router: RwLock<Option<Arc<LlmRouter>>>,
-    /// Registry of background jobs (shell with background: true).
-    pub background_jobs: Arc<bg::BackgroundJobs>,
-    /// Registry of in-process reminders (the `reminder` tool). The fired
+    /// Registry of background tasks (shell with background: true).
+    pub background_tasks: Arc<bg::BackgroundTasks>,
+    /// Registry of in-process scheduled tasks (the `schedule` tool). The fired
     /// channel is consumed by the agent layer, which notifies, runs the
-    /// scheduled tool, or resumes the scheduling task (see `ReminderMode`).
-    pub reminders: Arc<builtin::reminder::ReminderCenter>,
+    /// scheduled tool, or resumes the scheduling session (see `ScheduleMode`).
+    pub scheduled_tasks: Arc<builtin::scheduled_task::ScheduledTaskCenter>,
     /// App-level context for the `self` management tool (config loader, DB,
     /// router, log file). Wired in by the desktop shell; `None` in headless
     /// tests so the tool is simply not registered.
@@ -113,7 +113,7 @@ pub struct ToolsManager {
     /// manager (not the tool) so it survives catalog rebuilds.
     pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
     /// Monotonic catalog version, bumped whenever the global registry or any
-    /// per-task registration changes. The ReAct loop caches per-task tool
+    /// per-session registration changes. The ReAct loop caches per-session tool
     /// definitions keyed by this version, so a bump forces a rebuild without
     /// the loop re-querying schemas on every step.
     catalog_version: AtomicU64,
@@ -126,11 +126,11 @@ impl ToolsManager {
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
         let registry = ToolRegistry::new();
-        let background_jobs = Arc::new(bg::BackgroundJobs::new());
-        let reminders = Arc::new(builtin::reminder::ReminderCenter::new());
-        // Wire the background-job registry into the reminder center so
-        // `watch_job_id` reminders can wait for a job to finish.
-        reminders.set_jobs(Some(background_jobs.clone()));
+        let background_tasks = Arc::new(bg::BackgroundTasks::new());
+        let scheduled_tasks = Arc::new(builtin::scheduled_task::ScheduledTaskCenter::new());
+        // Wire the background-task registry into the scheduled_task center so
+        // `watch_task_id` scheduled_tasks can wait for a task to finish.
+        scheduled_tasks.set_tasks(Some(background_tasks.clone()));
         Self {
             registry,
             mcp_manager: McpManager::new(),
@@ -144,11 +144,11 @@ impl ToolsManager {
             tool_settings: RwLock::new(HashMap::new()),
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
-            task_registrations: RwLock::new(HashMap::new()),
+            session_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
-            background_jobs,
-            reminders,
+            background_tasks,
+            scheduled_tasks,
             self_context: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             catalog_version: AtomicU64::new(0),
@@ -172,11 +172,11 @@ impl ToolsManager {
     /// Wire the app-level context for the `self` management tool and register
     /// the tool. Called by the desktop shell after the config loader exists;
     /// later catalog rebuilds keep the tool registered. Also hands the DB to
-    /// the reminder registry and the background-job registry so reminders and
-    /// job results persist across restarts.
+    /// the scheduled-task registry and the background-task registry so scheduled_tasks and
+    /// task results persist across restarts.
     pub async fn set_self_context(&self, ctx: builtin::SelfToolContext) {
-        self.reminders.set_db(ctx.db.clone()).await;
-        self.background_jobs.set_db(ctx.db.clone()).await;
+        self.scheduled_tasks.set_db(ctx.db.clone()).await;
+        self.background_tasks.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
         self.rebuild_catalog().await;
     }
@@ -191,8 +191,8 @@ impl ToolsManager {
     pub async fn set_context_limits(&self, limits: ContextLimitsConfig) {
         self.mcp_manager.set_limits(&limits).await;
         self.skills_engine.set_limits(&limits).await;
-        self.background_jobs.set_limits(&limits).await;
-        self.reminders.set_limits(&limits).await;
+        self.background_tasks.set_limits(&limits).await;
+        self.scheduled_tasks.set_limits(&limits).await;
         *self.context_limits.write().await = limits;
         self.rebuild_catalog().await;
     }
@@ -235,7 +235,7 @@ impl ToolsManager {
     /// `load_skill` / `load_mcp` meta-tools are registered globally. Full skill
     /// and MCP tool adapters are NOT injected into the global registry until the
     /// LLM explicitly calls `load_skill` / `load_mcp`, which registers them
-    /// per-task (see `register_for_task`).
+    /// per-session (see `register_for_session`).
     pub async fn rebuild_catalog(&self) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
 
@@ -251,8 +251,8 @@ impl ToolsManager {
             &Arc::new(self.mcp_manager.clone()),
             &self.mcp_server_configs,
             router,
-            self.background_jobs.clone(),
-            self.reminders.clone(),
+            self.background_tasks.clone(),
+            self.scheduled_tasks.clone(),
             self_context,
             self.registry.clone(),
             self.clipboard_history.clone(),
@@ -275,29 +275,29 @@ impl ToolsManager {
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Register a tool for a specific task (per-task skill overlay).
+    /// Register a tool for a specific session (per-session skill overlay).
     /// Does NOT modify the global registry.
-    pub async fn register_for_task(&self, task_id: &str, tool: ToolBox) {
+    pub async fn register_for_session(&self, session_id: &str, tool: ToolBox) {
         let name = tool.name();
-        self.task_registrations
+        self.session_registrations
             .write()
             .await
-            .entry(task_id.to_string())
+            .entry(session_id.to_string())
             .or_default()
             .insert(name, tool);
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Remove all per-task tool registrations for a given task.
-    pub async fn unregister_task(&self, task_id: &str) {
-        self.task_registrations.write().await.remove(task_id);
+    /// Remove all per-session tool registrations for a given session.
+    pub async fn unregister_session(&self, session_id: &str) {
+        self.session_registrations.write().await.remove(session_id);
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Register a skill as a per-task tool adapter. Looks up the skill by
-    /// name, checks `enabled`, and registers `SkillToolAdapter` for the task.
+    /// Register a skill as a per-session tool adapter. Looks up the skill by
+    /// name, checks `enabled`, and registers `SkillToolAdapter` for the session.
     /// Returns `true` if the skill was found and enabled.
-    pub async fn register_skill_for_task(&self, task_id: &str, skill_name: &str) -> bool {
+    pub async fn register_skill_for_session(&self, session_id: &str, skill_name: &str) -> bool {
         let Some(skill) = self.skills_engine.get_skill(skill_name).await else {
             return false;
         };
@@ -306,11 +306,12 @@ impl ToolsManager {
         }
         let runner = self.skill_runner.read().await.clone();
         let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        self.register_for_task(task_id, Arc::new(adapter)).await;
+        self.register_for_session(session_id, Arc::new(adapter))
+            .await;
         true
     }
 
-    /// Register all tools from an MCP server as per-task tool adapters.
+    /// Register all tools from an MCP server as per-session tool adapters.
     /// Looks up the client by server name and registers `McpToolAdapter`
     /// for each cached tool. Returns `true` if the client was found.
     ///
@@ -318,24 +319,29 @@ impl ToolsManager {
     /// (`discover_all`), so the tools cache can be empty even though the
     /// server is configured and enabled. Wait briefly (bounded) for the
     /// handshake + tools/list to complete so a fast resume does not register
-    /// zero tools and silently lose the task's MCP access. A server that is
+    /// zero tools and silently lose the session's MCP access. A server that is
     /// definitively offline gives up early instead of stalling the resume.
-    pub async fn register_mcp_for_task(&self, task_id: &str, server_name: &str) -> bool {
+    pub async fn register_mcp_for_session(&self, session_id: &str, server_name: &str) -> bool {
         let Some(client) = self.mcp_manager.get_client(server_name).await else {
             return false;
         };
         let tools = client.wait_for_tools(Duration::from_secs(3)).await;
         for info in tools {
             let adapter = McpToolAdapter::new(client.clone(), server_name, info);
-            self.register_for_task(task_id, Arc::new(adapter)).await;
+            self.register_for_session(session_id, Arc::new(adapter))
+                .await;
         }
         true
     }
 
-    /// Look up a tool: first check per-task registrations, then global registry.
-    pub async fn get_tool_for_task(&self, task_id: Option<&str>, name: &str) -> Option<ToolBox> {
-        if let Some(tid) = task_id
-            && let reg = self.task_registrations.read().await
+    /// Look up a tool: first check per-session registrations, then global registry.
+    pub async fn get_tool_for_session(
+        &self,
+        session_id: Option<&str>,
+        name: &str,
+    ) -> Option<ToolBox> {
+        if let Some(tid) = session_id
+            && let reg = self.session_registrations.read().await
             && let Some(tools) = reg.get(tid)
             && let Some(tool) = tools.get(name)
         {
@@ -367,7 +373,7 @@ impl ToolsManager {
     /// into the system prompt. The LLM uses `load_mcp` to get full schemas.
     /// Only enabled servers are listed — disabled ones cannot be loaded.
     /// Tool names are included (when the server is connected and cached) so
-    /// the LLM can judge whether a server's tools fit the task instead of
+    /// the LLM can judge whether a server's tools fit the session instead of
     /// defaulting to weaker built-ins.
     pub async fn build_mcp_index(&self) -> Vec<Value> {
         let configs = self.mcp_server_configs.read().await;
@@ -413,13 +419,13 @@ impl ToolsManager {
         entries
     }
 
-    /// Return tool schemas for a task: global registry schemas merged with
-    /// per-task registered skill/MCP adapters. Called before each LLM step so
+    /// Return tool schemas for a session: global registry schemas merged with
+    /// per-session registered skill/MCP adapters. Called before each LLM step so
     /// that tools loaded via `load_skill`/`load_mcp` become visible to the model.
-    pub async fn list_schemas_for_task(&self, task_id: &str) -> Vec<Value> {
+    pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
         let mut schemas = self.registry.list_schemas().await;
-        let reg = self.task_registrations.read().await;
-        if let Some(tools) = reg.get(task_id) {
+        let reg = self.session_registrations.read().await;
+        if let Some(tools) = reg.get(session_id) {
             for tool in tools.values() {
                 let risk = tool.risk_level(&serde_json::json!({}));
                 schemas.push(serde_json::json!({
@@ -495,7 +501,7 @@ impl Default for ToolsManager {
 impl ToolsManager {
     pub async fn execute_tool(
         &self,
-        task_id: Option<&str>,
+        session_id: Option<&str>,
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
@@ -514,21 +520,21 @@ impl ToolsManager {
         }
 
         let tool = self
-            .get_tool_for_task(task_id, tool_name)
+            .get_tool_for_session(session_id, tool_name)
             .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
 
-        // Tools that scope to the current task (reminder, jobs) get the task
+        // Tools that scope to the current session (schedule, tasks) get the session
         // id injected privately here — after the LLM-facing input was
         // captured by the caller — so it never reaches the tool schema, the
-        // step history, or the LLM. Declared via `Tool::requires_task_id` so
+        // step history, or the LLM. Declared via `Tool::requires_session_id` so
         // the injection cannot drift from the tool that consumes it.
         let mut exec_input = input;
-        if tool.requires_task_id()
-            && let Some(tid) = task_id
+        if tool.requires_session_id()
+            && let Some(tid) = session_id
             && let Some(obj) = exec_input.as_object_mut()
         {
-            obj.insert("_task_id".into(), serde_json::json!(tid));
+            obj.insert("_session_id".into(), serde_json::json!(tid));
         }
         tool.validate_input(&exec_input)?;
         let settings = self.tool_settings.read().await;
@@ -580,7 +586,7 @@ impl ToolsManager {
                     self.tool_circuits.record_failure(tool_name);
                     // Long-running tools may hand the work to a background
                     // mechanism on timeout instead of failing the step, so
-                    // the task can continue and pick the result up later
+                    // the session can continue and pick the result up later
                     // (auto-pushed on completion). Declared per-tool via
                     // `Tool::timeout_fallback` (currently the shell tool).
                     if !cancel.is_cancelled()
@@ -607,11 +613,11 @@ impl ToolsManager {
 
     pub async fn get_risk_level(
         &self,
-        task_id: Option<&str>,
+        session_id: Option<&str>,
         tool_name: &str,
         input: &Value,
     ) -> RiskLevel {
-        self.get_tool_for_task(task_id, tool_name)
+        self.get_tool_for_session(session_id, tool_name)
             .await
             .map(|t| t.risk_level(input))
             .unwrap_or(RiskLevel::Safe)
@@ -839,21 +845,21 @@ mod tests {
         );
     }
 
-    // ── Progressive loading: per-task schemas & MCP index ──────────────
+    // ── Progressive loading: per-session schemas & MCP index ──────────────
 
     #[tokio::test]
-    async fn test_list_schemas_for_task_includes_per_task_tools() {
+    async fn test_list_schemas_for_session_includes_per_session_tools() {
         use crate::skills::SkillManifest;
 
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
 
-        // Before registering a per-task tool, schemas come only from the
+        // Before registering a per-session tool, schemas come only from the
         // global registry.
-        let base_schemas = mgr.list_schemas_for_task("task-a").await;
+        let base_schemas = mgr.list_schemas_for_session("ses-a").await;
         let base_count = base_schemas.len();
 
-        // Register a fake per-task tool.
+        // Register a fake per-session tool.
         let manifest = SkillManifest {
             name: "demo".into(),
             description: "demo skill".into(),
@@ -864,18 +870,18 @@ mod tests {
         let skill = Skill::from_manifest_unchecked(manifest, std::path::PathBuf::from("."), true);
         let runner = mgr.skill_runner.read().await.clone();
         let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        mgr.register_for_task("task-a", Arc::new(adapter)).await;
+        mgr.register_for_session("ses-a", Arc::new(adapter)).await;
 
-        let schemas = mgr.list_schemas_for_task("task-a").await;
+        let schemas = mgr.list_schemas_for_session("ses-a").await;
         assert_eq!(
             schemas.len(),
             base_count + 1,
-            "per-task skill tool should appear in schemas"
+            "per-session skill tool should appear in schemas"
         );
         assert!(schemas.iter().any(|s| s["name"] == "skill__demo"));
 
-        // Other tasks should NOT see this tool.
-        let other = mgr.list_schemas_for_task("task-b").await;
+        // Other sessions should NOT see this tool.
+        let other = mgr.list_schemas_for_session("ses-b").await;
         assert_eq!(other.len(), base_count);
         assert!(!other.iter().any(|s| s["name"] == "skill__demo"));
     }
@@ -924,7 +930,7 @@ mod tests {
     #[tokio::test]
     async fn test_rebuild_catalog_does_not_register_mcp_tools() {
         // Progressive loading: MCP tools must NOT be in the global registry.
-        // They should only appear per-task after `load_mcp`.
+        // They should only appear per-session after `load_mcp`.
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
         let schemas = mgr.registry.list_schemas().await;

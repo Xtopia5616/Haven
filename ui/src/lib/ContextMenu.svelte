@@ -93,7 +93,7 @@
 
 {#if open}
 	<!-- onclick stopPropagation: the menu may live inside a clickable parent
-		(e.g. TaskCard), and item clicks must not bubble into it. -->
+		(e.g. SessionCard), and item clicks must not bubble into it. -->
 	<div
 		class="ctx-menu"
 		bind:this={menuEl}

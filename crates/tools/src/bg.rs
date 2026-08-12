@@ -6,13 +6,13 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::Instrument;
 
 use haven_memory::Database;
-/// Maximum concurrent *running* background jobs per process. Prevents an
-/// agent from leaking unbounded child processes. Finished jobs are reaped
+/// Maximum concurrent *running* background tasks per process. Prevents an
+/// agent from leaking unbounded child processes. Finished tasks are reaped
 /// on the next spawn, so this is a concurrency cap, not a lifetime cap.
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. Window
 /// suppression (`CREATE_NO_WINDOW`) is applied here unconditionally because
-/// background jobs must never pop a console. The foreground `ShellTool`
+/// background tasks must never pop a console. The foreground `ShellTool`
 /// uses `build_shell_command_silent` only when `silent` is requested, so
 /// non-silent foreground commands can still show their window.
 pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command {
@@ -39,7 +39,17 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
             let ps = format!(
                 "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}"
             );
-            c.args(["-NoProfile", "-Command", ps.as_str()]);
+            // Pass the whole script via -EncodedCommand (UTF-16LE base64)
+            // instead of -Command: the payload is a single opaque ASCII token,
+            // so quotes, semicolons, `%`, backticks and `$` in the user command
+            // can never be mangled by PowerShell's own command-line re-parsing,
+            // and non-ASCII input survives the console code page unchanged.
+            c.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                encode_utf16le_base64(&ps).as_str(),
+            ]);
             c
         }
         _ => {
@@ -83,6 +93,21 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
         }
     }
     std_cmd
+}
+
+/// Base64-encode a string as UTF-16LE for PowerShell's `-EncodedCommand`.
+///
+/// PowerShell decodes the argument as UTF-16LE bytes, so this round-trips any
+/// Unicode input exactly and stays pure ASCII on the process command line,
+/// sidestepping both argument-escaping and console-code-page issues.
+#[cfg(windows)]
+fn encode_utf16le_base64(text: &str) -> String {
+    use base64::Engine;
+    let mut bytes = Vec::with_capacity(text.len() * 2);
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(&bytes)
 }
 
 /// Detect a locally running proxy (common Windows proxy ports) and return
@@ -154,7 +179,7 @@ pub fn proxy_env_vars() -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// Directory for per-command output logs (background jobs and failed
+/// Directory for per-command output logs (background tasks and failed
 /// foreground commands), under the shared Temp working directory.
 pub fn output_log_dir(kind: &str) -> std::path::PathBuf {
     haven_common::default_work_dir().join(kind)
@@ -167,11 +192,11 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
     let dir = output_log_dir(kind);
     let path = dir.join(format!("{id}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(job_id = %id, "failed to create output-log dir {}: {e}", dir.display());
+        tracing::warn!(task_id = %id, "failed to create output-log dir {}: {e}", dir.display());
         return path;
     }
     if let Err(e) = std::fs::write(&path, text) {
-        tracing::warn!(job_id = %id, "failed to write output log {}: {e}", path.display());
+        tracing::warn!(task_id = %id, "failed to write output log {}: {e}", path.display());
     }
     path
 }
@@ -183,36 +208,36 @@ pub fn collect_byte_cap(max_chars: usize) -> usize {
     max_chars.saturating_mul(4).max(8192)
 }
 
-/// A background job that has reached a terminal state, surfaced to a consumer
-/// (the agent layer) so the owning task can be auto-notified of the result
+/// A background task that has reached a terminal state, surfaced to a consumer
+/// (the agent layer) so the owning session can be auto-notified of the result
 /// instead of the model having to poll `status`.
 #[derive(Clone, Debug)]
-pub struct JobCompletion {
-    pub job_id: String,
-    pub task_id: Option<String>,
+pub struct BackgroundTaskCompletion {
+    pub task_id: String,
+    pub session_id: Option<String>,
     /// Terminal status string: "completed", "failed", or "cancelled".
     pub status: String,
-    /// The job's status JSON (same shape `status()` returns for terminal
+    /// The task's status JSON (same shape `status()` returns for terminal
     /// states), carrying the output/error payload.
     pub status_json: Value,
 }
 
 /// Optional sink for background lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
-/// - `activity:created`  — a job was spawned `{ job_id, started_at }`
-/// - `activity:updated`  — the job was bound to a task `{ job_id, task_id }`
-/// - `activity:output`   — live output preview while the job runs
-///   `{ job_id, output }` (bounded tail, emitted periodically)
-/// - `activity:finished` — the job reached a terminal state (full status
-///   JSON, which already carries `job_id`, `status`, and the output/error
+/// - `task:created`  — a task was spawned `{ task_id, started_at }`
+/// - `task:updated`  — the task was bound to a session `{ task_id, session_id }`
+/// - `task:output`   — live output preview while the task runs
+///   `{ task_id, output }` (bounded tail, emitted periodically)
+/// - `task:finished` — the task reached a terminal state (full status
+///   JSON, which already carries `task_id`, `status`, and the output/error
 ///   payload)
 ///
-/// Shared by the reminder registry (`activity:created` / `activity:finished`
-/// / `activity:updated`), which uses the same callback shape.
+/// Shared by the scheduled-task registry (`task:created` / `task:finished`
+/// / `task:updated`), which uses the same callback shape.
 pub type EventSink = Arc<dyn Fn(String, serde_json::Value) + Send + Sync>;
 
 /// Shared storage + forwarding for the UI event sink, used identically by
-/// `BackgroundJobs` and the reminder registry. Keeps the sink behind a
+/// `BackgroundTasks` and the scheduled-task registry. Keeps the sink behind a
 /// `Mutex<Option<_>>` so `set_event_sink` can be called once from the desktop
 /// shell and `emit` is a no-op before that.
 #[derive(Default)]
@@ -230,17 +255,17 @@ impl EventSinkState {
     }
 }
 
-/// Bounded live-output tail kept per running job for `activity:output`
+/// Bounded live-output tail kept per running task for `task:output`
 /// preview events. Characters, not bytes: decoded lossy on emit.
 const JOB_TAIL_MAX_CHARS: usize = 2000;
-/// Cadence of `activity:output` events while a job produces output.
+/// Cadence of `task:output` events while a task produces output.
 const JOB_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(1500);
-/// Terminal jobs stay on the board this long, then are reaped by the next
+/// Terminal tasks stay on the board this long, then are reaped by the next
 /// spawn (the UI panel and the persisted log files remain the record).
 const TERMINAL_JOB_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Clone, Debug)]
-enum JobState {
+enum BackgroundTaskState {
     Running {
         started_at: String,
     },
@@ -269,22 +294,22 @@ enum JobState {
     },
 }
 
-impl JobState {
+impl BackgroundTaskState {
     fn is_terminal(&self) -> bool {
-        !matches!(self, JobState::Running { .. })
+        !matches!(self, BackgroundTaskState::Running { .. })
     }
 }
 
-struct JobEntry {
-    task_id: Option<String>,
-    state: JobState,
+struct BackgroundTask {
+    session_id: Option<String>,
+    state: BackgroundTaskState,
     /// Kill signal for the running child process.
     kill: Option<oneshot::Sender<()>>,
-    /// Bounded tail of the combined live output, for `activity:output` preview
-    /// events while the job runs. `None` for terminal entries.
+    /// Bounded tail of the combined live output, for `task:output` preview
+    /// events while the task runs. `None` for terminal entries.
     tail: Option<Arc<Mutex<String>>>,
-    /// The shell command this job is executing (surfaced in running status so
-    /// the agent can see what the job is doing right now).
+    /// The shell command this task is executing (surfaced in running status so
+    /// the agent can see what the task is doing right now).
     command: String,
     /// Interpreter the command runs under ("cmd", "powershell", "bash", ...).
     shell: String,
@@ -293,12 +318,12 @@ struct JobEntry {
 /// True when a terminal entry has outlived `TERMINAL_JOB_TTL` (running
 /// entries are never stale). Entries with an unparseable `finished_at` are
 /// kept (never wrongly reaped).
-fn terminal_entry_stale(entry: &JobEntry) -> bool {
+fn terminal_entry_stale(entry: &BackgroundTask) -> bool {
     let finished = match &entry.state {
-        JobState::Completed { finished_at, .. }
-        | JobState::Failed { finished_at, .. }
-        | JobState::Cancelled { finished_at, .. } => finished_at,
-        JobState::Running { .. } => return false,
+        BackgroundTaskState::Completed { finished_at, .. }
+        | BackgroundTaskState::Failed { finished_at, .. }
+        | BackgroundTaskState::Cancelled { finished_at, .. } => finished_at,
+        BackgroundTaskState::Running { .. } => return false,
     };
     chrono::DateTime::parse_from_rfc3339(finished)
         .map(|t| t.with_timezone(&chrono::Utc))
@@ -306,45 +331,45 @@ fn terminal_entry_stale(entry: &JobEntry) -> bool {
         .unwrap_or(false)
 }
 
-/// Registry of background tool jobs (refine: long-running commands).
+/// Registry of background tool tasks (refine: long-running commands).
 ///
-/// A job is spawned with `spawn_shell`, runs detached from the ReAct loop,
-/// and is polled with `status`. Jobs are tied to a task via `attach_task`;
-/// `cancel_for_task` kills and drops them when the task ends.
+/// A task is spawned with `spawn_shell`, runs detached from the ReAct loop,
+/// and is polled with `status`. Tasks are tied to a session via `attach_session`;
+/// `cancel_for_session` kills and drops them when the session ends.
 ///
-/// When a job finishes, a `JobCompletion` is sent on the completion channel
+/// When a task finishes, a `BackgroundTaskCompletion` is sent on the completion channel
 /// (see `take_completion_receiver`) so the agent layer can auto-inject the
-/// result into the owning task's context without the model polling.
-pub struct BackgroundJobs {
-    jobs: RwLock<HashMap<String, JobEntry>>,
-    completion_tx: mpsc::UnboundedSender<JobCompletion>,
+/// result into the owning session's context without the model polling.
+pub struct BackgroundTasks {
+    tasks: RwLock<HashMap<String, BackgroundTask>>,
+    completion_tx: mpsc::UnboundedSender<BackgroundTaskCompletion>,
     /// Receiver handed out exactly once to the consumer (the agent layer).
-    completion_rx: Mutex<Option<mpsc::UnboundedReceiver<JobCompletion>>>,
-    /// Max concurrent *running* jobs (from `context_limits.background_max_jobs`).
-    max_jobs: RwLock<usize>,
+    completion_rx: Mutex<Option<mpsc::UnboundedReceiver<BackgroundTaskCompletion>>>,
+    /// Max concurrent *running* tasks (from `context_limits.background_max_tasks`).
+    max_tasks: RwLock<usize>,
     /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
     /// to forward lifecycle events as Tauri events.
     event_sink: EventSinkState,
     /// Persistent store; `None` in headless/test builds (in-memory only).
-    /// Terminal job rows stay here as history even after the in-memory board
+    /// Terminal task rows stay here as history even after the in-memory board
     /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
     db: RwLock<Option<Arc<Database>>>,
 }
 
-impl Default for BackgroundJobs {
+impl Default for BackgroundTasks {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BackgroundJobs {
+impl BackgroundTasks {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
-            jobs: RwLock::new(HashMap::new()),
+            tasks: RwLock::new(HashMap::new()),
             completion_tx: tx,
             completion_rx: Mutex::new(Some(rx)),
-            max_jobs: RwLock::new(64),
+            max_tasks: RwLock::new(64),
             event_sink: EventSinkState::default(),
             db: RwLock::new(None),
         }
@@ -360,18 +385,18 @@ impl BackgroundJobs {
         self.event_sink.emit(event, payload);
     }
 
-    /// Replace the unified context limits (background job concurrency cap).
+    /// Replace the unified context limits (background task concurrency cap).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *self.max_jobs.write().await = limits.background_max_jobs;
+        *self.max_tasks.write().await = limits.background_max_tasks;
     }
 
     /// Attach the database used for persistence. Wired by the desktop shell
-    /// (same handle the reminder registry receives); headless tests skip it.
+    /// (same handle the scheduled-task registry receives); headless tests skip it.
     pub async fn set_db(&self, db: Option<Arc<Database>>) {
         *self.db.write().await = db;
     }
 
-    /// Post-restart cleanup: job rows a previous process left `running` are
+    /// Post-restart cleanup: task rows a previous process left `running` are
     /// stale (their child processes died with the app), so mark them failed.
     /// Called once from the agent layer startup. Returns the number of rows
     /// marked. Idempotent.
@@ -379,23 +404,23 @@ impl BackgroundJobs {
         let Some(db) = self.db.read().await.clone() else {
             return 0;
         };
-        db.mark_interrupted_jobs().unwrap_or_else(|e| {
-            tracing::warn!("restore_after_restart: failed to mark interrupted jobs: {e}");
+        db.mark_interrupted_tasks().unwrap_or_else(|e| {
+            tracing::warn!("restore_after_restart: failed to mark interrupted tasks: {e}");
             0
         })
     }
 
-    /// Persist a terminal job row (its status payload + owning task) so the
+    /// Persist a terminal task row (its status payload + owning session) so the
     /// result survives the in-memory board's TTL and app restarts. No-op
-    /// without a database. Must run outside the `jobs` lock is not required
+    /// without a database. Must run outside the `tasks` lock is not required
     /// (the DB is a separate lock); callers may hold either.
-    async fn persist_terminal(&self, job_id: &str, entry: &JobEntry) {
+    async fn persist_terminal(&self, task_id: &str, entry: &BackgroundTask) {
         let Some(db) = self.db.read().await.clone() else {
             return;
         };
         let (status, output, error, error_reason, log_path, exit_code, finished_at) =
             match &entry.state {
-                JobState::Completed {
+                BackgroundTaskState::Completed {
                     output,
                     exit_code,
                     log_path,
@@ -410,7 +435,7 @@ impl BackgroundJobs {
                     *exit_code,
                     finished_at.as_str(),
                 ),
-                JobState::Failed {
+                BackgroundTaskState::Failed {
                     error,
                     error_reason,
                     log_path,
@@ -426,7 +451,7 @@ impl BackgroundJobs {
                     *exit_code,
                     finished_at.as_str(),
                 ),
-                JobState::Cancelled { finished_at, .. } => (
+                BackgroundTaskState::Cancelled { finished_at, .. } => (
                     "cancelled",
                     None,
                     None,
@@ -435,10 +460,10 @@ impl BackgroundJobs {
                     None,
                     finished_at.as_str(),
                 ),
-                JobState::Running { .. } => return,
+                BackgroundTaskState::Running { .. } => return,
             };
-        if let Err(e) = db.finish_job(
-            job_id,
+        if let Err(e) = db.finish_task(
+            task_id,
             status,
             output,
             error,
@@ -447,57 +472,59 @@ impl BackgroundJobs {
             exit_code,
             finished_at,
         ) {
-            tracing::warn!(job_id = %job_id, "failed to persist job result: {e}");
+            tracing::warn!(task_id = %task_id, "failed to persist task result: {e}");
         }
     }
 
     /// Take the completion receiver exactly once. The caller spawns a consumer
-    /// loop that receives `JobCompletion`s and notifies the owning tasks.
+    /// loop that receives `BackgroundTaskCompletion`s and notifies the owning sessions.
     /// Returns `None` if already taken.
-    pub fn take_completion_receiver(&self) -> Option<mpsc::UnboundedReceiver<JobCompletion>> {
+    pub fn take_completion_receiver(
+        &self,
+    ) -> Option<mpsc::UnboundedReceiver<BackgroundTaskCompletion>> {
         self.completion_rx.lock().unwrap().take()
     }
 
-    /// Emit a completion notification for a job (if it has a terminal state),
-    /// reading the owning task_id from the entry. Called from `mark_finished`,
-    /// `mark_cancelled`, and `attach_task` (the latter to close the race where
-    /// a job finishes before its task binding is recorded). Also persists the
+    /// Emit a completion notification for a task (if it has a terminal state),
+    /// reading the owning session_id from the entry. Called from `mark_finished`,
+    /// `mark_cancelled`, and `attach_session` (the latter to close the race where
+    /// a task finishes before its session binding is recorded). Also persists the
     /// terminal row so the result survives restarts.
-    async fn notify_completion(&self, job_id: &str, entry: &JobEntry) {
+    async fn notify_completion(&self, task_id: &str, entry: &BackgroundTask) {
         if !entry.state.is_terminal() {
             return;
         }
         let status = match &entry.state {
-            JobState::Completed { .. } => "completed",
-            JobState::Failed { .. } => "failed",
-            JobState::Cancelled { .. } => "cancelled",
-            JobState::Running { .. } => return,
+            BackgroundTaskState::Completed { .. } => "completed",
+            BackgroundTaskState::Failed { .. } => "failed",
+            BackgroundTaskState::Cancelled { .. } => "cancelled",
+            BackgroundTaskState::Running { .. } => return,
         };
-        self.persist_terminal(job_id, entry).await;
-        let status_json = render_status_json(job_id, &entry.state);
-        self.emit("activity:finished", status_json.clone());
-        let _ = self.completion_tx.send(JobCompletion {
-            job_id: job_id.to_string(),
-            task_id: entry.task_id.clone(),
+        self.persist_terminal(task_id, entry).await;
+        let status_json = render_status_json(task_id, &entry.state);
+        self.emit("task:finished", status_json.clone());
+        let _ = self.completion_tx.send(BackgroundTaskCompletion {
+            task_id: task_id.to_string(),
+            session_id: entry.session_id.clone(),
             status: status.to_string(),
             status_json,
         });
     }
 
-    /// Board view of every job: one entry per job with status, timestamps,
-    /// owning task id, and a bounded output/error preview. Surfaces the full
-    /// job set to the UI (the per-task variant `list_for_task` serves the
+    /// Board view of every task: one entry per task with status, timestamps,
+    /// owning session id, and a bounded output/error preview. Surfaces the full
+    /// task set to the UI (the per-session variant `list_for_session` serves the
     /// agent). Order: oldest first.
     pub async fn board(&self) -> Vec<Value> {
-        let jobs = self.jobs.read().await;
+        let tasks = self.tasks.read().await;
         let mut rows = Vec::new();
-        for (id, entry) in jobs.iter() {
+        for (id, entry) in tasks.iter() {
             let mut row = match &entry.state {
-                JobState::Running { .. } => running_status_json(id, entry),
+                BackgroundTaskState::Running { .. } => running_status_json(id, entry),
                 _ => render_status_json(id, &entry.state),
             };
-            if let Some(tid) = &entry.task_id {
-                row["task_id"] = json!(tid);
+            if let Some(tid) = &entry.session_id {
+                row["session_id"] = json!(tid);
             }
             attach_preview(&mut row);
             rows.push(row);
@@ -506,23 +533,23 @@ impl BackgroundJobs {
         rows
     }
 
-    /// Board view of every job owned by `task_id`: one entry per job with
+    /// Board view of every task owned by `session_id`: one entry per task with
     /// status, timestamps, and a bounded output/error preview. Lets the model
-    /// see all background work of a task in a single call instead of polling
-    /// `status` job by job. Order: oldest first.
-    pub async fn list_for_task(&self, task_id: &str) -> Vec<Value> {
-        let jobs = self.jobs.read().await;
+    /// see all background work of a session in a single call instead of polling
+    /// `status` task by task. Order: oldest first.
+    pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
+        let tasks = self.tasks.read().await;
         let mut rows = Vec::new();
-        for (id, entry) in jobs.iter() {
-            if entry.task_id.as_deref() != Some(task_id) {
+        for (id, entry) in tasks.iter() {
+            if entry.session_id.as_deref() != Some(session_id) {
                 continue;
             }
             let mut row = match &entry.state {
-                JobState::Running { .. } => running_status_json(id, entry),
+                BackgroundTaskState::Running { .. } => running_status_json(id, entry),
                 _ => render_status_json(id, &entry.state),
             };
-            if let Some(tid) = &entry.task_id {
-                row["task_id"] = json!(tid);
+            if let Some(tid) = &entry.session_id {
+                row["session_id"] = json!(tid);
             }
             attach_preview(&mut row);
             rows.push(row);
@@ -531,7 +558,7 @@ impl BackgroundJobs {
         rows
     }
 
-    /// Spawn a shell command as a background job. Returns the job id; the
+    /// Spawn a shell command as a background task. Returns the task id; the
     /// command keeps running after this function returns. `cwd` overrides the
     /// default Temp working directory when provided.
     pub async fn spawn_shell(
@@ -544,37 +571,37 @@ impl BackgroundJobs {
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
         }
-        // Unpredictable activity id: a sequential counter would let any
-        // task's agent enumerate and read other tasks' background outputs
+        // Unpredictable task id: a sequential counter would let any
+        // session's agent enumerate and read other sessions' background outputs
         // through status (which is RiskLevel::Safe).
         let id = haven_common::types::new_id("act");
         let started_at = chrono::Utc::now().to_rfc3339();
         let (kill_tx, kill_rx) = oneshot::channel();
         let tail = Arc::new(Mutex::new(String::new()));
         {
-            let mut jobs = self.jobs.write().await;
+            let mut tasks = self.tasks.write().await;
             // Reap terminal entries first: their results were already
             // delivered via the completion channel, so they must not occupy
-            // the cap forever (64 lifetime jobs would otherwise brick the
-            // feature for long-lived tasks). Terminal entries older than
+            // the cap forever (64 lifetime tasks would otherwise brick the
+            // feature for long-lived sessions). Terminal entries older than
             // `TERMINAL_JOB_TTL` are dropped the same way (the UI panel and
             // the persisted log files remain the record after that).
-            jobs.retain(|_, e| !terminal_entry_stale(e));
-            let running = jobs
+            tasks.retain(|_, e| !terminal_entry_stale(e));
+            let running = tasks
                 .values()
-                .filter(|e| matches!(e.state, JobState::Running { .. }))
+                .filter(|e| matches!(e.state, BackgroundTaskState::Running { .. }))
                 .count();
-            if running >= *self.max_jobs.read().await {
+            if running >= *self.max_tasks.read().await {
                 anyhow::bail!(
-                    "too many running background jobs (limit {})",
-                    *self.max_jobs.read().await
+                    "too many running background tasks (limit {})",
+                    *self.max_tasks.read().await
                 );
             }
-            jobs.insert(
+            tasks.insert(
                 id.clone(),
-                JobEntry {
-                    task_id: None,
-                    state: JobState::Running {
+                BackgroundTask {
+                    session_id: None,
+                    state: BackgroundTaskState::Running {
                         started_at: started_at.clone(),
                     },
                     kill: Some(kill_tx),
@@ -596,30 +623,30 @@ impl BackgroundJobs {
         {
             Ok(c) => c,
             Err(e) => {
-                // Spawn failed: remove the entry so the job is not left
+                // Spawn failed: remove the entry so the task is not left
                 // dangling as "running".
-                self.jobs.write().await.remove(&id);
+                self.tasks.write().await.remove(&id);
                 return Err(e.into());
             }
         };
 
-        // Persist the spawn so activity history survives restarts even when
+        // Persist the spawn so task history survives restarts even when
         // the process dies mid-run (`restore_after_restart` marks such rows
-        // failed). The task binding arrives later via `attach_task`.
+        // failed). The session binding arrives later via `attach_session`.
         if let Some(db) = self.db.read().await.clone()
-            && let Err(e) = db.save_job(&id, None, command, &started_at)
+            && let Err(e) = db.save_task(&id, None, command, &started_at)
         {
-            tracing::warn!(job_id = %id, "failed to persist job spawn: {e}");
+            tracing::warn!(task_id = %id, "failed to persist task spawn: {e}");
         }
 
         let me = self.clone();
-        let job_id = id.clone();
+        let task_id = id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
         self.emit(
-            "activity:created",
+            "task:created",
             json!({
-                "job_id": job_id,
+                "task_id": task_id,
                 "started_at": started_at,
             }),
         );
@@ -627,15 +654,15 @@ impl BackgroundJobs {
         // Windows, cancelling must kill the whole process tree, not just the
         // cmd.exe/powershell.exe wrapper.
         let child_pid = child.id();
-        // The job runner outlives its spawner: give it a job-level span so
-        // every log line emitted while the job runs/cancels (output-log
-        // writes, completion) carries the job id — parallel background jobs
+        // The task runner outlives its spawner: give it a task-level span so
+        // every log line emitted while the task runs/cancels (output-log
+        // writes, completion) carries the task id — parallel background tasks
         // stay distinguishable in logs.
-        let job_span = tracing::info_span!("bg_job", job_id = %job_id);
+        let task_span = tracing::info_span!("bg_task", task_id = %task_id);
         let runner_tail = tail.clone();
-        let emit_job_id = job_id.clone();
+        let emit_task_id = task_id.clone();
         tokio::spawn(async move {
-            // The job outlives this task: when `run` is dropped (kill signal
+            // The task outlives this session: when `run` is dropped (kill signal
             // received), kill_on_drop terminates the child.
             let max_collect = collect_byte_cap(max_chars);
             let stdout_tail = runner_tail.clone();
@@ -671,16 +698,16 @@ impl BackgroundJobs {
                     if let Some(pid) = child_pid {
                         kill_process_tree(pid).await;
                     }
-                    me.mark_cancelled(&job_id, &started_at).await;
+                    me.mark_cancelled(&task_id, &started_at).await;
                 }
                 (combined, success, exit_code, truncated) = &mut run => {
-                    me.mark_finished(&job_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
+                    me.mark_finished(&task_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
                 }
             }
-        }.instrument(job_span));
+        }.instrument(task_span));
 
-        // Live-output preview emitter: while the job runs, periodically push
-        // the bounded tail of the combined stdout/stderr as `activity:output`
+        // Live-output preview emitter: while the task runs, periodically push
+        // the bounded tail of the combined stdout/stderr as `task:output`
         // events (only when it grew since the last tick). Stops as soon as
         // the entry leaves the Running state (finished, cancelled, or reaped).
         let emit_me = self.clone();
@@ -689,7 +716,7 @@ impl BackgroundJobs {
             let mut last_len = 0usize;
             loop {
                 tokio::time::sleep(JOB_OUTPUT_EMIT_INTERVAL).await;
-                if emit_me.status(&emit_job_id).await["status"].as_str() != Some("running") {
+                if emit_me.status(&emit_task_id).await["status"].as_str() != Some("running") {
                     return;
                 }
                 let t = emit_tail.lock().unwrap();
@@ -699,8 +726,8 @@ impl BackgroundJobs {
                     let output = t.clone();
                     drop(t);
                     emit_me.emit(
-                        "activity:output",
-                        json!({ "job_id": emit_job_id, "output": output }),
+                        "task:output",
+                        json!({ "task_id": emit_task_id, "output": output }),
                     );
                 }
             }
@@ -709,65 +736,65 @@ impl BackgroundJobs {
         Ok(id)
     }
 
-    /// Report the current status of a job as JSON.
-    pub async fn status(&self, job_id: &str) -> Value {
-        let jobs = self.jobs.read().await;
-        let Some(entry) = jobs.get(job_id) else {
-            return json!({"job_id": job_id, "status": "not_found"});
+    /// Report the current status of a task as JSON.
+    pub async fn status(&self, task_id: &str) -> Value {
+        let tasks = self.tasks.read().await;
+        let Some(entry) = tasks.get(task_id) else {
+            return json!({"task_id": task_id, "status": "not_found"});
         };
         match &entry.state {
-            JobState::Running { .. } => {
-                let mut v = running_status_json(job_id, entry);
+            BackgroundTaskState::Running { .. } => {
+                let mut v = running_status_json(task_id, entry);
                 v["hint"] = json!(
-                    "The job is still running. Its result is pushed back to your task automatically when it finishes — no polling needed. Use the jobs tool to see all background jobs at once."
+                    "The task is still running. Its result is pushed back to your session automatically when it finishes — no polling needed. Use the tasks tool to see all background tasks at once."
                 );
                 v
             }
-            _ => render_status_json(job_id, &entry.state),
+            _ => render_status_json(task_id, &entry.state),
         }
     }
 
-    /// Associate a job with its owning task. Called by the task executor
-    /// after a background tool call so `cancel_for_task` can clean it up.
+    /// Associate a task with its owning session. Called by the session executor
+    /// after a background tool call so `cancel_for_session` can clean it up.
     ///
-    /// Also closes a race: a short-lived job may finish (and call
+    /// Also closes a race: a short-lived task may finish (and call
     /// `mark_finished`/`mark_cancelled`) before this binding is recorded, in
-    /// which case the completion notification carried `task_id: None` and was
-    /// dropped by the consumer. If the job is already terminal here, re-fire
-    /// the notification with the now-known task_id so the owning task still
+    /// which case the completion notification carried `session_id: None` and was
+    /// dropped by the consumer. If the task is already terminal here, re-fire
+    /// the notification with the now-known session_id so the owning session still
     /// receives the result.
-    pub async fn attach_task(&self, job_id: &str, task_id: &str) {
-        let mut jobs = self.jobs.write().await;
-        if let Some(entry) = jobs.get_mut(job_id) {
-            entry.task_id = Some(task_id.to_string());
+    pub async fn attach_session(&self, task_id: &str, session_id: &str) {
+        let mut tasks = self.tasks.write().await;
+        if let Some(entry) = tasks.get_mut(task_id) {
+            entry.session_id = Some(session_id.to_string());
             self.emit(
-                "activity:updated",
+                "task:updated",
                 json!({
-                    "job_id": job_id,
                     "task_id": task_id,
+                    "session_id": session_id,
                 }),
             );
-            // Record the owning task in the persisted row too, so terminal
-            // history keeps its owner (spawn rows start with task_id NULL).
+            // Record the owning session in the persisted row too, so terminal
+            // history keeps its owner (spawn rows start with session_id NULL).
             if let Some(db) = self.db.read().await.clone()
-                && let Err(e) = db.update_job_task(job_id, task_id)
+                && let Err(e) = db.update_task_session(task_id, session_id)
             {
-                tracing::warn!(job_id = %job_id, "failed to persist job task binding: {e}");
+                tracing::warn!(task_id = %task_id, "failed to persist task session binding: {e}");
             }
             if entry.state.is_terminal() {
-                self.notify_completion(job_id, entry).await;
+                self.notify_completion(task_id, entry).await;
             }
         }
     }
 
-    /// Cancel a single running job (kept for inspection afterwards).
-    /// Returns false when the job does not exist or is not running.
-    pub async fn cancel(&self, job_id: &str) -> bool {
-        let mut jobs = self.jobs.write().await;
-        let Some(entry) = jobs.get_mut(job_id) else {
+    /// Cancel a single running task (kept for inspection afterwards).
+    /// Returns false when the task does not exist or is not running.
+    pub async fn cancel(&self, task_id: &str) -> bool {
+        let mut tasks = self.tasks.write().await;
+        let Some(entry) = tasks.get_mut(task_id) else {
             return false;
         };
-        if !matches!(entry.state, JobState::Running { .. }) {
+        if !matches!(entry.state, BackgroundTaskState::Running { .. }) {
             return false;
         }
         if let Some(tx) = entry.kill.take() {
@@ -776,17 +803,17 @@ impl BackgroundJobs {
         true
     }
 
-    /// Cancel and drop every job owned by `task_id`. Called when a task
+    /// Cancel and drop every task owned by `session_id`. Called when a session
     /// ends, is removed, or is rolled back.
-    pub async fn cancel_for_task(&self, task_id: &str) {
-        let mut jobs = self.jobs.write().await;
-        let ids: Vec<String> = jobs
+    pub async fn cancel_for_session(&self, session_id: &str) {
+        let mut tasks = self.tasks.write().await;
+        let ids: Vec<String> = tasks
             .iter()
-            .filter(|(_, e)| e.task_id.as_deref() == Some(task_id))
+            .filter(|(_, e)| e.session_id.as_deref() == Some(session_id))
             .map(|(id, _)| id.clone())
             .collect();
         for id in ids {
-            if let Some(mut entry) = jobs.remove(&id)
+            if let Some(mut entry) = tasks.remove(&id)
                 && let Some(tx) = entry.kill.take()
             {
                 let _ = tx.send(());
@@ -806,22 +833,22 @@ impl BackgroundJobs {
         exit_code: Option<i32>,
         truncated: bool,
     ) {
-        let mut jobs = self.jobs.write().await;
-        let Some(entry) = jobs.get_mut(id) else {
+        let mut tasks = self.tasks.write().await;
+        let Some(entry) = tasks.get_mut(id) else {
             return;
         };
         entry.kill = None;
         entry.tail = None;
         let finished_at = chrono::Utc::now().to_rfc3339();
         entry.state = if success {
-            JobState::Completed {
+            BackgroundTaskState::Completed {
                 output: combined.clone(),
                 exit_code,
                 truncated,
                 // When the collected output was capped, the log file keeps
                 // the full transcript for inspection.
                 log_path: truncated.then(|| {
-                    write_output_log("job-logs", id, &combined)
+                    write_output_log("task-logs", id, &combined)
                         .to_string_lossy()
                         .into_owned()
                 }),
@@ -836,11 +863,11 @@ impl BackgroundJobs {
             // The full output always lands in a log file so the root cause
             // is recoverable even when the summary misses it.
             let diagnosed = append_windows_diagnostics(shell, command, &combined);
-            JobState::Failed {
+            BackgroundTaskState::Failed {
                 error: combined.clone(),
                 error_reason: summarize_error(&diagnosed, 1200),
                 log_path: Some(
-                    write_output_log("job-logs", id, &combined)
+                    write_output_log("task-logs", id, &combined)
                         .to_string_lossy()
                         .into_owned(),
                 ),
@@ -853,13 +880,13 @@ impl BackgroundJobs {
     }
 
     async fn mark_cancelled(&self, id: &str, started_at: &str) {
-        let mut jobs = self.jobs.write().await;
-        let Some(entry) = jobs.get_mut(id) else {
+        let mut tasks = self.tasks.write().await;
+        let Some(entry) = tasks.get_mut(id) else {
             return;
         };
         entry.kill = None;
         entry.tail = None;
-        entry.state = JobState::Cancelled {
+        entry.state = BackgroundTaskState::Cancelled {
             started_at: started_at.to_string(),
             finished_at: chrono::Utc::now().to_rfc3339(),
         };
@@ -878,18 +905,18 @@ fn attach_preview(row: &mut Value) {
     row["preview"] = json!(preview.chars().take(200).collect::<String>());
 }
 
-/// Render the running-state row for a job: the command line it is executing
-/// and the bounded live-output tail, so the agent sees what the job is doing
+/// Render the running-state row for a task: the command line it is executing
+/// and the bounded live-output tail, so the agent sees what the task is doing
 /// right now instead of only "running". `output` is omitted while empty (the
 /// command has not produced anything yet).
-fn running_status_json(job_id: &str, entry: &JobEntry) -> Value {
+fn running_status_json(task_id: &str, entry: &BackgroundTask) -> Value {
     let mut v = json!({
-        "job_id": job_id,
+        "task_id": task_id,
         "status": "running",
         "command": entry.command,
         "shell": entry.shell,
     });
-    if let JobState::Running { started_at } = &entry.state {
+    if let BackgroundTaskState::Running { started_at } = &entry.state {
         v["started_at"] = json!(started_at);
     }
     if let Some(tail) = &entry.tail {
@@ -901,11 +928,11 @@ fn running_status_json(job_id: &str, entry: &JobEntry) -> Value {
     v
 }
 
-/// Render the terminal status JSON for a job (mirrors `status()` output for
+/// Render the terminal status JSON for a task (mirrors `status()` output for
 /// completed/failed/cancelled states), used in completion notifications.
-fn render_status_json(job_id: &str, state: &JobState) -> Value {
+fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
     match state {
-        JobState::Completed {
+        BackgroundTaskState::Completed {
             output,
             exit_code,
             truncated,
@@ -914,7 +941,7 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
             finished_at,
         } => {
             let mut v = json!({
-                "job_id": job_id,
+                "task_id": task_id,
                 "status": "completed",
                 "output": output,
                 "started_at": started_at,
@@ -931,7 +958,7 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
             }
             v
         }
-        JobState::Failed {
+        BackgroundTaskState::Failed {
             error,
             error_reason,
             log_path,
@@ -940,7 +967,7 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
             finished_at,
         } => {
             let mut v = json!({
-                "job_id": job_id,
+                "task_id": task_id,
                 "status": "failed",
                 "error": error,
                 "error_reason": error_reason,
@@ -955,16 +982,16 @@ fn render_status_json(job_id: &str, state: &JobState) -> Value {
             }
             v
         }
-        JobState::Cancelled {
+        BackgroundTaskState::Cancelled {
             started_at,
             finished_at,
         } => json!({
-            "job_id": job_id,
+            "task_id": task_id,
             "status": "cancelled",
             "started_at": started_at,
             "finished_at": finished_at,
         }),
-        JobState::Running { .. } => json!({ "job_id": job_id, "status": "running" }),
+        BackgroundTaskState::Running { .. } => json!({ "task_id": task_id, "status": "running" }),
     }
 }
 
@@ -1051,7 +1078,7 @@ fn is_powershell_noise_line(trimmed: &str) -> bool {
 /// Condense a failed command's captured output into a short, readable reason:
 /// progress-bar/spinner lines are dropped, only the last few meaningful lines
 /// are kept, and the result is capped at `max_chars`. Used for the failed
-/// job's `error_reason` and the foreground shell tool's error text, so a
+/// task's `error_reason` and the foreground shell tool's error text, so a
 /// multi-KB progress dump cannot drown the actual error (e.g. a 416 from a
 /// failed download).
 pub fn summarize_error(text: &str, max_chars: usize) -> String {
@@ -1200,7 +1227,7 @@ fn append_tail(tail: &Mutex<String>, chunk: &[u8]) {
 /// remaining bytes are still read and discarded: closing the pipe read end
 /// early can make the child fail writes (broken pipe) and flip its exit code.
 /// When `tail` is given, every decoded chunk is also appended to the shared
-/// bounded live-output tail (for `activity:output` preview events).
+/// bounded live-output tail (for `task:output` preview events).
 /// Returns `(text, overflowed)`.
 pub(crate) async fn read_stream_capped<R>(
     stdout: Option<R>,
@@ -1278,10 +1305,10 @@ mod tests {
     use std::time::Duration;
 
     /// Poll `status` until it is no longer "running" (or timeout).
-    async fn wait_terminal(jobs: &BackgroundJobs, id: &str, timeout_secs: u64) -> Value {
+    async fn wait_terminal(tasks: &BackgroundTasks, id: &str, timeout_secs: u64) -> Value {
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         loop {
-            let v = jobs.status(id).await;
+            let v = tasks.status(id).await;
             if v["status"] != "running" || std::time::Instant::now() > deadline {
                 return v;
             }
@@ -1289,43 +1316,45 @@ mod tests {
         }
     }
 
-    /// Spawn the two fixture echo jobs (`job-a` / `job-b`) and attach them to
-    /// `task-1` / `task-2`. Shared by the board and scoped-list tests.
-    async fn spawn_two_echo_jobs(jobs: &Arc<BackgroundJobs>) -> (String, String) {
-        let id_a = jobs
-            .spawn_shell("echo job-a", "cmd", 20_000, None)
+    /// Spawn the two fixture echo tasks (`task-a` / `task-b`) and attach them to
+    /// `ses-1` / `ses-2`. Shared by the board and scoped-list tests.
+    async fn spawn_two_echo_tasks(tasks: &Arc<BackgroundTasks>) -> (String, String) {
+        let id_a = tasks
+            .spawn_shell("echo task-a", "cmd", 20_000, None)
             .await
             .unwrap();
-        let id_b = jobs
-            .spawn_shell("echo job-b", "cmd", 20_000, None)
+        let id_b = tasks
+            .spawn_shell("echo task-b", "cmd", 20_000, None)
             .await
             .unwrap();
-        jobs.attach_task(&id_a, "task-1").await;
-        jobs.attach_task(&id_b, "task-2").await;
+        tasks.attach_session(&id_a, "ses-1").await;
+        tasks.attach_session(&id_b, "ses-2").await;
         (id_a, id_b)
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_completion_notified_on_finish() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let mut rx = jobs.take_completion_receiver().expect("receiver available");
-        // Attach the task BEFORE the job finishes (normal path): the
-        // completion must carry the task_id.
-        let id = jobs
+        let tasks = Arc::new(BackgroundTasks::new());
+        let mut rx = tasks
+            .take_completion_receiver()
+            .expect("receiver available");
+        // Attach the session BEFORE the task finishes (normal path): the
+        // completion must carry the session_id.
+        let id = tasks
             .spawn_shell("echo done", "cmd", 20_000, None)
             .await
             .unwrap();
-        jobs.attach_task(&id, "task-A").await;
-        let v = wait_terminal(&jobs, &id, 10).await;
+        tasks.attach_session(&id, "ses-A").await;
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "completed");
         let comp = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("completion received")
             .expect("channel open");
-        assert_eq!(comp.job_id, id);
+        assert_eq!(comp.task_id, id);
         assert_eq!(comp.status, "completed");
-        assert_eq!(comp.task_id.as_deref(), Some("task-A"));
+        assert_eq!(comp.session_id.as_deref(), Some("ses-A"));
         assert!(
             comp.status_json["output"]
                 .as_str()
@@ -1336,13 +1365,13 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_job_result_persisted_to_db() {
+    async fn test_task_result_persisted_to_db() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
-        let jobs = Arc::new(BackgroundJobs::new());
-        jobs.set_db(Some(db.clone())).await;
+        let tasks = Arc::new(BackgroundTasks::new());
+        tasks.set_db(Some(db.clone())).await;
 
-        let id = jobs
+        let id = tasks
             .spawn_shell(
                 "echo live-line & ping -n 4 127.0.0.1 >nul",
                 "cmd",
@@ -1351,8 +1380,8 @@ mod tests {
             )
             .await
             .unwrap();
-        jobs.attach_task(&id, "task-DB").await;
-        let v = wait_terminal(&jobs, &id, 10).await;
+        tasks.attach_session(&id, "ses-DB").await;
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "completed");
 
         // The status flips to completed before the terminal row is persisted
@@ -1360,19 +1389,19 @@ mod tests {
         // DB instead of reading it immediately.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let row = loop {
-            let rows = db.list_activities(Some("job")).unwrap();
+            let rows = db.list_tasks(Some("background")).unwrap();
             if let Some(row) = rows.iter().find(|r| r.id == id) {
                 break row.clone();
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "job row never persisted"
+                "task row never persisted"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
-        assert_eq!(row.kind, "job");
+        assert_eq!(row.kind, "background");
         assert_eq!(row.status.as_deref(), Some("completed"));
-        assert_eq!(row.task_id.as_deref(), Some("task-DB"));
+        assert_eq!(row.session_id.as_deref(), Some("ses-DB"));
         assert!(row.output.as_deref().unwrap().contains("live-line"));
         assert_eq!(row.exit_code, Some(0));
         assert!(row.finished_at.is_some());
@@ -1381,49 +1410,53 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_completion_refired_after_late_attach() {
-        // Race path: the job finishes before attach_task is called. The
-        // completion first fires with task_id=None; attach_task must re-fire
-        // with the task_id so the owning task still gets notified.
-        let jobs = Arc::new(BackgroundJobs::new());
-        let mut rx = jobs.take_completion_receiver().expect("receiver available");
-        let id = jobs
+        // Race path: the task finishes before attach_session is called. The
+        // completion first fires with session_id=None; attach_session must re-fire
+        // with the session_id so the owning session still gets notified.
+        let tasks = Arc::new(BackgroundTasks::new());
+        let mut rx = tasks
+            .take_completion_receiver()
+            .expect("receiver available");
+        let id = tasks
             .spawn_shell("echo fast", "cmd", 20_000, None)
             .await
             .unwrap();
-        // Wait for the job to finish BEFORE attaching (simulate the race).
-        let v = wait_terminal(&jobs, &id, 10).await;
+        // Wait for the task to finish BEFORE attaching (simulate the race).
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "completed");
-        // Drain the task_id=None completion fired by mark_finished.
+        // Drain the session_id=None completion fired by mark_finished.
         let none_comp = rx.recv().await.expect("first completion");
-        assert!(none_comp.task_id.is_none());
-        // Now attach: should re-fire with the task_id.
-        jobs.attach_task(&id, "task-B").await;
+        assert!(none_comp.session_id.is_none());
+        // Now attach: should re-fire with the session_id.
+        tasks.attach_session(&id, "ses-B").await;
         let comp = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("refired completion received")
             .expect("channel open");
-        assert_eq!(comp.task_id.as_deref(), Some("task-B"));
+        assert_eq!(comp.session_id.as_deref(), Some("ses-B"));
         assert_eq!(comp.status, "completed");
     }
 
     #[tokio::test]
     async fn test_completion_skipped_for_running() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        // No jobs 鈫?no completion. Just confirm the receiver is taken.
-        let _rx = jobs.take_completion_receiver().expect("receiver available");
+        let tasks = Arc::new(BackgroundTasks::new());
+        // No tasks 鈫?no completion. Just confirm the receiver is taken.
+        let _rx = tasks
+            .take_completion_receiver()
+            .expect("receiver available");
         // status on not_found doesn't notify.
-        assert_eq!(jobs.status("nope").await["status"], "not_found");
+        assert_eq!(tasks.status("nope").await["status"], "not_found");
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_completes_with_output() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell("echo bg-hello", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&jobs, &id, 10).await;
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "completed", "got: {}", v);
         assert!(v["output"].as_str().unwrap().contains("bg-hello"));
         assert!(v["finished_at"].as_str().is_some());
@@ -1432,8 +1465,8 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_running_status_includes_command_and_live_output() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell(
                 "echo live-line & ping -n 3 127.0.0.1 >nul",
                 "cmd",
@@ -1442,8 +1475,8 @@ mod tests {
             )
             .await
             .unwrap();
-        // While the job runs, status must carry the command line it executes.
-        let v = jobs.status(&id).await;
+        // While the task runs, status must carry the command line it executes.
+        let v = tasks.status(&id).await;
         assert_eq!(v["status"], "running", "got: {}", v);
         assert_eq!(v["shell"], "cmd");
         assert!(
@@ -1453,7 +1486,7 @@ mod tests {
         // And the live output tail once the command has produced something.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let v = jobs.status(&id).await;
+            let v = tasks.status(&id).await;
             if v["output"].as_str().unwrap_or("").contains("live-line") {
                 break;
             }
@@ -1464,8 +1497,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         // The running row of the board carries the same command + output.
-        let board = jobs.board().await;
-        let row = board.iter().find(|r| r["job_id"] == id).expect("on board");
+        let board = tasks.board().await;
+        let row = board.iter().find(|r| r["task_id"] == id).expect("on board");
         assert!(row["command"].as_str().unwrap().contains("live-line"));
         assert!(row["preview"].as_str().unwrap_or("").contains("live-line"));
     }
@@ -1473,24 +1506,24 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_failure_reported() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell("exit 7", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&jobs, &id, 10).await;
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "failed", "got: {}", v);
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_stderr_captured() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell("echo err-msg 1>&2", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&jobs, &id, 10).await;
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "completed", "got: {}", v);
         assert!(v["output"].as_str().unwrap().contains("err-msg"));
     }
@@ -1498,47 +1531,47 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_cancelled() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
             .unwrap();
-        assert_eq!(jobs.status(&id).await["status"], "running");
-        assert!(jobs.cancel(&id).await, "cancel must report success");
-        let v = wait_terminal(&jobs, &id, 10).await;
+        assert_eq!(tasks.status(&id).await["status"], "running");
+        assert!(tasks.cancel(&id).await, "cancel must report success");
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "cancelled", "got: {}", v);
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_cancel_for_task_cleans_up() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+    async fn test_cancel_for_session_cleans_up() {
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
             .unwrap();
-        jobs.attach_task(&id, "task-1").await;
-        assert_eq!(jobs.status(&id).await["status"], "running");
-        jobs.cancel_for_task("task-1").await;
-        assert_eq!(jobs.status(&id).await["status"], "not_found");
+        tasks.attach_session(&id, "ses-1").await;
+        assert_eq!(tasks.status(&id).await["status"], "running");
+        tasks.cancel_for_session("ses-1").await;
+        assert_eq!(tasks.status(&id).await["status"], "not_found");
     }
 
     #[tokio::test]
     async fn test_status_not_found() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        assert_eq!(jobs.status("job-nope").await["status"], "not_found");
+        let tasks = Arc::new(BackgroundTasks::new());
+        assert_eq!(tasks.status("task-nope").await["status"], "not_found");
     }
 
     #[tokio::test]
-    async fn test_cancel_unknown_job() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        assert!(!jobs.cancel("job-nope").await);
+    async fn test_cancel_unknown_task() {
+        let tasks = Arc::new(BackgroundTasks::new());
+        assert!(!tasks.cancel("task-nope").await);
     }
 
     #[tokio::test]
     async fn test_spawn_empty_command_rejected() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        assert!(jobs.spawn_shell("  ", "cmd", 20_000, None).await.is_err());
+        let tasks = Arc::new(BackgroundTasks::new());
+        assert!(tasks.spawn_shell("  ", "cmd", 20_000, None).await.is_err());
     }
 
     #[tokio::test]
@@ -1583,17 +1616,14 @@ mod tests {
         let tail = Arc::new(Mutex::new(String::new()));
         let mut content = "a".repeat(8191);
         content.push('中');
-        read_stream_capped(Some(&content.as_bytes()[..]), 10_000, Some(tail.clone())).await;
+        read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;
         let t = tail.lock().unwrap();
         assert!(
             t.ends_with('中'),
             "tail must keep the split char intact, got: {:?}",
             &t[t.len().saturating_sub(40)..]
         );
-        assert!(
-            !t.contains('\u{FFFD}'),
-            "no replacement chars in tail"
-        );
+        assert!(!t.contains('\u{FFFD}'), "no replacement chars in tail");
     }
 
     #[test]
@@ -1616,14 +1646,14 @@ mod tests {
     #[test]
     fn test_terminal_entry_stale_ttl() {
         let now = chrono::Utc::now();
-        let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| JobEntry {
-            task_id: None,
+        let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| BackgroundTask {
+            session_id: None,
             state: if running {
-                JobState::Running {
+                BackgroundTaskState::Running {
                     started_at: now.to_rfc3339(),
                 }
             } else {
-                JobState::Completed {
+                BackgroundTaskState::Completed {
                     output: String::new(),
                     exit_code: None,
                     truncated: false,
@@ -1639,15 +1669,15 @@ mod tests {
         };
         assert!(
             terminal_entry_stale(&entry(now - chrono::Duration::minutes(20), false)),
-            "20-minute-old terminal job must be stale"
+            "20-minute-old terminal task must be stale"
         );
         assert!(
             !terminal_entry_stale(&entry(now - chrono::Duration::minutes(5), false)),
-            "fresh terminal job must be kept"
+            "fresh terminal task must be kept"
         );
         assert!(
             !terminal_entry_stale(&entry(now, true)),
-            "running job is never stale"
+            "running task is never stale"
         );
     }
 
@@ -1812,75 +1842,75 @@ mod tests {
         assert_eq!(out, "a\nb");
     }
 
-    // ── list_for_task (jobs board) ────────────────────────────────────────
+    // ── list_for_session (tasks board) ────────────────────────────────────────
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_event_sink_receives_lifecycle() {
-        let jobs = Arc::new(BackgroundJobs::new());
+        let tasks = Arc::new(BackgroundTasks::new());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink_events = events.clone();
-        jobs.set_event_sink(Arc::new(move |name, payload| {
+        tasks.set_event_sink(Arc::new(move |name, payload| {
             sink_events.lock().unwrap().push((name, payload));
         }));
-        let id = jobs
+        let id = tasks
             .spawn_shell("echo bg-event", "cmd", 20_000, None)
             .await
             .unwrap();
-        jobs.attach_task(&id, "task-evt").await;
-        wait_terminal(&jobs, &id, 10).await;
+        tasks.attach_session(&id, "ses-evt").await;
+        wait_terminal(&tasks, &id, 10).await;
 
         let evs = events.lock().unwrap();
         let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"activity:created"), "got: {names:?}");
-        assert!(names.contains(&"activity:updated"), "got: {names:?}");
-        assert!(names.contains(&"activity:finished"), "got: {names:?}");
+        assert!(names.contains(&"task:created"), "got: {names:?}");
+        assert!(names.contains(&"task:updated"), "got: {names:?}");
+        assert!(names.contains(&"task:finished"), "got: {names:?}");
         let term = evs
             .iter()
-            .find(|(n, _)| n == "activity:finished")
+            .find(|(n, _)| n == "task:finished")
             .expect("terminal event");
         assert_eq!(term.1["status"], "completed");
-        assert_eq!(term.1["job_id"], id);
+        assert_eq!(term.1["task_id"], id);
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_board_lists_all_jobs_with_task() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let (id_a, id_b) = spawn_two_echo_jobs(&jobs).await;
-        wait_terminal(&jobs, &id_a, 10).await;
-        wait_terminal(&jobs, &id_b, 10).await;
+    async fn test_board_lists_all_jobs_with_session() {
+        let tasks = Arc::new(BackgroundTasks::new());
+        let (id_a, id_b) = spawn_two_echo_tasks(&tasks).await;
+        wait_terminal(&tasks, &id_a, 10).await;
+        wait_terminal(&tasks, &id_b, 10).await;
 
-        let rows = jobs.board().await;
-        assert_eq!(rows.len(), 2, "all jobs on board: {rows:?}");
+        let rows = tasks.board().await;
+        assert_eq!(rows.len(), 2, "all tasks on board: {rows:?}");
         let by_id: HashMap<_, _> = rows
             .iter()
-            .map(|r| (r["job_id"].as_str().unwrap(), r))
+            .map(|r| (r["task_id"].as_str().unwrap(), r))
             .collect();
-        assert_eq!(by_id[&id_a.as_str()]["task_id"], "task-1");
-        assert_eq!(by_id[&id_b.as_str()]["task_id"], "task-2");
+        assert_eq!(by_id[&id_a.as_str()]["session_id"], "ses-1");
+        assert_eq!(by_id[&id_b.as_str()]["session_id"], "ses-2");
         assert_eq!(by_id[&id_a.as_str()]["status"], "completed");
         assert!(
             by_id[&id_a.as_str()]["preview"]
                 .as_str()
                 .unwrap()
-                .contains("job-a"),
+                .contains("task-a"),
             "preview expected, got: {rows:?}"
         );
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_job_output_preview_emitted() {
-        let jobs = Arc::new(BackgroundJobs::new());
+    async fn test_task_output_preview_emitted() {
+        let tasks = Arc::new(BackgroundTasks::new());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink_events = events.clone();
-        jobs.set_event_sink(Arc::new(move |name, payload| {
+        tasks.set_event_sink(Arc::new(move |name, payload| {
             sink_events.lock().unwrap().push((name, payload));
         }));
-        // A job that keeps running past one emit interval while producing
+        // A task that keeps running past one emit interval while producing
         // output (ping lasts ~3s), so the preview event has time to fire.
-        let id = jobs
+        let id = tasks
             .spawn_shell(
                 "echo preview-line-123 && ping -n 4 127.0.0.1 > nul",
                 "cmd",
@@ -1894,9 +1924,9 @@ mod tests {
             let evs = events.lock().unwrap();
             let output_evt = evs
                 .iter()
-                .find(|(n, _)| n == "activity:output")
-                .expect("activity:output event must be emitted while running");
-            assert_eq!(output_evt.1["job_id"], id);
+                .find(|(n, _)| n == "task:output")
+                .expect("task:output event must be emitted while running");
+            assert_eq!(output_evt.1["task_id"], id);
             assert!(
                 output_evt.1["output"]
                     .as_str()
@@ -1906,45 +1936,88 @@ mod tests {
                 output_evt.1["output"]
             );
         }
-        let _ = jobs.cancel(&id).await;
+        let _ = tasks.cancel(&id).await;
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_list_for_task_scopes_to_owning_task() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let (id_a, id_b) = spawn_two_echo_jobs(&jobs).await;
-        wait_terminal(&jobs, &id_a, 10).await;
-        wait_terminal(&jobs, &id_b, 10).await;
+    async fn test_list_for_session_scopes_to_owning_session() {
+        let tasks = Arc::new(BackgroundTasks::new());
+        let (id_a, id_b) = spawn_two_echo_tasks(&tasks).await;
+        wait_terminal(&tasks, &id_a, 10).await;
+        wait_terminal(&tasks, &id_b, 10).await;
 
-        let rows = jobs.list_for_task("task-1").await;
-        assert_eq!(rows.len(), 1, "only task-1's jobs: {rows:?}");
-        assert_eq!(rows[0]["job_id"], id_a);
+        let rows = tasks.list_for_session("ses-1").await;
+        assert_eq!(rows.len(), 1, "only ses-1's tasks: {rows:?}");
+        assert_eq!(rows[0]["task_id"], id_a);
         assert_eq!(rows[0]["status"], "completed");
         assert!(
-            rows[0]["preview"].as_str().unwrap().contains("job-a"),
+            rows[0]["preview"].as_str().unwrap().contains("task-a"),
             "preview expected, got: {rows:?}"
         );
 
-        let all = jobs.list_for_task("task-2").await;
+        let all = tasks.list_for_session("ses-2").await;
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0]["job_id"], id_b);
+        assert_eq!(all[0]["task_id"], id_b);
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_failed_job_reports_exit_code_and_reason() {
-        let jobs = Arc::new(BackgroundJobs::new());
-        let id = jobs
+    async fn test_failed_task_reports_exit_code_and_reason() {
+        let tasks = Arc::new(BackgroundTasks::new());
+        let id = tasks
             .spawn_shell("echo progress... && exit 42", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&jobs, &id, 10).await;
+        let v = wait_terminal(&tasks, &id, 10).await;
         assert_eq!(v["status"], "failed", "got: {v}");
         assert_eq!(v["exit_code"], 42, "exit code must be captured, got: {v}");
         assert!(
             v["error_reason"].as_str().is_some_and(|s| !s.is_empty()),
             "error_reason must be present, got: {v}"
+        );
+    }
+
+    // ── encode_utf16le_base64 ────────────────────────────────────────────
+
+    #[cfg(windows)]
+    #[test]
+    fn test_encode_utf16le_base64_roundtrips_unicode() {
+        let script = "Write-Output \"中文 & $('quote')\"; %foo%";
+        let encoded = encode_utf16le_base64(script);
+        // The payload must be pure ASCII so no code page / escaping can touch it.
+        assert!(encoded.is_ascii(), "payload must be ASCII: {encoded}");
+        // Decode back: each char is a UTF-16LE unit, then UTF-16 -> String.
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .expect("valid base64");
+        let units: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&units).expect("valid UTF-16"),
+            script,
+            "encoded command must round-trip exactly"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_build_shell_command_powershell_uses_encoded_command() {
+        let cmd = build_shell_command_silent("powershell", "Write-Output hi");
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[2], "-EncodedCommand");
+        // The 4th arg is base64 UTF-16LE of the UTF-8-forced script.
+        assert!(
+            args[3]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
         );
     }
 }

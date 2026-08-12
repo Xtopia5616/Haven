@@ -17,5 +17,5 @@ haven-memory = { path = "../memory" }
 haven-llm = { path = "../llm" }
 haven-tools = { path = "../tools" }
 haven-common = { path = "../common" }
-haven-task = { path = "../task" }
+haven-session = { path = "../session" }
 tiktoken-rs = "0.12"

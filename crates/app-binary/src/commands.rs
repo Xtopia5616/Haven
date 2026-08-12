@@ -8,8 +8,8 @@ use haven_llm::stt::build_stt_client;
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_llm::{ModelInfo, ModelRegistry};
 use haven_memory::repositories::messages::Message;
-use haven_memory::repositories::task_steps::TaskStep;
-use haven_memory::repositories::tasks::Task;
+use haven_memory::repositories::session_steps::SessionStep;
+use haven_memory::repositories::sessions::Session;
 use haven_tools::{ConfirmationResult, McpClientStatus, McpServerSnapshot, McpStatusChangeEvent};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -22,8 +22,8 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::filter::EnvFilter;
 
 #[derive(Serialize)]
-pub struct TaskListResponse {
-    pub tasks: Vec<haven_task::TaskInfo>,
+pub struct SessionListResponse {
+    pub sessions: Vec<haven_session::SessionInfo>,
 }
 
 #[derive(Serialize)]
@@ -260,7 +260,7 @@ async fn hot_swap_router(state: &AppState, new_router: Arc<LlmRouter>) -> Result
 /// The transcript is **not** submitted to the agent here: the frontend
 /// listens for `transcription:result` and delivers the text through the same
 /// `process_transcript` path as a typed message, so voice input continues the
-/// currently open conversation (task) instead of always starting a new one.
+/// currently open conversation (session) instead of always starting a new one.
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,
@@ -364,7 +364,7 @@ pub async fn stop_recording(
     // "recording" overlay up for the entire post-processing run. With
     // this split the overlay disappears within ~80 ms of the user
     // clicking stop, and STT + agent run as background work that
-    // drives the rest of the UI through `transcription:*` / `task:*`
+    // drives the rest of the UI through `transcription:*` / `session:*`
     // events.
     let result = match state.pipeline.stop_capture().await {
         Ok(result) => result,
@@ -424,7 +424,7 @@ pub async fn cancel_recording(
 pub async fn process_transcript(
     state: State<'_, Arc<AppState>>,
     transcript: String,
-    active_task_id: Option<String>,
+    active_session_id: Option<String>,
     attachments: Option<Vec<haven_memory::repositories::messages::MessageAttachment>>,
     voice: Option<bool>,
 ) -> Result<Value, String> {
@@ -439,15 +439,15 @@ pub async fn process_transcript(
     let attachments = persist_file_attachments(attachments).await?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
-        "process_transcript called: text={:?} active_task_id={:?} attachments={} voice={}",
+        "process_transcript called: text={:?} active_session_id={:?} attachments={} voice={}",
         transcript,
-        active_task_id,
+        active_session_id,
         attachments.len(),
         voice
     );
     let result = state
         .agent
-        .process_input_with_attachments(&transcript, active_task_id.clone(), &attachments, voice)
+        .process_input_with_attachments(&transcript, active_session_id.clone(), &attachments, voice)
         .await
         .map_err(|e| log_err("process_transcript", e))?;
     tracing::debug!("process_transcript result: {:?}", result);
@@ -621,60 +621,63 @@ fn validate_attachments(
 }
 
 #[tauri::command]
-pub async fn reopen_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
-    tracing::debug!("reopen_task called: task_id={}", task_id);
+pub async fn reopen_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<(), String> {
+    tracing::debug!("reopen_session called: session_id={}", session_id);
     state
         .agent
-        .reopen_task(&task_id)
+        .reopen_session(&session_id)
         .await
-        .map_err(|e| log_err("reopen_task", e))?;
-    tracing::debug!("reopen_task done");
+        .map_err(|e| log_err("reopen_session", e))?;
+    tracing::debug!("reopen_session done");
     Ok(())
 }
 
 #[tauri::command]
-pub async fn get_tasks(state: State<'_, Arc<AppState>>) -> Result<TaskListResponse, String> {
-    let tasks = state.executor.list_tasks().await;
-    Ok(TaskListResponse { tasks })
+pub async fn get_sessions(state: State<'_, Arc<AppState>>) -> Result<SessionListResponse, String> {
+    let sessions = state.executor.list_sessions().await;
+    Ok(SessionListResponse { sessions })
 }
 
-/// Board view of every activity (background jobs + pending reminders), for
-/// the UI's activity panel. Mirrors the `activity:created` / `activity:updated`
-/// / `activity:finished` / `activity:output` events so the panel can hydrate
-/// on mount / navigation. Job rows carry `kind: "job"` (plus `job_id`),
-/// reminder rows `kind: "reminder"` (plus `id`).
+/// Board view of every task (background tasks + pending scheduled_tasks), for
+/// the UI's task panel. Mirrors the `task:created` / `task:updated`
+/// / `task:finished` / `task:output` events so the panel can hydrate
+/// on mount / navigation. Task rows carry `kind: "task"` (plus `task_id`),
+/// scheduled-task rows `kind: "scheduled"` (plus `id`).
 ///
-/// Live jobs come from the in-memory board (with output preview); terminal
-/// job rows that already aged out of the board's TTL are merged back in from
-/// the persisted activity table, so the panel keeps showing history (results
+/// Live tasks come from the in-memory board (with output preview); terminal
+/// task rows that already aged out of the board's TTL are merged back in from
+/// the persisted task table, so the panel keeps showing history (results
 /// survive app restarts).
 #[tauri::command]
-pub async fn list_activities(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, String> {
-    let mut rows = state.tools.background_jobs.board().await;
+pub async fn list_tasks(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, String> {
+    let mut rows = state.tools.background_tasks.board().await;
     for row in &mut rows {
-        row["kind"] = json!("job");
+        row["kind"] = json!("background");
     }
     let mut live_ids = std::collections::HashSet::new();
     for row in &rows {
-        if let Some(id) = row.get("job_id").and_then(|v| v.as_str()) {
+        if let Some(id) = row.get("task_id").and_then(|v| v.as_str()) {
             live_ids.insert(id.to_string());
         }
     }
-    if let Ok(history) = state.db.list_activities(Some("job")) {
+    if let Ok(history) = state.db.list_tasks(Some("background")) {
         for a in history {
             if live_ids.contains(&a.id) {
                 continue;
             }
             let mut row = json!({
-                "kind": "job",
-                "job_id": a.id,
+                "kind": "background",
+                "task_id": a.id,
                 "status": a.status,
                 "started_at": a.started_at,
                 "finished_at": a.finished_at,
                 "command": a.command,
             });
-            if let Some(tid) = &a.task_id {
-                row["task_id"] = json!(tid);
+            if let Some(tid) = &a.session_id {
+                row["session_id"] = json!(tid);
             }
             if let Some(code) = a.exit_code {
                 row["exit_code"] = json!(code);
@@ -701,44 +704,41 @@ pub async fn list_activities(state: State<'_, Arc<AppState>>) -> Result<Vec<Valu
             rows.push(row);
         }
     }
-    let mut reminder_rows = state.tools.reminders.list().await;
+    let mut reminder_rows = state.tools.scheduled_tasks.list().await;
     for row in &mut reminder_rows {
-        row["kind"] = json!("reminder");
+        row["kind"] = json!("scheduled");
     }
     rows.extend(reminder_rows);
     Ok(rows)
 }
 
-/// Cancel a running activity from the UI (a background job or a pending
-/// reminder, selected via `kind`). Returns false when the activity does not
+/// Cancel a running task from the UI (a background task or a pending
+/// scheduled task, selected via `kind`). Returns false when the task does not
 /// exist or is not cancellable.
 #[tauri::command]
-pub async fn cancel_activity(
+pub async fn cancel_task(
     state: State<'_, Arc<AppState>>,
-    activity_id: String,
+    task_id: String,
     kind: String,
 ) -> Result<bool, String> {
-    let cancelled = if kind == "reminder" {
-        state.tools.reminders.cancel(&activity_id).await
+    let cancelled = if kind == "scheduled" {
+        state.tools.scheduled_tasks.cancel(&task_id).await
     } else {
-        state.tools.background_jobs.cancel(&activity_id).await
+        state.tools.background_tasks.cancel(&task_id).await
     };
     if !cancelled {
-        tracing::warn!(
-            "cancel_activity: not found or not cancellable: {}",
-            activity_id
-        );
+        tracing::warn!("cancel_task: not found or not cancellable: {}", task_id);
     }
     Ok(cancelled)
 }
 
-/// Fired-reminder history (and terminal job history past the in-memory TTL)
-/// from the persisted activity table, newest first, for the activity panel's
-/// history tab. Rows carry `kind` plus the full stored payload; reminder rows
+/// Fired-scheduled-task history (and terminal task history past the in-memory TTL)
+/// from the persisted task table, newest first, for the task panel's
+/// history tab. Rows carry `kind` plus the full stored payload; scheduled-task rows
 /// are limited to `limit` entries (default 50) so the panel cannot grow
 /// unboundedly.
 #[tauri::command]
-pub async fn list_activity_history(
+pub async fn list_task_history(
     state: State<'_, Arc<AppState>>,
     kind: Option<String>,
     limit: Option<usize>,
@@ -746,8 +746,8 @@ pub async fn list_activity_history(
     let limit = limit.unwrap_or(50).min(200);
     let rows = state
         .db
-        .list_activities(kind.as_deref())
-        .map_err(|e| log_err("list_activity_history", e))?;
+        .list_tasks(kind.as_deref())
+        .map_err(|e| log_err("list_task_history", e))?;
     let mut out = Vec::new();
     for a in rows.into_iter().take(limit) {
         let mut row = json!({
@@ -774,8 +774,8 @@ pub async fn list_activity_history(
         if let Some(m) = &a.mode {
             row["mode"] = json!(m);
         }
-        if let Some(tid) = &a.task_id {
-            row["task_id"] = json!(tid);
+        if let Some(tid) = &a.session_id {
+            row["session_id"] = json!(tid);
         }
         if let Some(c) = &a.command {
             row["command"] = json!(c);
@@ -797,38 +797,35 @@ pub async fn list_activity_history(
     Ok(out)
 }
 
-/// Remove a persisted activity row (fired reminder or terminal job history)
+/// Remove a persisted task row (fired scheduled_task or terminal task history)
 /// by id. Returns false when no row matched.
 #[tauri::command]
-pub async fn delete_activity(
-    state: State<'_, Arc<AppState>>,
-    activity_id: String,
-) -> Result<bool, String> {
+pub async fn delete_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<bool, String> {
     state
         .db
-        .delete_activity(&activity_id)
+        .delete_task(&task_id)
         .map(|_| true)
-        .map_err(|e| log_err("delete_activity", e))
+        .map_err(|e| log_err("delete_task", e))
 }
 
 #[tauri::command]
-pub async fn end_task(
+pub async fn end_session(
     state: State<'_, Arc<AppState>>,
-    task_id: String,
+    session_id: String,
     _app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // L3: capture the title BEFORE end_task removes the task from the
+    // L3: capture the title BEFORE end_session removes the session from the
     // in-memory list; reading afterwards would fall back to the DB and lose
-    // the generated title (end_task clears the working set).
+    // the generated title (end_session clears the working set).
     let title = state
         .executor
-        .get_task(&task_id)
+        .get_session(&session_id)
         .await
         .map(|t| t.title.clone().unwrap_or(t.input))
         .or_else(|| {
             state
                 .db
-                .get_task(&task_id)
+                .get_session(&session_id)
                 .ok()
                 .flatten()
                 .map(|t| t.title.unwrap_or(t.input_text))
@@ -837,12 +834,15 @@ pub async fn end_task(
 
     let _ = state
         .executor
-        .end_task(&task_id)
+        .end_session(&session_id)
         .await
-        .map_err(|e| log_err("end_task", e))?;
-    // end_task always ends as Completed — the user explicitly finished the
-    // task, so it is reported as completed (with notification), never error.
-    state.agent.emit_task_completed(&task_id, &title).await;
+        .map_err(|e| log_err("end_session", e))?;
+    // end_session always ends as Completed — the user explicitly finished the
+    // session, so it is reported as completed (with notification), never error.
+    state
+        .agent
+        .emit_session_completed(&session_id, &title)
+        .await;
     Ok(())
 }
 
@@ -854,9 +854,9 @@ pub async fn resolve_confirmation(
     trust_session: Option<bool>,
 ) -> Result<(), String> {
     // Resolve the confirmation and capture the step's risk level atomically
-    // (under the executor's tasks lock). This avoids the previous race where
-    // the resolution and a separate `list_tasks()` lookup could observe a
-    // step that a concurrent `end_task`/rollback had already removed.
+    // (under the executor's sessions lock). This avoids the previous race where
+    // the resolution and a separate `list_sessions()` lookup could observe a
+    // step that a concurrent `end_session`/rollback had already removed.
     let risk_level = state
         .executor
         .resolve_confirmation(&step_id.into(), confirmed)
@@ -896,10 +896,10 @@ pub async fn get_history(
     state: State<'_, Arc<AppState>>,
     limit: i64,
     offset: i64,
-) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
+) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
         .db
-        .list_tasks(limit, offset)
+        .list_sessions(limit, offset)
         .map_err(|e| log_err("get_history", e))
 }
 
@@ -907,7 +907,7 @@ pub async fn get_history(
 pub async fn count_history(state: State<'_, Arc<AppState>>) -> Result<i64, String> {
     state
         .db
-        .count_tasks()
+        .count_sessions()
         .map_err(|e| log_err("count_history", e))
 }
 
@@ -917,10 +917,10 @@ pub async fn search_history_paginated(
     query: String,
     limit: i64,
     offset: i64,
-) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
+) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
         .db
-        .search_tasks_paginated(&query, limit, offset)
+        .search_sessions_paginated(&query, limit, offset)
         .map_err(|e| log_err("search_history_paginated", e))
 }
 
@@ -931,7 +931,7 @@ pub async fn count_history_search(
 ) -> Result<i64, String> {
     state
         .db
-        .count_tasks_search(&query)
+        .count_sessions_search(&query)
         .map_err(|e| log_err("count_history_search", e))
 }
 
@@ -1465,10 +1465,10 @@ pub async fn execute_skill(
 pub async fn search_history(
     state: State<'_, Arc<AppState>>,
     query: String,
-) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
+) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
         .db
-        .search_tasks(&query)
+        .search_sessions(&query)
         .map_err(|e| log_err("search_history", e))
 }
 
@@ -1482,10 +1482,10 @@ pub async fn search_history_filtered(
     end_date: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
-) -> Result<Vec<haven_memory::repositories::tasks::Task>, String> {
+) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
         .db
-        .search_tasks_filtered(
+        .search_sessions_filtered(
             query.as_deref(),
             status.as_deref(),
             start_date.as_deref(),
@@ -1496,12 +1496,12 @@ pub async fn search_history_filtered(
         .map_err(|e| log_err("search_history_filtered", e))
 }
 
-/// Manually update a task's display title.
+/// Manually update a session's display title.
 #[tauri::command]
-pub async fn update_task_title(
+pub async fn update_session_title(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
-    task_id: String,
+    session_id: String,
     title: String,
 ) -> Result<(), String> {
     let title = title.trim().to_string();
@@ -1510,13 +1510,16 @@ pub async fn update_task_title(
     }
     state
         .db
-        .update_task_title(&task_id, &title)
-        .map_err(|e| log_err("update_task_title", e))?;
-    state.executor.update_task_title(&task_id, &title).await;
+        .update_session_title(&session_id, &title)
+        .map_err(|e| log_err("update_session_title", e))?;
+    state
+        .executor
+        .update_session_title(&session_id, &title)
+        .await;
     let _ = app.emit(
-        "task:title-updated",
+        "session:title-updated",
         serde_json::json!({
-            "task_id": task_id,
+            "session_id": session_id,
             "title": title,
         }),
     );
@@ -1524,20 +1527,23 @@ pub async fn update_task_title(
 }
 
 #[tauri::command]
-pub async fn delete_task(
+pub async fn delete_session(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
-    task_id: String,
+    session_id: String,
 ) -> Result<(), String> {
     state
         .db
-        .delete_task(&task_id)
-        .map_err(|e| log_err("delete_task", e))?;
-    state.executor.remove_task(&task_id).await;
-    // The task is gone, so no `task:updated` terminal transition will ever
-    // fire for it; a dedicated `task:deleted` lets listeners (busy-task
-    // tracking, per-task state) release the id immediately.
-    let _ = app.emit("task:deleted", serde_json::json!({ "task_id": task_id }));
+        .delete_session(&session_id)
+        .map_err(|e| log_err("delete_session", e))?;
+    state.executor.remove_session(&session_id).await;
+    // The session is gone, so no `session:updated` terminal transition will ever
+    // fire for it; a dedicated `session:deleted` lets listeners (busy-session
+    // tracking, per-session state) release the id immediately.
+    let _ = app.emit(
+        "session:deleted",
+        serde_json::json!({ "session_id": session_id }),
+    );
     Ok(())
 }
 
@@ -1548,14 +1554,14 @@ pub async fn clear_history(
 ) -> Result<u64, String> {
     let count = state
         .db
-        .clear_tasks()
+        .clear_sessions()
         .map(|n| n as u64)
         .map_err(|e| log_err("clear_history", e))?;
-    state.executor.clear_all_tasks().await;
-    // `task_id: null` signals "every task was removed" so listeners clear
-    // per-task state (e.g. the busy set) in one shot instead of one event
-    // per deleted task.
-    let _ = app.emit("task:deleted", serde_json::json!({ "task_id": null }));
+    state.executor.clear_all_sessions().await;
+    // `session_id: null` signals "every session was removed" so listeners clear
+    // per-session state (e.g. the busy set) in one shot instead of one event
+    // per deleted session.
+    let _ = app.emit("session:deleted", serde_json::json!({ "session_id": null }));
     Ok(count)
 }
 
@@ -1882,9 +1888,9 @@ pub async fn export_history(
     end_date: Option<String>,
     status: Option<String>,
 ) -> Result<String, String> {
-    let tasks = state
+    let sessions = state
         .db
-        .search_tasks_filtered(
+        .search_sessions_filtered(
             None,
             status.as_deref(),
             start_date.as_deref(),
@@ -1895,8 +1901,8 @@ pub async fn export_history(
         .map_err(|e| log_err("export_history", e))?;
     serde_json::to_string_pretty(&serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
-        "count": tasks.len(),
-        "tasks": tasks,
+        "count": sessions.len(),
+        "sessions": sessions,
     }))
     .map_err(|e| log_err("export_history", e))
 }
@@ -1995,8 +2001,8 @@ pub async fn update_settings(
     let (
         mcp_servers,
         mcp_discovery,
-        task_max_steps,
-        task_max_concurrent,
+        session_max_steps,
+        session_max_concurrent,
         llm_config,
         min_risk_level,
     ) = {
@@ -2008,8 +2014,8 @@ pub async fn update_settings(
         (
             config.mcp_servers.clone(),
             config.mcp_discovery.clone(),
-            config.task.max_steps,
-            config.task.max_concurrent,
+            config.session.max_steps,
+            config.session.max_concurrent,
             config.llm.clone(),
             config.security.min_risk_level,
         )
@@ -2018,8 +2024,8 @@ pub async fn update_settings(
     state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
     let new_router = Arc::new(LlmRouter::new(llm_config));
     hot_swap_router(&state, new_router).await?;
-    state.agent.set_max_steps(task_max_steps);
-    state.executor.set_max_concurrent(task_max_concurrent);
+    state.agent.set_max_steps(session_max_steps);
+    state.executor.set_max_concurrent(session_max_concurrent);
     state
         .tools
         .safety_gateway
@@ -2103,6 +2109,31 @@ pub async fn update_settings(
     Ok(())
 }
 
+/// Persist just the appearance section (theme / accent) without touching the
+/// rest of the settings. Used by the UI for quick theme toggles so a single
+/// appearance change does not need the full `Settings` round-trip.
+#[tauri::command]
+pub async fn set_appearance(
+    theme: Option<String>,
+    accent_color: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = app.state::<Arc<AppState>>();
+    let mut loader = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("set_appearance", e))?;
+    let cfg = loader.config_mut();
+    if let Some(t) = theme {
+        cfg.appearance.theme = Some(t);
+    }
+    if let Some(a) = accent_color {
+        cfg.appearance.accent_color = Some(a);
+    }
+    loader.save().map_err(|e| log_err("set_appearance", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn enable_autostart() -> Result<(), String> {
     // Debug builds load from devUrl (localhost:4721) — autostart would
@@ -2126,33 +2157,37 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 }
 
 #[derive(Serialize)]
-pub struct TaskReviewResponse {
-    pub task: Task,
+pub struct SessionReviewResponse {
+    pub session: Session,
     pub messages: Vec<Message>,
-    pub steps: Vec<TaskStep>,
-    /// Persisted cumulative token/cost counters for the task, so a resumed
+    pub steps: Vec<SessionStep>,
+    /// Persisted cumulative token/cost counters for the session, so a resumed
     /// or auto-restored conversation can restore the token-stats display.
-    /// When the task predates usage persistence (no `task_usage` row) this
+    /// When the session predates usage persistence (no `session_usage` row) this
     /// falls back to a rough estimate derived from the persisted message
     /// and step text, flagged by `usage_estimated`.
-    pub usage: Option<haven_memory::repositories::usage::TaskUsage>,
-    /// True when `usage` is an estimate (task created before per-task usage
+    pub usage: Option<haven_memory::repositories::usage::SessionUsage>,
+    /// True when `usage` is an estimate (session created before per-session usage
     /// counters were persisted) rather than the real recorded totals.
     pub usage_estimated: bool,
+    /// Per-LLM-call usage detail (one row per model response: step, role,
+    /// model, tokens, cost, duration), oldest first. Empty for sessions that
+    /// predate per-call usage persistence.
+    pub llm_usage: Vec<haven_memory::repositories::usage::LlmCallUsage>,
 }
 
-/// Rough token-count estimate for tasks that predate usage persistence.
+/// Rough token-count estimate for sessions that predate usage persistence.
 /// Counts CJK characters as ~1 token and other characters as ~1/4 token
 /// across persisted messages and tool steps, adds a flat prompt/tool
 /// definition overhead, and charges 800 tokens per image attachment.
 /// Cost is unknown, so `has_cost` stays false. Estimates are computed on
-/// read and never written to `task_usage`, so a resumed conversation's
+/// read and never written to `session_usage`, so a resumed conversation's
 /// real counters can never be contaminated by them.
-fn estimate_task_usage(
+fn estimate_session_usage(
     messages: &[Message],
-    steps: &[TaskStep],
-) -> haven_memory::repositories::usage::TaskUsage {
-    use haven_memory::repositories::usage::TaskUsage;
+    steps: &[SessionStep],
+) -> haven_memory::repositories::usage::SessionUsage {
+    use haven_memory::repositories::usage::SessionUsage;
 
     fn estimate_text(text: &str) -> u32 {
         let mut cjk: u32 = 0;
@@ -2197,7 +2232,7 @@ fn estimate_task_usage(
     total += 3000;
     let prompt = total * 2 / 3;
     let completion = total - prompt;
-    TaskUsage {
+    SessionUsage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: total,
@@ -2206,98 +2241,110 @@ fn estimate_task_usage(
     }
 }
 
-/// Load the task's messages and steps into a review response.
-/// Shared by `get_task_for_review` and `get_last_conversation`.
-fn review_response_for_task(
+/// Load the session's messages and steps into a review response.
+/// Shared by `get_session_for_review` and `get_last_conversation`.
+fn review_response_for_session(
     db: &haven_memory::Database,
-    task: Task,
-) -> Result<TaskReviewResponse, String> {
+    session: Session,
+) -> Result<SessionReviewResponse, String> {
     let messages = db
-        .get_task_messages(&task.id)
-        .map_err(|e| log_err("review_response_for_task", e))?;
+        .get_session_messages(&session.id)
+        .map_err(|e| log_err("review_response_for_session", e))?;
     let steps = db
-        .get_task_steps(&task.id)
-        .map_err(|e| log_err("review_response_for_task", e))?;
+        .get_session_steps(&session.id)
+        .map_err(|e| log_err("review_response_for_session", e))?;
     let (usage, usage_estimated) = match db
-        .get_task_usage(&task.id)
-        .map_err(|e| log_err("review_response_for_task", e))?
+        .get_session_usage(&session.id)
+        .map_err(|e| log_err("review_response_for_session", e))?
     {
         Some(u) => (Some(u), false),
-        None => (Some(estimate_task_usage(&messages, &steps)), true),
+        None => (Some(estimate_session_usage(&messages, &steps)), true),
     };
-    Ok(TaskReviewResponse {
-        task,
+    let llm_usage = db
+        .get_session_llm_usage(&session.id)
+        .map_err(|e| log_err("review_response_for_session", e))?;
+    Ok(SessionReviewResponse {
+        session,
         messages,
         steps,
         usage,
         usage_estimated,
+        llm_usage,
     })
 }
 
 #[tauri::command]
-pub async fn get_task_for_review(
+pub async fn get_session_for_review(
     state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<TaskReviewResponse, String> {
-    let task = state
+    session_id: String,
+) -> Result<SessionReviewResponse, String> {
+    let session = state
         .db
-        .get_task(&task_id)
-        .map_err(|e| log_err("get_task_for_review", e))?
-        .ok_or_else(|| format!("Task not found: {}", task_id))?;
-    review_response_for_task(&state.db, task)
+        .get_session(&session_id)
+        .map_err(|e| log_err("get_session_for_review", e))?
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+    review_response_for_session(&state.db, session)
 }
 
-/// Return the most recent persisted task with its session messages and
+/// Return the most recent persisted session with its session messages and
 /// steps, for the chat page to auto-restore the last conversation on app
-/// start. Returns `None` when no task exists yet.
+/// start. Returns `None` when no session exists yet.
 #[tauri::command]
 pub async fn get_last_conversation(
     state: State<'_, Arc<AppState>>,
-) -> Result<Option<TaskReviewResponse>, String> {
-    let tasks = state
+) -> Result<Option<SessionReviewResponse>, String> {
+    let sessions = state
         .db
-        .list_tasks(1, 0)
+        .list_sessions(1, 0)
         .map_err(|e| log_err("get_last_conversation", e))?;
-    match tasks.into_iter().next() {
-        Some(task) => review_response_for_task(&state.db, task).map(Some),
+    match sessions.into_iter().next() {
+        Some(session) => review_response_for_session(&state.db, session).map(Some),
         None => Ok(None),
     }
 }
 
-/// Roll back a task to a specific branch point. The task is rewound to
-/// the saved state at that step. When `pause` is true the task is set to
+/// Roll back a session to a specific branch point. The session is rewound to
+/// the saved state at that step. When `pause` is true the session is set to
 /// Paused (user wants to edit the message before re-sending); otherwise it
 /// is set to Pending for immediate re-execution. `target_message_id` is the
 /// id of the exact message being rolled back; it lets the backend detect an
 /// orphan rollback (a user message that was never processed into the
-/// ReAct context). The id must resolve to a persisted task message when
+/// ReAct context). The id must resolve to a persisted session message when
 /// `pause` is true — an unresolvable id is an error, not a content-based
 /// guess.
 #[tauri::command]
-pub async fn rollback_task(
+pub async fn rollback_session(
     state: State<'_, Arc<AppState>>,
-    task_id: String,
+    session_id: String,
     target_step: u32,
     pause: Option<bool>,
     target_message_id: Option<String>,
 ) -> Result<(), String> {
     state
         .agent
-        .rollback_task(&task_id, target_step, pause.unwrap_or(false), target_message_id.as_deref())
+        .rollback_session(
+            &session_id,
+            target_step,
+            pause.unwrap_or(false),
+            target_message_id.as_deref(),
+        )
         .await
-        .map_err(|e| log_err("rollback_task", e))
+        .map_err(|e| log_err("rollback_session", e))
 }
 
-/// Resume a task that errored mid-step. Removes partial output persisted on
-/// error and sets the task to Pending so the dispatcher retries the failed
+/// Resume a session that errored mid-step. Removes partial output persisted on
+/// error and sets the session to Pending so the dispatcher retries the failed
 /// step from the saved snapshot.
 #[tauri::command]
-pub async fn continue_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
+pub async fn continue_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<(), String> {
     state
         .agent
-        .continue_task(&task_id)
+        .continue_session(&session_id)
         .await
-        .map_err(|e| log_err("continue_task", e))
+        .map_err(|e| log_err("continue_session", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -2437,10 +2484,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_task_list_response_serde() {
-        let resp = TaskListResponse { tasks: vec![] };
+    fn test_session_list_response_serde() {
+        let resp = SessionListResponse { sessions: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(json, r#"{"tasks":[]}"#);
+        assert_eq!(json, r#"{"sessions":[]}"#);
     }
 
     #[test]
@@ -2715,10 +2762,10 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_task_usage_has_no_cost() {
+    fn test_estimate_session_usage_has_no_cost() {
         let msg = Message {
             id: "m1".into(),
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             role: "user".into(),
             content: "你好 world".into(),
             message_type: None,
@@ -2727,9 +2774,9 @@ mod tests {
             attachments: vec![att("image/png", "aGVsbG8=")],
             voice: false,
         };
-        let step = TaskStep {
+        let step = SessionStep {
             id: "s1".into(),
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             step_number: 0,
             thought: Some("查找文件".into()),
             action_tool: Some("file".into()),
@@ -2743,7 +2790,7 @@ mod tests {
             completed_at: None,
             created_at: String::new(),
         };
-        let u = estimate_task_usage(&[msg], &[step]);
+        let u = estimate_session_usage(&[msg], &[step]);
         assert!(!u.has_cost);
         assert_eq!(u.cost_usd, 0.0);
         // CJK chars count 1 token, latin chars count 1/4, image +800,
@@ -2753,10 +2800,10 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_task_usage_cjk_weighting() {
+    fn test_estimate_session_usage_cjk_weighting() {
         let cjk = Message {
             id: "m1".into(),
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             role: "user".into(),
             content: "你好世界".into(),
             message_type: None,
@@ -2767,7 +2814,7 @@ mod tests {
         };
         let latin = Message {
             id: "m2".into(),
-            task_id: "t1".into(),
+            session_id: "t1".into(),
             role: "user".into(),
             content: "hello".into(),
             message_type: None,
@@ -2776,8 +2823,8 @@ mod tests {
             attachments: vec![],
             voice: false,
         };
-        let u1 = estimate_task_usage(&[cjk], &[]);
-        let u2 = estimate_task_usage(&[latin], &[]);
+        let u1 = estimate_session_usage(&[cjk], &[]);
+        let u2 = estimate_session_usage(&[latin], &[]);
         // 4 CJK chars = 4 tokens; 5 latin chars = 1 token.
         assert_eq!(u1.total_tokens - u2.total_tokens, 3);
     }

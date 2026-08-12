@@ -9,7 +9,7 @@ pub use openai::OpenAiAdapter;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
 use haven_common::config::ModelEndpoint;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -102,13 +102,10 @@ pub(crate) fn build_headers(
     if endpoint.api_key.is_empty() {
         return headers;
     }
-    let customized = endpoint.auth_header_name != "Authorization"
-        || endpoint.auth_header_prefix != "Bearer";
+    let customized =
+        endpoint.auth_header_name != "Authorization" || endpoint.auth_header_prefix != "Bearer";
     if customized {
-        let auth = format!(
-            "{} {}",
-            endpoint.auth_header_prefix, endpoint.api_key
-        );
+        let auth = format!("{} {}", endpoint.auth_header_prefix, endpoint.api_key);
         if let Ok(v) = HeaderValue::from_str(&auth) {
             let name = endpoint
                 .auth_header_name
@@ -149,12 +146,14 @@ pub(crate) async fn send_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
             // Try seconds first, then HTTP-date
-            s.parse::<u64>().ok().or_else(|| {
-                // HTTP-date: not commonly used; log and fall back to None
-                tracing::warn!("Retry-After as HTTP-date not yet supported: {}", s);
-                None
-            })
-            .map(Duration::from_secs)
+            s.parse::<u64>()
+                .ok()
+                .or_else(|| {
+                    // HTTP-date: not commonly used; log and fall back to None
+                    tracing::warn!("Retry-After as HTTP-date not yet supported: {}", s);
+                    None
+                })
+                .map(Duration::from_secs)
         });
     let txt = resp.text().await.unwrap_or_default();
     Err(http_status_to_error(status, &txt, retry_after))
@@ -258,7 +257,7 @@ pub(crate) enum LineMode {
     SseOrRaw,
 }
 
-/// Spawn a task that reads an HTTP response byte stream line-by-line and
+/// Spawn a session that reads an HTTP response byte stream line-by-line and
 /// forwards parsed payloads on `tx`. Handles SSE (`data: …`) and raw-JSON-lines
 /// formats in one pass; the interpretation is selected via `mode`.
 pub(crate) fn spawn_line_reader<S>(
@@ -485,13 +484,17 @@ mod tests {
 
     #[test]
     fn normalize_web_search_call_item_skips_non_objects() {
-        assert_eq!(normalize_web_search_call_item(serde_json::Value::Null), serde_json::Value::Null);
+        assert_eq!(
+            normalize_web_search_call_item(serde_json::Value::Null),
+            serde_json::Value::Null
+        );
     }
 
     #[test]
     fn upsert_web_search_call_replaces_same_id_and_appends_new() {
         use serde_json::json;
-        let mut calls = vec![json!({"type": "web_search_call", "id": "ws_1", "status": "in_progress"})];
+        let mut calls =
+            vec![json!({"type": "web_search_call", "id": "ws_1", "status": "in_progress"})];
         // The completed payload replaces the in-progress skeleton by id.
         upsert_web_search_call(
             &mut calls,
@@ -499,7 +502,10 @@ mod tests {
         );
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["status"], "completed");
-        assert_eq!(calls[0]["action"], json!({"type": "search", "queries": ["capital of France"]}));
+        assert_eq!(
+            calls[0]["action"],
+            json!({"type": "search", "queries": ["capital of France"]})
+        );
         // A different id is appended.
         upsert_web_search_call(
             &mut calls,

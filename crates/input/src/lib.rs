@@ -370,7 +370,7 @@ impl InputPipeline {
                     offset += VAD_FRAME_SAMPLES;
 
                     // Run the model on the dedicated VAD worker thread instead
-                    // of spawning a blocking task per frame (and locking the
+                    // of spawning a blocking session per frame (and locking the
                     // engine). Frames below the energy floor skip the
                     // round-trip entirely — they are silence by definition.
                     let prob = match &data.vad_worker {
@@ -550,20 +550,6 @@ impl InputPipeline {
                 "未配置 STT 服务（设置 → STT Provider 选择 MCP Server 或 LLM Adapter）".into(),
             );
         }
-    }
-
-    /// Backwards-compatible single-call stop: captures audio and runs STT
-    /// inline. New callers should prefer `stop_capture` + `transcribe`.
-    pub async fn stop_recording(&self) -> Result<RecordingResult> {
-        let mut result = self.stop_capture().await?;
-        self.transcribe(&mut result).await;
-        tracing::debug!(
-            "Recording stopped, {} samples, reason={:?}, transcript={}",
-            result.pcm.len(),
-            result.reason,
-            result.transcript.is_some(),
-        );
-        Ok(result)
     }
 
     async fn stop_capture_inner(&self) -> Result<RecordingResult> {
@@ -746,7 +732,7 @@ struct LoopData {
     silent_abort: Arc<AtomicBool>,
 }
 
-/// Fire the async auto-stop hook on a spawned task: the recording loop must
+/// Fire the async auto-stop hook on a spawned session: the recording loop must
 /// return promptly (the hook drives the stop path that awaits this loop's
 /// result), so it can never be awaited in place.
 fn notify_auto_stop(handler: &Option<Arc<dyn InputHandler>>) {

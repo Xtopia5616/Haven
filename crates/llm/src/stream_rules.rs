@@ -15,7 +15,7 @@ pub struct StreamRule {
     pub pattern: Regex,
     /// Raw pattern string for (de)serialization.
     pub pattern_str: String,
-    /// Text to inject as a system reminder when the rule triggers in abort mode.
+    /// Text to inject as a system message when the rule triggers in abort mode.
     pub inject: String,
     /// Whether to abort the stream or just warn.
     pub mode: StreamRuleMode,
@@ -61,7 +61,7 @@ impl<'de> Deserialize<'de> for StreamRule {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StreamRuleMode {
-    /// Abort the current stream, inject the rule as a system reminder, and retry.
+    /// Abort the current stream, inject the rule as a system message, and retry.
     Abort,
     /// Emit a warning event to the UI but allow the stream to continue.
     Warn,

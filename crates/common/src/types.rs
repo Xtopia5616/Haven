@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 //
 // Unified ID convention (see AGENTS.md §ID 规范):
 //   - Every persisted entity id is a `{prefix}-{uuid32}` string (hyphen +
-//     lowercase-hex simple UUID), e.g. `task-3f9a...`.
-//   - Prefixes: `task-` (tasks), `msg-` (messages and memory episodes —
-//     memory_episodes shares the message id space), `step-` (task_steps),
-//     `fact-` (facts), `act-` (activities — unified background jobs and
-//     reminders; the legacy `job-`/`rem-` prefixes were merged into it),
+//     lowercase-hex simple UUID), e.g. `ses-3f9a...`.
+//   - Prefixes: `ses-` (sessions), `msg-` (messages and memory episodes —
+//     memory_episodes shares the message id space), `step-` (session_steps),
+//     `fact-` (facts), `task-` (tasks — unified background tasks and
+//     scheduled tasks),
 //     `conf-` (safety-gateway confirmations),
 //     `rec-` (voice recording sessions), `file-` (temporary files),
 //     `call-` (locally synthesized tool-call ids when the provider sends an
