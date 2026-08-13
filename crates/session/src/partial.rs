@@ -148,9 +148,13 @@ impl PartialStore {
         self.locks.lock().await.remove(session_id);
         let db = self.db.clone();
         let tid = session_id.to_string();
-        let _ = db
-            .run_blocking(move |db| db.delete_partial_message(&tid))
-            .await;
+        let tid_for_db = tid.clone();
+        if let Err(e) = db
+            .run_blocking(move |db| db.delete_partial_message(&tid_for_db))
+            .await
+        {
+            tracing::warn!("delete_partial_message failed for session {}: {}", tid, e);
+        }
     }
 
     fn bump_generation(&self, session_id: &str) {

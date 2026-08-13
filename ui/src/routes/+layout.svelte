@@ -2,7 +2,7 @@
 	import '../app.css';
 	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertTask, removeTask, refreshTasks, taskStore, sessionStore, cancelTask, refreshTaskHistory, deleteTask, formatMessageTime } from '$lib/stores.js';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.js';
-	import { themeStore, persistAppearance } from '$lib/themeStore.js';
+	import { themeStore } from '$lib/themeStore.js';
 	import { invoke } from '$lib/tauri.js';
 	import logger from '$lib/logger.js';
 	import { registerListeners } from '$lib/events.js';
@@ -160,7 +160,6 @@
 	function toggleTheme() {
 		themeStore.toggle();
 		theme = themeStore.currentTheme;
-		persistAppearance();
 	}
 
 	// Task registry (background tasks + scheduled tasks) mirrored from
@@ -339,13 +338,6 @@
 			}
 			if (settings?.hotkey?.key_binding) {
 				hotkeyBinding = settings.hotkey.key_binding;
-			}
-			if (settings?.appearance?.theme) {
-				themeStore.setTheme(settings.appearance.theme);
-				theme = themeStore.currentTheme;
-			}
-			if (settings?.appearance?.accent_color) {
-				themeStore.setAccent(settings.appearance.accent_color);
 			}
 		}).catch((e) => {
 			logger.warn('+layout', 'get_settings error', e);

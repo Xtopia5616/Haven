@@ -1,7 +1,7 @@
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
-use haven_memory::repositories::sessions::Session as DbTask;
+use haven_memory::repositories::sessions::Session as DbSession;
 use haven_tools::{ConfirmationResult, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -182,7 +182,7 @@ impl SessionInfo {
     /// the 10-field literal that used to be duplicated at every `load_*` site;
     /// `status` is taken from the record so callers that need a forced override
     /// (e.g. `load_pending_sessions`) can mutate it after construction.
-    pub fn from_db_record(record: &DbTask) -> Self {
+    pub fn from_db_record(record: &DbSession) -> Self {
         Self {
             id: record.id.clone(),
             input: record.input_text.clone(),
@@ -830,7 +830,7 @@ impl SessionExecutor {
     /// End a session. Since the user explicitly asked to end it, the session is
     /// always marked as Completed —regardless of whether it was still
     /// Running (forced stop) or Paused (naturally finished). Clean up
-    /// resources either way. Called from the frontend "缁撴潫浠诲姟" button.
+    /// resources either way. Called from the frontend "结束任务" button.
     pub async fn end_session(&self, session_id: &str) -> anyhow::Result<SessionStatus> {
         // Cancel the running token first to interrupt any active ReAct loop.
         // Ensure a real token exists even when the dispatcher hasn't created
@@ -1161,10 +1161,17 @@ impl SessionExecutor {
     /// startup so queued work from a previous run is picked up after an app
     /// restart. Returns the number of sessions reloaded.
     pub async fn load_pending_sessions(&self) -> usize {
-        let pending = self
-            .db
-            .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)
-            .unwrap_or_default();
+        let pending =
+            match self
+                .db
+                .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("load_pending_sessions: pending-session query failed: {}", e);
+                    Vec::new()
+                }
+            };
         let mut loaded = 0;
         let mut queued = Vec::new();
         {
@@ -1611,7 +1618,7 @@ mod tests {
         exec.clone().start_dispatcher(handler);
 
         // Wait for the dispatcher to claim the session, run the panicking
-        // handler, and mark it Error in the DB (pending 鈫?running 鈫?error).
+        // handler, and mark it Error in the DB (pending → running → error).
         let mut db_status = String::new();
         for _ in 0..100 {
             db_status = exec
@@ -1728,7 +1735,7 @@ mod tests {
     }
 
     /// A Pending session whose handler is still alive (present in the running
-    /// set, e.g. blocked in a pause-wait after Paused 鈫?Pending) must not be
+    /// set, e.g. blocked in a pause-wait after Paused → Pending) must not be
     /// claimed again —otherwise the dispatcher spawns a duplicate ReAct loop.
     /// The stale queue entry is consumed on the skip: the alive handler picks
     /// up the supplement via the status watcher itself, and a later transition
@@ -1968,12 +1975,12 @@ mod tests {
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
-        exec.add_supplement_with_attachments(&session.id, "鐪嬪浘", std::slice::from_ref(&att))
+        exec.add_supplement_with_attachments(&session.id, "看图", std::slice::from_ref(&att))
             .await
             .unwrap();
         let drained = exec.get_supplements(&session.id).await;
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].text, "鐪嬪浘");
+        assert_eq!(drained[0].text, "看图");
         assert_eq!(drained[0].attachments, vec![att]);
         assert!(exec.get_supplements(&session.id).await.is_empty());
     }

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, RiskLevel};
+use crate::types::{ConfirmationMode, HotkeyMode, McpTransportType, RiskLevel, ShellChoice};
 
 // ---------------------------------------------------------------------------
 // Sub-config structures
@@ -93,6 +93,13 @@ pub struct ModelEndpoint {
     /// token-usage display.
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// Per-endpoint override for the reasoning-echo cap (chars) sent back to
+    /// OpenAI-compatible providers. `None` inherits the global
+    /// `context_limits.reasoning_echo_max_chars` at router build time (see
+    /// [`LlmConfig::with_reasoning_echo_cap`]). Kept out of the on-disk
+    /// config when unset so the global default stays the single knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_echo_max_chars: Option<usize>,
 }
 
 fn default_auth_header_name() -> String {
@@ -146,6 +153,7 @@ impl Default for ModelEndpoint {
             cost_per_1k_input_tokens: 0.0,
             cost_per_1k_output_tokens: 0.0,
             context_window: None,
+            reasoning_echo_max_chars: None,
         }
     }
 }
@@ -238,6 +246,48 @@ impl Default for LlmConfig {
     }
 }
 
+impl LlmConfig {
+    /// Apply the global per-response output-cap floor to every role endpoint:
+    /// each endpoint's effective `max_tokens` becomes
+    /// `max(endpoint.max_tokens, cap)`. Called when building the router so a
+    /// small legacy per-endpoint cap (the old default was 8192) can no longer
+    /// truncate long outputs mid-stream; per-endpoint values larger than the
+    /// floor are preserved.
+    pub fn with_response_cap(mut self, cap: u32) -> Self {
+        for ep in [
+            &mut self.small_model,
+            &mut self.default_model,
+            &mut self.balanced_model,
+            &mut self.image_model,
+            &mut self.audio_model,
+            &mut self.embedding_model,
+        ] {
+            ep.max_tokens = ep.max_tokens.max(cap);
+        }
+        self
+    }
+
+    /// Apply the global reasoning-echo cap to every role endpoint that does
+    /// not already set its own `reasoning_echo_max_chars` override. Called
+    /// when building the router so the cap can be tuned from the "限制"
+    /// settings tab without editing each endpoint.
+    pub fn with_reasoning_echo_cap(mut self, cap: usize) -> Self {
+        for ep in [
+            &mut self.small_model,
+            &mut self.default_model,
+            &mut self.balanced_model,
+            &mut self.image_model,
+            &mut self.audio_model,
+            &mut self.embedding_model,
+        ] {
+            if ep.reasoning_echo_max_chars.is_none() {
+                ep.reasoning_echo_max_chars = Some(cap);
+            }
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct HotkeyConfig {
@@ -294,6 +344,14 @@ pub struct ContextLimitsConfig {
     /// Context window in tokens used when an endpoint has no explicit
     /// `context_window` and the model id is not in the builtin catalog.
     pub default_context_window: u32,
+    /// Per-response output cap floor (tokens) applied to every role endpoint
+    /// when the router is built: the effective `max_tokens` sent to the
+    /// provider is `max(endpoint.max_tokens, max_response_tokens)`. A small
+    /// per-endpoint `max_tokens` (the legacy default was 8192) truncated long
+    /// outputs mid-stream (finish_reason `length`), so the global default is
+    /// deliberately very large — it only acts as a floor, letting users lower
+    /// it from the "限制" settings tab without editing every endpoint.
+    pub max_response_tokens: u32,
     /// Maximum characters of a tool observation fed back into the
     /// conversation. Also the default cap (in chars) builtin tools apply to
     /// their own output — the observation budget is the only limit, so tools
@@ -362,6 +420,37 @@ pub struct ContextLimitsConfig {
     /// Max chars read per file tool `summary` LLM call before the outer
     /// timeout fires.
     pub file_summary_timeout_secs: u64,
+    // —— agent loop behavior caps (were hardcoded constants in the ReAct loop) ——
+    /// How many times a text-only response that looks cut off / mid-session is
+    /// retried with a continuation nudge before it is accepted as a final
+    /// answer. Bounded so a model that keeps refusing to call a tool cannot
+    /// spin the loop forever. Was `MAX_CUT_OFF_RETRIES = 2`.
+    pub cut_off_retries: u32,
+    /// How many times a completely empty model response is retried before the
+    /// turn errors out. Was `EMPTY_RESPONSE_MAX_RETRIES = 3`.
+    pub empty_response_max_retries: u32,
+    /// Settling delay between empty-response retries (ms), giving the
+    /// upstream transient glitch time to clear. Was
+    /// `EMPTY_RESPONSE_RETRY_DELAY = 1500`.
+    pub empty_response_retry_delay_ms: u64,
+    /// A provider stream that delivers no chunk for this long (ms) is
+    /// announced to the UI as `StreamStalled`, long before the router's idle
+    /// timeout aborts it. Was `STALL_WARN_DELAY_MS = 10_000`.
+    pub stream_stall_warn_delay_ms: u64,
+    /// Cap (chars) for the per-turn reasoning echo sent back to
+    /// OpenAI-compatible providers; oversized reasoning keeps its tail. Was
+    /// `MAX_REASONING_ECHO_CHARS = 3000` in the responses adapter.
+    pub reasoning_echo_max_chars: usize,
+    // —— background task caps ——
+    /// Bounded live-output tail (chars) kept per running task for `task:output`
+    /// preview events. Was `JOB_TAIL_MAX_CHARS = 2000`.
+    pub background_job_tail_max_chars: usize,
+    /// Cadence of `task:output` events while a task produces output (ms).
+    /// Was `JOB_OUTPUT_EMIT_INTERVAL = 1500`.
+    pub background_job_output_emit_interval_ms: u64,
+    /// Terminal tasks stay on the board this long (secs), then are reaped by
+    /// the next spawn. Was `TERMINAL_JOB_TTL = 600`.
+    pub terminal_job_ttl_secs: u64,
     // —— safety boundaries (raising these widens the attack surface) ——
     /// MCP binary content (image/audio/resource blob) kept in observations
     /// before being replaced by an `oversized` marker (base64 chars).
@@ -411,6 +500,13 @@ impl Default for ContextLimitsConfig {
             compaction_ratio: 0.75,
             compaction_reserve_tokens: 4_096,
             default_context_window: 128_000,
+            // Per-response output cap floor: deliberately large so long outputs
+            // are never truncated by a small per-endpoint `max_tokens` (the
+            // legacy default was 8192 and cut off long replies mid-stream).
+            // 128k covers the largest common provider output budgets; the
+            // router additionally clamps to the endpoint's resolved context
+            // window so the floor can never be rejected by the provider.
+            max_response_tokens: 128_000,
             max_observation_chars: 8_000,
             max_transcript_chars: 4_000,
             max_attachment_images: 4,
@@ -438,6 +534,14 @@ impl Default for ContextLimitsConfig {
             max_known_facts: 40,
             sanitize_field_max_chars: 256,
             file_summary_timeout_secs: 120,
+            cut_off_retries: 2,
+            empty_response_max_retries: 3,
+            empty_response_retry_delay_ms: 1500,
+            stream_stall_warn_delay_ms: 10_000,
+            reasoning_echo_max_chars: 3000,
+            background_job_tail_max_chars: 2000,
+            background_job_output_emit_interval_ms: 1500,
+            terminal_job_ttl_secs: 600,
             mcp_max_binary_payload_bytes: 2 * 1024 * 1024,
             mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
             skills_max_md_bytes: 256 * 1024,
@@ -731,21 +835,6 @@ impl LogConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Appearance / accent color configuration (M6-??)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
-pub struct AppearanceConfig {
-    /// UI theme: "light" or "dark". `None` means "no preference set" — the
-    /// frontend falls back to the OS color scheme.
-    pub theme: Option<String>,
-    /// Accent color preset key: "blue", "green", "red", or `custom:#rrggbb`.
-    /// `None` means "no preference set" — the frontend uses its default.
-    pub accent_color: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
 // Notification configuration (M5-03)
 // ---------------------------------------------------------------------------
 
@@ -841,6 +930,10 @@ impl Default for McpServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct AppConfig {
+    /// Default shell for the agent's `shell` tool when the model omits the
+    /// `shell` argument. One of `powershell` (built-in Windows PowerShell),
+    /// `cmd`, or `pwsh` (PowerShell 7, requires a separate install).
+    pub default_shell: ShellChoice,
     pub audio: AudioConfig,
     pub llm: LlmConfig,
     pub hotkey: HotkeyConfig,
@@ -855,7 +948,6 @@ pub struct AppConfig {
     pub mcp_servers: Vec<McpServerConfig>,
     pub notification: NotificationConfig,
     pub log: LogConfig,
-    pub appearance: AppearanceConfig,
     pub tool_settings: HashMap<String, ToolConfig>,
 }
 
@@ -866,6 +958,7 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
+    pub default_shell: ShellChoice,
     pub audio: AudioConfig,
     pub llm: LlmConfig,
     pub hotkey: HotkeyConfig,
@@ -880,7 +973,6 @@ pub struct Settings {
     pub mcp_servers: Vec<McpServerConfig>,
     pub notification: NotificationConfig,
     pub log: LogConfig,
-    pub appearance: AppearanceConfig,
     pub tool_settings: HashMap<String, ToolConfig>,
 }
 
@@ -899,6 +991,7 @@ impl From<&AppConfig> for Settings {
         let mut stt = c.stt.clone();
         stt.api_key = String::new();
         Self {
+            default_shell: c.default_shell,
             audio: c.audio.clone(),
             llm,
             hotkey: c.hotkey.clone(),
@@ -913,7 +1006,6 @@ impl From<&AppConfig> for Settings {
             mcp_servers: c.mcp_servers.clone(),
             notification: c.notification.clone(),
             log: c.log.clone(),
-            appearance: c.appearance.clone(),
             tool_settings: c.tool_settings.clone(),
         }
     }
@@ -1028,71 +1120,39 @@ impl ConfigLoader {
     /// incoming value is empty.
     pub fn apply_settings(&mut self, settings: &Settings) {
         // Preserve existing keys if the frontend sends empty strings (masked).
-        let prev_small_key = self.config.llm.small_model.api_key.clone();
-        let prev_default_key = self.config.llm.default_model.api_key.clone();
-        let prev_balanced_key = self.config.llm.balanced_model.api_key.clone();
-        let prev_image_key = self.config.llm.image_model.api_key.clone();
-        let prev_audio_key = self.config.llm.audio_model.api_key.clone();
-        let prev_embedding_key = self.config.llm.embedding_model.api_key.clone();
+        // `Settings::from` blanks every api key, so the incoming `llm` carries
+        // no secrets; the previous live config is the only key source.
+        let prev_llm = self.config.llm.clone();
 
-        let incoming = settings.llm.clone();
-        self.config.llm.small_model = incoming.small_model.clone();
-        self.config.llm.default_model = incoming.default_model.clone();
-        self.config.llm.balanced_model = incoming.balanced_model.clone();
-        self.config.llm.image_model = incoming.image_model.clone();
-        self.config.llm.audio_model = incoming.audio_model.clone();
-        self.config.llm.embedding_model = incoming.embedding_model.clone();
-        self.config.llm.models = incoming.models.clone();
-        self.config.llm.role_models = incoming.role_models.clone();
-        self.config.llm.max_total_duration_secs = incoming.max_total_duration_secs;
-        self.config.llm.stream_idle_timeout_secs = incoming.stream_idle_timeout_secs;
-        self.config.llm.retry_base_secs = incoming.retry_base_secs;
-        self.config.llm.retry_factor = incoming.retry_factor;
-        self.config.llm.retry_max_secs = incoming.retry_max_secs;
-        self.config.llm.retry_jitter = incoming.retry_jitter;
-        self.config.llm.stt_use_audio_model = incoming.stt_use_audio_model;
-        self.config.llm.vision_use_image_model = incoming.vision_use_image_model;
-        self.config.llm.max_concurrent_requests = incoming.max_concurrent_requests;
-
-        if settings.llm.small_model.api_key.is_empty() {
-            self.config.llm.small_model.api_key = prev_small_key;
-        }
-        if settings.llm.default_model.api_key.is_empty() {
-            self.config.llm.default_model.api_key = prev_default_key;
-        }
-        if settings.llm.balanced_model.api_key.is_empty() {
-            self.config.llm.balanced_model.api_key = prev_balanced_key;
-        }
-        if settings.llm.image_model.api_key.is_empty() {
-            self.config.llm.image_model.api_key = prev_image_key;
-        }
-        if settings.llm.audio_model.api_key.is_empty() {
-            self.config.llm.audio_model.api_key = prev_audio_key;
-        }
-        if settings.llm.embedding_model.api_key.is_empty() {
-            self.config.llm.embedding_model.api_key = prev_embedding_key;
-        }
-
-        // Preserve masked library-entry keys, matched by entry name.
-        {
-            let prev_keys: Vec<(String, String)> = self
-                .config
-                .llm
-                .models
-                .iter()
-                .map(|m| (m.name.clone(), m.endpoint.api_key.clone()))
-                .collect();
-            self.config.llm.models = settings.llm.models.clone();
-            for entry in self.config.llm.models.iter_mut() {
-                if entry.endpoint.api_key.is_empty()
-                    && let Some((_, k)) = prev_keys.iter().find(|(n, _)| *n == entry.name)
-                {
-                    entry.endpoint.api_key = k.clone();
-                }
+        // Replace the whole `llm` section wholesale instead of copying fields
+        // by hand: a new field added to `LlmConfig` is then applied here
+        // automatically and cannot be forgotten (the two structs stay in sync
+        // via `From<&AppConfig> for Settings`, which masks keys only).
+        let mut llm = settings.llm.clone();
+        for (next, prev) in [
+            (&mut llm.small_model, &prev_llm.small_model),
+            (&mut llm.default_model, &prev_llm.default_model),
+            (&mut llm.balanced_model, &prev_llm.balanced_model),
+            (&mut llm.image_model, &prev_llm.image_model),
+            (&mut llm.audio_model, &prev_llm.audio_model),
+            (&mut llm.embedding_model, &prev_llm.embedding_model),
+        ] {
+            if next.api_key.is_empty() {
+                next.api_key = prev.api_key.clone();
             }
         }
+        // Preserve masked library-entry keys, matched by entry name.
+        for entry in llm.models.iter_mut() {
+            if entry.endpoint.api_key.is_empty()
+                && let Some(prev) = prev_llm.models.iter().find(|m| m.name == entry.name)
+            {
+                entry.endpoint.api_key = prev.endpoint.api_key.clone();
+            }
+        }
+        self.config.llm = llm;
 
         self.config.audio = settings.audio.clone();
+        self.config.default_shell = settings.default_shell;
         self.config.hotkey = settings.hotkey.clone();
         self.config.session = settings.session.clone();
         // The settings form sends the full `context_limits` object (the
@@ -1122,7 +1182,6 @@ impl ConfigLoader {
         // copies (written directly by those commands) before saving.
         self.config.log = settings.log.clone();
         self.config.notification = settings.notification.clone();
-        self.config.appearance = settings.appearance.clone();
     }
 
     pub fn path(&self) -> &Path {
@@ -1148,6 +1207,11 @@ mod tests {
         assert_eq!(cfg.context_limits.compaction_ratio, 0.75);
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 4096);
         assert_eq!(cfg.context_limits.default_context_window, 128_000);
+        assert_eq!(cfg.context_limits.max_response_tokens, 128_000);
+        assert_eq!(cfg.context_limits.cut_off_retries, 2);
+        assert_eq!(cfg.context_limits.empty_response_max_retries, 3);
+        assert_eq!(cfg.context_limits.stream_stall_warn_delay_ms, 10_000);
+        assert_eq!(cfg.context_limits.reasoning_echo_max_chars, 3000);
         assert_eq!(cfg.context_limits.max_observation_chars, 8_000);
         assert_eq!(cfg.context_limits.max_transcript_chars, 4_000);
         assert_eq!(cfg.context_limits.max_attachment_images, 4);
@@ -1253,6 +1317,29 @@ mod tests {
         cfg.llm.default_model.api_key = "super-secret".to_string();
         let settings = Settings::from(&cfg);
         assert!(settings.llm.default_model.api_key.is_empty());
+    }
+
+    #[test]
+    fn with_response_cap_raises_small_endpoint_caps_and_preserves_large_ones() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.default_model.max_tokens = 4096;
+        cfg.llm.small_model.max_tokens = 20_000;
+        let lifted = cfg.llm.clone().with_response_cap(10_000);
+        // Small legacy cap is raised to the floor.
+        assert_eq!(lifted.default_model.max_tokens, 10_000);
+        // An endpoint already above the floor keeps its own value.
+        assert_eq!(lifted.small_model.max_tokens, 20_000);
+    }
+
+    #[test]
+    fn with_reasoning_echo_cap_fills_unset_endpoints_and_preserves_overrides() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.default_model.reasoning_echo_max_chars = Some(1234);
+        let filled = cfg.llm.clone().with_reasoning_echo_cap(5000);
+        // An endpoint without an override inherits the global cap.
+        assert_eq!(filled.small_model.reasoning_echo_max_chars, Some(5000));
+        // A per-endpoint override is preserved.
+        assert_eq!(filled.default_model.reasoning_echo_max_chars, Some(1234));
     }
 
     #[test]

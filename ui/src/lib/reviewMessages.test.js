@@ -387,6 +387,21 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.map((m) => m.id)).toContain('thought-t-1-0');
 	});
 
+	it('keeps the interrupted partial reasoning after a continue resync', () => {
+		// After continue_session truncates the errored step's partial output
+		// from the DB, the resync must NOT clear the already-streamed
+		// "Thinking…" block. handleContinue preserves it by leaving it out of
+		// partialIds; mergeLiveStreaming keeps it because the DB (post-truncate)
+		// has no matching reasoning content.
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'reasoning-t-1-0', role: 'assistant', type: 'reasoning', content: '先想想一部分', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toContain('reasoning-t-1-0');
+		expect(merged.find((m) => m.id === 'reasoning-t-1-0').content).toBe('先想想一部分');
+	});
+
 	it('prefers a live awaiting ask card over the DB ask card', () => {
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },

@@ -189,13 +189,15 @@ impl Database {
     /// Embeddable surface text for a fact: `subject predicate object`.
     pub fn fact_text_by_id(&self, fact_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
-        let text: Option<String> = conn
-            .query_row(
-                "SELECT subject || ' ' || predicate || ' ' || object FROM facts WHERE id = ?1",
-                rusqlite::params![fact_id],
-                |r| r.get(0),
-            )
-            .ok();
+        let text = match conn.query_row(
+            "SELECT subject || ' ' || predicate || ' ' || object FROM facts WHERE id = ?1",
+            rusqlite::params![fact_id],
+            |r| r.get(0),
+        ) {
+            Ok(t) => Some(t),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
         Ok(text)
     }
 
@@ -203,27 +205,28 @@ impl Database {
     /// compaction summary when the id belongs to a `memory_episodes` row.
     pub fn episode_text(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
-        if let Ok(Some(content)) = conn
-            .query_row(
-                "SELECT content FROM messages WHERE id = ?1",
-                rusqlite::params![entity_id],
-                |r| r.get::<_, String>(0),
-            )
-            .map(Some)
-        {
+        let content = match conn.query_row(
+            "SELECT content FROM messages WHERE id = ?1",
+            rusqlite::params![entity_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(c) => Some(c),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(content) = content {
             return Ok(Some(content));
         }
-        if let Ok(Some(summary)) = conn
-            .query_row(
-                "SELECT summary FROM memory_episodes WHERE id = ?1",
-                rusqlite::params![entity_id],
-                |r| r.get::<_, String>(0),
-            )
-            .map(Some)
-        {
-            return Ok(Some(summary));
-        }
-        Ok(None)
+        let summary = match conn.query_row(
+            "SELECT summary FROM memory_episodes WHERE id = ?1",
+            rusqlite::params![entity_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(s) => Some(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(summary)
     }
 
     /// Brute-force cosine search over one memory domain. Data volumes here are

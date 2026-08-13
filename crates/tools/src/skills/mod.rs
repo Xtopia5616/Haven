@@ -273,8 +273,8 @@ pub fn parse_skill_md(
 /// Scan `<root>/<skill-name>/SKILL.md` for all skills under `root`.
 ///
 /// `enabled_filter` semantics:
-/// - `None` 鈫?all skills are enabled.
-/// - `Some(list)` 鈫?only skills whose names are in `list` are enabled (empty
+/// - `None` → all skills are enabled.
+/// - `Some(list)` → only skills whose names are in `list` are enabled (empty
 ///   `Some([])` disables everything).
 ///
 /// Invalid SKILL.md files produce a `warn!` and are skipped (non-fatal).
@@ -428,7 +428,7 @@ impl SkillsEngine {
     /// Configure the skills root + optional exhaustive enabled allowlist, and
     /// trigger an immediate disk refresh.
     ///
-    /// `enabled` semantics: `None` 鈫?all enabled; `Some(list)` 鈫?allowlist.
+    /// `enabled` semantics: `None` → all enabled; `Some(list)` → allowlist.
     pub async fn set_config(
         &self,
         root: Option<PathBuf>,
@@ -779,7 +779,7 @@ mod tests {
         assert!(s.has_script);
         assert!(s.enabled);
 
-        // Disable 鈫?persisted as Some exhaustive list minus alpha
+        // Disable → persisted as Some exhaustive list minus alpha
         eng.set_enabled("alpha", false).await.unwrap();
         let updated = eng.get("alpha").await.unwrap();
         assert!(!updated.enabled);
@@ -840,7 +840,7 @@ mod tests {
 
         // Disable a, enable b explicitly
         eng.set_enabled("a", false).await.unwrap();
-        // b should still be enabled (None 鈫?all, but we transitioned to Some(["b"]) after disabling a)
+        // b should still be enabled (None → all, but we transitioned to Some(["b"]) after disabling a)
         let list = eng.list().await;
         let a = list.iter().find(|s| s.name == "a").unwrap();
         let b = list.iter().find(|s| s.name == "b").unwrap();

@@ -5,8 +5,8 @@ pub mod text;
 pub mod types;
 
 pub use config::{
-    AppConfig, AppearanceConfig, ConfigLoader, LogConfig, LogLevel, McpDiscoveryConfig,
-    McpServerConfig, Settings, SkillsExecConfig, default_work_dir,
+    AppConfig, ConfigLoader, LogConfig, LogLevel, McpDiscoveryConfig, McpServerConfig, Settings,
+    SkillsExecConfig, default_work_dir,
 };
 pub use types::McpTransportType;
 

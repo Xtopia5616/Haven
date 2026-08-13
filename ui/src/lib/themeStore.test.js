@@ -33,6 +33,23 @@ describe('themeStore', () => {
 		expect(themeStore.currentTheme).toBe('light');
 	});
 
+	it('prefers persisted localStorage theme over the attribute and OS', async () => {
+		localStorage.setItem('haven.theme', 'light');
+		localStorage.setItem('haven.accent', 'green');
+		document.documentElement.setAttribute('data-theme', 'dark');
+		const { themeStore } = await loadThemeStore();
+		expect(themeStore.currentTheme).toBe('light');
+		expect(themeStore.currentAccent).toBe('green');
+	});
+
+	it('persists theme and accent to localStorage on set', async () => {
+		const { themeStore } = await loadThemeStore();
+		themeStore.setTheme('light');
+		themeStore.setAccent('red');
+		expect(localStorage.getItem('haven.theme')).toBe('light');
+		expect(localStorage.getItem('haven.accent')).toBe('red');
+	});
+
 	it('setTheme updates the store and attribute', async () => {
 		const { themeStore } = await loadThemeStore();
 		themeStore.setTheme('light');

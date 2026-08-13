@@ -1,17 +1,42 @@
 import { writable } from 'svelte/store';
-import { invoke } from './tauri.js';
 
 const VALID_THEMES = ['light', 'dark'];
 
 const CUSTOM_PREFIX = 'custom:';
 
+// localStorage keys — the theme / accent live entirely in the frontend so
+// toggles never touch the backend config (no Tauri IPC / config.toml write).
+const THEME_KEY = 'haven.theme';
+const ACCENT_KEY = 'haven.accent';
+
+// Preset hex values are mirrored in the blocking script in `app.html` for the
+// first-paint accent color — keep the two tables in sync when adding/renaming.
 const ACCENT_PRESETS = {
 	blue: { label: '信息蓝', hex: '#2C5090' },
 	green: { label: '邮政绿', hex: '#006548' },
 	red: { label: '中国红', hex: '#C82910' },
 };
 
+function readStorage(key) {
+	try {
+		return window.localStorage.getItem(key);
+	} catch {
+		return null;
+	}
+}
+
+function writeStorage(key, value) {
+	try {
+		window.localStorage.setItem(key, value);
+	} catch {
+		// localStorage unavailable (privacy mode etc.) — theme still applies
+		// for the current session.
+	}
+}
+
 function detectInitialTheme() {
+	const stored = readStorage(THEME_KEY);
+	if (stored && VALID_THEMES.includes(stored)) return stored;
 	if (typeof document === 'undefined') return 'dark';
 	const el = document.documentElement;
 	const existing = el.getAttribute('data-theme');
@@ -22,6 +47,8 @@ function detectInitialTheme() {
 }
 
 function detectInitialAccent() {
+	const stored = readStorage(ACCENT_KEY);
+	if (stored && (ACCENT_PRESETS[stored] || stored.startsWith(CUSTOM_PREFIX))) return stored;
 	if (typeof document === 'undefined') return 'blue';
 	const el = document.documentElement;
 	const existing = el.getAttribute('data-accent');
@@ -64,6 +91,7 @@ function createStore() {
 			if (!VALID_THEMES.includes(theme)) return;
 			currentTheme = theme;
 			applyTheme(theme);
+			writeStorage(THEME_KEY, theme);
 			set({ theme: currentTheme, accent: currentAccent });
 		},
 		setAccent(accent) {
@@ -74,6 +102,7 @@ function createStore() {
 				}
 				currentAccent = accent;
 				applyAccent(accent);
+				writeStorage(ACCENT_KEY, accent);
 				set({ theme: currentTheme, accent: currentAccent });
 			}
 		},
@@ -84,13 +113,3 @@ function createStore() {
 }
 
 export const themeStore = createStore();
-
-// Persist the current appearance to the backend config (single source of
-// truth). Fire-and-forget so a theme toggle never blocks the UI; in a
-// non-Tauri context (unit tests) it is a no-op.
-export function persistAppearance() {
-	invoke('set_appearance', {
-		theme: themeStore.currentTheme,
-		accent_color: themeStore.currentAccent,
-	}).catch(() => {});
-}

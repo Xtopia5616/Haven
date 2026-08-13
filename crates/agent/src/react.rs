@@ -42,8 +42,8 @@ pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart
     } else {
         let name = att.filename.as_deref().unwrap_or("attachment");
         match &att.path {
-            Some(path) => ContentPart::text(format!("[闄勪欢: {name}锛岃矾寰? {path}]")),
-            None => ContentPart::text(format!("[闄勪欢: {name}]")),
+            Some(path) => ContentPart::text(format!("[附件: {name}，路径: {path}]")),
+            None => ContentPart::text(format!("[附件: {name}]")),
         }
     }
 }
@@ -100,18 +100,8 @@ const MID_TASK_RETRY_NUDGE: &str = "The session is not finished: the last step r
 /// How many times a text-only response that looks cut off / mid-session is retried
 /// with a continuation nudge before it is accepted as a final answer. Bounded so
 /// a model that keeps refusing to call a tool cannot spin the loop forever.
-const MAX_CUT_OFF_RETRIES: u32 = 2;
-
-/// How many times a completely empty model response is retried before the
-/// turn errors out. Providers occasionally return HTTP 200 with an empty
-/// stream (a silent upstream failure); one retry is often not enough, and
-/// falling back to "No action decided." makes the assistant look like it
-/// ignored the user.
-const EMPTY_RESPONSE_MAX_RETRIES: u32 = 3;
-/// Settling delay between empty-response retries, giving the upstream
-/// transient glitch time to clear.
-const EMPTY_RESPONSE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
-
+/// Configurable via `context_limits.cut_off_retries` (was a `MAX_CUT_OFF_RETRIES`
+/// constant before it was unified into settings).
 /// Poll interval of the per-call stall watchdog (see `StreamForwarder`).
 const STALL_WATCHDOG_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -119,9 +109,9 @@ const STALL_WATCHDOG_POLL: std::time::Duration = std::time::Duration::from_secs(
 /// UI as `StreamStalled` — long before the router's idle timeout aborts the
 /// stream, so the user sees "still generating" feedback instead of a frozen
 /// conversation. Covers the first-chunk wait too (the anchor starts at the
-/// call's creation).
-const STALL_WARN_DELAY_MS: u64 = 10_000;
-
+/// call's creation). Configurable via `context_limits.stream_stall_warn_delay_ms`
+/// (was a `STALL_WARN_DELAY_MS` constant before it was unified into settings).
+///
 /// Current wall-clock time in milliseconds since the Unix epoch. Used by the
 /// stall watchdog anchors (the chunk timestamps it compares against).
 fn now_millis() -> u64 {
@@ -312,6 +302,7 @@ pub(crate) async fn set_status_and_emit(
     status: SessionStatus,
 ) -> anyhow::Result<()> {
     let status_str = status.as_str().to_string();
+    tracing::debug!("session {} status -> {}", session_id, status_str);
     executor.update_session_status(session_id, status).await?;
     emitter
         .emit(crate::event::AgentEvent::SessionUpdated {
@@ -542,7 +533,17 @@ impl ReActEngine {
                 let session_id = ctx.session_id.clone();
                 let text = text.to_string();
                 let step_num = ctx.step_num;
-                move |db| db.create_thought_step(&session_id, step_num as i32, &text)
+                move |db| {
+                    if let Err(e) = db.create_thought_step(&session_id, step_num as i32, &text) {
+                        tracing::warn!(
+                            "create_thought_step failed (session={} step={}): {}",
+                            session_id,
+                            step_num,
+                            e
+                        );
+                    }
+                    Ok::<(), anyhow::Error>(())
+                }
             })
             .await;
         let mut content = vec![ContentPart::text(format!("{prefix}: {text}"))];
@@ -629,9 +630,17 @@ impl ReActEngine {
         // not once per session lifetime (documented in refactor-dedup.md A9).
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
+        tracing::info!(
+            "ReAct loop start: session={} run_id={} start_step={} max_steps={} effective_max={}",
+            session_id,
+            run_id,
+            start_step,
+            max_steps,
+            effective_max
+        );
         // Cut-off retry counter: a text-only response that looks truncated (or
         // is a mid-session narration that stopped without a tool call) is retried
-        // up to MAX_CUT_OFF_RETRIES times per run with a continuation nudge (the
+        // up to `context_limits.cut_off_retries` times per run with a continuation nudge (the
         // nudge is not persisted into the canonical). Kept separate from the
         // empty response budget — the two heuristics address different failure
         // modes.
@@ -797,8 +806,9 @@ impl ReActEngine {
             let partial_reasoning: Arc<std::sync::Mutex<String>> =
                 Arc::new(std::sync::Mutex::new(String::new()));
             tracing::debug!(
-                "ReAct step {} calling LLM, {} messages, {} tools",
+                "ReAct step {} session {} calling LLM, {} messages, {} tools",
                 step_num,
+                session_id,
                 llm_messages.len(),
                 tools.len()
             );
@@ -897,13 +907,13 @@ impl ReActEngine {
             // Empty-response retry budget for THIS step. A completely empty
             // model response (no text, no reasoning, no tool calls) is almost
             // always a transient upstream glitch. Retry the same context up
-            // to EMPTY_RESPONSE_MAX_RETRIES times before concluding the model
+            // to `context_limits.empty_response_max_retries` times before concluding the model
             // decided nothing — otherwise the session would instantly "complete"
             // with a "No action decided." message and pause without answering.
             // Declared per step so an earlier empty response in this run
             // cannot starve a later incident of its retries; the exhausted
             // state (reached 0) also drives the explicit error path below.
-            let mut empty_retries_remaining = EMPTY_RESPONSE_MAX_RETRIES;
+            let mut empty_retries_remaining = self.context_limits.empty_response_max_retries;
             // A response carrying `web_search_call` items is NOT empty: it is
             // a server-side search round that must round-trip instead.
             if thought.is_none() && actions.is_empty() && response.web_search_calls.is_empty() {
@@ -933,7 +943,9 @@ impl ReActEngine {
                                 .await;
                             return Ok(());
                         }
-                        _ = tokio::time::sleep(EMPTY_RESPONSE_RETRY_DELAY) => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(
+                            self.context_limits.empty_response_retry_delay_ms,
+                        )) => {}
                     }
                     if cancel_res.is_cancelled() {
                         self.save_exit_snapshot(
@@ -1015,13 +1027,13 @@ impl ReActEngine {
             // stopped without issuing the tool call it described —must not
             // end the turn presenting a partial answer as final.
             // Retry with a continuation nudge (never persisted into the
-            // canonical), up to MAX_CUT_OFF_RETRIES times; if every retry is
+            // canonical), up to `context_limits.cut_off_retries` times; if every retry is
             // also unusable, fall back to the original text below.
             let pending_ask = Self::canonical_has_pending_ask(canonical);
             // Responses that carried a web search call must never be re-asked:
             // the search round itself is a legitimate (non-cut-off) outcome,
             // and retrying would trigger a duplicate server-side search.
-            while cut_off_retries < MAX_CUT_OFF_RETRIES
+            while cut_off_retries < self.context_limits.cut_off_retries
                 && !pending_ask
                 && response.web_search_calls.is_empty()
                 && Self::is_suspect_final(&thought, &actions, &response, canonical)
@@ -1054,7 +1066,7 @@ impl ReActEngine {
                     response.finish_reason,
                     mid_session,
                     cut_off_retries,
-                    MAX_CUT_OFF_RETRIES
+                    self.context_limits.cut_off_retries
                 );
                 let mut retry_messages = llm_messages.clone();
                 retry_messages.push(LlmMessage {
@@ -1269,7 +1281,9 @@ impl ReActEngine {
                 // like the assistant ignored the user — surface an explicit
                 // error instead so the user can retry the session, and the real
                 // cause (upstream silent failure) is visible.
-                if thought.is_none() && empty_retries_remaining < EMPTY_RESPONSE_MAX_RETRIES {
+                if thought.is_none()
+                    && empty_retries_remaining < self.context_limits.empty_response_max_retries
+                {
                     let err_msg = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。"
                         .to_string();
                     self.emit_error(&emitter, session_id, &err_msg).await;
@@ -1510,6 +1524,15 @@ impl ReActEngine {
                             .map(|o| o.keys().collect::<Vec<_>>())
                             .unwrap_or_default()
                     );
+                    tracing::trace!(
+                        "tool '{}' at step {} full input: {} chars",
+                        tool_name,
+                        step_num,
+                        tool_input
+                            .as_object()
+                            .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
+                            .unwrap_or(0)
+                    );
                     let result = executor
                         .execute_step(&session_id, &tool_name, tool_input.clone(), step_num)
                         .await;
@@ -1521,6 +1544,14 @@ impl ReActEngine {
                                     tool_name,
                                     step_num,
                                     r.success,
+                                    serde_json::to_string(&r.output)
+                                        .map(|s| s.len())
+                                        .unwrap_or(0)
+                                );
+                                tracing::trace!(
+                                    "tool '{}' at step {} full output: {} chars",
+                                    tool_name,
+                                    step_num,
                                     serde_json::to_string(&r.output)
                                         .map(|s| s.len())
                                         .unwrap_or(0)
@@ -1799,10 +1830,17 @@ impl ReActEngine {
                     // The interjection is the user's reply to the pending
                     // question: queue it as a paired answer so the model does
                     // not re-answer the old question on resume.
-                    let _ = self
+                    if let Err(e) = self
                         .executor
                         .add_answer_with_attachments(session_id, &s.text, &s.attachments)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to queue user answer for asked question (session={}): {}",
+                            session_id,
+                            e
+                        );
+                    }
                 }
                 let status = if has_answer {
                     SessionStatus::Pending
@@ -1925,8 +1963,8 @@ impl ReActEngine {
     /// Finalize a turn: persist the assistant text, save the branch point
     /// (when requested), snapshot the ReAct state, then mark the session with
     /// the given status and notify the frontend + inference. Shared by all
-    /// pause/complete paths so the persist 鈫?branch-point 鈫?snapshot 鈫?
-    /// status 鈫?event ordering cannot drift between them. The snapshot is
+    /// pause/complete paths so the persist → branch-point → snapshot →
+    /// status → event ordering cannot drift between them. The snapshot is
     /// taken after the branch point so it includes the newly added entry.
     /// Callers pause with `SessionStatus::Paused` (scheduling) or
     /// `SessionStatus::PausedAwaitingAnswer` (the `ask` tool is blocked on a
@@ -1947,6 +1985,13 @@ impl ReActEngine {
         branch_point_step: Option<u32>,
         infer: &(dyn Fn() + Send + Sync),
     ) -> anyhow::Result<()> {
+        tracing::info!(
+            "ReAct turn finished: session={} step={} status={} final={} chars",
+            session_id,
+            snapshot_step,
+            status.as_str(),
+            final_text.chars().count()
+        );
         self.persist_session_message(session_id, "assistant", final_text, Some("text"))
             .await;
         if let Some(step) = branch_point_step {
@@ -1988,6 +2033,11 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         infer: &(dyn Fn() + Send + Sync),
     ) -> anyhow::Result<()> {
+        tracing::info!(
+            "ReAct step budget exhausted: session={} next_step={}",
+            session_id,
+            snapshot_step
+        );
         self.save_snapshot_with_branches(
             session_id,
             canonical,
@@ -2483,7 +2533,9 @@ impl ReActEngine {
         // handed back to the session's buffer for reuse on the next snapshot.
         let back: String = db
             .run_blocking(move |db| {
-                let _ = db.save_react_state(&tid_owned, &json);
+                if let Err(e) = db.save_react_state(&tid_owned, &json) {
+                    tracing::warn!("save_react_state failed for session {}: {}", tid_owned, e);
+                }
                 Ok(json)
             })
             .await
@@ -2643,6 +2695,7 @@ impl ReActEngine {
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
             self.context_limits.event_chunk_batch_max_bytes,
+            self.context_limits.stream_stall_warn_delay_ms,
             partial_thought,
             partial_reasoning,
             self.executor.partials.clone(),
@@ -2664,7 +2717,17 @@ impl ReActEngine {
         let duration_ms = started.elapsed().as_millis() as u64;
         forwarder.flush().await;
         match result {
-            Ok(resp) => Ok((resp, duration_ms)),
+            Ok(resp) => {
+                tracing::debug!(
+                    "ReAct step {} session {} LLM stream took {} ms ({} text chars, {} tool_calls)",
+                    ctx.step_num,
+                    ctx.session_id,
+                    duration_ms,
+                    resp.text.len(),
+                    resp.tool_calls.len()
+                );
+                Ok((resp, duration_ms))
+            }
             Err(e) => Err(e),
         }
     }
@@ -2691,6 +2754,7 @@ impl ReActEngine {
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
             self.context_limits.event_chunk_batch_max_bytes,
+            self.context_limits.stream_stall_warn_delay_ms,
             partial_thought,
             partial_reasoning,
             self.executor.partials.clone(),
@@ -2827,6 +2891,12 @@ impl ReActEngine {
                         Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
                         Err(e2) => {
                             let err_msg = format!("Compaction retry also failed: {}", e2);
+                            tracing::error!(
+                                "ReAct step {} session {} fatal: {}",
+                                ctx.step_num,
+                                ctx.session_id,
+                                err_msg
+                            );
                             self.persist_partial_on_error(
                                 ctx,
                                 canonical,
@@ -2844,6 +2914,12 @@ impl ReActEngine {
                     }
                 } else {
                     let err_msg = "context length exceeded but compaction failed".to_string();
+                    tracing::error!(
+                        "ReAct step {} session {} fatal: {}",
+                        ctx.step_num,
+                        ctx.session_id,
+                        err_msg
+                    );
                     self.persist_partial_on_error(
                         ctx,
                         canonical,
@@ -2866,6 +2942,12 @@ impl ReActEngine {
             Err(haven_llm::LlmError::Cancelled) => StepCallOutcome::Cancelled,
             Err(e) => {
                 let err_msg = format!("Both default model and balanced model failed: {}", e);
+                tracing::error!(
+                    "ReAct step {} session {} fatal: {}",
+                    ctx.step_num,
+                    ctx.session_id,
+                    err_msg
+                );
                 self.persist_partial_on_error(
                     ctx,
                     canonical,
@@ -3009,6 +3091,17 @@ impl ReActEngine {
         };
 
         let model = response.model.clone().or_else(|| usage.model_name.clone());
+
+        tracing::debug!(
+            "ReAct step {} session {} LLM usage: {}/{}/{} tokens, {} ms, model={:?}",
+            step_number,
+            session_id,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+            duration_ms.unwrap_or(0),
+            model
+        );
 
         // Persist the cumulative counters AND one per-call detail row so a
         // resumed session (after session completion or app restart) restores the
@@ -3278,6 +3371,7 @@ impl ReActEngine {
         session_id: &str,
         error: &str,
     ) {
+        tracing::error!("ReAct session {} error: {}", session_id, error);
         {
             let mut notified = self.balanced_model_notified.lock().unwrap();
             notified.remove(session_id);
@@ -3315,6 +3409,7 @@ impl StreamForwarder {
     fn new(
         ctx: &StepCtx,
         max_batch_bytes: usize,
+        stall_warn_delay_ms: u64,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
         partial_store: Arc<haven_session::partial::PartialStore>,
@@ -3417,7 +3512,7 @@ impl StreamForwarder {
             }
         };
         // Stall watchdog: announce `StreamStalled` once per silent episode
-        // (a chunk anchor that produced no traffic for STALL_WARN_DELAY_MS).
+        // (a chunk anchor that produced no traffic for `stall_warn_delay_ms`).
         // The anchor starts at creation so a slow first chunk is covered
         // too; the emitted-anchor sentinel starts at MAX so the no-chunk
         // case (anchor 0) announces exactly once. Aborted by `flush` and
@@ -3435,7 +3530,7 @@ impl StreamForwarder {
                         _ = tokio::time::sleep(STALL_WATCHDOG_POLL) => {
                             let last_ms = last.load(std::sync::atomic::Ordering::Relaxed);
                             let base = if last_ms == 0 { created_ms } else { last_ms };
-                            if now_millis().saturating_sub(base) >= STALL_WARN_DELAY_MS
+                            if now_millis().saturating_sub(base) >= stall_warn_delay_ms
                                 && last_ms != emitted_anchor
                             {
                                 emitted_anchor = last_ms;

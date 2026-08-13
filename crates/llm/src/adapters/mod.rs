@@ -290,6 +290,7 @@ pub(crate) fn spawn_line_reader<S>(
                                         if payload.is_empty() || payload == "[DONE]" {
                                             continue;
                                         }
+                                        tracing::trace!("stream payload: {} chars", payload.len());
                                         if tx.send(payload).is_err() {
                                             return;
                                         }
@@ -305,6 +306,7 @@ pub(crate) fn spawn_line_reader<S>(
                                     if payload == "[DONE]" || payload.is_empty() {
                                         continue;
                                     }
+                                    tracing::trace!("stream payload: {} chars", payload.len());
                                     if tx.send(payload).is_err() {
                                         return;
                                     }
@@ -321,11 +323,16 @@ pub(crate) fn spawn_line_reader<S>(
                                     if let Some(payload) = remaining.strip_prefix("data: ") {
                                         let payload = payload.trim().to_string();
                                         if !payload.is_empty() && payload != "[DONE]" {
+                                            tracing::trace!(
+                                                "stream flush: {} chars",
+                                                payload.len()
+                                            );
                                             let _ = tx.send(payload);
                                         }
                                     }
                                 }
                                 LineMode::SseOrRaw => {
+                                    tracing::trace!("stream flush: {} chars", remaining.len());
                                     let _ = tx.send(remaining);
                                 }
                             }

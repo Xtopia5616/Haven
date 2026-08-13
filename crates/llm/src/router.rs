@@ -319,7 +319,28 @@ pub struct LlmRouter {
 }
 
 impl LlmRouter {
-    pub fn new(config: LlmConfig) -> Self {
+    pub fn new(mut config: LlmConfig) -> Self {
+        // The per-response cap floor (`with_response_cap`) can push
+        // `max_tokens` far above a provider's per-model output limit; sending
+        // the raw value (e.g. the 1M default floor) makes Anthropic/OpenAI/
+        // Gemini reject the request with HTTP 400. Clamp each endpoint's
+        // effective `max_tokens` to its resolved context window here so the
+        // floor can never exceed what the provider will accept, while small
+        // legacy caps (8192) still get lifted so long outputs are not
+        // truncated mid-stream.
+        for ep in [
+            &mut config.small_model,
+            &mut config.default_model,
+            &mut config.balanced_model,
+            &mut config.image_model,
+            &mut config.audio_model,
+            &mut config.embedding_model,
+        ] {
+            let window = crate::registry::context_window_for(ep);
+            if window > 0 {
+                ep.max_tokens = ep.max_tokens.min(window);
+            }
+        }
         // Failover sanity check: when the balanced slot points at the same
         // endpoint+model as the primary, any primary failure (timeout, empty
         // response, provider outage) will fail identically on failover — the
@@ -1361,7 +1382,9 @@ impl LlmRouter {
         }
 
         drop(chunk_tx);
-        let _ = consumer.await;
+        if let Err(e) = consumer.await {
+            tracing::warn!("stream chunk consumer task panicked: {}", e);
+        }
 
         Ok(LlmResponse {
             text,
@@ -2659,6 +2682,23 @@ mod tests {
         assert!(
             deadline2.unwrap() >= deadline.unwrap(),
             "cooldown deadline must never shrink"
+        );
+    }
+
+    #[test]
+    fn router_clamps_max_tokens_to_context_window() {
+        // A huge response-cap floor (e.g. the 128k default) must not be sent
+        // raw to providers with smaller output budgets: Anthropic/OpenAI/Gemini
+        // reject max_tokens above the model limit with HTTP 400.
+        let mut cfg = haven_common::config::AppConfig::default().llm;
+        cfg.default_model.model_name = "gpt-4o-mini".into(); // catalog: 128k
+        cfg.default_model.max_tokens = 1_000_000; // absurd cap floor
+        let router = LlmRouter::new(cfg);
+        let built = router.config.try_read().expect("router config readable");
+        assert!(
+            built.default_model.max_tokens <= 128_000,
+            "max_tokens must be clamped to the resolved context window, got {}",
+            built.default_model.max_tokens
         );
     }
 }

@@ -13,6 +13,9 @@ pub struct ShellTool {
     pub tasks: Arc<BackgroundTasks>,
     /// Output cap (chars) for command output.
     pub max_output_chars: usize,
+    /// Shell used when the model omits the `shell` argument
+    /// ("cmd" | "powershell" | "pwsh" on Windows).
+    pub default_shell: String,
 }
 
 impl Default for ShellTool {
@@ -20,19 +23,24 @@ impl Default for ShellTool {
         Self {
             tasks: Arc::new(BackgroundTasks::new()),
             max_output_chars: 20_000,
+            #[cfg(windows)]
+            default_shell: "powershell".into(),
+            #[cfg(not(windows))]
+            default_shell: "sh".into(),
         }
     }
 }
 
 impl ShellTool {
     /// Resolve the `shell` and `cwd` arguments from tool input, applying the
-    /// platform default shell (powershell on Windows, sh elsewhere). Shared
-    /// by the foreground and background execution paths.
-    fn resolve_shell_and_cwd(input: &Value) -> (&str, Option<PathBuf>) {
-        #[cfg(windows)]
-        let shell = input["shell"].as_str().unwrap_or("powershell");
-        #[cfg(not(windows))]
-        let shell = input["shell"].as_str().unwrap_or("sh");
+    /// configured default shell when the model omits `shell`. Shared by the
+    /// foreground and background execution paths.
+    fn resolve_shell_and_cwd(&self, input: &Value) -> (String, Option<PathBuf>) {
+        let shell = input["shell"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.default_shell.clone());
         let cwd = input["cwd"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -47,7 +55,7 @@ impl Tool for ShellTool {
         "shell".into()
     }
     fn description(&self) -> String {
-        "Execute a shell command on the user's PC. Default shell on Windows: powershell (cmd is available via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. The executed shell is reported in the result's shell field. Commands that exceed the timeout are automatically moved to the background and keep running.".into()
+        "Execute a shell command on the user's PC. The default shell is user-configurable in the app settings (cmd / Windows PowerShell / PowerShell 7, reported in the result's shell field; any shell is selectable per call via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. Commands that exceed the timeout are automatically moved to the background and keep running.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -64,14 +72,14 @@ impl Tool for ShellTool {
 
     fn input_schema(&self) -> Value {
         #[cfg(windows)]
-        let shells = ["cmd", "powershell"];
+        let shells = ["cmd", "powershell", "pwsh"];
         #[cfg(not(windows))]
         let shells = ["sh", "bash"];
         serde_json::json!({
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "Shell command to execute" },
-                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: powershell on Windows, sh on POSIX). Remember: `&&` only works in cmd — PowerShell requires `;`." },
+                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
                 "background": { "type": "boolean", "description": "Run the command in the background and return a task_id immediately. The result is pushed back to you automatically when the task finishes; list all tasks with the tasks tool.", "default": false },
                 "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
@@ -86,7 +94,7 @@ impl Tool for ShellTool {
             anyhow::bail!("command is required");
         }
         let silent = input["silent"].as_bool().unwrap_or(false);
-        let (shell, cwd) = Self::resolve_shell_and_cwd(&input);
+        let (shell, cwd) = self.resolve_shell_and_cwd(&input);
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
@@ -97,7 +105,7 @@ impl Tool for ShellTool {
         // immediately. The result is pushed back to the session automatically on
         // completion; the agent can list all tasks with the `tasks` tool.
         if input["background"].as_bool().unwrap_or(false) {
-            let task_id = self.tasks.spawn_shell(cmd, shell, max_chars, cwd).await?;
+            let task_id = self.tasks.spawn_shell(cmd, &shell, max_chars, cwd).await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
                 "task_id": task_id,
@@ -107,7 +115,7 @@ impl Tool for ShellTool {
             })));
         }
 
-        let mut std_cmd = bg::build_shell_command_silent(shell, cmd);
+        let mut std_cmd = bg::build_shell_command_silent(&shell, cmd);
         if let Some(cwd) = cwd {
             std_cmd.current_dir(cwd);
         }
@@ -138,8 +146,8 @@ impl Tool for ShellTool {
         // No live tail: foreground shell output is shown in the tool card only
         // after it completes.
         let max_collect = bg::collect_byte_cap(max_chars);
-        let stdout_fut = bg::read_stream_capped(child.stdout.take(), max_collect, None);
-        let stderr_fut = bg::read_stream_capped(child.stderr.take(), max_collect, None);
+        let stdout_fut = bg::read_stream_capped(child.stdout.take(), max_collect, None, 0);
+        let stderr_fut = bg::read_stream_capped(child.stderr.take(), max_collect, None, 0);
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
         let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
@@ -169,7 +177,7 @@ impl Tool for ShellTool {
         }
         // Strip PowerShell's NativeCommandError / CLIXML formatting noise so
         // the reported text carries the real output, not the wrapper.
-        combined = bg::sanitize_shell_output(&combined, shell);
+        combined = bg::sanitize_shell_output(&combined, &shell);
 
         let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
         let truncated = stdout_overflow || stderr_overflow;
@@ -199,7 +207,7 @@ impl Tool for ShellTool {
             } else {
                 stderr
             };
-            let err_text = bg::sanitize_shell_output(&err_text, shell);
+            let err_text = bg::sanitize_shell_output(&err_text, &shell);
             let mut err_text = bg::summarize_error(&err_text, 2000);
             let code_str = exit_code
                 .map(|c| c.to_string())
@@ -217,7 +225,7 @@ impl Tool for ShellTool {
             );
             let log_path = log_path.to_string_lossy().into_owned();
             output["log_path"] = serde_json::Value::String(log_path.clone());
-            err_text = bg::append_windows_diagnostics(shell, cmd, &err_text);
+            err_text = bg::append_windows_diagnostics(&shell, cmd, &err_text);
             err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
             Ok(ToolResult {
                 success: false,
@@ -238,11 +246,11 @@ impl Tool for ShellTool {
         if cmd.trim().is_empty() {
             return None;
         }
-        let (shell, cwd) = Self::resolve_shell_and_cwd(input);
+        let (shell, cwd) = self.resolve_shell_and_cwd(input);
         let max_chars = self.max_output_chars;
         let task_id = self
             .tasks
-            .spawn_shell(cmd, shell, max_chars, cwd)
+            .spawn_shell(cmd, &shell, max_chars, cwd)
             .await
             .ok()?;
         Some(ToolResult::ok(serde_json::json!({
@@ -304,6 +312,7 @@ mod tests {
         {
             assert!(shells.contains(&"cmd"));
             assert!(shells.contains(&"powershell"));
+            assert!(shells.contains(&"pwsh"));
         }
         #[cfg(not(windows))]
         {
@@ -389,6 +398,62 @@ mod tests {
             .unwrap();
         assert!(result.success, "expected success: {:?}", result.error);
         assert!(result.output["output"].as_str().unwrap().contains("hello"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_pwsh_echo() {
+        // PowerShell 7 (pwsh) is not preinstalled on Windows; skip when absent.
+        if std::process::Command::new("pwsh")
+            .args(["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"])
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("pwsh not installed; skipping pwsh echo test");
+            return;
+        }
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "Write-Output hello-pwsh", "shell": "pwsh"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        assert!(
+            result.output["output"]
+                .as_str()
+                .unwrap()
+                .contains("hello-pwsh"),
+            "got: {:?}",
+            result.output["output"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_respects_configured_default_shell() {
+        // When the model omits `shell`, the configured default is used.
+        let tool = ShellTool {
+            default_shell: "cmd".into(),
+            ..Default::default()
+        };
+        let result = tool
+            .execute(
+                json!({"command": "echo default-shell-ok"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "expected success: {:?}", result.error);
+        assert_eq!(result.output["shell"], "cmd");
+        assert!(
+            result.output["output"]
+                .as_str()
+                .unwrap()
+                .contains("default-shell-ok")
+        );
     }
 
     #[cfg(windows)]
@@ -605,6 +670,105 @@ mod tests {
             out
         );
         assert!(out.contains("ok"), "got: {}", out);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_clixml_stderr_stripped() {
+        // Merging native stderr (`2>&1`) makes PS 5.1 serialize the error
+        // stream as a CLIXML document; the real message must survive without
+        // the wrapper, the `_xHHHH_` char escapes or the localized noise.
+        // (The merged error record makes PS exit 1 — that is expected here.)
+        let result = ShellTool::default()
+            .execute(
+                json!({"command": "cmd /c \"echo boom 1>&2\" 2>&1", "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let out = result.output["output"].as_str().unwrap();
+        assert!(out.contains("boom"), "real message must survive: {out:?}");
+        assert!(!out.contains("CLIXML"), "wrapper must be stripped: {out:?}");
+        assert!(
+            !out.contains("_x000D_"),
+            "char escapes must be decoded: {out:?}"
+        );
+        assert!(
+            !out.contains("CategoryInfo"),
+            "record noise must be dropped: {out:?}"
+        );
+        assert_eq!(result.output["exit_code"], 1);
+        let err = result.error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("cmd : boom"),
+            "error must carry the message: {err:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_utf16_redirection_decodes() {
+        // A UTF-16LE file (what PS 5.1 `>` redirection used to write) read
+        // back through the shell pipe must decode cleanly instead of arriving
+        // as NUL-byte mojibake.
+        let path = haven_common::default_work_dir().join("utf16_redir_test.txt");
+        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
+        let script = format!(
+            "[IO.File]::WriteAllText('{}', '你好', [Text.Encoding]::Unicode)",
+            path.display()
+        );
+        let write = ShellTool::default()
+            .execute(
+                json!({"command": script, "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(write.success, "write failed: {:?}", write.error);
+        let read = ShellTool::default()
+            .execute(
+                json!({"command": format!("type {}", path.display()), "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(read.success, "read failed: {:?}", read.error);
+        let out = read.output["output"].as_str().unwrap();
+        assert!(out.contains("你好"), "UTF-16 file must decode: {out:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_redirection_roundtrip_chinese() {
+        // `>` redirection on PS 5.1 must not produce a UTF-16 file: writing
+        // with `>` then reading the bytes back through the shell pipe must
+        // round-trip Chinese cleanly (no NUL bytes, no replacement chars).
+        let path = haven_common::default_work_dir().join("redir_utf8_test.txt");
+        std::fs::create_dir_all(haven_common::default_work_dir()).unwrap();
+        let write = ShellTool::default()
+            .execute(
+                json!({"command": format!("\"中文内容 hello\" > '{}'", path.display()), "shell": "powershell"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(write.success, "write failed: {:?}", write.error);
+        let read = ShellTool::default()
+            .execute(
+                json!({"command": format!("type {}", path.display()), "shell": "cmd"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(read.success, "read failed: {:?}", read.error);
+        let out = read.output["output"].as_str().unwrap();
+        assert!(
+            out.contains("中文内容"),
+            "redirection round-trip must be UTF-8: {out:?}"
+        );
+        assert!(!out.contains('\u{FFFD}'), "no replacement chars: {out:?}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(windows)]

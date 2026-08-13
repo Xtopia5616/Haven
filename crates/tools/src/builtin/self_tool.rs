@@ -214,12 +214,21 @@ impl SelfTool {
         // Recent session counts.
         if let Some(db) = &self.context.db {
             let mut counts: HashMap<String, usize> = HashMap::new();
-            if let Ok(sessions) = db.list_sessions(50, 0) {
-                for t in &sessions {
-                    *counts.entry(t.status.clone()).or_default() += 1;
+            match db.list_sessions(50, 0) {
+                Ok(sessions) => {
+                    for t in &sessions {
+                        *counts.entry(t.status.clone()).or_default() += 1;
+                    }
                 }
+                Err(e) => tracing::warn!("self status: list_sessions failed: {}", e),
             }
-            let total = db.count_sessions().unwrap_or(0);
+            let total = match db.count_sessions() {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!("self status: count_sessions failed: {}", e);
+                    0
+                }
+            };
             out["sessions"] = serde_json::json!({ "total": total, "recent_50_by_status": counts });
         } else {
             out["sessions"] = serde_json::json!({ "unavailable": true });

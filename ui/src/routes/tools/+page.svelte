@@ -64,12 +64,21 @@
 		}
 	}
 
+	function isMcpConnected(s) {
+		// McpClientStatus serializes unit variants as strings ("Connected");
+		// only Offline { error } arrives as an object ({"Offline": …}).
+		return s.status === 'Connected';
+	}
+
 	async function refreshMcpList() {
-		// Refresh re-establishes every enabled server connection (like the
-		// per-card reconnect) so a server that went down or changed comes back
-		// without restarting the app. Disabled servers have no live client.
-		const enabled = mcpServers.filter((s) => s.enabled);
-		for (const s of enabled) {
+		// Refresh only re-establishes servers that are not currently connected
+		// (Offline / Disconnected / Connecting), like the per-card reconnect,
+		// so a heavy server that went down or changed comes back without
+		// restarting the app. Already-connected servers keep their live
+		// session and are not restarted (e.g. Ghidra is not relaunched on
+		// every refresh). Disabled servers have no live client.
+		const needReconnect = mcpServers.filter((s) => s.enabled && !isMcpConnected(s));
+		for (const s of needReconnect) {
 			try {
 				await invoke('reconnect_mcp', { name: s.name });
 			} catch (e) {

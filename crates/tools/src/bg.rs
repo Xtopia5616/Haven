@@ -31,13 +31,19 @@ pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command 
 pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::Command {
     #[cfg(windows)]
     let mut std_cmd = match shell {
-        "powershell" => {
+        // `powershell` (Windows built-in PS 5.1) and `pwsh` (PowerShell 7+)
+        // share the same wrapper: -EncodedCommand plus forced UTF-8.
+        "powershell" | "pwsh" => {
             // Force UTF-8 for both the native-command pipe ($OutputEncoding) and
             // PowerShell's own redirected output ([Console]::OutputEncoding) so
             // command output arrives as UTF-8 instead of the OEM/ANSI code page.
-            let mut c = std::process::Command::new("powershell");
+            // The Out-File default is also pinned to UTF-8: PS 5.1's `>`
+            // redirection writes UTF-16LE otherwise, and files the agent later
+            // reads (`cat`, Get-Content) would come back as mangled UTF-16.
+            let mut c = std::process::Command::new(shell);
             let ps = format!(
-                "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}"
+                "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+                 $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; {command}"
             );
             // Pass the whole script via -EncodedCommand (UTF-16LE base64)
             // instead of -Command: the payload is a single opaque ASCII token,
@@ -255,15 +261,6 @@ impl EventSinkState {
     }
 }
 
-/// Bounded live-output tail kept per running task for `task:output`
-/// preview events. Characters, not bytes: decoded lossy on emit.
-const JOB_TAIL_MAX_CHARS: usize = 2000;
-/// Cadence of `task:output` events while a task produces output.
-const JOB_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(1500);
-/// Terminal tasks stay on the board this long, then are reaped by the next
-/// spawn (the UI panel and the persisted log files remain the record).
-const TERMINAL_JOB_TTL: Duration = Duration::from_secs(600);
-
 #[derive(Clone, Debug)]
 enum BackgroundTaskState {
     Running {
@@ -315,20 +312,28 @@ struct BackgroundTask {
     shell: String,
 }
 
-/// True when a terminal entry has outlived `TERMINAL_JOB_TTL` (running
-/// entries are never stale). Entries with an unparseable `finished_at` are
-/// kept (never wrongly reaped).
-fn terminal_entry_stale(entry: &BackgroundTask) -> bool {
+/// True when a terminal entry has outlived the configured terminal-task TTL
+/// (running entries are never stale). Entries with an unparseable
+/// `finished_at` are kept (never wrongly reaped).
+fn terminal_entry_stale(entry: &BackgroundTask, ttl: Duration) -> bool {
     let finished = match &entry.state {
         BackgroundTaskState::Completed { finished_at, .. }
         | BackgroundTaskState::Failed { finished_at, .. }
         | BackgroundTaskState::Cancelled { finished_at, .. } => finished_at,
         BackgroundTaskState::Running { .. } => return false,
     };
-    chrono::DateTime::parse_from_rfc3339(finished)
-        .map(|t| t.with_timezone(&chrono::Utc))
-        .map(|t| chrono::Utc::now() - t > chrono::Duration::from_std(TERMINAL_JOB_TTL).unwrap())
-        .unwrap_or(false)
+    let finished_ts = match chrono::DateTime::parse_from_rfc3339(finished) {
+        Ok(t) => t.with_timezone(&chrono::Utc),
+        Err(e) => {
+            tracing::warn!(
+                "terminal_entry_stale: unparseable finished_at '{}': {}",
+                finished,
+                e
+            );
+            return false;
+        }
+    };
+    chrono::Utc::now() - finished_ts > chrono::Duration::from_std(ttl).unwrap()
 }
 
 /// Registry of background tool tasks (refine: long-running commands).
@@ -347,6 +352,15 @@ pub struct BackgroundTasks {
     completion_rx: Mutex<Option<mpsc::UnboundedReceiver<BackgroundTaskCompletion>>>,
     /// Max concurrent *running* tasks (from `context_limits.background_max_tasks`).
     max_tasks: RwLock<usize>,
+    /// Live-output tail cap (chars) for `task:output` preview events (from
+    /// `context_limits.background_job_tail_max_chars`).
+    job_tail_max_chars: RwLock<usize>,
+    /// Cadence of `task:output` events while a task produces output (from
+    /// `context_limits.background_job_output_emit_interval_ms`).
+    job_output_emit_interval: RwLock<Duration>,
+    /// Terminal tasks stay on the board this long, then are reaped (from
+    /// `context_limits.terminal_job_ttl_secs`).
+    terminal_job_ttl: RwLock<Duration>,
     /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
     /// to forward lifecycle events as Tauri events.
     event_sink: EventSinkState,
@@ -370,6 +384,9 @@ impl BackgroundTasks {
             completion_tx: tx,
             completion_rx: Mutex::new(Some(rx)),
             max_tasks: RwLock::new(64),
+            job_tail_max_chars: RwLock::new(2000),
+            job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
+            terminal_job_ttl: RwLock::new(Duration::from_secs(600)),
             event_sink: EventSinkState::default(),
             db: RwLock::new(None),
         }
@@ -385,9 +402,14 @@ impl BackgroundTasks {
         self.event_sink.emit(event, payload);
     }
 
-    /// Replace the unified context limits (background task concurrency cap).
+    /// Replace the unified context limits (background task concurrency cap,
+    /// live-output tail size, output-event cadence, terminal-task TTL).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *self.max_tasks.write().await = limits.background_max_tasks;
+        *self.job_tail_max_chars.write().await = limits.background_job_tail_max_chars;
+        *self.job_output_emit_interval.write().await =
+            Duration::from_millis(limits.background_job_output_emit_interval_ms);
+        *self.terminal_job_ttl.write().await = Duration::from_secs(limits.terminal_job_ttl_secs);
     }
 
     /// Attach the database used for persistence. Wired by the desktop shell
@@ -578,15 +600,19 @@ impl BackgroundTasks {
         let started_at = chrono::Utc::now().to_rfc3339();
         let (kill_tx, kill_rx) = oneshot::channel();
         let tail = Arc::new(Mutex::new(String::new()));
+        let tail_max_chars = *self.job_tail_max_chars.read().await;
+        let emit_interval = *self.job_output_emit_interval.read().await;
         {
             let mut tasks = self.tasks.write().await;
             // Reap terminal entries first: their results were already
             // delivered via the completion channel, so they must not occupy
             // the cap forever (64 lifetime tasks would otherwise brick the
             // feature for long-lived sessions). Terminal entries older than
-            // `TERMINAL_JOB_TTL` are dropped the same way (the UI panel and
-            // the persisted log files remain the record after that).
-            tasks.retain(|_, e| !terminal_entry_stale(e));
+            // the configured terminal-task TTL are dropped the same way (the
+            // UI panel and the persisted log files remain the record after
+            // that).
+            let terminal_ttl = *self.terminal_job_ttl.read().await;
+            tasks.retain(|_, e| !terminal_entry_stale(e, terminal_ttl));
             let running = tasks
                 .values()
                 .filter(|e| matches!(e.state, BackgroundTaskState::Running { .. }))
@@ -667,10 +693,18 @@ impl BackgroundTasks {
             let max_collect = collect_byte_cap(max_chars);
             let stdout_tail = runner_tail.clone();
             let stderr_tail = runner_tail.clone();
-            let stdout_fut =
-                read_stream_capped(child.stdout.take(), max_collect, Some(stdout_tail));
-            let stderr_fut =
-                read_stream_capped(child.stderr.take(), max_collect, Some(stderr_tail));
+            let stdout_fut = read_stream_capped(
+                child.stdout.take(),
+                max_collect,
+                Some(stdout_tail),
+                tail_max_chars,
+            );
+            let stderr_fut = read_stream_capped(
+                child.stderr.take(),
+                max_collect,
+                Some(stderr_tail),
+                tail_max_chars,
+            );
             let run = async {
                 let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
                     tokio::join!(stdout_fut, stderr_fut);
@@ -715,7 +749,7 @@ impl BackgroundTasks {
         tokio::spawn(async move {
             let mut last_len = 0usize;
             loop {
-                tokio::time::sleep(JOB_OUTPUT_EMIT_INTERVAL).await;
+                tokio::time::sleep(emit_interval).await;
                 if emit_me.status(&emit_task_id).await["status"].as_str() != Some("running") {
                     return;
                 }
@@ -998,24 +1032,31 @@ fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
 /// Strip PowerShell-specific noise from captured command output so the real
 /// message survives instead of NativeCommandError formatting:
 /// - pwsh 7 serializes native stderr as CLIXML (`#< CLIXML` + escape chars);
-///   the message text inside `<S S="Error">...</S>` segments is extracted.
+///   the message text inside `<S S="Error">...</S>` segments is extracted and
+///   its XML entities (`&amp;`, `&gt;`) and `_xHHHH_` char escapes are decoded.
 /// - Windows PowerShell 5.1 wraps error records with header lines
-///   (`NativeCommandError`, `At line:`, `+ `, `~~~`, `+ CategoryInfo`,
-///   `+ FullyQualifiedErrorId`) that add no information.
+///   (`NativeCommandError`, `At line:`/`所在位置 行:`, `+ `, `~~~`,
+///   `+ CategoryInfo`, `+ FullyQualifiedErrorId`) that add no information.
+/// - pwsh 7 renders error records with `$PSStyle` ANSI colors even into a
+///   pipe (`ESC[31;1m … ESC[0m`); those escapes are removed for every shell.
 ///
 /// CRLF line endings (cmd.exe / native Windows tools) are normalized to LF
 /// for every shell so downstream line-based processing and the model never
 /// see stray `\r` characters. Lone `\r` (progress-redraw lines) is kept —
 /// `summarize_error` relies on it to collapse progress bars.
 ///
-/// Non-PowerShell output is returned unchanged apart from the line endings.
+/// Non-PowerShell output is returned unchanged apart from line-ending and
+/// ANSI cleanup.
 pub fn sanitize_shell_output(text: &str, shell: &str) -> String {
+    let text = strip_ansi_escapes(text);
     let text = text.replace("\r\n", "\n");
-    if shell != "powershell" {
+    if shell != "powershell" && shell != "pwsh" {
         return text;
     }
     let text = if text.contains("#< CLIXML") {
-        extract_clixml_messages(&text)
+        // ANSI escapes inside a CLIXML payload arrive as `_x001B_` and only
+        // become literal ESC after unescaping, so strip again after extraction.
+        strip_ansi_escapes(&replace_clixml_documents(&text))
     } else {
         text
     };
@@ -1031,9 +1072,44 @@ pub fn sanitize_shell_output(text: &str, shell: &str) -> String {
     joined.trim().to_string()
 }
 
-/// Pull the human-readable messages out of a pwsh 7 CLIXML stderr blob. Each
-/// native stderr line arrives as `<S S="Error">text</S>`; non-matching content
-/// falls back to the raw text (control chars removed).
+/// Replace every CLIXML document (`#< CLIXML` … `</Objs>`) in `text` with the
+/// human-readable messages inside it. Content before/after a document (e.g.
+/// real stdout lines captured next to a CLIXML stderr blob) is preserved —
+/// otherwise sanitizing would silently drop the actual command output.
+fn replace_clixml_documents(text: &str) -> String {
+    const HEADER: &str = "#< CLIXML";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(HEADER) {
+        out.push_str(&rest[..start]);
+        let doc_tail = &rest[start + HEADER.len()..];
+        let Some(end_rel) = doc_tail.find("</Objs>") else {
+            // Unterminated document (truncated capture): keep the remainder
+            // as-is so no content is silently dropped.
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let doc_end = start + HEADER.len() + end_rel + "</Objs>".len();
+        let doc = &rest[start..doc_end];
+        let messages = extract_clixml_messages(doc);
+        if !messages.is_empty() {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&messages);
+        }
+        rest = &rest[doc_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Pull the human-readable messages out of a CLIXML stderr blob. Each native
+/// stderr / error-record line arrives as `<S S="Error">text</S>`; the text is
+/// XML-escaped (`&amp;`, `&gt;`) and PowerShell char-escaped (`_x000D_`,
+/// `_x000A_` for CR/LF), so both are decoded and newlines normalized before
+/// the messages are joined. Non-matching content falls back to the document's
+/// text content (markup and control chars removed).
 fn extract_clixml_messages(text: &str) -> String {
     const TAG: &str = "<S S=\"Error\">";
     let mut out = String::new();
@@ -1048,15 +1124,100 @@ fn extract_clixml_messages(text: &str) -> String {
             if !out.is_empty() {
                 out.push('\n');
             }
-            out.push_str(inner);
+            out.push_str(&clixml_unescape(inner));
         }
         rest = &rest[inner_start + end_rel + 4..];
     }
     if out.is_empty() {
-        text.chars().filter(|c| !c.is_control()).collect::<String>()
+        let stripped: String = text.chars().filter(|c| !c.is_control()).collect::<String>();
+        strip_xml_markup(&stripped)
     } else {
-        out
+        out.replace("\r\n", "\n").replace('\r', "\n")
     }
+}
+
+/// Decode a CLIXML message payload: PowerShell `_xHHHH_` char escapes first
+/// (`_x000D_` = CR, `_x000A_` = LF), then XML entities via the shared
+/// `haven_common::encoding::xml_unescape` (`&amp;` last so a literal
+/// `&amp;lt;` cannot be double-unescaped into `<`).
+fn clixml_unescape(text: &str) -> String {
+    let text = decode_x_escapes(text);
+    haven_common::encoding::xml_unescape(&text)
+}
+
+/// Decode PowerShell's `_xHHHH_` character escapes (`_x000D_`, `_x000A_`,
+/// `_x001B_`, …) to their code points. Any other text passes through.
+fn decode_x_escapes(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '_'
+            && i + 6 < chars.len()
+            && chars[i + 1] == 'x'
+            && chars[i + 2..i + 6].iter().all(|c| c.is_ascii_hexdigit())
+            && chars[i + 6] == '_'
+        {
+            let hex: String = chars[i + 2..i + 6].iter().collect();
+            if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                out.push(char::from_u32(v).unwrap_or('\u{FFFD}'));
+                i += 7;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Keep only the text content between XML tags (used when a CLIXML doc has no
+/// `<S S="Error">` segments): skip markup and control characters.
+fn strip_xml_markup(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in text.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag && !c.is_control() => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Remove ANSI escape sequences (CSI, `ESC[…`) that pwsh 7 emits when it
+/// renders error records with `$PSStyle` colors into a pipe.
+fn strip_ansi_escapes(text: &str) -> String {
+    // Most output has no escapes: return the input unchanged (memchr fast
+    // path) instead of allocating a full-size copy on every shell command.
+    if !text.contains('\u{1b}') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            // Parameter bytes (0x30–0x3F), then the final byte (0x40–0x7E).
+            while let Some(&n) = chars.peek() {
+                if ('\u{30}'..='\u{3f}').contains(&n) {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if let Some(&n) = chars.peek()
+                && ('\u{40}'..='\u{7e}').contains(&n)
+            {
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// True when a trimmed PowerShell output line is error-record formatting that
@@ -1065,6 +1226,8 @@ fn is_powershell_noise_line(trimmed: &str) -> bool {
     trimmed.is_empty()
         || trimmed == "NativeCommandError"
         || trimmed.starts_with("At line:")
+        // Localized position header (e.g. zh-CN: "所在位置 行:1 字符: 77").
+        || trimmed.starts_with("所在位置")
         || trimmed == "+"
         || trimmed.starts_with("+ ")
         || trimmed.starts_with("+~")
@@ -1120,7 +1283,7 @@ pub fn append_windows_diagnostics(shell: &str, command: &str, text: &str) -> Str
     let cmd_lower = command.to_lowercase();
     let mut hints: Vec<&str> = Vec::new();
 
-    if shell == "powershell" {
+    if shell == "powershell" || shell == "pwsh" {
         // `curl` is an alias for Invoke-WebRequest in PowerShell; the user
         // almost always wants the real curl (curl.exe).
         if cmd_lower.contains("curl ") && !cmd_lower.contains("curl.exe") {
@@ -1203,16 +1366,17 @@ async fn kill_process_tree(pid: u32) {
 }
 
 /// Append a decoded chunk to the shared live-output tail, keeping it bounded
-/// to the last `JOB_TAIL_MAX_CHARS` characters (dropping from the front).
-fn append_tail(tail: &Mutex<String>, chunk: &[u8]) {
+/// to the last `max_chars` characters (dropping from the front). `max_chars`
+/// comes from `context_limits.background_job_tail_max_chars`.
+fn append_tail(tail: &Mutex<String>, chunk: &[u8], max_chars: usize) {
     let text = haven_common::encoding::decode_lossy(chunk);
     if text.is_empty() {
         return;
     }
     let mut t = tail.lock().unwrap();
     t.push_str(&text);
-    while t.len() > JOB_TAIL_MAX_CHARS {
-        let overflow = t.len() - JOB_TAIL_MAX_CHARS;
+    while t.len() > max_chars {
+        let overflow = t.len() - max_chars;
         let cut = t
             .char_indices()
             .nth(overflow)
@@ -1233,6 +1397,7 @@ pub(crate) async fn read_stream_capped<R>(
     stdout: Option<R>,
     max_bytes: usize,
     tail: Option<Arc<Mutex<String>>>,
+    tail_max_chars: usize,
 ) -> (String, bool)
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -1258,7 +1423,7 @@ where
                     match std::str::from_utf8(&pending) {
                         Ok(s) => {
                             if !s.is_empty() {
-                                append_tail(t, s.as_bytes());
+                                append_tail(t, s.as_bytes(), tail_max_chars);
                             }
                             pending.clear();
                         }
@@ -1268,13 +1433,13 @@ where
                                 // Incomplete trailing sequence: flush the valid
                                 // prefix and keep the remnant for the next read.
                                 if valid > 0 {
-                                    append_tail(t, &pending[..valid]);
+                                    append_tail(t, &pending[..valid], tail_max_chars);
                                 }
                                 pending.drain(..valid);
                             } else {
                                 // Not UTF-8 (e.g. GBK): decode the whole chunk
                                 // lossily and reset the carry.
-                                append_tail(t, &pending);
+                                append_tail(t, &pending, tail_max_chars);
                                 pending.clear();
                             }
                         }
@@ -1440,7 +1605,7 @@ mod tests {
     #[tokio::test]
     async fn test_completion_skipped_for_running() {
         let tasks = Arc::new(BackgroundTasks::new());
-        // No tasks 鈫?no completion. Just confirm the receiver is taken.
+        // No tasks → no completion. Just confirm the receiver is taken.
         let _rx = tasks
             .take_completion_receiver()
             .expect("receiver available");
@@ -1576,14 +1741,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_stream_capped_under_cap() {
-        let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None).await;
+        let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None, 2000).await;
         assert_eq!(text, "hello");
         assert!(!overflowed);
     }
 
     #[tokio::test]
     async fn test_read_stream_capped_none() {
-        let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None).await;
+        let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None, 2000).await;
         assert_eq!(text, "");
         assert!(!overflowed);
     }
@@ -1591,7 +1756,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_stream_capped_over_cap() {
         let data = vec![b'x'; 1000];
-        let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None).await;
+        let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None, 2000).await;
         assert_eq!(text.len(), 100);
         assert!(overflowed);
     }
@@ -1600,11 +1765,11 @@ mod tests {
     async fn test_read_stream_capped_appends_tail() {
         let tail = Arc::new(Mutex::new(String::new()));
         let (text, _) =
-            read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
+            read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone()), 2000).await;
         assert_eq!(text, "hello tail");
         assert_eq!(*tail.lock().unwrap(), "hello tail");
         // A second chunk appends (multi-chunk tee).
-        read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
+        read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone()), 2000).await;
         assert_eq!(*tail.lock().unwrap(), "hello tail more");
     }
 
@@ -1616,7 +1781,7 @@ mod tests {
         let tail = Arc::new(Mutex::new(String::new()));
         let mut content = "a".repeat(8191);
         content.push('中');
-        read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;
+        read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone()), 2000).await;
         let t = tail.lock().unwrap();
         assert!(
             t.ends_with('中'),
@@ -1630,11 +1795,12 @@ mod tests {
     fn test_append_tail_bounded() {
         let tail = Mutex::new(String::new());
         // A single oversized chunk is truncated to the last max chars.
-        let big = "x".repeat(JOB_TAIL_MAX_CHARS + 500);
-        append_tail(&tail, big.as_bytes());
-        assert_eq!(tail.lock().unwrap().len(), JOB_TAIL_MAX_CHARS);
+        let max_chars = 2000usize;
+        let big = "x".repeat(max_chars + 500);
+        append_tail(&tail, big.as_bytes(), max_chars);
+        assert_eq!(tail.lock().unwrap().len(), max_chars);
         // Subsequent chunks drop the front.
-        append_tail(&tail, "tail-end".as_bytes());
+        append_tail(&tail, "tail-end".as_bytes(), max_chars);
         let t = tail.lock().unwrap();
         assert!(
             t.ends_with("tail-end"),
@@ -1668,15 +1834,21 @@ mod tests {
             shell: "cmd".into(),
         };
         assert!(
-            terminal_entry_stale(&entry(now - chrono::Duration::minutes(20), false)),
+            terminal_entry_stale(
+                &entry(now - chrono::Duration::minutes(20), false),
+                Duration::from_secs(600)
+            ),
             "20-minute-old terminal task must be stale"
         );
         assert!(
-            !terminal_entry_stale(&entry(now - chrono::Duration::minutes(5), false)),
+            !terminal_entry_stale(
+                &entry(now - chrono::Duration::minutes(5), false),
+                Duration::from_secs(600)
+            ),
             "fresh terminal task must be kept"
         );
         assert!(
-            !terminal_entry_stale(&entry(now, true)),
+            !terminal_entry_stale(&entry(now, true), Duration::from_secs(600)),
             "running task is never stale"
         );
     }
@@ -1719,15 +1891,89 @@ mod tests {
 
     #[test]
     fn test_sanitize_shell_output_strips_clixml_wrapper() {
-        // pwsh 7 serializes native stderr as CLIXML.
-        let text = "#< CLIXML\n\u{1f}<Objs V=\"1\" S=\"Err\"><S S=\"Error\">boom: connection refused</S></Objs>"
-            .to_string();
-        let out = sanitize_shell_output(&text, "powershell");
+        // Windows PowerShell 5.1 serializes a merged native error stream as a
+        // CLIXML document on stderr. Payloads are XML-escaped (`&gt;`, `&amp;`)
+        // and char-escaped (`_x000D_`/`_x000A_`), and the record carries
+        // localized position/category noise lines that must be dropped.
+        let text = concat!(
+            "#< CLIXML\r\n",
+            "<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">",
+            "<S S=\"Error\">cmd : boom: connection refused _x000D__x000A_</S>",
+            "<S S=\"Error\">所在位置 行:1 字符: 77_x000D__x000A_</S>",
+            "<S S=\"Error\">+ ... 2&gt;&amp;1_x000D__x000A_</S>",
+            "<S S=\"Error\">+ ~~~~~~~~~~~~~~~~~~~~~_x000D__x000A_</S>",
+            "<S S=\"Error\">    + CategoryInfo          : NotSpecified: (boom :String) [], RemoteException_x000D__x000A_</S>",
+            "<S S=\"Error\">    + FullyQualifiedErrorId : NativeCommandError_x000D__x000A_</S>",
+            "<S S=\"Error\"> _x000D__x000A_</S>",
+            "</Objs>"
+        );
+        let out = sanitize_shell_output(text, "powershell");
         assert!(
             out.contains("boom: connection refused"),
             "message must survive CLIXML, got: {out}"
         );
         assert!(!out.contains("CLIXML"), "got: {out}");
+        assert!(
+            !out.contains("_x000D_"),
+            "char escapes must be decoded, got: {out}"
+        );
+        assert!(
+            !out.contains("&gt;") && !out.contains("&amp;"),
+            "xml escapes must be decoded, got: {out}"
+        );
+        assert!(
+            !out.contains("CategoryInfo"),
+            "noise must be dropped, got: {out}"
+        );
+        assert!(
+            !out.contains("所在位置"),
+            "localized position line must be dropped, got: {out}"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_clixml_preserves_preceding_stdout() {
+        // Real stdout captured next to a CLIXML stderr blob must not be lost:
+        // only the CLIXML document is replaced, not the whole text.
+        let text = "build succeeded\n#< CLIXML\n\u{1f}<Objs V=\"1\" S=\"Err\"><S S=\"Error\">boom: connection refused</S></Objs>";
+        let out = sanitize_shell_output(text, "powershell");
+        assert!(
+            out.contains("build succeeded"),
+            "stdout must survive, got: {out}"
+        );
+        assert!(out.contains("boom: connection refused"), "got: {out}");
+        assert!(!out.contains("CLIXML"), "got: {out}");
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_strips_ansi_escapes() {
+        // pwsh 7 renders error records with $PSStyle ANSI colors even into a
+        // pipe; the escapes must not reach the model.
+        let out = sanitize_shell_output("\u{1b}[31;1mboom\u{1b}[0m", "powershell");
+        assert_eq!(out, "boom");
+        let out = sanitize_shell_output("\u{1b}[31;1mboom\u{1b}[0m", "cmd");
+        assert_eq!(out, "boom");
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_strips_ansi_escaped_inside_clixml() {
+        // Inside a CLIXML payload the ESC byte is char-escaped as `_x001B_`;
+        // the escape must be stripped after unescaping, not just on the raw
+        // text (where no literal ESC exists yet).
+        let text = concat!(
+            "#< CLIXML\r\n",
+            "<Objs V=\"1\" S=\"Err\">",
+            "<S S=\"Error\">_x001B_[31;1mboom: refused_x001B_[0m _x000D__x000A_</S>",
+            "</Objs>"
+        );
+        let out = sanitize_shell_output(text, "powershell");
+        assert_eq!(out, "boom: refused", "got: {out:?}");
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_non_powershell_still_strips_ansi() {
+        let out = sanitize_shell_output("\u{1b}[2K\r34%", "cmd");
+        assert_eq!(out, "\r34%", "non-ANSI control must be untouched");
     }
 
     #[test]
@@ -2019,5 +2265,21 @@ mod tests {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
         );
+        // The payload must pin Out-File to UTF-8 so `>`/Out-File redirection
+        // on PS 5.1 never writes UTF-16 files the agent would garble later.
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&args[3])
+            .expect("valid base64");
+        let units: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let payload = String::from_utf16(&units).expect("valid UTF-16");
+        assert!(
+            payload.contains("$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'"),
+            "redirection must default to UTF-8, got: {payload}"
+        );
+        assert!(payload.ends_with("Write-Output hi"));
     }
 }

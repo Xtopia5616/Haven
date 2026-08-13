@@ -8,16 +8,29 @@
 		<title>Haven</title>
 		<script>
 			(function() {
-				// First-paint fallback only: the persisted theme/accent live in
-				// config.toml (loaded via get_settings after mount). Until that
-				// arrives, use the OS color scheme so the first frame never
-				// flashes an unreadable page.
-				var theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+				// The theme / accent persist in localStorage (frontend-only), so
+				// they can be applied synchronously on this blocking script and
+				// the first paint is always correct — no wait for get_settings.
+				function read(k) {
+					try { return window.localStorage.getItem(k); } catch (e) { return null; }
+				}
+				var theme = read('haven.theme');
+				if (theme !== 'light' && theme !== 'dark') {
+					theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+				}
 				document.documentElement.setAttribute('data-theme', theme);
-				(function() {
-					var hex = '#2C5090'; /* info蓝 default */
-					document.documentElement.style.setProperty('--md-accent-hex', hex);
-				})();
+				var accent = read('haven.accent');
+				// Preset hexes are mirrored from themeStore.js's ACCENT_PRESETS —
+				// keep this table in sync when adding/renaming presets.
+				var hex = '#2C5090'; /* info蓝 default */
+				if (accent === 'green') hex = '#006548';
+				else if (accent === 'red') hex = '#C82910';
+				else if (accent && accent.indexOf('custom:') === 0) {
+					var c = accent.slice(7);
+					if (/^#[0-9a-f]{6}$/i.test(c)) hex = c;
+				}
+				document.documentElement.setAttribute('data-accent', accent || 'blue');
+				document.documentElement.style.setProperty('--md-accent-hex', hex);
 			})();
 		</script>
 		%sveltekit.head%

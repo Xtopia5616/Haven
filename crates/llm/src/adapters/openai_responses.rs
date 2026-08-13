@@ -242,6 +242,8 @@ impl OpenAiResponsesAdapter {
     /// Cap for the per-turn reasoning echo in `convert_input`. Full reasoning
     /// (10k+ chars per turn) makes request bodies balloon and providers stall
     /// mid-inference; the tail of each turn preserves the conclusions.
+    /// The live value comes from `context_limits.reasoning_echo_max_chars`
+    /// (the endpoint's `reasoning_echo_max_chars` override wins when set).
     const MAX_REASONING_ECHO_CHARS: usize = 3000;
 
     fn text_content(parts: &[ContentPart]) -> String {
@@ -283,7 +285,10 @@ impl OpenAiResponsesAdapter {
     /// System prompts go to the top-level `instructions` field; assistant
     /// tool calls become standalone `function_call` items; tool results
     /// become `function_call_output` items.
-    fn convert_input(msgs: Vec<LlmMessage>) -> (Vec<Value>, Option<String>) {
+    fn convert_input(
+        msgs: Vec<LlmMessage>,
+        max_reasoning_echo_chars: usize,
+    ) -> (Vec<Value>, Option<String>) {
         let mut instructions: Vec<String> = Vec::new();
         let mut items: Vec<Value> = Vec::new();
         for m in msgs {
@@ -331,13 +336,13 @@ impl OpenAiResponsesAdapter {
                         .map(str::trim)
                         .filter(|r| !r.is_empty())
                     {
-                        let text: String = if r.len() > Self::MAX_REASONING_ECHO_CHARS {
-                            // Last `MAX_REASONING_ECHO_CHARS` chars: the tail
+                        let text: String = if r.len() > max_reasoning_echo_chars {
+                            // Last `max_reasoning_echo_chars` chars: the tail
                             // carries the turn's conclusions, which the next
                             // inference round depends on.
                             r.chars()
                                 .rev()
-                                .take(Self::MAX_REASONING_ECHO_CHARS)
+                                .take(max_reasoning_echo_chars)
                                 .collect::<Vec<_>>()
                                 .into_iter()
                                 .rev()
@@ -421,7 +426,12 @@ impl OpenAiResponsesAdapter {
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> ResponsesRequest {
-        let (input, instructions) = Self::convert_input(messages);
+        let (input, instructions) = Self::convert_input(
+            messages,
+            self.endpoint
+                .reasoning_echo_max_chars
+                .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+        );
         let mut tools_json = Self::convert_tools(tools);
         // `tool_choice` semantics: `None` (no tools at all), string
         // `"auto"`, or a specific tool object like
@@ -556,6 +566,11 @@ impl OpenAiResponsesAdapter {
         let body = self.build_request_body(messages, tools, stream);
         let url = self.responses_url();
         tracing::debug!("POST {} (model: {})", url, body.model);
+        tracing::debug!(
+            "POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
+        );
         let mut req = self
             .client
             .post(&url)
@@ -565,10 +580,13 @@ impl OpenAiResponsesAdapter {
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req).await?;
 
-        let json: ResponsesResponse = resp
-            .json()
+        let txt = resp
+            .text()
             .await
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let json: ResponsesResponse =
+            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
         self.parse_response(json, model)
     }
@@ -589,6 +607,11 @@ impl OpenAiResponsesAdapter {
             } else {
                 "SET"
             },
+        );
+        tracing::trace!(
+            "chat_stream_inner: POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 
         let mut req = self
@@ -971,7 +994,10 @@ mod tests {
                 web_search_calls: Vec::new(),
             },
         ];
-        let (items, instructions) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, instructions) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(instructions.as_deref(), Some("you are helpful"));
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["role"], "user");
@@ -1003,7 +1029,10 @@ mod tests {
                 web_search_calls: Vec::new(),
             },
         ];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items.len(), 3);
         assert_eq!(items[0]["role"], "assistant");
         assert_eq!(items[0]["content"][0]["type"], "output_text");
@@ -1043,7 +1072,10 @@ mod tests {
                 web_search_calls: Vec::new(),
             },
         ];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items.len(), 4);
         assert_eq!(items[0]["role"], "assistant");
         assert_eq!(items[0]["content"][0]["type"], "output_text");
@@ -1073,7 +1105,10 @@ mod tests {
             reasoning: Some(long.clone()),
             web_search_calls: Vec::new(),
         }];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items.len(), 2);
         let echoed = items[1]["content"][0]["text"].as_str().unwrap();
         assert_eq!(
@@ -1101,7 +1136,10 @@ mod tests {
             reasoning: Some("   ".into()),
             web_search_calls: Vec::new(),
         }];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["role"], "assistant");
     }
@@ -1127,7 +1165,10 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
         }];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items[0]["content"][0]["type"], "input_image");
         assert!(
             items[0]["content"][0]["image_url"]
@@ -1276,7 +1317,10 @@ mod tests {
                 "status": "in_progress"
             })],
         }];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "assistant");
         assert_eq!(
@@ -1309,7 +1353,10 @@ mod tests {
             reasoning: None,
             web_search_calls: vec![ws.clone()],
         }];
-        let (items, _) = OpenAiResponsesAdapter::convert_input(msgs);
+        let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(items.len(), 2);
         assert_eq!(items[1], ws);
     }

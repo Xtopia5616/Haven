@@ -645,7 +645,20 @@
 		while (trailingIdx > 0 && currentMessages[trailingIdx - 1].role === 'assistant') {
 			trailingIdx--;
 		}
-		const partialIds = new Set(currentMessages.slice(trailingIdx).map((m) => m.id));
+		// continue_session truncates the interrupted step's partial output from
+		// the DB for a clean retry, so those trailing assistant messages would
+		// otherwise be dropped on resync. But the partial REASONING ("Thinking…")
+		// already streamed before the error is valuable context and must not
+		// vanish — keep it so the user keeps seeing the thinking they watched.
+		// Only the partial thought (final answer text) and stale tool/final
+		// messages are dropped: the backend truncates them and the retry
+		// regenerates them.
+		const partialIds = new Set(
+			currentMessages
+				.slice(trailingIdx)
+				.filter((m) => m.type !== 'reasoning')
+				.map((m) => m.id),
+		);
 		try {
 			// First unblock the errored session: continue_session truncates the
 			// partial output and sets the session to Pending so the "继续" user
@@ -853,9 +866,26 @@
 		chunkFlushRaf = 0;
 		if (pendingChunks.length === 0) return;
 		const batch = pendingChunks.splice(0);
+		// Merge deltas per step before touching the message list: each
+		// accumulateStreamChunk call copies the whole conversation array, so
+		// applying N chunks of the same step separately costs O(N × list) per
+		// flush — a long answer on a long conversation stalls the main thread.
+		// Concatenating the deltas preserves the final text (the step's snap
+		// reconciles everything anyway) and collapses the work to O(steps ×
+		// list), normally one array copy per flush.
+		const mergedBySid = new Map();
+		for (const c of batch) {
+			const prev = mergedBySid.get(c.sid);
+			if (prev) {
+				prev.delta = (prev.delta || '') + (c.delta || '');
+				prev.finalizeReasoning = prev.finalizeReasoning || c.finalizeReasoning;
+			} else {
+				mergedBySid.set(c.sid, { ...c });
+			}
+		}
 		// Group by session preserving arrival order within each session.
 		const bySession = new Map();
-		for (const c of batch) {
+		for (const c of mergedBySid.values()) {
 			let list = bySession.get(c.tid);
 			if (!list) bySession.set(c.tid, (list = []));
 			list.push(c);

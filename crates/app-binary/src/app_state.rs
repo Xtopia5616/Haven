@@ -59,7 +59,11 @@ impl AppState {
         });
 
         let cfg = config_loader.config().clone();
-        let llm_config = cfg.llm.clone();
+        let llm_config = cfg
+            .llm
+            .clone()
+            .with_response_cap(cfg.context_limits.max_response_tokens)
+            .with_reasoning_echo_cap(cfg.context_limits.reasoning_echo_max_chars);
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.session.max_steps;
         let conversation_window_size = cfg.memory.session_window_size;
@@ -72,6 +76,9 @@ impl AppState {
         // so `rebuild_catalog` can apply them from the first rebuild.
         let tool_settings = cfg.tool_settings.clone();
         tools.set_tool_settings(tool_settings).await;
+        // Default shell for the `shell` tool (cmd / powershell / pwsh) so the
+        // catalog picks it up from the first rebuild.
+        tools.set_default_shell(cfg.default_shell).await;
         // Unified context limits (compaction threshold, tool output cap, ...)
         // feed the catalog rebuild so tools pick up the global output cap.
         tools.set_context_limits(context_limits.clone()).await;

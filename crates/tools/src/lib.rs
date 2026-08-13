@@ -8,7 +8,7 @@ pub mod tool;
 pub mod util;
 
 use haven_common::config::{ContextLimitsConfig, McpServerConfig, SkillsExecConfig, ToolConfig};
-use haven_common::types::RiskLevel;
+use haven_common::types::{RiskLevel, ShellChoice};
 use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -87,6 +87,9 @@ pub struct ToolsManager {
     /// budget for tool outputs fed back into the conversation; per-tool
     /// `tool_settings.*.max_output_chars` overrides it.
     context_limits: RwLock<ContextLimitsConfig>,
+    /// Default shell for the `shell` tool, set from app settings
+    /// (cmd / powershell / pwsh).
+    default_shell: RwLock<ShellChoice>,
     /// Full builtin tool list (enabled and disabled) so the UI can list and
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
@@ -143,6 +146,7 @@ impl ToolsManager {
             safety_gateway: SafetyGateway::new(RiskLevel::Medium),
             tool_settings: RwLock::new(HashMap::new()),
             context_limits: RwLock::new(ContextLimitsConfig::default()),
+            default_shell: RwLock::new(ShellChoice::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
             session_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
@@ -194,6 +198,13 @@ impl ToolsManager {
         self.background_tasks.set_limits(&limits).await;
         self.scheduled_tasks.set_limits(&limits).await;
         *self.context_limits.write().await = limits;
+        self.rebuild_catalog().await;
+    }
+
+    /// Replace the `shell` tool's default shell and rebuild the catalog so
+    /// the running agent picks up the new value on its next step.
+    pub async fn set_default_shell(&self, shell: ShellChoice) {
+        *self.default_shell.write().await = shell;
         self.rebuild_catalog().await;
     }
 
@@ -258,6 +269,7 @@ impl ToolsManager {
             self.clipboard_history.clone(),
             &settings,
             &limits,
+            *self.default_shell.read().await,
         )
         .await;
 

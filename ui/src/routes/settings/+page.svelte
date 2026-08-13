@@ -2,7 +2,7 @@
 	import logger from '$lib/logger.js';
 			import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.js';
-	import { themeStore, persistAppearance } from '$lib/themeStore.js';
+	import { themeStore } from '$lib/themeStore.js';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -298,6 +298,7 @@
 		compaction_ratio: 0.75,
 		compaction_reserve_tokens: 4096,
 		default_context_window: 128000,
+		max_response_tokens: 1000000,
 		max_observation_chars: 8000,
 		max_transcript_chars: 4000,
 		max_attachment_images: 4,
@@ -324,6 +325,14 @@
 		max_known_facts: 40,
 		sanitize_field_max_chars: 256,
 		file_summary_timeout_secs: 120,
+		cut_off_retries: 2,
+		empty_response_max_retries: 3,
+		empty_response_retry_delay_ms: 1500,
+		stream_stall_warn_delay_ms: 10000,
+		reasoning_echo_max_chars: 3000,
+		background_job_tail_max_chars: 2000,
+		background_job_output_emit_interval_ms: 1500,
+		terminal_job_ttl_secs: 600,
 		mcp_max_binary_payload_bytes: 2 * 1024 * 1024,
 		mcp_max_sse_buffer_bytes: 2 * 1024 * 1024,
 		skills_max_md_bytes: 256 * 1024,
@@ -354,6 +363,7 @@
 			hint: '模型上下文窗口与自动压缩（compaction）行为的阈值。压缩阈值过高可能导致上下文溢出。',
 			fields: [
 				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'tokens', danger: true, hint: '端点未配置 context_window 且模型不在内置目录时的回退窗口。调高会增大每次请求的成本与溢出风险。' },
+				{ key: 'max_response_tokens', label: '回复输出 token 下限', unit: 'tokens', danger: false, hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大）。默认极大，长回复不会被截断；需要限制输出长度时调低此项。' },
 				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
 				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
 				{ key: 'max_observation_chars', label: '工具观察字符上限', unit: 'chars', danger: true, hint: '工具结果进入对话的最大字符数，也是 shell/file/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。' },
@@ -403,11 +413,26 @@
 			],
 		},
 		{
+			id: 'agent',
+			title: '代理循环行为',
+			hint: 'ReAct 循环的重试/空响应/停滞反馈阈值。这些原本是硬编码常量，现可在设置中调整。',
+			fields: [
+				{ key: 'cut_off_retries', label: '截断回复重试次数', unit: 'count', danger: false, hint: '看起来被截断/中途停止的文字回复会带提示重试几次再作为最终答案。调大 = 更努力地补全长回复。' },
+				{ key: 'empty_response_max_retries', label: '空响应重试次数', unit: 'count', danger: false, hint: '完全空的模型响应重试几次再报错（服务端静默失败的兜底）。' },
+				{ key: 'empty_response_retry_delay_ms', label: '空响应重试间隔', unit: 'ms', danger: false },
+				{ key: 'stream_stall_warn_delay_ms', label: '流停滞提醒延迟', unit: 'ms', danger: false, hint: '流式输出停顿多久后向界面提示"仍在生成"。调大 = 更晚提示。' },
+				{ key: 'reasoning_echo_max_chars', label: '推理回显上限', unit: 'chars', danger: false, hint: '回传给服务商的每轮 reasoning 最大字符数（防止请求体过大导致流中断）。' },
+			],
+		},
+		{
 			id: 'resources',
 			title: '资源上限',
 			hint: '并发与内存资源保护。调大可能造成 CPU/内存/进程占用失控。',
 			fields: [
 				{ key: 'background_max_tasks', label: '后台任务并发上限', unit: 'count', danger: true, hint: '同时运行的 background shell 任务数。调大 = 子进程失控风险。' },
+				{ key: 'background_job_tail_max_chars', label: '后台任务输出尾部上限', unit: 'chars', danger: false, hint: '运行中任务实时输出预览保留的尾部字符数。' },
+				{ key: 'background_job_output_emit_interval_ms', label: '后台输出事件间隔', unit: 'ms', danger: false },
+				{ key: 'terminal_job_ttl_secs', label: '后台任务保留时长', unit: 'secs', danger: false, hint: '已完成任务在面板保留多久后被回收（历史仍存数据库）。' },
 				{ key: 'scheduled_tasks_max', label: '定时任务数量上限', unit: 'count', danger: true },
 				{ key: 'scheduled_tasks_due_horizon_secs', label: '定时任务最远排期', unit: 'days', days: true, danger: false },
 				{ key: 'clipboard_history_entries', label: '剪贴板历史默认条数', unit: 'count', danger: false },
@@ -468,6 +493,36 @@
 	});
 	let log = $state({ level: 'info', file_enabled: true });
 
+	// Default shell for the agent's `shell` tool (cmd / Windows PowerShell /
+	// PowerShell 7). Availability is probed via check_shell_available so the
+	// UI can warn when pwsh is picked without being installed.
+	let defaultShell = $state('powershell');
+	let shellAvailable = $state({ cmd: true, powershell: true, pwsh: true });
+	const SHELL_BASE_OPTIONS = [
+		{ value: 'cmd', label: 'cmd.exe（命令提示符）' },
+		{ value: 'powershell', label: 'Windows PowerShell（系统自带）' },
+		{ value: 'pwsh', label: 'PowerShell 7（pwsh）' },
+	];
+
+	function shellOptions() {
+		return SHELL_BASE_OPTIONS.map((o) =>
+			o.value === 'pwsh' && shellAvailable.pwsh === false
+				? { ...o, label: `${o.label}（未安装）` }
+				: o,
+		);
+	}
+
+	async function checkShells() {
+		for (const s of ['cmd', 'powershell', 'pwsh']) {
+			try {
+				const res = await invoke('check_shell_available', { shell: s });
+				shellAvailable[s] = !!res?.available;
+			} catch {
+				shellAvailable[s] = true; // assume available on probe failure
+			}
+		}
+	}
+
 	// Log viewer (Logging section): reads the tail of the current log file
 	// via get_log_info / read_log_tail and shows it in a dialog.
 	let logView = $state({ open: false, path: '', content: '', loading: false });
@@ -526,6 +581,11 @@
 	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
 	let savedAccent = themeStore.currentAccent; // snapshot for reverting unsaved changes
 	let currentTheme = $state(themeStore.currentTheme);
+	let savedTheme = themeStore.currentTheme; // snapshot for reverting unsaved changes
+	// Only revert a theme change made through this page's own controls: the
+	// sidebar theme-toggle button also lives in the shared layout and stays
+	// visible here, and its already-persisted toggle must not be rolled back.
+	let themeTouched = false;
 	const unsubTheme = themeStore.subscribe((v) => { currentTheme = v.theme; });
 	// L12: guards against onDestroy running while onMount's async settings
 	// load is still in flight.
@@ -536,6 +596,9 @@
 		unsubTheme();
 		if (accent !== savedAccent) {
 			themeStore.setAccent(savedAccent);
+		}
+		if (themeTouched && currentTheme !== savedTheme) {
+			themeStore.setTheme(savedTheme);
 		}
 	});
 
@@ -599,17 +662,8 @@
 				mcpServerNames = (settings.mcp_servers || []).map((s) => s.name || '').filter(Boolean);
 			notification = settings.notification || notification;
 			log = settings.log || log;
-			if (settings.appearance?.theme) {
-				themeStore.setTheme(settings.appearance.theme);
-			}
-			if (settings.appearance?.accent_color) {
-				accent = settings.appearance.accent_color;
-				savedAccent = accent;
-				themeStore.setAccent(accent);
-				if (!themeStore.presets[accent]) customAccentHex = themeStore.accentColor;
-			} else {
-				savedAccent = themeStore.currentAccent;
-			}
+			defaultShell = settings.default_shell || 'powershell';
+			checkShells();
 			}
 		} catch (e) {
 			addNotification(`加载设置失败: ${e}`, 'error', 4000);
@@ -713,6 +767,7 @@
 		try {
 			await invoke('update_settings', {
 				settings: {
+					default_shell: defaultShell,
 					llm: llmConfig,
 					hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },
 					audio: {
@@ -759,14 +814,12 @@
 				file_enabled: log.file_enabled,
 				file_path: null,
 			},
-			appearance: {
-				theme: themeStore.currentTheme,
-				accent_color: accent,
-			},
 				},
 			});
 		addNotification('设置已保存', 'success');
 			savedAccent = accent;
+			savedTheme = currentTheme;
+			themeTouched = false;
 			if (autostartEnabled) {
 				try { await invoke('enable_autostart'); } catch (e) {
 					autostartEnabled = false;
@@ -1042,6 +1095,21 @@
 	</div>
 
 	<div class="section">
+		<h2>Agent Shell</h2>
+		<p class="model-hint">Agent 的 shell 工具默认使用的命令行解释器。模型仍可在调用时通过 shell 参数临时指定其他 shell（cmd / powershell / pwsh）。</p>
+		<div class="form-row">
+			<label for="default-shell">Default Shell</label>
+			<MaterialSelect id="default-shell" value={defaultShell} options={shellOptions()} onChange={(v) => { defaultShell = v; }} />
+		</div>
+		{#if defaultShell === 'pwsh' && shellAvailable.pwsh === false}
+			<div class="shell-warning">
+				<p>未检测到 PowerShell 7（pwsh），命令将无法执行。请先安装：</p>
+				<code>winget install Microsoft.PowerShell</code>
+			</div>
+		{/if}
+	</div>
+
+	<div class="section">
 		<h2>Memory</h2>
 		<div class="form-row">
 			<label for="memory-window-size">Window Size</label>
@@ -1160,16 +1228,16 @@
 					class:md-btn--filled={currentTheme !== 'light'}
 					role="radio"
 					aria-checked={currentTheme === 'light'}
-					onclick={() => themeStore.setTheme('light')}
-				>Light</button>
-				<button
-					class="md-btn"
-					class:md-btn--outlined={currentTheme === 'dark'}
-					class:md-btn--filled={currentTheme !== 'dark'}
-					role="radio"
-					aria-checked={currentTheme === 'dark'}
-					onclick={() => themeStore.setTheme('dark')}
-				>Dark</button>
+				onclick={() => { themeTouched = true; themeStore.setTheme('light'); }}
+			>Light</button>
+			<button
+				class="md-btn"
+				class:md-btn--outlined={currentTheme === 'dark'}
+				class:md-btn--filled={currentTheme !== 'dark'}
+				role="radio"
+				aria-checked={currentTheme === 'dark'}
+				onclick={() => { themeTouched = true; themeStore.setTheme('dark'); }}
+			>Dark</button>
 			</div>
 		</div>
 		<div class="form-row">
@@ -1503,7 +1571,7 @@
 	{/if}
 
 
-	<div class="section">
+	<div class="section input-format-section">
 		<h2>输入格式</h2>
 		<p class="model-hint">每种输入格式的处理方式与限制。保存后对聊天输入框生效，后端校验使用相同配置。</p>
 
@@ -1757,6 +1825,12 @@
 		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase; letter-spacing: 1px; margin-bottom: var(--md-sys-space-lg);
 	}
+	.input-format-section {
+		max-width: 640px;
+	}
+	.input-format-section .form-row :global(.md-number-field) {
+		width: 200px;
+	}
 	.model-group-heading {
 		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
 		margin-top: var(--md-sys-space-lg); margin-bottom: var(--md-sys-space-sm);
@@ -1786,7 +1860,7 @@
 	.llm-head h2 { margin: 0; }
 	.picker-card {
 		display: grid;
-		grid-template-columns: minmax(200px, 1.2fr) minmax(180px, 1fr) minmax(160px, 1fr);
+		grid-template-columns: 1.2fr 1fr 1fr;
 		gap: var(--md-sys-space-lg);
 		align-items: end;
 	}
@@ -1929,6 +2003,24 @@
 		color: var(--md-sys-color-on-surface);
 	}
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
+	.shell-warning {
+		margin-top: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-error);
+		border-radius: var(--md-sys-shape-medium);
+		background: color-mix(in srgb, var(--md-sys-color-error) 10%, transparent);
+		color: var(--md-sys-color-on-surface);
+		font-size: 12px;
+	}
+	.shell-warning p { margin: 0 0 var(--md-sys-space-xs); }
+	.shell-warning code {
+		display: inline-block;
+		padding: 2px 8px;
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface-container-high);
+		font-family: ui-monospace, Consolas, monospace;
+		user-select: all;
+	}
 	.form-row {
 		display: flex; align-items: center; margin-bottom: var(--md-sys-space-sm); gap: var(--md-sys-space-md);
 	}
@@ -2211,5 +2303,41 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		margin: 0;
 		white-space: pre;
+	}
+
+	@media (max-width: 900px) {
+		.limits-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (max-width: 700px) {
+		.limit-row,
+		.form-row {
+			flex-direction: column;
+			align-items: stretch;
+			gap: var(--md-sys-space-xs);
+		}
+		.picker-card {
+			grid-template-columns: 1fr;
+			gap: var(--md-sys-space-md);
+		}
+		.form-row label,
+		.form-row .form-label {
+			width: auto;
+			flex-shrink: 1;
+		}
+		.limit-input {
+			justify-content: space-between;
+		}
+		.switch-row {
+			align-items: flex-start;
+		}
+		.switch-label {
+			padding-top: 6px;
+		}
+		.format-card {
+			padding: var(--md-sys-space-sm);
+		}
 	}
 </style>

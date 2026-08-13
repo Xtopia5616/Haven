@@ -44,7 +44,13 @@ impl VenvManager {
     }
 
     fn checksum_file(path: &Path) -> String {
-        let content = std::fs::read(path).unwrap_or_default();
+        let content = match std::fs::read(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("checksum_file: failed to read {}: {}", path.display(), e);
+                Vec::new()
+            }
+        };
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         content.hash(&mut hasher);
         format!("{:x}", hasher.finish())

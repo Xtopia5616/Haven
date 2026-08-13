@@ -463,6 +463,11 @@ impl OpenAiAdapter {
         );
 
         tracing::debug!("POST {} (model: {})", url, body.model);
+        tracing::debug!(
+            "POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
+        );
         let mut req = self
             .client
             .post(&url)
@@ -472,10 +477,13 @@ impl OpenAiAdapter {
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req).await?;
 
-        let json: OpenAiResponse = resp
-            .json()
+        let txt = resp
+            .text()
             .await
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let json: OpenAiResponse =
+            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
         self.parse_openai_response(json, model)
     }
@@ -501,6 +509,11 @@ impl OpenAiAdapter {
             },
             self.endpoint.timeout_secs,
             self.endpoint.timeout_streaming_secs
+        );
+        tracing::trace!(
+            "chat_stream_inner: POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 
         let mut req = self
@@ -570,6 +583,10 @@ impl OpenAiAdapter {
                                     if payload == "[DONE]" || payload.is_empty() {
                                         continue;
                                     }
+                                    tracing::trace!(
+                                        "openai stream payload: {} chars",
+                                        payload.len()
+                                    );
                                     // If the receiver was dropped (consumer cancelled
                                     // or stream abandoned), stop reading the HTTP
                                     // response body to avoid wasting bandwidth/CPU.
@@ -582,6 +599,10 @@ impl OpenAiAdapter {
                                 // Flush any remaining buffered data before EOF.
                                 let remaining = buf.trim().to_string();
                                 if !remaining.is_empty() && remaining != "[DONE]" {
+                                    tracing::trace!(
+                                        "openai stream flush: {} chars",
+                                        remaining.len()
+                                    );
                                     let _ = tx.send(remaining);
                                 }
                                 break;
@@ -829,6 +850,11 @@ impl LlmClient for OpenAiAdapter {
             input,
         };
         tracing::debug!("POST {} (model: {})", url, body.model);
+        tracing::debug!(
+            "POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
+        );
         let mut req = self
             .client
             .post(&url)
@@ -838,10 +864,13 @@ impl LlmClient for OpenAiAdapter {
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req).await?;
 
-        let json: OpenAiEmbedResponse = resp
-            .json()
+        let txt = resp
+            .text()
             .await
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let json: OpenAiEmbedResponse =
+            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let requested = body.input.len();
         let vectors: Vec<Vec<f32>> = json.data.into_iter().map(|item| item.embedding).collect();
         if vectors.is_empty() {

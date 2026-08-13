@@ -92,14 +92,12 @@ fn xml_section<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     xml.split(&open).nth(1)?.split(&close).next()
 }
 
-/// 反转义任务 XML 中的实体（路径可能含 `&` 等字符）。
+/// 反转义任务 XML 中的实体（路径可能含 `&` 等字符）。复用 haven-common 的
+/// 实现（`&amp;` 最后替换，避免 `&amp;lt;` 被二次解码），与 CLIXML 消息解码
+/// 保持同一语义。
 #[cfg(target_os = "windows")]
 fn xml_unescape(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
+    haven_common::encoding::xml_unescape(s)
 }
 
 /// 任务 XML 的 `<Arguments>` 是否包含 `--autostart`。

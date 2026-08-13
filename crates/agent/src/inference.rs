@@ -263,18 +263,25 @@ impl InferenceEngine {
         if let Some(last) = cursor_last {
             let db = self.db.clone();
             let key = cursor_key.clone();
-            let _ = db
+            if let Err(e) = db
                 .run_blocking(move |db| {
                     db.set_kv(&key, &last)?;
                     Ok::<(), anyhow::Error>(())
                 })
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    "fact extraction cursor advance failed for session {}: {}",
+                    session_id,
+                    e
+                );
+            }
         }
     }
 
     /// True when the vector index holds embeddings from a different model
     /// than the currently configured `embedding_model`. Vectors from another
-    /// model are not comparable (dimension mismatch 鈫?cosine similarity
+    /// model are not comparable (dimension mismatch → cosine similarity
     /// degenerates to 0), so the index must be rebuilt.
     async fn embedding_model_changed(&self) -> bool {
         let current = self
@@ -288,10 +295,17 @@ impl InferenceEngine {
             return false;
         }
         let db = self.db.clone();
-        let stored: Vec<String> = db
-            .run_blocking(move |db| db.list_embedding_models())
-            .await
-            .unwrap_or_default();
+        let stored: Vec<String> = match db.run_blocking(move |db| db.list_embedding_models()).await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "embedding_model_changed: list_embedding_models failed: {}",
+                    e
+                );
+                Vec::new()
+            }
+        };
         !stored.is_empty() && stored.iter().any(|m| m != &current)
     }
 
@@ -312,33 +326,82 @@ impl InferenceEngine {
         // rebuild below starts from a clean, dimension-consistent index.
         if self.embedding_model_changed().await {
             let db = self.db.clone();
-            let _ = db.run_blocking(move |db| db.clear_embeddings()).await;
-            tracing::info!("embedding model changed: cleared vector index for rebuild");
+            if let Err(e) = db.run_blocking(move |db| db.clear_embeddings()).await {
+                tracing::error!(
+                    "embedding model changed: failed to clear vector index: {}",
+                    e
+                );
+            } else {
+                tracing::info!("embedding model changed: cleared vector index for rebuild");
+            }
         }
         let db = self.db.clone();
-        let pending: Vec<(String, String, String)> = db
+        let pending_raw = db
             .run_blocking(move |db| {
                 let mut out: Vec<(String, String, String)> = Vec::new();
-                for id in db
-                    .missing_embedding_ids(entity_kind::FACT)
-                    .unwrap_or_default()
-                {
-                    if let Ok(Some(text)) = db.fact_text_by_id(&id) {
-                        out.push((entity_kind::FACT.to_string(), id, text));
+                match db.missing_embedding_ids(entity_kind::FACT) {
+                    Ok(ids) => {
+                        for id in ids {
+                            match db.fact_text_by_id(&id) {
+                                Ok(Some(text)) => {
+                                    out.push((entity_kind::FACT.to_string(), id, text));
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "embed_new_memory: fact_text_by_id failed for {}: {}",
+                                        id,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "embed_new_memory: missing_embedding_ids(fact) failed: {}",
+                            e
+                        );
                     }
                 }
-                for id in db
-                    .missing_embedding_ids(entity_kind::EPISODE)
-                    .unwrap_or_default()
-                {
-                    if let Ok(Some(text)) = db.episode_text(&id) {
-                        out.push((entity_kind::EPISODE.to_string(), id, text));
+                match db.missing_embedding_ids(entity_kind::EPISODE) {
+                    Ok(ids) => {
+                        for id in ids {
+                            match db.episode_text(&id) {
+                                Ok(Some(text)) => {
+                                    out.push((entity_kind::EPISODE.to_string(), id, text));
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "embed_new_memory: episode_text failed for {}: {}",
+                                        id,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "embed_new_memory: missing_embedding_ids(episode) failed: {}",
+                            e
+                        );
                     }
                 }
                 Ok::<Vec<(String, String, String)>, anyhow::Error>(out)
             })
-            .await
-            .unwrap_or_default();
+            .await;
+        let pending: Vec<(String, String, String)> = match pending_raw {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "embed_new_memory: failed to collect pending embedding items: {}",
+                    e
+                );
+                Vec::new()
+            }
+        };
         if pending.is_empty() {
             return;
         }
@@ -362,10 +425,31 @@ impl InferenceEngine {
                         .map(|((kind, id, text), v)| (kind.clone(), id.clone(), text.clone(), v))
                         .collect();
                     let db = self.db.clone();
+                    let batch_len = owned.len();
                     let _ = db
                         .run_blocking(move |db| {
+                            let mut failures = 0usize;
                             for (kind, id, text, vector) in owned {
-                                let _ = db.save_embedding(&kind, &id, &model, &vector, &text);
+                                if let Err(e) =
+                                    db.save_embedding(&kind, &id, &model, &vector, &text)
+                                {
+                                    failures += 1;
+                                    if failures <= 3 {
+                                        tracing::warn!(
+                                            "save_embedding failed for {} {}: {}",
+                                            kind,
+                                            id,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            if failures > 0 {
+                                tracing::warn!(
+                                    "embedding batch: {} of {} items failed to save",
+                                    failures,
+                                    batch_len
+                                );
                             }
                             Ok::<(), anyhow::Error>(())
                         })
@@ -390,11 +474,27 @@ impl InferenceEngine {
         let db = self.db.clone();
         let _ = db
             .run_blocking(move |db| {
-                let _ = db.dedup_facts();
-                let _ = db.delete_sensitive_facts();
-                let _ = db.flush_low_confidence(0.3);
-                let _ = db.prune_orphaned_embeddings();
-                let _ = db.cleanup_orphan_extraction_cursors();
+                if let Err(e) = db.dedup_facts() {
+                    tracing::warn!("memory maintenance: dedup_facts failed: {}", e);
+                }
+                if let Err(e) = db.delete_sensitive_facts() {
+                    tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e);
+                }
+                if let Err(e) = db.flush_low_confidence(0.3) {
+                    tracing::warn!("memory maintenance: flush_low_confidence failed: {}", e);
+                }
+                if let Err(e) = db.prune_orphaned_embeddings() {
+                    tracing::warn!(
+                        "memory maintenance: prune_orphaned_embeddings failed: {}",
+                        e
+                    );
+                }
+                if let Err(e) = db.cleanup_orphan_extraction_cursors() {
+                    tracing::warn!(
+                        "memory maintenance: cleanup_orphan_extraction_cursors failed: {}",
+                        e
+                    );
+                }
                 Ok::<(), anyhow::Error>(())
             })
             .await;
@@ -605,7 +705,7 @@ impl InferenceEngine {
                     }
                     let tags = sanitize_tags(&tags_raw);
                     let tags: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-                    let _ = db.upsert_fact_with_durability(
+                    if let Err(e) = db.upsert_fact_with_durability(
                         &subject,
                         &predicate,
                         &object,
@@ -614,7 +714,15 @@ impl InferenceEngine {
                         &tags,
                         src_ref.as_ref(),
                         durability,
-                    );
+                    ) {
+                        tracing::warn!(
+                            "fact inference: failed to persist fact '{} {} {}': {}",
+                            subject,
+                            predicate,
+                            object,
+                            e
+                        );
+                    }
                 }
                 Ok::<(), anyhow::Error>(())
             })
@@ -679,10 +787,13 @@ impl InferenceEngine {
     /// collapsing everything onto "user".
     async fn load_known_facts(&self) -> String {
         let db = self.db.clone();
-        let facts = db
-            .run_blocking(move |db| db.list_facts())
-            .await
-            .unwrap_or_default();
+        let facts = match db.run_blocking(move |db| db.list_facts()).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("load_known_facts: list_facts failed: {}", e);
+                Vec::new()
+            }
+        };
         let mut lines: Vec<String> = Vec::new();
         for fact in facts.iter().take(self.max_known_facts) {
             let subject = if fact.subject == "user" {

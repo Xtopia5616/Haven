@@ -109,11 +109,20 @@ impl EngineHandle {
         if self.cmd_tx.send(EngineCommand::StopAndDrain(tx)).is_err() {
             return Ok(Vec::new());
         }
-        let data = tokio::time::timeout(CMD_TIMEOUT, rx)
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .unwrap_or_default();
+        let data = match tokio::time::timeout(CMD_TIMEOUT, rx).await {
+            Ok(Ok(data)) => data,
+            Ok(Err(_)) => {
+                tracing::warn!("stop_and_drain: engine dropped the reply channel");
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "stop_and_drain: engine did not reply within {:?}",
+                    CMD_TIMEOUT
+                );
+                Vec::new()
+            }
+        };
         Ok(data)
     }
 

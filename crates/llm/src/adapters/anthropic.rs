@@ -447,6 +447,11 @@ impl AnthropicAdapter {
         let body = self.build_request_body(messages, tools, stream);
         let url = self.messages_url();
         tracing::debug!("POST {} (model: {})", url, body.model);
+        tracing::debug!(
+            "POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
+        );
         let mut req = self
             .client
             .post(&url)
@@ -456,10 +461,13 @@ impl AnthropicAdapter {
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req).await?;
 
-        let json: AnthropicResponse = resp
-            .json()
+        let txt = resp
+            .text()
             .await
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let json: AnthropicResponse =
+            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
         self.parse_response(json, model)
     }
@@ -480,6 +488,11 @@ impl AnthropicAdapter {
             } else {
                 "SET"
             },
+        );
+        tracing::trace!(
+            "chat_stream_inner: POST {} request body: {} chars",
+            url,
+            serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 
         let mut req = self

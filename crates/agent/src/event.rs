@@ -549,7 +549,14 @@ impl EventDispatcher {
             run_id,
             thought.len()
         );
-        let _ = db.create_thought_step(session_id, step_number as i32, thought);
+        if let Err(e) = db.create_thought_step(session_id, step_number as i32, thought) {
+            tracing::warn!(
+                "create_thought_step failed (session={} step={}): {}",
+                session_id,
+                step_number,
+                e
+            );
+        }
         emitter
             .emit(AgentEvent::Thought {
                 session_id: session_id.into(),

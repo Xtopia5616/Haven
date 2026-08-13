@@ -121,6 +121,30 @@ pub enum HotkeyMode {
     Hold,
 }
 
+/// Default shell used by the agent's `shell` tool when the model does not
+/// specify one explicitly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ShellChoice {
+    /// Windows built-in Windows PowerShell (`powershell.exe`).
+    #[default]
+    Powershell,
+    /// Command Prompt (`cmd.exe`).
+    Cmd,
+    /// PowerShell 7+ (`pwsh.exe`, cross-platform, not preinstalled on Windows).
+    Pwsh,
+}
+
+impl ShellChoice {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ShellChoice::Powershell => "powershell",
+            ShellChoice::Cmd => "cmd",
+            ShellChoice::Pwsh => "pwsh",
+        }
+    }
+}
+
 /// Risk level for a tool invocation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, PartialOrd, Hash)]
 #[serde(rename_all = "lowercase")]

@@ -68,6 +68,7 @@ pub async fn register_builtin_tools(
     clipboard_history: Arc<clipboard::ClipboardHistory>,
     settings: &HashMap<String, haven_common::config::ToolConfig>,
     limits: &haven_common::config::ContextLimitsConfig,
+    default_shell: haven_common::types::ShellChoice,
 ) {
     tools.push(Arc::new(audio::AudioTool));
     tools.push(Arc::new(ask::AskTool));
@@ -102,6 +103,7 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(shell::ShellTool {
         tasks: background_tasks.clone(),
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
+        default_shell: default_shell.as_str().into(),
     }));
     tools.push(Arc::new(task_status::TaskStatusTool {
         tasks: background_tasks.clone(),

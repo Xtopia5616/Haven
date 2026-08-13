@@ -1301,12 +1301,20 @@ impl McpClient {
         *self.reconnect_retries.lock().await = 0;
         *self.status.lock().await = McpClientStatus::Connecting;
 
-        self.shutdown().await.ok();
+        if let Err(e) = self.shutdown().await {
+            tracing::warn!("MCP reconnect: shutdown of previous session failed: {}", e);
+        }
         self.connect().await?;
 
         // Refresh tools cache
-        if let Ok(tools) = self.list_tools().await {
-            *self.tools_cache.lock().await = Some(tools);
+        match self.list_tools().await {
+            Ok(tools) => *self.tools_cache.lock().await = Some(tools),
+            Err(e) => {
+                tracing::warn!(
+                    "MCP reconnect: list_tools failed, tool cache stays stale: {}",
+                    e
+                );
+            }
         }
 
         *self.last_error.lock().await = None;
