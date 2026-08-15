@@ -4,7 +4,10 @@ use anyhow::Result;
 use tract_onnx::prelude::*;
 
 const MODEL_BYTES: &[u8] = include_bytes!("../../../assets/models/silero_vad.onnx");
-const FRAME_SIZE: usize = 480;
+/// Audio samples per VAD frame (10 ms at 16 kHz). Single definition for the
+/// whole crate: the inference engine consumes exactly this many samples and
+/// the recording loop chunks captured audio by it.
+pub(crate) const FRAME_SIZE: usize = 480;
 const STATE_DIM: usize = 128;
 const ENERGY_THRESHOLD: f32 = 0.001;
 
@@ -54,11 +57,13 @@ impl VadEngine {
         Ok(Self { model, state })
     }
 
+    /// Run one inference for a speech frame. The caller (recording loop)
+    /// pre-filters frames by `frame_has_energy`, so silent frames never pay
+    /// the model round-trip; the energy check deliberately lives there —
+    /// running it here again would recompute the same sum-of-squares per
+    /// frame.
     pub fn infer(&mut self, frame: &[f32]) -> f32 {
         if frame.len() < FRAME_SIZE {
-            return 0.0;
-        }
-        if !frame_has_energy(frame) {
             return 0.0;
         }
 

@@ -26,6 +26,13 @@ pub struct TranscriptionResultEvent {
     pub confidence: Option<f64>,
 }
 
+/// Emitted right before STT runs, so the UI can show a "transcribing" hint
+/// covering the gap between `recording:stopped` and `transcription:result`.
+#[derive(Clone, Serialize)]
+pub struct TranscriptionStartedEvent {
+    pub session_id: haven_common::types::SessionId,
+}
+
 #[derive(Clone, Serialize)]
 pub struct TranscriptionErrorEvent {
     pub session_id: haven_common::types::SessionId,
@@ -83,6 +90,15 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"session_id\":\"s1\""));
         assert!(json.contains("\"confidence\":0.95"));
+    }
+
+    #[test]
+    fn test_transcription_started_event_serde() {
+        let ev = TranscriptionStartedEvent {
+            session_id: "rec-abc".into(),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"session_id\":\"rec-abc\""));
     }
 
     #[test]

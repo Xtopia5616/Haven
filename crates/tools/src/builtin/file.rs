@@ -4,7 +4,7 @@ use haven_common::prompts::{FILE_SUMMARY_SYSTEM_PROMPT, IMAGE_ANALYSIS_SYSTEM_PR
 use haven_common::types::RiskLevel;
 use haven_llm::EndpointRole;
 use haven_llm::LlmRouter;
-use haven_llm::types::{ContentPart, LlmMessage, LlmRole};
+use haven_llm::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use serde_json::Value;
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -116,16 +116,16 @@ async fn understand_image(
     }
 
     let messages = vec![
-        LlmMessage {
-            role: LlmRole::System,
+        CanonicalMessage {
+            role: CanonicalRole::System,
             content: vec![ContentPart::text(sys)],
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         },
-        LlmMessage {
-            role: LlmRole::User,
+        CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![ContentPart::Image {
                 content_type: "image_url".into(),
                 media_type: media_type.into(),
@@ -881,16 +881,16 @@ async fn summarize(
     }
 
     let messages = vec![
-        LlmMessage {
-            role: LlmRole::System,
+        CanonicalMessage {
+            role: CanonicalRole::System,
             content: vec![ContentPart::text(sys)],
             tool_call_id: None,
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
         },
-        LlmMessage {
-            role: LlmRole::User,
+        CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![ContentPart::text(content)],
             tool_call_id: None,
             tool_calls: None,

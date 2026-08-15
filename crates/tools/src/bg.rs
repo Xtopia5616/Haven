@@ -6,9 +6,14 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::Instrument;
 
 use haven_memory::Database;
-/// Maximum concurrent *running* background tasks per process. Prevents an
-/// agent from leaking unbounded child processes. Finished tasks are reaped
-/// on the next spawn, so this is a concurrency cap, not a lifetime cap.
+
+/// Windows `CREATE_NO_WINDOW` process creation flag: the child runs without a
+/// console window. Single definition for every spawn site that must never pop
+/// a console (background tasks, silent shell commands, launched GUI-less
+/// commands).
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. Window
 /// suppression (`CREATE_NO_WINDOW`) is applied here unconditionally because
@@ -20,7 +25,6 @@ pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command 
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
         std_cmd.creation_flags(CREATE_NO_WINDOW);
     }
     std_cmd

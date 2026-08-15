@@ -75,9 +75,9 @@
 			<div class="top-row">
 				<span class="state-label">
 					{#if processing}
-						处理中…转写
+						转写中…
 					{:else}
-						{speaking ? '正在聆听…' : '请说话'}
+						{speaking ? '正在聆听…' : '录音中…'}
 					{/if}
 				</span>
 				<span class="timer">{display}</span>

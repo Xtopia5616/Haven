@@ -212,11 +212,14 @@ impl Database {
         if affected == 0 {
             anyhow::bail!("session '{}' not found in database", id);
         }
-        // Drop the fact-extraction cursor for this session; otherwise every
-        // deleted session leaves a permanent kv_store row behind.
+        // Drop the fact-extraction cursor and throttle stamp for this session;
+        // otherwise every deleted session leaves permanent kv_store rows behind.
         conn.execute(
-            "DELETE FROM kv_store WHERE key = ?1",
-            rusqlite::params![format!("fact_extraction.{}", id)],
+            "DELETE FROM kv_store WHERE key = ?1 OR key = ?2",
+            rusqlite::params![
+                format!("fact_extraction.{}", id),
+                format!("fact_extraction_last_run.{}", id)
+            ],
         )?;
         drop(conn);
         self.cache_invalidate_sessions();

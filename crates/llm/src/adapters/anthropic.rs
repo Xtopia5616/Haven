@@ -13,8 +13,8 @@ use crate::adapters::{
 };
 use crate::client::LlmClient;
 use crate::types::{
-    ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
-    ToolDefinition, Usage,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FinishReason, LlmError,
+    LlmResponse, StreamChunk, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -252,19 +252,19 @@ impl AnthropicAdapter {
     /// Convert provider-neutral messages into Anthropic messages, extracting
     /// system prompts into the top-level `system` field (the API has no system
     /// role) and tool results into `tool_result` content blocks.
-    fn convert_messages(msgs: Vec<LlmMessage>) -> (Vec<AnthropicMessage>, Option<String>) {
+    fn convert_messages(msgs: Vec<CanonicalMessage>) -> (Vec<AnthropicMessage>, Option<String>) {
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<AnthropicMessage> = Vec::new();
         for m in msgs {
             match m.role {
-                LlmRole::System => {
+                CanonicalRole::System => {
                     for p in &m.content {
                         if let ContentPart::Text(t) = p {
                             system_parts.push(t.clone());
                         }
                     }
                 }
-                LlmRole::User => {
+                CanonicalRole::User => {
                     if m.tool_call_id.is_some() {
                         out.push(AnthropicMessage {
                             role: "user".into(),
@@ -285,23 +285,15 @@ impl AnthropicAdapter {
                         });
                     }
                 }
-                LlmRole::Assistant => {
+                CanonicalRole::Assistant => {
                     let mut blocks = Self::content_to_blocks(&m.content);
                     if let Some(calls) = m.tool_calls {
                         for tc in calls {
-                            let input = serde_json::from_str(&tc.arguments).unwrap_or_else(|_| {
-                                tracing::warn!(
-                                    "tool call '{}' arguments are not valid JSON: {}",
-                                    tc.name,
-                                    tc.arguments
-                                );
-                                json!({})
-                            });
                             blocks.push(json!({
                                 "type": "tool_use",
                                 "id": tc.id,
                                 "name": tc.name,
-                                "input": input
+                                "input": tc.arguments
                             }));
                         }
                     }
@@ -313,7 +305,7 @@ impl AnthropicAdapter {
                         content: Value::Array(blocks),
                     });
                 }
-                LlmRole::Tool => {
+                CanonicalRole::Tool => {
                     out.push(AnthropicMessage {
                         role: "user".into(),
                         content: json!([{
@@ -346,7 +338,7 @@ impl AnthropicAdapter {
 
     fn build_request_body(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> AnthropicRequest {
@@ -397,13 +389,10 @@ impl AnthropicAdapter {
                 }
                 Some("tool_use") => {
                     if let Some(name) = block.name {
-                        tool_calls.push(ToolCall {
+                        tool_calls.push(CanonicalToolCall {
                             id: block.id.unwrap_or_default(),
                             name,
-                            arguments: block
-                                .input
-                                .map(|v| serde_json::to_string(&v).unwrap_or_default())
-                                .unwrap_or_default(),
+                            arguments: block.input.unwrap_or_default(),
                         });
                     }
                 }
@@ -440,7 +429,7 @@ impl AnthropicAdapter {
 
     async fn chat_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
@@ -474,7 +463,7 @@ impl AnthropicAdapter {
 
     async fn chat_stream_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let body = self.build_request_body(messages, tools, true);
@@ -658,10 +647,10 @@ impl AnthropicAdapter {
                         if let Some(block) = state.blocks.get(index)
                             && block.kind == BlockKind::ToolUse
                         {
-                            chunk.tool_calls.push(ToolCall {
+                            chunk.tool_calls.push(CanonicalToolCall {
                                 id: block.tool_id.clone(),
                                 name: block.tool_name.clone(),
-                                arguments: block.tool_input.clone(),
+                                arguments: CanonicalToolCall::from_wire_args(&block.tool_input),
                             });
                         }
                         Some((Ok(chunk), state))
@@ -731,13 +720,13 @@ impl LlmClient for AnthropicAdapter {
         "anthropic"
     }
 
-    async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+    async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, Vec::new(), false).await
     }
 
     async fn chat_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
@@ -745,14 +734,14 @@ impl LlmClient for AnthropicAdapter {
 
     async fn chat_stream(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
     async fn chat_stream_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
@@ -858,16 +847,16 @@ mod tests {
     #[test]
     fn convert_messages_extracts_system_and_maps_roles() {
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::System,
+            CanonicalMessage {
+                role: CanonicalRole::System,
                 content: vec![ContentPart::text("you are helpful")],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::User,
+            CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hello")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -886,24 +875,24 @@ mod tests {
     #[test]
     fn convert_messages_multiple_system_messages_joined() {
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::System,
+            CanonicalMessage {
+                role: CanonicalRole::System,
                 content: vec![ContentPart::text("part one")],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::System,
+            CanonicalMessage {
+                role: CanonicalRole::System,
                 content: vec![ContentPart::text("part two")],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::User,
+            CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hi")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -917,8 +906,8 @@ mod tests {
 
     #[test]
     fn convert_messages_tool_result_block() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Tool,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Tool,
             content: vec![ContentPart::text("result body")],
             tool_call_id: Some("toolu_1".into()),
             tool_calls: None,
@@ -935,14 +924,14 @@ mod tests {
 
     #[test]
     fn convert_messages_assistant_tool_use_blocks() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("let me check")],
             tool_call_id: None,
-            tool_calls: Some(vec![ToolCall {
+            tool_calls: Some(vec![CanonicalToolCall {
                 id: "toolu_2".into(),
                 name: "file".into(),
-                arguments: r#"{"operation":"read"}"#.into(),
+                arguments: serde_json::json!({"operation": "read"}),
             }]),
             reasoning: None,
             web_search_calls: Vec::new(),
@@ -960,8 +949,8 @@ mod tests {
 
     #[test]
     fn convert_messages_image_part_becomes_base64_source() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::User,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![ContentPart::Image {
                 content_type: "image_url".into(),
                 media_type: "image/png".into(),
@@ -982,8 +971,8 @@ mod tests {
 
     #[test]
     fn convert_messages_empty_user_content_skipped() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::User,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![],
             tool_call_id: None,
             tool_calls: None,
@@ -1004,8 +993,8 @@ mod tests {
         };
         let client = AnthropicAdapter::new(ep);
         let body = client.build_request_body(
-            vec![LlmMessage {
-                role: LlmRole::User,
+            vec![CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hi")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -1109,7 +1098,7 @@ mod tests {
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].id, "toolu_9");
         assert_eq!(resp.tool_calls[0].name, "file");
-        assert!(resp.tool_calls[0].arguments.contains("\"read\""));
+        assert_eq!(resp.tool_calls[0].arguments["operation"], "read");
         assert_eq!(resp.finish_reason, Some(FinishReason::ToolCalls));
     }
 

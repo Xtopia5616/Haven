@@ -123,8 +123,7 @@ impl Tool for ProcessTool {
                 // Hide the console window when spawning GUI-less commands.
                 #[cfg(windows)]
                 {
-                    const CREATE_NO_WINDOW: u32 = 0x08000000;
-                    child.creation_flags(CREATE_NO_WINDOW);
+                    child.creation_flags(crate::bg::CREATE_NO_WINDOW);
                 }
                 child.spawn()?;
                 Ok(ToolResult::ok(serde_json::json!({"launched": cmd})))

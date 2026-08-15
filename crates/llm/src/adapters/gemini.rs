@@ -13,8 +13,8 @@ use crate::adapters::{
 };
 use crate::client::LlmClient;
 use crate::types::{
-    ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
-    ToolDefinition, Usage,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FinishReason, LlmError,
+    LlmResponse, StreamChunk, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -179,7 +179,7 @@ impl GeminiAdapter {
     /// are extracted into the top-level `systemInstruction`; tool results map
     /// to `functionResponse` parts; assistant tool calls to `functionCall`
     /// parts.
-    fn convert_contents(msgs: Vec<LlmMessage>) -> (Vec<GeminiContent>, Option<Value>) {
+    fn convert_contents(msgs: Vec<CanonicalMessage>) -> (Vec<GeminiContent>, Option<Value>) {
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<GeminiContent> = Vec::new();
         // Gemini's `functionResponse.name` must match the `functionCall.name`
@@ -190,16 +190,16 @@ impl GeminiAdapter {
             std::collections::HashMap::new();
         for m in msgs {
             match m.role {
-                LlmRole::System => {
+                CanonicalRole::System => {
                     for p in &m.content {
                         if let ContentPart::Text(t) = p {
                             system_parts.push(t.clone());
                         }
                     }
                 }
-                LlmRole::User | LlmRole::Tool => {
+                CanonicalRole::User | CanonicalRole::Tool => {
                     let is_tool_result =
-                        matches!(m.role, LlmRole::Tool) || m.tool_call_id.is_some();
+                        matches!(m.role, CanonicalRole::Tool) || m.tool_call_id.is_some();
                     let mut parts = Vec::new();
                     if is_tool_result {
                         let call_id = m.tool_call_id.unwrap_or_default();
@@ -228,25 +228,17 @@ impl GeminiAdapter {
                         parts,
                     });
                 }
-                LlmRole::Assistant => {
+                CanonicalRole::Assistant => {
                     let mut parts = Self::content_to_parts(&m.content);
                     if let Some(calls) = &m.tool_calls {
                         for tc in calls {
                             call_id_to_name.insert(tc.id.clone(), tc.name.clone());
-                            let args = serde_json::from_str(&tc.arguments).unwrap_or_else(|_| {
-                                tracing::warn!(
-                                    "tool call '{}' arguments are not valid JSON: {}",
-                                    tc.name,
-                                    tc.arguments
-                                );
-                                json!({})
-                            });
                             parts.push(GeminiPart {
                                 text: None,
                                 inline_data: None,
                                 function_call: Some(json!({
                                     "name": tc.name,
-                                    "args": args
+                                    "args": tc.arguments
                                 })),
                                 function_response: None,
                             });
@@ -332,7 +324,7 @@ impl GeminiAdapter {
 
     fn build_request_body(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         _stream: bool,
     ) -> GeminiRequest {
@@ -389,13 +381,10 @@ impl GeminiAdapter {
                     if let Some(fc) = part.function_call
                         && let Some(name) = fc.name
                     {
-                        tool_calls.push(ToolCall {
+                        tool_calls.push(CanonicalToolCall {
                             id: format!("call_{}", tool_calls.len()),
                             name,
-                            arguments: fc
-                                .args
-                                .map(|v| serde_json::to_string(&v).unwrap_or_default())
-                                .unwrap_or_default(),
+                            arguments: fc.args.unwrap_or_default(),
                         });
                     }
                 }
@@ -424,7 +413,7 @@ impl GeminiAdapter {
 
     async fn chat_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         let body = self.build_request_body(messages, tools, false);
@@ -457,7 +446,7 @@ impl GeminiAdapter {
 
     async fn chat_stream_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let body = self.build_request_body(messages, tools, true);
@@ -502,7 +491,7 @@ impl GeminiAdapter {
             /// Accumulated text per part index (deltas are emitted as suffixes).
             text_parts: Vec<String>,
             /// Accumulated tool calls per functionCall part index.
-            tool_calls_acc: Vec<ToolCall>,
+            tool_calls_acc: Vec<CanonicalToolCall>,
             accumulated_text: String,
             last_model: Option<String>,
             finish_reason: Option<FinishReason>,
@@ -602,16 +591,15 @@ impl GeminiAdapter {
                                         && let Some(name) = fc.name
                                     {
                                         while state.tool_calls_acc.len() <= idx {
-                                            state.tool_calls_acc.push(ToolCall {
+                                            state.tool_calls_acc.push(CanonicalToolCall {
                                                 id: format!("call_{}", state.tool_calls_acc.len()),
                                                 name: String::new(),
-                                                arguments: String::new(),
+                                                arguments: Value::Null,
                                             });
                                         }
                                         state.tool_calls_acc[idx].name = name;
                                         if let Some(args) = fc.args {
-                                            state.tool_calls_acc[idx].arguments =
-                                                serde_json::to_string(&args).unwrap_or_default();
+                                            state.tool_calls_acc[idx].arguments = args;
                                         }
                                     }
                                 }
@@ -638,13 +626,13 @@ impl LlmClient for GeminiAdapter {
         "gemini"
     }
 
-    async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+    async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, Vec::new()).await
     }
 
     async fn chat_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools).await
@@ -652,14 +640,14 @@ impl LlmClient for GeminiAdapter {
 
     async fn chat_stream(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
     async fn chat_stream_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
@@ -754,16 +742,16 @@ mod tests {
     #[test]
     fn convert_contents_extracts_system_instruction() {
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::System,
+            CanonicalMessage {
+                role: CanonicalRole::System,
                 content: vec![ContentPart::text("be concise")],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::User,
+            CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hi")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -783,8 +771,8 @@ mod tests {
     fn convert_contents_tool_result_function_response() {
         // Without a preceding assistant declaration the call id is the only
         // name available; use it as the fallback.
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Tool,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Tool,
             content: vec![ContentPart::text("result body")],
             tool_call_id: Some("call_1".into()),
             tool_calls: None,
@@ -806,20 +794,20 @@ mod tests {
         // into the response name. Build the assistant declaration first,
         // then the tool result referencing the same call id.
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::Assistant,
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
                 content: vec![ContentPart::text("checking")],
                 tool_call_id: None,
-                tool_calls: Some(vec![ToolCall {
+                tool_calls: Some(vec![CanonicalToolCall {
                     id: "call_0".into(),
                     name: "read_file".into(),
-                    arguments: r#"{"path":"/tmp"}"#.into(),
+                    arguments: serde_json::json!({"path": "/tmp"}),
                 }]),
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::Tool,
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
                 content: vec![ContentPart::text("file contents")],
                 tool_call_id: Some("call_0".into()),
                 tool_calls: None,
@@ -840,35 +828,35 @@ mod tests {
     #[test]
     fn convert_contents_multiple_tool_results_map_their_own_call_names() {
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::Assistant,
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
                 content: vec![ContentPart::text("doing")],
                 tool_call_id: None,
                 tool_calls: Some(vec![
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "c1".into(),
                         name: "shell".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     },
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "c2".into(),
                         name: "ask".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     },
                 ]),
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::Tool,
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
                 content: vec![ContentPart::text("out1")],
                 tool_call_id: Some("c1".into()),
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::Tool,
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
                 content: vec![ContentPart::text("out2")],
                 tool_call_id: Some("c2".into()),
                 tool_calls: None,
@@ -885,14 +873,14 @@ mod tests {
 
     #[test]
     fn convert_contents_assistant_function_call() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("checking")],
             tool_call_id: None,
-            tool_calls: Some(vec![ToolCall {
+            tool_calls: Some(vec![CanonicalToolCall {
                 id: "call_2".into(),
                 name: "file".into(),
-                arguments: r#"{"operation":"read"}"#.into(),
+                arguments: serde_json::json!({"operation": "read"}),
             }]),
             reasoning: None,
             web_search_calls: Vec::new(),
@@ -907,8 +895,8 @@ mod tests {
 
     #[test]
     fn convert_contents_image_and_audio_inline_data() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::User,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![
                 ContentPart::Image {
                     content_type: "image_url".into(),
@@ -1024,7 +1012,7 @@ mod tests {
         assert_eq!(resp.text, "checking");
         assert_eq!(resp.tool_calls.len(), 1);
         assert_eq!(resp.tool_calls[0].name, "file");
-        assert!(resp.tool_calls[0].arguments.contains("\"read\""));
+        assert_eq!(resp.tool_calls[0].arguments["operation"], "read");
         assert_eq!(resp.finish_reason, Some(FinishReason::Stop));
         assert_eq!(resp.usage.total_tokens, 15);
         assert_eq!(resp.model.as_deref(), Some("gemini-2.5-flash"));

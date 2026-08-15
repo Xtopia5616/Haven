@@ -37,7 +37,9 @@ const DIAG_INTERVAL: u32 = 250;
 
 /// Per-stream diagnostic counter for the audio callback: logs a rolling
 /// peak amplitude so silent-capture and "no speech at the head" issues can
-/// be diagnosed from logs instead of by listening to saved WAVs.
+/// be diagnosed from logs instead of by listening to saved WAVs. The peak
+/// itself is computed by the mixdown loop (one pass over the chunk); this
+/// only counts callbacks and logs.
 struct CallbackDiag {
     callbacks: u32,
     window_peak: f32,
@@ -53,13 +55,10 @@ impl CallbackDiag {
         }
     }
 
-    fn observe(&mut self, mono: &[f32]) {
+    fn observe(&mut self, peak: f32) {
         self.callbacks += 1;
-        for &s in mono {
-            let a = s.abs();
-            if a > self.window_peak {
-                self.window_peak = a;
-            }
+        if peak > self.window_peak {
+            self.window_peak = peak;
         }
         if self.callbacks.is_multiple_of(DIAG_INTERVAL) {
             tracing::debug!(
@@ -264,6 +263,8 @@ where
 /// [`TARGET_SAMPLE_RATE`], detect signal, and push it into the ring. The
 /// mutex is held for the shortest possible window (a single push). `mono`
 /// and `resampled` are caller-owned scratch buffers reused across callbacks.
+/// The chunk is scanned exactly once: peak and signal-floor detection fold
+/// into the mixdown loop instead of extra passes over the data.
 #[allow(clippy::too_many_arguments)]
 fn process_chunk<T: Sample>(
     data: &[T],
@@ -281,13 +282,28 @@ fn process_chunk<T: Sample>(
     let frames = data.len() / ch;
     mono.clear();
     mono.reserve(frames);
+    // Peak of the chunk's mono mixdown: drives the signal-floor check and
+    // the rolling diagnostic without a second scan.
+    let mut peak = 0.0f32;
     for frame in data.chunks_exact(ch) {
-        let sum: f32 = frame.iter().map(|s| s.to_sample::<f32>()).sum();
+        let mut sum = 0.0f32;
+        for &s in frame {
+            let v = s.to_sample::<f32>();
+            let a = v.abs();
+            if a > peak {
+                peak = a;
+            }
+            sum += v;
+        }
         mono.push(sum / ch as f32);
     }
-    diag.observe(&*mono);
+    diag.observe(peak);
     resampler.process_into(mono, resampled);
-    if resampled.iter().any(|s| s.abs() > SIGNAL_FLOOR) {
+    // Checked on the source mixdown: if any source sample exceeds the floor,
+    // the resampled stream carries signal too (interpolation of the peak's
+    // neighbors stays far above the -80 dBFS floor), and scanning here saves
+    // a second pass over the data on the real-time thread.
+    if peak > SIGNAL_FLOOR {
         signals.has_signal.store(true, Ordering::SeqCst);
     }
     if let Ok(mut ring) = ring.lock() {
@@ -422,8 +438,8 @@ mod tests {
     #[test]
     fn diag_tracks_rolling_peak() {
         let mut diag = CallbackDiag::new();
-        diag.observe(&[0.0, 0.3]);
-        diag.observe(&[-0.9, 0.1]);
+        diag.observe(0.3);
+        diag.observe(0.9);
         assert_eq!(diag.callbacks, 2);
         assert!((diag.window_peak - 0.9).abs() < 1e-6);
     }

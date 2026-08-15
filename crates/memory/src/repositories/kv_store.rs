@@ -40,14 +40,22 @@ impl Database {
 
     /// Remove fact-extraction cursors whose session no longer exists (session rows
     /// are deleted without going through `delete_session`, e.g. history purge or
-    /// older deletions before cursor cleanup was added). Called during memory
-    /// maintenance so the kv table does not grow without bound.
+    /// older deletions before cursor cleanup was added). Also purges the
+    /// `fact_extraction_last_run.<session_id>` throttle stamps of dead sessions.
+    /// Called during memory maintenance so the kv table does not grow without
+    /// bound.
     pub fn cleanup_orphan_extraction_cursors(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
         let deleted = conn.execute(
             "DELETE FROM kv_store
-             WHERE key LIKE 'fact_extraction.%'
-               AND NOT EXISTS (SELECT 1 FROM sessions WHERE id = substr(key, 17))",
+             WHERE (key LIKE 'fact_extraction.%'
+                    OR key LIKE 'fact_extraction_last_run.%')
+               AND NOT EXISTS (SELECT 1 FROM sessions
+                               WHERE id = CASE
+                                   WHEN key LIKE 'fact_extraction_last_run.%'
+                                   THEN substr(key, 26)
+                                   ELSE substr(key, 17)
+                               END)",
             [],
         )?;
         Ok(deleted as u64)
@@ -93,22 +101,39 @@ mod tests {
     fn cleanup_orphan_extraction_cursors_removes_stale_keys() {
         let db = test_db();
         let session = db.create_session("", "").unwrap();
-        // Cursor for an existing session: kept.
+        // Cursor + throttle stamp for an existing session: kept.
         db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
             .unwrap();
-        // Orphan cursor (no session row) and non-cursor keys: the orphan is
-        // removed, unrelated kv keys survive.
+        db.set_kv(
+            &format!("fact_extraction_last_run.{}", session.id),
+            "2026-08-15T00:00:00Z",
+        )
+        .unwrap();
+        // Orphan cursor / orphan throttle stamp (no session row) and
+        // non-cursor keys: the orphans are removed, unrelated kv keys survive.
         db.set_kv("fact_extraction.gone", "msg-9").unwrap();
+        db.set_kv("fact_extraction_last_run.gone", "2026-08-15T00:00:00Z")
+            .unwrap();
         db.set_kv("other.state", "keep").unwrap();
 
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
-        assert_eq!(removed, 1);
+        assert_eq!(removed, 2);
         assert!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
                 .is_some()
         );
+        assert!(
+            db.get_kv(&format!("fact_extraction_last_run.{}", session.id))
+                .unwrap()
+                .is_some()
+        );
         assert!(db.get_kv("fact_extraction.gone").unwrap().is_none());
+        assert!(
+            db.get_kv("fact_extraction_last_run.gone")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(db.get_kv("other.state").unwrap(), Some("keep".into()));
     }
 

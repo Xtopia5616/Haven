@@ -152,17 +152,11 @@ pub async fn execute_skill(
     }
 
     let risk_level = RiskLevel::Medium;
-    if confirmed.unwrap_or(false) {
-        state
-            .tools
-            .safety_gateway
-            .trust_risk_level(risk_level)
-            .await;
-    } else {
+    if !confirmed.unwrap_or(false) {
         match state
             .tools
             .safety_gateway
-            .check(&format!("skill:{}", name), &params, risk_level)
+            .check(None, &format!("skill:{}", name), &params, risk_level)
             .await
         {
             ConfirmationResult::AutoApproved => {}

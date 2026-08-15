@@ -23,6 +23,13 @@ pub async fn update_settings(
     settings: haven_common::config::Settings,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
+    let mut last = t0;
+    let mut tick = |name: &str| {
+        let now = std::time::Instant::now();
+        tracing::info!("update_settings: {name} += {:?}", now.duration_since(last));
+        last = now;
+    };
     let state = app.state::<Arc<AppState>>();
     let old_hotkey = {
         let cfg = state
@@ -54,13 +61,16 @@ pub async fn update_settings(
         cfg.tool_settings = disk.config().tool_settings.clone();
         loader.save().map_err(|e| log_err("update_settings", e))?;
     }
+    tick("config save");
 
     // Propagate audio config to running pipeline
     state.pipeline.update_config(settings.audio).await;
+    tick("pipeline.update_config");
 
     // Propagate the default shell choice to the shell tool so the running
     // agent executes new commands in the selected shell.
     state.tools.set_default_shell(settings.default_shell).await;
+    tick("set_default_shell");
 
     // Reload MCP servers from config
     let (
@@ -90,13 +100,17 @@ pub async fn update_settings(
         )
     };
     state.tools.load_mcp_from_config(&mcp_servers).await;
+    tick("load_mcp_from_config");
     state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
+    tick("mcp_manager.start_monitors");
     let new_router = Arc::new(LlmRouter::new(
         llm_config
             .with_response_cap(max_response_tokens)
             .with_reasoning_echo_cap(reasoning_echo_max_chars),
     ));
+    tick("LlmRouter::new");
     hot_swap_router(&state, new_router).await?;
+    tick("hot_swap_router");
     state.agent.set_max_steps(session_max_steps);
     state.executor.set_max_concurrent(session_max_concurrent);
     state
@@ -181,6 +195,8 @@ pub async fn update_settings(
             }),
         );
     }
+    tick("hotkey section");
+    tracing::info!("update_settings: TOTAL {:?}", t0.elapsed());
     Ok(())
 }
 

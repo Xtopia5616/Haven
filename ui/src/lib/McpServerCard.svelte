@@ -6,6 +6,17 @@
 
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
 	let expanded = $state(false);
+	let refreshing = $state(false);
+
+	async function handleReconnect() {
+		if (refreshing) return;
+		refreshing = true;
+		try {
+			await onReconnect?.(server.name);
+		} finally {
+			refreshing = false;
+		}
+	}
 
 	function toggleExpand() {
 		expanded = !expanded;
@@ -63,14 +74,12 @@
 				? { id: 'disable', label: '禁用', icon: 'power', action: () => onToggle?.(server.name, false) }
 				: { id: 'enable', label: '启用', icon: 'power', action: () => onToggle?.(server.name, true) },
 		);
-		if (isOffline()) {
-			items.push({
-				id: 'reconnect',
-				label: '重连',
-				icon: 'refresh',
-				action: () => onReconnect?.(server.name),
-			});
-		}
+		items.push({
+			id: 'reconnect',
+			label: '刷新',
+			icon: 'refresh',
+			action: handleReconnect,
+		});
 		items.push({ id: 'edit', label: '编辑', icon: 'edit', action: () => onEdit?.(server) });
 		items.push({
 			id: 'copyName',
@@ -122,9 +131,27 @@
 		</div>
 		<div class="card-actions" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="presentation">
 			<MaterialSwitch checked={server.enabled} onChange={handleToggle} />
-			{#if isOffline()}
-				<MaterialIconButton variant="primary" label="Reconnect" onclick={() => onReconnect?.(server.name)}>↻</MaterialIconButton>
-			{/if}
+			<MaterialIconButton
+				variant="primary"
+				label="Refresh"
+				onclick={handleReconnect}
+				disabled={refreshing}
+			>
+				<svg
+					class:spin={refreshing}
+					width="16"
+					height="16"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<polyline points="23 4 23 10 17 10" />
+					<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+				</svg>
+			</MaterialIconButton>
 			<MaterialIconButton label="Edit" onclick={() => onEdit?.(server)}>✎</MaterialIconButton>
 			<MaterialIconButton variant="danger" label="Remove" onclick={() => onRemove?.(server.name)}>✕</MaterialIconButton>
 		</div>
@@ -350,5 +377,16 @@
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+	.card-actions svg.spin {
+		animation: md-icon-spin 0.9s linear infinite;
+	}
+	@keyframes md-icon-spin {
+		from {
+			transform: rotate(0deg);
+		}
+		to {
+			transform: rotate(360deg);
+		}
 	}
 </style>

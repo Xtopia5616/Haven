@@ -1,11 +1,109 @@
-//! Database schema initialization (no migration layer).
+//! Database schema initialization with a versioned migration layer.
 //!
-//! The schema below is the single source of truth for the current database
-//! shape. It runs idempotently (`CREATE ... IF NOT EXISTS`) on every open,
-//! and any database whose shape predates it — a schema that is missing any
-//! required column — is rejected with a clear error telling the user to
-//! delete the file and rebuild. There is deliberately no upgrade path: old
-//! databases are not migrated, converted, or rewritten.
+//! The current schema shape lives in [`SCHEMA_SQL`] and is created
+//! idempotently on every open. Versioning uses `PRAGMA user_version`:
+//!
+//! - A brand-new database (or a v0 database whose shape happens to match the
+//!   current schema — built by a pre-versioning binary) is stamped with
+//!   [`SCHEMA_VERSION`] after initialization.
+//! - An older database (`user_version < SCHEMA_VERSION`) is upgraded by
+//!   running every migration in [`MIGRATIONS`] with a version above its own.
+//! - A NEWER database (`user_version > SCHEMA_VERSION`) is rejected — the
+//!   binary is older than the database and could corrupt it.
+//!
+//! Any schema change must be a new entry in [`MIGRATIONS`] (bumping
+//! [`SCHEMA_VERSION`]), not an edit to `SCHEMA_SQL` alone: a fresh DB runs
+//! `SCHEMA_SQL` and gets the final version stamp, an existing DB runs only
+//! the migrations it has not seen yet.
+
+/// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
+const SCHEMA_VERSION: i32 = 2;
+
+/// A single forward migration: bumps the database from `version - 1` to
+/// `version`. Entries run in order on every open of an older database.
+struct Migration {
+    version: i32,
+    apply: fn(&rusqlite::Connection) -> anyhow::Result<()>,
+}
+
+/// Ordered list of migrations, oldest first. Each entry's `version` must be
+/// `SCHEMA_VERSION - len`..=SCHEMA_VERSION and strictly increasing; version 1
+/// is the initial full schema (no migration). History of migrations that
+/// altered an existing schema:
+///
+/// - v2: backfill legacy fact predicate spellings to the canonical aliases
+///   introduced by `normalize_predicate` (workspace → project_path, etc.) and
+///   collapse the resulting duplicates, so single-valued constraints and the
+///   "forget this fact" path work against rows written by older binaries.
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 2,
+    apply: migrate_v2_backfill_predicate_aliases,
+}];
+
+/// Rewrite pre-normalization predicate spellings to the canonical alias (the
+/// same map as `haven_memory::repositories::facts::normalize_predicate`),
+/// then collapse rows that became duplicates on (subject, predicate, object).
+/// The keeper rule mirrors `dedup_facts`: highest confidence, then newest
+/// `created_at`. Guarded so it is a no-op on a genuinely fresh database that
+/// has not created the `facts` table yet.
+fn migrate_v2_backfill_predicate_aliases(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "facts")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        UPDATE facts SET predicate = 'project_path'
+         WHERE predicate IN ('workspace','workspace_path','project_location','working_directory','working_dir');
+        UPDATE facts SET predicate = 'works_at'
+         WHERE predicate IN ('employer','company_name');
+        UPDATE facts SET predicate = 'language'
+         WHERE predicate IN ('favorite_language','preferred_language');
+        UPDATE facts SET predicate = 'verbosity'
+         WHERE predicate IN ('preferred_verbosity','verbosity_level');
+        UPDATE facts SET predicate = 'shell'
+         WHERE predicate IN ('preferred_shell','shell_choice');
+        UPDATE facts SET predicate = 'os'
+         WHERE predicate IN ('os_name','operating_system');
+
+        DELETE FROM facts
+         WHERE id NOT IN (
+             SELECT id FROM (
+                 SELECT id, ROW_NUMBER() OVER (
+                     PARTITION BY subject, predicate, object
+                     ORDER BY confidence DESC, created_at DESC
+                 ) AS rn FROM facts
+             ) WHERE rn = 1
+         );
+        "#,
+    )?;
+    Ok(())
+}
+
+fn user_version(conn: &rusqlite::Connection) -> anyhow::Result<i32> {
+    Ok(conn
+        .prepare("PRAGMA user_version")?
+        .query_row([], |r| r.get(0))?)
+}
+
+fn set_user_version(conn: &rusqlite::Connection, version: i32) -> anyhow::Result<()> {
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+    Ok(())
+}
+
+/// Run every migration in `migrations` whose version is above the database's
+/// current version, stamping `user_version` after each one. Split out from
+/// `init_schema` so tests can exercise the chain with synthetic migrations.
+fn apply_migrations(
+    conn: &rusqlite::Connection,
+    from: i32,
+    migrations: &[Migration],
+) -> anyhow::Result<()> {
+    for migration in migrations.iter().filter(|m| m.version > from) {
+        (migration.apply)(conn)?;
+        set_user_version(conn, migration.version)?;
+    }
+    Ok(())
+}
 
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
@@ -193,6 +291,27 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
 /// LIKE path. The whole block runs inside one transaction and the idempotency
 /// guard checks that the sync triggers exist too, so a crash partway through
 /// (table created but triggers missing) is repaired on the next startup.
+///
+/// Tokenizer: `trigram` (SQLite ≥ 3.34) instead of the default unicode61.
+/// unicode61 does not split CJK runs, so Chinese facts were only findable via
+/// the LIKE fallback (a full scan). trigram indexes every 3-char window and
+/// matches substrings, which works for Chinese and keeps the BM25 ranking.
+/// Short queries (1-2 chars) still miss the trigram index and fall through to
+/// the LIKE path in `search_facts`, as before. The applied tokenizer is
+/// recorded in `kv_store` (`facts_fts_tokenizer`) so a tokenizer change
+/// rebuilds the index exactly once instead of on every startup.
+const FTS_TOKENIZER: &str = "trigram";
+const FTS_TOKENIZER_KV_KEY: &str = "facts_fts_tokenizer";
+
+fn applied_fts_tokenizer(conn: &rusqlite::Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM kv_store WHERE key = ?1",
+        rusqlite::params![FTS_TOKENIZER_KV_KEY],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     let has_fts: bool = conn
         .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='facts_fts'")?
@@ -205,18 +324,21 @@ fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             .map(|c| c == 0)
             .unwrap_or(true)
     });
-    if !has_fts || triggers_missing {
+    let tokenizer_stale = applied_fts_tokenizer(conn).as_deref() != Some(FTS_TOKENIZER);
+    if !has_fts || triggers_missing || tokenizer_stale {
         // DROP first so a partially-applied previous attempt (table present
         // but triggers missing) is rebuilt cleanly; external-content tables
         // re-index from the facts table via the 'rebuild' command.
-        let fts_sql = "BEGIN;
+        let fts_sql = format!(
+            "BEGIN;
             DROP TABLE IF EXISTS facts_fts;
             DROP TRIGGER IF EXISTS facts_ai;
             DROP TRIGGER IF EXISTS facts_ad;
             DROP TRIGGER IF EXISTS facts_au;
             CREATE VIRTUAL TABLE facts_fts USING fts5(
                 subject, predicate, object, tags,
-                content='facts', content_rowid='rowid'
+                content='facts', content_rowid='rowid',
+                tokenize='{FTS_TOKENIZER}'
             );
             CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
                 INSERT INTO facts_fts(rowid, subject, predicate, object, tags)
@@ -233,13 +355,22 @@ fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 VALUES (new.rowid, new.subject, new.predicate, new.object, new.tags);
             END;
             INSERT INTO facts_fts(facts_fts) VALUES ('rebuild');
-            COMMIT;";
-        if let Err(e) = conn.execute_batch(fts_sql) {
+            COMMIT;"
+        );
+        if let Err(e) = conn.execute_batch(&fts_sql) {
             tracing::warn!("FTS5 unavailable, facts search falls back to LIKE: {}", e);
             // execute_batch auto-commits each statement, but the explicit
             // BEGIN above means a mid-batch failure leaves the transaction
             // open — roll it back so the connection is left in a clean state.
             let _ = conn.execute_batch("ROLLBACK");
+        } else {
+            // Record the tokenizer only after a successful rebuild so a
+            // failed attempt retries on the next startup.
+            let _ = conn.execute(
+                "INSERT INTO kv_store (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                rusqlite::params![FTS_TOKENIZER_KV_KEY, FTS_TOKENIZER],
+            );
         }
     }
     Ok(())
@@ -272,22 +403,53 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
         .unwrap_or(false))
 }
 
-/// Create the current schema (idempotent). Rejects databases whose shape
-/// predates it — there is no migration layer, so the user must delete the
-/// file and let a fresh schema be created.
+/// Create or upgrade the schema to the current version (idempotent).
+///
+/// Version resolution:
+/// - `user_version > SCHEMA_VERSION` → error (database is from a NEWER Haven).
+/// - `user_version == SCHEMA_VERSION` → schema is current; the idempotent
+///   full-schema pass below still runs so missing objects (e.g. an FTS table
+///   dropped mid-crash) self-heal.
+/// - `user_version < SCHEMA_VERSION` → run each pending migration in order.
+///   A v0 database (built by a pre-versioning binary) has no stamp: if it
+///   carries the required columns it is treated as current-shape and the
+///   pending data migrations still run against it (each is guarded against
+///   missing tables, so a genuinely fresh DB is a no-op); if any required
+///   column is missing it predates the schema and is rejected with a clear
+///   error — there is deliberately no upgrade path from that shape, the user
+///   must delete the file and rebuild.
 pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    // Reject legacy databases BEFORE creating anything: each table's CREATE
-    // statement carries all of its columns atomically, so a table that exists
-    // while missing a required column can only be an old-version table. An
-    // early check turns the confusion of a later "no such column" into one
-    // clear message.
-    for (table, col) in REQUIRED_COLUMNS {
-        if table_exists(conn, table)? && !column_exists(conn, table, col)? {
-            return Err(anyhow::anyhow!(
-                "database schema is from an old Haven version (missing {table}.{col}). \
-                 The current version does not migrate old databases; \
-                 delete the database file (haven.db) and restart to create a fresh one."
-            ));
+    let version = user_version(conn)?;
+    if version > SCHEMA_VERSION {
+        anyhow::bail!(
+            "database schema version {version} is NEWER than this Haven binary \
+             (supports up to {SCHEMA_VERSION}). Update Haven to open this database."
+        );
+    }
+    if version < SCHEMA_VERSION {
+        if version == 0 {
+            // Pre-versioning database. If it is missing a required column it
+            // predates the current shape and cannot be migrated — reject it
+            // BEFORE creating anything so a later "no such column" turns into
+            // one clear message.
+            for (table, col) in REQUIRED_COLUMNS {
+                if table_exists(conn, table)? && !column_exists(conn, table, col)? {
+                    anyhow::bail!(
+                        "database schema is from an old Haven version (missing {table}.{col}). \
+                         The current version does not migrate such old databases; \
+                         delete the database file (haven.db) and restart to create a fresh one."
+                    );
+                }
+            }
+            // A v0 database that passes the shape check is "current shape": it
+            // still needs the pending data migrations (e.g. the v2 predicate
+            // alias backfill) applied before stamping.
+            apply_migrations(conn, 0, MIGRATIONS)?;
+        } else {
+            // Stamped old database: run the pending migrations in order. Each
+            // migration is stamped as it completes so a crash mid-chain leaves
+            // the database at a consistent, retryable version.
+            apply_migrations(conn, version, MIGRATIONS)?;
         }
     }
     for sql in SCHEMA_SQL {
@@ -297,6 +459,9 @@ pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(MEMORY_EMBEDDINGS_SCHEMA)?;
     ensure_facts_fts(conn)?;
     ensure_fact_embedding_triggers(conn)?;
+    if user_version(conn)? < SCHEMA_VERSION {
+        set_user_version(conn, SCHEMA_VERSION)?;
+    }
     Ok(())
 }
 
@@ -412,6 +577,113 @@ mod tests {
         init_schema(&conn).unwrap();
         init_schema(&conn).unwrap();
         assert_eq!(get_tables(&conn), tables_before);
+    }
+
+    #[test]
+    fn init_schema_stamps_current_user_version() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn init_schema_stamps_legacy_complete_database() {
+        // A pre-versioning binary left a schema with all required columns but
+        // no user_version stamp (0). init_schema must treat it as current
+        // shape and stamp it, not reject it.
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        set_user_version(&conn, 0).unwrap();
+        init_schema(&conn).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn init_schema_rejects_newer_database() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        set_user_version(&conn, SCHEMA_VERSION + 5).unwrap();
+        let err = init_schema(&conn).unwrap_err().to_string();
+        assert!(
+            err.contains("NEWER"),
+            "expected a newer-version error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn apply_migrations_runs_in_order_and_stamps() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let migrations = [
+            Migration {
+                version: 2,
+                apply: |c| {
+                    c.execute_batch("CREATE TABLE IF NOT EXISTS mig_v2 (id TEXT PRIMARY KEY)")
+                        .map_err(anyhow::Error::from)
+                },
+            },
+            Migration {
+                version: 3,
+                apply: |c| {
+                    c.execute_batch("CREATE TABLE IF NOT EXISTS mig_v3 (id TEXT PRIMARY KEY)")
+                        .map_err(anyhow::Error::from)
+                },
+            },
+        ];
+        apply_migrations(&conn, 1, &migrations).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 3);
+        assert!(table_exists(&conn, "mig_v2").unwrap());
+        assert!(table_exists(&conn, "mig_v3").unwrap());
+        // Re-running from the current version is a no-op.
+        apply_migrations(&conn, 3, &migrations).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 3);
+    }
+
+    #[test]
+    fn v2_migration_backfills_legacy_predicate_aliases() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        // Simulate rows written by the pre-normalization binary: legacy
+        // spellings plus a canonical row for the same concept.
+        conn.execute_batch(
+            r#"
+            INSERT INTO facts (id, subject, predicate, object) VALUES
+                ('f1', 'user', 'workspace', 'D:/proj'),
+                ('f2', 'user', 'workspace_path', 'D:/proj'),
+                ('f3', 'user', 'project_path', 'D:/proj'),
+                ('f4', 'user', 'employer', 'ACME'),
+                ('f5', 'user', 'works_at', 'ACME'),
+                ('f6', 'user', 'favorite_language', 'Rust');
+            "#,
+        )
+        .unwrap();
+        // Stamp as v1, then reopen: migration v2 must run.
+        set_user_version(&conn, 1).unwrap();
+        init_schema(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT predicate, object FROM facts ORDER BY predicate")
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("language".to_string(), "Rust".to_string()),
+                ("project_path".to_string(), "D:/proj".to_string()),
+                ("works_at".to_string(), "ACME".to_string()),
+            ],
+            "legacy aliases must be rewritten and the duplicate collapsed"
+        );
     }
 
     #[test]
@@ -552,5 +824,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hits, 1, "FTS index must contain the inserted fact");
+    }
+
+    #[test]
+    fn fts_trigram_matches_chinese_substrings() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO facts (id, subject, predicate, object)
+             VALUES ('f1', 'user', 'likes', '喝咖啡和写代码')",
+            [],
+        )
+        .unwrap();
+        // trigram splits CJK into 3-char windows, so a 3+ char substring of a
+        // Chinese fact must match (unicode61 never matched CJK at all).
+        let hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH '\"喝咖啡\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "trigram FTS must match Chinese substrings");
+    }
+
+    #[test]
+    fn fts_tokenizer_recorded_and_stable_across_reinit() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let recorded: String = conn
+            .query_row(
+                "SELECT value FROM kv_store WHERE key = 'facts_fts_tokenizer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, FTS_TOKENIZER);
+        // Re-initialization must not rebuild or restamp the index.
+        init_schema(&conn).unwrap();
+        let table_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='facts_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 1);
+        // A stale tokenizer record triggers exactly one rebuild (the
+        // `tokenize=` change is honored on the rebuilt table).
+        conn.execute("DELETE FROM kv_store WHERE key = 'facts_fts_tokenizer'", [])
+            .unwrap();
+        init_schema(&conn).unwrap();
+        let rebuilt: String = conn
+            .query_row(
+                "SELECT value FROM kv_store WHERE key = 'facts_fts_tokenizer'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rebuilt, FTS_TOKENIZER);
     }
 }

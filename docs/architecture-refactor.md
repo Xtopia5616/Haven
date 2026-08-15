@@ -237,3 +237,5 @@ cd ui && npm run check && npm run test:run
 |---|---|---|
 | 2026-08-14 | S1–S5 | 完成：命名统一、commands 拆分、apply_settings 收敛、S4 确认高频路径、rollback.rs 抽取 |
 | 2026-08-14 | S6 | 评估后降级（脚本状态机耦合深，拆组件风险高收益低，记录待办） |
+| 2026-08-14 | 评审修复 | 恢复 rollback fallback 语义；LLM/工具全量 trace 降级为长度摘要；`max_response_tokens` 默认 128k 且 router 按 context_window clamp；修复 rollback.rs mojibake |
+| 2026-08-14 | 测试修复 | `dispatcher_panicked_handler_marks_error` flaky：DB error 写入与内存 slot 释放间存在窗口，断言改轮询；回调 `try_lock().unwrap()` 改 `std::sync::Mutex` 消除锁竞态 |

@@ -384,6 +384,10 @@
 				addNotification(data.error || '录音错误，请检查麦克风/STT 配置', 'error', 5000);
 				resetOverlay();
 			},
+			'transcription:started': (event) => {
+				addNotification('正在转写录音…', 'info', 2000);
+				setOverlay({ processing: true });
+			},
 			'transcription:result': (event) => {
 				const data = event.payload || {};
 				const text = (data.text || '').trim();

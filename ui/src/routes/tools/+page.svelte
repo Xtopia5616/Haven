@@ -64,32 +64,35 @@
 		}
 	}
 
-	function isMcpConnected(s) {
-		// McpClientStatus serializes unit variants as strings ("Connected");
-		// only Offline { error } arrives as an object ({"Offline": …}).
-		return s.status === 'Connected';
-	}
-
 	async function refreshMcpList() {
-		// Refresh only re-establishes servers that are not currently connected
-		// (Offline / Disconnected / Connecting), like the per-card reconnect,
-		// so a heavy server that went down or changed comes back without
-		// restarting the app. Already-connected servers keep their live
-		// session and are not restarted (e.g. Ghidra is not relaunched on
-		// every refresh). Disabled servers have no live client.
-		const needReconnect = mcpServers.filter((s) => s.enabled && !isMcpConnected(s));
-		for (const s of needReconnect) {
-			try {
-				await invoke('reconnect_mcp', { name: s.name });
-			} catch (e) {
-				logger.warn('tools', `reconnect ${s.name} error`, e);
+		// Diff-only refresh: check the persisted config against the live
+		// clients and reconcile additions/removals/changed-config reconnects.
+		// Already-connected servers with an unchanged config keep their live
+		// session (no restart — e.g. Ghidra is not relaunched). Reconnecting a
+		// specific server is the per-card Refresh button's job.
+		try {
+			const result = await invoke('refresh_mcp_servers');
+			await refreshMcpServers();
+			const added = result?.added || [];
+			const removed = result?.removed || [];
+			const updated = result?.updated || [];
+			const failed = result?.failed || [];
+			if (added.length === 0 && removed.length === 0 && updated.length === 0 && failed.length === 0) {
+				addNotification('MCP 服务器无变化', 'info', 2000);
+			} else {
+				const parts = [];
+				if (added.length) parts.push(`新增 ${added.join(', ')}`);
+				if (removed.length) parts.push(`移除 ${removed.join(', ')}`);
+				if (updated.length) parts.push(`重连 ${updated.join(', ')}`);
+				if (failed.length) parts.push(`${failed.join(', ')} 连接失败`);
+				addNotification(
+					`MCP 刷新: ${parts.join('；')}`,
+					failed.length && added.length === 0 && removed.length === 0 && updated.length === 0 ? 'warning' : 'success',
+					3000,
+				);
 			}
-		}
-		const ok = await refreshMcpServers();
-		if (ok) {
-			addNotification('MCP 服务器已刷新', 'success', 2000);
-		} else {
-			addNotification('刷新 MCP 服务器失败', 'error', 3000);
+		} catch (e) {
+			addNotification(`刷新 MCP 服务器失败: ${e}`, 'error', 3000);
 		}
 	}
 
@@ -189,12 +192,13 @@
 	}
 
 	async function handleReconnect(name) {
+		addNotification(`正在刷新 ${name}…`, 'info', 1500);
 		try {
 			await invoke('reconnect_mcp', { name });
-			addNotification(`正在重连 ${name}…`, 'info', 2000);
+			addNotification(`刷新成功：${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`重连失败: ${e}`, 'error', 3000);
+			addNotification(`刷新失败: ${e}`, 'error', 3000);
 		}
 	}
 

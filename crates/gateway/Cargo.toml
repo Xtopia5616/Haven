@@ -1,5 +1,5 @@
 [package]
-name = "haven-llm"
+name = "haven-gateway"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,17 +9,12 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
 async-trait.workspace = true
-reqwest = { version = "0.13.4", features = ["json", "stream", "multipart"] }
-bytes = "1"
-futures-util.workspace = true
-tokio-util.workspace = true
-regex = "1"
 base64.workspace = true
-sha2.workspace = true
-chrono.workspace = true
+futures-util.workspace = true
+encoding_rs.workspace = true
 haven-common = { path = "../common" }
+haven-llm = { path = "../llm" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "macros", "test-util"] }

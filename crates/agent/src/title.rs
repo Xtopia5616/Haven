@@ -58,25 +58,25 @@ mod tests {
     use futures_util::Stream;
     use haven_llm::OpenAiAdapter;
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{LlmError, LlmMessage, LlmResponse, LlmRole};
+    use haven_llm::types::{CanonicalMessage, CanonicalRole, LlmError, LlmResponse};
     use std::pin::Pin;
     use std::sync::Mutex;
 
     struct RecordingMock {
         result: Mutex<Result<LlmResponse, LlmError>>,
-        calls: Mutex<Vec<Vec<LlmMessage>>>,
+        calls: Mutex<Vec<Vec<CanonicalMessage>>>,
     }
 
     #[async_trait]
     impl LlmClient for RecordingMock {
-        async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             self.calls.lock().unwrap().push(messages);
             self.result.lock().unwrap().clone()
         }
 
         async fn chat_stream(
             &self,
-            _messages: Vec<LlmMessage>,
+            _messages: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn Stream<Item = Result<haven_llm::types::StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -176,8 +176,8 @@ mod tests {
         let calls = tr.mock.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].len(), 2);
-        assert!(matches!(calls[0][0].role, LlmRole::System));
-        assert!(matches!(calls[0][1].role, LlmRole::User));
+        assert!(matches!(calls[0][0].role, CanonicalRole::System));
+        assert!(matches!(calls[0][1].role, CanonicalRole::User));
     }
 
     #[tokio::test]

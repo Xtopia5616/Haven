@@ -11,6 +11,7 @@ tracing.workspace = true
 anyhow.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 tokio-util.workspace = true
 haven-memory = { path = "../memory" }
@@ -18,4 +19,6 @@ haven-llm = { path = "../llm" }
 haven-tools = { path = "../tools" }
 haven-common = { path = "../common" }
 haven-session = { path = "../session" }
+haven-gateway = { path = "../gateway" }
+base64.workspace = true
 tiktoken-rs = "0.12"

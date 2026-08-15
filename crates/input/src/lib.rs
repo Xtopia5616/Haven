@@ -25,7 +25,6 @@ mod wav;
 
 pub use wav::encode_wav_to_vec;
 
-const VAD_FRAME_SAMPLES: usize = 480;
 const VAD_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
 const RECORDING_LOOP_INTERVAL: Duration = Duration::from_millis(30);
 
@@ -54,6 +53,17 @@ pub enum RecordingReason {
     Silence,
     MaxDuration,
     Cancel,
+}
+
+/// Recording flavor for the recording loop. User-input recordings (button /
+/// hotkey / VAD) run VAD auto-stop and notify the input handler; agent-tool
+/// (`audio` tool) recordings capture a fixed window with no VAD and no
+/// handler notifications, so the user-facing recording UI and shell state
+/// are never disturbed by an agent-initiated recording.
+#[derive(Debug, Clone, Copy)]
+enum LoopMode {
+    Normal,
+    Timed { duration: Duration },
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +204,26 @@ impl InputPipeline {
     }
 
     pub async fn start_recording(&self) -> Result<()> {
+        self.start_inner(LoopMode::Normal).await
+    }
+
+    /// Capture audio for a fixed `duration`, returning the recorded PCM.
+    /// Used by the agent `audio` tool: no VAD auto-stop, no handler
+    /// notifications, and the capture is capped by the configured
+    /// `max_duration_secs` so a runaway tool call cannot monopolize the
+    /// microphone. Fails when a user recording is already in flight.
+    pub async fn record_for(&self, duration: Duration) -> Result<RecordingResult> {
+        let max = Duration::from_secs(self.config.lock().await.max_duration_secs.max(1));
+        let duration = duration.min(max);
+        self.start_inner(LoopMode::Timed { duration }).await?;
+        // The loop ends by itself at `duration`; `stop_capture` closes the
+        // stream and returns whatever accumulated (works whether or not the
+        // loop already finished).
+        tokio::time::sleep(duration).await;
+        self.stop_capture().await
+    }
+
+    async fn start_inner(&self, mode: LoopMode) -> Result<()> {
         {
             let mut state = self.state.lock().await;
             if *state != RecordingState::Pending {
@@ -261,6 +291,7 @@ impl InputPipeline {
             handler: self.handler.get().cloned(),
             failed: handle.stream_failed.clone(),
             silent_abort: handle.silent_abort.clone(),
+            mode,
         };
         tokio::spawn(async move {
             let result = Self::recording_loop(loop_data, cancel).await;
@@ -273,12 +304,20 @@ impl InputPipeline {
 
     async fn recording_loop(data: LoopData, cancel: CancellationToken) -> RecordingResult {
         let start = std::time::Instant::now();
-        let max_duration = {
-            let config = data.config.lock().await;
-            Duration::from_secs(config.max_duration_secs)
+        let max_duration = match data.mode {
+            LoopMode::Normal => {
+                let config = data.config.lock().await;
+                Duration::from_secs(config.max_duration_secs)
+            }
+            LoopMode::Timed { duration } => duration,
         };
 
-        let mut accumulated_pcm: Vec<f32> = Vec::new();
+        // Pre-reserve the full recording up front (max_duration × sample
+        // rate): the loop appends a 30 ms chunk per tick, and growing from an
+        // empty Vec would reallocate ~10 times and copy up to 2× the final
+        // size over the recording.
+        let mut accumulated_pcm: Vec<f32> =
+            Vec::with_capacity(max_duration.as_secs() as usize * TARGET_SAMPLE_RATE as usize);
         let mut vad_partial: Vec<f32> = Vec::new();
         let mut last_vad_status = std::time::Instant::now();
 
@@ -298,7 +337,12 @@ impl InputPipeline {
             // recording silence until max_duration.
             if data.failed.load(Ordering::SeqCst) {
                 tracing::warn!("audio capture stream failed; stopping recording early");
-                notify_auto_stop(&data.handler);
+                // Timed (agent-tool) recordings must not notify the handler:
+                // that path steals the stop, emits UI events and submits the
+                // transcript as a user voice message.
+                if matches!(data.mode, LoopMode::Normal) {
+                    notify_auto_stop(&data.handler);
+                }
                 let elapsed = start.elapsed();
                 return RecordingResult {
                     pcm: accumulated_pcm,
@@ -325,7 +369,11 @@ impl InputPipeline {
             }
 
             if start.elapsed() >= max_duration {
-                notify_auto_stop(&data.handler);
+                // Timed (agent-tool) recordings must not notify the handler:
+                // that path stops the shell recording and emits UI events.
+                if matches!(data.mode, LoopMode::Normal) {
+                    notify_auto_stop(&data.handler);
+                }
                 let elapsed = start.elapsed();
                 return RecordingResult {
                     pcm: accumulated_pcm,
@@ -347,83 +395,87 @@ impl InputPipeline {
                 }
                 accumulated_pcm.extend_from_slice(&new_data);
 
-                let mut vad_input = Vec::new();
-                std::mem::swap(&mut vad_partial, &mut vad_input);
-                vad_input.extend_from_slice(&new_data);
+                // Timed recordings skip VAD entirely: fixed-window capture,
+                // no auto-stop, no handler notifications.
+                if matches!(data.mode, LoopMode::Normal) {
+                    let mut vad_input = Vec::new();
+                    std::mem::swap(&mut vad_partial, &mut vad_input);
+                    vad_input.extend_from_slice(&new_data);
 
-                let mut offset = 0;
-                while offset + VAD_FRAME_SAMPLES <= vad_input.len() {
-                    // Cancellation wins over VAD latency: each inference runs
-                    // on the blocking pool so a slow model (tract in debug
-                    // builds) cannot stall the stop path.
-                    if cancel.is_cancelled() {
-                        let elapsed = start.elapsed();
-                        return RecordingResult {
-                            pcm: accumulated_pcm,
-                            reason: RecordingReason::Manual,
-                            duration_ms: elapsed.as_millis() as u64,
-                            transcript: None,
-                            transcript_error: None,
-                        };
-                    }
-                    let frame = &vad_input[offset..offset + VAD_FRAME_SAMPLES];
-                    offset += VAD_FRAME_SAMPLES;
+                    let mut offset = 0;
+                    while offset + vad::FRAME_SIZE <= vad_input.len() {
+                        // Cancellation wins over VAD latency: each inference runs
+                        // on the blocking pool so a slow model (tract in debug
+                        // builds) cannot stall the stop path.
+                        if cancel.is_cancelled() {
+                            let elapsed = start.elapsed();
+                            return RecordingResult {
+                                pcm: accumulated_pcm,
+                                reason: RecordingReason::Manual,
+                                duration_ms: elapsed.as_millis() as u64,
+                                transcript: None,
+                                transcript_error: None,
+                            };
+                        }
+                        let frame = &vad_input[offset..offset + vad::FRAME_SIZE];
+                        offset += vad::FRAME_SIZE;
 
-                    // Run the model on the dedicated VAD worker thread instead
-                    // of spawning a blocking session per frame (and locking the
-                    // engine). Frames below the energy floor skip the
-                    // round-trip entirely — they are silence by definition.
-                    let prob = match &data.vad_worker {
-                        Some(w) if vad::frame_has_energy(frame) => {
-                            let frame_owned = frame.to_vec();
-                            tokio::select! {
-                                p = w.infer(frame_owned) => p,
-                                _ = cancel.cancelled() => {
-                                    let elapsed = start.elapsed();
-                                    return RecordingResult {
-                                        pcm: accumulated_pcm,
-                                        reason: RecordingReason::Manual,
-                                        duration_ms: elapsed.as_millis() as u64,
-                                        transcript: None,
-                                        transcript_error: None,
-                                    };
+                        // Run the model on the dedicated VAD worker thread instead
+                        // of spawning a blocking session per frame (and locking the
+                        // engine). Frames below the energy floor skip the
+                        // round-trip entirely — they are silence by definition.
+                        let prob = match &data.vad_worker {
+                            Some(w) if vad::frame_has_energy(frame) => {
+                                let frame_owned = frame.to_vec();
+                                tokio::select! {
+                                    p = w.infer(frame_owned) => p,
+                                    _ = cancel.cancelled() => {
+                                        let elapsed = start.elapsed();
+                                        return RecordingResult {
+                                            pcm: accumulated_pcm,
+                                            reason: RecordingReason::Manual,
+                                            duration_ms: elapsed.as_millis() as u64,
+                                            transcript: None,
+                                            transcript_error: None,
+                                        };
+                                    }
                                 }
                             }
-                        }
-                        _ => 0.0,
-                    };
-
-                    let (signal, state) = {
-                        let mut det = data.vad_detector.lock().await;
-                        let signal = det.process(prob);
-                        let state = det.state();
-                        (signal, state)
-                    };
-
-                    // Notify outside the detector lock: the hook may emit
-                    // events and must not stall VAD inference.
-                    if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
-                        if let Some(h) = &data.handler {
-                            h.on_vad_status(signal, state);
-                        }
-                        last_vad_status = std::time::Instant::now();
-                    }
-
-                    if signal == vad::VadSignal::AutoStop {
-                        notify_auto_stop(&data.handler);
-                        let elapsed = start.elapsed();
-                        return RecordingResult {
-                            pcm: accumulated_pcm,
-                            reason: RecordingReason::Silence,
-                            duration_ms: elapsed.as_millis() as u64,
-                            transcript: None,
-                            transcript_error: None,
+                            _ => 0.0,
                         };
-                    }
-                }
 
-                if offset < vad_input.len() {
-                    vad_partial = vad_input[offset..].to_vec();
+                        let (signal, state) = {
+                            let mut det = data.vad_detector.lock().await;
+                            let signal = det.process(prob);
+                            let state = det.state();
+                            (signal, state)
+                        };
+
+                        // Notify outside the detector lock: the hook may emit
+                        // events and must not stall VAD inference.
+                        if last_vad_status.elapsed() >= VAD_THROTTLE_INTERVAL {
+                            if let Some(h) = &data.handler {
+                                h.on_vad_status(signal, state);
+                            }
+                            last_vad_status = std::time::Instant::now();
+                        }
+
+                        if signal == vad::VadSignal::AutoStop {
+                            notify_auto_stop(&data.handler);
+                            let elapsed = start.elapsed();
+                            return RecordingResult {
+                                pcm: accumulated_pcm,
+                                reason: RecordingReason::Silence,
+                                duration_ms: elapsed.as_millis() as u64,
+                                transcript: None,
+                                transcript_error: None,
+                            };
+                        }
+                    }
+
+                    if offset < vad_input.len() {
+                        vad_partial = vad_input[offset..].to_vec();
+                    }
                 }
             }
 
@@ -523,16 +575,20 @@ impl InputPipeline {
             }
         }
 
-        let stt_guard = self.stt_client.lock().await;
-        if let Some(ref client) = *stt_guard {
+        // Clone the client out of the lock: the STT call is a network
+        // round-trip, and holding the mutex across it would block
+        // `set_stt_client` (e.g. a provider switch in settings) for the
+        // whole transcription.
+        let client = self.stt_client.lock().await.clone();
+        if let Some(client) = client {
             // `result.pcm` is always the resampled mono stream at
             // TARGET_SAMPLE_RATE.
             let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
 
             match client.transcribe(&wav).await {
-                Ok(text) => {
-                    if !text.trim().is_empty() {
-                        result.transcript = Some(text);
+                Ok(stt) => {
+                    if !stt.text.trim().is_empty() {
+                        result.transcript = Some(stt.text);
                     } else {
                         tracing::warn!(
                             "STT returned an empty transcription ({}s of audio); skipping — no speech detected",
@@ -730,6 +786,7 @@ struct LoopData {
     handler: Option<Arc<dyn InputHandler>>,
     failed: Arc<AtomicBool>,
     silent_abort: Arc<AtomicBool>,
+    mode: LoopMode,
 }
 
 /// Fire the async auto-stop hook on a spawned session: the recording loop must
@@ -796,8 +853,11 @@ mod tests {
         struct DummySttClient;
         #[async_trait::async_trait]
         impl SttClient for DummySttClient {
-            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<String> {
-                Ok("dummy".into())
+            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+                Ok(haven_llm::SttResult {
+                    text: "dummy".into(),
+                    confidence: None,
+                })
             }
         }
         let pipeline = InputPipeline::new();
@@ -903,8 +963,11 @@ mod tests {
         struct EmptySttClient;
         #[async_trait::async_trait]
         impl SttClient for EmptySttClient {
-            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<String> {
-                Ok("   ".into())
+            async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+                Ok(haven_llm::SttResult {
+                    text: "   ".into(),
+                    confidence: None,
+                })
             }
         }
         let pipeline = InputPipeline::new();

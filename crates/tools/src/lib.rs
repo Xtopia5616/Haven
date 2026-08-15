@@ -115,6 +115,10 @@ pub struct ToolsManager {
     /// Shared clipboard history for the `clipboard` tool. Lives on the
     /// manager (not the tool) so it survives catalog rebuilds.
     pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
+    /// Shared input pipeline for the `audio` tool's `record` operation.
+    /// Wired in by the desktop shell; `None` in headless tests so the tool
+    /// reports recording as unavailable.
+    audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
     /// Monotonic catalog version, bumped whenever the global registry or any
     /// per-session registration changes. The ReAct loop caches per-session tool
     /// definitions keyed by this version, so a bump forces a rebuild without
@@ -155,6 +159,7 @@ impl ToolsManager {
             scheduled_tasks,
             self_context: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
+            audio_pipeline: RwLock::new(None),
             catalog_version: AtomicU64::new(0),
         }
     }
@@ -201,10 +206,18 @@ impl ToolsManager {
         self.rebuild_catalog().await;
     }
 
-    /// Replace the `shell` tool's default shell and rebuild the catalog so
-    /// the running agent picks up the new value on its next step.
+    /// Replace the default shell for the `shell` tool and rebuild the catalog
+    /// so the running agent picks up the new value on its next step.
     pub async fn set_default_shell(&self, shell: ShellChoice) {
         *self.default_shell.write().await = shell;
+        self.rebuild_catalog().await;
+    }
+
+    /// Wire the shared input pipeline into the `audio` tool so its `record`
+    /// operation captures + transcribes through the same engine/STT as user
+    /// voice input. `None` (headless) makes recording unavailable.
+    pub async fn set_audio_pipeline(&self, pipeline: Option<Arc<haven_input::InputPipeline>>) {
+        *self.audio_pipeline.write().await = pipeline;
         self.rebuild_catalog().await;
     }
 
@@ -255,6 +268,7 @@ impl ToolsManager {
         let self_context = self.self_context.read().await.clone();
         let settings = self.tool_settings.read().await;
         let limits = self.context_limits.read().await.clone();
+        let audio_pipeline = self.audio_pipeline.read().await.clone();
         builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
@@ -270,6 +284,7 @@ impl ToolsManager {
             &settings,
             &limits,
             *self.default_shell.read().await,
+            audio_pipeline,
         )
         .await;
 
@@ -486,6 +501,44 @@ impl ToolsManager {
     /// `enabled` state, so the UI can list every tool and re-enable disabled
     /// ones. The registry itself only holds enabled tools (see
     /// `rebuild_catalog`).
+    /// Poll the skills directory for changes and auto-refresh the engine
+    /// whenever `SKILL.md` files are added / modified / removed. The first
+    /// pass always refreshes too, so a UI that loaded before the initial
+    /// scan finished (startup race) still catches up. `on_change` fires on
+    /// the background task after a successful refresh so callers can
+    /// re-sync views / emit events (e.g. `skills:status_change`).
+    pub fn spawn_skills_watcher(
+        self: Arc<Self>,
+        poll_interval: Duration,
+        on_change: impl Fn() + Send + Sync + 'static,
+    ) {
+        let engine = self.skills_engine.clone();
+        tokio::spawn(async move {
+            let mut last_sig: Option<Vec<(std::path::PathBuf, std::time::SystemTime, u64)>> = None;
+            loop {
+                let sig = engine.folder_signature().await;
+                let changed = last_sig.is_none() || last_sig.as_ref() != Some(&sig);
+                if changed {
+                    match engine.refresh_from_disk().await {
+                        Ok(()) => {
+                            // Commit the signature only after a successful
+                            // refresh: on error the old signature is kept so
+                            // the next poll retries instead of treating the
+                            // failed change as already seen.
+                            last_sig = Some(sig);
+                            self.rebuild_catalog().await;
+                            on_change();
+                        }
+                        Err(e) => {
+                            tracing::warn!("skills auto-refresh failed: {e}");
+                        }
+                    }
+                }
+                tokio::time::sleep(poll_interval).await;
+            }
+        });
+    }
+
     pub async fn list_builtin_tools(&self) -> Vec<Value> {
         let tools = self.all_builtin_tools.read().await;
         let settings = self.tool_settings.read().await;

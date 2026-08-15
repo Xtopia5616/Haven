@@ -37,6 +37,9 @@
 		audio_model: false,
 		embedding_model: false,
 		stt: false,
+		ocr: false,
+		tts: false,
+		image_gen: false,
 	});
 
 	// Model library UI state: the popup manages named endpoints (`models`).
@@ -101,6 +104,24 @@
 		{ value: 'stt:none', label: 'None' },
 	];
 	const STT_STYLE_SET = new Set(STT_STYLE_OPTIONS.map((o) => o.value));
+
+	// Media capability providers for the OCR / TTS / 文生图 cards.
+	const OCR_PROVIDER_OPTIONS = [
+		{ value: 'none', label: 'None' },
+		{ value: 'baidu', label: 'Baidu 通用文字识别' },
+		{ value: 'azure', label: 'Azure AI Vision' },
+		{ value: 'tencent', label: 'Tencent 通用印刷体' },
+	];
+	const TTS_PROVIDER_OPTIONS = [
+		{ value: 'none', label: 'None' },
+		{ value: 'openai', label: 'OpenAI TTS' },
+		{ value: 'elevenlabs', label: 'ElevenLabs' },
+	];
+	const IMAGE_GEN_PROVIDER_OPTIONS = [
+		{ value: 'none', label: 'None' },
+		{ value: 'openai', label: 'OpenAI（gpt-image-1）' },
+		{ value: 'gemini', label: 'Google Gemini' },
+	];
 
 	function sttProviderFromStyle(style) {
 		return style.startsWith('stt:') ? style.slice(4) : null;
@@ -472,7 +493,6 @@
 		{ id: 'limits', label: '限制' },
 	];
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
-	let memoryRecall = $state({ query: '', kind: 'fact', results: [], loading: false });
 	let memoryMaintenance = $state({ running: false, lastCount: null });
 	let security = $state({ confirmation_mode: 'always', min_risk_level: 'medium' });
 
@@ -483,6 +503,30 @@
 		model: '',
 		base_url: '',
 		timeout_secs: 30,
+		min_confidence: 0.7,
+	});
+	let ocr = $state({
+		provider: 'none',
+		api_key: '',
+		api_secret: '',
+		base_url: '',
+		timeout_secs: 20,
+		min_confidence: 0.7,
+	});
+	let tts = $state({
+		provider: 'none',
+		api_key: '',
+		model: '',
+		voice: '',
+		base_url: '',
+		timeout_secs: 60,
+	});
+	let imageGen = $state({
+		provider: 'none',
+		api_key: '',
+		model: '',
+		base_url: '',
+		timeout_secs: 120,
 	});
 	let notification = $state({
 		session_created: { in_app: true, windows: false },
@@ -562,14 +606,6 @@
 		}
 	});
 
-	// Full facts management state (Memory section): every stored fact plus
-	// the manual-add form. Backed by list_facts / add_fact / delete_fact.
-	// Preferences live here too: they are facts tagged `preference` (single
-	// memory channel), so there is no separate Preferences list.
-	let facts = $state([]);
-	let factsLoaded = $state(false);
-	let newFact = $state({ predicate: '', object: '', tags: '' });
-	let addingFact = $state(false);
 	// Names of configured MCP servers, offered in the Audio Model card's
 	// Model field when the STT provider is an MCP server.
 	let mcpServerNames = $state([]);
@@ -579,13 +615,7 @@
 	let showKey = $state(false);
 	let accent = $state(themeStore.currentAccent);
 	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
-	let savedAccent = themeStore.currentAccent; // snapshot for reverting unsaved changes
 	let currentTheme = $state(themeStore.currentTheme);
-	let savedTheme = themeStore.currentTheme; // snapshot for reverting unsaved changes
-	// Only revert a theme change made through this page's own controls: the
-	// sidebar theme-toggle button also lives in the shared layout and stays
-	// visible here, and its already-persisted toggle must not be rolled back.
-	let themeTouched = false;
 	const unsubTheme = themeStore.subscribe((v) => { currentTheme = v.theme; });
 	// L12: guards against onDestroy running while onMount's async settings
 	// load is still in flight.
@@ -594,12 +624,6 @@
 	onDestroy(() => {
 		mounted = false;
 		unsubTheme();
-		if (accent !== savedAccent) {
-			themeStore.setAccent(savedAccent);
-		}
-		if (themeTouched && currentTheme !== savedTheme) {
-			themeStore.setTheme(savedTheme);
-		}
 	});
 
 	onMount(async () => {
@@ -638,19 +662,44 @@
 					confirmation_mode: settings.security?.confirmation_mode || 'always',
 					min_risk_level: settings.security?.min_risk_level || 'medium',
 				};
+				const media = settings.media || {};
 				stt = {
-					provider: settings.stt?.provider || 'mcp',
-					mcp_server: settings.stt?.mcp_server || '',
-					api_key: settings.stt?.api_key || '',
-					model: settings.stt?.model || '',
-					base_url: settings.stt?.base_url || '',
-					timeout_secs: settings.stt?.timeout_secs || 30,
+					provider: media.stt?.provider || 'mcp',
+					mcp_server: media.stt?.mcp_server || '',
+					api_key: media.stt?.api_key || '',
+					model: media.stt?.model || '',
+					base_url: media.stt?.base_url || '',
+					timeout_secs: media.stt?.timeout_secs || 30,
+					min_confidence: media.stt?.min_confidence ?? 0.7,
+				};
+				ocr = {
+					provider: media.ocr?.provider || 'none',
+					api_key: media.ocr?.api_key || '',
+					api_secret: media.ocr?.api_secret || '',
+					base_url: media.ocr?.base_url || '',
+					timeout_secs: media.ocr?.timeout_secs || 20,
+					min_confidence: media.ocr?.min_confidence ?? 0.7,
+				};
+				tts = {
+					provider: media.tts?.provider || 'none',
+					api_key: media.tts?.api_key || '',
+					model: media.tts?.model || '',
+					voice: media.tts?.voice || '',
+					base_url: media.tts?.base_url || '',
+					timeout_secs: media.tts?.timeout_secs || 60,
+				};
+				imageGen = {
+					provider: media.image_gen?.provider || 'none',
+					api_key: media.image_gen?.api_key || '',
+					model: media.image_gen?.model || '',
+					base_url: media.image_gen?.base_url || '',
+					timeout_secs: media.image_gen?.timeout_secs || 120,
 				};
 				// Audio Model Provider selector reflects the STT provider when
 				// one is explicitly configured; `llm` maps back to the
 				// endpoint's LLM wire style (the "transcribe via audio_model"
 				// mode).
-				const sttCfg = settings.stt;
+				const sttCfg = media.stt;
 				let llmAudioStyle = settings.llm?.audio_model?.api_style || '';
 				if (sttCfg?.provider === 'llm') {
 					audioApiStyle = llmAudioStyle || 'openai-chat';
@@ -682,74 +731,7 @@
 		} catch (e) {
 			addNotification(`获取开机自启状态失败: ${e}`, 'error', 3000);
 		}
-		await loadFacts();
 	});
-
-	async function loadFacts() {
-		try {
-			facts = (await invoke('list_facts')) || [];
-			factsLoaded = true;
-		} catch {
-			facts = [];
-			logger.warn('settings', 'load facts error');
-		}
-	}
-
-	async function addFact() {
-		const predicate = newFact.predicate.trim();
-		const object = newFact.object.trim();
-		if (!predicate || !object) {
-			addNotification('请输入 predicate 和 object', 'error', 3000);
-			return;
-		}
-		addingFact = true;
-		try {
-			const tags = newFact.tags
-				.split(',')
-				.map((t) => t.trim())
-				.filter(Boolean);
-			const created = await invoke('add_fact', {
-				subject: 'user',
-				predicate,
-				object,
-				tags: tags.length ? tags : null,
-			});
-			facts = [created, ...facts];
-			newFact = { predicate: '', object: '', tags: '' };
-			addNotification('事实已保存', 'success', 2500);
-		} catch (e) {
-			addNotification(`添加事实失败: ${e}`, 'error', 3000);
-		} finally {
-			addingFact = false;
-		}
-	}
-
-	async function deleteFact(factId) {
-		try {
-			await invoke('delete_fact', { factId });
-			facts = facts.filter((f) => f.id !== factId);
-		} catch (e) {
-			addNotification(`删除事实失败: ${e}`, 'error', 3000);
-		}
-	}
-
-	async function runRecall() {
-		const q = memoryRecall.query.trim();
-		if (!q) return;
-		memoryRecall.loading = true;
-		try {
-			memoryRecall.results = (await invoke('recall_memory', {
-				query: q,
-				kind: memoryRecall.kind,
-				limit: 10,
-			})) || [];
-		} catch (e) {
-			memoryRecall.results = [];
-			addNotification(`记忆检索失败: ${e}`, 'error', 4000);
-		} finally {
-			memoryRecall.loading = false;
-		}
-	}
 
 	async function runMaintenance() {
 		memoryMaintenance.running = true;
@@ -794,13 +776,39 @@
 				// Full object (loaded state kept intact) so fields the UI does
 				// not render are preserved; backend applies it wholesale.
 				context_limits: contextLimits,
-					stt: {
-						provider: stt.provider,
-						mcp_server: stt.mcp_server || null,
-						api_key: stt.api_key,
-						model: stt.model,
-						base_url: stt.base_url,
-						timeout_secs: stt.timeout_secs,
+					media: {
+						stt: {
+							provider: stt.provider,
+							mcp_server: stt.mcp_server || null,
+							api_key: stt.api_key,
+							model: stt.model,
+							base_url: stt.base_url,
+							timeout_secs: stt.timeout_secs,
+							min_confidence: stt.min_confidence,
+						},
+						ocr: {
+							provider: ocr.provider,
+							api_key: ocr.api_key,
+							api_secret: ocr.api_secret,
+							base_url: ocr.base_url,
+							timeout_secs: ocr.timeout_secs,
+							min_confidence: ocr.min_confidence,
+						},
+						tts: {
+							provider: tts.provider,
+							api_key: tts.api_key,
+							model: tts.model,
+							voice: tts.voice,
+							base_url: tts.base_url,
+							timeout_secs: tts.timeout_secs,
+						},
+						image_gen: {
+							provider: imageGen.provider,
+							api_key: imageGen.api_key,
+							model: imageGen.model,
+							base_url: imageGen.base_url,
+							timeout_secs: imageGen.timeout_secs,
+						},
 					},
 					notification: {
 						session_created: { in_app: notification.session_created.in_app, windows: notification.session_created.windows },
@@ -817,9 +825,6 @@
 				},
 			});
 		addNotification('设置已保存', 'success');
-			savedAccent = accent;
-			savedTheme = currentTheme;
-			themeTouched = false;
 			if (autostartEnabled) {
 				try { await invoke('enable_autostart'); } catch (e) {
 					autostartEnabled = false;
@@ -850,6 +855,12 @@
 		if (newKeyValue.trim()) {
 			if (keyChangeDialog.model === 'stt') {
 				stt.api_key = newKeyValue.trim();
+			} else if (keyChangeDialog.model === 'ocr') {
+				ocr.api_key = newKeyValue.trim();
+			} else if (keyChangeDialog.model === 'tts') {
+				tts.api_key = newKeyValue.trim();
+			} else if (keyChangeDialog.model === 'image_gen') {
+				imageGen.api_key = newKeyValue.trim();
 			} else {
 				llmConfig[keyChangeDialog.model].api_key = newKeyValue.trim();
 				scheduleFetch(keyChangeDialog.model);
@@ -1070,10 +1081,162 @@
 
 	<div class="section">
 		<h2>STT (Speech-to-Text)</h2>
-		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 行的 API Style 下拉框及其字段中完成。此处仅设置转写超时。</p>
+		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 行的 API Style 下拉框及其字段中完成。此处仅设置转写超时与置信度阈值。</p>
 		<div class="form-row">
 			<label for="stt-timeout">Timeout (sec)</label>
 			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(v) => { stt.timeout_secs = v; }} />
+		</div>
+		<div class="form-row">
+			<label for="stt-min-confidence">Min Confidence</label>
+			<input id="stt-min-confidence" type="range" class="md-slider" bind:value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" />
+			<span class="range-value">{stt.min_confidence}</span>
+		</div>
+		<p class="model-hint">置信度低于阈值时自动升级主模型转写。仅支持置信度报告的提供商（Deepgram / AssemblyAI / MCP）生效；Whisper 等不报告置信度的提供商在失败或空结果时升级主模型。</p>
+	</div>
+
+	<div class="section">
+		<h2>Media Capabilities（OCR / TTS / 文生图）</h2>
+		<p class="model-hint">媒体网关的专用模型：图片「提取文字」走 OCR；「朗读/配音」走 TTS；「画…」走文生图。选择 None 时相关请求由主模型处理（图片文字提取回落到视觉模型）。</p>
+
+		<div class="model-card">
+			<div class="picker-card">
+				<div class="model-field model-role">
+					<span class="field-label">OCR（图片文字提取）</span>
+					<div class="role-hint">百度/腾讯需 API Key + Secret Key；Azure 需资源端点作为 Base URL</div>
+				</div>
+				<div class="model-field">
+					<span class="field-label">Provider</span>
+					<MaterialSelect id="ocr-provider" value={ocr.provider} options={OCR_PROVIDER_OPTIONS} onChange={(v) => { ocr.provider = v; }} />
+				</div>
+				<div class="model-field">
+					<span class="field-label">API Key</span>
+					<div class="key-cell" class:key-not-configured={!keyConfigured.ocr}>
+						<StatusDot color={keyConfigured.ocr ? 'success' : 'outline'} />
+						<button
+							id="ocr-api-key"
+							class="md-btn md-btn--xs md-btn--outlined"
+							title={keyConfigured.ocr ? 'Configured' : 'Not Configured'}
+							onclick={() => openKeyDialog('ocr', 'OCR API Key')}
+						>
+							{keyConfigured.ocr ? 'Change' : 'Set'}
+						</button>
+					</div>
+				</div>
+				{#if ocr.provider === 'baidu' || ocr.provider === 'tencent'}
+					<div class="model-field">
+						<span class="field-label">Secret Key</span>
+						<input id="ocr-secret" type="password" class="md-input" bind:value={ocr.api_secret} placeholder="Secret Key" autocomplete="off" />
+					</div>
+				{/if}
+				{#if ocr.provider === 'azure'}
+					<div class="model-field">
+						<span class="field-label">Base URL</span>
+						<input id="ocr-base-url" type="text" class="md-input" bind:value={ocr.base_url} placeholder="https://&lt;resource&gt;.cognitiveservices.azure.com" autocomplete="off" />
+					</div>
+				{/if}
+				<div class="model-field">
+					<span class="field-label">Min Confidence</span>
+					<input id="ocr-min-confidence" type="range" class="md-slider" bind:value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" />
+					<span class="range-value">{ocr.min_confidence}</span>
+				</div>
+				<div class="model-field">
+					<span class="field-label">Timeout (sec)</span>
+					<MaterialNumberField id="ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={(v) => { ocr.timeout_secs = v; }} />
+				</div>
+			</div>
+		</div>
+
+		<div class="model-card">
+			<div class="picker-card">
+				<div class="model-field model-role">
+					<span class="field-label">TTS（朗读 / 配音）</span>
+					<div class="role-hint">对「朗读这段话」「读出来」等请求合成语音并附到消息</div>
+				</div>
+				<div class="model-field">
+					<span class="field-label">Provider</span>
+					<MaterialSelect id="tts-provider" value={tts.provider} options={TTS_PROVIDER_OPTIONS} onChange={(v) => { tts.provider = v; }} />
+				</div>
+				<div class="model-field">
+					<span class="field-label">API Key</span>
+					<div class="key-cell" class:key-not-configured={!keyConfigured.tts}>
+						<StatusDot color={keyConfigured.tts ? 'success' : 'outline'} />
+						<button
+							id="tts-api-key"
+							class="md-btn md-btn--xs md-btn--outlined"
+							title={keyConfigured.tts ? 'Configured' : 'Not Configured'}
+							onclick={() => openKeyDialog('tts', 'TTS API Key')}
+						>
+							{keyConfigured.tts ? 'Change' : 'Set'}
+						</button>
+					</div>
+				</div>
+				{#if tts.provider === 'openai'}
+					<div class="model-field">
+						<span class="field-label">Model</span>
+						<input id="tts-model" type="text" class="md-input" bind:value={tts.model} placeholder="tts-1 / gpt-4o-mini-tts" autocomplete="off" />
+					</div>
+					<div class="model-field">
+						<span class="field-label">Voice</span>
+						<input id="tts-voice" type="text" class="md-input" bind:value={tts.voice} placeholder="alloy / nova / echo…" autocomplete="off" />
+					</div>
+					<div class="model-field">
+						<span class="field-label">Base URL</span>
+						<input id="tts-base-url" type="text" class="md-input" bind:value={tts.base_url} placeholder="https://api.openai.com/v1" autocomplete="off" />
+					</div>
+				{:else if tts.provider === 'elevenlabs'}
+					<div class="model-field">
+						<span class="field-label">Voice ID</span>
+						<input id="tts-voice" type="text" class="md-input" bind:value={tts.voice} placeholder="elevenlabs voice id" autocomplete="off" />
+					</div>
+				{/if}
+				{#if tts.provider !== 'none'}
+					<div class="model-field">
+						<span class="field-label">Timeout (sec)</span>
+						<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={(v) => { tts.timeout_secs = v; }} />
+					</div>
+				{/if}
+			</div>
+		</div>
+
+		<div class="model-card">
+			<div class="picker-card">
+				<div class="model-field model-role">
+					<span class="field-label">文生图（画…）</span>
+					<div class="role-hint">对「画一只猫」「生成海报」等请求生成图片并附到消息</div>
+				</div>
+				<div class="model-field">
+					<span class="field-label">Provider</span>
+					<MaterialSelect id="ig-provider" value={imageGen.provider} options={IMAGE_GEN_PROVIDER_OPTIONS} onChange={(v) => { imageGen.provider = v; }} />
+				</div>
+				<div class="model-field">
+					<span class="field-label">API Key</span>
+					<div class="key-cell" class:key-not-configured={!keyConfigured.image_gen}>
+						<StatusDot color={keyConfigured.image_gen ? 'success' : 'outline'} />
+						<button
+							id="ig-api-key"
+							class="md-btn md-btn--xs md-btn--outlined"
+							title={keyConfigured.image_gen ? 'Configured' : 'Not Configured'}
+							onclick={() => openKeyDialog('image_gen', '文生图 API Key')}
+						>
+							{keyConfigured.image_gen ? 'Change' : 'Set'}
+						</button>
+					</div>
+				</div>
+				{#if imageGen.provider !== 'none'}
+					<div class="model-field">
+						<span class="field-label">Model</span>
+						<input id="ig-model" type="text" class="md-input" bind:value={imageGen.model} placeholder={imageGen.provider === 'openai' ? 'gpt-image-1' : 'gemini-2.5-flash-image'} autocomplete="off" />
+					</div>
+					<div class="model-field">
+						<span class="field-label">Base URL</span>
+						<input id="ig-base-url" type="text" class="md-input" bind:value={imageGen.base_url} placeholder={imageGen.provider === 'openai' ? 'https://api.openai.com/v1' : 'https://generativelanguage.googleapis.com'} autocomplete="off" />
+					</div>
+					<div class="model-field">
+						<span class="field-label">Timeout (sec)</span>
+						<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={(v) => { imageGen.timeout_secs = v; }} />
+					</div>
+				{/if}
+			</div>
 		</div>
 	</div>
 
@@ -1119,42 +1282,8 @@
 			<label for="memory-retention">Retention (days)</label>
 			<MaterialNumberField id="memory-retention" value={memory.history_retention_days} min={1} max={365} onChange={(v) => { memory.history_retention_days = v; }} />
 		</div>
-		<h3 class="model-group-heading">Recall &amp; Maintenance</h3>
-		<p class="model-hint">检索已存储的记忆（事实 / 历史对话）。配置了 Embedding Model 时使用语义检索，否则回退到关键词匹配。维护会清理重复、敏感、过期的事实与残留向量。</p>
-		<div class="form-row recall-row">
-			<label for="memory-recall-query">Query</label>
-			<input
-				id="memory-recall-query"
-				type="text"
-				class="md-input"
-				bind:value={memoryRecall.query}
-				placeholder="e.g. dark theme"
-				onkeydown={(e) => { if (e.key === 'Enter') runRecall(); }}
-				autocomplete="off"
-			/>
-			<MaterialSelect
-				id="memory-recall-kind"
-				value={memoryRecall.kind}
-				options={[
-					{ value: 'fact', label: 'Facts' },
-					{ value: 'episode', label: 'Conversations' },
-				]}
-				onChange={(v) => { memoryRecall.kind = v; }}
-			/>
-			<button class="md-btn" onclick={runRecall} disabled={memoryRecall.loading}>
-				{memoryRecall.loading ? 'Searching…' : 'Search'}
-			</button>
-		</div>
-		{#if memoryRecall.results.length > 0}
-			<ul class="recall-results">
-				{#each memoryRecall.results as r (r.entity_id + r.text)}
-					<li>
-						<span class="recall-score">{(r.score ?? 0).toFixed(2)}</span>
-						<span class="recall-text">{r.text}</span>
-					</li>
-				{/each}
-			</ul>
-		{/if}
+		<h3 class="model-group-heading">Maintenance</h3>
+		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
 		<div class="form-row">
 			<button class="md-btn" onclick={runMaintenance} disabled={memoryMaintenance.running}>
 				{memoryMaintenance.running ? 'Running…' : 'Run Memory Maintenance'}
@@ -1163,58 +1292,6 @@
 				<span class="recall-hint">上次清理 {memoryMaintenance.lastCount} 项</span>
 			{/if}
 		</div>
-		<h3 class="model-group-heading">Facts</h3>
-		<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 facts 工具的 remember / forget 操作更新这里。</p>
-		<div class="form-row add-fact-row">
-			<input
-				type="text"
-				class="md-input"
-				placeholder="predicate (e.g. email)"
-				bind:value={newFact.predicate}
-				autocomplete="off"
-			/>
-			<input
-				type="text"
-				class="md-input"
-				placeholder="object (e.g. alice@example.com)"
-				bind:value={newFact.object}
-				autocomplete="off"
-			/>
-			<input
-				type="text"
-				class="md-input"
-				placeholder="tags (optional, comma-separated)"
-				bind:value={newFact.tags}
-				autocomplete="off"
-			/>
-			<button class="md-btn" onclick={addFact} disabled={addingFact}>
-				{addingFact ? 'Adding…' : 'Add Fact'}
-			</button>
-		</div>
-		{#if factsLoaded && facts.length > 0}
-			<div class="fact-list">
-				{#each facts as fact}
-					<div class="fact-row">
-						<span class="fact-key">
-							{#if fact.subject !== 'user'}{fact.subject}:{/if}{fact.predicate}
-						</span>
-						<span class="fact-value">
-							{#if fact.source === 'inferred'}
-								<span class="fact-tag fact-tag--inf">inferred</span>
-							{:else}
-								<span class="fact-tag fact-tag--user">user</span>
-							{/if}
-							{fact.object}
-						</span>
-						<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deleteFact(fact.id)} title="Delete fact">
-							&times;
-						</button>
-					</div>
-				{/each}
-			</div>
-		{:else if factsLoaded}
-			<p class="model-hint">No facts recorded yet. They will appear here as you use Haven.</p>
-		{/if}
 	</div>
 
 	<div class="section appearance-section">
@@ -1228,7 +1305,7 @@
 					class:md-btn--filled={currentTheme !== 'light'}
 					role="radio"
 					aria-checked={currentTheme === 'light'}
-				onclick={() => { themeTouched = true; themeStore.setTheme('light'); }}
+				onclick={() => { themeStore.setTheme('light'); }}
 			>Light</button>
 			<button
 				class="md-btn"
@@ -1236,7 +1313,7 @@
 				class:md-btn--filled={currentTheme !== 'dark'}
 				role="radio"
 				aria-checked={currentTheme === 'dark'}
-				onclick={() => { themeTouched = true; themeStore.setTheme('dark'); }}
+				onclick={() => { themeStore.setTheme('dark'); }}
 			>Dark</button>
 			</div>
 		</div>
@@ -2153,45 +2230,6 @@
 		margin: var(--md-sys-space-md) auto 0;
 		z-index: 1;
 	}
-	.recall-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		flex-wrap: wrap;
-	}
-	.recall-row .md-input {
-		flex: 1;
-		min-width: 200px;
-	}
-	.recall-results {
-		list-style: none;
-		margin: var(--md-sys-space-sm) 0 var(--md-sys-space-md);
-		padding: 0;
-		max-height: 220px;
-		overflow-y: auto;
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-radius-md);
-	}
-	.recall-results li {
-		display: flex;
-		align-items: baseline;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border-bottom: 1px solid var(--md-sys-color-outline-variant);
-		font-size: 13px;
-	}
-	.recall-results li:last-child {
-		border-bottom: none;
-	}
-	.recall-score {
-		font-variant-numeric: tabular-nums;
-		color: var(--md-sys-color-primary);
-		min-width: 42px;
-	}
-	.recall-text {
-		color: var(--md-sys-color-on-surface);
-		overflow-wrap: anywhere;
-	}
 	.recall-hint {
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 13px;
@@ -2201,53 +2239,6 @@
 		font-size: 14px;
 		line-height: 1.5;
 		margin-bottom: var(--md-sys-space-lg);
-	}
-	.fact-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-	}
-	.fact-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-xs) 0;
-	}
-	.fact-key {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 13px;
-		font-weight: 500;
-		min-width: 140px;
-		flex-shrink: 0;
-	}
-	.fact-value {
-		color: var(--md-sys-color-on-surface);
-		font-size: 13px;
-		flex: 1;
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-	}
-	.fact-tag {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		height: 20px;
-		padding: 0 6px;
-		border-radius: var(--md-sys-shape-small);
-		font-size: 10px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		flex-shrink: 0;
-	}
-	.fact-tag--user {
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
-	}
-	.fact-tag--inf {
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
 	}
 	.theme-toggle-row {
 		display: flex;

@@ -50,7 +50,19 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
     }
     status.insert(
         "stt".to_string(),
-        serde_json::json!(!cfg.stt.api_key.is_empty()),
+        serde_json::json!(!cfg.media.stt.api_key.is_empty()),
+    );
+    status.insert(
+        "ocr".to_string(),
+        serde_json::json!(!cfg.media.ocr.api_key.is_empty()),
+    );
+    status.insert(
+        "tts".to_string(),
+        serde_json::json!(!cfg.media.tts.api_key.is_empty()),
+    );
+    status.insert(
+        "image_gen".to_string(),
+        serde_json::json!(!cfg.media.image_gen.api_key.is_empty()),
     );
     let mut models_status = serde_json::Map::new();
     for m in &cfg.llm.models {
@@ -130,7 +142,7 @@ pub async fn discover_models(
                 guard.config().clone()
             };
             if role == "stt" {
-                let stt = &cfg.stt;
+                let stt = &cfg.media.stt;
                 let stt_base = if stt.base_url.is_empty() {
                     stt_default_base_url(&stt.provider)
                 } else {
@@ -172,7 +184,7 @@ pub async fn discover_models(
             guard.config().clone()
         };
         if role.as_deref() == Some("stt") {
-            match cfg.stt.provider.as_str() {
+            match cfg.media.stt.provider.as_str() {
                 "gemini" => Some(("x-goog-api-key".to_string(), key.clone())),
                 _ => Some(("Authorization".to_string(), format!("Bearer {}", key))),
             }

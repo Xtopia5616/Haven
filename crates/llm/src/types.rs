@@ -1,87 +1,8 @@
-pub use haven_common::types::ContentPart;
-use haven_common::types::{CanonicalMessage, CanonicalRole};
+pub use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
-
-/// Convert provider-neutral canonical messages into provider-specific LlmMessage.
-/// Called at the LLM invocation boundary — the Agent internally uses CanonicalMessage.
-/// Takes a slice so the caller keeps ownership of its canonical (retries reuse the
-/// converted messages instead of re-cloning the whole canonical and re-serializing
-/// every tool-call argument on each attempt).
-pub fn convert_to_llm(msgs: &[CanonicalMessage]) -> Vec<LlmMessage> {
-    msgs.iter()
-        .map(|m| {
-            let role = match m.role {
-                CanonicalRole::System => LlmRole::System,
-                CanonicalRole::User => LlmRole::User,
-                CanonicalRole::Assistant => LlmRole::Assistant,
-                CanonicalRole::Tool => LlmRole::Tool,
-            };
-            LlmMessage {
-                role,
-                content: m.content.clone(),
-                tool_call_id: m.tool_call_id.clone(),
-                tool_calls: m.tool_calls.clone().map(|calls| {
-                    calls
-                        .into_iter()
-                        .map(|tc| ToolCall {
-                            id: tc.id,
-                            name: tc.name,
-                            arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
-                        })
-                        .collect()
-                }),
-                reasoning: m.reasoning.clone(),
-                web_search_calls: m.web_search_calls.clone(),
-            }
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmMessage {
-    pub role: LlmRole,
-    pub content: Vec<ContentPart>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    /// Tool calls from this (assistant) message, forwarded to the API so
-    /// subsequent tool responses can be linked by tool_call_id.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
-    /// Internal reasoning/chain-of-thought from the model (e.g. DeepSeek's
-    /// reasoning_content). Echoed back to APIs that require it in
-    /// multi-turn requests.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
-    /// Raw `web_search_call` output items from the provider's built-in web
-    /// search tool. Must be passed back verbatim in the next request's input
-    /// so the server can restore the search context (stateless Responses
-    /// API). Never parsed or rewritten.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub web_search_calls: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub enum LlmRole {
-    #[default]
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
-impl std::fmt::Display for LlmRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LlmRole::System => write!(f, "system"),
-            LlmRole::User => write!(f, "user"),
-            LlmRole::Assistant => write!(f, "assistant"),
-            LlmRole::Tool => write!(f, "tool"),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
@@ -91,13 +12,6 @@ pub struct Usage {
     // §2.14: model name and cost tracking
     pub model_name: Option<String>,
     pub cost: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -165,7 +79,7 @@ impl WebSearchPhase {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmResponse {
     pub text: String,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<CanonicalToolCall>,
     pub finish_reason: Option<FinishReason>,
     pub usage: Usage,
     // §2.14: which model produced this response
@@ -173,7 +87,7 @@ pub struct LlmResponse {
     /// Internal reasoning/chain-of-thought produced by the model (e.g.
     /// DeepSeek-R1's reasoning_content, Claude's extended thinking).
     pub reasoning: Option<String>,
-    /// Raw `web_search_call` output items (see [`LlmMessage::web_search_calls`]).
+    /// Raw `web_search_call` output items (see [`CanonicalMessage::web_search_calls`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
 }
@@ -296,7 +210,7 @@ impl From<reqwest::Error> for LlmError {
 #[derive(Debug, Clone, Default)]
 pub struct StreamChunk {
     pub text: Option<String>,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Vec<CanonicalToolCall>,
     pub finish_reason: Option<FinishReason>,
     pub usage: Option<Usage>,
     pub model: Option<String>,
@@ -308,14 +222,13 @@ pub struct StreamChunk {
     /// "正在联网搜索…" indicator from it.
     pub web_search: Option<WebSearchPhase>,
     /// Raw `web_search_call` items accumulated while streaming (see
-    /// [`LlmMessage::web_search_calls`]).
+    /// [`CanonicalMessage::web_search_calls`]).
     pub web_search_calls: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::types::{CanonicalMessage, CanonicalRole};
     use std::time::Duration;
 
     #[test]
@@ -370,61 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn llm_role_display_outputs_lowercase() {
-        assert_eq!(LlmRole::System.to_string(), "system");
-        assert_eq!(LlmRole::User.to_string(), "user");
-        assert_eq!(LlmRole::Assistant.to_string(), "assistant");
-        assert_eq!(LlmRole::Tool.to_string(), "tool");
-    }
-
-    #[test]
-    fn llm_role_default_is_system() {
-        assert_eq!(LlmRole::default().to_string(), "system");
-    }
-
-    #[test]
-    fn llm_message_system_role_with_content() {
-        let msg = LlmMessage {
-            role: LlmRole::System,
-            content: vec![ContentPart::Text("system prompt".into())],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        assert_eq!(msg.role.to_string(), "system");
-        assert_eq!(msg.content.len(), 1);
-    }
-
-    #[test]
-    fn llm_message_user_role_with_text() {
-        let msg = LlmMessage {
-            role: LlmRole::User,
-            content: vec![ContentPart::text("hello")],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        assert_eq!(msg.role.to_string(), "user");
-        assert_eq!(msg.content.len(), 1);
-    }
-
-    #[test]
-    fn llm_message_assistant_role_empty_content() {
-        let msg = LlmMessage {
-            role: LlmRole::Assistant,
-            content: vec![],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        assert_eq!(msg.role.to_string(), "assistant");
-        assert!(msg.content.is_empty());
-    }
-
-    #[test]
     fn usage_default_values_are_zero() {
         let u = Usage::default();
         assert_eq!(u.prompt_tokens, 0);
@@ -432,18 +290,6 @@ mod tests {
         assert_eq!(u.total_tokens, 0);
         assert!(u.model_name.is_none());
         assert!(u.cost.is_none());
-    }
-
-    #[test]
-    fn tool_call_construction() {
-        let tc = ToolCall {
-            id: "call_1".into(),
-            name: "read_file".into(),
-            arguments: r#"{"path":"/tmp"}"#.into(),
-        };
-        assert_eq!(tc.id, "call_1");
-        assert_eq!(tc.name, "read_file");
-        assert_eq!(tc.arguments, r#"{"path":"/tmp"}"#);
     }
 
     #[test]
@@ -548,10 +394,10 @@ mod tests {
     fn stream_chunk_construction_with_tool_calls_and_finish_reason() {
         let chunk = StreamChunk {
             text: None,
-            tool_calls: vec![ToolCall {
+            tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
                 name: "shell".into(),
-                arguments: "{}".into(),
+                arguments: serde_json::json!({}),
             }],
             finish_reason: Some(FinishReason::ToolCalls),
             usage: Some(Usage {
@@ -597,106 +443,5 @@ mod tests {
         };
         assert_eq!(tf.name, "echo");
         assert!(tf.description.contains("echoes"));
-    }
-
-    #[test]
-    fn convert_to_llm_system_role() {
-        let cm = CanonicalMessage {
-            role: CanonicalRole::System,
-            content: vec![ContentPart::Text("system prompt".into())],
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        let msgs = convert_to_llm(&[cm]);
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].role.to_string(), "system");
-    }
-
-    #[test]
-    fn convert_to_llm_user_role() {
-        let cm = CanonicalMessage {
-            role: CanonicalRole::User,
-            content: vec![ContentPart::text("hi")],
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        let msgs = convert_to_llm(&[cm]);
-        assert_eq!(msgs[0].role.to_string(), "user");
-    }
-
-    #[test]
-    fn convert_to_llm_tool_maps_to_tool_role() {
-        let cm = CanonicalMessage {
-            role: CanonicalRole::Tool,
-            content: vec![ContentPart::Text("tool result".into())],
-            tool_calls: None,
-            tool_call_id: Some("tid".into()),
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        let msgs = convert_to_llm(&[cm]);
-        assert_eq!(msgs[0].role.to_string(), "tool");
-        assert_eq!(msgs[0].tool_call_id.as_deref(), Some("tid"));
-    }
-
-    #[test]
-    fn convert_to_llm_assistant_role() {
-        let cm = CanonicalMessage {
-            role: CanonicalRole::Assistant,
-            content: vec![ContentPart::text("answer")],
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        let msgs = convert_to_llm(&[cm]);
-        assert_eq!(msgs[0].role.to_string(), "assistant");
-    }
-
-    #[test]
-    fn convert_to_llm_preserves_content_parts() {
-        let cm = CanonicalMessage {
-            role: CanonicalRole::User,
-            content: vec![
-                ContentPart::Text("part1".into()),
-                ContentPart::Text("part2".into()),
-            ],
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        };
-        let msgs = convert_to_llm(&[cm]);
-        assert_eq!(msgs[0].content.len(), 2);
-    }
-
-    #[test]
-    fn convert_to_llm_multiple_messages() {
-        let cms = vec![
-            CanonicalMessage {
-                role: CanonicalRole::System,
-                content: vec![ContentPart::Text("prompt".into())],
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-            },
-            CanonicalMessage {
-                role: CanonicalRole::User,
-                content: vec![ContentPart::text("question")],
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-            },
-        ];
-        let msgs = convert_to_llm(&cms);
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role.to_string(), "system");
-        assert_eq!(msgs[1].role.to_string(), "user");
     }
 }

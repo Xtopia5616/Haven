@@ -13,8 +13,8 @@ use crate::adapters::{
 };
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{
-    ContentPart, Embedding, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
-    ToolCall, ToolDefinition, Usage,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, Embedding, FinishReason,
+    LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -212,7 +212,7 @@ impl OpenAiAdapter {
         build_headers(&self.endpoint, "Authorization", true)
     }
 
-    fn convert_messages(msgs: Vec<LlmMessage>) -> Vec<OpenAiMessage> {
+    fn convert_messages(msgs: Vec<CanonicalMessage>) -> Vec<OpenAiMessage> {
         msgs.into_iter()
             .map(|m| {
                 // When the assistant message carries tool_calls, the content
@@ -273,22 +273,25 @@ impl OpenAiAdapter {
                 let tool_calls = m.tool_calls.map(|calls| {
                     calls
                         .into_iter()
-                        .map(|tc| OpenAiMessageToolCall {
-                            id: tc.id,
-                            call_type: "function".into(),
-                            function: OpenAiMessageToolFunction {
-                                name: tc.name,
-                                arguments: tc.arguments,
-                            },
+                        .map(|tc| {
+                            let args = tc.args_to_wire();
+                            OpenAiMessageToolCall {
+                                id: tc.id,
+                                call_type: "function".into(),
+                                function: OpenAiMessageToolFunction {
+                                    name: tc.name,
+                                    arguments: args,
+                                },
+                            }
                         })
                         .collect()
                 });
                 OpenAiMessage {
                     role: match m.role {
-                        LlmRole::System => "system".to_string(),
-                        LlmRole::User => "user".to_string(),
-                        LlmRole::Assistant => "assistant".to_string(),
-                        LlmRole::Tool => "tool".to_string(),
+                        CanonicalRole::System => "system".to_string(),
+                        CanonicalRole::User => "user".to_string(),
+                        CanonicalRole::Assistant => "assistant".to_string(),
+                        CanonicalRole::Tool => "tool".to_string(),
                     },
                     content,
                     tool_call_id: m.tool_call_id,
@@ -308,7 +311,7 @@ impl OpenAiAdapter {
             .collect()
     }
 
-    fn extract_tool_calls(choice: &OpenAiChoice) -> Vec<ToolCall> {
+    fn extract_tool_calls(choice: &OpenAiChoice) -> Vec<CanonicalToolCall> {
         let mut out = Vec::new();
         if let Some(msg) = choice.message.as_ref().or(choice.delta.as_ref())
             && let Some(calls) = &msg.tool_calls
@@ -318,10 +321,10 @@ impl OpenAiAdapter {
                 let args = c.function.arguments.clone().unwrap_or_default();
                 let id = c.id.clone().unwrap_or_default();
                 if !name.is_empty() {
-                    out.push(ToolCall {
+                    out.push(CanonicalToolCall {
                         id,
                         name,
-                        arguments: args,
+                        arguments: CanonicalToolCall::from_wire_args(&args),
                     });
                 }
             }
@@ -345,7 +348,7 @@ impl OpenAiAdapter {
 
     fn build_request_body(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> OpenAiRequest {
@@ -452,7 +455,7 @@ impl OpenAiAdapter {
 
     async fn chat_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
@@ -490,7 +493,7 @@ impl OpenAiAdapter {
 
     async fn chat_stream_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let body = self.build_request_body(messages, tools, true);
@@ -621,33 +624,31 @@ impl OpenAiAdapter {
             }
         });
 
-        // Merge streaming tool-call deltas by index.
+        // Merge streaming tool-call deltas by index. Arguments arrive as
+        // incremental JSON fragments, so they accumulate as a raw string and
+        // are parsed once at flush time.
         fn merge_tool_call(
-            acc: &mut Vec<ToolCall>,
+            acc: &mut Vec<(String, String, String)>,
             index: usize,
             id: Option<&str>,
             name: Option<&str>,
             arguments: Option<&str>,
         ) {
             while acc.len() <= index {
-                acc.push(ToolCall {
-                    id: String::new(),
-                    name: String::new(),
-                    arguments: String::new(),
-                });
+                acc.push((String::new(), String::new(), String::new()));
             }
             if let Some(id) = id
                 && !id.is_empty()
             {
-                acc[index].id = id.to_string();
+                acc[index].0 = id.to_string();
             }
             if let Some(name) = name
                 && !name.is_empty()
             {
-                acc[index].name = name.to_string();
+                acc[index].1 = name.to_string();
             }
             if let Some(args) = arguments {
-                acc[index].arguments.push_str(args);
+                acc[index].2.push_str(args);
             }
         }
 
@@ -661,7 +662,7 @@ impl OpenAiAdapter {
             rx: tokio::sync::mpsc::UnboundedReceiver<String>,
             done: bool,
             accumulated_text: String,
-            tool_calls_acc: Vec<ToolCall>,
+            tool_calls_acc: Vec<(String, String, String)>,
             web_search_acc: Vec<serde_json::Value>,
             last_model: Option<String>,
             has_finish_reason: bool,
@@ -692,7 +693,14 @@ impl OpenAiAdapter {
                             } else {
                                 Ok(StreamChunk {
                                     text: None,
-                                    tool_calls: std::mem::take(&mut state.tool_calls_acc),
+                                    tool_calls: std::mem::take(&mut state.tool_calls_acc)
+                                        .into_iter()
+                                        .map(|(id, name, args)| CanonicalToolCall {
+                                            id,
+                                            name,
+                                            arguments: CanonicalToolCall::from_wire_args(&args),
+                                        })
+                                        .collect(),
                                     finish_reason: None,
                                     usage: state.usage.take(),
                                     model: state.last_model.clone(),
@@ -806,13 +814,13 @@ impl LlmClient for OpenAiAdapter {
         "openai-chat"
     }
 
-    async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+    async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, Vec::new(), false).await
     }
 
     async fn chat_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
@@ -820,14 +828,14 @@ impl LlmClient for OpenAiAdapter {
 
     async fn chat_stream(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
     async fn chat_stream_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
@@ -935,8 +943,8 @@ mod tests {
         };
         let client = OpenAiAdapter::new(ep);
         let e = client
-            .chat(vec![LlmMessage {
-                role: LlmRole::User,
+            .chat(vec![CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hi")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -1039,8 +1047,8 @@ mod tests {
             "action": {"type": "search", "queries": ["capital of France"]},
             "query": "foo"
         });
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("searched")],
             tool_call_id: None,
             tool_calls: None,
@@ -1063,8 +1071,8 @@ mod tests {
             "id": "ws_9",
             "status": "in_progress"
         });
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("searched")],
             tool_call_id: None,
             tool_calls: None,
@@ -1244,8 +1252,8 @@ mod tests {
 
     #[test]
     fn convert_messages_image_content_part() {
-        let msg = LlmMessage {
-            role: LlmRole::User,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![
                 ContentPart::Text("describe this".into()),
                 ContentPart::Image {
@@ -1274,8 +1282,8 @@ mod tests {
 
     #[test]
     fn convert_messages_empty_content() {
-        let msg = LlmMessage {
-            role: LlmRole::User,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![],
             tool_call_id: None,
             tool_calls: None,
@@ -1289,8 +1297,8 @@ mod tests {
 
     #[test]
     fn convert_messages_system_role_maps_to_system_string() {
-        let msg = LlmMessage {
-            role: LlmRole::System,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::System,
             content: vec![ContentPart::text("you are helpful")],
             tool_call_id: None,
             tool_calls: None,
@@ -1303,8 +1311,8 @@ mod tests {
 
     #[test]
     fn convert_messages_assistant_role_maps_to_assistant_string() {
-        let msg = LlmMessage {
-            role: LlmRole::Assistant,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("hello")],
             tool_call_id: None,
             tool_calls: None,
@@ -1317,8 +1325,8 @@ mod tests {
 
     #[test]
     fn convert_messages_tool_role_maps_to_tool_string() {
-        let msg = LlmMessage {
-            role: LlmRole::Tool,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::Tool,
             content: vec![ContentPart::text("result")],
             tool_call_id: Some("call_1".into()),
             tool_calls: None,
@@ -1332,8 +1340,8 @@ mod tests {
 
     #[test]
     fn convert_messages_single_text_part_becomes_json_string() {
-        let msg = LlmMessage {
-            role: LlmRole::User,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![ContentPart::text("hello")],
             tool_call_id: None,
             tool_calls: None,
@@ -1348,8 +1356,8 @@ mod tests {
 
     #[test]
     fn convert_messages_single_audio_part_nested_input_audio() {
-        let msg = LlmMessage {
-            role: LlmRole::User,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![ContentPart::Audio {
                 content_type: "input_audio".into(),
                 media_type: "audio/wav".into(),
@@ -1371,8 +1379,8 @@ mod tests {
 
     #[test]
     fn convert_messages_single_image_part_nested_image_url() {
-        let msg = LlmMessage {
-            role: LlmRole::User,
+        let msg = CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![ContentPart::Image {
                 content_type: "image_url".into(),
                 media_type: "image/png".into(),

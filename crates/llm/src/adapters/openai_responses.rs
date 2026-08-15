@@ -13,8 +13,8 @@ use crate::adapters::{
 };
 use crate::client::LlmClient;
 use crate::types::{
-    ContentPart, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
-    ToolDefinition, Usage, WebSearchPhase,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FinishReason, LlmError,
+    LlmResponse, StreamChunk, ToolDefinition, Usage, WebSearchPhase,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -286,27 +286,27 @@ impl OpenAiResponsesAdapter {
     /// tool calls become standalone `function_call` items; tool results
     /// become `function_call_output` items.
     fn convert_input(
-        msgs: Vec<LlmMessage>,
+        msgs: Vec<CanonicalMessage>,
         max_reasoning_echo_chars: usize,
     ) -> (Vec<Value>, Option<String>) {
         let mut instructions: Vec<String> = Vec::new();
         let mut items: Vec<Value> = Vec::new();
         for m in msgs {
             match m.role {
-                LlmRole::System => {
+                CanonicalRole::System => {
                     for p in &m.content {
                         if let ContentPart::Text(t) = p {
                             instructions.push(t.clone());
                         }
                     }
                 }
-                LlmRole::User => {
+                CanonicalRole::User => {
                     let content = Self::content_to_parts(&m.content);
                     if !content.is_empty() {
                         items.push(json!({"role": "user", "content": content}));
                     }
                 }
-                LlmRole::Assistant => {
+                CanonicalRole::Assistant => {
                     let text = Self::text_content(&m.content);
                     if !text.is_empty() {
                         items.push(json!({
@@ -370,12 +370,12 @@ impl OpenAiResponsesAdapter {
                                 "type": "function_call",
                                 "call_id": tc.id,
                                 "name": tc.name,
-                                "arguments": tc.arguments
+                                "arguments": tc.args_to_wire()
                             }));
                         }
                     }
                 }
-                LlmRole::Tool => {
+                CanonicalRole::Tool => {
                     items.push(json!({
                         "type": "function_call_output",
                         "call_id": m.tool_call_id.unwrap_or_default(),
@@ -409,7 +409,7 @@ impl OpenAiResponsesAdapter {
 
     fn build_request_body(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> ResponsesRequest {
@@ -421,7 +421,7 @@ impl OpenAiResponsesAdapter {
     /// environment variables.
     fn build_request_body_with_mode(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
         web_search_mode: WebSearchMode,
@@ -499,10 +499,13 @@ impl OpenAiResponsesAdapter {
                 }
                 Some("function_call") => {
                     if let Some(name) = item.name {
-                        tool_calls.push(ToolCall {
+                        tool_calls.push(CanonicalToolCall {
                             id: item.call_id.or(item.id).unwrap_or_default(),
                             name,
-                            arguments: item.arguments.unwrap_or_default(),
+                            arguments: item
+                                .arguments
+                                .map(|a| CanonicalToolCall::from_wire_args(&a))
+                                .unwrap_or(Value::Null),
                         });
                     }
                 }
@@ -559,7 +562,7 @@ impl OpenAiResponsesAdapter {
 
     async fn chat_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
@@ -593,7 +596,7 @@ impl OpenAiResponsesAdapter {
 
     async fn chat_stream_inner(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let body = self.build_request_body(messages, tools, true);
@@ -633,14 +636,11 @@ impl OpenAiResponsesAdapter {
         struct UnfoldState {
             rx: mpsc::UnboundedReceiver<String>,
             done: bool,
-            /// Function calls accumulated per item id; flushed in the final chunk.
-            tool_calls: Vec<(String, ToolCall)>,
+            /// Function calls accumulated per item id; flushed in the final
+            /// chunk. Tuple: (lookup key for argument deltas, resolved call
+            /// id, name, raw argument JSON fragments parsed at flush time).
+            tool_calls: Vec<(String, String, String, String)>,
             accumulated_text: String,
-            /// Reasoning (thinking-mode) deltas, accumulated across
-            /// `response.reasoning_text.delta` events. Flushed on the final
-            /// chunk so the response can echo it back to the provider (see
-            /// `convert_input`).
-            accumulated_reasoning: String,
             last_model: Option<String>,
             finish_reason: Option<FinishReason>,
             usage: Option<Usage>,
@@ -658,7 +658,6 @@ impl OpenAiResponsesAdapter {
                 done: false,
                 tool_calls: Vec::new(),
                 accumulated_text: String::new(),
-                accumulated_reasoning: String::new(),
                 last_model: None,
                 finish_reason: None,
                 usage: None,
@@ -675,18 +674,21 @@ impl OpenAiResponsesAdapter {
                         let chunk = if !state.saw_completed && !state.accumulated_text.is_empty() {
                             Err(LlmError::StreamTruncated)
                         } else {
-                            let reasoning = if state.accumulated_reasoning.is_empty() {
-                                None
-                            } else {
-                                Some(state.accumulated_reasoning.clone())
-                            };
                             Ok(StreamChunk {
                                 text: None,
-                                tool_calls: state.tool_calls.drain(..).map(|(_, tc)| tc).collect(),
+                                tool_calls: state
+                                    .tool_calls
+                                    .drain(..)
+                                    .map(|(_, id, name, args)| CanonicalToolCall {
+                                        id,
+                                        name,
+                                        arguments: CanonicalToolCall::from_wire_args(&args),
+                                    })
+                                    .collect(),
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
-                                reasoning,
+                                reasoning: None,
                                 web_search: None,
                                 web_search_calls: state.web_search_calls.drain(..).collect(),
                             })
@@ -707,19 +709,26 @@ impl OpenAiResponsesAdapter {
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::ReasoningTextDelta { delta }) => {
-                        if let Some(d) = delta {
-                            state.accumulated_reasoning.push_str(&d);
-                        }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
+                        // Forward each reasoning delta live so the UI can render
+                        // thinking while it streams (matches the chat-completions
+                        // adapter's per-delta `reasoning_content`); the router
+                        // aggregates the deltas into the final response for the
+                        // provider echo-back (`convert_input`).
+                        if let Some(d) = delta {
+                            chunk.reasoning = Some(d);
+                        }
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::FunctionCallArgsDelta { item_id, delta }) => {
                         if let (Some(id), Some(d)) = (item_id, delta)
-                            && let Some((_, tc)) =
-                                state.tool_calls.iter_mut().find(|(tid, _)| tid == &id)
+                            && let Some((_, _, _, args)) = state
+                                .tool_calls
+                                .iter_mut()
+                                .find(|(tid, _, _, _)| tid == &id)
                         {
-                            tc.arguments.push_str(&d);
+                            args.push_str(&d);
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
@@ -734,11 +743,9 @@ impl OpenAiResponsesAdapter {
                                     if let Some(id) = item.id.clone() {
                                         state.tool_calls.push((
                                             id,
-                                            ToolCall {
-                                                id: item.call_id.or(item.id).unwrap_or_default(),
-                                                name: item.name.unwrap_or_default(),
-                                                arguments: item.arguments.unwrap_or_default(),
-                                            },
+                                            item.call_id.or(item.id).unwrap_or_default(),
+                                            item.name.unwrap_or_default(),
+                                            item.arguments.unwrap_or_default(),
                                         ));
                                     }
                                 }
@@ -826,19 +833,22 @@ impl OpenAiResponsesAdapter {
                             }
                         }
                         state.done = true;
-                        let reasoning = if state.accumulated_reasoning.is_empty() {
-                            None
-                        } else {
-                            Some(state.accumulated_reasoning.clone())
-                        };
                         Some((
                             Ok(StreamChunk {
                                 text: None,
-                                tool_calls: state.tool_calls.drain(..).map(|(_, tc)| tc).collect(),
+                                tool_calls: state
+                                    .tool_calls
+                                    .drain(..)
+                                    .map(|(_, id, name, args)| CanonicalToolCall {
+                                        id,
+                                        name,
+                                        arguments: CanonicalToolCall::from_wire_args(&args),
+                                    })
+                                    .collect(),
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
-                                reasoning,
+                                reasoning: None,
                                 web_search: None,
                                 web_search_calls: state.web_search_calls.drain(..).collect(),
                             }),
@@ -882,13 +892,13 @@ impl LlmClient for OpenAiResponsesAdapter {
         "openai-responses"
     }
 
-    async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+    async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, Vec::new(), false).await
     }
 
     async fn chat_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_inner(messages, tools, false).await
@@ -896,14 +906,14 @@ impl LlmClient for OpenAiResponsesAdapter {
 
     async fn chat_stream(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
     async fn chat_stream_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
@@ -977,16 +987,16 @@ mod tests {
     #[test]
     fn convert_input_extracts_instructions() {
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::System,
+            CanonicalMessage {
+                role: CanonicalRole::System,
                 content: vec![ContentPart::text("you are helpful")],
                 tool_call_id: None,
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::User,
+            CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hello")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -1008,20 +1018,20 @@ mod tests {
     #[test]
     fn convert_input_function_call_and_output() {
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::Assistant,
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
                 content: vec![ContentPart::text("let me check")],
                 tool_call_id: None,
-                tool_calls: Some(vec![ToolCall {
+                tool_calls: Some(vec![CanonicalToolCall {
                     id: "call_1".into(),
                     name: "file".into(),
-                    arguments: r#"{"operation":"read"}"#.into(),
+                    arguments: serde_json::json!({"operation": "read"}),
                 }]),
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::Tool,
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
                 content: vec![ContentPart::text("result body")],
                 tool_call_id: Some("call_1".into()),
                 tool_calls: None,
@@ -1051,20 +1061,20 @@ mod tests {
         // reasoning item must be emitted before the function_call item, in
         // the same position the provider produced it.
         let msgs = vec![
-            LlmMessage {
-                role: LlmRole::Assistant,
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
                 content: vec![ContentPart::text("let me check")],
                 tool_call_id: None,
-                tool_calls: Some(vec![ToolCall {
+                tool_calls: Some(vec![CanonicalToolCall {
                     id: "call_1".into(),
                     name: "file".into(),
-                    arguments: r#"{"operation":"read"}"#.into(),
+                    arguments: serde_json::json!({"operation": "read"}),
                 }]),
                 reasoning: Some("  I should read the file first.  ".into()),
                 web_search_calls: Vec::new(),
             },
-            LlmMessage {
-                role: LlmRole::Tool,
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
                 content: vec![ContentPart::text("result body")],
                 tool_call_id: Some("call_1".into()),
                 tool_calls: None,
@@ -1097,8 +1107,8 @@ mod tests {
             "{}END-MARKER",
             "thinking step. ".repeat(OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS + 500)
         );
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("ok")],
             tool_call_id: None,
             tool_calls: None,
@@ -1128,8 +1138,8 @@ mod tests {
 
     #[test]
     fn convert_input_skips_blank_reasoning() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("hi")],
             tool_call_id: None,
             tool_calls: None,
@@ -1146,8 +1156,8 @@ mod tests {
 
     #[test]
     fn convert_input_image_and_audio() {
-        let msgs = vec![LlmMessage {
-            role: LlmRole::User,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::User,
             content: vec![
                 ContentPart::Image {
                     content_type: "image_url".into(),
@@ -1190,8 +1200,8 @@ mod tests {
         };
         let client = OpenAiResponsesAdapter::new(ep);
         let body = client.build_request_body_with_mode(
-            vec![LlmMessage {
-                role: LlmRole::User,
+            vec![CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::text("hi")],
                 tool_call_id: None,
                 tool_calls: None,
@@ -1305,8 +1315,8 @@ mod tests {
         // 400 ("missing field `action`"): the stream's output_item.added
         // skeleton only carries type/id/status, so the fallback fills the
         // internally-tagged-enum action object (search variant + queries).
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("let me search")],
             tool_call_id: None,
             tool_calls: None,
@@ -1345,8 +1355,8 @@ mod tests {
             "action": {"type": "open_page", "url": "https://example.com"},
             "query": "foo"
         });
-        let msgs = vec![LlmMessage {
-            role: LlmRole::Assistant,
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
             content: vec![ContentPart::text("let me search")],
             tool_call_id: None,
             tool_calls: None,

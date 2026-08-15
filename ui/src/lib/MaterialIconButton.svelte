@@ -4,14 +4,16 @@
 	 * @prop {string} label — aria-label
 	 * @prop {'default'|'danger'|'primary'} variant
 	 * @prop {function} onclick
+	 * @prop {boolean} disabled
 	 */
-	let { label = '', variant = 'default', onclick, children } = $props();
+	let { label = '', variant = 'default', onclick, disabled = false, children } = $props();
 </script>
 
 <button
 	class="md-icon-btn"
 	data-variant={variant}
 	aria-label={label}
+	disabled={disabled}
 	onclick={(e) => { e.stopPropagation(); onclick?.(); }}
 >
 	{@render children?.()}
@@ -46,5 +48,10 @@
 	}
 	.md-icon-btn[data-variant='primary']:hover {
 		background: var(--md-sys-color-primary-container);
+	}
+	.md-icon-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+		pointer-events: none;
 	}
 </style>

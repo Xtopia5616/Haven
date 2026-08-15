@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -540,6 +541,27 @@ impl SkillsEngine {
         let g = self.inner.read().await;
         Self::resolve_root(g.root.as_deref())
     }
+
+    /// Cheap fingerprint of the skills directory: for every `<root>/<skill>/`
+    /// entry holding a `SKILL.md`, record `(path, mtime, length)`. Detects
+    /// added / removed / modified skills without reading file contents. Used
+    /// by the auto-refresh watcher to know when a rescan is worth doing.
+    pub async fn folder_signature(&self) -> Vec<(PathBuf, SystemTime, u64)> {
+        let root = self.resolved_root().await;
+        let mut sig = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let skill_md = entry.path().join("SKILL.md");
+                if let Ok(meta) = std::fs::metadata(&skill_md)
+                    && let Ok(mtime) = meta.modified()
+                {
+                    sig.push((skill_md, mtime, meta.len()));
+                }
+            }
+        }
+        sig.sort();
+        sig
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +778,53 @@ mod tests {
     // -----------------------------------------------------------------------
     // SkillsEngine
     // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn engine_folder_signature_tracks_changes() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let eng = SkillsEngine::new();
+        eng.set_config(Some(dir.clone()), None).await.unwrap();
+
+        // Empty folder → empty signature.
+        assert!(eng.folder_signature().await.is_empty());
+
+        write_skill(
+            &dir,
+            "a",
+            "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
+            false,
+        );
+        let sig1 = eng.folder_signature().await;
+        assert_eq!(sig1.len(), 1);
+
+        // Modified SKILL.md (different length) → signature changes.
+        write_skill(
+            &dir,
+            "a",
+            "# Skill: a\n## Metadata\n- description: a much longer description\n## Instructions\ni\n",
+            false,
+        );
+        let sig2 = eng.folder_signature().await;
+        assert_ne!(sig1, sig2);
+
+        // Added skill → signature gains an entry.
+        write_skill(
+            &dir,
+            "b",
+            "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
+            false,
+        );
+        let sig3 = eng.folder_signature().await;
+        assert_eq!(sig3.len(), 2);
+
+        // Removed skill → signature loses the entry.
+        std::fs::remove_dir_all(dir.join("a")).unwrap();
+        let sig4 = eng.folder_signature().await;
+        assert_eq!(sig4.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn engine_refresh_and_query() {

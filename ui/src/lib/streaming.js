@@ -1,14 +1,14 @@
 // Pure helpers for live-stream accumulation of assistant thought/reasoning
-// messages. Extracted from +page.svelte so the sentence-boundary split and
-// full-text snap reconciliation can be unit-tested without a DOM.
+// messages. Extracted from +page.svelte so the accumulation and full-text
+// snap reconciliation can be unit-tested without a DOM.
 //
-// Thought chunks stream into per-sentence segments: when a chunk completes a
-// sentence (ends with 。！？…!?; and not inside an unclosed code fence), the
-// current message is finalized (streaming:false, segmented:true) and the next
-// chunk opens a fresh segment (id `${baseId}-${N}`). The authoritative
-// `agent:thought` snap then collapses every segment into a single message
-// containing the full step text, so the final answer renders as one bubble no
-// matter where the chunk boundaries happened to land.
+// Thought and reasoning chunks stream into ONE message per step — no
+// sentence splitting. Splitting produced several bubbles mid-stream that
+// only merged after the authoritative `agent:thought` snap arrived, so the
+// streaming view visibly disagreed with the final result. The snap still
+// reconciles the step's final text, and the full-text reasoning reconcile
+// repairs characters lost to batcher drops, so the last bubble always
+// matches the persisted message.
 
 // ── Step / tool id factories ──────────────────────────────────────────────
 // Single source of truth for the streaming ids. Every event handler builds
@@ -24,15 +24,15 @@ export const toolId = (sessionId, stepNumber, runId, callIdOrName) =>
 	`${stepId('tool', sessionId, stepNumber, runId)}-${callIdOrName}`;
 
 /**
- * Finalize every streaming block belonging to a step: the reasoning block,
- * the thought block, and any thought sentence-segments. Clearing `segmented`
- * drops straggler chunks that flush out of the batcher after the event.
- * Shared by the silent and visible `agent:action` branches.
+ * Finalize every streaming block belonging to a step: the reasoning block
+ * and the thought block. Shared by the silent and visible `agent:action`
+ * branches. Finalized blocks drop straggler chunks that flush out of the
+ * batcher after the event.
  */
 export function finalizeStreamBlocks(messages, reasoningId, thoughtId) {
 	return messages.map((x) =>
 		(x.id === reasoningId || x.id === thoughtId || x.id.startsWith(thoughtId + '-'))
-			? { ...x, streaming: false, segmented: false }
+			? { ...x, streaming: false }
 			: x
 	);
 }
@@ -68,16 +68,6 @@ export function newToolMessage({
 	};
 }
 
-const SENTENCE_END_RE = /[。！？…!?;；]$/;
-
-function isSentenceEnd(delta) {
-	return !!delta && SENTENCE_END_RE.test(delta);
-}
-
-function inUnclosedFence(content) {
-	return ((content.match(/```/g) || []).length % 2) !== 0;
-}
-
 export function thoughtSegmentIds(messages, baseId) {
 	return messages
 		.filter((x) => x.id === baseId || x.id.startsWith(baseId + '-'))
@@ -85,7 +75,7 @@ export function thoughtSegmentIds(messages, baseId) {
 }
 
 // Streaming blocks always live at the tail of the conversation (or just in
-// front of the step's own thought segments), so scanning backwards finds a
+// front of the step's own thought message), so scanning backwards finds a
 // unique step id in O(tail-distance) instead of O(whole list) — a full
 // forward scan per chunk would cost O(n) on every batched flush of a long
 // conversation. The id is unique, so direction never changes the result.
@@ -100,7 +90,6 @@ function newStreamMessage({
 	id,
 	content,
 	streaming = true,
-	segmented = false,
 	msgType = undefined,
 	stepNumber = null,
 	time = '',
@@ -114,7 +103,6 @@ function newStreamMessage({
 		stepNumber,
 		time,
 		streaming,
-		segmented,
 	};
 }
 
@@ -128,148 +116,58 @@ export function accumulateStreamChunk(messages, opts) {
 	const { stepId, stepIdPrefix, delta, msgType, stepNumber, time } = opts;
 	if (!delta) return messages;
 
-	if (stepIdPrefix !== 'thought') {
-		// Reasoning: one block per step, no sentence splitting.
-		const idx = lastIndexById(messages, stepId);
-		if (idx >= 0) {
-			const curr = messages[idx].content || '';
-			// Finalized reasoning normally rejects new deltas — except the
-			// backend's authoritative reconciliation chunk, which carries the
-			// complete reasoning text so the UI can recover characters lost
-			// to batcher drops. It arrives AFTER the stream is finalized (the
-			// backend guarantees it is the last reasoning event for the
-			// step), so detect it by length: a dropped intermediate batch
-			// makes `curr` a prefix-mismatched partial, so a longer full-text
-			// delta is accepted even without the `startsWith` prefix check.
-			// A straggler incremental partial (shorter than the accumulated
-			// text) is still rejected.
-			if (messages[idx].streaming === false) {
-				if (delta.length > curr.length && delta !== curr) {
-					const next = [...messages];
-					next[idx] = { ...next[idx], content: delta };
-					return next;
-				}
-				return messages;
+	// One streaming block per step (reasoning and thought alike): no sentence
+	// splitting, so the bubble never fragments mid-stream.
+	const idx = lastIndexById(messages, stepId);
+	if (idx >= 0) {
+		const curr = messages[idx].content || '';
+		// Finalized blocks normally reject new deltas — except the backend's
+		// authoritative reconciliation chunk, which carries the complete text
+		// so the UI can recover characters lost to batcher drops. It arrives
+		// AFTER the stream is finalized (the backend guarantees it is the
+		// last reasoning event for the step), so detect it by length: a
+		// dropped intermediate batch makes `curr` a prefix-mismatched
+		// partial, so a longer full-text delta is accepted even without the
+		// `startsWith` prefix check. A straggler incremental partial (shorter
+		// than the accumulated text) is still rejected.
+		if (messages[idx].streaming === false) {
+			if (delta.length > curr.length && delta !== curr) {
+				const next = [...messages];
+				next[idx] = { ...next[idx], content: delta };
+				return next;
 			}
-			const content = delta.startsWith(curr) ? delta : curr + delta;
-			const next = [...messages];
-			next[idx] = { ...next[idx], content, streaming: true };
-			return next;
+			return messages;
 		}
-		// Interleaved providers may stream reasoning AFTER the thought text
-		// already started (text first, thinking later). Appending at the end
-		// would render Thinking... below the answer until the snap finally
-		// reorders it — a visible jump. Insert in front of the same step's
-		// first thought segment so the order is stable the whole way through.
-		const thoughtBase = `thought${stepId.slice(stepIdPrefix.length)}`;
-		const insertAt = messages.findIndex(
-			(x) => x.id === thoughtBase || x.id.startsWith(thoughtBase + '-'),
-		);
-		const newMsg = newStreamMessage({ id: stepId, content: delta, msgType, stepNumber, time });
-		if (insertAt < 0) return [...messages, newMsg];
+		// Some providers echo the WHOLE text with every chunk instead of
+		// sending incremental deltas; comparing against the accumulated text
+		// detects the echo and replaces instead of concatenating garbage.
+		const content = delta.startsWith(curr) ? delta : curr + delta;
 		const next = [...messages];
-		next.splice(insertAt, 0, newMsg);
+		next[idx] = { ...next[idx], content, streaming: true };
 		return next;
 	}
-
-	const segIds = thoughtSegmentIds(messages, stepId);
-	if (segIds.length === 0) {
-		// The very first chunk may already complete a sentence — finalize it
-		// immediately, otherwise it would stay open until the next boundary.
-		const ended = isSentenceEnd(delta) && !inUnclosedFence(delta);
-		return [
-			...messages,
-			newStreamMessage({
-				id: stepId,
-				content: delta,
-				streaming: !ended,
-				segmented: ended,
-				msgType,
-				stepNumber,
-				time,
-			}),
-		];
-	}
-
-	const lastIdx = lastIndexById(messages, segIds[segIds.length - 1]);
-	const last = messages[lastIdx];
+	// Interleaved providers may stream reasoning AFTER the thought text
+	// already started (text first, thinking later). Appending at the end
+	// would render Thinking... below the answer until the snap finally
+	// reorders it — a visible jump. Insert in front of the same step's
+	// thought message so the order is stable the whole way through.
+	const thoughtBase = `thought${stepId.slice(stepIdPrefix.length)}`;
+	const insertAt = messages.findIndex(
+		(x) => x.id === thoughtBase || x.id.startsWith(thoughtBase + '-'),
+	);
+	const newMsg = newStreamMessage({ id: stepId, content: delta, msgType, stepNumber, time });
+	if (insertAt < 0) return [...messages, newMsg];
 	const next = [...messages];
-
-	// Cumulative providers echo the WHOLE text with every chunk. After a
-	// sentence-boundary split the stream is multiple segments, so compare
-	// against the concatenation of all segments — not just the last one,
-	// which would misdetect an echo (e.g. `A。B。C` vs last `B`) and
-	// concatenate it into garbage (`BA。B。C`). When the delta extends the
-	// full content, collapse every segment into one message carrying the
-	// echoed text and resume streaming in place.
-	const byId = new Map(messages.map((x) => [x.id, x]));
-	const fullContent = segIds.map((id) => byId.get(id)?.content ?? '').join('');
-	if (fullContent && delta.startsWith(fullContent) && delta.length > fullContent.length) {
-		const firstSegIdx = messages.findIndex((x) => segIds.includes(x.id));
-		const rest = messages.filter((x) => !segIds.includes(x.id));
-		rest.splice(
-			firstSegIdx,
-			0,
-			newStreamMessage({
-				id: stepId,
-				content: delta,
-				streaming: true,
-				segmented: false,
-				msgType,
-				stepNumber,
-				time,
-			}),
-		);
-		return rest;
-	}
-
-	if (last.streaming === false) {
-		// Finalized by a sentence boundary (segmented) → the next chunk opens
-		// a fresh segment. Finalized by the snap / tool action (segmented
-		// cleared) → drop straggler chunks that flush out of the batcher late.
-		if (!last.segmented) return messages;
-		// Cumulative providers echo the whole text with every chunk — the
-		// boundary-finalize was premature. Resume streaming in place instead
-		// of duplicating the text in a new segment.
-		if (last.content && delta.startsWith(last.content)) {
-			next[lastIdx] = { ...last, content: delta, streaming: true, segmented: false };
-			return next;
-		}
-		// The opening chunk of a new segment may itself complete a sentence.
-		const fullContent = segIds.map((id) => byId.get(id)?.content ?? '').join('');
-		const segEnded = isSentenceEnd(delta) && !inUnclosedFence(fullContent + delta);
-		next.push(
-			newStreamMessage({
-				id: `${stepId}-${segIds.length}`,
-				content: delta,
-				streaming: !segEnded,
-				segmented: segEnded,
-				msgType,
-				stepNumber,
-				time,
-			}),
-		);
-		return next;
-	}
-
-	const curr = last.content || '';
-	// Some non-OpenAI providers send cumulative text per chunk.
-	const cumulative = delta.startsWith(curr);
-	const content = cumulative ? delta : curr + delta;
-	// Sentence boundary → finalize this segment so it is inserted immediately;
-	// the next chunk opens a fresh one.
-	const ended = !cumulative && isSentenceEnd(delta) && !inUnclosedFence(content);
-	next[lastIdx] = { ...last, content, streaming: !ended, segmented: ended || last.segmented };
+	next.splice(insertAt, 0, newMsg);
 	return next;
 }
 
 /**
  * Reconcile the authoritative full step text (`agent:thought`) with the
- * streamed segments: finalize the reasoning block and collapse every
- * sentence-segment into a single message with the full thought text. The
- * merged message carries no `segmented` flag, so any straggler chunk that
- * flushes out of the batcher after the snap is dropped instead of opening a
- * fresh bubble.
+ * streamed message: finalize the reasoning block and replace the thought
+ * message with the complete text. The merged message carries no streaming
+ * flag, so any straggler chunk that flushes out of the batcher after the
+ * snap is dropped instead of reopening the bubble.
  * @param {Array<object>} messages
  * @param {{ stepId: string, reasoningId: string, thought: string, stepNumber: number, time: string }} opts
  * @returns {Array<object>}

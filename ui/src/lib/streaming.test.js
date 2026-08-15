@@ -27,23 +27,17 @@ const snap = (messages, thought, opts = {}) =>
 const last = (messages) => messages[messages.length - 1];
 
 describe('accumulateStreamChunk (thought)', () => {
-	it('creates a streaming message for the first chunk without a boundary', () => {
+	it('creates a streaming message for the first chunk', () => {
 		const out = chunk([], '好的');
 		expect(out).toHaveLength(1);
 		expect(out[0]).toMatchObject({
 			id: STEP_ID,
 			content: '好的',
 			streaming: true,
-			segmented: false,
 		});
 	});
 
-	it('finalizes immediately when the first chunk completes a sentence', () => {
-		const out = chunk([], '好的。');
-		expect(out[0]).toMatchObject({ content: '好的。', streaming: false, segmented: true });
-	});
-
-	it('appends incremental deltas to the open segment', () => {
+	it('appends incremental deltas to the streaming message', () => {
 		let m = chunk([], '好的');
 		m = chunk(m, '，我先');
 		m = chunk(m, '查一下');
@@ -51,75 +45,27 @@ describe('accumulateStreamChunk (thought)', () => {
 		expect(last(m)).toMatchObject({ content: '好的，我先查一下', streaming: true });
 	});
 
-	it('finalizes at a sentence boundary mid-stream', () => {
-		let m = chunk([], '好的');
-		m = chunk(m, '，我先查一下。');
-		expect(last(m)).toMatchObject({ content: '好的，我先查一下。', streaming: false, segmented: true });
-	});
-
-	it('opens a new segment when the next chunk arrives after a boundary', () => {
-		let m = chunk([], '好的。');
-		m = chunk(m, '今天20度');
-		expect(m).toHaveLength(2);
-		expect(m[1]).toMatchObject({
-			id: `${STEP_ID}-1`,
-			content: '今天20度',
-			streaming: true,
-			segmented: false,
-		});
-	});
-
-	it('finalizes the opening chunk of a new segment when it ends a sentence', () => {
+	it('never splits into separate bubbles at sentence boundaries', () => {
+		// Regression: sentence-completing chunks used to finalize the message
+		// and open a new segment, so the answer showed as several bubbles
+		// while streaming and only merged after the snap.
 		let m = chunk([], '好的。');
 		m = chunk(m, '今天20度。');
-		expect(m).toHaveLength(2);
-		expect(m[1]).toMatchObject({ content: '今天20度。', streaming: false, segmented: true });
-	});
-
-	it('keeps segment numbering unique across multiple splits', () => {
-		let m = chunk([], '一。');
-		m = chunk(m, '二。');
-		m = chunk(m, '三');
-		expect(m.map((x) => x.id)).toEqual([STEP_ID, `${STEP_ID}-1`, `${STEP_ID}-2`]);
-	});
-
-	it('does not split inside an unclosed code fence', () => {
-		let m = chunk([], '```js');
-		m = chunk(m, 'console.log("a。")');
-		expect(m).toHaveLength(1);
-		expect(last(m)).toMatchObject({ content: '```jsconsole.log("a。")', streaming: true });
-	});
-
-	it('finalizes at the boundary once the code fence is closed', () => {
-		let m = chunk([], '```js\nx。\n```');
-		expect(last(m)).toMatchObject({ streaming: true });
-		m = chunk(m, '之后的话。');
+		m = chunk(m, '适合出门。');
 		expect(m).toHaveLength(1);
 		expect(last(m)).toMatchObject({
-			content: '```js\nx。\n```之后的话。',
-			streaming: false,
-			segmented: true,
-		});
-	});
-
-	it('drops straggler chunks after a snap finalization', () => {
-		let m = chunk([], '好的。');
-		m = chunk(m, '今天20度');
-		m = snap(m, '好的。今天20度');
-		const before = m;
-		const out = chunk(m, '残留');
-		expect(out).toBe(before);
-	});
-
-	it('resumes streaming in place when a cumulative echo follows a boundary', () => {
-		let m = chunk([], '好的。');
-		const out = chunk(m, '好的。今天20度。');
-		expect(out).toHaveLength(1);
-		expect(out[0]).toMatchObject({
-			content: '好的。今天20度。',
+			id: STEP_ID,
+			content: '好的。今天20度。适合出门。',
 			streaming: true,
-			segmented: false,
 		});
+	});
+
+	it('does not split inside a code fence', () => {
+		let m = chunk([], '```js');
+		m = chunk(m, 'console.log("a。")');
+		m = chunk(m, '```');
+		expect(m).toHaveLength(1);
+		expect(last(m)).toMatchObject({ content: '```jsconsole.log("a。")```', streaming: true });
 	});
 
 	it('replaces content for cumulative providers (no splitting)', () => {
@@ -131,60 +77,32 @@ describe('accumulateStreamChunk (thought)', () => {
 		expect(m[0].streaming).toBe(true);
 	});
 
-	it('collapses segments when a cumulative echo follows a sentence split', () => {
-		// After a boundary the stream holds `A。` + `B`. A cumulative
-		// provider then echoes the FULL text `A。B。C` — comparing only
-		// against the last segment (`B`) would concatenate garbage
-		// (`BA。B。C`). All segments must collapse into one message.
-		let m = chunk([], '好的。');
+	it('drops straggler chunks after a snap finalization', () => {
+		let m = chunk([], '好的');
 		m = chunk(m, '今天20度');
-		const out = chunk(m, '好的。今天20度。适合出门');
-		expect(out).toHaveLength(1);
-		expect(out[0]).toMatchObject({
-			id: STEP_ID,
-			content: '好的。今天20度。适合出门',
-			streaming: true,
-			segmented: false,
-		});
+		m = snap(m, '好的今天20度');
+		const before = m;
+		const out = chunk(m, '残留');
+		expect(out).toBe(before);
 	});
 
-	it('collapses segments when a cumulative echo resumes a finalized split', () => {
-		// The split segment was finalized (streaming: false, segmented:
-		// true); the echo reopens it in place with the full text.
-		let m = chunk([], '好的。');
-		m = chunk(m, '今天20度。');
-		const out = chunk(m, '好的。今天20度。适合出门。');
+	it('accepts a full-text reconcile after finalization', () => {
+		// A dropped middle batch leaves the accumulated content a
+		// prefix-MISMATCHED partial of the authoritative text. The final
+		// full-text delta must still replace it (length-based).
+		let m = chunk([], '开头的回答');
+		m = chunk(m, '结尾');
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = chunk(m, '开头的回答，中间被丢掉的内容，结尾');
 		expect(out).toHaveLength(1);
-		expect(out[0]).toMatchObject({
-			id: STEP_ID,
-			content: '好的。今天20度。适合出门。',
-			streaming: true,
-			segmented: false,
-		});
+		expect(out[0].content).toBe('开头的回答，中间被丢掉的内容，结尾');
 	});
 
-	it('keeps reasoning in front when collapsing segments over a cumulative echo', () => {
-		// Same index-mapping class as the original applyThoughtSnap bug: the
-		// collapse splices the merged message at an index computed against
-		// `messages`, applied to `rest` with the segments removed. A
-		// reasoning block sitting before the segments must stay above the
-		// merged answer, not sink below it.
-		let m = chunk([], '好的。');
-		const reasoning = {
-			id: REASONING_ID,
-			role: 'assistant',
-			content: '先想想',
-			streaming: true,
-		};
-		m = [reasoning, ...m];
-		m = chunk(m, '今天20度');
-		const out = chunk(m, '好的。今天20度。适合出门');
-		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
-		expect(out[1]).toMatchObject({
-			content: '好的。今天20度。适合出门',
-			streaming: true,
-			segmented: false,
-		});
+	it('rejects a stale incremental delta after finalization', () => {
+		let m = chunk([], '回答');
+		m = m.map((x) => ({ ...x, streaming: false }));
+		const out = chunk(m, '多余');
+		expect(out).toBe(m);
 	});
 });
 
@@ -255,7 +173,7 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		expect(m[0]).toMatchObject({ id: REASONING_ID, content: '迟到的推理', streaming: true });
 	});
 
-	it('appends a reasoning block when no thought segment exists yet', () => {
+	it('appends a reasoning block when no thought message exists yet', () => {
 		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		const m = accumulateStreamChunk([], { ...base, delta: '先推理' });
 		expect(m).toHaveLength(1);
@@ -264,13 +182,13 @@ describe('accumulateStreamChunk (reasoning)', () => {
 });
 
 describe('applyThoughtSnap', () => {
-	it('creates the message when no segments exist yet', () => {
+	it('creates the message when no streamed thought exists yet', () => {
 		const out = snap([], '完整的回答。');
 		expect(out).toHaveLength(1);
 		expect(out[0]).toMatchObject({ id: STEP_ID, content: '完整的回答。', streaming: false });
 	});
 
-	it('collapses all segments into a single message on snap', () => {
+	it('finalizes and reconciles the streamed thought on snap', () => {
 		let m = chunk([], '好的。');
 		m = chunk(m, '今天20度');
 		const out = snap(m, '好的。今天20度');
@@ -294,7 +212,7 @@ describe('applyThoughtSnap', () => {
 		});
 	});
 
-	it('replaces all segments when the stream diverged (retry/fallback)', () => {
+	it('replaces the streamed text when the stream diverged (retry/fallback)', () => {
 		let m = chunk([], '坏掉的尝试');
 		m = chunk(m, '重试的完整回答。');
 		const out = snap(m, '重试的完整回答。');
@@ -325,8 +243,8 @@ describe('applyThoughtSnap', () => {
 
 	it('moves a trailing reasoning block in front of the merged thought', () => {
 		// Interleaved providers may stream reasoning AFTER the thought
-		// segments (text first). The snap must not leave the final order
-		// as [answer, Thinking...].
+		// (text first). The snap must not leave the final order as
+		// [answer, Thinking...].
 		let m = chunk([], '回答文字。');
 		const reasoning = {
 			id: REASONING_ID,
@@ -355,7 +273,7 @@ describe('applyThoughtSnap', () => {
 	});
 
 	it('keeps the user question before the reasoning (does not jump above it)', () => {
-		// Reported bug: with [user, reasoning, thought-seg], the off-by-one
+		// Reported bug: with [user, reasoning, thought], the off-by-one
 		// insertion pushed thinking ABOVE the user question.
 		const user = { id: 'user-1', role: 'user', content: '问题' };
 		const reasoning = {
@@ -372,7 +290,7 @@ describe('applyThoughtSnap', () => {
 
 	it('keeps a tool card in order when collapsing a later step', () => {
 		// A prior tool card must not sink below the merged thought/reasoning
-		// when a subsequent step's segments are collapsed.
+		// when a subsequent step's message is collapsed.
 		const user = { id: 'user-1', role: 'user', content: '问题' };
 		const reasoning = {
 			id: REASONING_ID,
@@ -397,7 +315,7 @@ describe('applyThoughtSnap', () => {
 });
 
 describe('thoughtSegmentIds', () => {
-	it('matches the base id and its numbered segments only', () => {
+	it('matches the base id and its numbered children only', () => {
 		const m = [
 			{ id: 'thought-t-1-0' },
 			{ id: 'thought-t-1-0-1' },
@@ -434,18 +352,18 @@ describe('stepId / toolId factories', () => {
 });
 
 describe('finalizeStreamBlocks', () => {
-	it('finalizes reasoning, thought, and thought segments; leaves others alone', () => {
+	it('finalizes reasoning and thought blocks; leaves others alone', () => {
 		const m = [
 			{ id: 'reasoning-t-1-0', streaming: true },
-			{ id: 'thought-t-1-0', streaming: true, segmented: true },
-			{ id: 'thought-t-1-0-1', streaming: true, segmented: true },
+			{ id: 'thought-t-1-0', streaming: true },
+			{ id: 'thought-t-1-0-1', streaming: true },
 			{ id: 'thought-t-2-0', streaming: true },
 			{ id: 'm1', streaming: true },
 		];
 		const out = finalizeStreamBlocks(m, 'reasoning-t-1-0', 'thought-t-1-0');
-		expect(out.find((x) => x.id === 'reasoning-t-1-0')).toMatchObject({ streaming: false, segmented: false });
-		expect(out.find((x) => x.id === 'thought-t-1-0')).toMatchObject({ streaming: false, segmented: false });
-		expect(out.find((x) => x.id === 'thought-t-1-0-1')).toMatchObject({ streaming: false, segmented: false });
+		expect(out.find((x) => x.id === 'reasoning-t-1-0')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'thought-t-1-0')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'thought-t-1-0-1')).toMatchObject({ streaming: false });
 		expect(out.find((x) => x.id === 'thought-t-2-0')).toMatchObject({ streaming: true });
 		expect(out.find((x) => x.id === 'm1')).toMatchObject({ streaming: true });
 	});

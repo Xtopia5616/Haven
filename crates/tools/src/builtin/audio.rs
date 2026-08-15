@@ -1,11 +1,34 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
+use haven_input::InputPipeline;
 use serde_json::Value;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-pub struct AudioTool;
+/// Default capture window when the LLM omits `duration`.
+const DEFAULT_RECORD_SECS: f64 = 10.0;
+/// Hard cap: the microphone belongs to the user first, and a runaway tool
+/// call must not monopolize it (the pipeline's own `max_duration_secs`
+/// config still applies as a final bound).
+const MAX_RECORD_SECS: f64 = 60.0;
+
+/// Play or record audio. `record` captures through the shared input pipeline
+/// (same engine/STT as user voice input) and returns the transcription;
+/// `play` is not yet implemented (no playback engine exists).
+pub struct AudioTool {
+    /// Shared capture/STT pipeline. `None` in headless/test contexts where
+    /// recording is unavailable; the `record` operation then fails cleanly.
+    pipeline: Option<Arc<InputPipeline>>,
+}
+
+impl AudioTool {
+    pub fn new(pipeline: Option<Arc<InputPipeline>>) -> Self {
+        Self { pipeline }
+    }
+}
 
 #[async_trait]
 impl Tool for AudioTool {
@@ -14,7 +37,10 @@ impl Tool for AudioTool {
     }
 
     fn description(&self) -> String {
-        "Play or record audio on the system".into()
+        "Play or record audio on the system: `record` captures a clip through \
+         the microphone, transcribes it with the configured STT provider and \
+         returns the text"
+            .into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -39,7 +65,7 @@ impl Tool for AudioTool {
                 },
                 "duration": {
                     "type": "number",
-                    "description": "Recording duration in seconds"
+                    "description": "Recording duration in seconds (default 10, max 60)"
                 },
                 "text": {
                     "type": "string",
@@ -51,9 +77,73 @@ impl Tool for AudioTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let _ = input;
-        let _ = cancel;
-        Err(anyhow::anyhow!("audio tool not yet implemented"))
+        match input["operation"].as_str() {
+            Some("record") => self.record(&input, cancel).await,
+            Some("play") => Err(anyhow::anyhow!("audio tool: play is not yet implemented")),
+            _ => Err(anyhow::anyhow!(
+                "audio tool: unknown operation, expected \"record\" or \"play\""
+            )),
+        }
+    }
+}
+
+impl AudioTool {
+    /// Capture for `duration` seconds via the shared input pipeline, run STT
+    /// and return the transcript. Never disturbs the user-facing recording
+    /// UI: the pipeline's timed mode skips VAD auto-stop and handler
+    /// notifications, and a user recording in flight is reported as an error.
+    async fn record(&self, input: &Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let Some(pipeline) = &self.pipeline else {
+            return Err(anyhow::anyhow!(
+                "audio tool: recording is unavailable in this context"
+            ));
+        };
+        if !pipeline.recording_configured().await {
+            return Err(anyhow::anyhow!(
+                "audio tool: STT is not configured; enable an STT provider to record audio"
+            ));
+        }
+        let duration = input["duration"]
+            .as_f64()
+            .unwrap_or(DEFAULT_RECORD_SECS)
+            .clamp(1.0, MAX_RECORD_SECS);
+        match pipeline.get_state().await {
+            haven_input::RecordingState::Recording => {
+                return Err(anyhow::anyhow!(
+                    "audio tool: a recording is already in progress, try again later"
+                ));
+            }
+            haven_input::RecordingState::Processing => {
+                return Err(anyhow::anyhow!(
+                    "audio tool: the previous recording is still processing, try again shortly"
+                ));
+            }
+            haven_input::RecordingState::Pending => {}
+        }
+
+        let mut result = tokio::select! {
+            r = pipeline.record_for(Duration::from_secs_f64(duration)) => r.map_err(|e| {
+                anyhow::anyhow!("audio tool: recording failed: {e}")
+            })?,
+            _ = cancel.cancelled() => {
+                // Release the microphone promptly; the partial capture is
+                // discarded (nothing was delivered to the agent).
+                let _ = pipeline.stop_capture().await;
+                return Err(anyhow::anyhow!("audio tool: recording cancelled"));
+            }
+        };
+        pipeline.transcribe(&mut result).await;
+
+        if let Some(text) = result.transcript.filter(|t| !t.trim().is_empty()) {
+            return Ok(ToolResult::ok(serde_json::json!({
+                "transcript": text,
+                "duration_ms": result.duration_ms,
+            })));
+        }
+        let detail = result
+            .transcript_error
+            .unwrap_or_else(|| "no speech detected in the recording".into());
+        Err(anyhow::anyhow!("audio tool: {detail}"))
     }
 }
 
@@ -65,30 +155,30 @@ mod tests {
 
     #[test]
     fn test_audio_tool_name() {
-        assert_eq!(AudioTool.name(), "audio");
+        assert_eq!(AudioTool::new(None).name(), "audio");
     }
 
     #[test]
     fn test_audio_tool_description() {
-        assert!(AudioTool.description().contains("audio"));
+        assert!(AudioTool::new(None).description().contains("audio"));
     }
 
     #[test]
     fn test_audio_tool_risk_level() {
         assert_eq!(
-            AudioTool.risk_level(&json!({"operation": "play"})),
+            AudioTool::new(None).risk_level(&json!({"operation": "play"})),
             RiskLevel::Low
         );
         assert_eq!(
-            AudioTool.risk_level(&json!({"operation": "record"})),
+            AudioTool::new(None).risk_level(&json!({"operation": "record"})),
             RiskLevel::Medium
         );
-        assert_eq!(AudioTool.risk_level(&json!({})), RiskLevel::Low);
+        assert_eq!(AudioTool::new(None).risk_level(&json!({})), RiskLevel::Low);
     }
 
     #[test]
     fn test_audio_tool_input_schema() {
-        let schema = AudioTool.input_schema();
+        let schema = AudioTool::new(None).input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let enum_vals = schema["properties"]["operation"]["enum"]
             .as_array()
@@ -105,8 +195,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_audio_execute_not_implemented() {
-        let result = AudioTool
+    async fn test_audio_execute_play_not_implemented() {
+        let result = AudioTool::new(None)
             .execute(
                 json!({"operation": "play", "file_path": "x.wav"}),
                 CancellationToken::new(),
@@ -117,12 +207,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_audio_execute_cancelled_still_not_implemented() {
+    async fn test_audio_execute_record_without_pipeline() {
+        let result = AudioTool::new(None)
+            .execute(json!({"operation": "record"}), CancellationToken::new())
+            .await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_execute_cancelled_record_without_pipeline() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = AudioTool
+        let result = AudioTool::new(None)
             .execute(json!({"operation": "record"}), cancel)
             .await;
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_execute_unknown_operation() {
+        let result = AudioTool::new(None)
+            .execute(json!({"operation": "record_x"}), CancellationToken::new())
+            .await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unknown operation"));
     }
 }

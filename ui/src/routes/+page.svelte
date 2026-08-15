@@ -1154,9 +1154,9 @@
 					const tid = data.session_id;
 					const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
 					const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
-					// The authoritative snap collapses the streamed segments:
-					// apply any queued chunks first so no delta is left to
-					// accumulate onto the collapsed message afterwards.
+					// The authoritative snap reconciles the streamed text: apply
+					// any queued chunks first so no delta is left to accumulate
+					// onto the finalized message afterwards.
 					flushChunksNow();
 					pruneSeq(thoughtId);
 					pruneSeq(reasoningId);
@@ -1266,7 +1266,7 @@
 					updateSessionMessages(tid, (m) => {
 						// Finalize any streaming reasoning and thought blocks —
 						// a tool action means the text/reasoning phase is over.
-						// Clearing `segmented` drops straggler chunks that flush
+						// Finalized blocks drop straggler chunks that flush
 						// out of the batcher after this event.
 						const fixed = finalizeStreamBlocks(m, reasoningId, thoughtId);
 						const existing = fixed.find((x) => x.id === toolMsgId);

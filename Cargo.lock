@@ -2043,8 +2043,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
+ "chrono",
  "futures-util",
  "haven-common",
+ "haven-gateway",
  "haven-llm",
  "haven-memory",
  "haven-session",
@@ -2068,6 +2071,7 @@ dependencies = [
  "chrono",
  "haven-agent",
  "haven-common",
+ "haven-gateway",
  "haven-input",
  "haven-llm",
  "haven-memory",
@@ -2103,6 +2107,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "haven-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "encoding_rs",
+ "futures-util",
+ "haven-common",
+ "haven-llm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "haven-input"
 version = "0.1.0"
 dependencies = [
@@ -2127,12 +2148,14 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "futures-util",
  "haven-common",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
@@ -2186,6 +2209,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "haven-common",
+ "haven-input",
  "haven-llm",
  "haven-memory",
  "ignore",

@@ -1,5 +1,4 @@
 use crate::db::Database;
-use crate::repositories::messages::Message;
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 
@@ -52,21 +51,6 @@ impl FactSourceRef {
             snippet,
         }
     }
-}
-
-/// A fact extracted by the rule-based inference engine, before it is
-/// persisted to the database.
-#[derive(Debug, Clone)]
-pub struct InferredFact {
-    pub subject: String,
-    pub predicate: String,
-    pub object: String,
-    pub confidence: f64,
-    pub tags: Vec<String>,
-    /// 0..1 durability rating assigned by the rule (identity rules are
-    /// durable, transient preference rules less so).
-    pub durability: f64,
-    pub source_ref: Option<FactSourceRef>,
 }
 
 /// What `upsert_fact` did with an extracted fact.
@@ -141,6 +125,26 @@ pub fn is_identity_predicate(predicate: &str) -> bool {
         predicate.to_ascii_lowercase().as_str(),
         "name" | "birthday" | "email" | "phone" | "city" | "country" | "timezone"
     )
+}
+
+/// Canonical form for a fact predicate: trimmed + lowercase + alias mapping.
+/// Every write path (inference persistence, `set_user_fact`, the facts tool)
+/// normalizes so the same concept arriving under different spellings merges
+/// into ONE row instead of fanning out — `Workspace` and `workspace_path`
+/// and `project_location` all become `project_path`, keeping single-valued
+/// constraints (and decay rules) effective across sources.
+pub fn normalize_predicate(predicate: &str) -> String {
+    let p = predicate.trim().to_ascii_lowercase();
+    match p.as_str() {
+        "workspace" | "workspace_path" | "project_location" | "working_directory"
+        | "working_dir" => "project_path".into(),
+        "employer" | "company_name" => "works_at".into(),
+        "favorite_language" | "preferred_language" => "language".into(),
+        "preferred_verbosity" | "verbosity_level" => "verbosity".into(),
+        "preferred_shell" | "shell_choice" => "shell".into(),
+        "os_name" | "operating_system" => "os".into(),
+        _ => p,
+    }
 }
 
 /// Predicates that change over time (paths, employers, tooling): these decay
@@ -246,18 +250,6 @@ fn sort_facts_effective(facts: &mut [Fact]) {
     }
 }
 
-/// Map a predicate to a default tag set used by the inference engine.
-fn tags_for_predicate(predicate: &str) -> Vec<String> {
-    match predicate {
-        "likes" | "dislikes" | "uses" | "language" | "verbosity" => {
-            vec!["preference".into()]
-        }
-        "project_path" => vec!["workspace".into()],
-        "name" | "works_at" => vec!["identity".into()],
-        _ => vec![],
-    }
-}
-
 /// Predicate names that must never be stored as (or shown from) user facts:
 /// API keys, tokens, passwords and other credentials.
 pub fn is_sensitive_predicate(predicate: &str) -> bool {
@@ -316,7 +308,10 @@ impl Database {
     }
 
     /// Insert a fact with an optional reference to the message it came from
-    /// and an explicit durability rating (0..1).
+    /// and an explicit durability rating (0..1). The predicate is normalized
+    /// to its canonical form ([`Self::normalize_predicate`] via
+    /// [`normalize_predicate`]) so the same concept from any source merges
+    /// into one row.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_fact_with_source_ref(
         &self,
@@ -329,6 +324,7 @@ impl Database {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<Fact> {
+        let predicate = normalize_predicate(predicate);
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
@@ -355,7 +351,7 @@ impl Database {
         Ok(Fact {
             id,
             subject: subject.into(),
-            predicate: predicate.into(),
+            predicate,
             object: object.into(),
             source: source.into(),
             confidence,
@@ -392,6 +388,7 @@ impl Database {
         object: &str,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
+        let predicate = normalize_predicate(predicate);
         let triple_exists: Option<Fact> = {
             let conn = self.conn();
             conn.query_row(
@@ -440,7 +437,7 @@ impl Database {
             fact.last_seen_at = Some(Utc::now().to_rfc3339());
             return Ok(fact);
         }
-        if is_single_valued_predicate(predicate) {
+        if is_single_valued_predicate(&predicate) {
             let conn = self.conn();
             conn.execute(
                 "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
@@ -448,7 +445,7 @@ impl Database {
             )?;
             self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
-        self.insert_fact(subject, predicate, object, "user", 1.0, tags)
+        self.insert_fact(subject, &predicate, object, "user", 1.0, tags)
     }
 
     /// Delete facts by (subject, predicate[, object]) — used by the
@@ -461,6 +458,7 @@ impl Database {
         predicate: &str,
         object: Option<&str>,
     ) -> anyhow::Result<u64> {
+        let predicate = normalize_predicate(predicate);
         let conn = self.conn();
         let deleted = match object {
             Some(obj) => conn.execute(
@@ -548,13 +546,14 @@ impl Database {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<UpsertOutcome> {
+        let predicate = normalize_predicate(predicate);
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
         // §P2: polarity conflict — "likes X" and "dislikes X" contradict each
         // other; the newest observation demotes the opposite-polarity fact so
         // the prompt never shows both. User-stated facts always win: an
         // inferred fact never demotes a user-stated opposite.
-        let opposite = match predicate.to_ascii_lowercase().as_str() {
+        let opposite = match predicate.as_str() {
             "likes" => Some("dislikes"),
             "dislikes" => Some("likes"),
             _ => None,
@@ -604,7 +603,7 @@ impl Database {
                 return Ok(UpsertOutcome::Reinforced);
             }
 
-            if is_single_valued_predicate(predicate) {
+            if is_single_valued_predicate(&predicate) {
                 // A user-stated value is authoritative: never let inference
                 // store a contradicting inferred value alongside it.
                 let has_user_value = conn
@@ -643,13 +642,49 @@ impl Database {
             self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
         let _ = self.insert_fact_with_source_ref(
-            subject, predicate, object, source, confidence, tags, source_ref, durability,
+            subject, &predicate, object, source, confidence, tags, source_ref, durability,
         )?;
         Ok(if corrected {
             UpsertOutcome::Corrected
         } else {
             UpsertOutcome::Inserted
         })
+    }
+
+    /// Fetch a single fact by id. Used by the prompt builder to resolve
+    /// vector-recall hits (`search_embeddings` returns entity ids) back into
+    /// full facts for ranking and rendering.
+    pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
+        let mut rows = stmt.query(rusqlite::params![id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(fact_from_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch multiple facts by id in a single query (input order preserved).
+    /// Used by the prompt builder to resolve a batch of vector-recall hits in
+    /// one round-trip instead of one query per id.
+    pub fn get_facts_by_ids(&self, ids: &[String]) -> anyhow::Result<Vec<Fact>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT {FACT_COLS} FROM facts WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params = rusqlite::params_from_iter(ids.iter().map(|s| s.as_str()));
+        let mut rows = stmt.query(params)?;
+        let mut out = Vec::with_capacity(ids.len());
+        while let Some(row) = rows.next()? {
+            out.push(fact_from_row(row)?);
+        }
+        Ok(out)
     }
 
     pub fn get_facts(&self, subject: &str) -> anyhow::Result<Vec<Fact>> {
@@ -1005,326 +1040,15 @@ impl Database {
         self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(count)
     }
-
-    /// Extract and clean the object that follows a trigger phrase at byte
-    /// offset `from` in the ORIGINAL-cased message. Splits at sentence
-    /// punctuation, strips trailing fluff phrases (preference rules only),
-    /// caps the length, and rejects degenerate values (empty / too short).
-    /// Returns `None` when nothing usable follows the phrase.
-    fn extract_object(content_orig: &str, from: usize, strip_fluff: bool) -> Option<String> {
-        let mut obj = content_orig[from..]
-            .split(['.', ',', '!', '?', ';', '\n'])
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        // Strip trailing punctuation that survived the sentence split.
-        while let Some(c) = obj.chars().last() {
-            if matches!(c, '.' | ',' | '!' | '?' | ';' | ':') {
-                obj.pop();
-            } else {
-                break;
-            }
-        }
-        if strip_fluff {
-            // Repeated confirmation fillers inflate preference objects
-            // ("I like Rust programming very much."). Strip the trailing
-            // phrase instead of storing it as part of the liked thing.
-            let mut changed = true;
-            while changed {
-                changed = false;
-                for phrase in [
-                    " very much",
-                    " a lot",
-                    " as well",
-                    " all the time",
-                    " at all",
-                    " too",
-                    " now",
-                    " actually",
-                ] {
-                    if obj.to_lowercase().ends_with(phrase) {
-                        obj.truncate(obj.len() - phrase.len());
-                        changed = true;
-                    }
-                }
-            }
-            obj = obj.trim().to_string();
-        }
-        if obj.chars().count() < 2 || obj.chars().count() > 80 {
-            return None;
-        }
-        Some(obj)
-    }
-
-    /// Extract a filesystem path that follows a trigger phrase. Unlike
-    /// [`Self::extract_object`], the object is cut at the path itself: the
-    /// first `/` or `\` (optionally preceded by a drive letter like `C:`) is
-    /// the start, and the first whitespace after it is the end — so
-    /// "my project at /home/user/app works fine." yields `/home/user/app`
-    /// instead of capturing the whole sentence. When no path separator is
-    /// present (e.g. "my workspace is here") it falls back to the general
-    /// object extraction.
-    fn extract_path_object(content_orig: &str, from: usize) -> Option<String> {
-        let raw = content_orig[from..]
-            .split(['.', ',', '!', '?', ';', '\n'])
-            .next()
-            .unwrap_or("")
-            .trim();
-        if raw.is_empty() {
-            return None;
-        }
-        // No path separator: fall back to the general object extraction
-        // ("my workspace is tidy" still yields a usable object).
-        let sep_idx = match raw.find(['/', '\\']) {
-            Some(i) => i,
-            None => return Self::extract_object(content_orig, from, false),
-        };
-        // Keep the drive letter when the separator follows one ("D:\...").
-        let start = if sep_idx >= 2
-            && raw.as_bytes()[sep_idx - 1] == b':'
-            && raw.as_bytes()[sep_idx - 2].is_ascii_alphanumeric()
-        {
-            sep_idx - 2
-        } else {
-            sep_idx
-        };
-        let path = raw[start..].split_whitespace().next().unwrap_or("");
-        if path.chars().count() < 2 {
-            return None;
-        }
-        Some(path.to_string())
-    }
-
-    pub fn infer_facts_from_messages(&self, messages: &[Message]) -> Vec<InferredFact> {
-        let mut facts: Vec<InferredFact> = Vec::new();
-        let mut corrected_predicates: Vec<String> = Vec::new();
-
-        for msg in messages {
-            let content = msg.content.to_lowercase();
-            let content_orig = &msg.content;
-            // Every rule-built fact points back at the message it came from.
-            let source_ref = || Some(FactSourceRef::from_message(&msg.id, &msg.content));
-
-            // Rule 1: "I like/love/prefer X" -> ("user", "likes", "X", 0.9)
-            for pattern in &["i like ", "i love ", "i prefer ", "my favorite "] {
-                if let Some(idx) = content.find(pattern)
-                    && let Some(obj) = Self::extract_object(content_orig, idx + pattern.len(), true)
-                {
-                    facts.push(InferredFact {
-                        subject: "user".into(),
-                        predicate: "likes".into(),
-                        object: obj,
-                        confidence: 0.9,
-                        tags: tags_for_predicate("likes"),
-                        durability: 0.5,
-                        source_ref: source_ref(),
-                    });
-                }
-            }
-
-            // Rule 2: "I don't like / I hate X" -> ("user", "dislikes", "X", 0.8)
-            for pattern in &["i don't like ", "i hate ", "i dislike "] {
-                if let Some(idx) = content.find(pattern)
-                    && let Some(obj) = Self::extract_object(content_orig, idx + pattern.len(), true)
-                {
-                    facts.push(InferredFact {
-                        subject: "user".into(),
-                        predicate: "dislikes".into(),
-                        object: obj,
-                        confidence: 0.8,
-                        tags: tags_for_predicate("dislikes"),
-                        durability: 0.5,
-                        source_ref: source_ref(),
-                    });
-                }
-            }
-
-            // Rule 3: "my project at /path" -> ("user", "project_path", "/path", 0.7)
-            let path_patterns = [
-                "my project at ",
-                "my project is at ",
-                "my project is in ",
-                "my code is at ",
-                "my workspace is ",
-            ];
-            for pattern in &path_patterns {
-                if let Some(idx) = content.find(pattern)
-                    && let Some(obj) = Self::extract_path_object(content_orig, idx + pattern.len())
-                {
-                    facts.push(InferredFact {
-                        subject: "user".into(),
-                        predicate: "project_path".into(),
-                        object: obj,
-                        confidence: 0.7,
-                        tags: tags_for_predicate("project_path"),
-                        durability: 0.7,
-                        source_ref: source_ref(),
-                    });
-                }
-            }
-
-            // Rule 4: "actually I prefer Y" -> correction: lower confidence of existing facts with same predicate
-            if content.contains("actually")
-                && (content.contains("prefer")
-                    || content.contains("use")
-                    || content.contains("want"))
-            {
-                corrected_predicates.push("likes".into());
-            }
-
-            // Rule 5: "my name is X" or "I am X" -> ("user", "name", "X", 0.85)
-            for pattern in &["my name is ", "i am ", "call me ", "i'm ", "i am called "] {
-                if let Some(idx) = content.find(pattern) {
-                    let after = &content[idx + pattern.len()..];
-                    let stop_words = ["looking", "trying", "going", "using", "working", "doing"];
-                    let first_word = after.split_whitespace().next().unwrap_or("");
-                    if !stop_words.contains(&first_word) {
-                        // Names are short: cap at 4 words, no fluff strip.
-                        let obj = Self::extract_object(content_orig, idx + pattern.len(), false)
-                            .filter(|o| o.split_whitespace().count() <= 4);
-                        if let Some(obj) = obj {
-                            facts.push(InferredFact {
-                                subject: "user".into(),
-                                predicate: "name".into(),
-                                object: obj,
-                                confidence: 0.85,
-                                tags: tags_for_predicate("name"),
-                                durability: 1.0,
-                                source_ref: source_ref(),
-                            });
-                        }
-                    }
-                }
-            }
-
-            // Rule 6: "I use X" -> ("user", "uses", "X", 0.7)
-            if let Some(idx) = content.find("i use ")
-                && let Some(obj) = Self::extract_object(content_orig, idx + 6, false)
-            {
-                facts.push(InferredFact {
-                    subject: "user".into(),
-                    predicate: "uses".into(),
-                    object: obj,
-                    confidence: 0.7,
-                    tags: tags_for_predicate("uses"),
-                    durability: 0.6,
-                    source_ref: source_ref(),
-                });
-            }
-
-            // Rule 7: "I work at/for X" -> ("user", "works_at", "X", 0.75)
-            for pattern in &["i work at ", "i work for ", "i work in "] {
-                if let Some(idx) = content.find(pattern)
-                    && let Some(obj) =
-                        Self::extract_object(content_orig, idx + pattern.len(), false)
-                {
-                    facts.push(InferredFact {
-                        subject: "user".into(),
-                        predicate: "works_at".into(),
-                        object: obj,
-                        confidence: 0.75,
-                        tags: tags_for_predicate("works_at"),
-                        durability: 0.7,
-                        source_ref: source_ref(),
-                    });
-                }
-            }
-
-            // Rule 8: preferred language -> ("user", "language", "X", 0.75).
-            // Single-valued: a newer statement replaces the previous one via
-            // the upsert machinery (user-stated values stay authoritative).
-            for pattern in &["i speak ", "my language is ", "respond in "] {
-                if let Some(idx) = content.find(pattern)
-                    && let Some(obj) =
-                        Self::extract_object(content_orig, idx + pattern.len(), false)
-                {
-                    facts.push(InferredFact {
-                        subject: "user".into(),
-                        predicate: "language".into(),
-                        object: obj,
-                        confidence: 0.75,
-                        tags: tags_for_predicate("language"),
-                        durability: 0.8,
-                        source_ref: source_ref(),
-                    });
-                }
-            }
-
-            // Rule 9: output verbosity -> ("user", "verbosity", "concise"|"detailed", 0.6)
-            if content.contains("be concise")
-                || content.contains("keep it short")
-                || content.contains("brief")
-            {
-                facts.push(InferredFact {
-                    subject: "user".into(),
-                    predicate: "verbosity".into(),
-                    object: "concise".into(),
-                    confidence: 0.6,
-                    tags: tags_for_predicate("verbosity"),
-                    durability: 0.8,
-                    source_ref: source_ref(),
-                });
-            }
-            if content.contains("be detailed")
-                || content.contains("explain in detail")
-                || content.contains("thorough")
-            {
-                facts.push(InferredFact {
-                    subject: "user".into(),
-                    predicate: "verbosity".into(),
-                    object: "detailed".into(),
-                    confidence: 0.6,
-                    tags: tags_for_predicate("verbosity"),
-                    durability: 0.8,
-                    source_ref: source_ref(),
-                });
-            }
-        }
-
-        // Lower confidence of corrected facts
-        if !corrected_predicates.is_empty() {
-            let conn = self.conn();
-            for pred in &corrected_predicates {
-                let _ = conn.execute(
-                    "UPDATE facts SET confidence = confidence * 0.5 WHERE subject = 'user' AND predicate = ?1 AND source = 'inferred'",
-                    rusqlite::params![pred],
-                );
-            }
-            // The raw UPDATEs above bypass the repository methods: invalidate
-            // the text caches (the demoted confidence must be reflected in
-            // prompts/recall) and the embeddings list cache (each UPDATE
-            // fires facts_embed_upd, which deletes the embedding rows).
-            self.cache_invalidate_facts("user");
-            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        }
-
-        facts
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{FactSourceRef, UpsertOutcome, fact_effective_confidence};
     use crate::Database;
-    use crate::embeddings::entity_kind;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
-    }
-
-    fn make_message(content: &str) -> crate::repositories::messages::Message {
-        crate::repositories::messages::Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            session_id: "t1".into(),
-            role: "user".into(),
-            content: content.into(),
-            message_type: Some("text".into()),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            tool_call_id: None,
-            attachments: vec![],
-            voice: false,
-        }
     }
 
     #[test]
@@ -1455,10 +1179,13 @@ mod tests {
         let results = db.search_facts("nonexistent").unwrap();
         assert!(results.is_empty());
 
-        // FTS5 token matching: "likes" matches the likes predicate but not
-        // the substring inside "dislikes".
+        // trigram tokenizer is substring-based: "likes" matches both the
+        // likes predicate and the "likes" inside "dislikes" (the price of CJK
+        // substring support; BM25 ranking decides the order between them).
         let results = db.search_facts("likes").unwrap();
-        assert_eq!(results.len(), 1);
+        assert_eq!(results.len(), 2);
+        let preds: Vec<&str> = results.iter().map(|f| f.predicate.as_str()).collect();
+        assert!(preds.contains(&"likes") && preds.contains(&"dislikes"));
     }
 
     #[test]
@@ -1698,6 +1425,33 @@ mod tests {
     }
 
     #[test]
+    fn test_predicate_normalization_merges_aliases() {
+        let db = create_db();
+        // Alias spellings collapse onto the canonical predicate...
+        db.set_user_fact("user", "Workspace", "D:/dev/app", &["workspace"])
+            .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].predicate, "project_path");
+        // ...so the single-valued constraint replaces, not duplicates, and a
+        // differently-spelled delete still removes the row.
+        db.set_user_fact("user", "workspace_path", "D:/dev/other", &["workspace"])
+            .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].object, "D:/dev/other");
+        let deleted = db
+            .delete_facts_by_triple("user", "project_location", Some("D:/dev/other"))
+            .unwrap();
+        assert_eq!(deleted, 1);
+        // upsert path normalizes too.
+        db.upsert_fact("user", "Employer", "Acme", "inferred", 0.9, &[], None)
+            .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts[0].predicate, "works_at");
+    }
+
+    #[test]
     fn test_delete_facts_by_triple_object_and_predicate() {
         let db = create_db();
         db.insert_fact("user", "uses", "VSCode", "user", 1.0, &["preference"])
@@ -1871,344 +1625,6 @@ mod tests {
         age_facts(&db, 2);
         assert_eq!(db.flush_low_confidence(0.3).unwrap(), 1);
         assert!(db.list_facts().unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_infer_rule_likes() {
-        let db = create_db();
-        let msgs = vec![make_message("I like Rust programming very much.")];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].subject, "user");
-        assert_eq!(facts[0].predicate, "likes");
-        assert_eq!(facts[0].object, "Rust programming");
-        assert_eq!(facts[0].confidence, 0.9);
-        assert_eq!(facts[0].tags, vec!["preference"]);
-    }
-
-    #[test]
-    fn test_infer_rule_likes_strips_fluff_phrases() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("I like dark themes a lot."),
-            make_message("I love Rust too."),
-            make_message("I prefer concise answers as well."),
-            make_message("I like plain text."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 4);
-        assert_eq!(facts[0].object, "dark themes");
-        assert_eq!(facts[1].object, "Rust");
-        assert_eq!(facts[2].object, "concise answers");
-        assert_eq!(facts[3].object, "plain text");
-    }
-
-    #[test]
-    fn test_infer_rule_rejects_degenerate_objects() {
-        let db = create_db();
-        // Two-char minimum: "I hate ." and "I like x." (1-char object) are
-        // both rejected; only the 2+ char object survives.
-        let msgs = vec![
-            make_message("I hate ."),
-            make_message("I like x."),
-            make_message("I like Go."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].predicate, "likes");
-        assert_eq!(facts[0].object, "Go");
-    }
-
-    #[test]
-    fn test_infer_rule_likes_variants() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("I love TypeScript."),
-            make_message("I prefer dark themes."),
-            make_message("My favorite language is Go."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 3);
-        for f in &facts {
-            assert_eq!(f.predicate, "likes");
-            assert_eq!(f.confidence, 0.9);
-            assert_eq!(f.tags, vec!["preference"]);
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_dislikes() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("I don't like Java at all."),
-            make_message("I hate slow builds."),
-            make_message("I dislike complicated configs."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 3);
-        for f in &facts {
-            assert_eq!(f.predicate, "dislikes");
-            assert_eq!(f.confidence, 0.8);
-            assert_eq!(f.tags, vec!["preference"]);
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_project_path() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("my project at /home/user/myapp works fine."),
-            make_message("my project is at /workspace/backend"),
-            make_message("my code is at /Users/dev/src"),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 3);
-        for f in &facts {
-            assert_eq!(f.predicate, "project_path");
-            assert_eq!(f.confidence, 0.7);
-            assert_eq!(f.tags, vec!["workspace"]);
-        }
-        assert_eq!(facts[0].object, "/home/user/myapp");
-        assert_eq!(facts[1].object, "/workspace/backend");
-        assert_eq!(facts[2].object, "/Users/dev/src");
-    }
-
-    #[test]
-    fn test_infer_rule_project_path_windows_and_preposition() {
-        let db = create_db();
-        let msgs = vec![
-            // Windows drive path keeps the drive letter.
-            make_message("my workspace is D:\\Workspace\\Haven"),
-            // A stray preposition before the path is not captured.
-            make_message("my project is at /opt/tools and it works"),
-            // No path separator: falls back to the general object rule.
-            make_message("my workspace is tidy"),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        let objects: Vec<&str> = facts.iter().map(|f| f.object.as_str()).collect();
-        assert!(objects.contains(&"D:\\Workspace\\Haven"));
-        assert!(objects.contains(&"/opt/tools"));
-        assert!(objects.contains(&"tidy"));
-    }
-
-    #[test]
-    fn test_infer_rule_name() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("my name is Alice Johnson."),
-            make_message("I am Bob"),
-            make_message("call me Charlie."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 3);
-        for f in &facts {
-            assert_eq!(f.predicate, "name");
-            assert_eq!(f.confidence, 0.85);
-            assert_eq!(f.tags, vec!["identity"]);
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_name_skips_action_words() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("I am looking for a new laptop."),
-            make_message("I am trying to fix the build."),
-            make_message("I am working on a feature."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        for f in &facts {
-            assert_ne!(f.predicate, "name");
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_uses() {
-        let db = create_db();
-        let msgs = vec![make_message("I use VSCode for development.")];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].predicate, "uses");
-        assert_eq!(facts[0].object, "VSCode for development");
-        assert_eq!(facts[0].confidence, 0.7);
-        assert_eq!(facts[0].tags, vec!["preference"]);
-    }
-
-    #[test]
-    fn test_infer_rule_works_at() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("I work at Acme Corp since last year."),
-            make_message("I work for Tech Inc."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 2);
-        for f in &facts {
-            assert_eq!(f.predicate, "works_at");
-            assert_eq!(f.confidence, 0.75);
-            assert_eq!(f.tags, vec!["identity"]);
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_language() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("I speak Chinese."),
-            make_message("My language is English"),
-            make_message("Please respond in 中文."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert_eq!(facts.len(), 3);
-        for f in &facts {
-            assert_eq!(f.subject, "user");
-            assert_eq!(f.predicate, "language");
-            assert_eq!(f.confidence, 0.75);
-            assert_eq!(f.tags, vec!["preference"]);
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_verbosity() {
-        let db = create_db();
-        let msgs = vec![
-            make_message("Please be concise and keep it short."),
-            make_message("Be thorough and explain in detail."),
-        ];
-        let facts = db.infer_facts_from_messages(&msgs);
-        let concise: Vec<_> = facts
-            .iter()
-            .filter(|f| f.predicate == "verbosity" && f.object == "concise")
-            .collect();
-        let detailed: Vec<_> = facts
-            .iter()
-            .filter(|f| f.predicate == "verbosity" && f.object == "detailed")
-            .collect();
-        assert_eq!(concise.len(), 1);
-        assert_eq!(detailed.len(), 1);
-        for f in facts.iter().filter(|f| f.predicate == "verbosity") {
-            assert_eq!(f.confidence, 0.6);
-            assert_eq!(f.tags, vec!["preference"]);
-        }
-    }
-
-    #[test]
-    fn test_infer_rule_language_verbosity_single_valued_upsert() {
-        let db = create_db();
-        let msg = make_message("I speak Chinese.");
-        for f in db.infer_facts_from_messages(std::slice::from_ref(&msg)) {
-            let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
-            db.upsert_fact(
-                &f.subject,
-                &f.predicate,
-                &f.object,
-                "inferred",
-                f.confidence,
-                &tags,
-                f.source_ref.as_ref(),
-            )
-            .unwrap();
-        }
-        // A newer statement replaces the earlier value instead of coexisting.
-        let msg2 = make_message("My language is English.");
-        for f in db.infer_facts_from_messages(std::slice::from_ref(&msg2)) {
-            let tags: Vec<&str> = f.tags.iter().map(|s| s.as_str()).collect();
-            db.upsert_fact(
-                &f.subject,
-                &f.predicate,
-                &f.object,
-                "inferred",
-                f.confidence,
-                &tags,
-                f.source_ref.as_ref(),
-            )
-            .unwrap();
-        }
-        let languages: Vec<_> = db
-            .get_facts("user")
-            .unwrap()
-            .into_iter()
-            .filter(|f| f.predicate == "language")
-            .collect();
-        // Single-valued predicates demote (halve) superseded inferred values
-        // instead of deleting them — same mechanism as project_path.
-        assert_eq!(languages.len(), 2);
-        let english = languages.iter().find(|f| f.object == "English").unwrap();
-        let chinese = languages.iter().find(|f| f.object == "Chinese").unwrap();
-        assert!(english.confidence > chinese.confidence);
-        assert!(
-            (chinese.confidence - 0.375).abs() < 1e-9,
-            "old inferred language must be demoted, got {}",
-            chinese.confidence
-        );
-    }
-
-    #[test]
-    fn test_infer_rule_correction_lowers_confidence() {
-        let db = create_db();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
-            .unwrap();
-        db.insert_fact("user", "likes", "Python", "inferred", 0.8, &["preference"])
-            .unwrap();
-
-        let msgs = vec![make_message("actually I prefer Go now.")];
-        let facts = db.infer_facts_from_messages(&msgs);
-        assert!(!facts.is_empty());
-
-        let updated = db.get_facts("user").unwrap();
-        for f in &updated {
-            if f.predicate == "likes" && f.source == "inferred" {
-                assert!(f.confidence < 0.9, "confidence should be lowered");
-            }
-        }
-    }
-
-    #[test]
-    fn test_rule_correction_demotion_invalidates_caches() {
-        let db = create_db();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &["preference"])
-            .unwrap();
-        let fact = db.get_facts("user").unwrap().remove(0);
-        db.save_embedding(entity_kind::FACT, &fact.id, "m", &[1.0], "x")
-            .unwrap();
-        // Warm both caches.
-        let _ = db.list_facts().unwrap();
-        let _ = db.list_embeddings(entity_kind::FACT).unwrap();
-
-        // Rule 4 fires (actually + want) but no extraction rule matches, so
-        // the batch is empty — the demotion UPDATE is the only mutation and
-        // must invalidate the caches on its own.
-        let msg = make_message("Actually I want a different tool.");
-        let inferred = db.infer_facts_from_messages(std::slice::from_ref(&msg));
-        assert!(
-            inferred.is_empty(),
-            "correction-only message emits no facts"
-        );
-
-        let facts = db.list_facts().unwrap();
-        assert!(
-            (facts[0].confidence - 0.45).abs() < 1e-9,
-            "demoted confidence must be visible (no stale _facts_all cache), got {}",
-            facts[0].confidence
-        );
-        assert!(
-            db.list_embeddings(entity_kind::FACT).unwrap().is_empty(),
-            "demotion UPDATE fires facts_embed_upd; the list cache must not keep serving the deleted vector"
-        );
-    }
-
-    #[test]
-    fn test_infer_multiple_rules_from_message() {
-        let db = create_db();
-        let msgs = vec![make_message(
-            "I like Rust. I use VSCode. I work at Acme. My name is Dave.",
-        )];
-        let facts = db.infer_facts_from_messages(&msgs);
-        let predicates: Vec<&str> = facts.iter().map(|f| f.predicate.as_str()).collect();
-        assert!(predicates.contains(&"likes"));
-        assert!(predicates.contains(&"uses"));
-        assert!(predicates.contains(&"works_at"));
-        assert!(predicates.contains(&"name"));
     }
 
     #[test]
@@ -2539,20 +1955,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rule_inference_carries_source_ref() {
-        let db = create_db();
-        let msg = make_message("I work at Acme Corp since last year.");
-        let inferred = db.infer_facts_from_messages(std::slice::from_ref(&msg));
-        assert_eq!(inferred.len(), 1);
-        let src = inferred[0]
-            .source_ref
-            .as_ref()
-            .expect("rule facts carry a source reference");
-        assert_eq!(src.message_id, msg.id);
-        assert!(src.snippet.contains("Acme"));
-    }
-
-    #[test]
     fn test_effective_confidence_decays_volatile_but_not_identity() {
         let db = create_db();
         db.insert_fact("user", "name", "Alice", "user", 1.0, &["identity"])
@@ -2784,16 +2186,5 @@ mod tests {
         let remaining = db.list_facts().unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].object, "Durable");
-    }
-
-    #[test]
-    fn test_rule_extraction_carries_durability() {
-        let db = create_db();
-        let msg = make_message("My name is Alice. I like Rust.");
-        let inferred = db.infer_facts_from_messages(std::slice::from_ref(&msg));
-        let name = inferred.iter().find(|f| f.predicate == "name").unwrap();
-        let likes = inferred.iter().find(|f| f.predicate == "likes").unwrap();
-        assert_eq!(name.durability, 1.0);
-        assert_eq!(likes.durability, 0.5);
     }
 }

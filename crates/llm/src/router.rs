@@ -9,7 +9,7 @@ use crate::adapters::adapter_for;
 use crate::client::{LlmClient, with_retry};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
 use crate::types::{
-    ContentPart, Embedding, FinishReason, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk,
+    CanonicalMessage, ContentPart, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
     ToolDefinition, Usage,
 };
 use futures_util::StreamExt;
@@ -41,7 +41,7 @@ const IDLE_SCALE_CAP_SECS: u64 = 90;
 /// audio part, tool-call arguments and echoed reasoning included). Only
 /// used to scale stream idle timeouts — exact counting is the provider's
 /// task.
-fn estimate_prompt_tokens(messages: &[LlmMessage]) -> u64 {
+fn estimate_prompt_tokens(messages: &[CanonicalMessage]) -> u64 {
     let mut total: u64 = 0;
     for m in messages {
         for part in &m.content {
@@ -55,11 +55,31 @@ fn estimate_prompt_tokens(messages: &[LlmMessage]) -> u64 {
         }
         if let Some(calls) = &m.tool_calls {
             for c in calls {
-                total += (c.arguments.chars().count() as u64) / 4;
+                // Serialize into a counting sink: the arguments are JSON
+                // `Value`s and this runs per step, so a temporary String is
+                // pure allocation for a length probe.
+                let mut counter = CountingWriter(0);
+                let _ = serde_json::to_writer(&mut counter, &c.arguments);
+                total += (counter.0 as u64) / 4;
             }
         }
     }
     total
+}
+
+/// Byte-counting `io::Write` sink used by [`estimate_prompt_tokens`] to
+/// measure serialized JSON length without allocating.
+struct CountingWriter(usize);
+
+impl std::io::Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Scale a base stream idle timeout by the estimated prompt size of the
@@ -67,7 +87,7 @@ fn estimate_prompt_tokens(messages: &[LlmMessage]) -> u64 {
 /// `IDLE_SCALE_CAP_SECS` total. The first-chunk grace already tolerates a
 /// slow prefill, so this targets the mid-stream data gaps that long
 /// contexts make slower.
-fn scale_stream_idle(base: Duration, messages: &[LlmMessage]) -> Duration {
+fn scale_stream_idle(base: Duration, messages: &[CanonicalMessage]) -> Duration {
     let base_secs = base.as_secs();
     let est_tokens = estimate_prompt_tokens(messages);
     let extra_secs = (est_tokens / 1_000).saturating_mul(IDLE_EXTRA_SECS_PER_1K_TOKENS);
@@ -709,7 +729,7 @@ impl LlmRouter {
     async fn call_with_retry_and_balanced_model(
         &self,
         primary: Arc<dyn LlmClient>,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         role: &EndpointRole,
     ) -> Result<LlmResponse, LlmError> {
@@ -787,7 +807,7 @@ impl LlmRouter {
     pub async fn chat(
         &self,
         role: EndpointRole,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<LlmResponse, LlmError> {
         self.with_endpoint_permit(&role, || async {
             self.check_circuit(&role).await?;
@@ -813,23 +833,9 @@ impl LlmRouter {
     ) -> Result<LlmResponse, LlmError> {
         let mut messages = Vec::with_capacity(if system.is_empty() { 1 } else { 2 });
         if !system.is_empty() {
-            messages.push(LlmMessage {
-                role: LlmRole::System,
-                content: vec![ContentPart::text(system)],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-            });
+            messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
         }
-        messages.push(LlmMessage {
-            role: LlmRole::User,
-            content: vec![ContentPart::text(user)],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        });
+        messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
         self.chat(role, messages).await
     }
 
@@ -895,7 +901,7 @@ impl LlmRouter {
     pub async fn chat_with_tools(
         &self,
         role: EndpointRole,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.with_endpoint_permit(&role, || async {
@@ -913,7 +919,7 @@ impl LlmRouter {
     pub async fn chat_stream(
         &self,
         role: EndpointRole,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<
         std::pin::Pin<
             Box<
@@ -965,7 +971,7 @@ impl LlmRouter {
     pub async fn chat_stream_with_tools_aggregated(
         &self,
         role: EndpointRole,
-        messages: &[LlmMessage],
+        messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
     ) -> Result<LlmResponse, LlmError> {
@@ -991,7 +997,7 @@ impl LlmRouter {
     pub async fn chat_stream_with_tools_aggregated_cancellable(
         &self,
         role: EndpointRole,
-        messages: &[LlmMessage],
+        messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
@@ -1012,7 +1018,7 @@ impl LlmRouter {
     async fn retry_stream_with_guidance(
         &self,
         primary: &Arc<dyn LlmClient>,
-        messages: &[LlmMessage],
+        messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         on_chunk: &Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
         cancel: CancellationToken,
@@ -1035,14 +1041,7 @@ impl LlmRouter {
         // providers (system must lead the request) and is merged
         // into the top-level system field by Anthropic/Gemini,
         // losing its position. A User message is legal anywhere.
-        retry_msgs.push(LlmMessage {
-            role: LlmRole::User,
-            content: vec![ContentPart::text(inject)],
-            tool_call_id: None,
-            tool_calls: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-        });
+        retry_msgs.push(CanonicalMessage::user_text(inject));
         Self::aggregate_stream_cancellable(
             primary.clone(),
             retry_msgs,
@@ -1058,7 +1057,7 @@ impl LlmRouter {
     async fn chat_stream_with_tools_aggregated_cancellable_inner(
         &self,
         role: EndpointRole,
-        messages: &[LlmMessage],
+        messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
@@ -1240,7 +1239,7 @@ impl LlmRouter {
 
     async fn aggregate_stream_cancellable(
         client: Arc<dyn LlmClient>,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
         cancel: CancellationToken,
@@ -1522,14 +1521,14 @@ mod tests {
     use super::*;
     use crate::stream_rules::StreamRuleMode;
     use crate::types::LlmError::Unknown;
-    use crate::{ToolCall, Usage};
+    use crate::{CanonicalToolCall, Usage};
     use async_trait::async_trait;
     use futures_util::stream;
     use std::pin::Pin;
 
-    fn llm_message(content: Vec<ContentPart>) -> LlmMessage {
-        LlmMessage {
-            role: LlmRole::User,
+    fn llm_message(content: Vec<ContentPart>) -> CanonicalMessage {
+        CanonicalMessage {
+            role: haven_common::types::CanonicalRole::User,
             content,
             tool_call_id: None,
             tool_calls: None,
@@ -1595,10 +1594,10 @@ mod tests {
             media_type: "image/png".into(),
             data: "base64".into(),
         });
-        msg.tool_calls = Some(vec![ToolCall {
+        msg.tool_calls = Some(vec![CanonicalToolCall {
             id: "call-1".into(),
             name: "shell".into(),
-            arguments: "{\"cmd\":\"echo hi\"}".into(),
+            arguments: serde_json::json!({"cmd": "echo hi"}),
         }]);
         msg.reasoning = Some("reasoning text".repeat(100));
         let tokens = estimate_prompt_tokens(&[msg]);
@@ -1614,7 +1613,7 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for MockStreamClient {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             if self.fail_chat {
                 Err(Unknown("mock: chat failed".into()))
             } else {
@@ -1631,7 +1630,7 @@ mod tests {
         }
         async fn chat_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             if self.fail_chat {
@@ -1650,7 +1649,7 @@ mod tests {
         }
         async fn chat_stream(
             &self,
-            _messages: Vec<LlmMessage>,
+            _messages: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1663,7 +1662,7 @@ mod tests {
         }
         async fn chat_stream_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -1735,12 +1734,12 @@ mod tests {
         struct MockEmbedClient;
         #[async_trait]
         impl LlmClient for MockEmbedClient {
-            async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+            async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
                 Err(LlmError::Unknown("mock: no chat".into()))
             }
             async fn chat_stream(
                 &self,
-                _: Vec<LlmMessage>,
+                _: Vec<CanonicalMessage>,
             ) -> Result<
                 Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
                 LlmError,
@@ -1780,12 +1779,12 @@ mod tests {
         struct FailingEmbed;
         #[async_trait]
         impl LlmClient for FailingEmbed {
-            async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+            async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
                 Err(LlmError::Unknown("mock: no chat".into()))
             }
             async fn chat_stream(
                 &self,
-                _: Vec<LlmMessage>,
+                _: Vec<CanonicalMessage>,
             ) -> Result<
                 Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
                 LlmError,
@@ -1839,10 +1838,10 @@ mod tests {
             }),
             Ok(StreamChunk {
                 text: None,
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc_1".into(),
                     name: "file".into(),
-                    arguments: "{\"operation\":\"read\",\"path\":\".\"}".into(),
+                    arguments: serde_json::json!({"operation": "read", "path": "."}),
                 }],
                 finish_reason: None,
                 usage: None,
@@ -1920,19 +1919,19 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for SlowStreamClient {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(Unknown("mock: no chat".into()))
         }
         async fn chat_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             Err(Unknown("mock: no chat_with_tools".into()))
         }
         async fn chat_stream(
             &self,
-            _messages: Vec<LlmMessage>,
+            _messages: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1941,7 +1940,7 @@ mod tests {
         }
         async fn chat_stream_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -2520,7 +2519,7 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for ConcurrencyProbe {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             let now = self
                 .concurrent
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -2542,7 +2541,7 @@ mod tests {
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -2604,14 +2603,14 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for AlwaysRateLimited {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(LlmError::RateLimit {
                 retry_after: Some(Duration::from_millis(300)),
             })
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,

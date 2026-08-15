@@ -79,16 +79,24 @@ pub async fn resolve_confirmation(
     // (under the executor's sessions lock). This avoids the previous race where
     // the resolution and a separate `list_sessions()` lookup could observe a
     // step that a concurrent `end_session`/rollback had already removed.
-    let risk_level = state
+    let resolution = state
         .executor
         .resolve_confirmation(&step_id.into(), confirmed)
         .await
         .map_err(|e| log_err("resolve_confirmation", e))?;
     if trust_session.unwrap_or(false)
         && confirmed
-        && let Some(level) = risk_level
+        && let Some((level, session_id)) = resolution
     {
-        state.tools.safety_gateway.trust_risk_level(level).await;
+        // Trust is recorded per conversation: it is scoped to the session that
+        // actually owns this confirmation (from the wait, not the caller), so
+        // an approval can never leak into other conversations. A None session
+        // (background task without a conversation) records nothing.
+        state
+            .tools
+            .safety_gateway
+            .trust_risk_level(session_id.as_deref(), level)
+            .await;
     }
     Ok(())
 }

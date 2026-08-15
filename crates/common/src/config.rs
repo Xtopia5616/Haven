@@ -412,6 +412,13 @@ pub struct ContextLimitsConfig {
     pub partial_checkpoint_interval_secs: u64,
     /// Steps between mid-session fact re-inference runs.
     pub fact_infer_interval_steps: u32,
+    /// Min wall-clock seconds between LLM fact-extraction calls for a given
+    /// session. Complements `fact_infer_interval_steps` (a step-based gate):
+    /// rapid message turns are throttled to at most one extraction per
+    /// interval, while the maintenance pass keeps memory consistent
+    /// regardless. The extraction cursor is untouched by a throttled skip,
+    /// so the pending messages are processed on the next allowed run.
+    pub fact_extraction_min_interval_secs: u64,
     /// Max known facts listed in the extraction prompt as context.
     pub max_known_facts: usize,
     /// Max chars of a fact subject/predicate/object field (prompt-injection
@@ -531,6 +538,7 @@ impl Default for ContextLimitsConfig {
             partial_checkpoint_min_chars: 1_000,
             partial_checkpoint_interval_secs: 2,
             fact_infer_interval_steps: 25,
+            fact_extraction_min_interval_secs: 60,
             max_known_facts: 40,
             sanitize_field_max_chars: 256,
             file_summary_timeout_secs: 120,
@@ -607,6 +615,8 @@ impl Default for SecurityConfig {
     }
 }
 
+/// Speech-to-text configuration. Lives under `[media.stt]` (previously the
+/// top-level `[stt]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SttConfig {
@@ -634,6 +644,12 @@ pub struct SttConfig {
     pub base_url: String,
     /// Transcription timeout in seconds.
     pub timeout_secs: u64,
+    /// Minimum transcription confidence (0.0-1.0) for the gateway's
+    /// confidence gate: when the provider reports a lower confidence the
+    /// gateway falls back to the main model. Providers without confidence
+    /// reporting (e.g. OpenAI Whisper) ignore this and fall back on error /
+    /// empty result instead.
+    pub min_confidence: f32,
 }
 
 impl Default for SttConfig {
@@ -645,8 +661,132 @@ impl Default for SttConfig {
             model: String::new(),
             base_url: String::new(),
             timeout_secs: 30,
+            min_confidence: 0.7,
         }
     }
+}
+
+/// OCR (image text extraction) configuration. Lives under `[media.ocr]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OcrConfig {
+    /// OCR provider. One of:
+    /// - `baidu`: Baidu 通用文字识别（标准版）
+    /// - `azure`: Azure AI Vision (Computer Vision 3.2 OCR)
+    /// - `tencent`: Tencent Cloud 通用印刷体识别
+    /// - `none`: no OCR client
+    pub provider: String,
+    /// API key / access token for cloud OCR providers.
+    pub api_key: String,
+    /// Secondary secret where a provider requires one (Baidu secret key).
+    pub api_secret: String,
+    /// Base URL override. Overrides the provider's default host when
+    /// non-empty.
+    pub base_url: String,
+    /// OCR timeout in seconds.
+    pub timeout_secs: u64,
+    /// Minimum recognition confidence (0.0-1.0) for the gateway's
+    /// confidence gate: when the provider reports a lower average
+    /// confidence the gateway falls back to the main model. Providers
+    /// without confidence reporting ignore this and fall back on error /
+    /// empty result instead.
+    pub min_confidence: f32,
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self {
+            provider: "none".into(),
+            api_key: String::new(),
+            api_secret: String::new(),
+            base_url: String::new(),
+            timeout_secs: 20,
+            min_confidence: 0.7,
+        }
+    }
+}
+
+/// Text-to-speech configuration. Lives under `[media.tts]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TtsConfig {
+    /// TTS provider. One of:
+    /// - `openai`: OpenAI `/v1/audio/speech` (tts-1 / tts-1-hd / gpt-4o-mini-tts)
+    /// - `elevenlabs`: ElevenLabs `/v1/text-to-speech/{voice_id}`
+    /// - `none`: no TTS client
+    pub provider: String,
+    pub api_key: String,
+    /// Model id for providers that require one (e.g. `tts-1`,
+    /// `gpt-4o-mini-tts`).
+    pub model: String,
+    /// Voice id / name for providers that expose voices
+    /// (e.g. `alloy`, `11labs_voice_id`).
+    pub voice: String,
+    /// Base URL override. Overrides the provider's default host when
+    /// non-empty.
+    pub base_url: String,
+    /// TTS timeout in seconds.
+    pub timeout_secs: u64,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            provider: "none".into(),
+            api_key: String::new(),
+            model: String::new(),
+            voice: String::new(),
+            base_url: String::new(),
+            timeout_secs: 60,
+        }
+    }
+}
+
+/// Text-to-image generation configuration. Lives under `[media.image_gen]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ImageGenConfig {
+    /// Image generation provider. One of:
+    /// - `openai`: OpenAI `/v1/images/generations` (gpt-image-1 / dall-e-3)
+    /// - `gemini`: Google Gemini `generateContent` (image modality)
+    /// - `none`: no image generation client
+    pub provider: String,
+    pub api_key: String,
+    /// Model id for providers that require one (e.g. `gpt-image-1`,
+    /// `gemini-2.5-flash-image`).
+    pub model: String,
+    /// Base URL override. Overrides the provider's default host when
+    /// non-empty.
+    pub base_url: String,
+    /// Image generation timeout in seconds.
+    pub timeout_secs: u64,
+}
+
+impl Default for ImageGenConfig {
+    fn default() -> Self {
+        Self {
+            provider: "none".into(),
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+            timeout_secs: 120,
+        }
+    }
+}
+
+/// Unified media capability configuration (STT / OCR / TTS / image
+/// generation). Replaced the legacy top-level `[stt]` section.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MediaConfig {
+    /// Speech-to-text (voice input transcription).
+    pub stt: SttConfig,
+    /// OCR (image text extraction).
+    pub ocr: OcrConfig,
+    /// Text-to-speech (voice output).
+    pub tts: TtsConfig,
+    /// Text-to-image generation.
+    pub image_gen: ImageGenConfig,
 }
 
 /// Skills ecosystem configuration (M4-01 / §4.6.3).
@@ -927,88 +1067,80 @@ impl Default for McpServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
-pub struct AppConfig {
+// ---------------------------------------------------------------------------
+// AppConfig + frontend-friendly Settings (hides sensitive fields)
+// ---------------------------------------------------------------------------
+//
+// `Settings` is the API-key-blanked view of `AppConfig`; the two structs must
+// stay structurally identical. Both structs and the conversion are generated
+// from one field list so they cannot drift. The `sanitize` block runs on the
+// cloned Settings before it is returned.
+
+macro_rules! settings_pair {
+    ($settings:ident; $(
+        $(#[$field_doc:meta])*
+        $field:ident: $ty:ty
+    ),* $(,)?; $($sanitize:tt)*) => {
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+        #[serde(default)]
+        pub struct AppConfig {
+            $( $(#[$field_doc])* pub $field: $ty, )*
+        }
+
+        #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+        #[serde(default)]
+        pub struct Settings {
+            $( $(#[$field_doc])* pub $field: $ty, )*
+        }
+
+        impl From<&AppConfig> for Settings {
+            fn from(c: &AppConfig) -> Self {
+                let mut $settings = Self {
+                    $( $field: c.$field.clone(), )*
+                };
+                $($sanitize)*
+                $settings
+            }
+        }
+    };
+}
+
+settings_pair! {
+    settings;
     /// Default shell for the agent's `shell` tool when the model omits the
     /// `shell` argument. One of `powershell` (built-in Windows PowerShell),
     /// `cmd`, or `pwsh` (PowerShell 7, requires a separate install).
-    pub default_shell: ShellChoice,
-    pub audio: AudioConfig,
-    pub llm: LlmConfig,
-    pub hotkey: HotkeyConfig,
-    pub session: SessionConfig,
-    pub context_limits: ContextLimitsConfig,
-    pub memory: MemoryConfig,
-    pub security: SecurityConfig,
-    pub stt: SttConfig,
-    pub skills: SkillsConfig,
-    pub skills_exec: SkillsExecConfig,
-    pub mcp_discovery: McpDiscoveryConfig,
-    pub mcp_servers: Vec<McpServerConfig>,
-    pub notification: NotificationConfig,
-    pub log: LogConfig,
-    pub tool_settings: HashMap<String, ToolConfig>,
-}
-
-// ---------------------------------------------------------------------------
-// Frontend-friendly settings (hides sensitive fields)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct Settings {
-    pub default_shell: ShellChoice,
-    pub audio: AudioConfig,
-    pub llm: LlmConfig,
-    pub hotkey: HotkeyConfig,
-    pub session: SessionConfig,
-    pub context_limits: ContextLimitsConfig,
-    pub memory: MemoryConfig,
-    pub security: SecurityConfig,
-    pub stt: SttConfig,
-    pub skills: SkillsConfig,
-    pub skills_exec: SkillsExecConfig,
-    pub mcp_discovery: McpDiscoveryConfig,
-    pub mcp_servers: Vec<McpServerConfig>,
-    pub notification: NotificationConfig,
-    pub log: LogConfig,
-    pub tool_settings: HashMap<String, ToolConfig>,
-}
-
-impl From<&AppConfig> for Settings {
-    fn from(c: &AppConfig) -> Self {
-        let mut llm = c.llm.clone();
-        llm.small_model.api_key = String::new();
-        llm.default_model.api_key = String::new();
-        llm.balanced_model.api_key = String::new();
-        llm.image_model.api_key = String::new();
-        llm.audio_model.api_key = String::new();
-        llm.embedding_model.api_key = String::new();
-        for m in llm.models.iter_mut() {
-            m.endpoint.api_key = String::new();
-        }
-        let mut stt = c.stt.clone();
-        stt.api_key = String::new();
-        Self {
-            default_shell: c.default_shell,
-            audio: c.audio.clone(),
-            llm,
-            hotkey: c.hotkey.clone(),
-            session: c.session.clone(),
-            context_limits: c.context_limits.clone(),
-            memory: c.memory.clone(),
-            security: c.security.clone(),
-            stt,
-            skills: c.skills.clone(),
-            skills_exec: c.skills_exec.clone(),
-            mcp_discovery: c.mcp_discovery.clone(),
-            mcp_servers: c.mcp_servers.clone(),
-            notification: c.notification.clone(),
-            log: c.log.clone(),
-            tool_settings: c.tool_settings.clone(),
-        }
+    default_shell: ShellChoice,
+    audio: AudioConfig,
+    llm: LlmConfig,
+    hotkey: HotkeyConfig,
+    session: SessionConfig,
+    context_limits: ContextLimitsConfig,
+    memory: MemoryConfig,
+    security: SecurityConfig,
+    media: MediaConfig,
+    skills: SkillsConfig,
+    skills_exec: SkillsExecConfig,
+    mcp_discovery: McpDiscoveryConfig,
+    mcp_servers: Vec<McpServerConfig>,
+    notification: NotificationConfig,
+    log: LogConfig,
+    tool_settings: HashMap<String, ToolConfig>,
+    ;
+    settings.llm.small_model.api_key = String::new();
+    settings.llm.default_model.api_key = String::new();
+    settings.llm.balanced_model.api_key = String::new();
+    settings.llm.image_model.api_key = String::new();
+    settings.llm.audio_model.api_key = String::new();
+    settings.llm.embedding_model.api_key = String::new();
+    for m in settings.llm.models.iter_mut() {
+        m.endpoint.api_key = String::new();
     }
+    settings.media.stt.api_key = String::new();
+    settings.media.ocr.api_key = String::new();
+    settings.media.ocr.api_secret = String::new();
+    settings.media.tts.api_key = String::new();
+    settings.media.image_gen.api_key = String::new();
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,13 +1159,24 @@ impl ConfigLoader {
         Self::data_dir().join("config.toml")
     }
 
-    /// Returns the Haven data directory, creating it if needed.
+    /// Returns the Haven data directory: `%APPDATA%/haven` on Windows,
+    /// `~/.local/share/haven` elsewhere. Single source of truth for every
+    /// persisted artifact (config, database, logs, skills); the app binary
+    /// must not re-implement this.
     pub fn data_dir() -> PathBuf {
-        let base = std::env::var("APPDATA").unwrap_or_else(|_| {
-            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".into());
-            format!("{}\\AppData\\Roaming", home)
-        });
-        PathBuf::from(base).join("haven")
+        #[cfg(target_os = "windows")]
+        {
+            let base = std::env::var("APPDATA").unwrap_or_else(|_| {
+                let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".into());
+                format!("{}\\AppData\\Roaming", home)
+            });
+            PathBuf::from(base).join("haven")
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            PathBuf::from(home).join(".local/share/haven")
+        }
     }
 
     /// Default skills directory: `<data_dir>/skills`.
@@ -1163,12 +1306,25 @@ impl ConfigLoader {
         self.config.context_limits = settings.context_limits.clone();
         self.config.memory = settings.memory.clone();
         self.config.security = settings.security.clone();
-        self.config.stt = {
-            let incoming = settings.stt.clone();
-            let prev_key = self.config.stt.api_key.clone();
+        self.config.media = {
+            let incoming = settings.media.clone();
+            let prev = &self.config.media;
             let mut s = incoming;
-            if s.api_key.is_empty() {
-                s.api_key = prev_key;
+            // Preserve masked keys for every media capability.
+            if s.stt.api_key.is_empty() {
+                s.stt.api_key = prev.stt.api_key.clone();
+            }
+            if s.ocr.api_key.is_empty() {
+                s.ocr.api_key = prev.ocr.api_key.clone();
+            }
+            if s.ocr.api_secret.is_empty() {
+                s.ocr.api_secret = prev.ocr.api_secret.clone();
+            }
+            if s.tts.api_key.is_empty() {
+                s.tts.api_key = prev.tts.api_key.clone();
+            }
+            if s.image_gen.api_key.is_empty() {
+                s.image_gen.api_key = prev.image_gen.api_key.clone();
             }
             s
         };
@@ -1248,12 +1404,23 @@ mod tests {
         assert_eq!(cfg.memory.history_retention_days, 90);
         assert!(cfg.security.encrypt_sensitive);
         assert!(cfg.mcp_servers.is_empty());
-        assert_eq!(cfg.stt.provider, "mcp");
-        assert_eq!(cfg.stt.timeout_secs, 30);
-        assert!(cfg.stt.mcp_server.is_none());
-        assert!(cfg.stt.api_key.is_empty());
-        assert!(cfg.stt.model.is_empty());
-        assert!(cfg.stt.base_url.is_empty());
+        assert_eq!(cfg.media.stt.provider, "mcp");
+        assert_eq!(cfg.media.stt.timeout_secs, 30);
+        assert!(cfg.media.stt.mcp_server.is_none());
+        assert!(cfg.media.stt.api_key.is_empty());
+        assert!(cfg.media.stt.model.is_empty());
+        assert!(cfg.media.stt.base_url.is_empty());
+        assert_eq!(cfg.media.stt.min_confidence, 0.7);
+        assert_eq!(cfg.media.ocr.provider, "none");
+        assert!(cfg.media.ocr.api_key.is_empty());
+        assert!(cfg.media.ocr.api_secret.is_empty());
+        assert_eq!(cfg.media.ocr.timeout_secs, 20);
+        assert_eq!(cfg.media.ocr.min_confidence, 0.7);
+        assert_eq!(cfg.media.tts.provider, "none");
+        assert!(cfg.media.tts.voice.is_empty());
+        assert_eq!(cfg.media.tts.timeout_secs, 60);
+        assert_eq!(cfg.media.image_gen.provider, "none");
+        assert_eq!(cfg.media.image_gen.timeout_secs, 120);
         assert!(cfg.llm.stt_use_audio_model);
         assert!(cfg.llm.vision_use_image_model);
         assert_eq!(cfg.llm.max_concurrent_requests, 2);
@@ -1363,29 +1530,52 @@ mod tests {
     }
 
     #[test]
-    fn apply_settings_preserves_stt_api_key_when_empty() {
+    fn apply_settings_preserves_media_api_keys_when_empty() {
         let mut cfg = AppConfig::default();
-        cfg.stt.provider = "openai".into();
-        cfg.stt.api_key = "keep-stt-key".to_string();
+        cfg.media.stt.provider = "openai".into();
+        cfg.media.stt.api_key = "keep-stt-key".to_string();
+        cfg.media.ocr.api_key = "keep-ocr-key".to_string();
+        cfg.media.ocr.api_secret = "keep-ocr-secret".to_string();
+        cfg.media.tts.api_key = "keep-tts-key".to_string();
+        cfg.media.image_gen.api_key = "keep-ig-key".to_string();
         let mut settings = Settings::from(&cfg);
-        // Frontend sends masked (empty) api key but a new model.
-        settings.stt.model = "whisper-1".to_string();
+        // Frontend sends masked (empty) api keys but new models/voices.
+        settings.media.stt.model = "whisper-1".to_string();
+        settings.media.ocr.provider = "baidu".to_string();
+        settings.media.tts.voice = "alloy".to_string();
+        settings.media.image_gen.model = "gpt-image-1".to_string();
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
         };
         loader.apply_settings(&settings);
-        assert_eq!(loader.config().stt.api_key, "keep-stt-key");
-        assert_eq!(loader.config().stt.model, "whisper-1");
-        assert_eq!(loader.config().stt.provider, "openai");
+        let media = &loader.config().media;
+        assert_eq!(media.stt.api_key, "keep-stt-key");
+        assert_eq!(media.stt.model, "whisper-1");
+        assert_eq!(media.stt.provider, "openai");
+        assert_eq!(media.ocr.api_key, "keep-ocr-key");
+        assert_eq!(media.ocr.api_secret, "keep-ocr-secret");
+        assert_eq!(media.ocr.provider, "baidu");
+        assert_eq!(media.tts.api_key, "keep-tts-key");
+        assert_eq!(media.tts.voice, "alloy");
+        assert_eq!(media.image_gen.api_key, "keep-ig-key");
+        assert_eq!(media.image_gen.model, "gpt-image-1");
     }
 
     #[test]
-    fn settings_hide_stt_api_key() {
+    fn settings_hide_media_api_keys() {
         let mut cfg = AppConfig::default();
-        cfg.stt.api_key = "top-secret".to_string();
+        cfg.media.stt.api_key = "stt-secret".to_string();
+        cfg.media.ocr.api_key = "ocr-secret".to_string();
+        cfg.media.ocr.api_secret = "ocr-secret-2".to_string();
+        cfg.media.tts.api_key = "tts-secret".to_string();
+        cfg.media.image_gen.api_key = "ig-secret".to_string();
         let settings = Settings::from(&cfg);
-        assert!(settings.stt.api_key.is_empty());
+        assert!(settings.media.stt.api_key.is_empty());
+        assert!(settings.media.ocr.api_key.is_empty());
+        assert!(settings.media.ocr.api_secret.is_empty());
+        assert!(settings.media.tts.api_key.is_empty());
+        assert!(settings.media.image_gen.api_key.is_empty());
     }
 
     #[test]

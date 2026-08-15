@@ -227,6 +227,10 @@ type SessionErrorCallback = Arc<Mutex<Option<Box<dyn Fn(String, String) + Send>>
 /// `resolve_confirmation` (or the session is cancelled).
 struct ConfirmWait {
     risk_level: RiskLevel,
+    /// The session (if any) the tool call belonged to. Resolving the wait
+    /// returns it so the app layer can record a "trust for this conversation"
+    /// approval against the right session id.
+    session_id: Option<String>,
     tx: tokio::sync::oneshot::Sender<bool>,
 }
 
@@ -893,6 +897,12 @@ impl SessionExecutor {
         self.dequeue_pending(session_id).await;
         self.cleanup_session_maps(session_id).await;
         self.sessions.lock().await.remove(session_id);
+        // The conversation is over — its trusted risk levels must not outlive
+        // it (a later conversation must ask again).
+        self.tools
+            .safety_gateway
+            .clear_session_trust(session_id)
+            .await;
         Ok(SessionStatus::Completed)
     }
 
@@ -900,6 +910,10 @@ impl SessionExecutor {
     /// This does NOT delete from DB —the caller handles that.
     /// Succeeds even if the session is not in memory (e.g. after restart).
     pub async fn remove_session(&self, session_id: &str) {
+        self.tools
+            .safety_gateway
+            .clear_session_trust(session_id)
+            .await;
         self.cancel_session_tasks(session_id).await;
         self.sessions.lock().await.remove(session_id);
         self.dequeue_pending(session_id).await;
@@ -931,6 +945,7 @@ impl SessionExecutor {
     /// Remove all sessions from memory and clean up running state.
     /// Used when the user clears history —the DB is already wiped.
     pub async fn clear_all_sessions(&self) {
+        self.tools.safety_gateway.clear_all_trust().await;
         self.sessions.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.running_sessions.lock().await.clear();
@@ -1051,6 +1066,14 @@ impl SessionExecutor {
             self.dequeue_pending(session_id).await;
             self.cleanup_session_maps(session_id).await;
             self.tools.unregister_session(session_id).await;
+            // The conversation ended — drop its trusted risk levels too (the
+            // ReAct loop / dispatcher-panic path reaches terminal status
+            // through here, not `end_session`, so this must happen on every
+            // terminal transition or the per-session trust map leaks).
+            self.tools
+                .safety_gateway
+                .clear_session_trust(session_id)
+                .await;
             if let Some(tx) = self.status_tx.lock().await.remove(session_id) {
                 let _ = tx.send(status);
             }
@@ -1420,7 +1443,7 @@ impl SessionExecutor {
         match self
             .tools
             .safety_gateway
-            .check(tool_name, &input, risk_level)
+            .check(session_id, tool_name, &input, risk_level)
             .await
         {
             ConfirmationResult::AutoApproved => {}
@@ -1487,10 +1510,14 @@ impl SessionExecutor {
     ) -> bool {
         let step_id: haven_common::types::ConfirmId = haven_common::types::new_id("conf").into();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.confirm_waits
-            .lock()
-            .await
-            .insert(step_id.clone(), ConfirmWait { risk_level, tx });
+        self.confirm_waits.lock().await.insert(
+            step_id.clone(),
+            ConfirmWait {
+                risk_level,
+                session_id: session_id.map(str::to_string),
+                tx,
+            },
+        );
         let tid = session_id.unwrap_or("task").to_string();
         // No confirmation callback wired (unit tests, degraded startup):
         // there is no UI that could ever answer — fail closed so the tool
@@ -1546,23 +1573,24 @@ impl SessionExecutor {
     }
 
     /// Resolve a pending safety-gateway confirmation and return the risk level
-    /// the gate attached to it, so the caller can trust the level for the
-    /// session. The approval/denial itself is persisted on the real `session_steps`
-    /// row when `create_action_step` records the step (via the `confirmed`
-    /// returned by `execute_gated`); this method only unblocks the ReAct loop
-    /// waiting on the oneshot. Every step id handed here comes from a
-    /// `confirm:requested` payload, which is only emitted by `await_confirmation`
-    /// — so an id not present in `confirm_waits` is stale (already resolved or
-    /// cancelled); there is no legacy path.
+    /// and the owning session id, so the caller can trust the level for the
+    /// right conversation. The approval/denial itself is persisted on the real
+    /// `session_steps` row when `create_action_step` records the step (via the
+    /// `confirmed` returned by `execute_gated`); this method only unblocks the
+    /// ReAct loop waiting on the oneshot. Every step id handed here comes from
+    /// a `confirm:requested` payload, which is only emitted by
+    /// `await_confirmation` — so an id not present in `confirm_waits` is stale
+    /// (already resolved or cancelled); there is no legacy path.
     pub async fn resolve_confirmation(
         &self,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-    ) -> anyhow::Result<Option<RiskLevel>> {
+    ) -> anyhow::Result<Option<(RiskLevel, Option<String>)>> {
         if let Some(wait) = self.confirm_waits.lock().await.remove(step_id) {
             let level = wait.risk_level;
+            let session_id = wait.session_id;
             let _ = wait.tx.send(confirmed);
-            return Ok(Some(level));
+            return Ok(Some((level, session_id)));
         }
         Ok(None)
     }
@@ -1601,11 +1629,16 @@ mod tests {
         // The panic path bypasses the ReAct loop's event emission, so the
         // wired on_session_error callback must fire — otherwise the UI would
         // never learn about the terminal transition.
-        let notified = Arc::new(tokio::sync::Mutex::new(None::<(String, String)>));
+        //
+        // A `std::sync::Mutex` (not a tokio mutex) so the synchronous
+        // callback can lock it directly; `try_lock().unwrap()` on a tokio
+        // mutex panicked whenever the poll loop below happened to hold the
+        // lock while the dispatcher fired the callback.
+        let notified = Arc::new(std::sync::Mutex::new(None::<(String, String)>));
         let nt = notified.clone();
         *exec.on_session_error.lock().await =
             Some(Box::new(move |session_id: String, reason: String| {
-                *nt.try_lock().unwrap() = Some((session_id, reason));
+                *nt.lock().unwrap() = Some((session_id, reason));
             }));
 
         let handler: RunHandler = Arc::new(move |_id: String| {
@@ -1635,15 +1668,31 @@ mod tests {
         assert_eq!(db_status, "error");
         // Terminal status removed the session from the working set and released
         // the running slot; the session is absent, not "error" in memory.
-        assert!(!exec.running_sessions.lock().await.contains(&session.id));
-        assert_eq!(exec.get_session_state(&session.id).await, None);
+        //
+        // NOTE: `update_session_status` persists the DB row BEFORE the
+        // in-memory cleanup (`cleanup_session_maps` / `unmark_running`), so
+        // seeing "error" in the DB does not guarantee the slot is released yet.
+        // Under parallel test load the dispatcher task can be descheduled
+        // between the two, so poll the memory side instead of asserting it
+        // immediately (this test flaked under `cargo test --workspace`).
+        let mut released = false;
+        for _ in 0..100 {
+            if !exec.running_sessions.lock().await.contains(&session.id)
+                && exec.get_session_state(&session.id).await.is_none()
+            {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(released, "running slot / working set must be released");
         // The wired failure callback fired with the session id and a panic
         // reason (the UI clears its busy set from this signal). Poll: the
         // callback runs right after the DB write in the dispatcher's spawned
         // session.
         let mut seen = None;
         for _ in 0..100 {
-            seen = notified.lock().await.clone();
+            seen = notified.lock().unwrap().clone();
             if seen.is_some() {
                 break;
             }

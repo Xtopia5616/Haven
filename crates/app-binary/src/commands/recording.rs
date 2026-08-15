@@ -1,6 +1,8 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use crate::events::{RecordingEvent, TranscriptionErrorEvent, TranscriptionResultEvent};
+use crate::events::{
+    RecordingEvent, TranscriptionErrorEvent, TranscriptionResultEvent, TranscriptionStartedEvent,
+};
 use haven_common::config::ContextLimitsConfig;
 use haven_input::{RecordingReason, RecordingResult};
 use serde::Serialize;
@@ -115,8 +117,6 @@ pub(crate) async fn finalize_transcription(
     app: &tauri::AppHandle,
     mut result: RecordingResult,
 ) -> Option<String> {
-    state.pipeline.transcribe(&mut result).await;
-
     // The session id of the recording that produced this transcription:
     // generated at start (recording:started) and consumed here, so both
     // event families of one recording share the same `rec-` id. The
@@ -127,6 +127,17 @@ pub(crate) async fn finalize_transcription(
         .unwrap_or_else(|p| p.into_inner())
         .take()
         .unwrap_or_else(|| haven_common::types::new_id("rec").into());
+
+    // Tell the UI STT is about to run, before the (potentially slow)
+    // network call, so it can show a "transcribing" hint right away.
+    let _ = app.emit(
+        "transcription:started",
+        TranscriptionStartedEvent {
+            session_id: session_id.clone(),
+        },
+    );
+
+    state.pipeline.transcribe(&mut result).await;
 
     match result.transcript {
         Some(text) => {
@@ -242,10 +253,16 @@ pub async fn stop_recording(
     );
 
     // STT runs inside `finalize_transcription`; the frontend submits the
-    // transcript via `process_transcript` (same path as typed input). The
-    // command returns as soon as the recording has been handed off.
-    let text = finalize_transcription(state.inner(), &app, result).await;
-    Ok(text.unwrap_or_default())
+    // transcript via `process_transcript` (same path as typed input). It is
+    // spawned detached so the invoke returns immediately — the UI is driven
+    // by the `transcription:*` events, not by this command's result, and
+    // awaiting the STT network call here would hold the command task for its
+    // whole duration.
+    let state = state.inner().clone();
+    std::mem::drop(tokio::spawn(async move {
+        finalize_transcription(&state, &app, result).await
+    }));
+    Ok(String::new())
 }
 
 #[tauri::command]

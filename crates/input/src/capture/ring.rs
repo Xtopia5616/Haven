@@ -34,13 +34,27 @@ impl RingBuffer {
     }
 
     pub fn push(&mut self, samples: &[f32]) {
-        for &s in samples {
-            self.buf[self.head] = s;
-            self.head = (self.head + 1) % self.cap;
-            if self.len < self.cap {
-                self.len += 1;
-            }
+        if samples.is_empty() {
+            return;
         }
+        // The queue keeps the last `cap` samples of the combined stream: if
+        // the incoming chunk is longer than the ring, only its tail survives
+        // (matching the per-sample overwrite semantics exactly).
+        let take = samples.len().min(self.cap);
+        let input = &samples[samples.len() - take..];
+        // Two contiguous copies instead of a per-sample `% cap` loop: this
+        // runs on the real-time audio callback thread, and a modulo per
+        // sample costs more than a memcpy per segment.
+        let first_len = take.min(self.cap - self.head);
+        self.buf[self.head..self.head + first_len].copy_from_slice(&input[..first_len]);
+        if first_len < take {
+            let rest = &input[first_len..];
+            self.buf[..rest.len()].copy_from_slice(rest);
+            self.head = rest.len();
+        } else {
+            self.head = (self.head + first_len) % self.cap;
+        }
+        self.len = (self.len + samples.len()).min(self.cap);
     }
 
     /// Take everything, oldest first. The buffer is left empty.
@@ -107,6 +121,33 @@ mod tests {
         assert_eq!(rb.len(), 5);
         let data = rb.drain();
         assert_eq!(data, vec![3.0, 4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn push_oversize_chunk_keeps_tail() {
+        let mut rb = RingBuffer::new(5);
+        rb.push(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(rb.len(), 5);
+        assert_eq!(rb.drain(), vec![3.0, 4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn push_matches_per_sample_semantics_across_chunks() {
+        let mut rb = RingBuffer::new(7);
+        rb.push(&[1.0, 2.0]);
+        rb.push(&[3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(rb.len(), 7);
+        assert_eq!(rb.drain(), vec![4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+    }
+
+    #[test]
+    fn push_wraps_and_drops_partial_tail() {
+        let mut rb = RingBuffer::new(8);
+        rb.push(&[1.0, 2.0, 3.0]);
+        // head = 3; the chunk crosses the end of the buffer twice.
+        rb.push(&[4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(rb.len(), 8);
+        assert_eq!(rb.drain(), vec![3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
     }
 
     #[test]

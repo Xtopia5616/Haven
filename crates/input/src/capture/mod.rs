@@ -46,7 +46,9 @@ pub use ring::RingBuffer;
 /// Upper bound for a command round-trip. The engine answers in microseconds;
 /// the timeout only guards against a dead engine thread.
 const CMD_TIMEOUT: Duration = Duration::from_secs(2);
-/// Engine command-channel poll cadence while a recording is active.
+/// Fallback command-wait for the engine while a recording's silence check is
+/// pending but `started_at` is unset (defensive; the start path always sets
+/// both together). Real waits sleep until the check deadline instead.
 const MONITOR_INTERVAL: Duration = Duration::from_millis(20);
 /// How much of a fresh recording is observed before deciding the capture is
 /// delivering pure digital silence and aborting with an error. Deliberately
@@ -166,12 +168,20 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<EngineHandle> {
                 silent_checked: false,
             };
             loop {
-                // Poll while recording (the silent-capture check runs on the
-                // poll cadence); block indefinitely while idle so an idle
-                // engine does not wake 50x/sec and keep the CPU out of low
-                // power states.
-                let cmd = if engine.recording {
-                    match cmd_rx.recv_timeout(MONITOR_INTERVAL) {
+                // Sleep only while the silent-capture check is still
+                // pending, and only until its deadline; after the check has
+                // run the engine blocks indefinitely (commands wake it). An
+                // idle or recording engine therefore never wakes 50x/sec and
+                // keeps the CPU out of low power states. Commands are still
+                // answered immediately: `recv_timeout` returns as soon as a
+                // message arrives.
+                let cmd = if engine.recording && !engine.silent_checked {
+                    let remaining = match engine.started_at {
+                        Some(started) => (started + SILENCE_CHECK_DELAY)
+                            .saturating_duration_since(Instant::now()),
+                        None => MONITOR_INTERVAL,
+                    };
+                    match cmd_rx.recv_timeout(remaining) {
                         Ok(cmd) => Some(cmd),
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {

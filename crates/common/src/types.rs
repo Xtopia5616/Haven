@@ -217,8 +217,25 @@ pub enum CanonicalRole {
     Tool,
 }
 
+impl CanonicalRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CanonicalRole::System => "system",
+            CanonicalRole::User => "user",
+            CanonicalRole::Assistant => "assistant",
+            CanonicalRole::Tool => "tool",
+        }
+    }
+}
+
+impl std::fmt::Display for CanonicalRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Provider-neutral message used by the Agent internally.
-/// Converted to provider-specific formats (e.g. `LlmMessage`) at the LLM call boundary.
+/// Converted to provider-specific wire formats at the LLM call boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalMessage {
     pub role: CanonicalRole,
@@ -302,6 +319,23 @@ pub struct CanonicalToolCall {
     pub arguments: serde_json::Value,
 }
 
+impl CanonicalToolCall {
+    /// Serialize the canonical argument object to the wire JSON string every
+    /// provider expects. Centralized so the encode policy (and the `{}`
+    /// fallback for a null/missing object) lives in one place instead of
+    /// being duplicated per adapter.
+    pub fn args_to_wire(&self) -> String {
+        serde_json::to_string(&self.arguments).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Parse a provider's wire arguments JSON string back into a canonical
+    /// value. Falls back to `Null` on malformed / empty input — providers are
+    /// unreliable about emitting valid JSON here.
+    pub fn from_wire_args(args: &str) -> serde_json::Value {
+        serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +355,16 @@ mod tests {
     #[test]
     fn canonical_role_default_is_system() {
         assert_eq!(CanonicalRole::default(), CanonicalRole::System);
+    }
+
+    #[test]
+    fn canonical_role_as_str_lowercase() {
+        assert_eq!(CanonicalRole::System.as_str(), "system");
+        assert_eq!(CanonicalRole::User.as_str(), "user");
+        assert_eq!(CanonicalRole::Assistant.as_str(), "assistant");
+        assert_eq!(CanonicalRole::Tool.as_str(), "tool");
+        assert_eq!(CanonicalRole::System.to_string(), "system");
+        assert_eq!(CanonicalRole::Tool.to_string(), "tool");
     }
 
     #[test]

@@ -139,6 +139,8 @@ pub const COMPACTED_SUMMARY_PREFIX: &str = "[Compacted summary of previous messa
 
 /// LLM speech-to-text transcription (audio_model).
 pub const STT_SYSTEM_PROMPT: &str = "You are a speech-to-text engine. Transcribe the audio verbatim in the speaker's language. Output only the transcription text, no commentary.";
+pub const OCR_SYSTEM_PROMPT: &str = "You are an OCR engine. Extract all visible text from the image verbatim, preserving line breaks. Output only the extracted text, no commentary.";
+pub const TRANSCRIBE_SYSTEM_PROMPT: &str = "You are a speech-to-text engine. Transcribe the audio verbatim in the speaker's language. Output only the transcription text, no commentary.";
 
 /// Image analysis (image_model via the router's vision role).
 pub const IMAGE_ANALYSIS_SYSTEM_PROMPT: &str = "You are analyzing an image. Describe what it shows and transcribe any visible text. Respond concisely in the user's language.";

@@ -2,7 +2,7 @@ use crate::ToolResult;
 use haven_common::McpTransportType;
 use haven_llm::stt::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -824,6 +824,21 @@ impl McpClient {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    /// Whether the live client was spawned from the given persisted config.
+    /// Refresh/reload paths use this to decide if an already-connected server
+    /// can be kept as-is or must be torn down and reconnected (a changed
+    /// command / args / env / url means the running child carries stale
+    /// credentials or an outdated invocation).
+    pub fn matches_config(&self, cfg: &haven_common::McpServerConfig) -> bool {
+        self.transport == cfg.transport
+            && self.command == cfg.command
+            && self.args == cfg.args
+            && self.env == cfg.env
+            && self.cwd == cfg.cwd
+            && self.url == cfg.url
+            && self.enabled.load(Ordering::SeqCst) == cfg.enabled
+    }
+
     pub async fn status(&self) -> McpClientStatus {
         self.status.lock().await.clone()
     }
@@ -1445,6 +1460,23 @@ impl McpClient {
 // McpManager — manages multiple MCP clients
 // ---------------------------------------------------------------------------
 
+/// Diff of [`McpManager::reconcile_servers`]: what a config list implies for
+/// the live clients. The caller owns the connect (with or without a health
+/// monitor) and the shutdown, so startup reload and the UI refresh command
+/// share one reconciliation rule.
+#[derive(Debug, Default)]
+pub struct McpReconcile {
+    /// Enabled servers with no live client yet.
+    pub to_connect_new: Vec<haven_common::McpServerConfig>,
+    /// Enabled servers whose live client was spawned from a different
+    /// config (command / args / env / url changed) and must be recreated.
+    pub to_connect_changed: Vec<haven_common::McpServerConfig>,
+    /// Live clients whose server was removed from config or disabled.
+    pub to_remove: Vec<String>,
+    /// Enabled servers already loaded from the identical config (kept).
+    pub kept: Vec<String>,
+}
+
 pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
@@ -1515,19 +1547,78 @@ impl McpManager {
         self.clients.lock().await.keys().cloned().collect()
     }
 
+    /// Single reconciliation rule between a config list and the live clients.
+    /// Diff-only: a server already loaded from the SAME config is kept as-is
+    /// (a reload never respawns a heavy stdio server such as Ghidra), a live
+    /// client whose persisted config changed is flagged for recreation, and
+    /// clients whose server is gone or disabled are flagged for shutdown.
+    pub async fn reconcile_servers(
+        &self,
+        servers: &[haven_common::McpServerConfig],
+    ) -> McpReconcile {
+        let mut out = McpReconcile::default();
+        let enabled: HashSet<String> = servers
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| s.name.clone())
+            .collect();
+        let clients = self.clients.lock().await;
+        for server in servers.iter().filter(|s| s.enabled) {
+            match clients.get(&server.name) {
+                Some(existing) if existing.matches_config(server) => {
+                    out.kept.push(server.name.clone());
+                }
+                Some(_) => out.to_connect_changed.push(server.clone()),
+                None => out.to_connect_new.push(server.clone()),
+            }
+        }
+        for name in clients.keys() {
+            if !enabled.contains(name) {
+                out.to_remove.push(name.clone());
+            }
+        }
+        out
+    }
+
     /// Load MCP servers from config, create clients, and connect them.
+    /// Diff-only (see [`Self::reconcile_servers`]): servers that already have
+    /// a live client spawned from the SAME config are skipped, a live client
+    /// whose persisted config changed is torn down and reconnected, and live
+    /// clients whose server was removed or disabled are shut down.
     /// Does NOT start health monitors — call `start_monitors` separately
     /// or use `discover_all` for the combined operation.
     pub async fn load_from_config(&self, servers: &[haven_common::McpServerConfig]) {
+        let t0 = std::time::Instant::now();
+        let reconcile = self.reconcile_servers(servers).await;
+
+        for name in reconcile.to_remove {
+            tracing::info!("MCP server '{}' removed/disabled, shutting down", name);
+            self.remove_client(&name).await;
+            let _ = self.status_tx.send(McpStatusChangeEvent {
+                name,
+                status: McpClientStatus::Disconnected,
+            });
+        }
+
         let mut pending = tokio::task::JoinSet::new();
 
-        for server in servers {
-            if !server.enabled {
-                continue;
+        for server in reconcile
+            .to_connect_new
+            .into_iter()
+            .chain(reconcile.to_connect_changed)
+        {
+            let name = server.name.clone();
+            {
+                let mut clients = self.clients.lock().await;
+                if clients.contains_key(&name) {
+                    tracing::info!("MCP server '{}' config changed, reconnecting", name);
+                    clients.remove(&name);
+                }
             }
+            let connect_t0 = std::time::Instant::now();
             let limits = self.limits.read().await.clone();
             let client = Arc::new(McpClient::new(
-                server,
+                &server,
                 limits.mcp_max_binary_payload_bytes,
                 limits.mcp_max_sse_buffer_bytes,
             ));
@@ -1545,24 +1636,29 @@ impl McpManager {
             let status_tx = self.status_tx.clone();
             pending.spawn(async move {
                 let result = client.connect().await;
-                (name, client, status_tx, result)
+                (name, client, status_tx, result, connect_t0)
             });
         }
 
         while let Some(result) = pending.join_next().await {
             match result {
-                Ok((name, client, status_tx, Ok(()))) => {
-                    tracing::info!("MCP server '{}' connected successfully", name);
+                Ok((name, client, status_tx, Ok(()), t0)) => {
+                    tracing::info!(
+                        "MCP server '{}' connected successfully in {:?}",
+                        name,
+                        t0.elapsed()
+                    );
                     let _ = status_tx.send(McpStatusChangeEvent {
                         name: name.clone(),
                         status: McpClientStatus::Connected,
                     });
                     drop(client);
                 }
-                Ok((name, client, status_tx, Err(e))) => {
+                Ok((name, client, status_tx, Err(e), t0)) => {
                     tracing::warn!(
-                        "MCP server '{}' failed to connect: {} (will retry later)",
+                        "MCP server '{}' failed to connect after {:?}: {} (will retry later)",
                         name,
+                        t0.elapsed(),
                         e
                     );
                     *client.last_error.lock().await = Some(format!("initial connect failed: {e}"));
@@ -1578,6 +1674,11 @@ impl McpManager {
                 }
             }
         }
+        tracing::info!(
+            "MCP load_from_config: {} servers, total {:?}",
+            servers.len(),
+            t0.elapsed()
+        );
     }
 
     /// Dynamically connect a single MCP server from config.

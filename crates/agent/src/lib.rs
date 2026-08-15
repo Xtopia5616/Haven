@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use base64::Engine;
+
 mod compactor;
 mod event;
 mod inference;
@@ -20,6 +22,9 @@ pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
 
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_gateway::coverage::MediaDecision;
+use haven_gateway::intent::GenerateKind;
+use haven_gateway::{AttachmentOutcome, GenerateOutcome};
 use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::repositories::messages::{Message, MessageAttachment};
@@ -219,6 +224,11 @@ pub struct AgentLayer {
     inference: Arc<InferenceEngine>,
     title: Option<TitleGenerator>,
     title_in_flight: Arc<Mutex<HashSet<String>>>,
+    /// Multi-modal media gateway (modality detection → intent → routing).
+    /// `None` in headless/test contexts: attachment pre-processing and
+    /// media generation are skipped and the agent handles media inline.
+    /// RwLock so provider switches can hot-swap it (like the router).
+    gateway: tokio::sync::RwLock<Option<Arc<haven_gateway::MediaGateway>>>,
 }
 
 /// A recent conversation message used to re-seed context when resuming a
@@ -228,6 +238,31 @@ pub struct AgentLayer {
 struct ConversationMessage {
     role: String,
     content: String,
+}
+
+/// Human-readable label for a gateway extraction decision, shown in the
+/// message content so the user (and the model) see where the text came from.
+fn extraction_label(decision: &MediaDecision) -> &'static str {
+    match decision.routed_to.as_str() {
+        "ocr" => "已通过 OCR 识别文字",
+        "stt" => "已通过语音识别转写",
+        "llm:image" => "已通过主模型提取图片文字",
+        "llm:audio" => "已通过主模型转写音频",
+        _ => "已自动提取内容",
+    }
+}
+
+/// Build a message attachment from a gateway-generated media file so the
+/// generated image / speech shows up in the chat like a user attachment.
+fn attachment_from_generated_file(path: &std::path::Path) -> anyhow::Result<MessageAttachment> {
+    let bytes = std::fs::read(path)?;
+    let media_type = haven_gateway::modality::detect_media_type(&bytes).to_string();
+    Ok(MessageAttachment {
+        media_type,
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        filename: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        path: Some(path.to_string_lossy().into_owned()),
+    })
 }
 
 impl AgentLayer {
@@ -240,7 +275,11 @@ impl AgentLayer {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let events = Arc::new(EventDispatcher::new());
-        let prompt_builder = Arc::new(SystemPromptBuilder::new(executor.get_tools(), db.clone()));
+        let prompt_builder = Arc::new(SystemPromptBuilder::with_router(
+            executor.get_tools(),
+            db.clone(),
+            Some(router.clone()),
+        ));
         let react_engine = Arc::new(ReActEngine::new(
             router.clone(),
             executor.clone(),
@@ -255,6 +294,7 @@ impl AgentLayer {
             context_limits.embedding_chunk_size,
             context_limits.max_known_facts,
             context_limits.sanitize_field_max_chars,
+            context_limits.fact_extraction_min_interval_secs,
         ));
         let _ = db.ensure_fact("user", "name", "Xtopia", "user", 1.0, &["identity"]);
         // Title generator is always available: it routes through the shared
@@ -274,7 +314,15 @@ impl AgentLayer {
             inference,
             title,
             title_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            gateway: tokio::sync::RwLock::new(None),
         }
+    }
+
+    /// Install (or clear) the media gateway. Set at app startup and on
+    /// provider hot-swaps; tests leave it `None` so the agent behaves
+    /// exactly as before.
+    pub async fn set_gateway(&self, gateway: Option<Arc<haven_gateway::MediaGateway>>) {
+        *self.gateway.write().await = gateway;
     }
 
     /// Persist a message into the session's message stream (conversation history).
@@ -1305,6 +1353,79 @@ impl AgentLayer {
             .await
     }
 
+    /// Run the media gateway over an incoming user message: extract
+    /// attachments through dedicated providers (OCR / ASR, with main-model
+    /// confidence/error fallback), and handle pure-text generation requests
+    /// (TTS / text-to-image). Returns the enriched message content (extracted
+    /// text / generation notes appended) and any generated-media attachments.
+    /// Fail-open: a gateway error leaves the message untouched.
+    async fn enrich_with_gateway(
+        &self,
+        transcript: &str,
+        attachments: &[MessageAttachment],
+    ) -> (String, Vec<MessageAttachment>) {
+        let Some(gateway) = self.gateway.read().await.clone() else {
+            return (transcript.to_string(), attachments.to_vec());
+        };
+        let mut notes: Vec<String> = Vec::new();
+        let mut out_attachments = attachments.to_vec();
+
+        if !attachments.is_empty() {
+            for att in attachments {
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(&att.data) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("gateway: attachment base64 decode failed: {e}");
+                        continue;
+                    }
+                };
+                let filename = att.filename.clone().unwrap_or_default();
+                match gateway
+                    .process_attachment(&bytes, &filename, transcript, None)
+                    .await
+                {
+                    Ok(AttachmentOutcome::Extracted { text, decision }) => {
+                        notes.push(format!("【{}】\n{}", extraction_label(&decision), text));
+                    }
+                    Ok(AttachmentOutcome::PassThrough { .. }) => {}
+                    Err(e) => tracing::warn!("gateway: attachment processing failed: {e}"),
+                }
+            }
+        } else if !transcript.trim().is_empty() {
+            match gateway.process_generate(transcript, None).await {
+                Ok(GenerateOutcome::Generated {
+                    kind, file_path, ..
+                }) => match attachment_from_generated_file(&file_path) {
+                    Ok(att) => {
+                        let name = file_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "media".into());
+                        out_attachments.push(att);
+                        notes.push(match kind {
+                            GenerateKind::Speech => {
+                                format!("（已生成语音文件：{name}）")
+                            }
+                            GenerateKind::Image => format!("（已生成图片：{name}）"),
+                        });
+                    }
+                    Err(e) => tracing::warn!("gateway: attaching generated file failed: {e}"),
+                },
+                Ok(GenerateOutcome::NotGenerate) | Ok(GenerateOutcome::Unsupported { .. }) => {}
+                Err(e) => tracing::warn!("gateway: generate request failed: {e}"),
+            }
+        }
+
+        if notes.is_empty() {
+            (transcript.to_string(), out_attachments)
+        } else {
+            (
+                format!("{}\n\n{}", transcript, notes.join("\n\n")),
+                out_attachments,
+            )
+        }
+    }
+
     /// Like `process_input`, but attaches binary payloads (images and
     /// user-uploaded files) to the user message. Attachments are persisted
     /// with the message; images are injected into the ReAct context as image
@@ -1315,9 +1436,17 @@ impl AgentLayer {
         &self,
         transcript: &str,
         active_session_id: Option<String>,
-        attachments: &[haven_memory::repositories::messages::MessageAttachment],
+        attachments: &[MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
+        // Media gateway pre-processing: extraction tasks (OCR / ASR) and
+        // generation requests (TTS / text-to-image) are handled here, before
+        // persistence, so every downstream path (steering, supplements, new
+        // sessions) sees the enriched message.
+        let (enriched, enriched_attachments) =
+            self.enrich_with_gateway(transcript, attachments).await;
+        let transcript: &str = &enriched;
+        let attachments = enriched_attachments.as_slice();
         tracing::debug!(
             "process_input: text={:?} active_session_id={:?} attachments={} voice={}",
             transcript,
@@ -1545,8 +1674,8 @@ mod tests {
     use futures_util::stream;
     use haven_common::types::{CanonicalToolCall, RiskLevel};
     use haven_llm::{
-        FinishReason, LlmClient, LlmError, LlmMessage, LlmResponse, LlmRole, StreamChunk, ToolCall,
-        ToolDefinition, Usage,
+        CanonicalMessage, CanonicalRole, FinishReason, LlmClient, LlmError, LlmResponse,
+        StreamChunk, ToolDefinition, Usage,
     };
     use haven_tools::{Tool, ToolBox, ToolResult, ToolsManager};
     use std::collections::VecDeque;
@@ -1567,12 +1696,12 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for FinalAnswerMock {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown("mock: chat not implemented".into()))
         }
         async fn chat_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown(
@@ -1581,7 +1710,7 @@ mod tests {
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1592,7 +1721,7 @@ mod tests {
         }
         async fn chat_stream_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -1600,10 +1729,10 @@ mod tests {
         > {
             let chunk = StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -2030,10 +2159,10 @@ mod tests {
     fn parse_default_model_response_with_tool_calls() {
         let resp = LlmResponse {
             text: "Opening file.".into(),
-            tool_calls: vec![ToolCall {
+            tool_calls: vec![CanonicalToolCall {
                 id: "tc1".into(),
                 name: "open_file".into(),
-                arguments: r#"{"path":"/tmp/test"}"#.into(),
+                arguments: serde_json::json!({"path": "/tmp/test"}),
             }],
             finish_reason: Some(FinishReason::ToolCalls),
             usage: haven_llm::Usage {
@@ -2062,10 +2191,10 @@ mod tests {
     fn parse_default_model_response_final_answer_tool_call() {
         let resp = LlmResponse {
             text: "All done.".into(),
-            tool_calls: vec![ToolCall {
+            tool_calls: vec![CanonicalToolCall {
                 id: "final".into(),
                 name: "final_answer".into(),
-                arguments: "{}".into(),
+                arguments: serde_json::json!({}),
             }],
             finish_reason: Some(FinishReason::Stop),
             usage: haven_llm::Usage {
@@ -2552,10 +2681,10 @@ mod tests {
         let client = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
             StreamChunk {
                 text: Some("keep working".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "c1".into(),
                     name: "read_file".into(),
-                    arguments: r#"{"path":"x"}"#.into(),
+                    arguments: serde_json::json!({"path": "x"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -2744,10 +2873,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
             StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -2818,7 +2947,7 @@ mod tests {
             for batch in seen.iter() {
                 let last = batch.last().expect("batch has messages");
                 assert!(
-                    !(matches!(last.role, LlmRole::Assistant) && last.tool_calls.is_some()),
+                    !(matches!(last.role, CanonicalRole::Assistant) && last.tool_calls.is_some()),
                     "batch must not end with a dangling assistant tool_call: {:?}",
                     batch
                 );
@@ -2844,10 +2973,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
             StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -2908,7 +3037,7 @@ mod tests {
                 roles
             );
             let rebuilt_tool = first.iter().any(|m| {
-                matches!(m.role, LlmRole::Assistant)
+                matches!(m.role, CanonicalRole::Assistant)
                     && m.tool_calls.as_ref().is_some_and(|c| {
                         c.iter()
                             .any(|tc| tc.name == "echo" && tc.id.starts_with("resumed_"))
@@ -2919,7 +3048,7 @@ mod tests {
                 "snapshot-less resume must rebuild the echo call from session_steps"
             );
             let rebuilt_result = first.iter().any(|m| {
-                matches!(m.role, LlmRole::Tool)
+                matches!(m.role, CanonicalRole::Tool)
                     && m.tool_call_id
                         .as_deref()
                         .is_some_and(|id| id.starts_with("resumed_"))
@@ -3579,7 +3708,7 @@ mod tests {
         chat_text: std::sync::Mutex<String>,
         /// Every message batch sent to `chat_stream_with_tools`, for
         /// assertions (e.g. that no dangling tool_call is sent).
-        seen: std::sync::Mutex<Vec<Vec<LlmMessage>>>,
+        seen: std::sync::Mutex<Vec<Vec<CanonicalMessage>>>,
     }
 
     enum ScriptedResponse {
@@ -3603,7 +3732,7 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for ScriptedMock {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             let text = self.chat_text.lock().unwrap().clone();
             Ok(LlmResponse {
                 text,
@@ -3623,14 +3752,14 @@ mod tests {
         }
         async fn chat_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown("mock: use chat_stream_with_tools".into()))
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -3639,7 +3768,7 @@ mod tests {
         }
         async fn chat_stream_with_tools(
             &self,
-            messages: Vec<LlmMessage>,
+            messages: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -3821,10 +3950,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("I'll echo that.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "echo".into(),
-                    arguments: r#"{"text":"hello"}"#.into(),
+                    arguments: serde_json::json!({"text": "hello"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -3835,10 +3964,10 @@ mod tests {
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -3874,10 +4003,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("I'll echo that.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: String::new(), // provider sends empty id
                     name: "echo".into(),
-                    arguments: r#"{"text":"hello"}"#.into(),
+                    arguments: serde_json::json!({"text": "hello"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -3888,10 +4017,10 @@ mod tests {
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -3946,10 +4075,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("I'll echo that.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "echo".into(),
-                    arguments: r#"{"text":"hello"}"#.into(),
+                    arguments: serde_json::json!({"text": "hello"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -3963,10 +4092,10 @@ mod tests {
             ScriptedResponse::ChunkDelayed(
                 StreamChunk {
                     text: Some("Done.".into()),
-                    tool_calls: vec![ToolCall {
+                    tool_calls: vec![CanonicalToolCall {
                         id: "final".into(),
                         name: "final_answer".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     }],
                     finish_reason: Some(FinishReason::Stop),
                     usage: None,
@@ -3980,10 +4109,10 @@ mod tests {
             // The re-run after the steering was injected also answers finally.
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Understood, continuing in French.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final2".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4017,11 +4146,13 @@ mod tests {
             assert_eq!(seen.len(), 3, "agent must re-run after mid-turn steering");
             let last_call = seen.last().unwrap();
             assert!(
-                last_call.iter().any(|m| matches!(m.role, LlmRole::User)
-                    && m.content.iter().any(|c| matches!(
-                        c,
-                        ContentPart::Text(t) if t.contains("Steering: stop and use French")
-                    ))),
+                last_call
+                    .iter()
+                    .any(|m| matches!(m.role, CanonicalRole::User)
+                        && m.content.iter().any(|c| matches!(
+                            c,
+                            ContentPart::Text(t) if t.contains("Steering: stop and use French")
+                        ))),
                 "steering must be injected into the re-run LLM call"
             );
         }
@@ -4049,10 +4180,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Running the tool.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "delay_a".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -4063,10 +4194,10 @@ mod tests {
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4102,7 +4233,7 @@ mod tests {
                 "no re-run needed: steering is drained at step boundary"
             );
             assert!(
-                seen[1].iter().any(|m| matches!(m.role, LlmRole::User)
+                seen[1].iter().any(|m| matches!(m.role, CanonicalRole::User)
                     && m.content.iter().any(|c| matches!(
                         c,
                         ContentPart::Text(t) if t.contains("Steering: add more detail")
@@ -4129,10 +4260,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("I need to clarify before proceeding.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "ask".into(),
-                    arguments: r#"{"question":"Which path should I take: A or B?"}"#.into(),
+                    arguments: serde_json::json!({"question": "Which path should I take: A or B?"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -4146,10 +4277,10 @@ mod tests {
             // where the loop incorrectly continues.
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4195,10 +4326,10 @@ mod tests {
             // Step 1: agent asks.
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Clarifying.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "ask".into(),
-                    arguments: r#"{"question":"A or B?"}"#.into(),
+                    arguments: serde_json::json!({"question": "A or B?"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -4210,10 +4341,10 @@ mod tests {
             // Step 2 (after resume): final answer.
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Going with A.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4273,10 +4404,10 @@ mod tests {
             // Step 1: ask the question.
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Asking.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "ask".into(),
-                    arguments: r#"{"question":"Proceed?"}"#.into(),
+                    arguments: serde_json::json!({"question": "Proceed?"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -4302,10 +4433,10 @@ mod tests {
             // Step 2 retry: final answer.
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Answer accepted.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4410,10 +4541,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Notifying the user.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "notify".into(),
-                    arguments: r#"{"title":"Build","body":"Compilation finished"}"#.into(),
+                    arguments: serde_json::json!({"title": "Build", "body": "Compilation finished"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -4424,10 +4555,10 @@ mod tests {
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4476,15 +4607,15 @@ mod tests {
             StreamChunk {
                 text: Some("Two questions.".into()),
                 tool_calls: vec![
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "tc1".into(),
                         name: "ask".into(),
-                        arguments: r#"{"question":"First?"}"#.into(),
+                        arguments: serde_json::json!({"question": "First?"}),
                     },
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "tc2".into(),
                         name: "ask".into(),
-                        arguments: r#"{"question":"Second?"}"#.into(),
+                        arguments: serde_json::json!({"question": "Second?"}),
                     },
                 ],
                 finish_reason: Some(FinishReason::ToolCalls),
@@ -4540,15 +4671,15 @@ mod tests {
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Running both in parallel.".into()),
                 tool_calls: vec![
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "tc1".into(),
                         name: "delay_a".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     },
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "tc2".into(),
                         name: "delay_b".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     },
                 ],
                 finish_reason: Some(FinishReason::ToolCalls),
@@ -4560,10 +4691,10 @@ mod tests {
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,
@@ -4620,15 +4751,15 @@ mod tests {
             StreamChunk {
                 text: Some("Running both in parallel.".into()),
                 tool_calls: vec![
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "tc1".into(),
                         name: "delay_a".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     },
-                    ToolCall {
+                    CanonicalToolCall {
                         id: "tc2".into(),
                         name: "delay_b".into(),
-                        arguments: "{}".into(),
+                        arguments: serde_json::json!({}),
                     },
                 ],
                 finish_reason: Some(FinishReason::ToolCalls),
@@ -4876,13 +5007,13 @@ mod tests {
         );
         let last_req = seen.last().unwrap();
         let idx_answer = last_req.iter().position(|m| {
-            matches!(m.role, LlmRole::Assistant)
+            matches!(m.role, CanonicalRole::Assistant)
                 && m.content
                     .iter()
                     .any(|p| matches!(p, ContentPart::Text(t) if t.contains("First answer.")))
         });
         let idx_followup = last_req.iter().position(|m| {
-            matches!(m.role, LlmRole::User)
+            matches!(m.role, CanonicalRole::User)
                 && m.content
                     .iter()
                     .any(|p| matches!(p, ContentPart::Text(t) if t.contains("next question")))
@@ -4909,10 +5040,10 @@ mod tests {
         let mock = Arc::new(ScriptedMock::new(vec![
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Calling echo.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "tc1".into(),
                     name: "echo".into(),
-                    arguments: r#"{"text":"data"}"#.into(),
+                    arguments: serde_json::json!({"text": "data"}),
                 }],
                 finish_reason: Some(FinishReason::ToolCalls),
                 usage: None,
@@ -4924,10 +5055,10 @@ mod tests {
             ScriptedResponse::Err(LlmError::ContextLengthExceeded),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done after compaction.".into()),
-                tool_calls: vec![ToolCall {
+                tool_calls: vec![CanonicalToolCall {
                     id: "final".into(),
                     name: "final_answer".into(),
-                    arguments: "{}".into(),
+                    arguments: serde_json::json!({}),
                 }],
                 finish_reason: Some(FinishReason::Stop),
                 usage: None,

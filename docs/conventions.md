@@ -208,3 +208,21 @@ try {
 - [ ] 通知：事件驱动，前端只经 `addNotification`；新事件按 §2.4 模板走完 channel / payload / toast / 配置四步。
 - [ ] 错误：后端 `Result<T, String>` + 日志 + 用户可读摘要；前端 try/catch + `addNotification`，不重复记日志。
 - [ ] 涉及桌面通知配置时同步扩展 `NotificationConfig` 与设置页。
+
+## 6. 「Haven」/「haven」大小写规范
+
+产品名统一大写 **Haven**，仅用于**用户可见的展示字符串**；其余**标识 / 路径 / 协议字段一律小写 `haven`**。禁止同一语义在不同地方混用大小写。
+
+| 域 | 大小写 | 示例 |
+|---|---|---|
+| 窗口标题 / 托盘 tooltip / 系统通知标题 | `Haven` | `tauri.conf.json` `productName`、`app-binary` 通知与托盘文案 |
+| 通知默认标题（`notify` / `scheduled_task` 工具） | `Haven` | `tool.rs` / `notify.rs` / `scheduled_task.rs` 默认 title |
+| 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `ui/src/routes/+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
+| Windows 计划任务名（Task Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `TASK_NAME` |
+| 数据目录 / 临时工作目录 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_work_dir()`、`haven.log` |
+| 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |
+| localStorage / kv 键 | `haven` | `haven.theme`、`haven.accent`、`haven.no_auto_restore` |
+| MCP `clientInfo.name` 等协议标识 | `haven` | `crates/tools/src/mcp/mod.rs` |
+| 测试 fixture 中的实体数据（subject 等） | `haven` | `inference.rs` / `prompt.rs` 测试 |
+
+判别方法：**会显示给用户看 → `Haven`；会被机器比较 / 拼接成路径 / 写入存储 → `haven`。**

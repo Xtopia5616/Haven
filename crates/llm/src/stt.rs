@@ -23,13 +23,23 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::LlmRouter;
-use crate::types::{ContentPart, LlmMessage, LlmRole};
+use crate::types::{CanonicalMessage, CanonicalRole, ContentPart};
+
+/// Outcome of a speech-to-text call: the transcript plus an optional
+/// confidence (0.0-1.0) reported by the provider. `None` confidence means
+/// the provider does not report one; the gateway's confidence gate treats
+/// that as "no signal" and falls back on error / empty text instead.
+#[derive(Debug, Clone, Default)]
+pub struct SttResult {
+    pub text: String,
+    pub confidence: Option<f32>,
+}
 
 /// Trait for speech-to-text conversion.
-/// Implementations receive WAV bytes and return transcribed text.
+/// Implementations receive WAV bytes and return the transcript.
 #[async_trait]
 pub trait SttClient: Send + Sync {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String>;
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult>;
 }
 
 /// Outcome of an MCP tool invocation, decoupled from the tools crate's
@@ -110,7 +120,7 @@ impl McpSttClient {
 
 #[async_trait]
 impl SttClient for McpSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String> {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         let audio_b64 = base64::engine::general_purpose::STANDARD.encode(wav_data);
 
         let input = serde_json::json!({
@@ -136,8 +146,9 @@ impl SttClient for McpSttClient {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("STT response missing 'text' field"))?
             .to_string();
-
-        Ok(text)
+        // Optional confidence passthrough (MCP servers exposing it).
+        let confidence = result.output["confidence"].as_f64().map(|c| c as f32);
+        Ok(SttResult { text, confidence })
     }
 }
 
@@ -156,7 +167,7 @@ impl LlmSttAdapter {
 
 #[async_trait]
 impl SttClient for LlmSttAdapter {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String> {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         let role = match self.router.stt_role().await {
             Some(role) => role,
             None => {
@@ -167,23 +178,16 @@ impl SttClient for LlmSttAdapter {
         };
         let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
         let messages = vec![
-            LlmMessage {
-                role: LlmRole::System,
-                content: vec![ContentPart::text(STT_SYSTEM_PROMPT)],
-                tool_call_id: None,
-                tool_calls: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-            },
-            LlmMessage {
-                role: LlmRole::User,
+            CanonicalMessage::system(vec![ContentPart::text(STT_SYSTEM_PROMPT)]),
+            CanonicalMessage {
+                role: CanonicalRole::User,
                 content: vec![ContentPart::Audio {
                     content_type: "input_audio".into(),
                     media_type: "audio/wav".into(),
                     data,
                 }],
-                tool_call_id: None,
                 tool_calls: None,
+                tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
             },
@@ -224,7 +228,10 @@ impl SttClient for LlmSttAdapter {
         let text = resp.text.trim().to_string();
         // Empty transcription (silence / too-short clip) is not an error:
         // the caller treats it as "no speech" and skips the message.
-        Ok(text)
+        Ok(SttResult {
+            text,
+            confidence: None,
+        })
     }
 }
 
@@ -290,7 +297,7 @@ impl OpenAiWhisperClient {
 
 #[async_trait]
 impl SttClient for OpenAiWhisperClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String> {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         let form = reqwest::multipart::Form::new()
             .part(
                 "file",
@@ -327,7 +334,11 @@ impl SttClient for OpenAiWhisperClient {
             .ok_or_else(|| anyhow::anyhow!("Whisper STT response missing 'text' field"))?
             .trim()
             .to_string();
-        Ok(text)
+        Ok(SttResult {
+            text,
+            // Whisper does not report confidence.
+            confidence: None,
+        })
     }
 }
 
@@ -367,7 +378,7 @@ impl DeepgramSttClient {
 
 #[async_trait]
 impl SttClient for DeepgramSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String> {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         let url = format!(
             "https://api.deepgram.com/v1/listen?model={}&smart_format=true",
             self.model
@@ -391,15 +402,18 @@ impl SttClient for DeepgramSttClient {
             return Err(stt_error_body(status, &body));
         }
 
-        // Deepgram nests text under `results.channels[0].alternatives[0].transcript`.
+        // Deepgram nests text under `results.channels[0].alternatives[0].transcript`
+        // and the alternative's overall confidence under `.confidence`.
         let json: serde_json::Value = serde_json::from_str(&body)
             .map_err(|e| anyhow::anyhow!("Deepgram STT returned invalid JSON: {}", e))?;
-        let text = json["results"]["channels"][0]["alternatives"][0]["transcript"]
+        let alternative = &json["results"]["channels"][0]["alternatives"][0];
+        let text = alternative["transcript"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Deepgram STT response missing transcript"))?
             .trim()
             .to_string();
-        Ok(text)
+        let confidence = alternative["confidence"].as_f64().map(|c| c as f32);
+        Ok(SttResult { text, confidence })
     }
 }
 
@@ -445,7 +459,7 @@ impl AssemblyAiSttClient {
 
 #[async_trait]
 impl SttClient for AssemblyAiSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String> {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         let upload_url = self
             .client
             .post(format!("{}/v2/upload", self.base_url))
@@ -521,7 +535,8 @@ impl SttClient for AssemblyAiSttClient {
             match status {
                 "completed" => {
                     let text = job["text"].as_str().unwrap_or("").trim().to_string();
-                    return Ok(text);
+                    let confidence = job["confidence"].as_f64().map(|c| c as f32);
+                    return Ok(SttResult { text, confidence });
                 }
                 "error" => {
                     let err = job["error"].as_str().unwrap_or("unknown error");
@@ -566,7 +581,7 @@ impl GeminiSttClient {
 
 #[async_trait]
 impl SttClient for GeminiSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<String> {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
         let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
         let body = serde_json::json!({
             "contents": [{
@@ -610,7 +625,10 @@ impl SttClient for GeminiSttClient {
             .trim()
             .to_string();
         // Empty transcription (silence / too-short clip) is not an error.
-        Ok(text)
+        Ok(SttResult {
+            text,
+            confidence: None,
+        })
     }
 }
 
@@ -633,9 +651,12 @@ mod tests {
 
     #[async_trait]
     impl SttClient for MockSttClient {
-        async fn transcribe(&self, _wav_data: &[u8]) -> Result<String> {
+        async fn transcribe(&self, _wav_data: &[u8]) -> Result<SttResult> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(self.response.clone())
+            Ok(SttResult {
+                text: self.response.clone(),
+                confidence: None,
+            })
         }
     }
 
@@ -647,7 +668,8 @@ mod tests {
         };
         let wav = vec![0u8; 44]; // minimal WAV header
         let result = client.transcribe(&wav).await.unwrap();
-        assert_eq!(result, "hello world");
+        assert_eq!(result.text, "hello world");
+        assert!(result.confidence.is_none());
         assert_eq!(client.call_count.load(Ordering::SeqCst), 1);
     }
 
@@ -658,7 +680,7 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for MockLlm {
-        async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             // The audio payload must be carried in an Audio content part.
             let has_audio = messages.iter().any(|m| {
@@ -677,7 +699,7 @@ mod tests {
 
         async fn chat_stream(
             &self,
-            _messages: Vec<LlmMessage>,
+            _messages: Vec<CanonicalMessage>,
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
         {
             Ok(Box::pin(futures_util::stream::empty()))
@@ -709,8 +731,9 @@ mod tests {
             .force_role_configured(EndpointRole::AudioModel, true)
             .await;
         let adapter = LlmSttAdapter::new(router);
-        let text = adapter.transcribe(&[0u8; 44]).await.unwrap();
-        assert_eq!(text, "你好世界");
+        let result = adapter.transcribe(&[0u8; 44]).await.unwrap();
+        assert_eq!(result.text, "你好世界");
+        assert!(result.confidence.is_none());
     }
 
     #[tokio::test]
@@ -729,8 +752,8 @@ mod tests {
         let router = mock_router("走默认模型的转写");
         router.force_routing_flags(false, true).await;
         let adapter = LlmSttAdapter::new(router);
-        let text = adapter.transcribe(&[0u8; 44]).await.unwrap();
-        assert_eq!(text, "走默认模型的转写");
+        let result = adapter.transcribe(&[0u8; 44]).await.unwrap();
+        assert_eq!(result.text, "走默认模型的转写");
     }
 
     struct MockLlmErr {
@@ -739,12 +762,12 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for MockLlmErr {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(self.err.clone())
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
         {
             Ok(Box::pin(futures_util::stream::empty()))

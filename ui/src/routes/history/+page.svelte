@@ -24,6 +24,25 @@
 	// Right-click context menu on a history item (open / rename / export / delete)
 	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
 
+	// Tabs: session history vs. memory recall vs. facts management.
+	let activeTab = $state('sessions');
+	const historyTabs = [
+		{ id: 'sessions', label: '会话' },
+		{ id: 'memory', label: '记忆' },
+		{ id: 'facts', label: '事实' },
+	];
+
+	// Memory recall (moved from Settings): search stored facts / episodes.
+	let memoryRecall = $state({ query: '', kind: 'fact', results: [], loading: false });
+
+	// Facts management (moved from Settings): every stored fact plus the
+	// manual-add form. Backed by list_facts / add_fact / delete_fact.
+	// Preferences are facts tagged `preference` (single memory channel).
+	let facts = $state([]);
+	let factsLoaded = $state(false);
+	let newFact = $state({ predicate: '', object: '', tags: '' });
+	let addingFact = $state(false);
+
 	const todayISO = $derived.by(() => {
 		const n = new Date();
 		return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
@@ -67,6 +86,15 @@
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
 		if (unlistenTitleUpdate) unlistenTitleUpdate.dispose();
+	});
+
+	// Defer the facts table load until the 事实 tab is first opened, so a
+	// sessions-only visit never pays the full list_facts scan. `factsLoaded`
+	// guards the load to once.
+	$effect(() => {
+		if (activeTab === 'facts' && !factsLoaded) {
+			loadFacts();
+		}
 	});
 
 	function filterParams(extra) {
@@ -320,33 +348,117 @@
 			addNotification(`导出失败: ${e}`, 'error', 4000);
 		}
 	}
+
+	async function loadFacts() {
+		try {
+			facts = (await invoke('list_facts')) || [];
+			factsLoaded = true;
+		} catch {
+			facts = [];
+			factsLoaded = true;
+			logger.warn('history', 'load facts error');
+		}
+	}
+
+	async function addFact() {
+		const predicate = newFact.predicate.trim();
+		const object = newFact.object.trim();
+		if (!predicate || !object) {
+			addNotification('请输入 predicate 和 object', 'error', 3000);
+			return;
+		}
+		addingFact = true;
+		try {
+			const tags = newFact.tags
+				.split(',')
+				.map((t) => t.trim())
+				.filter(Boolean);
+			const created = await invoke('add_fact', {
+				subject: 'user',
+				predicate,
+				object,
+				tags: tags.length ? tags : null,
+			});
+			facts = [created, ...facts];
+			newFact = { predicate: '', object: '', tags: '' };
+			addNotification('事实已保存', 'success', 2500);
+		} catch (e) {
+			addNotification(`添加事实失败: ${e}`, 'error', 3000);
+		} finally {
+			addingFact = false;
+		}
+	}
+
+	async function deleteFact(factId) {
+		try {
+			await invoke('delete_fact', { factId });
+			facts = facts.filter((f) => f.id !== factId);
+		} catch (e) {
+			addNotification(`删除事实失败: ${e}`, 'error', 3000);
+		}
+	}
+
+	async function runRecall() {
+		const q = memoryRecall.query.trim();
+		if (!q) return;
+		memoryRecall.loading = true;
+		try {
+			memoryRecall.results = (await invoke('recall_memory', {
+				query: q,
+				kind: memoryRecall.kind,
+				limit: 10,
+			})) || [];
+		} catch (e) {
+			memoryRecall.results = [];
+			addNotification(`记忆检索失败: ${e}`, 'error', 4000);
+		} finally {
+			memoryRecall.loading = false;
+		}
+	}
 </script>
 
 <div class="history-page">
 	<div class="header-row">
 		<h1>History</h1>
-		<span class="count-badge">Total {totalCount} shown</span>
-		<div class="header-actions">
-			{#if selectMode}
-				<button
-					class="md-btn md-btn--filled"
-					onclick={exportSelected}
-					disabled={selectedIds.size === 0}
-				>
-					Export Selected ({selectedIds.size})
-				</button>
-				<button class="md-btn md-btn--text" onclick={cancelSelectMode}>Cancel</button>
-			{:else}
-				<button class="md-btn md-btn--outlined" onclick={enterSelectMode}>Export</button>
-				{#if sessions.length > 0}
-					<button class="md-btn md-btn--danger" onclick={() => (showClearDialog = true)}>
-						Clear All
+		{#if activeTab === 'sessions'}
+			<span class="count-badge">Total {totalCount} shown</span>
+			<div class="header-actions">
+				{#if selectMode}
+					<button
+						class="md-btn md-btn--filled"
+						onclick={exportSelected}
+						disabled={selectedIds.size === 0}
+					>
+						Export Selected ({selectedIds.size})
 					</button>
+					<button class="md-btn md-btn--text" onclick={cancelSelectMode}>Cancel</button>
+				{:else}
+					<button class="md-btn md-btn--outlined" onclick={enterSelectMode}>Export</button>
+					{#if sessions.length > 0}
+						<button class="md-btn md-btn--danger" onclick={() => (showClearDialog = true)}>
+							Clear All
+						</button>
+					{/if}
 				{/if}
-			{/if}
-		</div>
+			</div>
+		{/if}
 	</div>
 
+	<div class="md-tabs history-tabs" role="tablist">
+		{#each historyTabs as tab}
+			<button
+				class="md-tab"
+				class:active={activeTab === tab.id}
+				role="tab"
+				aria-selected={activeTab === tab.id}
+				onclick={() => (activeTab = tab.id)}
+			>
+				{tab.label}
+			</button>
+		{/each}
+	</div>
+
+	{#if activeTab === 'sessions'}
 	<div class="filter-bar">
 		<input
 			class="md-input"
@@ -475,6 +587,100 @@
 				</button>
 			</div>
 		{/if}
+	{/if}
+	{:else if activeTab === 'memory'}
+		<div class="section">
+			<h2>记忆检索</h2>
+			<p class="model-hint">检索已存储的记忆（事实 / 历史对话）。配置了 Embedding Model 时使用语义检索，否则回退到关键词匹配。</p>
+			<input
+				id="memory-recall-query"
+				type="text"
+				class="md-input"
+				bind:value={memoryRecall.query}
+				placeholder="检索记忆内容（事实 / 对话），如：深色主题"
+				onkeydown={(e) => { if (e.key === 'Enter') runRecall(); }}
+				autocomplete="off"
+			/>
+			<div class="recall-actions">
+				<MaterialSelect
+					id="memory-recall-kind"
+					value={memoryRecall.kind}
+					options={[
+						{ value: 'fact', label: 'Facts' },
+						{ value: 'episode', label: 'Conversations' },
+					]}
+					onChange={(v) => { memoryRecall.kind = v; }}
+				/>
+				<button class="md-btn md-btn--filled" onclick={runRecall} disabled={memoryRecall.loading}>
+					{memoryRecall.loading ? 'Searching…' : 'Search'}
+				</button>
+			</div>
+			{#if memoryRecall.results.length > 0}
+				<ul class="recall-results">
+					{#each memoryRecall.results as r (r.entity_id + r.text)}
+						<li>
+							<span class="recall-score">{(r.score ?? 0).toFixed(2)}</span>
+							<span class="recall-text">{r.text}</span>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
+	{:else}
+		<div class="section">
+			<h2>事实</h2>
+			<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 facts 工具的 remember / forget 操作更新这里。</p>
+			<input
+				type="text"
+				class="md-input"
+				placeholder="谓词（如 email）"
+				bind:value={newFact.predicate}
+				autocomplete="off"
+			/>
+			<input
+				type="text"
+				class="md-input"
+				placeholder="对象（如 alice@example.com）"
+				bind:value={newFact.object}
+				autocomplete="off"
+			/>
+			<input
+				type="text"
+				class="md-input"
+				placeholder="标签（可选，逗号分隔）"
+				bind:value={newFact.tags}
+				autocomplete="off"
+			/>
+			<div class="add-fact-actions">
+				<button class="md-btn md-btn--filled" onclick={addFact} disabled={addingFact}>
+					{addingFact ? 'Adding…' : 'Add Fact'}
+				</button>
+			</div>
+			{#if factsLoaded && facts.length > 0}
+				<div class="fact-list">
+					{#each facts as fact}
+						<div class="fact-row">
+							<span class="fact-key">
+								{#if fact.subject !== 'user'}{fact.subject}:{/if}{fact.predicate}
+							</span>
+							<span class="fact-value">
+								{#if fact.source === 'inferred'}
+									<span class="fact-tag fact-tag--inf">inferred</span>
+								{:else}
+									<span class="fact-tag fact-tag--user">user</span>
+								{/if}
+								{fact.object}
+							</span>
+							<button class="md-btn md-btn--xs md-btn--outlined" onclick={() => deleteFact(fact.id)} title="Delete fact">
+								&times;
+							</button>
+						</div>
+					{/each}
+				</div>
+			{:else if factsLoaded}
+				<p class="model-hint">No facts recorded yet. They will appear here as you use Haven.</p>
+			{/if}
+		</div>
 	{/if}
 </div>
 
@@ -840,5 +1046,111 @@
 		display: flex;
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
+	}
+	.history-tabs {
+		margin-bottom: var(--md-sys-space-xl);
+	}
+	.section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-md);
+	}
+	.section h2 {
+		font-size: 18px;
+		font-weight: 600;
+		color: var(--md-sys-color-on-surface);
+		margin: 0;
+	}
+	.model-hint {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		margin-top: calc(-1 * var(--md-sys-space-sm));
+		margin-bottom: var(--md-sys-space-md);
+	}
+	.recall-actions,
+	.add-fact-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+	}
+	.recall-actions :global(.md-select-container) {
+		width: 200px;
+		flex-shrink: 0;
+	}
+	.recall-results {
+		list-style: none;
+		margin: var(--md-sys-space-sm) 0 var(--md-sys-space-md);
+		padding: 0;
+		max-height: 220px;
+		overflow-y: auto;
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-radius-md);
+	}
+	.recall-results li {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		font-size: 13px;
+	}
+	.recall-results li:last-child {
+		border-bottom: none;
+	}
+	.recall-score {
+		font-variant-numeric: tabular-nums;
+		color: var(--md-sys-color-primary);
+		min-width: 42px;
+	}
+	.recall-text {
+		color: var(--md-sys-color-on-surface);
+		overflow-wrap: anywhere;
+	}
+	.fact-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xs);
+	}
+	.fact-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) 0;
+	}
+	.fact-key {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 13px;
+		font-weight: 500;
+		min-width: 140px;
+		flex-shrink: 0;
+	}
+	.fact-value {
+		color: var(--md-sys-color-on-surface);
+		font-size: 13px;
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+	}
+	.fact-tag {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		height: 20px;
+		padding: 0 6px;
+		border-radius: var(--md-sys-shape-small);
+		font-size: 10px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		flex-shrink: 0;
+	}
+	.fact-tag--user {
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+	}
+	.fact-tag--inf {
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
 	}
 </style>

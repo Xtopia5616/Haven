@@ -67,6 +67,23 @@ describe('ChatBubble', () => {
 		expect(container.querySelectorAll('.attachment-img').length).toBe(2);
 	});
 
+	it('renders audio attachments (TTS) with a player, not a file chip', () => {
+		const { container } = render(
+			ChatBubble,
+			base({
+				role: 'user',
+				content: '（已生成语音文件：file-abc.mp3）',
+				attachments: [
+					{ media_type: 'audio/mpeg', data: 'bXBzLWJ5dGVz', filename: 'file-abc.mp3' },
+				],
+			}),
+		);
+		const audio = container.querySelector('.attachment-audio');
+		expect(audio).toBeTruthy();
+		expect(audio.getAttribute('src')).toBe('data:audio/mpeg;base64,bXBzLWJ5dGVz');
+		expect(container.querySelector('.attachment-file')).toBeNull();
+	});
+
 	it('renders file attachments as name chips, not images', () => {
 		const { container } = render(
 			ChatBubble,

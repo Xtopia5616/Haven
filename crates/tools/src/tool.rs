@@ -417,7 +417,10 @@ pub enum ConfirmationResult {
 #[derive(Clone)]
 struct SafetyConfig {
     min_risk_level: RiskLevel,
-    session_trusted_levels: HashSet<RiskLevel>,
+    /// Per-conversation trusted risk levels, keyed by session id. Trusting a
+    /// level only affects that one session — other conversations (and the
+    /// threshold check) are untouched.
+    session_trusted_levels: HashMap<String, HashSet<RiskLevel>>,
 }
 
 pub struct SafetyGateway {
@@ -429,7 +432,7 @@ impl SafetyGateway {
         Self {
             config: RwLock::new(SafetyConfig {
                 min_risk_level,
-                session_trusted_levels: HashSet::new(),
+                session_trusted_levels: HashMap::new(),
             }),
         }
     }
@@ -445,6 +448,7 @@ impl SafetyGateway {
 
     pub async fn check(
         &self,
+        session_id: Option<&str>,
         tool_name: &str,
         params: &Value,
         risk_level: RiskLevel,
@@ -456,8 +460,15 @@ impl SafetyGateway {
             return ConfirmationResult::AutoApproved;
         }
 
-        // Session-trusted risk levels → auto approved
-        if cfg.session_trusted_levels.contains(&risk_level) {
+        // Session-trusted risk levels → auto approved. Trust is recorded per
+        // conversation only; without a session id (e.g. a UI-invoked call
+        // outside any conversation) there is nothing to check.
+        if let Some(sid) = session_id
+            && cfg
+                .session_trusted_levels
+                .get(sid)
+                .is_some_and(|levels| levels.contains(&risk_level))
+        {
             return ConfirmationResult::AutoApproved;
         }
 
@@ -468,13 +479,32 @@ impl SafetyGateway {
         }
     }
 
-    /// Trust a risk level for the remainder of the session.
-    pub async fn trust_risk_level(&self, level: RiskLevel) {
+    /// Trust a risk level for the remainder of the given session only. A
+    /// `None` session id (no conversation context) records nothing — there is
+    /// no session scope the trust could apply to.
+    pub async fn trust_risk_level(&self, session_id: Option<&str>, level: RiskLevel) {
+        let mut cfg = self.config.write().await;
+        if let Some(sid) = session_id {
+            cfg.session_trusted_levels
+                .entry(sid.to_string())
+                .or_default()
+                .insert(level);
+        }
+    }
+
+    /// Drop one session's trusted levels (the conversation ended or was
+    /// deleted). Other sessions are unaffected.
+    pub async fn clear_session_trust(&self, session_id: &str) {
         self.config
             .write()
             .await
             .session_trusted_levels
-            .insert(level);
+            .remove(session_id);
+    }
+
+    /// Drop every session's trusted levels (all history cleared / app reset).
+    pub async fn clear_all_trust(&self) {
+        self.config.write().await.session_trusted_levels.clear();
     }
 }
 
@@ -763,7 +793,7 @@ mod tests {
     async fn test_safety_gateway_new_default_threshold() {
         let gw = SafetyGateway::new(RiskLevel::Low);
         // Safe is below Low → auto approved
-        let result = gw.check("tool1", &json!({}), RiskLevel::Safe).await;
+        let result = gw.check(None, "tool1", &json!({}), RiskLevel::Safe).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
@@ -771,7 +801,7 @@ mod tests {
     async fn test_safety_gateway_below_threshold_auto_approved() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         // Low is below Medium → auto approved
-        let result = gw.check("tool1", &json!({}), RiskLevel::Low).await;
+        let result = gw.check(None, "tool1", &json!({}), RiskLevel::Low).await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
     }
 
@@ -779,7 +809,7 @@ mod tests {
     async fn test_safety_gateway_at_threshold_requires_confirmation() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
         // Medium is at the threshold → requires confirmation
-        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
+        let result = gw.check(None, "tool1", &json!({}), RiskLevel::Medium).await;
         assert!(matches!(
             result,
             ConfirmationResult::RequiresConfirmation { .. }
@@ -790,7 +820,7 @@ mod tests {
     async fn test_safety_gateway_above_threshold_requires_confirmation() {
         let gw = SafetyGateway::new(RiskLevel::Low);
         // High is above Low → requires confirmation
-        let result = gw.check("tool1", &json!({}), RiskLevel::High).await;
+        let result = gw.check(None, "tool1", &json!({}), RiskLevel::High).await;
         assert!(matches!(
             result,
             ConfirmationResult::RequiresConfirmation { .. }
@@ -800,27 +830,80 @@ mod tests {
     #[tokio::test]
     async fn test_safety_gateway_trusted_risk_level_auto_approved() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.trust_risk_level(RiskLevel::Medium).await;
-        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
+        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_trust_is_per_session() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
+        // The trusted session is auto-approved…
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
+        assert!(matches!(result, ConfirmationResult::AutoApproved));
+        // …but a different session is NOT: the trust must not leak across
+        // conversations.
+        let result = gw
+            .check(Some("ses-b"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
+        assert!(matches!(
+            result,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+        // A call with no session context is not trusted either.
+        let result = gw.check(None, "tool1", &json!({}), RiskLevel::Medium).await;
+        assert!(matches!(
+            result,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_clear_session_trust() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
+        assert!(matches!(result, ConfirmationResult::AutoApproved));
+
+        gw.clear_session_trust("ses-a").await;
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
+        assert!(matches!(
+            result,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
     }
 
     #[tokio::test]
     async fn test_safety_gateway_set_threshold_clears_trust() {
         let gw = SafetyGateway::new(RiskLevel::Low);
-        gw.trust_risk_level(RiskLevel::Medium).await;
+        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
         // Medium is >= Low → check against threshold should pass since trusted
-        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
 
         // Raising threshold clears session trusts
         gw.set_min_risk_level(RiskLevel::High).await;
         // Medium is below High → auto approved anyway (below threshold)
-        let result = gw.check("tool1", &json!({}), RiskLevel::Medium).await;
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
 
         // High is at threshold, trust was cleared → requires confirmation
-        let result = gw.check("tool1", &json!({}), RiskLevel::High).await;
+        let result = gw
+            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::High)
+            .await;
         assert!(matches!(
             result,
             ConfirmationResult::RequiresConfirmation { .. }

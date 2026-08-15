@@ -139,16 +139,29 @@
 	//
 	// Wide tables and code blocks get three affordances:
 	//   1. Edge fade hints (--sh-l / --sh-r) that appear while the block is
-	//      scrollable, refreshed on scroll, resize and content mutation.
+	//      scrollable, refreshed on scroll, resize and content mutation. The
+	//      fades are absolutely positioned on the NON-scrolling wrapper
+	//      (.md-code-wrap / .md-table-wrap), so they stay fixed at the
+	//      viewport edges while the content scrolls beneath them.
 	//   2. Mouse wheel over a horizontally-scrollable block is translated to
 	//      horizontal scrolling (when the block itself cannot scroll
 	//      vertically), so mouse users don't need shift+wheel.
 	//   3. A thin visible scrollbar, because scrollbars are hidden globally.
+	// The CSS vars are written to the fade-hosting wrapper (or the element
+	// itself for plain <pre> that never scrolls, e.g. streaming fences).
+	function hintTarget(el) {
+		const wrap = el.parentElement;
+		if (wrap && (wrap.classList.contains('md-code-wrap') || wrap.classList.contains('md-table-wrap'))) {
+			return wrap;
+		}
+		return el;
+	}
 	function refreshScrollHint(el) {
+		const target = hintTarget(el);
 		const atLeft = el.scrollLeft <= 0;
 		const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
-		el.style.setProperty('--sh-l', atLeft ? 0 : 1);
-		el.style.setProperty('--sh-r', atRight ? 0 : 1);
+		target.style.setProperty('--sh-l', atLeft ? 0 : 1);
+		target.style.setProperty('--sh-r', atRight ? 0 : 1);
 	}
 
 	function handleMdScrollCapture(e) {
@@ -346,6 +359,10 @@
 								alt="用户发送的图片"
 								loading="lazy"
 							/>
+						{:else if (att.media_type || '').startsWith('audio/') && att.data}
+							<audio class="attachment-audio" controls preload="none" src={imageDataUrl(att)} title={att.filename || '语音'}>
+								你的浏览器不支持音频播放
+							</audio>
 						{:else}
 							<div class="attachment-file" title={att.path || att.filename || '附件'}>
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -507,6 +524,12 @@
 	.attachment-img:hover {
 		opacity: 0.9;
 	}
+	.attachment-audio {
+		max-width: 240px;
+		height: 36px;
+		border-radius: var(--md-sys-shape-small);
+		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
+	}
 	.attachment-file {
 		display: inline-flex;
 		align-items: center;
@@ -558,6 +581,7 @@
 		word-break: break-word;
 	}
 	.md-content :global(.md-code-wrap) {
+		position: relative;
 		background: var(--md-sys-color-surface-container-high);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
@@ -568,6 +592,16 @@
 		background: none;
 		margin: 0;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border-radius: 0;
+	}
+	.md-content :global(.md-table-wrap) {
+		position: relative;
+		overflow: hidden;
+		border-radius: var(--md-sys-shape-small);
+		margin: 0 0 0.75em;
+	}
+	.md-content :global(.md-table-wrap table) {
+		margin: 0;
 		border-radius: 0;
 	}
 	.md-content :global(.md-code-bar) {
@@ -702,8 +736,7 @@
 		font-size: 12px;
 		scrollbar-width: thin;
 		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
-	}
-	.md-content :global(th),
+	}	.md-content :global(th),
 	.md-content :global(td) {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
@@ -715,7 +748,10 @@
 	}
 	/* Wide content affordances (scrollbars are hidden globally, so pre/table
 	 * re-enable a slim one and get edge fade hints driven by JS: --sh-l and
-	 * --sh-r are 1 while content is clipped on that side). */
+	 * --sh-r are 1 while content is clipped on that side). The fades are
+	 * pseudo-elements of the NON-scrolling wrappers (.md-code-wrap /
+	 * .md-table-wrap), so they stay pinned to the viewport edges while the
+	 * inner pre/table scrolls. */
 	.md-content :global(pre)::-webkit-scrollbar,
 	.md-content :global(table)::-webkit-scrollbar {
 		display: block;
@@ -730,10 +766,10 @@
 		background: var(--md-sys-color-outline-variant);
 		border-radius: 2px;
 	}
-	.md-content :global(pre)::before,
-	.md-content :global(pre)::after,
-	.md-content :global(table)::before,
-	.md-content :global(table)::after {
+	.md-content :global(.md-code-wrap)::before,
+	.md-content :global(.md-code-wrap)::after,
+	.md-content :global(.md-table-wrap)::before,
+	.md-content :global(.md-table-wrap)::after {
 		content: '';
 		position: absolute;
 		top: 0;
@@ -744,21 +780,21 @@
 		opacity: 0;
 		transition: opacity 0.15s ease;
 	}
-	.md-content :global(pre)::before,
-	.md-content :global(table)::before {
+	.md-content :global(.md-code-wrap)::before,
+	.md-content :global(.md-table-wrap)::before {
 		left: 0;
 		opacity: var(--sh-l, 0);
 		background: linear-gradient(to right, var(--md-sys-color-surface-container-high), transparent);
 		border-radius: var(--md-sys-shape-small) 0 var(--md-sys-shape-small) 0;
 	}
-	.md-content :global(pre)::after,
-	.md-content :global(table)::after {
+	.md-content :global(.md-code-wrap)::after,
+	.md-content :global(.md-table-wrap)::after {
 		right: 0;
 		opacity: var(--sh-r, 0);
 		background: linear-gradient(to left, var(--md-sys-color-surface-container-high), transparent);
 		border-radius: 0 var(--md-sys-shape-small) 0 var(--md-sys-shape-small);
 	}
-	.md-content :global(table)::before {
+	.md-content :global(.md-table-wrap)::before {
 		background: linear-gradient(
 			to right,
 			color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface)),
@@ -766,7 +802,7 @@
 		);
 		border-radius: 0;
 	}
-	.md-content :global(table)::after {
+	.md-content :global(.md-table-wrap)::after {
 		background: linear-gradient(
 			to left,
 			color-mix(in srgb, var(--md-sys-color-primary-container) 20%, var(--md-sys-color-surface)),
@@ -774,9 +810,9 @@
 		);
 		border-radius: 0;
 	}
-	.md-content :global(.md-code-wrap pre)::before,
-	.md-content :global(.md-code-wrap pre)::after {
-		border-radius: 0;
+	.md-content :global(.md-code-bar) {
+		position: relative;
+		z-index: 2;
 	}
 	.md-content :global(strong) {
 		font-weight: 700;

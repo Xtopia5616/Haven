@@ -110,11 +110,11 @@ fn sanitize_tags(tags: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Normalize a predicate to its canonical lowercase form so the same concept
-/// stored by different models/runs merges into one row instead of fanning out
-/// into `Likes`/`likes`/` likes`.
+/// Normalize a predicate to its canonical form (trim + lowercase + alias
+/// mapping). Delegates to the memory layer so the inference path and the
+/// repository write paths share ONE normalization policy.
 fn normalize_predicate(predicate: &str) -> String {
-    predicate.trim().to_ascii_lowercase()
+    haven_memory::repositories::facts::normalize_predicate(predicate)
 }
 
 pub struct InferenceEngine {
@@ -130,6 +130,9 @@ pub struct InferenceEngine {
     /// Max chars of a fact subject/predicate/object field (prompt-injection
     /// sanitization truncation).
     sanitize_max_chars: usize,
+    /// Min wall-clock seconds between LLM extraction calls per session
+    /// (time-based throttle, complements the step-based react gate).
+    fact_extraction_min_interval_secs: u64,
     /// Limits concurrent LLM fact-extraction calls to avoid overwhelming
     /// the BalancedModel endpoint when multiple sessions complete in rapid
     /// succession.
@@ -144,6 +147,7 @@ impl InferenceEngine {
         embed_chunk_size: usize,
         max_known_facts: usize,
         sanitize_max_chars: usize,
+        fact_extraction_min_interval_secs: u64,
     ) -> Self {
         Self {
             db,
@@ -152,6 +156,7 @@ impl InferenceEngine {
             embed_chunk_size,
             max_known_facts,
             sanitize_max_chars,
+            fact_extraction_min_interval_secs,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
@@ -170,11 +175,50 @@ impl InferenceEngine {
     /// the same old messages are re-scanned.
     ///
     /// Tries LLM-assisted extraction via the BalancedModel first. On any
-    /// failure (network error, circuit breaker open, bad JSON), falls back
-    /// to the rule-based extractor so inference is never silently skipped.
-    /// An empty `Ok([])` from the LLM is treated as a valid "no facts found"
-    /// response and does NOT trigger the fallback.
+    /// failure (network error, circuit breaker open, bad JSON) the extraction
+    /// is skipped for this window with a non-fatal warning — nothing is
+    /// persisted, and the cursor still advances so a persistent failure does
+    /// not re-analyze the same messages every turn. An empty `Ok([])` from
+    /// the LLM is treated as a valid "no facts found" response.
+    ///
+    /// Extraction is also time-throttled: a run within
+    /// `fact_extraction_min_interval_secs` of the previous one for the same
+    /// session returns early WITHOUT touching the cursor, so the pending
+    /// messages are still processed by the next allowed run (and by the
+    /// maintenance pass regardless).
     pub async fn infer_facts(&self, session_id: &str) {
+        // Time throttle: at most one LLM extraction per interval per session.
+        // kv_store key `fact_extraction_last_run.<session_id>` = RFC3339 of
+        // the last run that actually called the model. Note the underscore
+        // namespace (NOT `fact_extraction.`): the orphan-cursor cleanup
+        // matches `fact_extraction.%` and would wipe this stamp every
+        // maintenance pass.
+        if self.fact_extraction_min_interval_secs > 0 {
+            let last_key = format!("fact_extraction_last_run.{}", session_id);
+            let last_run = self
+                .db
+                .run_blocking({
+                    let key = last_key.clone();
+                    move |db| db.get_kv(&key)
+                })
+                .await
+                .ok()
+                .flatten();
+            if let Some(ts) = last_run
+                && let Ok(prev) = chrono::DateTime::parse_from_rfc3339(&ts)
+                && (chrono::Utc::now() - prev.with_timezone(&chrono::Utc)).num_seconds()
+                    < self.fact_extraction_min_interval_secs as i64
+            {
+                tracing::debug!(
+                    "fact inference: throttled (last run {} < {}s ago) for session {}",
+                    ts,
+                    self.fact_extraction_min_interval_secs,
+                    session_id
+                );
+                return;
+            }
+        }
+
         let messages = {
             let db = self.db.clone();
             let session_id = session_id.to_string();
@@ -228,6 +272,22 @@ impl InferenceEngine {
 
         let cursor_last = new_messages.last().map(|m| m.id.clone());
 
+        // Stamp the run timestamp BEFORE calling the model: the throttle
+        // guards "no more than one LLM call per interval", so even a failed
+        // call counts as a run (otherwise a persistent failure would retry
+        // every turn despite the cursor advancing).
+        if self.fact_extraction_min_interval_secs > 0 {
+            let db = self.db.clone();
+            let key = format!("fact_extraction_last_run.{}", session_id);
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = db
+                .run_blocking(move |db| {
+                    db.set_kv(&key, &now)?;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await;
+        }
+
         match self.infer_facts_with_llm(new_messages).await {
             Ok(facts) if !facts.is_empty() => {
                 self.persist_facts(&facts, new_messages).await;
@@ -236,26 +296,15 @@ impl InferenceEngine {
                 tracing::debug!("LLM found no facts in session {}", session_id);
             }
             Err(e) => {
-                tracing::warn!("LLM fact extraction failed ({}), falling back to rules", e);
-                let inferred = self.db.infer_facts_from_messages(new_messages);
-                // The rule extractor feeds the SAME persistence path as the
-                // LLM (sensitivity filter, confidence floor, normalization),
-                // so the two extraction channels cannot drift.
-                let batch: Vec<FactDraft> = inferred
-                    .into_iter()
-                    .map(|f| {
-                        (
-                            f.subject,
-                            f.predicate,
-                            f.object,
-                            f.confidence,
-                            f.tags,
-                            f.source_ref,
-                            f.durability,
-                        )
-                    })
-                    .collect();
-                self.persist_fact_batch(batch).await;
+                // Non-fatal: skip extraction for this window. The extraction
+                // cursor is still advanced below so a persistent failure does
+                // not re-analyze the same messages every turn; the maintenance
+                // pass keeps memory consistent regardless.
+                tracing::warn!(
+                    "LLM fact extraction failed for session {}, skipping: {}",
+                    session_id,
+                    e
+                );
             }
         }
 
@@ -612,12 +661,11 @@ impl InferenceEngine {
         self.persist_fact_batch(batch).await;
     }
 
-    /// Shared persistence policy for a batch of extracted facts, used by BOTH
-    /// the LLM extraction path and the rule-based fallback so the two cannot
-    /// drift: sensitivity filter, degenerate rejection, confidence floor for
-    /// brand-new facts, field sanitization / predicate normalization / tag
-    /// whitelist. Maintenance (dedup, sensitive purge, low-confidence flush)
-    /// is NOT inlined here — it runs once per session via `infer_all` →
+    /// Shared persistence policy for a batch of extracted facts: sensitivity
+    /// filter, degenerate rejection, confidence floor for brand-new facts,
+    /// field sanitization / predicate normalization / tag whitelist.
+    /// Maintenance (dedup, sensitive purge, low-confidence flush) is NOT
+    /// inlined here — it runs once per session via `infer_all` →
     /// `run_memory_maintenance` (and on the app scheduler), so the same facts
     /// are never swept twice.
     async fn persist_fact_batch(&self, facts: Vec<FactDraft>) {
@@ -876,7 +924,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{FinishReason, LlmError, LlmMessage, LlmResponse, StreamChunk};
+    use haven_llm::types::{CanonicalMessage, FinishReason, LlmError, LlmResponse, StreamChunk};
     use haven_memory::repositories::messages::Message;
     use std::pin::Pin;
 
@@ -887,7 +935,7 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for FakeLlm {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Ok(LlmResponse {
                 text: self.reply.clone(),
                 tool_calls: Vec::new(),
@@ -900,7 +948,7 @@ mod tests {
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -1043,6 +1091,17 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_predicate_maps_aliases() {
+        // Alias mapping merges the same concept under different spellings so
+        // single-valued constraints stay effective across sources.
+        assert_eq!(normalize_predicate("Workspace"), "project_path");
+        assert_eq!(normalize_predicate("workspace_path"), "project_path");
+        assert_eq!(normalize_predicate("project_location"), "project_path");
+        assert_eq!(normalize_predicate("employer"), "works_at");
+        assert_eq!(normalize_predicate("favorite_language"), "language");
+    }
+
+    #[test]
     fn test_sanitize_tags_caps_count() {
         let many: Vec<String> = (0..10).map(|_| "identity".to_string()).collect();
         assert_eq!(sanitize_tags(&many).len(), 4);
@@ -1117,6 +1176,8 @@ mod tests {
             embed_chunk_size: 64,
             max_known_facts: 40,
             sanitize_max_chars: 256,
+            // 0 disables the time throttle; interval tests opt in explicitly.
+            fact_extraction_min_interval_secs: 0,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
@@ -1174,12 +1235,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn infer_facts_rule_fallback_persists_and_indexes() {
-        // Balanced model reply is not valid JSON -> falls back to the rule
-        // extractor, which must still persist facts.
+    async fn infer_facts_throttled_within_interval_keeps_cursor() {
+        // A second run inside the min interval must NOT call the model and
+        // must NOT advance the cursor — the pending messages are processed by
+        // the next allowed run (the maintenance pass catches up regardless).
         let db = temp_db();
         let session = db.create_session("t1", "").unwrap();
-        let _ = db
+        let m1 = db
+            .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
+            .unwrap();
+        let engine = InferenceEngine {
+            db: db.clone(),
+            router: mock_router("[]"),
+            max_transcript_chars: 4_000,
+            embed_chunk_size: 64,
+            max_known_facts: 40,
+            sanitize_max_chars: 256,
+            fact_extraction_min_interval_secs: 3_600,
+            inference_semaphore: Arc::new(Semaphore::new(1)),
+        };
+        engine.infer_facts(&session.id).await;
+        let cursor: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
+        assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
+        let last_run: Option<String> = db
+            .get_kv(&format!("fact_extraction_last_run.{}", session.id))
+            .unwrap();
+        assert!(last_run.is_some(), "a model call must stamp last_run");
+
+        // New message arrives within the interval: run is skipped entirely.
+        let m2 = db
+            .add_message(&session.id, "user", "I use VSCode.", Some("text"), None)
+            .unwrap();
+        engine.infer_facts(&session.id).await;
+        let cursor2: Option<String> = db
+            .get_kv(&format!("fact_extraction.{}", session.id))
+            .unwrap();
+        assert_eq!(
+            cursor2.as_deref(),
+            Some(m1.id.as_str()),
+            "throttled run must not advance the cursor"
+        );
+        let last_run2: Option<String> = db
+            .get_kv(&format!("fact_extraction_last_run.{}", session.id))
+            .unwrap();
+        assert_eq!(last_run2, last_run, "throttled run must not re-stamp");
+        // The pending message is still unprocessed (not lost).
+        let user_msgs: Vec<String> = db
+            .get_session_messages(&session.id)
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content)
+            .collect();
+        assert_eq!(user_msgs.len(), 2);
+        let _ = m2;
+    }
+
+    #[tokio::test]
+    async fn infer_facts_llm_failure_skips_and_advances_cursor() {
+        // Balanced model reply is not valid JSON -> extraction fails. The
+        // failure is non-fatal: nothing is persisted, and the cursor still
+        // advances so the same messages are not re-analyzed next turn.
+        let db = temp_db();
+        let session = db.create_session("t1", "").unwrap();
+        let m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let engine = InferenceEngine {
@@ -1189,19 +1310,18 @@ mod tests {
             embed_chunk_size: 64,
             max_known_facts: 40,
             sanitize_max_chars: 256,
+            fact_extraction_min_interval_secs: 0,
             inference_semaphore: Arc::new(Semaphore::new(1)),
         };
         engine.infer_facts(&session.id).await;
         let facts = db.get_facts("user").unwrap();
         assert!(
-            facts
-                .iter()
-                .any(|f| f.predicate == "likes" && f.object == "Rust"),
-            "rule fallback must extract likes=Rust"
+            facts.is_empty(),
+            "a failed extraction must not persist anything"
         );
         let cursor: Option<String> = db
             .get_kv(&format!("fact_extraction.{}", session.id))
             .unwrap();
-        assert!(cursor.is_some());
+        assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
     }
 }

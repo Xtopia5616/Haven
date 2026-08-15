@@ -69,8 +69,9 @@ pub async fn register_builtin_tools(
     settings: &HashMap<String, haven_common::config::ToolConfig>,
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
+    audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
 ) {
-    tools.push(Arc::new(audio::AudioTool));
+    tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
     tools.push(Arc::new(ask::AskTool));
     tools.push(Arc::new(file::FilesTool::new(
         router,

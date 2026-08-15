@@ -134,24 +134,66 @@ impl AppState {
             t0.elapsed().as_millis()
         );
 
-        let stt_config = &cfg.stt;
+        let stt_config = &cfg.media.stt;
 
         // Build the STT client for the configured provider and wire it into
         // the input pipeline. On error (e.g. `mcp` provider with no server)
         // or `none`, the pipeline gets no client so transcription is disabled.
         let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
             std::sync::Arc::new(tools.mcp_manager.clone());
-        match build_stt_client(router.clone(), Some(mcp_caller), stt_config) {
-            Ok(client) => {
-                pipeline
-                    .set_stt_client(client.map(std::sync::Arc::from))
-                    .await;
-            }
-            Err(e) => {
-                tracing::warn!("STT client build failed, transcription disabled: {e}");
-                pipeline.set_stt_client(None).await;
-            }
-        }
+        let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
+            match build_stt_client(router.clone(), Some(mcp_caller), stt_config) {
+                Ok(client) => client.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("STT client build failed, transcription disabled: {e}");
+                    None
+                }
+            };
+        pipeline.set_stt_client(stt_client.clone()).await;
+
+        // Media gateway: dedicated OCR / TTS / image-generation clients plus
+        // the shared STT client. The gateway pre-processes attachments
+        // (extract → OCR/ASR with main-model fallback) and handles pure-text
+        // generation requests (TTS / text-to-image) before they reach the
+        // ReAct loop. A capability build error disables only that capability
+        // (fail-open: the main model still handles the media).
+        let gateway = {
+            let ocr: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
+                match haven_llm::build_ocr_client(&cfg.media.ocr) {
+                    Ok(c) => c.map(std::sync::Arc::from),
+                    Err(e) => {
+                        tracing::warn!("OCR client build failed, OCR disabled: {e}");
+                        None
+                    }
+                };
+            let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
+                match haven_llm::build_tts_client(&cfg.media.tts) {
+                    Ok(c) => c.map(std::sync::Arc::from),
+                    Err(e) => {
+                        tracing::warn!("TTS client build failed, TTS disabled: {e}");
+                        None
+                    }
+                };
+            let image_gen: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
+                match haven_llm::build_image_gen_client(&cfg.media.image_gen) {
+                    Ok(c) => c.map(std::sync::Arc::from),
+                    Err(e) => {
+                        tracing::warn!(
+                            "image generation client build failed, image generation disabled: {e}"
+                        );
+                        None
+                    }
+                };
+            std::sync::Arc::new(haven_gateway::MediaGateway::new(
+                router.clone(),
+                stt_client,
+                ocr,
+                tts,
+                image_gen,
+                cfg.media.clone(),
+            ))
+        };
+        agent.set_gateway(Some(gateway)).await;
 
         // Load MCP servers from config + start health monitors.
         let mcp_servers = cfg.mcp_servers.clone();
@@ -164,6 +206,10 @@ impl AppState {
         // for vision, small_model for summarization, with balanced-model
         // fallback). Also rebuilds the catalog.
         tools.set_router(router.clone()).await;
+        // Wire the shared input pipeline into the ToolsManager so the `audio`
+        // tool's `record` operation captures + transcribes through the same
+        // engine/STT as user voice input.
+        tools.set_audio_pipeline(Some(pipeline.clone())).await;
         tokio::spawn(async move {
             tools_skills
                 .discover_all(&mcp_servers, &mcp_discovery)
@@ -307,7 +353,7 @@ mod tests {
         // The default config is loaded and accessible via the mutex.
         let cfg = state.config_loader.lock().unwrap().config().clone();
         assert!(cfg.session.max_steps > 0);
-        assert_eq!(cfg.stt.provider, "mcp");
+        assert_eq!(cfg.media.stt.provider, "mcp");
     }
 
     #[tokio::test]

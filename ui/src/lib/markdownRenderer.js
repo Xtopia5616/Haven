@@ -85,6 +85,14 @@ export function getMarkdownRenderer() {
 				<pre><code class="hljs">${code}</code></pre>
 			</div>`;
 		};
+		// Wrap every table in a non-scrolling container. The edge fade hints
+		// live on this wrapper (positioned overlays), so they stay fixed at the
+		// viewport edges while the table scrolls inside it. Fades placed
+		// directly on the scroll container would scroll along with the content.
+		instance.renderer.rules.table_open = () =>
+			'<div class="md-table-wrap"><table>';
+		instance.renderer.rules.table_close = () => '</table></div>';
+
 		md = instance;
 		return md;
 	})();

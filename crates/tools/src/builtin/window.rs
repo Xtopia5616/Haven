@@ -252,10 +252,11 @@ mod imp {
     /// out of the GDI device context before it is released, then encoded
     /// with the `image` crate — the capture itself never touches the file.
     pub fn capture_screen(path: Option<std::path::PathBuf>) -> anyhow::Result<Value> {
+        use windows_sys::Win32::Foundation::GetLastError;
         use windows_sys::Win32::Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
-            CreateCompatibleDC, CreateDCW, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDIBits,
-            HGDIOBJ, SRCCOPY, SelectObject,
+            CreateCompatibleDC, CreateDCW, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC,
+            GetDIBits, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
@@ -268,29 +269,54 @@ mod imp {
                 anyhow::bail!("failed to query screen size ({width}x{height})");
             }
 
-            let screen_dc = CreateDCW(
-                std::ptr::null(),
-                "DISPLAY"
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect::<Vec<u16>>()
-                    .as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-            );
-            if screen_dc.is_null() {
-                anyhow::bail!("failed to create screen DC");
-            }
+            // Primary-screen DC. `CreateDCW("DISPLAY")` is the classic
+            // full-screen DC, but some environments (no interactive desktop
+            // access, disconnected RDP session) reject it. `GetDC(NULL)`
+            // retrieves the screen DC directly and is more lenient, so fall
+            // back to it. The two are released differently (DeleteDC vs
+            // ReleaseDC), tracked by `screen_dc_is_getdc`.
+            let (screen_dc, screen_dc_is_getdc) = {
+                let dc = CreateDCW(
+                    std::ptr::null(),
+                    "DISPLAY"
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect::<Vec<u16>>()
+                        .as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                );
+                if !dc.is_null() {
+                    (dc, false)
+                } else {
+                    let dc = GetDC(std::ptr::null_mut());
+                    if dc.is_null() {
+                        anyhow::bail!("failed to create screen DC (GDI error {})", GetLastError());
+                    }
+                    (dc, true)
+                }
+            };
             let mem_dc = CreateCompatibleDC(screen_dc);
             if mem_dc.is_null() {
-                DeleteDC(screen_dc);
-                anyhow::bail!("failed to create memory DC");
+                if screen_dc_is_getdc {
+                    ReleaseDC(std::ptr::null_mut(), screen_dc);
+                } else {
+                    DeleteDC(screen_dc);
+                }
+                anyhow::bail!("failed to create memory DC (GDI error {})", GetLastError());
             }
             let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
             if bitmap.is_null() {
                 DeleteDC(mem_dc);
-                DeleteDC(screen_dc);
-                anyhow::bail!("failed to create compatible bitmap");
+                if screen_dc_is_getdc {
+                    ReleaseDC(std::ptr::null_mut(), screen_dc);
+                } else {
+                    DeleteDC(screen_dc);
+                }
+                anyhow::bail!(
+                    "failed to create compatible bitmap (GDI error {})",
+                    GetLastError()
+                );
             }
             let old_obj = SelectObject(mem_dc, bitmap as HGDIOBJ);
             let ok = BitBlt(mem_dc, 0, 0, width, height, screen_dc, 0, 0, SRCCOPY);
@@ -319,13 +345,17 @@ mod imp {
             }
             DeleteObject(bitmap as _);
             DeleteDC(mem_dc);
-            DeleteDC(screen_dc);
+            if screen_dc_is_getdc {
+                ReleaseDC(std::ptr::null_mut(), screen_dc);
+            } else {
+                DeleteDC(screen_dc);
+            }
 
             if ok == 0 {
-                anyhow::bail!("BitBlt failed");
+                anyhow::bail!("BitBlt failed (GDI error {})", GetLastError());
             }
             if copied == 0 {
-                anyhow::bail!("GetDIBits failed");
+                anyhow::bail!("GetDIBits failed (GDI error {})", GetLastError());
             }
 
             // BGRA (GDI) -> RGBA for the image crate.

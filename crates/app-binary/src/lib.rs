@@ -634,6 +634,23 @@ pub fn run() {
             let state = app.state::<Arc<AppState>>();
             let shell = &state.shell;
 
+            // Auto-refresh skills when the skills folder changes on disk
+            // (and once at startup, so a UI that opened before the initial
+            // scan finished still catches up). Newly added / modified /
+            // removed SKILL.md files are picked up without a manual Refresh.
+            {
+                let emit_handle = handle.clone();
+                state.tools.clone().spawn_skills_watcher(
+                    std::time::Duration::from_secs(3),
+                    move || {
+                        let _ = emit_handle.emit(
+                            "skills:status_change",
+                            serde_json::json!({ "op": "auto_refresh" }),
+                        );
+                    },
+                );
+            }
+
             // Wire up the AgentEventEmitter to the app handle via an EventBus,
             // allowing multiple subscribers (frontend, log recorder, …).
             let bus = state.agent.install_event_bus();
@@ -926,6 +943,7 @@ pub fn run() {
             commands::memory::recall_memory,
             commands::mcp::list_mcp_tools,
             commands::mcp::reconnect_mcp,
+            commands::mcp::refresh_mcp_servers,
             commands::mcp::mcp_tool_call,
             commands::mcp::add_mcp_server,
             commands::mcp::update_mcp_server,
@@ -1058,7 +1076,7 @@ fn init_app_state(
     _log_config: Arc<std::sync::Mutex<LogConfig>>,
     config_loader: haven_common::config::ConfigLoader,
 ) -> AppState {
-    let db_path = app_data_dir().join("haven.db");
+    let db_path = haven_common::config::ConfigLoader::data_dir().join("haven.db");
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -1073,22 +1091,6 @@ fn init_app_state(
         tracing::error!("failed to initialize application state: {}", e);
         std::process::exit(1);
     })
-}
-
-fn app_data_dir() -> std::path::PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var("APPDATA").unwrap_or_else(|_| {
-            let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".into());
-            format!("{}\\AppData\\Roaming", home)
-        });
-        std::path::PathBuf::from(base).join("Haven")
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        std::path::PathBuf::from(home).join(".local/share/haven")
-    }
 }
 
 #[cfg(test)]
@@ -1491,11 +1493,11 @@ mod tests {
 
     #[test]
     fn test_app_data_dir_contains_haven() {
-        let dir = app_data_dir();
+        let dir = haven_common::config::ConfigLoader::data_dir();
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
         assert!(
             name.eq_ignore_ascii_case("haven"),
-            "expected 'Haven' got '{}'",
+            "expected 'haven' got '{}'",
             name
         );
     }
@@ -1504,7 +1506,7 @@ mod tests {
     fn test_app_data_dir_on_windows_uses_appdata() {
         #[cfg(target_os = "windows")]
         {
-            let dir = app_data_dir();
+            let dir = haven_common::config::ConfigLoader::data_dir();
             let s = dir.to_string_lossy();
             assert!(
                 s.contains("AppData\\Roaming") || s.contains("APPDATA"),

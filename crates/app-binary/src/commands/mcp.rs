@@ -84,6 +84,138 @@ pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Res
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct McpRefreshResult {
+    /// Servers configured (enabled) with no live client, connected by this
+    /// refresh.
+    pub added: Vec<String>,
+    /// Live clients whose server was removed from config or disabled, now
+    /// shut down.
+    pub removed: Vec<String>,
+    /// Servers whose persisted config changed since their live client was
+    /// spawned (command / args / env / url): the old client was torn down and
+    /// reconnected with the new config.
+    pub updated: Vec<String>,
+    /// Enabled configured servers that could not be connected.
+    pub failed: Vec<String>,
+}
+
+/// Diff-only refresh: reconcile the live MCP clients with the persisted
+/// config WITHOUT reconnecting servers that are already connected with an
+/// unchanged config. Servers newly configured (or enabled) with no live
+/// client are connected; a live client whose persisted config changed is
+/// torn down and reconnected so credential / invocation changes take effect;
+/// live clients whose server was removed from config or disabled are shut
+/// down. Unchanged, already-connected servers keep their live session (a
+/// heavy stdio server such as Ghidra is never restarted by a refresh).
+/// Per-server reconnection is the card-level Refresh button's job
+/// (`reconnect_mcp`).
+#[tauri::command]
+pub async fn refresh_mcp_servers(
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<McpRefreshResult, String> {
+    let (servers, discovery) = {
+        let loader = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("refresh_mcp_servers", e))?;
+        (
+            loader.config().mcp_servers.clone(),
+            loader.config().mcp_discovery.clone(),
+        )
+    };
+
+    // Re-sync the in-memory server config index with the persisted config so
+    // the UI snapshot and the MCP server index never diverge after an
+    // external config.toml edit.
+    {
+        let mut map = state.tools.mcp_server_configs.write().await;
+        map.clear();
+        for server in &servers {
+            map.insert(server.name.clone(), server.clone());
+        }
+    }
+
+    // Single reconciliation rule shared with `McpManager::load_from_config`:
+    // diff the live clients against the persisted config.
+    let reconcile = state.tools.mcp_manager.reconcile_servers(&servers).await;
+
+    // 1) Enabled servers whose live client was spawned from a different
+    //    config → tear the old client down (its monitor must not keep a
+    //    stale child process alive), then reconnect below.
+    let changed = reconcile.to_connect_changed;
+    let mut updated = Vec::new();
+    for server in &changed {
+        tracing::info!(
+            "refresh_mcp_servers: config changed for '{}', reconnecting",
+            server.name
+        );
+        state.tools.mcp_manager.remove_client(&server.name).await;
+        updated.push(server.name.clone());
+        let _ = app.emit(
+            "mcp:status_change",
+            McpStatusChangeEvent {
+                name: server.name.clone(),
+                status: McpClientStatus::Disconnected,
+            },
+        );
+    }
+
+    // 2) Enabled servers without a live client (new, or torn down above) →
+    //    connect with a health monitor.
+    let mut added = Vec::new();
+    let mut failed = Vec::new();
+    for server in reconcile.to_connect_new.into_iter().chain(changed) {
+        match connect_and_monitor(&state, &discovery, &server, "refresh_mcp_servers").await {
+            Ok(client) => {
+                state.tools.mcp_manager.add_client(client).await;
+                if !updated.iter().any(|n| n == &server.name) {
+                    added.push(server.name.clone());
+                }
+                let _ = app.emit(
+                    "mcp:status_change",
+                    McpStatusChangeEvent {
+                        name: server.name.clone(),
+                        status: McpClientStatus::Connected,
+                    },
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "refresh_mcp_servers: connect '{}' failed: {}",
+                    server.name,
+                    e
+                );
+                failed.push(server.name.clone());
+            }
+        }
+    }
+
+    // 3) Live clients whose server was removed from config or disabled →
+    //    shut them down.
+    let mut removed = Vec::new();
+    for name in reconcile.to_remove {
+        state.tools.mcp_manager.remove_client(&name).await;
+        removed.push(name.clone());
+        let _ = app.emit(
+            "mcp:status_change",
+            McpStatusChangeEvent {
+                name,
+                status: McpClientStatus::Disconnected,
+            },
+        );
+    }
+
+    state.tools.rebuild_catalog().await;
+    Ok(McpRefreshResult {
+        added,
+        removed,
+        updated,
+        failed,
+    })
+}
+
 #[tauri::command]
 pub async fn mcp_tool_call(
     state: State<'_, Arc<AppState>>,
@@ -91,11 +223,14 @@ pub async fn mcp_tool_call(
     tool: String,
     args: Value,
 ) -> Result<Value, String> {
-    // Check SafetyGateway (MCP tools default to Medium risk)
+    // Check SafetyGateway (MCP tools default to Medium risk). No session
+    // context here — the call is invoked from the UI, not a conversation — so
+    // only the threshold applies, never per-session trust.
     match state
         .tools
         .safety_gateway
         .check(
+            None,
             &format!("mcp:{}:{}", client, tool),
             &args,
             RiskLevel::Medium,

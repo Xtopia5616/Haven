@@ -8,6 +8,7 @@ members = [
     "crates/agent",
     "crates/input",
     "crates/llm",
+    "crates/gateway",
     "crates/app-binary",
 ]
 
@@ -32,6 +33,7 @@ tokio-util = "0.7"
 futures-util = "0.3"
 tempfile = "3"
 encoding_rs = "0.8"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

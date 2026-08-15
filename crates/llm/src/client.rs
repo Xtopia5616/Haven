@@ -3,7 +3,9 @@ use futures_util::Stream;
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::types::{Embedding, LlmError, LlmMessage, LlmResponse, StreamChunk, ToolDefinition};
+use crate::types::{
+    CanonicalMessage, Embedding, LlmError, LlmResponse, StreamChunk, ToolDefinition,
+};
 
 /// User-Agent sent on every provider HTTP request so Haven's traffic is
 /// identifiable server-side: DeepSeek, OpenAI, Anthropic, Gemini and most
@@ -30,7 +32,7 @@ pub fn http_client_builder() -> reqwest::ClientBuilder {
 
 /// Unified interface implemented by every provider adapter. Adapters convert
 /// the provider's native wire protocol to/from the provider-neutral
-/// `LlmMessage` / `LlmResponse` / `StreamChunk` types (see `adapters/`).
+/// `CanonicalMessage` / `LlmResponse` / `StreamChunk` types (see `adapters/`).
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     /// Human-readable wire protocol style of this adapter (e.g.
@@ -40,11 +42,11 @@ pub trait LlmClient: Send + Sync {
         "unknown"
     }
 
-    async fn chat(&self, messages: Vec<LlmMessage>) -> Result<LlmResponse, LlmError>;
+    async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError>;
 
     async fn chat_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         _tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat(messages).await
@@ -52,12 +54,12 @@ pub trait LlmClient: Send + Sync {
 
     async fn chat_stream(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>;
 
     async fn chat_stream_with_tools(
         &self,
-        messages: Vec<LlmMessage>,
+        messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let resp = self.chat_with_tools(messages, tools).await?;

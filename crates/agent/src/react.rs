@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
-use haven_llm::types::{LlmMessage, LlmRole};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
 use haven_memory::Database;
 use haven_memory::repositories::messages::MessageAttachment;
@@ -796,7 +795,7 @@ impl ReActEngine {
             // messages (the canonical is only replaced by the compaction
             // path, which re-converts) instead of cloning the whole
             // canonical and re-serializing every tool-call argument again.
-            let mut llm_messages = haven_llm::types::convert_to_llm(canonical);
+            let mut llm_messages = canonical.clone();
             let role = choose_agent_role(&router, has_image).await;
             // Accumulate streamed text locally so that if the LLM call fails
             // mid-stream, we can persist whatever was already received instead
@@ -817,7 +816,7 @@ impl ReActEngine {
                 step_num,
                 llm_messages
                     .iter()
-                    .map(|m| (m.role.clone(), m.content.len()))
+                    .map(|m| (m.role, m.content.len()))
                     .collect::<Vec<_>>()
             );
             let response = match self
@@ -1069,8 +1068,8 @@ impl ReActEngine {
                     self.context_limits.cut_off_retries
                 );
                 let mut retry_messages = llm_messages.clone();
-                retry_messages.push(LlmMessage {
-                    role: LlmRole::User,
+                retry_messages.push(CanonicalMessage {
+                    role: CanonicalRole::User,
                     content: vec![ContentPart::text(nudge)],
                     tool_call_id: None,
                     tool_calls: None,
@@ -2436,8 +2435,7 @@ impl ReActEngine {
                 .tool_calls
                 .iter()
                 .map(|tc| {
-                    let args: serde_json::Value =
-                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
+                    let args = tc.arguments.clone();
                     // `final_answer` is the only name that marks a tool call
                     // as the conversation's final answer.
                     let is_final = tc.name == "final_answer";
@@ -2686,7 +2684,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        llm_messages: &[LlmMessage],
+        llm_messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
@@ -2745,7 +2743,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        messages: &[LlmMessage],
+        messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
@@ -2781,7 +2779,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        llm_messages: &mut Vec<LlmMessage>,
+        llm_messages: &mut Vec<CanonicalMessage>,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         canonical: &mut Vec<CanonicalMessage>,
@@ -2842,7 +2840,7 @@ impl ReActEngine {
                     // (the old messages are stale), and the role must be
                     // re-resolved: summarizing away the last image-bearing
                     // turn changes the routing for the retry.
-                    *llm_messages = haven_llm::types::convert_to_llm(canonical);
+                    *llm_messages = canonical.clone();
                     let retry_role = if canonical_has_image(canonical) {
                         router.vision_role().await
                     } else {
@@ -3577,19 +3575,21 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{FinishReason, LlmError, LlmResponse, LlmRole, StreamChunk, ToolCall};
+    use haven_llm::types::{
+        CanonicalRole, CanonicalToolCall, FinishReason, LlmError, LlmResponse, StreamChunk,
+    };
     use std::pin::Pin;
 
     struct MockLlm;
 
     #[async_trait]
     impl LlmClient for MockLlm {
-        async fn chat(&self, _: Vec<LlmMessage>) -> Result<LlmResponse, LlmError> {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown("mock: chat not implemented".into()))
         }
         async fn chat_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown(
@@ -3598,7 +3598,7 @@ mod tests {
         }
         async fn chat_stream(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -3609,7 +3609,7 @@ mod tests {
         }
         async fn chat_stream_with_tools(
             &self,
-            _: Vec<LlmMessage>,
+            _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -3761,8 +3761,8 @@ mod tests {
         );
     }
 
-    fn text_msg(role: LlmRole, text: &str) -> LlmMessage {
-        LlmMessage {
+    fn text_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
+        CanonicalMessage {
             role,
             content: vec![ContentPart::text(text)],
             tool_call_id: None,
@@ -3772,8 +3772,8 @@ mod tests {
         }
     }
 
-    fn image_msg(role: LlmRole) -> LlmMessage {
-        LlmMessage {
+    fn image_msg(role: CanonicalRole) -> CanonicalMessage {
+        CanonicalMessage {
             role,
             content: vec![ContentPart::Image {
                 content_type: "image_url".into(),
@@ -3787,7 +3787,7 @@ mod tests {
         }
     }
 
-    fn msgs_contain_image(messages: &[LlmMessage]) -> bool {
+    fn msgs_contain_image(messages: &[CanonicalMessage]) -> bool {
         messages.iter().any(|m| {
             m.content
                 .iter()
@@ -3799,8 +3799,8 @@ mod tests {
     async fn choose_agent_role_default_without_images() {
         let router = mock_router();
         let messages = [
-            text_msg(LlmRole::System, "be concise"),
-            text_msg(LlmRole::User, "hello"),
+            text_msg(CanonicalRole::System, "be concise"),
+            text_msg(CanonicalRole::User, "hello"),
         ];
         let has_image = msgs_contain_image(&messages);
         assert_eq!(
@@ -3812,7 +3812,7 @@ mod tests {
     #[tokio::test]
     async fn choose_agent_role_default_when_image_model_unconfigured() {
         let router = mock_router();
-        let messages = [image_msg(LlmRole::User)];
+        let messages = [image_msg(CanonicalRole::User)];
         let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
@@ -3826,7 +3826,7 @@ mod tests {
         router
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
-        let messages = [image_msg(LlmRole::User)];
+        let messages = [image_msg(CanonicalRole::User)];
         let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
@@ -3841,7 +3841,7 @@ mod tests {
             .force_role_configured(EndpointRole::ImageModel, true)
             .await;
         router.force_routing_flags(true, false).await;
-        let messages = [image_msg(LlmRole::User)];
+        let messages = [image_msg(CanonicalRole::User)];
         let has_image = msgs_contain_image(&messages);
         assert_eq!(
             choose_agent_role(&router, has_image).await,
@@ -3849,7 +3849,11 @@ mod tests {
         );
     }
 
-    fn resp(text: &str, tool_calls: Vec<ToolCall>, finish: Option<FinishReason>) -> LlmResponse {
+    fn resp(
+        text: &str,
+        tool_calls: Vec<CanonicalToolCall>,
+        finish: Option<FinishReason>,
+    ) -> LlmResponse {
         LlmResponse {
             text: text.to_string(),
             tool_calls,
@@ -3891,10 +3895,10 @@ mod tests {
 
     #[test]
     fn parse_tool_calls_produce_actions() {
-        let tc = ToolCall {
+        let tc = CanonicalToolCall {
             id: "call_1".into(),
             name: "read_file".into(),
-            arguments: r#"{"path":"x.txt"}"#.into(),
+            arguments: serde_json::json!({"path": "x.txt"}),
         };
         let r = resp("thinking", vec![tc], Some(FinishReason::ToolCalls));
         let (thought, actions) = ReActEngine::parse_default_model_response(&r, 1);
@@ -3908,10 +3912,10 @@ mod tests {
 
     #[test]
     fn parse_final_answer_tool_call_marked_final() {
-        let tc = ToolCall {
+        let tc = CanonicalToolCall {
             id: "c2".into(),
             name: "final_answer".into(),
-            arguments: r#"{"answer":"done"}"#.into(),
+            arguments: serde_json::json!({"answer": "done"}),
         };
         let r = resp("answering", vec![tc], Some(FinishReason::ToolCalls));
         let (_, actions) = ReActEngine::parse_default_model_response(&r, 2);
@@ -3923,10 +3927,10 @@ mod tests {
         // Only `final_answer` marks a tool call as final; provider-specific
         // names like `answer`/`done` are ordinary tool calls now.
         for name in ["answer", "done"] {
-            let tc = ToolCall {
+            let tc = CanonicalToolCall {
                 id: String::new(),
                 name: name.into(),
-                arguments: "{}".into(),
+                arguments: serde_json::json!({}),
             };
             let r = resp("t", vec![tc], Some(FinishReason::ToolCalls));
             let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
@@ -3936,10 +3940,10 @@ mod tests {
 
     #[test]
     fn parse_empty_tool_call_id_gets_generated() {
-        let tc = ToolCall {
+        let tc = CanonicalToolCall {
             id: String::new(),
             name: "read_file".into(),
-            arguments: "{}".into(),
+            arguments: serde_json::json!({}),
         };
         let r = resp("", vec![tc], Some(FinishReason::ToolCalls));
         let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
@@ -3948,29 +3952,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_invalid_json_arguments_become_null() {
-        let tc = ToolCall {
-            id: "c3".into(),
-            name: "read_file".into(),
-            arguments: "not json".into(),
-        };
-        let r = resp("", vec![tc], Some(FinishReason::ToolCalls));
-        let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
-        assert!(actions[0].tool_input.is_null());
-    }
-
-    #[test]
     fn parse_multiple_tool_calls_preserve_order() {
         let tcs = vec![
-            ToolCall {
+            CanonicalToolCall {
                 id: "a".into(),
                 name: "search".into(),
-                arguments: "{}".into(),
+                arguments: serde_json::json!({}),
             },
-            ToolCall {
+            CanonicalToolCall {
                 id: "b".into(),
                 name: "read_file".into(),
-                arguments: "{}".into(),
+                arguments: serde_json::json!({}),
             },
         ];
         let r = resp("multi", tcs, Some(FinishReason::ToolCalls));
@@ -3983,10 +3975,10 @@ mod tests {
     #[test]
     fn parse_tool_calls_take_precedence_over_text_final() {
         // Even with Stop finish + step>0, tool_calls win over implicit final.
-        let tc = ToolCall {
+        let tc = CanonicalToolCall {
             id: "x".into(),
             name: "read_file".into(),
-            arguments: "{}".into(),
+            arguments: serde_json::json!({}),
         };
         let r = resp("text", vec![tc], Some(FinishReason::Stop));
         let (_, actions) = ReActEngine::parse_default_model_response(&r, 1);
