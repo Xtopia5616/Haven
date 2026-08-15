@@ -2,7 +2,7 @@ import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import {
 	DRAFT_KEY,
-	NEW_TASK_INTENT_KEY,
+	NEW_ACTION_INTENT_KEY,
 	addSessionMessage,
 	activeSessionIdStore,
 	moveSessionMessages,
@@ -87,7 +87,7 @@ export async function submitTranscript(text, { images = null, files = null, voic
 			// new session when appropriate.
 			if (freshStartAtDispatch) {
 				newSessionIntentStore.set(false);
-				if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
+				if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			}
 			moveSessionMessages(sessionId, result.SessionCreated);
 			activeSessionIdStore.set(result.SessionCreated);

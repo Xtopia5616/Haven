@@ -73,17 +73,22 @@ npm run check
 | `msg-` | 消息 messages.id；记忆片段 memory_episodes.id 与消息共用该 ID 空间 | `haven_memory` |
 | `step-` | 步骤 session_steps.id | `haven_memory` |
 | `fact-` | 长期记忆事实 facts.id | `haven_memory` |
-| `task-` | 工作单元 tasks.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
-| `conf-` | 安全确认请求（进程内，不落库） | `haven_session` |
-| `rec-` | 录音会话（一次录音一个 id，`recording:started`/`transcription:*` 事件共用，进程内） | `haven_app` |
+| `act-` | 工作单元 actions.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
+| `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
+
+以下前缀均为**进程内** ID，不落库：
+
+| 前缀 | 实体 | 位置 |
+|---|---|---|
+| `conf-` | 安全确认请求 | `haven_session` |
+| `rec-` | 录音会话（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `file-` | 临时文件名 | `haven_app` |
 | `call-` | provider 返回空 tool_call_id 时的本地兜底 | `haven_agent` |
-| `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。
-- Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id`、`task_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
-- 术语：**session** = 对话（ReAct 主实体）；**task** = 工作单元（后台任务/定时任务，`tasks` 表 kind 区分）；任务/作业/提醒统一叫任务，UI 文案一律「会话」「任务」「后台任务」「定时任务」。
+- Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id`、`action_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
+- 术语：**session** = 对话（ReAct 主实体）；**action** = 工作单元（后台任务/定时任务，`actions` 表 kind 区分）；任务/作业/提醒统一叫任务，UI 文案一律「会话」「任务」「后台任务」「定时任务」。
 - 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`SessionId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。
 - 序号类字段（u64 代次，非持久实体）：`run_id`（run 实例）、`gen_id`（流式代次）、MCP JSON-RPC `next_id`，保持现有命名并加文档说明。
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。

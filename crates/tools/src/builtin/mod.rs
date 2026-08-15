@@ -13,12 +13,12 @@ pub mod notify;
 pub mod power;
 pub mod process;
 pub mod registry;
-pub mod scheduled_task;
+pub mod scheduled_action;
 pub mod self_tool;
 pub mod shell;
 pub mod system;
-pub mod task_status;
-pub mod tasks;
+pub mod action_status;
+pub mod actions;
 pub mod window;
 
 use std::collections::HashMap;
@@ -27,13 +27,13 @@ use tokio::sync::RwLock;
 
 use crate::ToolBox;
 use crate::ToolRegistry;
-use crate::bg::BackgroundTasks;
+use crate::bg::BackgroundActions;
 use crate::mcp::McpManager;
 use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 
 pub use facts::FactsTool;
-pub use scheduled_task::{ScheduleMode, ScheduleTool, ScheduledTaskCenter, ScheduledTaskFired};
+pub use scheduled_action::{ScheduleMode, ScheduleTool, ScheduledActionCenter, ScheduledActionFired};
 pub use self_tool::{SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
@@ -61,8 +61,8 @@ pub async fn register_builtin_tools(
     mcp_manager: &Arc<McpManager>,
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     router: Option<Arc<haven_llm::LlmRouter>>,
-    background_tasks: Arc<BackgroundTasks>,
-    scheduled_tasks: Arc<ScheduledTaskCenter>,
+    background_actions: Arc<BackgroundActions>,
+    scheduled_actions: Arc<ScheduledActionCenter>,
     self_context: Option<SelfToolContext>,
     registry: ToolRegistry,
     clipboard_history: Arc<clipboard::ClipboardHistory>,
@@ -102,19 +102,19 @@ pub async fn register_builtin_tools(
         limits.clipboard_entry_max_chars,
     )));
     tools.push(Arc::new(shell::ShellTool {
-        tasks: background_tasks.clone(),
+        actions: background_actions.clone(),
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
     }));
-    tools.push(Arc::new(task_status::TaskStatusTool {
-        tasks: background_tasks.clone(),
+    tools.push(Arc::new(action_status::ActionStatusTool {
+        actions: background_actions.clone(),
     }));
-    tools.push(Arc::new(tasks::TasksTool {
-        tasks: background_tasks,
+    tools.push(Arc::new(actions::ActionsTool {
+        actions: background_actions,
     }));
     tools.push(Arc::new(input::InputTool));
-    tools.push(Arc::new(scheduled_task::ScheduleTool {
-        center: scheduled_tasks,
+    tools.push(Arc::new(scheduled_action::ScheduleTool {
+        center: scheduled_actions,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),

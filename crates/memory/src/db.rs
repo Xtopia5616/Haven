@@ -14,7 +14,7 @@ const FILE_POOL_MAX_CONNECTIONS: usize = 16;
 
 /// A tiny bounded pool of rusqlite connections. The previous design wrapped a
 /// SINGLE connection in a `Mutex`, which serialized every DB access across all
-/// concurrent sessions (and background tasks / title generation / memory
+/// concurrent sessions (and background actions / title generation / memory
 /// maintenance) on one global lock. SQLite in WAL mode supports one writer
 /// plus several concurrent readers, so a small pool lets parallel sessions' reads
 /// (message history, step lists, snapshots) run side-by-side instead of
@@ -603,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_tasks_hit_and_miss() {
+    fn test_cache_actions_hit_and_miss() {
         let db = Database::open_in_memory().unwrap();
         assert!(db.cache_get_sessions().is_none());
         let sessions = vec![make_session("1"), make_session("2")];
@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_tasks_ttl_expiry() {
+    fn test_cache_actions_ttl_expiry() {
         let db = Database::open_in_memory().unwrap();
         let sessions = vec![make_session("1")];
         db.cache_put_sessions(sessions, 1, 0);

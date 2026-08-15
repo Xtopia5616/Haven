@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 //     lowercase-hex simple UUID), e.g. `ses-3f9a...`.
 //   - Prefixes: `ses-` (sessions), `msg-` (messages and memory episodes —
 //     memory_episodes shares the message id space), `step-` (session_steps),
-//     `fact-` (facts), `task-` (tasks — unified background tasks and
-//     scheduled tasks),
-//     `conf-` (safety-gateway confirmations),
-//     `rec-` (voice recording sessions), `file-` (temporary files),
-//     `call-` (locally synthesized tool-call ids when the provider sends an
-//     empty one).
+//     `fact-` (facts), `act-` (actions — unified background actions and
+//     scheduled actions), `usage-` (llm_usage);
+//     `conf-` (safety-gateway confirmations), `rec-` (voice recording
+//     sessions), `file-` (temporary files), `call-` (locally synthesized
+//     tool-call ids when the provider sends an empty one) are in-process
+//     only and never persisted.
 //   - External ids (LLM `tool_call_id`, provider model ids, MCP session ids)
 //     keep their provider formats; `run_id`/`gen_id` are in-process u64
 //     run/generation counters, not persisted entity ids.

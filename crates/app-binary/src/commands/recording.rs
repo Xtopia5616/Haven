@@ -256,7 +256,7 @@ pub async fn stop_recording(
     // transcript via `process_transcript` (same path as typed input). It is
     // spawned detached so the invoke returns immediately — the UI is driven
     // by the `transcription:*` events, not by this command's result, and
-    // awaiting the STT network call here would hold the command task for its
+    // awaiting the STT network call here would hold the command action for its
     // whole duration.
     let state = state.inner().clone();
     std::mem::drop(tokio::spawn(async move {

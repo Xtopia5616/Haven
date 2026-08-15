@@ -1,5 +1,5 @@
 //! Tauri command handlers, split by domain:
-//! `recording` / `session` / `task` / `history` / `model` / `mcp` /
+//! `recording` / `session` / `action` / `history` / `model` / `mcp` /
 //! `skills` / `memory` / `settings` / `log`.
 //!
 //! Shared helpers (error conversion, router hot-swap, MCP connect, attachment
@@ -17,7 +17,7 @@ pub mod recording;
 pub mod session;
 pub mod settings;
 pub mod skills;
-pub mod task;
+pub mod action;
 
 use crate::app_state::AppState;
 use haven_common::McpServerConfig;

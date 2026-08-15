@@ -4,7 +4,7 @@
 // statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the history page.
 
-export const TASK_STATUSES = ['pending', 'running', 'paused', 'completed', 'failed', 'error'];
+export const ACTION_STATUSES = ['pending', 'running', 'paused', 'completed', 'failed', 'error'];
 
 const COLOR_MAP = {
 	pending: '#666',

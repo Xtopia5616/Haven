@@ -45,7 +45,7 @@ impl AgentLayer {
             for _ in 0..50 {
                 if !self
                     .executor
-                    .running_tasks_list()
+                    .running_actions_list()
                     .await
                     .contains(&session_id.to_string())
                 {
@@ -57,7 +57,7 @@ impl AgentLayer {
             if waited
                 && self
                     .executor
-                    .running_tasks_list()
+                    .running_actions_list()
                     .await
                     .contains(&session_id.to_string())
             {
@@ -68,9 +68,9 @@ impl AgentLayer {
             }
         }
 
-        // Background tasks spawned before the rollback are stale relative to
+        // Background actions spawned before the rollback are stale relative to
         // the restored snapshot: kill them so their children cannot leak.
-        self.executor.cancel_session_tasks(session_id).await;
+        self.executor.cancel_session_actions(session_id).await;
 
         let state_json = match self.db.get_react_state(session_id)? {
             Some(s) => s,

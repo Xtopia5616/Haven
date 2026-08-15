@@ -5,53 +5,53 @@ import logger from '$lib/logger.js';
 export const sessionStore = writable([]);
 
 /**
- * Task registry (background tasks + pending scheduled tasks):
- * `{ [id]: Task }` where each entry mirrors a row from the backend's
- * `list_tasks`:
+ * Action registry (background actions + pending scheduled actions):
+ * `{ [id]: Action }` where each entry mirrors a row from the backend's
+ * `list_actions`:
  *   { id, kind: 'background'|'scheduled', session_id?, status?, started_at?,
  *     finished_at?, due_at?, preview?, output?, error?, title?, body?, ... }
- * Background-task rows keep `task_id` and status fields; scheduled-task rows
+ * Background-action rows keep `action_id` and status fields; scheduled-action rows
  * keep `id` and due_at. `id` is normalized to the entry key for both.
- * Kept in sync by the `task:created` / `task:updated` / `task:output` /
- * `task:finished` events (registered in +layout.svelte, hydrated via
- * `refreshTasks`).
+ * Kept in sync by the `action:created` / `action:updated` / `action:output` /
+ * `action:finished` events (registered in +layout.svelte, hydrated via
+ * `refreshActions`).
  */
-export const taskStore = writable({});
+export const actionStore = writable({});
 
 /** Cap terminal entries so a long session cannot grow the store unbounded. */
-const TASK_STORE_MAX = 64;
+const ACTION_STORE_MAX = 64;
 
-function taskKey(payload) {
-	return payload?.id || payload?.task_id || null;
+function actionKey(payload) {
+	return payload?.id || payload?.action_id || null;
 }
 
-export function upsertTask(payload) {
-	const key = taskKey(payload);
+export function upsertAction(payload) {
+	const key = actionKey(payload);
 	if (!key) return;
-	taskStore.update((m) => {
+	actionStore.update((m) => {
 		const prev = m[key] || {};
 		const next = {
 			...prev,
 			...payload,
 			id: key,
-			kind: payload.kind || prev.kind || (payload.task_id ? 'background' : 'scheduled'),
+			kind: payload.kind || prev.kind || (payload.action_id ? 'background' : 'scheduled'),
 		};
 		// Terminal entries keep their full payload (output/error) so the
 		// panel can show the result; only the store size is bounded below.
 		const entries = { ...m, [key]: next };
 		const ids = Object.keys(entries);
-		if (ids.length > TASK_STORE_MAX) {
-			const excess = ids.length - TASK_STORE_MAX;
+		if (ids.length > ACTION_STORE_MAX) {
+			const excess = ids.length - ACTION_STORE_MAX;
 			for (const id of ids.slice(0, excess)) delete entries[id];
 		}
 		return entries;
 	});
 }
 
-/** Drop a task (fired or cancelled scheduled task, task removed server-side). */
-export function removeTask(id) {
+/** Drop a action (fired or cancelled scheduled action, action removed server-side). */
+export function removeAction(id) {
 	if (!id) return;
-	taskStore.update((m) => {
+	actionStore.update((m) => {
 		if (!(id in m)) return m;
 		const next = { ...m };
 		delete next[id];
@@ -59,53 +59,53 @@ export function removeTask(id) {
 	});
 }
 
-export async function refreshTasks() {
+export async function refreshActions() {
 	try {
-		const rows = await invoke('list_tasks');
+		const rows = await invoke('list_actions');
 		if (!Array.isArray(rows)) return;
 		// Replace the registry: entries missing from the board were removed
-		// server-side (a session ending cancels its tasks without terminal
-		// events, fired scheduled tasks leave the pending list), so they must
+		// server-side (a session ending cancels its actions without terminal
+		// events, fired scheduled actions leave the pending list), so they must
 		// not linger as stale rows.
-		taskStore.update((m) => {
+		actionStore.update((m) => {
 			const next = {};
 			for (const row of rows) {
-				const key = taskKey(row);
+				const key = actionKey(row);
 				if (key) next[key] = { ...(m[key] || {}), ...row, id: key };
 			}
 			return next;
 		});
 	} catch (e) {
-		logger.warn('stores', 'refreshTasks failed', e);
+		logger.warn('stores', 'refreshActions failed', e);
 	}
 }
 
-export async function cancelTask(id, kind = 'background') {
-	return invoke('cancel_task', { taskId: id, kind });
+export async function cancelAction(id, kind = 'background') {
+	return invoke('cancel_action', { actionId: id, kind });
 }
 
 /**
- * Fired-scheduled-task history (and terminal background-task history) from
- * the persisted task table, newest first. Returns the raw rows for the
+ * Fired-scheduled-action history (and terminal background-action history) from
+ * the persisted action table, newest first. Returns the raw rows for the
  * panel's history tab; the caller owns the list (no store backing — it is
  * fetched on demand).
  * @param {string} [kind]
  * @param {number} [limit]
  * @returns {Promise<Array>}
  */
-export async function refreshTaskHistory(kind = 'scheduled', limit = 50) {
+export async function refreshActionHistory(kind = 'scheduled', limit = 50) {
 	try {
-		const rows = await invoke('list_task_history', { kind, limit });
+		const rows = await invoke('list_action_history', { kind, limit });
 		return Array.isArray(rows) ? rows : [];
 	} catch (e) {
-		logger.warn('stores', 'refreshTaskHistory failed', e);
+		logger.warn('stores', 'refreshActionHistory failed', e);
 		return [];
 	}
 }
 
-/** Delete a persisted task row (history cleanup) by id. */
-export async function deleteTask(id) {
-	return invoke('delete_task', { taskId: id });
+/** Delete a persisted action row (history cleanup) by id. */
+export async function deleteAction(id) {
+	return invoke('delete_action', { actionId: id });
 }
 
 export const notificationStore = writable([]);
@@ -294,7 +294,7 @@ export const activeSessionIdStore = writable(null);
 // that survives app restarts (set by the new-session button, cleared when the
 // intent is fulfilled or abandoned). Mirrored into `newSessionIntentStore` for
 // the live session.
-export const NEW_TASK_INTENT_KEY = 'haven.no_auto_restore';
+export const NEW_ACTION_INTENT_KEY = 'haven.no_auto_restore';
 
 /**
  * Sticky intent flag: the user explicitly asked for a NEW session (new-session

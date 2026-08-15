@@ -91,7 +91,7 @@ pub async fn resolve_confirmation(
         // Trust is recorded per conversation: it is scoped to the session that
         // actually owns this confirmation (from the wait, not the caller), so
         // an approval can never leak into other conversations. A None session
-        // (background task without a conversation) records nothing.
+        // (background action without a conversation) records nothing.
         state
             .tools
             .safety_gateway

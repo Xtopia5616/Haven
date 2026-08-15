@@ -1647,10 +1647,10 @@
           "markdownDescription": "Enables the set_size_constraints command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_skip_taskbar command without any pre-configured scope.",
+          "description": "Enables the set_skip_actionbar command without any pre-configured scope.",
           "type": "string",
-          "const": "core:window:allow-set-skip-taskbar",
-          "markdownDescription": "Enables the set_skip_taskbar command without any pre-configured scope."
+          "const": "core:window:allow-set-skip-actionbar",
+          "markdownDescription": "Enables the set_skip_actionbar command without any pre-configured scope."
         },
         {
           "description": "Enables the set_theme command without any pre-configured scope.",
@@ -2115,10 +2115,10 @@
           "markdownDescription": "Denies the set_size_constraints command without any pre-configured scope."
         },
         {
-          "description": "Denies the set_skip_taskbar command without any pre-configured scope.",
+          "description": "Denies the set_skip_actionbar command without any pre-configured scope.",
           "type": "string",
-          "const": "core:window:deny-set-skip-taskbar",
-          "markdownDescription": "Denies the set_skip_taskbar command without any pre-configured scope."
+          "const": "core:window:deny-set-skip-actionbar",
+          "markdownDescription": "Denies the set_skip_actionbar command without any pre-configured scope."
         },
         {
           "description": "Denies the set_theme command without any pre-configured scope.",

@@ -73,9 +73,9 @@ onMount(async () => {
 ---
 
 ### 3. 同步 SQLite 在 Tokio runtime 内执行 + 全局 std Mutex 串行化
-**文件:** `crates/memory/db.rs:25-27`；调用点 `commands.rs:371,376,386,397,909,923,965,1220,1236,1281,1478`, `task/lib.rs:191,325,598,864`, `agent/src/react.rs:236,1164,1226`
+**文件:** `crates/memory/db.rs:25-27`；调用点 `commands.rs:371,376,386,397,909,923,965,1220,1236,1281,1478`, `action/lib.rs:191,325,598,864`, `agent/src/react.rs:236,1164,1226`
 
-每次 SQLite 操作（含 `synchronous=FULL` 的 fsync）都阻塞一个 worker 线程，并串行化所有 DB 任务；`task/lib.rs:317-332` 等路径还在持有 `tokio::Mutex` 期间做同步写入，把相关异步任务全部 stall 住。
+每次 SQLite 操作（含 `synchronous=FULL` 的 fsync）都阻塞一个 worker 线程，并串行化所有 DB 任务；`action/lib.rs:317-332` 等路径还在持有 `tokio::Mutex` 期间做同步写入，把相关异步任务全部 stall 住。
 
 **修复:**
 - 给 `Database` 增加 async facade，所有调用包 `tokio::task::spawn_blocking`
@@ -84,11 +84,11 @@ onMount(async () => {
 ```rust
 // crates/memory/src/db.rs
 impl Database {
-    pub async fn list_tasks_async(&self, limit: i64, offset: i64) -> Result<Vec<TaskRow>> {
+    pub async fn list_actions_async(&self, limit: i64, offset: i64) -> Result<Vec<ActionRow>> {
         let conn = self.conn.clone(); // Arc<Mutex<Connection>>
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            TaskRepo::list(&conn, limit, offset)
+            ActionRepo::list(&conn, limit, offset)
         }).await?
     }
 }
@@ -97,7 +97,7 @@ impl Database {
 或专用 worker:
 ```rust
 enum DbCmd {
-    ListTasks { reply: oneshot::Sender<Result<Vec<TaskRow>>> },
+    ListActions { reply: oneshot::Sender<Result<Vec<ActionRow>>> },
     // ...
 }
 
@@ -182,14 +182,14 @@ export function updateModelState(state, opts = {}) {
 ### 7. `messages` 不是 `$derived`，而是 state + effect 同步
 **文件:** `ui/src/routes/+page.svelte:510-525`, `ui/src/lib/stores.js:64-69`
 
-`updateTaskMessages` 每 chunk 做 `{...m, [taskId]: fn(m[taskId]||[])}`（数组 + dict 双拷贝）。改为 `derived`，并在 `fn` 返回相同引用时跳过外层拷贝。
+`updateActionMessages` 每 chunk 做 `{...m, [actionId]: fn(m[actionId]||[])}`（数组 + dict 双拷贝）。改为 `derived`，并在 `fn` 返回相同引用时跳过外层拷贝。
 
 ```js
 // stores.js
-export function updateTaskMessages(taskId, fn) {
-  taskMessagesStore.update((m) => {
-    const next = fn(m[taskId] || []);
-    return next === m[taskId] ? m : { ...m, [taskId]: next };
+export function updateActionMessages(actionId, fn) {
+  actionMessagesStore.update((m) => {
+    const next = fn(m[actionId] || []);
+    return next === m[actionId] ? m : { ...m, [actionId]: next };
   });
 }
 ```
@@ -198,9 +198,9 @@ export function updateTaskMessages(taskId, fn) {
 <!-- +page.svelte -->
 <script>
   const messages = $derived(
-    activeTaskId
-      ? (taskMessagesDict[activeTaskId] || [])
-      : (taskMessagesDict['_draft'] || [])
+    activeActionId
+      ? (actionMessagesDict[activeActionId] || [])
+      : (actionMessagesDict['_draft'] || [])
   );
 </script>
 ```
@@ -269,7 +269,7 @@ let (chunk_tx, chunk_rx) = mpsc::channel::<StreamChunk>(1024); // 扩大上限
 ---
 
 ### 11. 缓存命中/写入各做一次 deep clone（含大附件 base64）
-**文件:** `crates/memory/db.rs:64,109,143`；写入侧 `messages.rs:204`, `tasks.rs:128`, `facts.rs:113`
+**文件:** `crates/memory/db.rs:64,109,143`；写入侧 `messages.rs:204`, `actions.rs:128`, `facts.rs:113`
 
 `get_session_messages` 命中克隆整条 `Message`（含 10 MB 图），紧接着 put 路径再 clone 一次。缓存值改为 `Arc<Vec<Message>>`，put 路径直接 move 入缓存。
 
@@ -400,47 +400,47 @@ WHERE id NOT IN (
 
 ---
 
-### 16. `get_tasks` 通过 IPC 序列化全量 TaskInfo（含每步 input/output）
-**文件:** `crates/task/src/lib.rs:546-548`；调用 `commands.rs:174,286,301`, `crates/agent/src/lib.rs:585-591,671`
+### 16. `get_actions` 通过 IPC 序列化全量 ActionInfo（含每步 input/output）
+**文件:** `crates/action/src/lib.rs:546-548`；调用 `commands.rs:174,286,301`, `crates/agent/src/lib.rs:585-591,671`
 
-`run_task_from_id` 等只是找一个 task 就 `list_tasks().clone()` 全表。增加 `get_task(id)`；`get_tasks` 命令返回不含 `steps` 的精简投影。
+`run_action_from_id` 等只是找一个 action 就 `list_actions().clone()` 全表。增加 `get_action(id)`；`get_actions` 命令返回不含 `steps` 的精简投影。
 
 ```rust
-// task/lib.rs
+// action/lib.rs
 #[derive(Serialize)]
-pub struct TaskSummary {
+pub struct ActionSummary {
     pub id: String,
     pub title: String,
-    pub status: TaskStatus,
+    pub status: ActionStatus,
     pub created_at: i64,
     pub updated_at: i64,
     pub message_count: usize,
 }
 
-pub fn list_summaries(&self) -> Result<Vec<TaskSummary>> {
+pub fn list_summaries(&self) -> Result<Vec<ActionSummary>> {
     // SELECT 仅必要字段，不 JOIN steps
 }
 
-pub fn find(&self, id: &str) -> Option<TaskInfo> {
-    self.tasks.read().ok()?.values().find(|t| t.id == id).cloned()
+pub fn find(&self, id: &str) -> Option<ActionInfo> {
+    self.actions.read().ok()?.values().find(|t| t.id == id).cloned()
 }
 ```
 
 ---
 
-### 17. `task:*` 事件 `loadTasks()` 无去重
+### 17. `action:*` 事件 `loadActions()` 无去重
 **文件:** `ui/src/routes/+page.svelte:674-710`
 
-后端事件突发时连续 2-4 次 `get_tasks` IPC 往返。增加 microtask / `requestAnimationFrame` 合并。
+后端事件突发时连续 2-4 次 `get_actions` IPC 往返。增加 microaction / `requestAnimationFrame` 合并。
 
 ```js
-let loadTasksScheduled = false;
-function scheduleLoadTasks() {
-  if (loadTasksScheduled) return;
-  loadTasksScheduled = true;
-  Promise.resolve().then(() => { loadTasksScheduled = false; loadTasks(); });
+let loadActionsScheduled = false;
+function scheduleLoadActions() {
+  if (loadActionsScheduled) return;
+  loadActionsScheduled = true;
+  Promise.resolve().then(() => { loadActionsScheduled = false; loadActions(); });
 }
-// 在 task:created/updated/completed/error 处理器中调用 scheduleLoadTasks()
+// 在 action:created/updated/completed/error 处理器中调用 scheduleLoadActions()
 ```
 
 ---
@@ -466,7 +466,7 @@ function onScroll() {
 ---
 
 ### 19. 长匹配字符串 / `LIKE '%…%'` 历史搜索
-**文件:** `crates/memory/src/tasks.rs:377-412`（`search_history_filtered`）
+**文件:** `crates/memory/src/actions.rs:377-412`（`search_history_filtered`）
 
 `LIKE '%query%'` 走全表扫描；同命令在 Tauri async runtime 同步执行。
 
@@ -476,7 +476,7 @@ function onScroll() {
 
 ```sql
 -- migrations.sql
-CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS actions_fts USING fts5(
   title, content, content_rowid='id'
 );
 ```
@@ -519,7 +519,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
 | 8 | 13, 14. CPAL scratch buffer + VAD singleton | ⭐⭐⭐ | 中 |
 | 9 | 15. `dedup_facts` window-function + 19. FTS5 | ⭐⭐ | 低 |
 | 10 | 5. 长对话 `content-visibility: auto` + 窗口化 | ⭐⭐ | 中 |
-| 11 | 16. `get_tasks` 投影 + 17. `loadTasks` 合并 | ⭐⭐ | 低 |
+| 11 | 16. `get_actions` 投影 + 17. `loadActions` 合并 | ⭐⭐ | 低 |
 | 12 | 18. `onScroll` raf 节流 + 各种微改动 | ⭐ | 低 |
 
 ---

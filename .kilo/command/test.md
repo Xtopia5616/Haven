@@ -9,7 +9,7 @@ If first arg is a crate name, map it to the package:
   common → -p haven-common
   memory → -p haven-memory
   tools  → -p haven-tools
-  task   → -p haven-task
+  action   → -p haven-action
   agent  → -p haven-agent
   llm    → -p haven-llm
   input  → -p haven-input

@@ -133,7 +133,7 @@ pub trait AgentEventEmitter: Send + Sync {
 
 /// Bounded-queue emitter wrapper: `emit` becomes an enqueue into an in-memory
 /// queue drained by a dedicated consumer session, so producers (the ReAct loop,
-/// chunk batchers, task/scheduled-task consumers) never await the subscriber chain
+/// chunk batchers, action/scheduled-action consumers) never await the subscriber chain
 /// (Tauri IPC, toast logic, log writers). The queue is sized far above the
 /// per-step event volume and chunk deltas are already micro-batched upstream,
 /// so eviction is a logged last resort, not a normal path.
@@ -517,7 +517,7 @@ impl EventDispatcher {
         }
     }
 
-    /// Surface a user-facing notification (used by fired scheduled_tasks, which are
+    /// Surface a user-facing notification (used by fired scheduled_actions, which are
     /// not tied to a session). Same event the `notify` tool produces.
     pub async fn emit_notification(&self, title: &str, body: &str) {
         let emitter = self.emitter.lock().unwrap().clone();

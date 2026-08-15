@@ -102,12 +102,12 @@ pub struct ToolsManager {
     /// ImageModel role; the router handles retries and the balanced-model
     /// fallback.
     router: RwLock<Option<Arc<LlmRouter>>>,
-    /// Registry of background tasks (shell with background: true).
-    pub background_tasks: Arc<bg::BackgroundTasks>,
-    /// Registry of in-process scheduled tasks (the `schedule` tool). The fired
+    /// Registry of background actions (shell with background: true).
+    pub background_actions: Arc<bg::BackgroundActions>,
+    /// Registry of in-process scheduled actions (the `schedule` tool). The fired
     /// channel is consumed by the agent layer, which notifies, runs the
     /// scheduled tool, or resumes the scheduling session (see `ScheduleMode`).
-    pub scheduled_tasks: Arc<builtin::scheduled_task::ScheduledTaskCenter>,
+    pub scheduled_actions: Arc<builtin::scheduled_action::ScheduledActionCenter>,
     /// App-level context for the `self` management tool (config loader, DB,
     /// router, log file). Wired in by the desktop shell; `None` in headless
     /// tests so the tool is simply not registered.
@@ -133,11 +133,11 @@ impl ToolsManager {
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
         let registry = ToolRegistry::new();
-        let background_tasks = Arc::new(bg::BackgroundTasks::new());
-        let scheduled_tasks = Arc::new(builtin::scheduled_task::ScheduledTaskCenter::new());
-        // Wire the background-task registry into the scheduled_task center so
-        // `watch_task_id` scheduled_tasks can wait for a task to finish.
-        scheduled_tasks.set_tasks(Some(background_tasks.clone()));
+        let background_actions = Arc::new(bg::BackgroundActions::new());
+        let scheduled_actions = Arc::new(builtin::scheduled_action::ScheduledActionCenter::new());
+        // Wire the background-action registry into the scheduled_action center so
+        // `watch_action_id` scheduled_actions can wait for a action to finish.
+        scheduled_actions.set_actions(Some(background_actions.clone()));
         Self {
             registry,
             mcp_manager: McpManager::new(),
@@ -155,8 +155,8 @@ impl ToolsManager {
             session_registrations: RwLock::new(HashMap::new()),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
-            background_tasks,
-            scheduled_tasks,
+            background_actions,
+            scheduled_actions,
             self_context: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
@@ -181,11 +181,11 @@ impl ToolsManager {
     /// Wire the app-level context for the `self` management tool and register
     /// the tool. Called by the desktop shell after the config loader exists;
     /// later catalog rebuilds keep the tool registered. Also hands the DB to
-    /// the scheduled-task registry and the background-task registry so scheduled_tasks and
-    /// task results persist across restarts.
+    /// the scheduled-action registry and the background-action registry so scheduled_actions and
+    /// action results persist across restarts.
     pub async fn set_self_context(&self, ctx: builtin::SelfToolContext) {
-        self.scheduled_tasks.set_db(ctx.db.clone()).await;
-        self.background_tasks.set_db(ctx.db.clone()).await;
+        self.scheduled_actions.set_db(ctx.db.clone()).await;
+        self.background_actions.set_db(ctx.db.clone()).await;
         *self.self_context.write().await = Some(ctx);
         self.rebuild_catalog().await;
     }
@@ -200,8 +200,8 @@ impl ToolsManager {
     pub async fn set_context_limits(&self, limits: ContextLimitsConfig) {
         self.mcp_manager.set_limits(&limits).await;
         self.skills_engine.set_limits(&limits).await;
-        self.background_tasks.set_limits(&limits).await;
-        self.scheduled_tasks.set_limits(&limits).await;
+        self.background_actions.set_limits(&limits).await;
+        self.scheduled_actions.set_limits(&limits).await;
         *self.context_limits.write().await = limits;
         self.rebuild_catalog().await;
     }
@@ -276,8 +276,8 @@ impl ToolsManager {
             &Arc::new(self.mcp_manager.clone()),
             &self.mcp_server_configs,
             router,
-            self.background_tasks.clone(),
-            self.scheduled_tasks.clone(),
+            self.background_actions.clone(),
+            self.scheduled_actions.clone(),
             self_context,
             self.registry.clone(),
             self.clipboard_history.clone(),
@@ -505,7 +505,7 @@ impl ToolsManager {
     /// whenever `SKILL.md` files are added / modified / removed. The first
     /// pass always refreshes too, so a UI that loaded before the initial
     /// scan finished (startup race) still catches up. `on_change` fires on
-    /// the background task after a successful refresh so callers can
+    /// the background action after a successful refresh so callers can
     /// re-sync views / emit events (e.g. `skills:status_change`).
     pub fn spawn_skills_watcher(
         self: Arc<Self>,
@@ -589,7 +589,7 @@ impl ToolsManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
 
-        // Tools that scope to the current session (schedule, tasks) get the session
+        // Tools that scope to the current session (schedule, actions) get the session
         // id injected privately here — after the LLM-facing input was
         // captured by the caller — so it never reaches the tool schema, the
         // step history, or the LLM. Declared via `Tool::requires_session_id` so

@@ -68,8 +68,8 @@ General:\n\
 3. When the session is complete, respond with a concise summary of what was done, in the same language the user is using.\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
-Shell & background tasks:\n\
-6. shell(background: true) returns a task_id immediately; the task's final output is delivered back to you automatically as context when it finishes — do not poll it with `task_status`. Use `tasks` to see all background tasks at once. The user also gets a push notification when a background task finishes.\n\
+Shell & background actions:\n\
+6. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll it with `action_status`. Use `actions` to see all background actions at once. The user also gets a push notification when a background action finishes.\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
 Interaction & notifications:\n\
 8. Calling ask pauses the session until the user replies; their answer is injected as context for the next step.\n\
@@ -100,7 +100,7 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own.\n\
 - network: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
 - shell: Never run interactive commands that block waiting for input (interactive prompts, REPLs, editors, pagers, wizards) — they will hang forever because no one is there to answer. Use non-interactive flags (e.g. -y, --yes, -n) or supply all input up front instead.\n\
-- shell (background tasks): After launching a background task, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the task's output when it finishes.";
+- shell (background actions): After launching a background action, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the action's output when it finishes.";
 
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";

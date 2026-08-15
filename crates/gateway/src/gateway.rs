@@ -4,7 +4,7 @@
 //! and the dedicated media clients (STT / OCR / TTS / image generation):
 //!
 //! - [`MediaGateway::process_attachment`] — for a binary attachment: detect
-//!   modality, classify intent, run the coverage action. Extraction tasks
+//!   modality, classify intent, run the coverage action. Extraction actions
 //!   run through the dedicated provider with a confidence gate; a result
 //!   below `min_confidence` (or an error / empty result) falls back to the
 //!   main model, which is called directly with the media as a content part.
@@ -163,7 +163,7 @@ impl MediaGateway {
         }
     }
 
-    /// Fall back to the main model for an extraction task: the media is sent
+    /// Fall back to the main model for an extraction action: the media is sent
     /// as a content part (image → vision role, audio → STT role) with the
     /// extraction system prompt, and the model's reply becomes the extracted
     /// text. The decision carries `fallback = true`.

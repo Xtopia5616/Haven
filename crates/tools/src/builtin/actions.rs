@@ -4,27 +4,27 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::BackgroundTasks;
+use crate::bg::BackgroundActions;
 use crate::{Tool, ToolResult};
 
-/// One-call board of every background task started by the current session
-/// (task_id, status, timestamps, output preview), so the agent can inspect all
-/// background work at once instead of polling `status` task by task.
+/// One-call board of every background action started by the current session
+/// (action_id, status, timestamps, output preview), so the agent can inspect all
+/// background work at once instead of polling `status` action by action.
 ///
 /// The owning session id is injected privately by the tools manager
-/// (`_session_id`), mirroring the `scheduled_task` tool, so a task board can never
-/// leak other sessions' tasks or outputs.
-pub struct TasksTool {
-    pub tasks: Arc<BackgroundTasks>,
+/// (`_session_id`), mirroring the `scheduled_action` tool, so a action board can never
+/// leak other sessions' actions or outputs.
+pub struct ActionsTool {
+    pub actions: Arc<BackgroundActions>,
 }
 
 #[async_trait]
-impl Tool for TasksTool {
+impl Tool for ActionsTool {
     fn name(&self) -> String {
-        "tasks".into()
+        "actions".into()
     }
     fn description(&self) -> String {
-        "List all background tasks of the current session in one call: task_id, status, timestamps and a brief output preview. Use this instead of polling status task by task."
+        "List all background actions of the current session in one call: action_id, status, timestamps and a brief output preview. Use this instead of polling status action by action."
             .into()
     }
 
@@ -32,7 +32,7 @@ impl Tool for TasksTool {
         RiskLevel::Safe
     }
 
-    /// Needs the private `_session_id` input so the task board is scoped to the
+    /// Needs the private `_session_id` input so the action board is scoped to the
     /// current session.
     fn requires_session_id(&self) -> bool {
         true
@@ -45,7 +45,7 @@ impl Tool for TasksTool {
                 "status": {
                     "type": "string",
                     "enum": ["running", "completed", "failed", "cancelled"],
-                    "description": "Optional filter: only list tasks in this state"
+                    "description": "Optional filter: only list actions in this state"
                 }
             }
         })
@@ -57,13 +57,13 @@ impl Tool for TasksTool {
         }
         let session_id = input["_session_id"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("tasks requires a session context"))?;
+            .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
         let filter = input["status"].as_str().map(|s| s.to_string());
-        let mut rows = self.tasks.list_for_session(session_id).await;
+        let mut rows = self.actions.list_for_session(session_id).await;
         if let Some(f) = filter.as_deref() {
             rows.retain(|r| r["status"].as_str() == Some(f));
         }
-        Ok(ToolResult::ok(serde_json::json!({ "tasks": rows })))
+        Ok(ToolResult::ok(serde_json::json!({ "actions": rows })))
     }
 }
 
@@ -74,28 +74,28 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_tasks_tool_name() {
+    fn test_actions_tool_name() {
         assert_eq!(
-            TasksTool {
-                tasks: Arc::new(BackgroundTasks::new())
+            ActionsTool {
+                actions: Arc::new(BackgroundActions::new())
             }
             .name(),
-            "tasks"
+            "actions"
         );
     }
 
     #[test]
-    fn test_tasks_tool_risk_level() {
-        let tool = TasksTool {
-            tasks: Arc::new(BackgroundTasks::new()),
+    fn test_actions_tool_risk_level() {
+        let tool = ActionsTool {
+            actions: Arc::new(BackgroundActions::new()),
         };
         assert_eq!(tool.risk_level(&json!({})), RiskLevel::Safe);
     }
 
     #[test]
-    fn test_tasks_tool_schema() {
-        let tool = TasksTool {
-            tasks: Arc::new(BackgroundTasks::new()),
+    fn test_actions_tool_schema() {
+        let tool = ActionsTool {
+            actions: Arc::new(BackgroundActions::new()),
         };
         let schema = tool.input_schema();
         let filter = &schema["properties"]["status"]["enum"];
@@ -103,32 +103,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tasks_tool_requires_session_context() {
-        let tool = TasksTool {
-            tasks: Arc::new(BackgroundTasks::new()),
+    async fn test_actions_tool_requires_session_context() {
+        let tool = ActionsTool {
+            actions: Arc::new(BackgroundActions::new()),
         };
         let result = tool.execute(json!({}), CancellationToken::new()).await;
-        assert!(result.is_err(), "tasks without a session context must fail");
+        assert!(result.is_err(), "actions without a session context must fail");
     }
 
     #[tokio::test]
-    async fn test_tasks_tool_lists_session_tasks() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let tool = TasksTool { tasks };
+    async fn test_actions_tool_lists_session_actions() {
+        let actions = Arc::new(BackgroundActions::new());
+        let tool = ActionsTool { actions };
         let result = tool
             .execute(json!({"_session_id": "ses-x"}), CancellationToken::new())
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["tasks"], json!([]));
+        assert_eq!(result.output["actions"], json!([]));
     }
 
     #[tokio::test]
-    async fn test_tasks_tool_cancelled() {
+    async fn test_actions_tool_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let tool = TasksTool {
-            tasks: Arc::new(BackgroundTasks::new()),
+        let tool = ActionsTool {
+            actions: Arc::new(BackgroundActions::new()),
         };
         let result = tool.execute(json!({"_session_id": "ses-x"}), cancel).await;
         assert!(result.is_err());

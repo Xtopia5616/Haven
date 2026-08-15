@@ -380,7 +380,7 @@ impl TauriEmitter {
             }
             AgentEvent::SessionUpdated { session_id, status } if status == "pending" => {
                 // A transition to Pending after a Paused/Error state is a
-                // resume (continue flow, ask answer, task-completion wake).
+                // resume (continue flow, ask answer, action-completion wake).
                 // Surface it as a Windows toast when enabled so the user
                 // knows the session is running again without checking the app.
                 let notify = self
@@ -668,23 +668,23 @@ pub fn run() {
                 rt.block_on(bus.subscribe("tauri", buffered));
             });
 
-            // Forward task lifecycle to the frontend (`task:created`
-            // / `task:updated` / `task:output` / `task:finished`)
-            // so the task panel stays live while sessions run in the
+            // Forward action lifecycle to the frontend (`action:created`
+            // / `action:updated` / `action:output` / `action:finished`)
+            // so the action panel stays live while sessions run in the
             // background. Emits are fire-and-forget like every other Tauri
-            // event. Tasks (`task_id` payloads) and scheduled_tasks (`id` payloads)
+            // event. Actions (`action_id` payloads) and scheduled_actions (`id` payloads)
             // share this sink.
-            let task_sink_handle = handle.clone();
-            state.tools.background_tasks.set_event_sink(Arc::new(
+            let action_sink_handle = handle.clone();
+            state.tools.background_actions.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
-                    let _ = task_sink_handle.emit(&event, payload);
+                    let _ = action_sink_handle.emit(&event, payload);
                 },
             ));
 
-            // Same for scheduled_tasks, so the pending list in the task panel
-            // stays live and fired scheduled_tasks can be acknowledged.
+            // Same for scheduled_actions, so the pending list in the action panel
+            // stays live and fired scheduled_actions can be acknowledged.
             let reminder_sink_handle = handle.clone();
-            state.tools.scheduled_tasks.set_event_sink(Arc::new(
+            state.tools.scheduled_actions.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     let _ = reminder_sink_handle.emit(&event, payload);
                 },
@@ -916,10 +916,10 @@ pub fn run() {
             commands::session::reopen_session,
             commands::session::get_last_conversation,
             commands::session::get_sessions,
-            commands::task::list_tasks,
-            commands::task::cancel_task,
-            commands::task::list_task_history,
-            commands::task::delete_task,
+            commands::action::list_actions,
+            commands::action::cancel_action,
+            commands::action::list_action_history,
+            commands::action::delete_action,
             commands::session::end_session,
             commands::session::resolve_confirmation,
             commands::skills::get_tools,

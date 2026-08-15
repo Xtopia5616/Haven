@@ -1,6 +1,6 @@
 <script>
 	import '../app.css';
-	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertTask, removeTask, refreshTasks, taskStore, sessionStore, cancelTask, refreshTaskHistory, deleteTask, formatMessageTime } from '$lib/stores.js';
+	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertAction, removeAction, refreshActions, actionStore, sessionStore, cancelAction, refreshActionHistory, deleteAction, formatMessageTime } from '$lib/stores.js';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.js';
 	import { themeStore } from '$lib/themeStore.js';
 	import { invoke } from '$lib/tauri.js';
@@ -162,48 +162,48 @@
 		theme = themeStore.currentTheme;
 	}
 
-	// Task registry (background tasks + scheduled tasks) mirrored from
-	// taskStore (kept live by the `task:*` listeners above). Background
-	// tasks sort newest-first; scheduled tasks sort soonest-first; both
-	// derive from one store keyed by the normalized task id. The status chip
+	// Action registry (background actions + scheduled actions) mirrored from
+	// actionStore (kept live by the `action:*` listeners above). Background
+	// actions sort newest-first; scheduled actions sort soonest-first; both
+	// derive from one store keyed by the normalized action id. The status chip
 	// in the titlebar opens a menu of these, replacing the old chat-toolbar
 	// button.
-	let taskMenuOpen = $state(false);
+	let actionMenuOpen = $state(false);
 	let activities = $state({});
-	$effect(() => syncStore(taskStore, (v) => (activities = v)));
-	const taskEntries = $derived(Object.values(activities));
-	const backgroundTaskEntries = $derived(
-		taskEntries
+	$effect(() => syncStore(actionStore, (v) => (activities = v)));
+	const actionEntries = $derived(Object.values(activities));
+	const backgroundActionEntries = $derived(
+		actionEntries
 			.filter((a) => a.kind === 'background')
 			.sort((a, b) =>
 				String(b.started_at || '').localeCompare(String(a.started_at || '')),
 			),
 	);
-	const pendingScheduledTasks = $derived(
-		taskEntries
+	const pendingScheduledActions = $derived(
+		actionEntries
 			.filter((a) => a.kind === 'scheduled')
 			.sort((a, b) => String(a.due_at || '').localeCompare(String(b.due_at || ''))),
 	);
-	const runningTaskCount = $derived(
-		backgroundTaskEntries.filter((j) => j.status === 'running').length,
+	const runningActionCount = $derived(
+		backgroundActionEntries.filter((j) => j.status === 'running').length,
 	);
 
 	// Panel tab filter: 'all' | 'background' | 'scheduled' | 'history'.
-	let taskTab = $state('all');
+	let actionTab = $state('all');
 
-	// Fired-scheduled-task history (and terminal background-task rows past
+	// Fired-scheduled-action history (and terminal background-action rows past
 	// the in-memory TTL), fetched on demand when the history tab opens.
-	let taskHistory = $state([]);
+	let actionHistory = $state([]);
 	let historyLoaded = $state(false);
 	$effect(() => {
-		if (!taskMenuOpen || taskTab !== 'history' || historyLoaded) return;
-		refreshTaskHistory('scheduled', 50).then((rows) => {
-			taskHistory = rows;
+		if (!actionMenuOpen || actionTab !== 'history' || historyLoaded) return;
+		refreshActionHistory('scheduled', 50).then((rows) => {
+			actionHistory = rows;
 			historyLoaded = true;
 		});
 	});
 
-	// Session titles for background-task rows; mirrored from the chat page's
+	// Session titles for background-action rows; mirrored from the chat page's
 	// loadSessions().
 	let sessions = $state([]);
 	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
@@ -211,22 +211,22 @@
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
 	$effect(() => {
-		if (!taskMenuOpen) return;
+		if (!actionMenuOpen) return;
 		const t = setInterval(() => (countdownTick += 1), 1000);
 		return () => clearInterval(t);
 	});
 
 	async function handleDeleteHistory(id) {
 		try {
-			await deleteTask(id);
-			taskHistory = taskHistory.filter((h) => h.id !== id);
+			await deleteAction(id);
+			actionHistory = actionHistory.filter((h) => h.id !== id);
 			addNotification('已删除历史记录', 'success', 2000);
 		} catch (e) {
 			addNotification(`删除历史记录失败: ${e}`, 'error', 3000);
 		}
 	}
 
-	function taskStatusLabel(status) {
+	function actionStatusLabel(status) {
 		switch (status) {
 			case 'running':
 				return '运行中';
@@ -241,7 +241,7 @@
 		}
 	}
 
-	function taskStatusColor(status) {
+	function actionStatusColor(status) {
 		switch (status) {
 			case 'running':
 				return '#44cc44';
@@ -256,19 +256,19 @@
 		}
 	}
 
-	function sessionTitleFor(task) {
-		if (!task.session_id) return '';
-		const t = sessions.find((x) => x.id === task.session_id);
-		return t?.title || t?.input || task.session_id;
+	function sessionTitleFor(action) {
+		if (!action.session_id) return '';
+		const t = sessions.find((x) => x.id === action.session_id);
+		return t?.title || t?.input || action.session_id;
 	}
 
-	function taskDuration(task) {
-		const start = new Date(task.started_at).getTime();
+	function actionDuration(action) {
+		const start = new Date(action.started_at).getTime();
 		if (isNaN(start)) return '';
 		const end =
-			task.status === 'running'
+			action.status === 'running'
 				? Date.now()
-				: new Date(task.finished_at || task.started_at).getTime();
+				: new Date(action.finished_at || action.started_at).getTime();
 		if (isNaN(end)) return '';
 		const secs = Math.floor((end - start) / 1000);
 		if (secs < 60) return `${secs}s`;
@@ -276,9 +276,9 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
-	async function handleCancelTask(taskId, kind = 'background') {
+	async function handleCancelAction(actionId, kind = 'background') {
 		try {
-			const ok = await cancelTask(taskId, kind);
+			const ok = await cancelAction(actionId, kind);
 			if (!ok) {
 				addNotification(
 					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',
@@ -295,7 +295,7 @@
 		}
 	}
 
-	function scheduledTaskCountdown(dueAt) {
+	function scheduledActionCountdown(dueAt) {
 		const due = new Date(dueAt).getTime();
 		if (isNaN(due)) return '';
 		const diff = due - Date.now();
@@ -318,11 +318,11 @@
 	}
 
 	function handleWindowClick(e) {
-		if (taskMenuOpen) {
-			const menu = document.querySelector('.status-task-menu');
+		if (actionMenuOpen) {
+			const menu = document.querySelector('.status-action-menu');
 			const chip = document.querySelector('.status-chip-btn');
 			if (menu && chip && !menu.contains(e.target) && !chip.contains(e.target)) {
-				taskMenuOpen = false;
+				actionMenuOpen = false;
 			}
 		}
 	}
@@ -569,33 +569,33 @@
 				// redundant — the toast itself already lives in the app.
 				addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
 			},
-			// Task lifecycle (background tasks + scheduled tasks). Registered
-			// globally (not on the chat page) so tasks stay tracked while
-			// the user visits other tabs. Background-task payloads carry
-			// `task_id`; scheduled-task payloads carry `id` — the store
+			// Action lifecycle (background actions + scheduled actions). Registered
+			// globally (not on the chat page) so actions stay tracked while
+			// the user visits other tabs. Background-action payloads carry
+			// `action_id`; scheduled-action payloads carry `id` — the store
 			// normalizes both.
-			'task:created': (event) => {
-				upsertTask(event.payload || {});
+			'action:created': (event) => {
+				upsertAction(event.payload || {});
 			},
-			// Background task attached to a session (payload has task_id) or
-			// a scheduled task was cancelled (payload only has id).
-			'task:updated': (event) => {
+			// Background action attached to a session (payload has action_id) or
+			// a scheduled action was cancelled (payload only has id).
+			'action:updated': (event) => {
 				const p = event.payload || {};
-				if (p.task_id) {
-					upsertTask(p);
+				if (p.action_id) {
+					upsertAction(p);
 				} else {
-					removeTask(p.id);
+					removeAction(p.id);
 				}
 			},
-			// Live output preview while a background task runs (bounded tail).
-			'task:output': (event) => {
-				upsertTask(event.payload || {});
+			// Live output preview while a background action runs (bounded tail).
+			'action:output': (event) => {
+				upsertAction(event.payload || {});
 			},
-			'task:finished': (event) => {
+			'action:finished': (event) => {
 				const p = event.payload || {};
-				if (p.task_id) {
-					upsertTask(p);
-					// A background task finishing is only worth a toast when the
+				if (p.action_id) {
+					upsertAction(p);
+					// A background action finishing is only worth a toast when the
 					// user is not already watching its owning session (the result
 					// also lands in the session's conversation).
 					if (p.status === 'completed' || p.status === 'failed') {
@@ -603,27 +603,27 @@
 						if (!p.session_id || p.session_id !== activeId) {
 							const label = p.status === 'completed' ? '完成' : '失败';
 							addNotification(
-								`后台任务${label}: ${p.task_id || ''}`,
+								`后台任务${label}: ${p.action_id || ''}`,
 								p.status === 'completed' ? 'success' : 'error',
 								4000,
 							);
 						}
 					}
 				} else {
-					// Scheduled task fired: drop from the pending list. The
+					// Scheduled action fired: drop from the pending list. The
 					// toast is surfaced by the agent's `notification:show` (the
 					// fired consumer always notifies).
-					removeTask(p.id);
+					removeAction(p.id);
 				}
 			},
 		}, { tag: '+layout' });
 		eventRegistrations = registrations;
 		await registrations.ready;
 
-		// Hydrate the task registry for tasks started before this mount
-		// (events only cover tasks spawned after the listeners above;
+		// Hydrate the action registry for actions started before this mount
+		// (events only cover actions spawned after the listeners above;
 		// fired/cancelled while the UI was away are already gone).
-		refreshTasks();
+		refreshActions();
 
 		probeLlmConnection();
 		scheduleLlmProbe();
@@ -658,10 +658,10 @@
 			<div class="status-switch">
 				<button
 					class="status-chip status-chip-btn"
-					onclick={() => (taskMenuOpen = !taskMenuOpen)}
+					onclick={() => (actionMenuOpen = !actionMenuOpen)}
 					title={
-						runningTaskCount > 0 || pendingScheduledTasks.length > 0
-							? `任务${runningTaskCount > 0 ? `（${runningTaskCount} 个后台任务运行中）` : ''}${pendingScheduledTasks.length > 0 ? `· 定时任务（${pendingScheduledTasks.length} 条）` : ''}`
+						runningActionCount > 0 || pendingScheduledActions.length > 0
+							? `任务${runningActionCount > 0 ? `（${runningActionCount} 个后台任务运行中）` : ''}${pendingScheduledActions.length > 0 ? `· 定时任务（${pendingScheduledActions.length} 条）` : ''}`
 							: '任务：后台任务与定时任务'
 					}
 					aria-label="任务：后台任务与定时任务"
@@ -697,79 +697,79 @@
 						<StatusDot color="success" />
 						<span class="status-text">就绪</span>
 					{/if}
-					{#if runningTaskCount > 0 || pendingScheduledTasks.length > 0}
-						<span class="status-badge">{runningTaskCount + pendingScheduledTasks.length}</span>
+					{#if runningActionCount > 0 || pendingScheduledActions.length > 0}
+						<span class="status-badge">{runningActionCount + pendingScheduledActions.length}</span>
 					{/if}
 				</button>
-				{#if taskMenuOpen}
-					<div class="status-task-menu task-menu">
-						<div class="task-menu-tabs">
+				{#if actionMenuOpen}
+					<div class="status-action-menu action-menu">
+						<div class="action-menu-tabs">
 							<button
-								class="task-menu-tab"
-								class:active={taskTab === 'all'}
-								onclick={() => (taskTab = 'all')}
+								class="action-menu-tab"
+								class:active={actionTab === 'all'}
+								onclick={() => (actionTab = 'all')}
 								type="button"
 								>全部</button
 							>
 							<button
-								class="task-menu-tab"
-								class:active={taskTab === 'background'}
-								onclick={() => (taskTab = 'background')}
+								class="action-menu-tab"
+								class:active={actionTab === 'background'}
+								onclick={() => (actionTab = 'background')}
 								type="button"
 								>后台任务</button
 							>
 							<button
-								class="task-menu-tab"
-								class:active={taskTab === 'scheduled'}
-								onclick={() => (taskTab = 'scheduled')}
+								class="action-menu-tab"
+								class:active={actionTab === 'scheduled'}
+								onclick={() => (actionTab = 'scheduled')}
 								type="button"
 								>定时任务</button
 							>
 							<button
-								class="task-menu-tab"
-								class:active={taskTab === 'history'}
+								class="action-menu-tab"
+								class:active={actionTab === 'history'}
 								onclick={() => {
-									taskTab = 'history';
+									actionTab = 'history';
 									historyLoaded = false;
 								}}
 								type="button"
 								>历史</button
 							>
 						</div>
-						{#if taskTab !== 'scheduled'}
-							<div class="task-menu-title">后台任务</div>
-							{#if backgroundTaskEntries.length === 0}
-								<div class="task-menu-empty">暂无后台任务</div>
+						{#if actionTab !== 'scheduled'}
+							<div class="action-menu-title">后台任务</div>
+							{#if backgroundActionEntries.length === 0}
+								<div class="action-menu-empty">暂无后台任务</div>
 							{:else}
-								{#each backgroundTaskEntries as task}
-									<div class="task-item" class:task-item-running={task.status === 'running'}>
-										<span class="task-dot" style="color: {taskStatusColor(task.status)}"
+								{#each backgroundActionEntries as action}
+									<div class="action-item" class:action-item-running={action.status === 'running'}>
+										<span class="action-dot" style="color: {actionStatusColor(action.status)}"
 											>&#9679;</span
 										>
-										<div class="task-item-main">
-											<div class="task-item-top">
-												<span class="task-id">{task.id}</span>
+										<div class="action-item-main">
+											<div class="action-item-top">
+												<span class="action-id">{action.id}</span>
 												<span
-													class="task-item-status"
-													class:running={task.status === 'running'}
-													>{taskStatusLabel(task.status)}</span
+													class="action-item-status"
+													class:running={action.status === 'running'}
+													>{actionStatusLabel(action.status)}</span
 												>
 											</div>
-											<div class="task-item-sub">
-												<span class="task-session">{sessionTitleFor(task)}</span>
-												<span class="task-duration">{taskDuration(task)}</span>
+											<div class="action-item-sub">
+												<span class="action-session">{sessionTitleFor(action)}</span>
+												<span class="action-duration">{actionDuration(action)}</span>
 											</div>
-											{#if task.status === 'running' && task.output}
-												<div class="task-output">{task.output}</div>
+											{#if action.status === 'running' && action.output}
+												<div class="action-output">{action.output}</div>
 											{/if}
-											{#if task.status === 'failed' && task.error_reason}
-												<div class="task-error">{task.error_reason}</div>
+											{#if action.status === 'failed' && action.error_reason}
+												<div class="action-error">{action.error_reason}</div>
 											{/if}
 										</div>
-										{#if task.status === 'running'}
+										{#if action.status === 'running'}
 											<button
-												class="task-cancel"
-												onclick={() => handleCancelTask(task.id, 'background')}
+												class="action-cancel"
+												onclick={() => handleCancelAction(action.id, 'background')}
 												title="停止后台任务"
 												aria-label="停止后台任务"
 												type="button"
@@ -780,29 +780,29 @@
 								{/each}
 							{/if}
 						{/if}
-						{#if taskTab !== 'background'}
-							<div class="task-menu-title scheduled-menu-title">定时任务</div>
-							{#if pendingScheduledTasks.length === 0}
-								<div class="task-menu-empty">暂无定时任务</div>
+						{#if actionTab !== 'background'}
+							<div class="action-menu-title scheduled-menu-title">定时任务</div>
+							{#if pendingScheduledActions.length === 0}
+								<div class="action-menu-empty">暂无定时任务</div>
 							{:else}
-								{#each pendingScheduledTasks as r}
-									<div class="task-item scheduled-item">
+								{#each pendingScheduledActions as r}
+									<div class="action-item scheduled-item">
 										<span class="scheduled-dot">&#9200;</span>
-										<div class="task-item-main">
-											<div class="task-item-top">
+										<div class="action-item-main">
+											<div class="action-item-top">
 												<span class="scheduled-title-text">{r.title || r.body}</span>
-												<span class="task-item-status"
+												<span class="action-item-status"
 													>{r.mode === 'continue' ? '续接会话' : '执行工具'}</span
 												>
 											</div>
-											<div class="task-item-sub">
+											<div class="action-item-sub">
 												<span class="scheduled-body">{r.body}</span>
-												<span class="task-duration">{scheduledTaskCountdown(r.due_at)}</span>
+												<span class="action-duration">{scheduledActionCountdown(r.due_at)}</span>
 											</div>
 										</div>
 										<button
-											class="task-cancel"
-											onclick={() => handleCancelTask(r.id, 'scheduled')}
+											class="action-cancel"
+											onclick={() => handleCancelAction(r.id, 'scheduled')}
 											title="取消定时任务"
 											aria-label="取消定时任务"
 											type="button"
@@ -812,28 +812,28 @@
 								{/each}
 							{/if}
 						{/if}
-						{#if taskTab === 'history'}
-							<div class="task-menu-title scheduled-menu-title">已触发</div>
-							{#if taskHistory.length === 0}
-								<div class="task-menu-empty">暂无历史记录</div>
+						{#if actionTab === 'history'}
+							<div class="action-menu-title scheduled-menu-title">已触发</div>
+							{#if actionHistory.length === 0}
+								<div class="action-menu-empty">暂无历史记录</div>
 							{:else}
-								{#each taskHistory as h}
-									<div class="task-item scheduled-item">
+								{#each actionHistory as h}
+									<div class="action-item scheduled-item">
 										<span class="scheduled-dot">&#9989;</span>
-										<div class="task-item-main">
-											<div class="task-item-top">
+										<div class="action-item-main">
+											<div class="action-item-top">
 												<span class="scheduled-title-text">{h.title || h.body || '定时任务'}</span>
-												<span class="task-item-status"
+												<span class="action-item-status"
 													>{h.mode === 'continue' ? '已续接会话' : '已执行'}</span
 												>
 											</div>
-											<div class="task-item-sub">
+											<div class="action-item-sub">
 												<span class="scheduled-body">{h.body}</span>
-												<span class="task-duration">{formatHistoryTime(h)}</span>
+												<span class="action-duration">{formatHistoryTime(h)}</span>
 											</div>
 										</div>
 										<button
-											class="task-cancel"
+											class="action-cancel"
 											onclick={() => handleDeleteHistory(h.id)}
 											title="删除历史记录"
 											aria-label="删除历史记录"
@@ -976,7 +976,7 @@
 	.recording-text {
 		color: var(--md-sys-color-error);
 	}
-	.task-menu {
+	.action-menu {
 		position: absolute;
 		right: 0;
 		top: calc(100% + 8px);
@@ -991,12 +991,12 @@
 		padding: var(--md-sys-space-xs);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	.task-menu-tabs {
+	.action-menu-tabs {
 		display: flex;
 		gap: var(--md-sys-space-xs);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-xs) 0;
 	}
-	.task-menu-tab {
+	.action-menu-tab {
 		flex: 1;
 		font-size: 11px;
 		padding: 4px var(--md-sys-space-sm);
@@ -1006,12 +1006,12 @@
 		color: var(--md-sys-color-on-surface-variant);
 		cursor: pointer;
 	}
-	.task-menu-tab.active {
+	.action-menu-tab.active {
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 		font-weight: 600;
 	}
-	.task-menu-title {
+	.action-menu-title {
 		font-size: 11px;
 		font-weight: 600;
 		letter-spacing: 0.4px;
@@ -1019,13 +1019,13 @@
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
-	.task-menu-empty {
+	.action-menu-empty {
 		padding: var(--md-sys-space-lg) var(--md-sys-space-md);
 		font-size: 12px;
 		color: var(--md-sys-color-on-surface-variant);
 		text-align: center;
 	}
-	.task-item {
+	.action-item {
 		display: flex;
 		align-items: flex-start;
 		gap: var(--md-sys-space-sm);
@@ -1033,61 +1033,61 @@
 		border-radius: var(--md-sys-shape-small);
 		opacity: 0.85;
 	}
-	.task-item-running {
+	.action-item-running {
 		opacity: 1;
 		background: var(--md-sys-color-surface-container);
 	}
-	.task-dot {
+	.action-dot {
 		font-size: 10px;
 		margin-top: 3px;
 		flex-shrink: 0;
 	}
-	.task-item-main {
+	.action-item-main {
 		flex: 1;
 		min-width: 0;
 	}
-	.task-item-top {
+	.action-item-top {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 	}
-	.task-id {
+	.action-id {
 		font-size: 11px;
 		font-family: var(--md-sys-typescale-mono);
 		color: var(--md-sys-color-on-surface);
 		font-weight: 600;
 	}
-	.task-item-status {
+	.action-item-status {
 		flex-shrink: 0;
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
 		margin-left: auto;
 	}
-	.task-item-status.running {
+	.action-item-status.running {
 		color: #44cc44;
 	}
-	.task-item-sub {
+	.action-item-sub {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		margin-top: 2px;
 		min-width: 0;
 	}
-	.task-session {
+	.action-session {
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface-variant);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.task-duration {
+	.action-duration {
 		font-size: 10px;
 		color: var(--md-sys-color-on-surface-variant);
 		margin-left: auto;
 		flex-shrink: 0;
 		font-family: var(--md-sys-typescale-mono);
 	}
-	.task-error {
+	.action-error {
 		margin-top: 4px;
 		font-size: 10px;
 		font-family: var(--md-sys-typescale-mono);
@@ -1096,7 +1096,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.task-output {
+	.action-output {
 		margin-top: 4px;
 		max-height: 64px;
 		overflow: hidden;
@@ -1134,7 +1134,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.task-cancel {
+	.action-cancel {
 		flex-shrink: 0;
 		width: 22px;
 		height: 22px;
@@ -1150,7 +1150,7 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
-	.task-cancel:hover {
+	.action-cancel:hover {
 		background: var(--md-sys-color-error-container);
 	}
 	.theme-toggle {

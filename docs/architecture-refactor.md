@@ -11,7 +11,7 @@
 
 项目经过多次重构，当前存在四类架构问题（详见下方各步骤）：
 
-1. **命名与语义漂移**：`Session as DbTask` 别名与 ID 规范（`task-` = 工作单元）冲突；
+1. **命名与语义漂移**：`Session as DbAction` 别名与 ID 规范（`act-` = 工作单元）冲突；
 2. **上帝文件**：`commands.rs`（2840 行）、`agent/src/lib.rs`（6173 行）等巨型文件难以维护；
 3. **同步 SQLite 在 async 上下文裸调**：`run_blocking` facade 已存在但使用不充分；
 4. **配置映射手写漂移**：`AppConfig`/`Settings` 互转靠手工字段列表，易漏。
@@ -22,7 +22,7 @@
 
 | 步骤 | 内容 | 风险 | 类型 |
 |---|---|---|---|
-| S1 | `DbTask` → `DbSession` 命名统一 | 低 | 纯重命名 |
+| S1 | `DbAction` → `DbSession` 命名统一 | 低 | 纯重命名 |
 | S2 | `commands.rs` 按域拆分 | 低 | 纯搬移 |
 | S3 | `apply_settings` 映射收敛防漂移 | 中 | 结构性 |
 | S4 | ReAct 高频 DB 路径接入 `run_blocking` | 中 | 性能/一致性 |
@@ -33,20 +33,20 @@
 
 ---
 
-## S1: `DbTask` → `DbSession` 命名统一
+## S1: `DbAction` → `DbSession` 命名统一
 
 ### 动机
-`crates/session/src/lib.rs:4` 将 `haven_memory::repositories::sessions::Session` 别名为 `DbTask`。
-AGENTS.md ID 规范中 `task-` 前缀专属「工作单元」（后台任务/定时任务），会话记录叫 `DbTask` 会误导新读者。
+`crates/session/src/lib.rs:4` 将 `haven_memory::repositories::sessions::Session` 别名为 `DbAction`。
+AGENTS.md ID 规范中 `act-` 前缀专属「工作单元」（后台任务/定时任务），会话记录叫 `DbAction` 会误导新读者。
 
 ### 改动
 - `crates/session/src/lib.rs`：
-  - `use haven_memory::repositories::sessions::Session as DbTask;` → `as DbSession`
-  - `from_db_record(record: &DbTask)` → `&DbSession`
+  - `use haven_memory::repositories::sessions::Session as DbAction;` → `as DbSession`
+  - `from_db_record(record: &DbAction)` → `&DbSession`
 
 ### 验收
 - `cargo check -p haven-session` 通过
-- 仓库内无 `DbTask` 残留
+- 仓库内无 `DbAction` 残留
 
 ### 行为影响
 无（仅内部别名）。
@@ -70,7 +70,7 @@ crates/app-binary/src/commands/
 ├── session.rs    # reopen_session、get_sessions、end_session、resolve_confirmation、
 │                 #      get_last_conversation、update_session_title、delete_session、
 │                 #      clear_history、rollback_session、continue_session、评审相关
-├── task.rs       # list_tasks、cancel_task、list_task_history、delete_task
+├── action.rs       # list_actions、cancel_action、list_action_history、delete_action
 ├── history.rs    # get_history、count_history、search_history(_paginated/_filtered)、
 │                 #      count_history_search、export_history
 ├── model.rs      # get_api_key_status、check_llm_connection、list_models、discover_models、
@@ -167,7 +167,7 @@ crates/agent/src/
 ├── lib.rs              # AgentLayer 核心：new/start/dispatch/process_input/session 生命周期
 ├── rollback.rs         # rollback_session 及其私有辅助
 ├── review.rs           # review_response_for_session、estimate_session_usage、get_session_for_review
-├── task_completion.rs  # 后台任务完成消费循环
+├── action_completion.rs  # 后台任务完成消费循环
 └── event.rs / react.rs / inference.rs / ...（现有）
 ```
 - `impl AgentLayer` 块可拆到子模块（`impl AgentLayer` 在多个文件中合法），私有字段经
@@ -210,7 +210,7 @@ crates/agent/src/
 
 ## 遗留清单（本计划不做，记录待办）
 
-- 事件三通道统一到 `EventBus`（task:* 事件接入 `TauriEmitter::channel` 注册表）——改动面大，
+- 事件三通道统一到 `EventBus`（action:* 事件接入 `TauriEmitter::channel` 注册表）——改动面大，
   涉及前端归一化兜底，单独排期。
 - `haven-tools` 依赖收敛：`file.rs` 的 `LlmRouter` 摘要/视觉端口化（`Summarizer` trait）。
 - `facts.rs`（2797 行）/ `router.rs`（2661 行）/ `bg.rs`（2243 行）的进一步拆分。

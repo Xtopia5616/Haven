@@ -466,9 +466,9 @@ impl AgentLayer {
         });
         executor.start_dispatcher(handler);
 
-        // Spawn a consumer for background-task completions. When a task
+        // Spawn a consumer for background-action completions. When a action
         // finishes, inject the result into the owning session's context at the
-        // next ReAct step (via the task-completions buffer) and, if the session was
+        // next ReAct step (via the action-completions buffer) and, if the session was
         // Paused for scheduling reasons, wake it to Pending so the dispatcher
         // resumes and the model processes the result no manual `status`
         // polling required.
@@ -479,10 +479,10 @@ impl AgentLayer {
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.background_tasks.take_completion_receiver() {
+        if let Some(mut rx) = tools.background_actions.take_completion_receiver() {
             tokio::spawn(async move {
                 while let Some(comp) = rx.recv().await {
-                    // Skip cancellations: a cancelled task was killed
+                    // Skip cancellations: a cancelled action was killed
                     // intentionally (end_session/rollback), so notifying would
                     // risk resurrecting an ended session.
                     if comp.status == "cancelled" {
@@ -492,9 +492,9 @@ impl AgentLayer {
                         continue;
                     };
                     // Per-completion span so every log line in the consumer
-                    // (wake, injection, notification) carries both the task and
-                    // the owning session — parallel tasks stay distinguishable.
-                    let comp_span = tracing::info_span!("task_completion", task_id = %comp.task_id, session_id = %tid);
+                    // (wake, injection, notification) carries both the action and
+                    // the owning session — parallel actions stay distinguishable.
+                    let comp_span = tracing::info_span!("action_completion", action_id = %comp.action_id, session_id = %tid);
                     let _comp_guard = comp_span.enter();
                     // Only completed/failed carry a useful payload.
                     let payload = match comp.status_json.get("output").and_then(|v| v.as_str()) {
@@ -506,7 +506,7 @@ impl AgentLayer {
                             .unwrap_or("")
                             .to_string(),
                     };
-                    // Failed tasks carry a pre-condensed reason (progress bars
+                    // Failed actions carry a pre-condensed reason (progress bars
                     // stripped, tail kept) so the model and the notification
                     // see the real error, not a multi-KB progress dump. The
                     // injected context is capped either way: the model needs
@@ -522,15 +522,15 @@ impl AgentLayer {
                         payload
                     };
                     let mut msg = format!(
-                        "[Background task result]\ntask_id: {}\nstatus: {}\n\n{}",
-                        comp.task_id,
+                        "[Background action result]\naction_id: {}\nstatus: {}\n\n{}",
+                        comp.action_id,
                         comp.status,
                         truncate_notification(
                             &reason,
-                            agent.context_limits.task_result_context_chars
+                            agent.context_limits.action_result_context_chars
                         )
                     );
-                    // Failed tasks write the full output to a log file; point
+                    // Failed actions write the full output to a log file; point
                     // the model at it so a condensed reason never hides the
                     // root cause.
                     if let Some(log_path) = comp
@@ -541,11 +541,11 @@ impl AgentLayer {
                     {
                         msg.push_str(&format!("\nFull log: {log_path}"));
                     }
-                    agent.executor.add_task_completion(&tid, &msg).await;
+                    agent.executor.add_action_completion(&tid, &msg).await;
                     let state = agent.executor.get_session_state(&tid).await;
                     // Awaiting-answer pauses must not be auto-woken by
-                    // background-task completions (the model is blocked on the
-                    // user, not on task results).
+                    // background-action completions (the model is blocked on the
+                    // user, not on action results).
                     let awaiting = matches!(&state, Some(s) if s.is_awaiting_answer());
                     if state == Some(SessionStatus::Paused) && !awaiting {
                         if let Err(e) = agent
@@ -553,7 +553,7 @@ impl AgentLayer {
                             .update_session_status(&tid, SessionStatus::Pending)
                             .await
                         {
-                            tracing::warn!("task-completion wake session {} failed: {}", tid, e);
+                            tracing::warn!("action-completion wake session {} failed: {}", tid, e);
                             continue;
                         }
                         agent.events.emit_session_updated(&tid, "pending").await;
@@ -563,7 +563,7 @@ impl AgentLayer {
                     // into, so the buffered context above would be dropped.
                     // Persist the result as a message in the session's history
                     // instead — reopening the session shows what the background
-                    // task produced. (Live/paused sessions get the result via the
+                    // action produced. (Live/paused sessions get the result via the
                     // next ReAct step; awaiting-answer sessions keep it buffered
                     // until the user replies.)
                     if (matches!(&state, Some(s) if s.is_terminal()) || state.is_none())
@@ -579,7 +579,7 @@ impl AgentLayer {
                         .await
                     {
                         tracing::warn!(
-                            "task-completion persist for ended session {} failed: {}",
+                            "action-completion persist for ended session {} failed: {}",
                             tid,
                             e
                         );
@@ -596,35 +596,35 @@ impl AgentLayer {
                         agent.context_limits.notification_summary_chars,
                     );
                     let body = if summary.trim().is_empty() {
-                        format!("{} {}", comp.task_id, status_label)
+                        format!("{} {}", comp.action_id, status_label)
                     } else {
-                        format!("{} {}\n{}", comp.task_id, status_label, summary)
+                        format!("{} {}\n{}", comp.action_id, status_label, summary)
                     };
                     agent.events.emit_notification(&title, &body).await;
                 }
             });
         }
-        // Spawn a consumer for fired scheduled_tasks: the fire behavior is chosen
-        // by the scheduled task's mode.
+        // Spawn a consumer for fired scheduled_actions: the fire behavior is chosen
+        // by the scheduled action's mode.
         // - `notify`: surface it as a Notification event (in-app toast +
         //   Windows notification), exactly like the `notify` tool's signal.
         // - `tool`: execute the scheduled tool with its stored arguments
         //   (no LLM round-trip), then notify the user of the outcome.
-        // - `continue`: resume the session that scheduled the task ??the
-        //   scheduled task text is injected into that session's conversation and the
+        // - `continue`: resume the session that scheduled the action ??the
+        //   scheduled action text is injected into that session's conversation and the
         //   session is woken, so a scheduled "keep going at 3pm" continues the
-        //   same ReAct loop without anyone speaking. A continue-mode task
+        //   same ReAct loop without anyone speaking. A continue-mode action
         //   without a session id is an error (no fallback).
         let agent = self.clone();
         let tools = self.executor.get_tools();
-        if let Some(mut rx) = tools.scheduled_tasks.take_fired_receiver() {
+        if let Some(mut rx) = tools.scheduled_actions.take_fired_receiver() {
             tokio::spawn(async move {
                 while let Some(fired) = rx.recv().await {
-                    // Per-scheduled-task span so fire logs carry the scheduled task and
-                    // its owning session; parallel scheduled-task fires stay distinct.
+                    // Per-scheduled-action span so fire logs carry the scheduled action and
+                    // its owning session; parallel scheduled-action fires stay distinct.
                     let fire_span = tracing::info_span!(
                         "reminder_fired",
-                        reminder_id = %fired.task_id,
+                        reminder_id = %fired.action_id,
                         session_id = %fired.session_id.as_deref().unwrap_or("-")
                     );
                     let _fire_guard = fire_span.enter();
@@ -700,9 +700,9 @@ impl AgentLayer {
                                 .map(|s| s.trim().to_string())
                                 .filter(|s| !s.is_empty())
                                 .unwrap_or_else(|| {
-                                    "ScheduledTask fired: continue the session.".into()
+                                    "ScheduledAction fired: continue the session.".into()
                                 });
-                            // A continue-mode task requires the session it
+                            // A continue-mode action requires the session it
                             // continues; without one it cannot run (there is
                             // no fallback to a brand-new session).
                             let Some(session_id) = fired.session_id.clone() else {
@@ -728,18 +728,18 @@ impl AgentLayer {
                                 .await
                             {
                                 Ok(result) => tracing::info!(
-                                    "scheduled task {} resumed session: {:?}",
-                                    fired.task_id,
+                                    "scheduled action {} resumed session: {:?}",
+                                    fired.action_id,
                                     result
                                 ),
                                 Err(e) => tracing::warn!(
-                                    "scheduled task {} failed to resume session: {}",
-                                    fired.task_id,
+                                    "scheduled action {} failed to resume session: {}",
+                                    fired.action_id,
                                     e
                                 ),
                             }
                             // Also surface the notification so the user sees
-                            // the scheduled task while the session continues.
+                            // the scheduled action while the session continues.
                             agent
                                 .events
                                 .emit_notification(&fired.title, &fired.body)
@@ -749,25 +749,25 @@ impl AgentLayer {
                 }
             });
         }
-        // Re-arm scheduled_tasks persisted by a previous run: overdue ones (the app
+        // Re-arm scheduled_actions persisted by a previous run: overdue ones (the app
         // was closed when they expired) fire immediately, future ones resume
         // their countdown. Runs in the background; the notification consumer
-        // spawned above delivers the overdue fires. Also clean up task rows a
+        // spawned above delivers the overdue fires. Also clean up action rows a
         // previous run left `running` (their child processes died with the
-        // app), so persisted task history never shows stale live work.
+        // app), so persisted action history never shows stale live work.
         let restore_tools = self.executor.get_tools();
         tokio::spawn(async move {
-            let overdue = restore_tools.scheduled_tasks.restore_pending().await;
+            let overdue = restore_tools.scheduled_actions.restore_pending().await;
             if overdue > 0 {
                 tracing::info!(
-                    "restored {} overdue scheduled task(s) from previous run",
+                    "restored {} overdue scheduled action(s) from previous run",
                     overdue
                 );
             }
-            let interrupted = restore_tools.background_tasks.restore_after_restart().await;
+            let interrupted = restore_tools.background_actions.restore_after_restart().await;
             if interrupted > 0 {
                 tracing::info!(
-                    "marked {} interrupted background task(s) as failed",
+                    "marked {} interrupted background action(s) as failed",
                     interrupted
                 );
             }
@@ -1439,7 +1439,7 @@ impl AgentLayer {
         attachments: &[MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<ProcessResult> {
-        // Media gateway pre-processing: extraction tasks (OCR / ASR) and
+        // Media gateway pre-processing: extraction actions (OCR / ASR) and
         // generation requests (TTS / text-to-image) are handled here, before
         // persistence, so every downstream path (steering, supplements, new
         // sessions) sees the enriched message.
@@ -1585,7 +1585,7 @@ impl AgentLayer {
                             }
                         }
                         // Notify the frontend so it can drop the stale
-                        // activeTaskId and reset the model indicator instead of
+                        // activeActionId and reset the model indicator instead of
                         // showing an orphaned bubble with no response.
                         let fresh_status =
                             fresh_state.as_ref().map(|s| s.as_str()).unwrap_or("error");

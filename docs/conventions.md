@@ -50,7 +50,7 @@ logger.error('invoke', `'${cmd}' failed`, e);
 | `debug` | 每步细节（ReAct 循环、流式 chunk） | thought/action/observation 摘要 |
 | `trace` | 预留，底层数据包级 | — |
 
-**格式约定**：事件消息统一为 `模块::方法: 描述`，上下文用 `key=value` 内联（与 `TauriEmitter::trace_event` 一致），描述含上下文时使用 `tracing` 结构化字段 `tracing::debug!(task_id, step_number, ...)`。禁止 `println!` / `eprintln!` / `dbg!` 输出日志。
+**格式约定**：事件消息统一为 `模块::方法: 描述`，上下文用 `key=value` 内联（与 `TauriEmitter::trace_event` 一致），描述含上下文时使用 `tracing` 结构化字段 `tracing::debug!(action_id, step_number, ...)`。禁止 `println!` / `eprintln!` / `dbg!` 输出日志。
 
 **命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`commands.rs`），该函数固定输出两行：
 
@@ -65,13 +65,13 @@ command error: {e}
 
 ### 1.3 ID 上下文（多会话 / 多任务并行可区分）
 
-凡是会话、任务（后台任务与定时任务）等**并发实体**的日志，必须携带对应 ID（`session_id` / `task_id`），使并行日志可直观区分。两条机制配合：
+凡是会话、任务（后台任务与定时任务）等**并发实体**的日志，必须携带对应 ID（`session_id` / `action_id`），使并行日志可直观区分。两条机制配合：
 
 **a) 结构化字段**：日志宏中直接传 ID 字段，fmt 输出形如 `session_id=ses-xxx msg`，可稳定 grep：
 
 ```rust
 tracing::info!(session_id = %session_id, "dispatcher spawning handler");
-tracing::warn!(task_id = %id, "failed to write output log {}: {e}", path.display());
+tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.display());
 ```
 
 **b) Span 上下文**（推荐）：在并发边界建立 `info_span!`，span 内的所有日志**自动**携带 ID 前缀，无需每个调用点手写。已在以下位置建立（新并发边界须照此办理）：
@@ -79,9 +79,9 @@ tracing::warn!(task_id = %id, "failed to write output log {}: {e}", path.display
 | Span 名 | 字段 | 位置 | 覆盖范围 |
 |---|---|---|---|
 | `run_session` | `session_id` | `haven_session::SessionExecutor::start_dispatcher`（handler 处 `.instrument(span)`） | 整个 ReAct 循环：agent / react / compactor / title / inference 的所有嵌套日志 |
-| `bg_task` | `task_id` | `haven_tools::BackgroundTasks::spawn_shell`（runner future `.instrument(span)`） | 后台任务运行 / 取消 / 输出日志写入 |
-| `task_completion` | `task_id`, `session_id` | `haven_agent::AgentLayer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
-| `scheduled_task_fired` | `task_id`, `session_id` | `haven_agent::AgentLayer` 定时任务 consumer | 定时任务执行与会话恢复 |
+| `bg_action` | `action_id` | `haven_tools::BackgroundActions::spawn_shell`（runner future `.instrument(span)`） | 后台任务运行 / 取消 / 输出日志写入 |
+| `action_completion` | `action_id`, `session_id` | `haven_agent::AgentLayer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
+| `scheduled_action_fired` | `action_id`, `session_id` | `haven_agent::AgentLayer` 定时任务 consumer | 定时任务执行与会话恢复 |
 
 规则：
 
@@ -135,7 +135,7 @@ addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
 ### 2.3 后端事件流
 
 - **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …），channel 映射的唯一事实来源是 `TauriEmitter::channel`（`lib.rs`）；新增 `AgentEvent` 变体必须在 `channel` 中登记并补测试。
-- **任务（task）事件**：后台任务（kind=`background`）与定时任务（kind=`scheduled`）统一为「任务」，共用同一组事件 `task:created` / `task:updated` / `task:output` / `task:finished`。事件由 `haven_tools` 直接 emit（`bg.rs` / `builtin/scheduled_task.rs` 的 `EventSink`），不走 `TauriEmitter::channel`。payload 区分：后台任务带 `task_id`，定时任务带 `id`；前端 `taskStore` 统一归一化（`id = payload.id || payload.task_id`，条目带 `kind: 'background'|'scheduled'`）。
+- **任务（action）事件**：后台任务（kind=`background`）与定时任务（kind=`scheduled`）统一为「任务」，共用同一组事件 `action:created` / `action:updated` / `action:output` / `action:finished`。事件由 `haven_tools` 直接 emit（`bg.rs` / `builtin/scheduled_action.rs` 的 `EventSink`），不走 `TauriEmitter::channel`。payload 区分：后台任务带 `action_id`，定时任务带 `id`；前端 `actionStore` 统一归一化（`id = payload.id || payload.action_id`，条目带 `kind: 'background'|'scheduled'`）。
 - **wire 载荷**：统一 snake_case JSON（`{session_id, status, title}`），前端在边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
 - **桌面通知**：统一走 `TauriEmitter::maybe_show_toast`，每个变体先查 `config.notification.{event}.windows` 再决定是否 `notification().builder()...show()`。`notify` 工具（`AgentEvent::Notification`）是 agent 显式请求，双通道默认全开。
 - **配置**：`NotificationConfig { in_app, windows }`（`haven_common::config`），事件维度 `session_created` / `session_completed` / `session_paused` / `session_error`。默认值见 `config.rs` 的 `Default` 实现；新增可通知事件必须同步扩展该结构与设置页。
@@ -216,9 +216,9 @@ try {
 | 域 | 大小写 | 示例 |
 |---|---|---|
 | 窗口标题 / 托盘 tooltip / 系统通知标题 | `Haven` | `tauri.conf.json` `productName`、`app-binary` 通知与托盘文案 |
-| 通知默认标题（`notify` / `scheduled_task` 工具） | `Haven` | `tool.rs` / `notify.rs` / `scheduled_task.rs` 默认 title |
+| 通知默认标题（`notify` / `scheduled_action` 工具） | `Haven` | `tool.rs` / `notify.rs` / `scheduled_action.rs` 默认 title |
 | 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `ui/src/routes/+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
-| Windows 计划任务名（Task Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `TASK_NAME` |
+| Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
 | 数据目录 / 临时工作目录 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_work_dir()`、`haven.log` |
 | 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |
 | localStorage / kv 键 | `haven` | `haven.theme`、`haven.accent`、`haven.no_auto_restore` |

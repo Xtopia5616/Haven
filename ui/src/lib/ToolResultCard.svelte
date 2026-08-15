@@ -10,7 +10,7 @@
 		file_search: '文件搜索',
 		process: '进程列表',
 		window: '窗口列表',
-		task_status: '后台任务',
+		action_status: '后台任务',
 		schedule: '定时任务',
 		env: '环境变量',
 		file: '文件操作',
@@ -142,10 +142,10 @@
 				return Array.isArray(data.processes) ? data : null;
 			case 'window':
 				return Array.isArray(data.windows) ? data : null;
-			case 'task_status':
+			case 'action_status':
 				return typeof data.status === 'string' ? data : null;
 			case 'schedule':
-				return Array.isArray(data.scheduled_tasks) || (data.id && data.mode) ? data : null;
+				return Array.isArray(data.scheduled_actions) || (data.id && data.mode) ? data : null;
 			case 'env':
 				return Array.isArray(data.variables) || data.name ? data : null;
 			case 'file':
@@ -487,7 +487,7 @@
 							d="M8 21h8M12 17v4"
 						/></svg
 					>
-				{:else if toolName === 'task_status'}
+				{:else if toolName === 'action_status'}
 					<svg
 						width="12"
 						height="12"
@@ -784,20 +784,20 @@
 				{:else}
 					<p class="tool-card-empty">没有可见窗口</p>
 				{/if}
-			{:else if toolName === 'task_status'}
-				<div class="task-row">
-					<span class="task-id">{data.job_id}</span>
+			{:else if toolName === 'action_status'}
+				<div class="action-row">
+					<span class="action-id">{data.job_id}</span>
 					<span class="status-badge status-{data.status}">{data.status}</span>
 				</div>
 				{#if data.exit_code != null}
 					<div class="tool-card-meta">退出码 {data.exit_code}</div>
 				{/if}
 			{:else if toolName === 'schedule'}
-				{#if Array.isArray(data.scheduled_tasks)}
-					<div class="tool-card-count">{data.scheduled_tasks.length} 条定时任务</div>
-					{#if data.scheduled_tasks.length > 0}
+				{#if Array.isArray(data.scheduled_actions)}
+					<div class="tool-card-count">{data.scheduled_actions.length} 条定时任务</div>
+					{#if data.scheduled_actions.length > 0}
 						<div class="tool-card-list">
-							{#each data.scheduled_tasks as r (r.id)}
+							{#each data.scheduled_actions as r (r.id)}
 								<div class="scheduled-row">
 									<span class="scheduled-title">{r.title || r.body}</span>
 									{#if r.mode}
@@ -813,8 +813,8 @@
 						<p class="tool-card-empty">没有待触发的定时任务</p>
 					{/if}
 				{:else}
-					<div class="task-row">
-						<span class="task-id">#{data.id}</span>
+					<div class="action-row">
+						<span class="action-id">#{data.id}</span>
 						<span class="scheduled-mode">{data.mode}</span>
 					</div>
 					{#if data.fires_at}
@@ -929,7 +929,7 @@
 					{/if}
 				{/if}
 			{:else if toolName === 'network'}
-				<div class="task-row">
+				<div class="action-row">
 					<span
 						class="status-badge status-{data.status >= 200 && data.status < 300
 							? 'completed'
@@ -1314,13 +1314,13 @@
 		font-family: var(--md-sys-typescale-mono);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.task-row {
+	.action-row {
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 		font-size: 12px;
 	}
-	.task-id {
+	.action-id {
 		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
 		color: var(--md-sys-color-on-surface);

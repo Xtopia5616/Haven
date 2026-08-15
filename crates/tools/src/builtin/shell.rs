@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::bg::{self, BackgroundTasks};
+use crate::bg::{self, BackgroundActions};
 use crate::{Tool, ToolResult};
 
 pub struct ShellTool {
-    /// Registry of background tasks for `background: true` invocations.
-    pub tasks: Arc<BackgroundTasks>,
+    /// Registry of background actions for `background: true` invocations.
+    pub actions: Arc<BackgroundActions>,
     /// Output cap (chars) for command output.
     pub max_output_chars: usize,
     /// Shell used when the model omits the `shell` argument
@@ -21,7 +21,7 @@ pub struct ShellTool {
 impl Default for ShellTool {
     fn default() -> Self {
         Self {
-            tasks: Arc::new(BackgroundTasks::new()),
+            actions: Arc::new(BackgroundActions::new()),
             max_output_chars: 20_000,
             #[cfg(windows)]
             default_shell: "powershell".into(),
@@ -81,7 +81,7 @@ impl Tool for ShellTool {
                 "command": { "type": "string", "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a task_id immediately. The result is pushed back to you automatically when the task finishes; list all tasks with the tasks tool.", "default": false },
+                "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. The result is pushed back to you automatically when the action finishes; list all actions with the actions tool.", "default": false },
                 "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
             },
             "required": ["command"]
@@ -101,17 +101,17 @@ impl Tool for ShellTool {
             anyhow::bail!("cancelled");
         }
 
-        // Background mode: hand the command to the task registry and return
+        // Background mode: hand the command to the action registry and return
         // immediately. The result is pushed back to the session automatically on
-        // completion; the agent can list all tasks with the `tasks` tool.
+        // completion; the agent can list all actions with the `actions` tool.
         if input["background"].as_bool().unwrap_or(false) {
-            let task_id = self.tasks.spawn_shell(cmd, &shell, max_chars, cwd).await?;
+            let action_id = self.actions.spawn_shell(cmd, &shell, max_chars, cwd).await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
-                "task_id": task_id,
+                "action_id": action_id,
                 "shell": shell,
                 "status": "running",
-                "hint": "The command is running in the background. Its output is pushed back to you automatically when it finishes — no need to poll. Use the tasks tool to see all background tasks at once, or the status tool with the task_id to inspect this one.",
+                "hint": "The command is running in the background. Its output is pushed back to you automatically when it finishes — no need to poll. Use the actions tool to see all background actions at once, or the status tool with the action_id to inspect this one.",
             })));
         }
 
@@ -236,9 +236,9 @@ impl Tool for ShellTool {
         }
     }
 
-    /// Re-run a timed-out foreground command as a background task so the session
+    /// Re-run a timed-out foreground command as a background action so the session
     /// is not blocked by long-running work (git clone, npm install, build
-    /// scripts). Uses the same task registry as `background: true`, so the
+    /// scripts). Uses the same action registry as `background: true`, so the
     /// result is pushed back to the session automatically on completion.
     async fn timeout_fallback(&self, input: &Value) -> Option<ToolResult> {
         let cmd = input["command"].as_str().unwrap_or("");
@@ -247,32 +247,32 @@ impl Tool for ShellTool {
         }
         let (shell, cwd) = self.resolve_shell_and_cwd(input);
         let max_chars = self.max_output_chars;
-        let task_id = self
-            .tasks
+        let action_id = self
+            .actions
             .spawn_shell(cmd, &shell, max_chars, cwd)
             .await
             .ok()?;
         Some(ToolResult::ok(serde_json::json!({
             "background": true,
-            "task_id": task_id,
+            "action_id": action_id,
             "shell": shell,
             "status": "running",
-            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this task's result.",
+            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this action's result.",
         })))
     }
 
-    /// Declare the background-task binding for `background: true` invocations
+    /// Declare the background-action binding for `background: true` invocations
     /// (and the timeout-fallback result above) so the executor attaches the
-    /// task to this session without name-matching "shell".
+    /// action to this session without name-matching "shell".
     fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
         if output.get("background").and_then(|v| v.as_bool()) != Some(true) {
             return Vec::new();
         }
         output
-            .get("task_id")
+            .get("action_id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(|task_id| vec![crate::tool::ToolRegistration::Task(task_id.to_string())])
+            .map(|action_id| vec![crate::tool::ToolRegistration::Action(action_id.to_string())])
             .unwrap_or_default()
     }
 }
@@ -790,7 +790,7 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_shell_background_returns_task_id_and_completes() {
+    async fn test_shell_background_returns_action_id_and_completes() {
         let tool = ShellTool::default();
         let result = tool
             .execute(
@@ -802,13 +802,13 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["background"], true);
         assert_eq!(result.output["status"], "running");
-        let task_id = result.output["task_id"].as_str().unwrap().to_string();
-        assert!(!task_id.is_empty());
+        let action_id = result.output["action_id"].as_str().unwrap().to_string();
+        assert!(!action_id.is_empty());
 
-        // Poll the task registry until the task completes.
+        // Poll the action registry until the action completes.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let status = loop {
-            let v = tool.tasks.status(&task_id).await;
+            let v = tool.actions.status(&action_id).await;
             if v["status"] != "running" || std::time::Instant::now() > deadline {
                 break v;
             }

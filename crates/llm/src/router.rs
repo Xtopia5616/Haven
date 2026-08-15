@@ -40,7 +40,7 @@ const IDLE_SCALE_CAP_SECS: u64 = 90;
 /// Rough prompt-size estimate in tokens (text chars / 4, ~1k per image or
 /// audio part, tool-call arguments and echoed reasoning included). Only
 /// used to scale stream idle timeouts — exact counting is the provider's
-/// task.
+/// action.
 fn estimate_prompt_tokens(messages: &[CanonicalMessage]) -> u64 {
     let mut total: u64 = 0;
     for m in messages {
@@ -1382,7 +1382,7 @@ impl LlmRouter {
 
         drop(chunk_tx);
         if let Err(e) = consumer.await {
-            tracing::warn!("stream chunk consumer task panicked: {}", e);
+            tracing::warn!("stream chunk consumer action panicked: {}", e);
         }
 
         Ok(LlmResponse {

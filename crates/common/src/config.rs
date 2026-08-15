@@ -402,10 +402,10 @@ pub struct ContextLimitsConfig {
     // —— agent text limits ——
     /// Max chars in notification summary text.
     pub notification_summary_chars: usize,
-    /// Max chars of a background-task result injected into the owning session's
-    /// context when the task finishes (the full output stays in the log file,
+    /// Max chars of a background-action result injected into the owning session's
+    /// context when the action finishes (the full output stays in the log file,
     /// whose path is appended so the model can read more on demand).
-    pub task_result_context_chars: usize,
+    pub action_result_context_chars: usize,
     /// Min chars of partial output before an interim checkpoint is persisted.
     pub partial_checkpoint_min_chars: usize,
     /// Min wall-clock seconds between partial-stream checkpoints.
@@ -448,14 +448,14 @@ pub struct ContextLimitsConfig {
     /// OpenAI-compatible providers; oversized reasoning keeps its tail. Was
     /// `MAX_REASONING_ECHO_CHARS = 3000` in the responses adapter.
     pub reasoning_echo_max_chars: usize,
-    // —— background task caps ——
-    /// Bounded live-output tail (chars) kept per running task for `task:output`
+    // —— background action caps ——
+    /// Bounded live-output tail (chars) kept per running action for `action:output`
     /// preview events. Was `JOB_TAIL_MAX_CHARS = 2000`.
     pub background_job_tail_max_chars: usize,
-    /// Cadence of `task:output` events while a task produces output (ms).
+    /// Cadence of `action:output` events while a action produces output (ms).
     /// Was `JOB_OUTPUT_EMIT_INTERVAL = 1500`.
     pub background_job_output_emit_interval_ms: u64,
-    /// Terminal tasks stay on the board this long (secs), then are reaped by
+    /// Terminal actions stay on the board this long (secs), then are reaped by
     /// the next spawn. Was `TERMINAL_JOB_TTL = 600`.
     pub terminal_job_ttl_secs: u64,
     // —— safety boundaries (raising these widens the attack surface) ——
@@ -487,12 +487,12 @@ pub struct ContextLimitsConfig {
     pub clipboard_history_max_entries: usize,
     /// Per-entry content truncation for clipboard history dumps.
     pub clipboard_entry_max_chars: usize,
-    /// Max concurrent scheduled_tasks.
-    pub scheduled_tasks_max: usize,
-    /// Max scheduled-task due horizon (secs ahead).
-    pub scheduled_tasks_due_horizon_secs: i64,
-    /// Max concurrent background shell tasks.
-    pub background_max_tasks: usize,
+    /// Max concurrent scheduled_actions.
+    pub scheduled_actions_max: usize,
+    /// Max scheduled-action due horizon (secs ahead).
+    pub scheduled_actions_due_horizon_secs: i64,
+    /// Max concurrent background shell actions.
+    pub background_max_actions: usize,
     /// Max bytes batched into one `agent:chunk` event.
     pub event_chunk_batch_max_bytes: usize,
     /// Audio ring buffer size in seconds (capture latency).
@@ -534,7 +534,7 @@ impl Default for ContextLimitsConfig {
             search_max_file_size_bytes: 100 * 1024 * 1024,
             search_window_bytes: 16 * 1024 * 1024,
             notification_summary_chars: 800,
-            task_result_context_chars: 4_000,
+            action_result_context_chars: 4_000,
             partial_checkpoint_min_chars: 1_000,
             partial_checkpoint_interval_secs: 2,
             fact_infer_interval_steps: 25,
@@ -563,9 +563,9 @@ impl Default for ContextLimitsConfig {
             clipboard_history_entries: 10,
             clipboard_history_max_entries: 100,
             clipboard_entry_max_chars: 2_000,
-            scheduled_tasks_max: 32,
-            scheduled_tasks_due_horizon_secs: 365 * 24 * 3600,
-            background_max_tasks: 64,
+            scheduled_actions_max: 32,
+            scheduled_actions_due_horizon_secs: 365 * 24 * 3600,
+            background_max_actions: 64,
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 64,
@@ -1394,8 +1394,8 @@ mod tests {
         assert_eq!(cfg.context_limits.network_max_retries, 2);
         assert_eq!(cfg.context_limits.network_max_body_bytes, 1024 * 1024);
         assert_eq!(cfg.context_limits.clipboard_history_max_entries, 100);
-        assert_eq!(cfg.context_limits.scheduled_tasks_max, 32);
-        assert_eq!(cfg.context_limits.background_max_tasks, 64);
+        assert_eq!(cfg.context_limits.scheduled_actions_max, 32);
+        assert_eq!(cfg.context_limits.background_max_actions, 64);
         assert_eq!(cfg.context_limits.event_chunk_batch_max_bytes, 8 * 1024);
         assert_eq!(cfg.context_limits.input_ring_buffer_secs, 20);
         assert_eq!(cfg.context_limits.embedding_chunk_size, 64);

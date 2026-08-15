@@ -903,7 +903,7 @@ impl SelfTool {
 
     /// Parse the `limit` arg and list sessions from the attached DB. Shared by
     /// `op_sessions` / `op_errors`; returns `None` when no DB is attached.
-    fn list_tasks_for_op(
+    fn list_actions_for_op(
         &self,
         input: &Value,
     ) -> anyhow::Result<Option<(i64, Vec<haven_memory::repositories::sessions::Session>)>> {
@@ -926,7 +926,7 @@ impl SelfTool {
     }
 
     async fn op_sessions(&self, input: &Value) -> anyhow::Result<Value> {
-        let Some((_limit, sessions)) = self.list_tasks_for_op(input)? else {
+        let Some((_limit, sessions)) = self.list_actions_for_op(input)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
         let rows: Vec<Value> = sessions
@@ -946,7 +946,7 @@ impl SelfTool {
     }
 
     async fn op_errors(&self, input: &Value) -> anyhow::Result<Value> {
-        let Some((_limit, sessions)) = self.list_tasks_for_op(input)? else {
+        let Some((_limit, sessions)) = self.list_actions_for_op(input)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
         let rows: Vec<Value> = sessions
@@ -2384,7 +2384,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_tasks_and_errors_unavailable_without_db() {
+    async fn test_actions_and_errors_unavailable_without_db() {
         let (tool, _dir) = make_tool();
         let result = tool
             .execute(json!({"operation": "sessions"}), CancellationToken::new())

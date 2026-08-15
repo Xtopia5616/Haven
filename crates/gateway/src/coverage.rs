@@ -1,6 +1,6 @@
 //! Stage 3: routing decisions — the (modality × intent) coverage table.
 //!
-//! Only high-cost extraction tasks get dedicated providers (OCR / ASR);
+//! Only high-cost extraction actions get dedicated providers (OCR / ASR);
 //! everything else passes through to the main model. The table is a pure
 //! function of `(Modality, Intent)` so it can be unit-tested and rendered
 //! for debugging without touching the network.

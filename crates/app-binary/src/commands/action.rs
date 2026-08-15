@@ -4,36 +4,36 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tauri::State;
 
-/// Board view of every task (background tasks + pending scheduled_tasks), for
-/// the UI's task panel. Mirrors the `task:created` / `task:updated`
-/// / `task:finished` / `task:output` events so the panel can hydrate
-/// on mount / navigation. Task rows carry `kind: "task"` (plus `task_id`),
-/// scheduled-task rows `kind: "scheduled"` (plus `id`).
+/// Board view of every action (background actions + pending scheduled_actions), for
+/// the UI's action panel. Mirrors the `action:created` / `action:updated`
+/// / `action:finished` / `action:output` events so the panel can hydrate
+/// on mount / navigation. Action rows carry `kind: "action"` (plus `action_id`),
+/// scheduled-action rows `kind: "scheduled"` (plus `id`).
 ///
-/// Live tasks come from the in-memory board (with output preview); terminal
-/// task rows that already aged out of the board's TTL are merged back in from
-/// the persisted task table, so the panel keeps showing history (results
+/// Live actions come from the in-memory board (with output preview); terminal
+/// action rows that already aged out of the board's TTL are merged back in from
+/// the persisted action table, so the panel keeps showing history (results
 /// survive app restarts).
 #[tauri::command]
-pub async fn list_tasks(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, String> {
-    let mut rows = state.tools.background_tasks.board().await;
+pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, String> {
+    let mut rows = state.tools.background_actions.board().await;
     for row in &mut rows {
         row["kind"] = json!("background");
     }
     let mut live_ids = std::collections::HashSet::new();
     for row in &rows {
-        if let Some(id) = row.get("task_id").and_then(|v| v.as_str()) {
+        if let Some(id) = row.get("action_id").and_then(|v| v.as_str()) {
             live_ids.insert(id.to_string());
         }
     }
-    if let Ok(history) = state.db.list_tasks(Some("background")) {
+    if let Ok(history) = state.db.list_actions(Some("background")) {
         for a in history {
             if live_ids.contains(&a.id) {
                 continue;
             }
             let mut row = json!({
                 "kind": "background",
-                "task_id": a.id,
+                "action_id": a.id,
                 "status": a.status,
                 "started_at": a.started_at,
                 "finished_at": a.finished_at,
@@ -67,7 +67,7 @@ pub async fn list_tasks(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, S
             rows.push(row);
         }
     }
-    let mut reminder_rows = state.tools.scheduled_tasks.list().await;
+    let mut reminder_rows = state.tools.scheduled_actions.list().await;
     for row in &mut reminder_rows {
         row["kind"] = json!("scheduled");
     }
@@ -75,33 +75,33 @@ pub async fn list_tasks(state: State<'_, Arc<AppState>>) -> Result<Vec<Value>, S
     Ok(rows)
 }
 
-/// Cancel a running task from the UI (a background task or a pending
-/// scheduled task, selected via `kind`). Returns false when the task does not
+/// Cancel a running action from the UI (a background action or a pending
+/// scheduled action, selected via `kind`). Returns false when the action does not
 /// exist or is not cancellable.
 #[tauri::command]
-pub async fn cancel_task(
+pub async fn cancel_action(
     state: State<'_, Arc<AppState>>,
-    task_id: String,
+    action_id: String,
     kind: String,
 ) -> Result<bool, String> {
     let cancelled = if kind == "scheduled" {
-        state.tools.scheduled_tasks.cancel(&task_id).await
+        state.tools.scheduled_actions.cancel(&action_id).await
     } else {
-        state.tools.background_tasks.cancel(&task_id).await
+        state.tools.background_actions.cancel(&action_id).await
     };
     if !cancelled {
-        tracing::warn!("cancel_task: not found or not cancellable: {}", task_id);
+        tracing::warn!("cancel_action: not found or not cancellable: {}", action_id);
     }
     Ok(cancelled)
 }
 
-/// Fired-scheduled-task history (and terminal task history past the in-memory TTL)
-/// from the persisted task table, newest first, for the task panel's
-/// history tab. Rows carry `kind` plus the full stored payload; scheduled-task rows
+/// Fired-scheduled-action history (and terminal action history past the in-memory TTL)
+/// from the persisted action table, newest first, for the action panel's
+/// history tab. Rows carry `kind` plus the full stored payload; scheduled-action rows
 /// are limited to `limit` entries (default 50) so the panel cannot grow
 /// unboundedly.
 #[tauri::command]
-pub async fn list_task_history(
+pub async fn list_action_history(
     state: State<'_, Arc<AppState>>,
     kind: Option<String>,
     limit: Option<usize>,
@@ -109,8 +109,8 @@ pub async fn list_task_history(
     let limit = limit.unwrap_or(50).min(200);
     let rows = state
         .db
-        .list_tasks(kind.as_deref())
-        .map_err(|e| log_err("list_task_history", e))?;
+        .list_actions(kind.as_deref())
+        .map_err(|e| log_err("list_action_history", e))?;
     let mut out = Vec::new();
     for a in rows.into_iter().take(limit) {
         let mut row = json!({
@@ -160,13 +160,13 @@ pub async fn list_task_history(
     Ok(out)
 }
 
-/// Remove a persisted task row (fired scheduled_task or terminal task history)
+/// Remove a persisted action row (fired scheduled_action or terminal action history)
 /// by id. Returns false when no row matched.
 #[tauri::command]
-pub async fn delete_task(state: State<'_, Arc<AppState>>, task_id: String) -> Result<bool, String> {
+pub async fn delete_action(state: State<'_, Arc<AppState>>, action_id: String) -> Result<bool, String> {
     state
         .db
-        .delete_task(&task_id)
+        .delete_action(&action_id)
         .map(|_| true)
-        .map_err(|e| log_err("delete_task", e))
+        .map_err(|e| log_err("delete_action", e))
 }

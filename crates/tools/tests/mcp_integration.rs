@@ -84,7 +84,7 @@ async fn create_client() -> Arc<McpClient> {
 #[cfg(windows)]
 async fn kill_child_tree(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
-        let _ = std::process::Command::new("taskkill")
+        let _ = std::process::Command::new("actionkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }

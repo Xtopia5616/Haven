@@ -52,9 +52,9 @@
 		pruneSeq,
 		updateModelState,
 		modelStateStore,
-		refreshTasks,
+		refreshActions,
 		DRAFT_KEY,
-		NEW_TASK_INTENT_KEY,
+		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
 	} from '$lib/stores.js';
 	import { submitTranscript } from '$lib/submit.js';
@@ -553,7 +553,7 @@
 		// persisted to localStorage so the next app launch skips restoring the
 		// previous conversation.
 		newSessionIntentStore.set(true);
-		if (browser) localStorage.setItem(NEW_TASK_INTENT_KEY, '1');
+		if (browser) localStorage.setItem(NEW_ACTION_INTENT_KEY, '1');
 		activeSessionId = null;
 		activeSessionIdStore.set(null);
 		sessionMenuOpen = false;
@@ -603,7 +603,7 @@
 			// session becomes the active conversation (and may be auto-restored
 			// on the next app launch).
 			newSessionIntentStore.set(false);
-			if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
+			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			activeSessionId = sessionId;
 			activeSessionIdStore.set(sessionId);
 			const t = sessions.find((x) => x.id === sessionId);
@@ -1028,7 +1028,7 @@
 		// auto-assign would re-select the old conversation on restart and the
 		// persisted intent would be silently defeated. The reviewTarget
 		// branch below (an explicit user choice) clears it again if needed.
-		if (browser && localStorage.getItem(NEW_TASK_INTENT_KEY)) {
+		if (browser && localStorage.getItem(NEW_ACTION_INTENT_KEY)) {
 			newSessionIntentStore.set(true);
 		}
 
@@ -1039,7 +1039,7 @@
 			// Opening a reviewed conversation abandons any pending fresh-start
 			// intent (the user chose this conversation explicitly).
 			newSessionIntentStore.set(false);
-			if (browser) localStorage.removeItem(NEW_TASK_INTENT_KEY);
+			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			activeSessionId = reviewTarget.sessionId;
 			activeSessionIdStore.set(activeSessionId);
 			// If this session was errored when reviewed, show the continue button.
@@ -1490,9 +1490,9 @@
 			}
 			// Session lifecycle changes may have reaped background jobs (a session
 			// ending cancels its jobs without terminal events): re-sync the
-			// task board so the panel drops entries that no longer exist.
+			// action board so the panel drops entries that no longer exist.
 			// Same for reminders: fired ones are gone from the pending list.
-			refreshTasks();
+			refreshActions();
 		})().catch((e) => {
 			addNotification(`加载会话列表失败: ${e}`, 'error', 3000);
 		});
@@ -1512,7 +1512,7 @@
 		if (
 			reviewTarget ||
 			get(newSessionIntentStore) ||
-			(browser && localStorage.getItem(NEW_TASK_INTENT_KEY))
+			(browser && localStorage.getItem(NEW_ACTION_INTENT_KEY))
 		) {
 			return;
 		}
@@ -1634,7 +1634,7 @@
 		if (remaining.length === 0) {
 			const submitted = resolvedAskIds.get(activeSessionId);
 			resolvedAskIds.delete(activeSessionId);
-			submitAskAnswers(activeSessionId, submitted);
+			submiactionAnswers(activeSessionId, submitted);
 		}
 	}
 
@@ -1643,7 +1643,7 @@
 	// question keeps the raw answer; multiple questions quote each one so the
 	// model can map answers back to its questions. Ignored questions are
 	// marked as 忽略.
-	function submitAskAnswers(sessionId, resolvedIds) {
+	function submiactionAnswers(sessionId, resolvedIds) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
 		const asks = (get(sessionMessagesStore)[sessionId] || []).filter(
 			(x) => x.type === 'ask' && x.resolved && resolvedIds.has(x.id),

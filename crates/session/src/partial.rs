@@ -23,7 +23,7 @@ use std::sync::Arc;
 ///   retry/rollback is re-streaming, or the step failed and the error path
 ///   persisted the buffers as real messages).
 ///
-/// All operations are serialized PER TASK by a per-session async lock (they are
+/// All operations are serialized PER ACTION by a per-session async lock (they are
 /// fast: the DB work happens in one blocking round trip), so concurrent
 /// checkpoints on DIFFERENT sessions never contend with each other, and a
 /// checkpoint and a promote/discard on the SAME session can never interleave.

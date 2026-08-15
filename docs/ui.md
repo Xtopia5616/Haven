@@ -436,7 +436,7 @@ ui/src/
 │   ├── RecordingIndicator.svelte
 │   ├── SkillCard.svelte
 │   ├── SkillDetailDrawer.svelte
-│   └── TaskCard.svelte
+│   └── ActionCard.svelte
 └── routes/
     ├── +layout.svelte      # 布局 + 事件总线
     ├── +page.svelte        # 聊天页

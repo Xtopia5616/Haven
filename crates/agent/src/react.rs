@@ -94,7 +94,7 @@ const CUT_OFF_RETRY_NUDGE: &str =
 /// did not run it). The generic cut-off nudge ("continue and complete") does not
 /// push it to actually issue the tool call it was narrating, so this variant
 /// spells out that the session still needs a tool call.
-const MID_TASK_RETRY_NUDGE: &str = "The session is not finished: the last step ran a tool and its result is in context, but your reply only described the next step instead of doing it. If the session still needs a tool call or a follow-up action, make that tool call NOW instead of describing it. Do not repeat work already done. Continue and finish the actual session.";
+const MID_ACTION_RETRY_NUDGE: &str = "The session is not finished: the last step ran a tool and its result is in context, but your reply only described the next step instead of doing it. If the session still needs a tool call or a follow-up action, make that tool call NOW instead of describing it. Do not repeat work already done. Continue and finish the actual session.";
 
 /// How many times a text-only response that looks cut off / mid-session is retried
 /// with a continuation nudge before it is accepted as a final answer. Bounded so
@@ -444,7 +444,7 @@ impl ReActEngine {
 
     /// Drain user-facing context into the canonical message list: supplements
     /// (paused-session replies), steering (mid-run user interjections) and
-    /// completed background-task results. Each becomes a `User` message so the
+    /// completed background-action results. Each becomes a `User` message so the
     /// agent sees it on the next LLM call.
     ///
     /// Returns `true` when at least one message was injected. Called at the
@@ -460,7 +460,7 @@ impl ReActEngine {
 
         // One combined drain pass instead of three separate queue reads:
         // the ses-map lock is taken once per step instead of three times.
-        let (supplements, steering, task_results) =
+        let (supplements, steering, action_results) =
             self.executor.drain_pending_context(&ctx.session_id).await;
         for supplement in &supplements {
             // A reply to a pending `ask` is injected as a paired answer so
@@ -488,15 +488,15 @@ impl ReActEngine {
             injected = true;
         }
 
-        // Deliver completed background-task results as context. These are
-        // kept separate from the steering queue so task output is never
+        // Deliver completed background-action results as context. These are
+        // kept separate from the steering queue so action output is never
         // mistaken for a user reply (which would let the `ask` pause path
         // resume the session without the user's answer). The payload text is
-        // self-labelling (`[Background task result] ... task_id ...`) and is
+        // self-labelling (`[Background action result] ... action_id ...`) and is
         // pushed as a User-role message because a mid-conversation System
         // message is rejected by some providers and a Tool message would need
         // a preceding assistant tool_call (see `is_dangling_boundary`).
-        for s in &task_results {
+        for s in &action_results {
             canonical.push(CanonicalMessage::user_text(s));
             injected = true;
         }
@@ -749,7 +749,7 @@ impl ReActEngine {
             };
 
             // Deliver user interjections (supplements, steering) and
-            // background-task results as context at the top of each step so
+            // background-action results as context at the top of each step so
             // they land in the gap between tool calls and the next LLM call.
             self.inject_pending_context(&ctx, canonical).await;
 
@@ -1054,7 +1054,7 @@ impl ReActEngine {
                 // continuation nudge.
                 let mid_session = Self::canonical_has_pending_tool_context(canonical);
                 let nudge = if mid_session {
-                    MID_TASK_RETRY_NUDGE
+                    MID_ACTION_RETRY_NUDGE
                 } else {
                     CUT_OFF_RETRY_NUDGE
                 };
@@ -1320,7 +1320,7 @@ impl ReActEngine {
                         observation: Some(msg.clone()),
                     });
                 }
-                // A user message (or background-task result) arrived while the
+                // A user message (or background-action result) arrived while the
                 // model was generating this answer: deliver it in the gap
                 // between the tool calls and the final content instead of
                 // deferring it until after the turn completes. The finished
@@ -1821,7 +1821,7 @@ impl ReActEngine {
                 // supplement and, if present, resume immediately as Pending so
                 // the answer isn't stranded while the session sits Paused. The
                 // steering queue holds only user interjections now —background
-                // task results are buffered separately —so `has_answer` truly
+                // action results are buffered separately —so `has_answer` truly
                 // reflects a human reply.
                 let steering = self.executor.get_steering(session_id).await;
                 let has_answer = !steering.is_empty();
@@ -1846,7 +1846,7 @@ impl ReActEngine {
                 } else {
                     // No reply arrived: the session pauses awaiting the user's
                     // answer (PausedAwaitingAnswer blocks auto-wake by
-                    // background-task completions).
+                    // background-action completions).
                     SessionStatus::PausedAwaitingAnswer
                 };
                 self.pause_turn(
@@ -1967,7 +1967,7 @@ impl ReActEngine {
     /// taken after the branch point so it includes the newly added entry.
     /// Callers pause with `SessionStatus::Paused` (scheduling) or
     /// `SessionStatus::PausedAwaitingAnswer` (the `ask` tool is blocked on a
-    /// human reply — that flavor also blocks background-task auto-wake).
+    /// human reply — that flavor also blocks background-action auto-wake).
     /// The step-budget checkpoint uses `pause_turn_budget` instead, which
     /// skips the assistant-message persist (the notice is a notification).
     #[allow(clippy::too_many_arguments)]
@@ -2007,7 +2007,7 @@ impl ReActEngine {
         .await;
         // The status itself carries the awaiting-answer flavor
         // (`PausedAwaitingAnswer`), so the transition is atomic: a
-        // background-task completion landing concurrently reads the final
+        // background-action completion landing concurrently reads the final
         // state and cannot auto-wake an answer-blocked session.
         set_status_and_emit(&self.executor, emitter, session_id, status).await?;
         infer();
@@ -2980,7 +2980,7 @@ impl ReActEngine {
     }
 
     /// Shared tail of the two "final answer" branches when a user message or
-    /// background-task result arrived while the LLM was generating: persist
+    /// background-action result arrived while the LLM was generating: persist
     /// the finished answer, insert it BEFORE the injected messages (so the
     /// re-run's LLM call sees the completed answer followed by the
     /// interjection, instead of answering blind and duplicating the bubble),

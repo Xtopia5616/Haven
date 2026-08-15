@@ -9,7 +9,7 @@ use haven_memory::Database;
 
 /// Windows `CREATE_NO_WINDOW` process creation flag: the child runs without a
 /// console window. Single definition for every spawn site that must never pop
-/// a console (background tasks, silent shell commands, launched GUI-less
+/// a console (background actions, silent shell commands, launched GUI-less
 /// commands).
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -17,7 +17,7 @@ pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. Window
 /// suppression (`CREATE_NO_WINDOW`) is applied here unconditionally because
-/// background tasks must never pop a console. The foreground `ShellTool`
+/// background actions must never pop a console. The foreground `ShellTool`
 /// uses `build_shell_command_silent` only when `silent` is requested, so
 /// non-silent foreground commands can still show their window.
 pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command {
@@ -189,7 +189,7 @@ pub fn proxy_env_vars() -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// Directory for per-command output logs (background tasks and failed
+/// Directory for per-command output logs (background actions and failed
 /// foreground commands), under the shared Temp working directory.
 pub fn output_log_dir(kind: &str) -> std::path::PathBuf {
     haven_common::default_work_dir().join(kind)
@@ -202,11 +202,11 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
     let dir = output_log_dir(kind);
     let path = dir.join(format!("{id}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(task_id = %id, "failed to create output-log dir {}: {e}", dir.display());
+        tracing::warn!(action_id = %id, "failed to create output-log dir {}: {e}", dir.display());
         return path;
     }
     if let Err(e) = std::fs::write(&path, text) {
-        tracing::warn!(task_id = %id, "failed to write output log {}: {e}", path.display());
+        tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.display());
     }
     path
 }
@@ -218,36 +218,36 @@ pub fn collect_byte_cap(max_chars: usize) -> usize {
     max_chars.saturating_mul(4).max(8192)
 }
 
-/// A background task that has reached a terminal state, surfaced to a consumer
+/// A background action that has reached a terminal state, surfaced to a consumer
 /// (the agent layer) so the owning session can be auto-notified of the result
 /// instead of the model having to poll `status`.
 #[derive(Clone, Debug)]
-pub struct BackgroundTaskCompletion {
-    pub task_id: String,
+pub struct BackgroundActionCompletion {
+    pub action_id: String,
     pub session_id: Option<String>,
     /// Terminal status string: "completed", "failed", or "cancelled".
     pub status: String,
-    /// The task's status JSON (same shape `status()` returns for terminal
+    /// The action's status JSON (same shape `status()` returns for terminal
     /// states), carrying the output/error payload.
     pub status_json: Value,
 }
 
 /// Optional sink for background lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
-/// - `task:created`  — a task was spawned `{ task_id, started_at }`
-/// - `task:updated`  — the task was bound to a session `{ task_id, session_id }`
-/// - `task:output`   — live output preview while the task runs
-///   `{ task_id, output }` (bounded tail, emitted periodically)
-/// - `task:finished` — the task reached a terminal state (full status
-///   JSON, which already carries `task_id`, `status`, and the output/error
+/// - `action:created`  — a action was spawned `{ action_id, started_at }`
+/// - `action:updated`  — the action was bound to a session `{ action_id, session_id }`
+/// - `action:output`   — live output preview while the action runs
+///   `{ action_id, output }` (bounded tail, emitted periodically)
+/// - `action:finished` — the action reached a terminal state (full status
+///   JSON, which already carries `action_id`, `status`, and the output/error
 ///   payload)
 ///
-/// Shared by the scheduled-task registry (`task:created` / `task:finished`
-/// / `task:updated`), which uses the same callback shape.
+/// Shared by the scheduled-action registry (`action:created` / `action:finished`
+/// / `action:updated`), which uses the same callback shape.
 pub type EventSink = Arc<dyn Fn(String, serde_json::Value) + Send + Sync>;
 
 /// Shared storage + forwarding for the UI event sink, used identically by
-/// `BackgroundTasks` and the scheduled-task registry. Keeps the sink behind a
+/// `BackgroundActions` and the scheduled-action registry. Keeps the sink behind a
 /// `Mutex<Option<_>>` so `set_event_sink` can be called once from the desktop
 /// shell and `emit` is a no-op before that.
 #[derive(Default)]
@@ -266,7 +266,7 @@ impl EventSinkState {
 }
 
 #[derive(Clone, Debug)]
-enum BackgroundTaskState {
+enum BackgroundActionState {
     Running {
         started_at: String,
     },
@@ -295,36 +295,36 @@ enum BackgroundTaskState {
     },
 }
 
-impl BackgroundTaskState {
+impl BackgroundActionState {
     fn is_terminal(&self) -> bool {
-        !matches!(self, BackgroundTaskState::Running { .. })
+        !matches!(self, BackgroundActionState::Running { .. })
     }
 }
 
-struct BackgroundTask {
+struct BackgroundAction {
     session_id: Option<String>,
-    state: BackgroundTaskState,
+    state: BackgroundActionState,
     /// Kill signal for the running child process.
     kill: Option<oneshot::Sender<()>>,
-    /// Bounded tail of the combined live output, for `task:output` preview
-    /// events while the task runs. `None` for terminal entries.
+    /// Bounded tail of the combined live output, for `action:output` preview
+    /// events while the action runs. `None` for terminal entries.
     tail: Option<Arc<Mutex<String>>>,
-    /// The shell command this task is executing (surfaced in running status so
-    /// the agent can see what the task is doing right now).
+    /// The shell command this action is executing (surfaced in running status so
+    /// the agent can see what the action is doing right now).
     command: String,
     /// Interpreter the command runs under ("cmd", "powershell", "bash", ...).
     shell: String,
 }
 
-/// True when a terminal entry has outlived the configured terminal-task TTL
+/// True when a terminal entry has outlived the configured terminal-action TTL
 /// (running entries are never stale). Entries with an unparseable
 /// `finished_at` are kept (never wrongly reaped).
-fn terminal_entry_stale(entry: &BackgroundTask, ttl: Duration) -> bool {
+fn terminal_entry_stale(entry: &BackgroundAction, ttl: Duration) -> bool {
     let finished = match &entry.state {
-        BackgroundTaskState::Completed { finished_at, .. }
-        | BackgroundTaskState::Failed { finished_at, .. }
-        | BackgroundTaskState::Cancelled { finished_at, .. } => finished_at,
-        BackgroundTaskState::Running { .. } => return false,
+        BackgroundActionState::Completed { finished_at, .. }
+        | BackgroundActionState::Failed { finished_at, .. }
+        | BackgroundActionState::Cancelled { finished_at, .. } => finished_at,
+        BackgroundActionState::Running { .. } => return false,
     };
     let finished_ts = match chrono::DateTime::parse_from_rfc3339(finished) {
         Ok(t) => t.with_timezone(&chrono::Utc),
@@ -340,54 +340,54 @@ fn terminal_entry_stale(entry: &BackgroundTask, ttl: Duration) -> bool {
     chrono::Utc::now() - finished_ts > chrono::Duration::from_std(ttl).unwrap()
 }
 
-/// Registry of background tool tasks (refine: long-running commands).
+/// Registry of background tool actions (refine: long-running commands).
 ///
-/// A task is spawned with `spawn_shell`, runs detached from the ReAct loop,
-/// and is polled with `status`. Tasks are tied to a session via `attach_session`;
+/// A action is spawned with `spawn_shell`, runs detached from the ReAct loop,
+/// and is polled with `status`. Actions are tied to a session via `attach_session`;
 /// `cancel_for_session` kills and drops them when the session ends.
 ///
-/// When a task finishes, a `BackgroundTaskCompletion` is sent on the completion channel
+/// When a action finishes, a `BackgroundActionCompletion` is sent on the completion channel
 /// (see `take_completion_receiver`) so the agent layer can auto-inject the
 /// result into the owning session's context without the model polling.
-pub struct BackgroundTasks {
-    tasks: RwLock<HashMap<String, BackgroundTask>>,
-    completion_tx: mpsc::UnboundedSender<BackgroundTaskCompletion>,
+pub struct BackgroundActions {
+    actions: RwLock<HashMap<String, BackgroundAction>>,
+    completion_tx: mpsc::UnboundedSender<BackgroundActionCompletion>,
     /// Receiver handed out exactly once to the consumer (the agent layer).
-    completion_rx: Mutex<Option<mpsc::UnboundedReceiver<BackgroundTaskCompletion>>>,
-    /// Max concurrent *running* tasks (from `context_limits.background_max_tasks`).
-    max_tasks: RwLock<usize>,
-    /// Live-output tail cap (chars) for `task:output` preview events (from
+    completion_rx: Mutex<Option<mpsc::UnboundedReceiver<BackgroundActionCompletion>>>,
+    /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
+    max_actions: RwLock<usize>,
+    /// Live-output tail cap (chars) for `action:output` preview events (from
     /// `context_limits.background_job_tail_max_chars`).
     job_tail_max_chars: RwLock<usize>,
-    /// Cadence of `task:output` events while a task produces output (from
+    /// Cadence of `action:output` events while a action produces output (from
     /// `context_limits.background_job_output_emit_interval_ms`).
     job_output_emit_interval: RwLock<Duration>,
-    /// Terminal tasks stay on the board this long, then are reaped (from
+    /// Terminal actions stay on the board this long, then are reaped (from
     /// `context_limits.terminal_job_ttl_secs`).
     terminal_job_ttl: RwLock<Duration>,
     /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
     /// to forward lifecycle events as Tauri events.
     event_sink: EventSinkState,
     /// Persistent store; `None` in headless/test builds (in-memory only).
-    /// Terminal task rows stay here as history even after the in-memory board
+    /// Terminal action rows stay here as history even after the in-memory board
     /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
     db: RwLock<Option<Arc<Database>>>,
 }
 
-impl Default for BackgroundTasks {
+impl Default for BackgroundActions {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BackgroundTasks {
+impl BackgroundActions {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
-            tasks: RwLock::new(HashMap::new()),
+            actions: RwLock::new(HashMap::new()),
             completion_tx: tx,
             completion_rx: Mutex::new(Some(rx)),
-            max_tasks: RwLock::new(64),
+            max_actions: RwLock::new(64),
             job_tail_max_chars: RwLock::new(2000),
             job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
             terminal_job_ttl: RwLock::new(Duration::from_secs(600)),
@@ -406,10 +406,10 @@ impl BackgroundTasks {
         self.event_sink.emit(event, payload);
     }
 
-    /// Replace the unified context limits (background task concurrency cap,
-    /// live-output tail size, output-event cadence, terminal-task TTL).
+    /// Replace the unified context limits (background action concurrency cap,
+    /// live-output tail size, output-event cadence, terminal-action TTL).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *self.max_tasks.write().await = limits.background_max_tasks;
+        *self.max_actions.write().await = limits.background_max_actions;
         *self.job_tail_max_chars.write().await = limits.background_job_tail_max_chars;
         *self.job_output_emit_interval.write().await =
             Duration::from_millis(limits.background_job_output_emit_interval_ms);
@@ -417,12 +417,12 @@ impl BackgroundTasks {
     }
 
     /// Attach the database used for persistence. Wired by the desktop shell
-    /// (same handle the scheduled-task registry receives); headless tests skip it.
+    /// (same handle the scheduled-action registry receives); headless tests skip it.
     pub async fn set_db(&self, db: Option<Arc<Database>>) {
         *self.db.write().await = db;
     }
 
-    /// Post-restart cleanup: task rows a previous process left `running` are
+    /// Post-restart cleanup: action rows a previous process left `running` are
     /// stale (their child processes died with the app), so mark them failed.
     /// Called once from the agent layer startup. Returns the number of rows
     /// marked. Idempotent.
@@ -430,23 +430,23 @@ impl BackgroundTasks {
         let Some(db) = self.db.read().await.clone() else {
             return 0;
         };
-        db.mark_interrupted_tasks().unwrap_or_else(|e| {
-            tracing::warn!("restore_after_restart: failed to mark interrupted tasks: {e}");
+        db.mark_interrupted_actions().unwrap_or_else(|e| {
+            tracing::warn!("restore_after_restart: failed to mark interrupted actions: {e}");
             0
         })
     }
 
-    /// Persist a terminal task row (its status payload + owning session) so the
+    /// Persist a terminal action row (its status payload + owning session) so the
     /// result survives the in-memory board's TTL and app restarts. No-op
-    /// without a database. Must run outside the `tasks` lock is not required
+    /// without a database. Must run outside the `actions` lock is not required
     /// (the DB is a separate lock); callers may hold either.
-    async fn persist_terminal(&self, task_id: &str, entry: &BackgroundTask) {
+    async fn persist_terminal(&self, action_id: &str, entry: &BackgroundAction) {
         let Some(db) = self.db.read().await.clone() else {
             return;
         };
         let (status, output, error, error_reason, log_path, exit_code, finished_at) =
             match &entry.state {
-                BackgroundTaskState::Completed {
+                BackgroundActionState::Completed {
                     output,
                     exit_code,
                     log_path,
@@ -461,7 +461,7 @@ impl BackgroundTasks {
                     *exit_code,
                     finished_at.as_str(),
                 ),
-                BackgroundTaskState::Failed {
+                BackgroundActionState::Failed {
                     error,
                     error_reason,
                     log_path,
@@ -477,7 +477,7 @@ impl BackgroundTasks {
                     *exit_code,
                     finished_at.as_str(),
                 ),
-                BackgroundTaskState::Cancelled { finished_at, .. } => (
+                BackgroundActionState::Cancelled { finished_at, .. } => (
                     "cancelled",
                     None,
                     None,
@@ -486,10 +486,10 @@ impl BackgroundTasks {
                     None,
                     finished_at.as_str(),
                 ),
-                BackgroundTaskState::Running { .. } => return,
+                BackgroundActionState::Running { .. } => return,
             };
-        if let Err(e) = db.finish_task(
-            task_id,
+        if let Err(e) = db.finish_action(
+            action_id,
             status,
             output,
             error,
@@ -498,55 +498,55 @@ impl BackgroundTasks {
             exit_code,
             finished_at,
         ) {
-            tracing::warn!(task_id = %task_id, "failed to persist task result: {e}");
+            tracing::warn!(action_id = %action_id, "failed to persist action result: {e}");
         }
     }
 
     /// Take the completion receiver exactly once. The caller spawns a consumer
-    /// loop that receives `BackgroundTaskCompletion`s and notifies the owning sessions.
+    /// loop that receives `BackgroundActionCompletion`s and notifies the owning sessions.
     /// Returns `None` if already taken.
     pub fn take_completion_receiver(
         &self,
-    ) -> Option<mpsc::UnboundedReceiver<BackgroundTaskCompletion>> {
+    ) -> Option<mpsc::UnboundedReceiver<BackgroundActionCompletion>> {
         self.completion_rx.lock().unwrap().take()
     }
 
-    /// Emit a completion notification for a task (if it has a terminal state),
+    /// Emit a completion notification for a action (if it has a terminal state),
     /// reading the owning session_id from the entry. Called from `mark_finished`,
     /// `mark_cancelled`, and `attach_session` (the latter to close the race where
-    /// a task finishes before its session binding is recorded). Also persists the
+    /// a action finishes before its session binding is recorded). Also persists the
     /// terminal row so the result survives restarts.
-    async fn notify_completion(&self, task_id: &str, entry: &BackgroundTask) {
+    async fn notify_completion(&self, action_id: &str, entry: &BackgroundAction) {
         if !entry.state.is_terminal() {
             return;
         }
         let status = match &entry.state {
-            BackgroundTaskState::Completed { .. } => "completed",
-            BackgroundTaskState::Failed { .. } => "failed",
-            BackgroundTaskState::Cancelled { .. } => "cancelled",
-            BackgroundTaskState::Running { .. } => return,
+            BackgroundActionState::Completed { .. } => "completed",
+            BackgroundActionState::Failed { .. } => "failed",
+            BackgroundActionState::Cancelled { .. } => "cancelled",
+            BackgroundActionState::Running { .. } => return,
         };
-        self.persist_terminal(task_id, entry).await;
-        let status_json = render_status_json(task_id, &entry.state);
-        self.emit("task:finished", status_json.clone());
-        let _ = self.completion_tx.send(BackgroundTaskCompletion {
-            task_id: task_id.to_string(),
+        self.persist_terminal(action_id, entry).await;
+        let status_json = render_status_json(action_id, &entry.state);
+        self.emit("action:finished", status_json.clone());
+        let _ = self.completion_tx.send(BackgroundActionCompletion {
+            action_id: action_id.to_string(),
             session_id: entry.session_id.clone(),
             status: status.to_string(),
             status_json,
         });
     }
 
-    /// Board view of every task: one entry per task with status, timestamps,
+    /// Board view of every action: one entry per action with status, timestamps,
     /// owning session id, and a bounded output/error preview. Surfaces the full
-    /// task set to the UI (the per-session variant `list_for_session` serves the
+    /// action set to the UI (the per-session variant `list_for_session` serves the
     /// agent). Order: oldest first.
     pub async fn board(&self) -> Vec<Value> {
-        let tasks = self.tasks.read().await;
+        let actions = self.actions.read().await;
         let mut rows = Vec::new();
-        for (id, entry) in tasks.iter() {
+        for (id, entry) in actions.iter() {
             let mut row = match &entry.state {
-                BackgroundTaskState::Running { .. } => running_status_json(id, entry),
+                BackgroundActionState::Running { .. } => running_status_json(id, entry),
                 _ => render_status_json(id, &entry.state),
             };
             if let Some(tid) = &entry.session_id {
@@ -559,19 +559,19 @@ impl BackgroundTasks {
         rows
     }
 
-    /// Board view of every task owned by `session_id`: one entry per task with
+    /// Board view of every action owned by `session_id`: one entry per action with
     /// status, timestamps, and a bounded output/error preview. Lets the model
     /// see all background work of a session in a single call instead of polling
-    /// `status` task by task. Order: oldest first.
+    /// `status` action by action. Order: oldest first.
     pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
-        let tasks = self.tasks.read().await;
+        let actions = self.actions.read().await;
         let mut rows = Vec::new();
-        for (id, entry) in tasks.iter() {
+        for (id, entry) in actions.iter() {
             if entry.session_id.as_deref() != Some(session_id) {
                 continue;
             }
             let mut row = match &entry.state {
-                BackgroundTaskState::Running { .. } => running_status_json(id, entry),
+                BackgroundActionState::Running { .. } => running_status_json(id, entry),
                 _ => render_status_json(id, &entry.state),
             };
             if let Some(tid) = &entry.session_id {
@@ -584,7 +584,7 @@ impl BackgroundTasks {
         rows
     }
 
-    /// Spawn a shell command as a background task. Returns the task id; the
+    /// Spawn a shell command as a background action. Returns the action id; the
     /// command keeps running after this function returns. `cwd` overrides the
     /// default Temp working directory when provided.
     pub async fn spawn_shell(
@@ -597,7 +597,7 @@ impl BackgroundTasks {
         if command.trim().is_empty() {
             anyhow::bail!("command is required");
         }
-        // Unpredictable task id: a sequential counter would let any
+        // Unpredictable action id: a sequential counter would let any
         // session's agent enumerate and read other sessions' background outputs
         // through status (which is RiskLevel::Safe).
         let id = haven_common::types::new_id("act");
@@ -607,31 +607,31 @@ impl BackgroundTasks {
         let tail_max_chars = *self.job_tail_max_chars.read().await;
         let emit_interval = *self.job_output_emit_interval.read().await;
         {
-            let mut tasks = self.tasks.write().await;
+            let mut actions = self.actions.write().await;
             // Reap terminal entries first: their results were already
             // delivered via the completion channel, so they must not occupy
-            // the cap forever (64 lifetime tasks would otherwise brick the
+            // the cap forever (64 lifetime actions would otherwise brick the
             // feature for long-lived sessions). Terminal entries older than
-            // the configured terminal-task TTL are dropped the same way (the
+            // the configured terminal-action TTL are dropped the same way (the
             // UI panel and the persisted log files remain the record after
             // that).
             let terminal_ttl = *self.terminal_job_ttl.read().await;
-            tasks.retain(|_, e| !terminal_entry_stale(e, terminal_ttl));
-            let running = tasks
+            actions.retain(|_, e| !terminal_entry_stale(e, terminal_ttl));
+            let running = actions
                 .values()
-                .filter(|e| matches!(e.state, BackgroundTaskState::Running { .. }))
+                .filter(|e| matches!(e.state, BackgroundActionState::Running { .. }))
                 .count();
-            if running >= *self.max_tasks.read().await {
+            if running >= *self.max_actions.read().await {
                 anyhow::bail!(
-                    "too many running background tasks (limit {})",
-                    *self.max_tasks.read().await
+                    "too many running background actions (limit {})",
+                    *self.max_actions.read().await
                 );
             }
-            tasks.insert(
+            actions.insert(
                 id.clone(),
-                BackgroundTask {
+                BackgroundAction {
                     session_id: None,
-                    state: BackgroundTaskState::Running {
+                    state: BackgroundActionState::Running {
                         started_at: started_at.clone(),
                     },
                     kill: Some(kill_tx),
@@ -653,30 +653,30 @@ impl BackgroundTasks {
         {
             Ok(c) => c,
             Err(e) => {
-                // Spawn failed: remove the entry so the task is not left
+                // Spawn failed: remove the entry so the action is not left
                 // dangling as "running".
-                self.tasks.write().await.remove(&id);
+                self.actions.write().await.remove(&id);
                 return Err(e.into());
             }
         };
 
-        // Persist the spawn so task history survives restarts even when
+        // Persist the spawn so action history survives restarts even when
         // the process dies mid-run (`restore_after_restart` marks such rows
         // failed). The session binding arrives later via `attach_session`.
         if let Some(db) = self.db.read().await.clone()
-            && let Err(e) = db.save_task(&id, None, command, &started_at)
+            && let Err(e) = db.save_action(&id, None, command, &started_at)
         {
-            tracing::warn!(task_id = %id, "failed to persist task spawn: {e}");
+            tracing::warn!(action_id = %id, "failed to persist action spawn: {e}");
         }
 
         let me = self.clone();
-        let task_id = id.clone();
+        let action_id = id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
         self.emit(
-            "task:created",
+            "action:created",
             json!({
-                "task_id": task_id,
+                "action_id": action_id,
                 "started_at": started_at,
             }),
         );
@@ -684,15 +684,15 @@ impl BackgroundTasks {
         // Windows, cancelling must kill the whole process tree, not just the
         // cmd.exe/powershell.exe wrapper.
         let child_pid = child.id();
-        // The task runner outlives its spawner: give it a task-level span so
-        // every log line emitted while the task runs/cancels (output-log
-        // writes, completion) carries the task id — parallel background tasks
+        // The action runner outlives its spawner: give it a action-level span so
+        // every log line emitted while the action runs/cancels (output-log
+        // writes, completion) carries the action id — parallel background actions
         // stay distinguishable in logs.
-        let task_span = tracing::info_span!("bg_task", task_id = %task_id);
+        let action_span = tracing::info_span!("bg_action", action_id = %action_id);
         let runner_tail = tail.clone();
-        let emit_task_id = task_id.clone();
+        let emit_action_id = action_id.clone();
         tokio::spawn(async move {
-            // The task outlives this session: when `run` is dropped (kill signal
+            // The action outlives this session: when `run` is dropped (kill signal
             // received), kill_on_drop terminates the child.
             let max_collect = collect_byte_cap(max_chars);
             let stdout_tail = runner_tail.clone();
@@ -736,16 +736,16 @@ impl BackgroundTasks {
                     if let Some(pid) = child_pid {
                         kill_process_tree(pid).await;
                     }
-                    me.mark_cancelled(&task_id, &started_at).await;
+                    me.mark_cancelled(&action_id, &started_at).await;
                 }
                 (combined, success, exit_code, truncated) = &mut run => {
-                    me.mark_finished(&task_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
+                    me.mark_finished(&action_id, &started_at, &shell_owned, &command_owned, combined, success, exit_code, truncated).await;
                 }
             }
-        }.instrument(task_span));
+        }.instrument(action_span));
 
-        // Live-output preview emitter: while the task runs, periodically push
-        // the bounded tail of the combined stdout/stderr as `task:output`
+        // Live-output preview emitter: while the action runs, periodically push
+        // the bounded tail of the combined stdout/stderr as `action:output`
         // events (only when it grew since the last tick). Stops as soon as
         // the entry leaves the Running state (finished, cancelled, or reaped).
         let emit_me = self.clone();
@@ -754,7 +754,7 @@ impl BackgroundTasks {
             let mut last_len = 0usize;
             loop {
                 tokio::time::sleep(emit_interval).await;
-                if emit_me.status(&emit_task_id).await["status"].as_str() != Some("running") {
+                if emit_me.status(&emit_action_id).await["status"].as_str() != Some("running") {
                     return;
                 }
                 let t = emit_tail.lock().unwrap();
@@ -764,8 +764,8 @@ impl BackgroundTasks {
                     let output = t.clone();
                     drop(t);
                     emit_me.emit(
-                        "task:output",
-                        json!({ "task_id": emit_task_id, "output": output }),
+                        "action:output",
+                        json!({ "action_id": emit_action_id, "output": output }),
                     );
                 }
             }
@@ -774,65 +774,65 @@ impl BackgroundTasks {
         Ok(id)
     }
 
-    /// Report the current status of a task as JSON.
-    pub async fn status(&self, task_id: &str) -> Value {
-        let tasks = self.tasks.read().await;
-        let Some(entry) = tasks.get(task_id) else {
-            return json!({"task_id": task_id, "status": "not_found"});
+    /// Report the current status of a action as JSON.
+    pub async fn status(&self, action_id: &str) -> Value {
+        let actions = self.actions.read().await;
+        let Some(entry) = actions.get(action_id) else {
+            return json!({"action_id": action_id, "status": "not_found"});
         };
         match &entry.state {
-            BackgroundTaskState::Running { .. } => {
-                let mut v = running_status_json(task_id, entry);
+            BackgroundActionState::Running { .. } => {
+                let mut v = running_status_json(action_id, entry);
                 v["hint"] = json!(
-                    "The task is still running. Its result is pushed back to your session automatically when it finishes — no polling needed. Use the tasks tool to see all background tasks at once."
+                    "The action is still running. Its result is pushed back to your session automatically when it finishes — no polling needed. Use the actions tool to see all background actions at once."
                 );
                 v
             }
-            _ => render_status_json(task_id, &entry.state),
+            _ => render_status_json(action_id, &entry.state),
         }
     }
 
-    /// Associate a task with its owning session. Called by the session executor
+    /// Associate a action with its owning session. Called by the session executor
     /// after a background tool call so `cancel_for_session` can clean it up.
     ///
-    /// Also closes a race: a short-lived task may finish (and call
+    /// Also closes a race: a short-lived action may finish (and call
     /// `mark_finished`/`mark_cancelled`) before this binding is recorded, in
     /// which case the completion notification carried `session_id: None` and was
-    /// dropped by the consumer. If the task is already terminal here, re-fire
+    /// dropped by the consumer. If the action is already terminal here, re-fire
     /// the notification with the now-known session_id so the owning session still
     /// receives the result.
-    pub async fn attach_session(&self, task_id: &str, session_id: &str) {
-        let mut tasks = self.tasks.write().await;
-        if let Some(entry) = tasks.get_mut(task_id) {
+    pub async fn attach_session(&self, action_id: &str, session_id: &str) {
+        let mut actions = self.actions.write().await;
+        if let Some(entry) = actions.get_mut(action_id) {
             entry.session_id = Some(session_id.to_string());
             self.emit(
-                "task:updated",
+                "action:updated",
                 json!({
-                    "task_id": task_id,
+                    "action_id": action_id,
                     "session_id": session_id,
                 }),
             );
             // Record the owning session in the persisted row too, so terminal
             // history keeps its owner (spawn rows start with session_id NULL).
             if let Some(db) = self.db.read().await.clone()
-                && let Err(e) = db.update_task_session(task_id, session_id)
+                && let Err(e) = db.update_action_session(action_id, session_id)
             {
-                tracing::warn!(task_id = %task_id, "failed to persist task session binding: {e}");
+                tracing::warn!(action_id = %action_id, "failed to persist action session binding: {e}");
             }
             if entry.state.is_terminal() {
-                self.notify_completion(task_id, entry).await;
+                self.notify_completion(action_id, entry).await;
             }
         }
     }
 
-    /// Cancel a single running task (kept for inspection afterwards).
-    /// Returns false when the task does not exist or is not running.
-    pub async fn cancel(&self, task_id: &str) -> bool {
-        let mut tasks = self.tasks.write().await;
-        let Some(entry) = tasks.get_mut(task_id) else {
+    /// Cancel a single running action (kept for inspection afterwards).
+    /// Returns false when the action does not exist or is not running.
+    pub async fn cancel(&self, action_id: &str) -> bool {
+        let mut actions = self.actions.write().await;
+        let Some(entry) = actions.get_mut(action_id) else {
             return false;
         };
-        if !matches!(entry.state, BackgroundTaskState::Running { .. }) {
+        if !matches!(entry.state, BackgroundActionState::Running { .. }) {
             return false;
         }
         if let Some(tx) = entry.kill.take() {
@@ -841,17 +841,17 @@ impl BackgroundTasks {
         true
     }
 
-    /// Cancel and drop every task owned by `session_id`. Called when a session
+    /// Cancel and drop every action owned by `session_id`. Called when a session
     /// ends, is removed, or is rolled back.
     pub async fn cancel_for_session(&self, session_id: &str) {
-        let mut tasks = self.tasks.write().await;
-        let ids: Vec<String> = tasks
+        let mut actions = self.actions.write().await;
+        let ids: Vec<String> = actions
             .iter()
             .filter(|(_, e)| e.session_id.as_deref() == Some(session_id))
             .map(|(id, _)| id.clone())
             .collect();
         for id in ids {
-            if let Some(mut entry) = tasks.remove(&id)
+            if let Some(mut entry) = actions.remove(&id)
                 && let Some(tx) = entry.kill.take()
             {
                 let _ = tx.send(());
@@ -871,22 +871,22 @@ impl BackgroundTasks {
         exit_code: Option<i32>,
         truncated: bool,
     ) {
-        let mut tasks = self.tasks.write().await;
-        let Some(entry) = tasks.get_mut(id) else {
+        let mut actions = self.actions.write().await;
+        let Some(entry) = actions.get_mut(id) else {
             return;
         };
         entry.kill = None;
         entry.tail = None;
         let finished_at = chrono::Utc::now().to_rfc3339();
         entry.state = if success {
-            BackgroundTaskState::Completed {
+            BackgroundActionState::Completed {
                 output: combined.clone(),
                 exit_code,
                 truncated,
                 // When the collected output was capped, the log file keeps
                 // the full transcript for inspection.
                 log_path: truncated.then(|| {
-                    write_output_log("task-logs", id, &combined)
+                    write_output_log("action-logs", id, &combined)
                         .to_string_lossy()
                         .into_owned()
                 }),
@@ -901,11 +901,11 @@ impl BackgroundTasks {
             // The full output always lands in a log file so the root cause
             // is recoverable even when the summary misses it.
             let diagnosed = append_windows_diagnostics(shell, command, &combined);
-            BackgroundTaskState::Failed {
+            BackgroundActionState::Failed {
                 error: combined.clone(),
                 error_reason: summarize_error(&diagnosed, 1200),
                 log_path: Some(
-                    write_output_log("task-logs", id, &combined)
+                    write_output_log("action-logs", id, &combined)
                         .to_string_lossy()
                         .into_owned(),
                 ),
@@ -918,13 +918,13 @@ impl BackgroundTasks {
     }
 
     async fn mark_cancelled(&self, id: &str, started_at: &str) {
-        let mut tasks = self.tasks.write().await;
-        let Some(entry) = tasks.get_mut(id) else {
+        let mut actions = self.actions.write().await;
+        let Some(entry) = actions.get_mut(id) else {
             return;
         };
         entry.kill = None;
         entry.tail = None;
-        entry.state = BackgroundTaskState::Cancelled {
+        entry.state = BackgroundActionState::Cancelled {
             started_at: started_at.to_string(),
             finished_at: chrono::Utc::now().to_rfc3339(),
         };
@@ -943,18 +943,18 @@ fn attach_preview(row: &mut Value) {
     row["preview"] = json!(preview.chars().take(200).collect::<String>());
 }
 
-/// Render the running-state row for a task: the command line it is executing
-/// and the bounded live-output tail, so the agent sees what the task is doing
+/// Render the running-state row for a action: the command line it is executing
+/// and the bounded live-output tail, so the agent sees what the action is doing
 /// right now instead of only "running". `output` is omitted while empty (the
 /// command has not produced anything yet).
-fn running_status_json(task_id: &str, entry: &BackgroundTask) -> Value {
+fn running_status_json(action_id: &str, entry: &BackgroundAction) -> Value {
     let mut v = json!({
-        "task_id": task_id,
+        "action_id": action_id,
         "status": "running",
         "command": entry.command,
         "shell": entry.shell,
     });
-    if let BackgroundTaskState::Running { started_at } = &entry.state {
+    if let BackgroundActionState::Running { started_at } = &entry.state {
         v["started_at"] = json!(started_at);
     }
     if let Some(tail) = &entry.tail {
@@ -966,11 +966,11 @@ fn running_status_json(task_id: &str, entry: &BackgroundTask) -> Value {
     v
 }
 
-/// Render the terminal status JSON for a task (mirrors `status()` output for
+/// Render the terminal status JSON for a action (mirrors `status()` output for
 /// completed/failed/cancelled states), used in completion notifications.
-fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
+fn render_status_json(action_id: &str, state: &BackgroundActionState) -> Value {
     match state {
-        BackgroundTaskState::Completed {
+        BackgroundActionState::Completed {
             output,
             exit_code,
             truncated,
@@ -979,7 +979,7 @@ fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
             finished_at,
         } => {
             let mut v = json!({
-                "task_id": task_id,
+                "action_id": action_id,
                 "status": "completed",
                 "output": output,
                 "started_at": started_at,
@@ -996,7 +996,7 @@ fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
             }
             v
         }
-        BackgroundTaskState::Failed {
+        BackgroundActionState::Failed {
             error,
             error_reason,
             log_path,
@@ -1005,7 +1005,7 @@ fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
             finished_at,
         } => {
             let mut v = json!({
-                "task_id": task_id,
+                "action_id": action_id,
                 "status": "failed",
                 "error": error,
                 "error_reason": error_reason,
@@ -1020,16 +1020,16 @@ fn render_status_json(task_id: &str, state: &BackgroundTaskState) -> Value {
             }
             v
         }
-        BackgroundTaskState::Cancelled {
+        BackgroundActionState::Cancelled {
             started_at,
             finished_at,
         } => json!({
-            "task_id": task_id,
+            "action_id": action_id,
             "status": "cancelled",
             "started_at": started_at,
             "finished_at": finished_at,
         }),
-        BackgroundTaskState::Running { .. } => json!({ "task_id": task_id, "status": "running" }),
+        BackgroundActionState::Running { .. } => json!({ "action_id": action_id, "status": "running" }),
     }
 }
 
@@ -1245,7 +1245,7 @@ fn is_powershell_noise_line(trimmed: &str) -> bool {
 /// Condense a failed command's captured output into a short, readable reason:
 /// progress-bar/spinner lines are dropped, only the last few meaningful lines
 /// are kept, and the result is capped at `max_chars`. Used for the failed
-/// task's `error_reason` and the foreground shell tool's error text, so a
+/// action's `error_reason` and the foreground shell tool's error text, so a
 /// multi-KB progress dump cannot drown the actual error (e.g. a 416 from a
 /// failed download).
 pub fn summarize_error(text: &str, max_chars: usize) -> String {
@@ -1357,12 +1357,12 @@ pub fn append_windows_diagnostics(_shell: &str, _command: &str, text: &str) -> S
 async fn kill_process_tree(pid: u32) {
     #[cfg(windows)]
     {
-        if let Ok(mut taskkill) = tokio::process::Command::new("taskkill")
+        if let Ok(mut actionkill) = tokio::process::Command::new("actionkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .kill_on_drop(true)
             .spawn()
         {
-            let _ = taskkill.wait().await;
+            let _ = actionkill.wait().await;
         }
     }
     #[cfg(not(windows))]
@@ -1395,7 +1395,7 @@ fn append_tail(tail: &Mutex<String>, chunk: &[u8], max_chars: usize) {
 /// remaining bytes are still read and discarded: closing the pipe read end
 /// early can make the child fail writes (broken pipe) and flip its exit code.
 /// When `tail` is given, every decoded chunk is also appended to the shared
-/// bounded live-output tail (for `task:output` preview events).
+/// bounded live-output tail (for `action:output` preview events).
 /// Returns `(text, overflowed)`.
 pub(crate) async fn read_stream_capped<R>(
     stdout: Option<R>,
@@ -1474,10 +1474,10 @@ mod tests {
     use std::time::Duration;
 
     /// Poll `status` until it is no longer "running" (or timeout).
-    async fn wait_terminal(tasks: &BackgroundTasks, id: &str, timeout_secs: u64) -> Value {
+    async fn wait_terminal(actions: &BackgroundActions, id: &str, timeout_secs: u64) -> Value {
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
         loop {
-            let v = tasks.status(id).await;
+            let v = actions.status(id).await;
             if v["status"] != "running" || std::time::Instant::now() > deadline {
                 return v;
             }
@@ -1485,43 +1485,43 @@ mod tests {
         }
     }
 
-    /// Spawn the two fixture echo tasks (`task-a` / `task-b`) and attach them to
+    /// Spawn the two fixture echo actions (`action-a` / `action-b`) and attach them to
     /// `ses-1` / `ses-2`. Shared by the board and scoped-list tests.
-    async fn spawn_two_echo_tasks(tasks: &Arc<BackgroundTasks>) -> (String, String) {
-        let id_a = tasks
-            .spawn_shell("echo task-a", "cmd", 20_000, None)
+    async fn spawn_two_echo_actions(actions: &Arc<BackgroundActions>) -> (String, String) {
+        let id_a = actions
+            .spawn_shell("echo action-a", "cmd", 20_000, None)
             .await
             .unwrap();
-        let id_b = tasks
-            .spawn_shell("echo task-b", "cmd", 20_000, None)
+        let id_b = actions
+            .spawn_shell("echo action-b", "cmd", 20_000, None)
             .await
             .unwrap();
-        tasks.attach_session(&id_a, "ses-1").await;
-        tasks.attach_session(&id_b, "ses-2").await;
+        actions.attach_session(&id_a, "ses-1").await;
+        actions.attach_session(&id_b, "ses-2").await;
         (id_a, id_b)
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_completion_notified_on_finish() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let mut rx = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let mut rx = actions
             .take_completion_receiver()
             .expect("receiver available");
-        // Attach the session BEFORE the task finishes (normal path): the
+        // Attach the session BEFORE the action finishes (normal path): the
         // completion must carry the session_id.
-        let id = tasks
+        let id = actions
             .spawn_shell("echo done", "cmd", 20_000, None)
             .await
             .unwrap();
-        tasks.attach_session(&id, "ses-A").await;
-        let v = wait_terminal(&tasks, &id, 10).await;
+        actions.attach_session(&id, "ses-A").await;
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "completed");
         let comp = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("completion received")
             .expect("channel open");
-        assert_eq!(comp.task_id, id);
+        assert_eq!(comp.action_id, id);
         assert_eq!(comp.status, "completed");
         assert_eq!(comp.session_id.as_deref(), Some("ses-A"));
         assert!(
@@ -1534,13 +1534,13 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_task_result_persisted_to_db() {
+    async fn test_action_result_persisted_to_db() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
-        let tasks = Arc::new(BackgroundTasks::new());
-        tasks.set_db(Some(db.clone())).await;
+        let actions = Arc::new(BackgroundActions::new());
+        actions.set_db(Some(db.clone())).await;
 
-        let id = tasks
+        let id = actions
             .spawn_shell(
                 "echo live-line & ping -n 4 127.0.0.1 >nul",
                 "cmd",
@@ -1549,8 +1549,8 @@ mod tests {
             )
             .await
             .unwrap();
-        tasks.attach_session(&id, "ses-DB").await;
-        let v = wait_terminal(&tasks, &id, 10).await;
+        actions.attach_session(&id, "ses-DB").await;
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "completed");
 
         // The status flips to completed before the terminal row is persisted
@@ -1558,13 +1558,13 @@ mod tests {
         // DB instead of reading it immediately.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let row = loop {
-            let rows = db.list_tasks(Some("background")).unwrap();
+            let rows = db.list_actions(Some("background")).unwrap();
             if let Some(row) = rows.iter().find(|r| r.id == id) {
                 break row.clone();
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "task row never persisted"
+                "action row never persisted"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
@@ -1579,25 +1579,25 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_completion_refired_after_late_attach() {
-        // Race path: the task finishes before attach_session is called. The
+        // Race path: the action finishes before attach_session is called. The
         // completion first fires with session_id=None; attach_session must re-fire
         // with the session_id so the owning session still gets notified.
-        let tasks = Arc::new(BackgroundTasks::new());
-        let mut rx = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let mut rx = actions
             .take_completion_receiver()
             .expect("receiver available");
-        let id = tasks
+        let id = actions
             .spawn_shell("echo fast", "cmd", 20_000, None)
             .await
             .unwrap();
-        // Wait for the task to finish BEFORE attaching (simulate the race).
-        let v = wait_terminal(&tasks, &id, 10).await;
+        // Wait for the action to finish BEFORE attaching (simulate the race).
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "completed");
         // Drain the session_id=None completion fired by mark_finished.
         let none_comp = rx.recv().await.expect("first completion");
         assert!(none_comp.session_id.is_none());
         // Now attach: should re-fire with the session_id.
-        tasks.attach_session(&id, "ses-B").await;
+        actions.attach_session(&id, "ses-B").await;
         let comp = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("refired completion received")
@@ -1608,24 +1608,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_completion_skipped_for_running() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        // No tasks → no completion. Just confirm the receiver is taken.
-        let _rx = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        // No actions → no completion. Just confirm the receiver is taken.
+        let _rx = actions
             .take_completion_receiver()
             .expect("receiver available");
         // status on not_found doesn't notify.
-        assert_eq!(tasks.status("nope").await["status"], "not_found");
+        assert_eq!(actions.status("nope").await["status"], "not_found");
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_completes_with_output() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell("echo bg-hello", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&tasks, &id, 10).await;
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "completed", "got: {}", v);
         assert!(v["output"].as_str().unwrap().contains("bg-hello"));
         assert!(v["finished_at"].as_str().is_some());
@@ -1634,8 +1634,8 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_running_status_includes_command_and_live_output() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell(
                 "echo live-line & ping -n 3 127.0.0.1 >nul",
                 "cmd",
@@ -1644,8 +1644,8 @@ mod tests {
             )
             .await
             .unwrap();
-        // While the task runs, status must carry the command line it executes.
-        let v = tasks.status(&id).await;
+        // While the action runs, status must carry the command line it executes.
+        let v = actions.status(&id).await;
         assert_eq!(v["status"], "running", "got: {}", v);
         assert_eq!(v["shell"], "cmd");
         assert!(
@@ -1655,7 +1655,7 @@ mod tests {
         // And the live output tail once the command has produced something.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let v = tasks.status(&id).await;
+            let v = actions.status(&id).await;
             if v["output"].as_str().unwrap_or("").contains("live-line") {
                 break;
             }
@@ -1666,8 +1666,8 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         // The running row of the board carries the same command + output.
-        let board = tasks.board().await;
-        let row = board.iter().find(|r| r["task_id"] == id).expect("on board");
+        let board = actions.board().await;
+        let row = board.iter().find(|r| r["action_id"] == id).expect("on board");
         assert!(row["command"].as_str().unwrap().contains("live-line"));
         assert!(row["preview"].as_str().unwrap_or("").contains("live-line"));
     }
@@ -1675,24 +1675,24 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_failure_reported() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell("exit 7", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&tasks, &id, 10).await;
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "failed", "got: {}", v);
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_stderr_captured() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell("echo err-msg 1>&2", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&tasks, &id, 10).await;
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "completed", "got: {}", v);
         assert!(v["output"].as_str().unwrap().contains("err-msg"));
     }
@@ -1700,47 +1700,47 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn test_spawn_shell_cancelled() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
             .unwrap();
-        assert_eq!(tasks.status(&id).await["status"], "running");
-        assert!(tasks.cancel(&id).await, "cancel must report success");
-        let v = wait_terminal(&tasks, &id, 10).await;
+        assert_eq!(actions.status(&id).await["status"], "running");
+        assert!(actions.cancel(&id).await, "cancel must report success");
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "cancelled", "got: {}", v);
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_cancel_for_session_cleans_up() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
             .unwrap();
-        tasks.attach_session(&id, "ses-1").await;
-        assert_eq!(tasks.status(&id).await["status"], "running");
-        tasks.cancel_for_session("ses-1").await;
-        assert_eq!(tasks.status(&id).await["status"], "not_found");
+        actions.attach_session(&id, "ses-1").await;
+        assert_eq!(actions.status(&id).await["status"], "running");
+        actions.cancel_for_session("ses-1").await;
+        assert_eq!(actions.status(&id).await["status"], "not_found");
     }
 
     #[tokio::test]
     async fn test_status_not_found() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        assert_eq!(tasks.status("task-nope").await["status"], "not_found");
+        let actions = Arc::new(BackgroundActions::new());
+        assert_eq!(actions.status("action-nope").await["status"], "not_found");
     }
 
     #[tokio::test]
-    async fn test_cancel_unknown_task() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        assert!(!tasks.cancel("task-nope").await);
+    async fn test_cancel_unknown_action() {
+        let actions = Arc::new(BackgroundActions::new());
+        assert!(!actions.cancel("action-nope").await);
     }
 
     #[tokio::test]
     async fn test_spawn_empty_command_rejected() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        assert!(tasks.spawn_shell("  ", "cmd", 20_000, None).await.is_err());
+        let actions = Arc::new(BackgroundActions::new());
+        assert!(actions.spawn_shell("  ", "cmd", 20_000, None).await.is_err());
     }
 
     #[tokio::test]
@@ -1816,14 +1816,14 @@ mod tests {
     #[test]
     fn test_terminal_entry_stale_ttl() {
         let now = chrono::Utc::now();
-        let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| BackgroundTask {
+        let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| BackgroundAction {
             session_id: None,
             state: if running {
-                BackgroundTaskState::Running {
+                BackgroundActionState::Running {
                     started_at: now.to_rfc3339(),
                 }
             } else {
-                BackgroundTaskState::Completed {
+                BackgroundActionState::Completed {
                     output: String::new(),
                     exit_code: None,
                     truncated: false,
@@ -1842,18 +1842,18 @@ mod tests {
                 &entry(now - chrono::Duration::minutes(20), false),
                 Duration::from_secs(600)
             ),
-            "20-minute-old terminal task must be stale"
+            "20-minute-old terminal action must be stale"
         );
         assert!(
             !terminal_entry_stale(
                 &entry(now - chrono::Duration::minutes(5), false),
                 Duration::from_secs(600)
             ),
-            "fresh terminal task must be kept"
+            "fresh terminal action must be kept"
         );
         assert!(
             !terminal_entry_stale(&entry(now, true), Duration::from_secs(600)),
-            "running task is never stale"
+            "running action is never stale"
         );
     }
 
@@ -2092,50 +2092,50 @@ mod tests {
         assert_eq!(out, "a\nb");
     }
 
-    // ── list_for_session (tasks board) ────────────────────────────────────────
+    // ── list_for_session (actions board) ────────────────────────────────────────
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_event_sink_receives_lifecycle() {
-        let tasks = Arc::new(BackgroundTasks::new());
+        let actions = Arc::new(BackgroundActions::new());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink_events = events.clone();
-        tasks.set_event_sink(Arc::new(move |name, payload| {
+        actions.set_event_sink(Arc::new(move |name, payload| {
             sink_events.lock().unwrap().push((name, payload));
         }));
-        let id = tasks
+        let id = actions
             .spawn_shell("echo bg-event", "cmd", 20_000, None)
             .await
             .unwrap();
-        tasks.attach_session(&id, "ses-evt").await;
-        wait_terminal(&tasks, &id, 10).await;
+        actions.attach_session(&id, "ses-evt").await;
+        wait_terminal(&actions, &id, 10).await;
 
         let evs = events.lock().unwrap();
         let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"task:created"), "got: {names:?}");
-        assert!(names.contains(&"task:updated"), "got: {names:?}");
-        assert!(names.contains(&"task:finished"), "got: {names:?}");
+        assert!(names.contains(&"action:created"), "got: {names:?}");
+        assert!(names.contains(&"action:updated"), "got: {names:?}");
+        assert!(names.contains(&"action:finished"), "got: {names:?}");
         let term = evs
             .iter()
-            .find(|(n, _)| n == "task:finished")
+            .find(|(n, _)| n == "action:finished")
             .expect("terminal event");
         assert_eq!(term.1["status"], "completed");
-        assert_eq!(term.1["task_id"], id);
+        assert_eq!(term.1["action_id"], id);
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_board_lists_all_jobs_with_session() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let (id_a, id_b) = spawn_two_echo_tasks(&tasks).await;
-        wait_terminal(&tasks, &id_a, 10).await;
-        wait_terminal(&tasks, &id_b, 10).await;
+        let actions = Arc::new(BackgroundActions::new());
+        let (id_a, id_b) = spawn_two_echo_actions(&actions).await;
+        wait_terminal(&actions, &id_a, 10).await;
+        wait_terminal(&actions, &id_b, 10).await;
 
-        let rows = tasks.board().await;
-        assert_eq!(rows.len(), 2, "all tasks on board: {rows:?}");
+        let rows = actions.board().await;
+        assert_eq!(rows.len(), 2, "all actions on board: {rows:?}");
         let by_id: HashMap<_, _> = rows
             .iter()
-            .map(|r| (r["task_id"].as_str().unwrap(), r))
+            .map(|r| (r["action_id"].as_str().unwrap(), r))
             .collect();
         assert_eq!(by_id[&id_a.as_str()]["session_id"], "ses-1");
         assert_eq!(by_id[&id_b.as_str()]["session_id"], "ses-2");
@@ -2144,23 +2144,23 @@ mod tests {
             by_id[&id_a.as_str()]["preview"]
                 .as_str()
                 .unwrap()
-                .contains("task-a"),
+                .contains("action-a"),
             "preview expected, got: {rows:?}"
         );
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_task_output_preview_emitted() {
-        let tasks = Arc::new(BackgroundTasks::new());
+    async fn test_action_output_preview_emitted() {
+        let actions = Arc::new(BackgroundActions::new());
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink_events = events.clone();
-        tasks.set_event_sink(Arc::new(move |name, payload| {
+        actions.set_event_sink(Arc::new(move |name, payload| {
             sink_events.lock().unwrap().push((name, payload));
         }));
-        // A task that keeps running past one emit interval while producing
+        // A action that keeps running past one emit interval while producing
         // output (ping lasts ~3s), so the preview event has time to fire.
-        let id = tasks
+        let id = actions
             .spawn_shell(
                 "echo preview-line-123 && ping -n 4 127.0.0.1 > nul",
                 "cmd",
@@ -2174,9 +2174,9 @@ mod tests {
             let evs = events.lock().unwrap();
             let output_evt = evs
                 .iter()
-                .find(|(n, _)| n == "task:output")
-                .expect("task:output event must be emitted while running");
-            assert_eq!(output_evt.1["task_id"], id);
+                .find(|(n, _)| n == "action:output")
+                .expect("action:output event must be emitted while running");
+            assert_eq!(output_evt.1["action_id"], id);
             assert!(
                 output_evt.1["output"]
                     .as_str()
@@ -2186,40 +2186,40 @@ mod tests {
                 output_evt.1["output"]
             );
         }
-        let _ = tasks.cancel(&id).await;
+        let _ = actions.cancel(&id).await;
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn test_list_for_session_scopes_to_owning_session() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let (id_a, id_b) = spawn_two_echo_tasks(&tasks).await;
-        wait_terminal(&tasks, &id_a, 10).await;
-        wait_terminal(&tasks, &id_b, 10).await;
+        let actions = Arc::new(BackgroundActions::new());
+        let (id_a, id_b) = spawn_two_echo_actions(&actions).await;
+        wait_terminal(&actions, &id_a, 10).await;
+        wait_terminal(&actions, &id_b, 10).await;
 
-        let rows = tasks.list_for_session("ses-1").await;
-        assert_eq!(rows.len(), 1, "only ses-1's tasks: {rows:?}");
-        assert_eq!(rows[0]["task_id"], id_a);
+        let rows = actions.list_for_session("ses-1").await;
+        assert_eq!(rows.len(), 1, "only ses-1's actions: {rows:?}");
+        assert_eq!(rows[0]["action_id"], id_a);
         assert_eq!(rows[0]["status"], "completed");
         assert!(
-            rows[0]["preview"].as_str().unwrap().contains("task-a"),
+            rows[0]["preview"].as_str().unwrap().contains("action-a"),
             "preview expected, got: {rows:?}"
         );
 
-        let all = tasks.list_for_session("ses-2").await;
+        let all = actions.list_for_session("ses-2").await;
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0]["task_id"], id_b);
+        assert_eq!(all[0]["action_id"], id_b);
     }
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn test_failed_task_reports_exit_code_and_reason() {
-        let tasks = Arc::new(BackgroundTasks::new());
-        let id = tasks
+    async fn test_failed_action_reports_exit_code_and_reason() {
+        let actions = Arc::new(BackgroundActions::new());
+        let id = actions
             .spawn_shell("echo progress... && exit 42", "cmd", 20_000, None)
             .await
             .unwrap();
-        let v = wait_terminal(&tasks, &id, 10).await;
+        let v = wait_terminal(&actions, &id, 10).await;
         assert_eq!(v["status"], "failed", "got: {v}");
         assert_eq!(v["exit_code"], 42, "exit code must be captured, got: {v}");
         assert!(

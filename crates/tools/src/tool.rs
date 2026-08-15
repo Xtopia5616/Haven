@@ -41,7 +41,7 @@ pub struct ToolSignals {
 
 /// Per-session side effects a tool declares through its result. The session
 /// executor applies them (registering skill/MCP adapters, attaching
-/// background tasks) without hard-coding tool names, so a new tool that needs
+/// background actions) without hard-coding tool names, so a new tool that needs
 /// a side effect declares it here instead of adding a name check in the
 /// executor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,9 +50,9 @@ pub enum ToolRegistration {
     Skill(String),
     /// Load an MCP server (by name) for the current session.
     McpServer(String),
-    /// Attach a background task (an task of kind `task`) to the current
+    /// Attach a background action (an action of kind `action`) to the current
     /// session (end/rollback cleanup).
-    Task(String),
+    Action(String),
 }
 
 impl ToolResult {
@@ -173,7 +173,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Whether this tool needs the private `_session_id` input field injected
-    /// before execution (e.g. `schedule`/`tasks` scope to the current session).
+    /// before execution (e.g. `schedule`/`actions` scope to the current session).
     /// The id is injected after the LLM-facing input was captured, so it
     /// never reaches the tool schema, the step history, or the LLM.
     fn requires_session_id(&self) -> bool {
@@ -189,7 +189,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Per-session side effects to apply after a successful execution
-    /// (skill/MCP adapters, background-task attachment).
+    /// (skill/MCP adapters, background-action attachment).
     fn registrations(&self, output: &Value) -> Vec<ToolRegistration> {
         let _ = output;
         Vec::new()
@@ -619,10 +619,10 @@ mod tests {
     fn test_extract_notify_signal() {
         let (title, body) = extract_notify_signal(&json!({
             "notify": true,
-            "title": "ScheduledTask",
+            "title": "ScheduledAction",
             "body": "Take a break",
         }));
-        assert_eq!(title.as_deref(), Some("ScheduledTask"));
+        assert_eq!(title.as_deref(), Some("ScheduledAction"));
         assert_eq!(body.as_deref(), Some("Take a break"));
     }
 

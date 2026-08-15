@@ -180,7 +180,7 @@ const SCHEMA_SQL: &[&str] = &[
         last_seen_at TEXT,
         source_ref TEXT
     )",
-    "CREATE TABLE IF NOT EXISTS tasks (
+    "CREATE TABLE IF NOT EXISTS actions (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'scheduled',
         due_at TEXT,
@@ -384,7 +384,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("session_steps", "thought"),
     ("facts", "tags"),
     ("facts", "durability"),
-    ("tasks", "kind"),
+    ("actions", "kind"),
 ];
 
 fn column_exists(conn: &rusqlite::Connection, table: &str, col: &str) -> anyhow::Result<bool> {
@@ -511,7 +511,7 @@ mod tests {
             "messages",
             "partial_messages",
             "kv_store",
-            "tasks",
+            "actions",
             "session_steps",
             "session_usage",
             "sessions",

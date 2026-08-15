@@ -3,7 +3,7 @@ pub mod facts;
 pub mod kv_store;
 pub mod messages;
 pub mod partials;
-pub mod scheduled_tasks;
+pub mod scheduled_actions;
 pub mod session_steps;
 pub mod sessions;
 pub mod usage;

@@ -170,7 +170,7 @@ pub fn is_single_valued_predicate(predicate: &str) -> bool {
                 | "works_at"
                 | "workspace"
                 | "company"
-                | "task"
+                | "action"
                 | "role"
                 | "shell"
                 | "os"

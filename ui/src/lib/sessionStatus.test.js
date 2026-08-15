@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { TASK_STATUSES, statusColor, statusVariant } from './sessionStatus.js';
+import { ACTION_STATUSES, statusColor, statusVariant } from './sessionStatus.js';
 
-describe('TASK_STATUSES', () => {
+describe('ACTION_STATUSES', () => {
 	it('covers the canonical backend statuses', () => {
-		expect(TASK_STATUSES).toEqual(['pending', 'running', 'paused', 'completed', 'failed', 'error']);
+		expect(ACTION_STATUSES).toEqual(['pending', 'running', 'paused', 'completed', 'failed', 'error']);
 	});
 });
 

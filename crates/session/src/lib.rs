@@ -71,9 +71,9 @@ pub type RunHandler =
 const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
 /// Bounded wait for a user confirmation. A pending confirmation whose
-/// frontend answer never arrives (window closed, dialog lost, scheduled task fired
+/// frontend answer never arrives (window closed, dialog lost, scheduled action fired
 /// with no UI attached) must fail CLOSED instead of blocking the session — or,
-/// for the scheduled-task path, the whole sequential scheduled-task consumer — for an
+/// for the scheduled-action path, the whole sequential scheduled-action consumer — for an
 /// unbounded time. The bound is short enough that a headless queue recovers
 /// quickly, yet still gives an interactive user a comfortable window to
 /// approve/deny a dialog.
@@ -84,9 +84,9 @@ pub enum SessionStatus {
     Pending,
     Running,
     Paused,
-    /// Paused because the `ask` tool is awaiting a human answer. Background-task
+    /// Paused because the `ask` tool is awaiting a human answer. Background-action
     /// completions must NOT auto-wake this state: the model is blocked on the
-    /// user, not on task results, and resuming would let the agent continue
+    /// user, not on action results, and resuming would let the agent continue
     /// (and run tools) without the user's consent. Serialized as "paused" so
     /// the wire/DB format is unchanged.
     PausedAwaitingAnswer,
@@ -281,12 +281,12 @@ pub struct SessionExecutor {
     /// becomes Pending right after a failed claim still wakes it (no missed
     /// notification, no polling fallback).
     dispatch_tx: watch::Sender<u64>,
-    /// Per-session buffer of completed background-task results, delivered to the
+    /// Per-session buffer of completed background-action results, delivered to the
     /// ReAct loop as context at the next step start. Kept separate from the
-    /// steering queue so task output is never mistaken for a user reply (the
+    /// steering queue so action output is never mistaken for a user reply (the
     /// `ask` pause path keys resume off the steering queue, which now holds
     /// only genuine user interjections).
-    task_completions: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    action_completions: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// Pending user confirmations for safety-gated tool calls, keyed by the
     /// generated step id reported in the `confirm:requested` event.
     confirm_waits: Arc<Mutex<HashMap<haven_common::types::ConfirmId, ConfirmWait>>>,
@@ -313,7 +313,7 @@ impl SessionExecutor {
             session_cancellations: Arc::new(Mutex::new(HashMap::new())),
             status_tx: Arc::new(Mutex::new(HashMap::new())),
             dispatch_tx: watch::channel(0).0,
-            task_completions: Arc::new(Mutex::new(HashMap::new())),
+            action_completions: Arc::new(Mutex::new(HashMap::new())),
             confirm_waits: Arc::new(Mutex::new(HashMap::new())),
             on_confirm_request: Arc::new(Mutex::new(None)),
             on_session_error: Arc::new(Mutex::new(None)),
@@ -541,9 +541,9 @@ impl SessionExecutor {
                         let _ = exec_inner
                             .update_session_status(&session_id, SessionStatus::Error)
                             .await;
-                        // The ReAct loop errored out: kill any background tasks
+                        // The ReAct loop errored out: kill any background actions
                         // the session spawned so their children cannot leak.
-                        exec_inner.cancel_session_tasks(&session_id).await;
+                        exec_inner.cancel_session_actions(&session_id).await;
                         // The ReAct loop never emitted a terminal event for
                         // this failure (panic bypasses its error path), so
                         // surface it through the wired callback — otherwise
@@ -674,7 +674,7 @@ impl SessionExecutor {
 
     /// Return a list of currently running session IDs. Used by rollback to wait
     /// until a stopped session's handler has fully released its slot.
-    pub async fn running_tasks_list(&self) -> Vec<String> {
+    pub async fn running_actions_list(&self) -> Vec<String> {
         self.running_sessions.lock().await.iter().cloned().collect()
     }
 
@@ -781,20 +781,20 @@ impl SessionExecutor {
         entry.lock().await.steering_queue.drain(..).collect()
     }
 
-    /// Buffer a completed background-task result for a session. It is delivered
+    /// Buffer a completed background-action result for a session. It is delivered
     /// to the ReAct loop as context at the next step start (drained by
-    /// `drain_task_completions`), separate from the user-driven steering queue.
-    pub async fn add_task_completion(&self, session_id: &str, text: &str) {
-        let mut tasks = self.task_completions.lock().await;
-        tasks
+    /// `drain_action_completions`), separate from the user-driven steering queue.
+    pub async fn add_action_completion(&self, session_id: &str, text: &str) {
+        let mut actions = self.action_completions.lock().await;
+        actions
             .entry(session_id.to_string())
             .or_default()
             .push(text.to_string());
     }
 
-    /// Drain buffered background-task completions for a session.
-    pub async fn drain_task_completions(&self, session_id: &str) -> Vec<String> {
-        self.task_completions
+    /// Drain buffered background-action completions for a session.
+    pub async fn drain_action_completions(&self, session_id: &str) -> Vec<String> {
+        self.action_completions
             .lock()
             .await
             .remove(session_id)
@@ -803,7 +803,7 @@ impl SessionExecutor {
 
     /// Drain all pending user-facing context for a session in one lock pass:
     /// supplements (paused-session replies / `ask` answers), steering (mid-run
-    /// user interjections) and buffered background-task results. The ReAct loop
+    /// user interjections) and buffered background-action results. The ReAct loop
     /// calls this once per step instead of three separate queue drains (three
     /// global ses-map lock acquisitions per step), so the three batches can
     /// never drift apart either.
@@ -822,13 +822,13 @@ impl SessionExecutor {
             }
             None => (Vec::new(), Vec::new()),
         };
-        let task_results = self
-            .task_completions
+        let action_results = self
+            .action_completions
             .lock()
             .await
             .remove(session_id)
             .unwrap_or_default();
-        (supplements, steering, task_results)
+        (supplements, steering, action_results)
     }
 
     /// End a session. Since the user explicitly asked to end it, the session is
@@ -848,9 +848,9 @@ impl SessionExecutor {
                 .clone()
         };
         cancel.cancel();
-        // Kill any background tasks the session spawned; they would otherwise
+        // Kill any background actions the session spawned; they would otherwise
         // keep running (and leak child processes) after the session is gone.
-        self.cancel_session_tasks(session_id).await;
+        self.cancel_session_actions(session_id).await;
         // Promote checkpointed stream text into history (skip when a real
         // message already supersedes it). Runs BEFORE the session is torn down;
         // the PartialStore's generation bump also invalidates any in-flight
@@ -914,12 +914,12 @@ impl SessionExecutor {
             .safety_gateway
             .clear_session_trust(session_id)
             .await;
-        self.cancel_session_tasks(session_id).await;
+        self.cancel_session_actions(session_id).await;
         self.sessions.lock().await.remove(session_id);
         self.dequeue_pending(session_id).await;
         self.cleanup_session_maps(session_id).await;
         self.status_tx.lock().await.remove(session_id);
-        self.task_completions.lock().await.remove(session_id);
+        self.action_completions.lock().await.remove(session_id);
     }
 
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
@@ -952,7 +952,7 @@ impl SessionExecutor {
         self.session_permits.lock().await.clear();
         self.session_cancellations.lock().await.clear();
         self.status_tx.lock().await.clear();
-        self.task_completions.lock().await.clear();
+        self.action_completions.lock().await.clear();
     }
 
     /// Subscribe to a session's status changes. Level-triggered: the receiver
@@ -1101,7 +1101,7 @@ impl SessionExecutor {
             (Running, Pending) => true,
             // Natural completion / failure.
             (Running, Completed) | (Running, Error) => true,
-            // Resume paths (user message, task completion, continue flow).
+            // Resume paths (user message, action completion, continue flow).
             (Paused, Pending) | (PausedAwaitingAnswer, Pending) => true,
             // Re-pause with an answer requirement.
             (Paused, PausedAwaitingAnswer) => true,
@@ -1242,17 +1242,17 @@ impl SessionExecutor {
         &self.db
     }
 
-    /// Cancel and drop all background tasks owned by a session, and cancel its
-    /// pending scheduled_tasks. Called when the session ends, is removed, or is
+    /// Cancel and drop all background actions owned by a session, and cancel its
+    /// pending scheduled_actions. Called when the session ends, is removed, or is
     /// rolled back so child processes cannot leak past their session and no
-    /// scheduled task fires against a session that no longer exists.
-    pub async fn cancel_session_tasks(&self, session_id: &str) {
+    /// scheduled action fires against a session that no longer exists.
+    pub async fn cancel_session_actions(&self, session_id: &str) {
         self.tools
-            .background_tasks
+            .background_actions
             .cancel_for_session(session_id)
             .await;
         self.tools
-            .scheduled_tasks
+            .scheduled_actions
             .cancel_for_session(session_id)
             .await;
     }
@@ -1289,7 +1289,7 @@ impl SessionExecutor {
                 }
                 if prev != SessionStatus::Running {
                     // The ReAct loop runs with status Pending (the dispatcher
-                    // never flips it to Running), and scheduled scheduled_tasks fire
+                    // never flips it to Running), and scheduled scheduled_actions fire
                     // on Paused sessions; both are legitimate tool-call moments.
                     session.status = SessionStatus::Running;
                     tracing::warn!(
@@ -1319,8 +1319,8 @@ impl SessionExecutor {
         // Apply the tool's declared per-session side effects (skill/MCP adapter
         // registration) instead of name-matching load_skill/load_mcp here —
         // a new tool with a side effect declares it via `Tool::registrations`
-        // and nothing in this executor needs to change. Background-task
-        // bindings are applied after the running-set guard below (a task
+        // and nothing in this executor needs to change. Background-action
+        // bindings are applied after the running-set guard below (a action
         // spawned in a concurrently-rolled-back step must not attach past
         // the cleanup sweep). `registrations` is extracted ONCE: calling it
         // twice could yield divergent results for stateful tools, and the
@@ -1344,8 +1344,8 @@ impl SessionExecutor {
                 haven_tools::ToolRegistration::McpServer(name) => {
                     self.tools.register_mcp_for_session(session_id, name).await;
                 }
-                // Task is applied after the running-set guard.
-                haven_tools::ToolRegistration::Task(_) => {}
+                // Action is applied after the running-set guard.
+                haven_tools::ToolRegistration::Action(_) => {}
             }
         }
         let step_number = step_num as i32;
@@ -1360,15 +1360,15 @@ impl SessionExecutor {
             );
             return Ok(result);
         }
-        // Tie a background task to its session so end/rollback can clean it up.
+        // Tie a background action to its session so end/rollback can clean it up.
         // Applied only AFTER the running-set guard above passed (a rollback
         // racing this step may have removed the session); the registrations were
         // extracted once, before the guard.
         for reg in &registrations {
-            if let haven_tools::ToolRegistration::Task(task_id) = reg {
+            if let haven_tools::ToolRegistration::Action(action_id) = reg {
                 self.tools
-                    .background_tasks
-                    .attach_session(task_id, session_id)
+                    .background_actions
+                    .attach_session(action_id, session_id)
                     .await;
             }
         }
@@ -1518,7 +1518,7 @@ impl SessionExecutor {
                 tx,
             },
         );
-        let tid = session_id.unwrap_or("task").to_string();
+        let tid = session_id.unwrap_or("action").to_string();
         // No confirmation callback wired (unit tests, degraded startup):
         // there is no UI that could ever answer — fail closed so the tool
         // never runs without approval, instead of blocking the session forever.
@@ -1544,8 +1544,8 @@ impl SessionExecutor {
             r = rx => r.ok(),
             _ = cancel.cancelled() => None,
             // Bounded, fail-closed fallback: an unanswered confirmation (e.g.
-            // the app window is closed when a scheduled task fires) must
-            // not wedge the session — or the sequential scheduled-task consumer —
+            // the app window is closed when a scheduled action fires) must
+            // not wedge the session — or the sequential scheduled-action consumer —
             // forever.
             _ = tokio::time::sleep(CONFIRM_WAIT_TIMEOUT) => {
                 tracing::warn!(
@@ -1672,7 +1672,7 @@ mod tests {
         // NOTE: `update_session_status` persists the DB row BEFORE the
         // in-memory cleanup (`cleanup_session_maps` / `unmark_running`), so
         // seeing "error" in the DB does not guarantee the slot is released yet.
-        // Under parallel test load the dispatcher task can be descheduled
+        // Under parallel test load the dispatcher action can be descheduled
         // between the two, so poll the memory side instead of asserting it
         // immediately (this test flaked under `cargo test --workspace`).
         let mut released = false;
@@ -2060,7 +2060,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tasks_all_present() {
+    async fn list_actions_all_present() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
@@ -2104,7 +2104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_pending_tasks_reloads_after_restart() {
+    async fn load_pending_actions_reloads_after_restart() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db.clone(), tools.clone(), 3);
@@ -2126,7 +2126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_pending_tasks_skips_non_pending() {
+    async fn load_pending_actions_skips_non_pending() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db.clone(), tools.clone(), 3);
@@ -2246,7 +2246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_tasks_need_explicit_reopen_to_reactivate() {
+    async fn terminal_actions_need_explicit_reopen_to_reactivate() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
@@ -2360,24 +2360,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_completions_buffered_and_drained() {
+    async fn action_completions_buffered_and_drained() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
-        let session = exec.create_session("bg task").await.unwrap();
+        let session = exec.create_session("bg action").await.unwrap();
 
-        assert!(exec.drain_task_completions(&session.id).await.is_empty());
+        assert!(exec.drain_action_completions(&session.id).await.is_empty());
 
-        exec.add_task_completion(&session.id, "task-1 done").await;
-        exec.add_task_completion(&session.id, "task-2 failed").await;
+        exec.add_action_completion(&session.id, "action-1 done").await;
+        exec.add_action_completion(&session.id, "action-2 failed").await;
 
-        let drained = exec.drain_task_completions(&session.id).await;
-        assert_eq!(drained, vec!["task-1 done", "task-2 failed"]);
-        assert!(exec.drain_task_completions(&session.id).await.is_empty());
+        let drained = exec.drain_action_completions(&session.id).await;
+        assert_eq!(drained, vec!["action-1 done", "action-2 failed"]);
+        assert!(exec.drain_action_completions(&session.id).await.is_empty());
     }
 
     #[tokio::test]
-    async fn remove_session_clears_task_buffers_and_status_watcher() {
+    async fn remove_session_clears_action_buffers_and_status_watcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
@@ -2385,12 +2385,12 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::PausedAwaitingAnswer)
             .await
             .unwrap();
-        exec.add_task_completion(&session.id, "stranded").await;
+        exec.add_action_completion(&session.id, "stranded").await;
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
 
         exec.remove_session(&session.id).await;
         assert_eq!(exec.get_session_state(&session.id).await, None);
-        assert!(exec.drain_task_completions(&session.id).await.is_empty());
+        assert!(exec.drain_action_completions(&session.id).await.is_empty());
     }
 }
