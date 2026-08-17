@@ -3,9 +3,9 @@ use futures_util::Stream;
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::types::{
-    CanonicalMessage, Embedding, LlmError, LlmResponse, StreamChunk, ToolDefinition,
-};
+use haven_common::types::CanonicalMessage;
+
+use crate::types::{Embedding, LlmError, LlmResponse, StreamChunk, ToolDefinition};
 
 /// User-Agent sent on every provider HTTP request so Haven's traffic is
 /// identifiable server-side: DeepSeek, OpenAI, Anthropic, Gemini and most

@@ -1,11 +1,11 @@
 use crate::desktop::DesktopShell;
 use haven_agent::AgentLayer;
+use haven_agent::SessionExecutor;
 use haven_common::config::ConfigLoader;
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use haven_memory::Database;
-use haven_session::SessionExecutor;
 use haven_tools::ToolsManager;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
@@ -59,11 +59,10 @@ impl AppState {
         });
 
         let cfg = config_loader.config().clone();
-        let llm_config = cfg
-            .llm
-            .clone()
-            .with_response_cap(cfg.context_limits.max_response_tokens)
-            .with_reasoning_echo_cap(cfg.context_limits.reasoning_echo_max_chars);
+        let llm_config = cfg.llm.materialize(
+            Some(cfg.context_limits.max_response_tokens),
+            Some(cfg.context_limits.reasoning_echo_max_chars),
+        );
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.session.max_steps;
         let conversation_window_size = cfg.memory.session_window_size;
@@ -184,7 +183,7 @@ impl AppState {
                         None
                     }
                 };
-            std::sync::Arc::new(haven_gateway::MediaGateway::new(
+            std::sync::Arc::new(haven_input::gateway::MediaGateway::new(
                 router.clone(),
                 stt_client,
                 ocr,

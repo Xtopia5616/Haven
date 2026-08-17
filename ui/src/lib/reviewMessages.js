@@ -4,80 +4,72 @@
 
 import { formatMessageTime } from '$lib/stores.js';
 
+// Sentinel the backend persists in `messages.tool_call_id` for assistant
+// messages that carry an `ask` question text (see
+// `ASK_MSG_TOOL_CALL_ID` in crates/agent/src/react.rs). The message exists
+// so resume can re-seed the question into the canonical; the review builder
+// skips it (the ask CARD is the step row) by this marker instead of content
+// matching. Kept in sync with the Rust const — pinned by a test below.
+export const ASK_MSG_TOOL_CALL_ID = '__ask__';
+
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that
  * arrived concurrently (e.g. a session still running while the user
- * navigates back). Streams append only when the DB doesn't already have
- * a bubble with the same id.
+ * navigates back). Pure ID union: every live bubble carries the SAME id
+ * the backend mints and persists its DB row under (`msg-*` for streamed
+ * thought/reasoning, `step-*` for tool/ask cards), so identity is decided
+ * by id alone and no content comparison is needed.
+ *
+ * Rules:
+ * - id present in both: the DB copy wins, EXCEPT an awaiting live `ask`
+ *   card (its options/awaiting may be fresher than the DB build).
+ * - live only, still streaming: keep (the DB write lands at step end).
+ * - live only, finalized: assistant message bubbles are kept — they may be
+ *   snap-finalized but not yet written to the DB, and dropping them would
+ *   make seen text vanish; the next merge converges once the row lands.
+ *   Cards (tool/ask) and user bubbles have no unpersisted equivalent, so
+ *   they drop with the DB rebuild.
  *
  * @param {Array<object>} dbMessages   buildReviewMessages() result
  * @param {Array<object>} existing     current sessionMessages entry
- * @param {{ dropToolSteps?: boolean }} [opts]
- *   dropToolSteps — when true, drop DB tool-step badges whose stepNumber
- *     is already represented by a live streaming tool card in `existing`.
- *     Used by switchToSession to avoid duplicate display while a session runs.
  */
-export function mergeLiveStreaming(dbMessages, existing, opts = {}) {
-	const { dropToolSteps = false } = opts;
-	let filteredDb = dbMessages;
-	if (dropToolSteps) {
-		const toolSteps = new Set(
-			existing.filter((m) => m.type === 'tool' && m.stepNumber != null)
-				.map((m) => m.stepNumber)
-		);
-		filteredDb = dbMessages.filter(
-			(m) => !(m.type === 'tool' && m.stepNumber != null && toolSteps.has(m.stepNumber))
-		);
-	}
-	const dbIds = new Set(filteredDb.map((m) => m.id));
-	// Reasoning: DB-persisted reasoning (id `msg.*`) and live streaming
-	// reasoning (id `reasoning-*`) carry DIFFERENT ids for the same step,
-	// so plain id dedup leaves two "Thinking…" bubbles after a session switch
-	// mid-step. Dedup by content: the live block is kept only while its
-	// text is not already persisted in the DB (streaming or not yet
-	// reconciled). Same for thought text that the snap already finalized
-	// but that has not been written to the DB yet — keeping it is what
-	// prevents the "finalized-but-unpersisted" message from vanishing.
-	const liveReasoning = existing.filter((m) => m.type === 'reasoning');
-	const dbReasoningContents = new Set(
-		filteredDb.filter((m) => m.type === 'reasoning').map((m) => m.content)
+export function mergeLiveStreaming(dbMessages, existing) {
+	// Awaiting live ask cards carry quick-reply options the DB build may lack
+	// (the pause status can land after the observation). Prefer EVERY
+	// awaiting card over its DB copy so all questions in a batched step stay
+	// answerable.
+	const liveAskById = new Map(
+		existing.filter((m) => m.type === 'ask' && m.awaiting).map((m) => [m.id, m]),
 	);
-	const liveThought = existing.filter(
-		(m) => m.role === 'assistant' && m.id.startsWith('thought-')
+	// A tool card still streaming has a live observation in flight; its DB
+	// badge exists (the step row is created at tool start) but is EMPTY until
+	// the observation lands, so the live card must win mid-tool.
+	const liveStreamingToolById = new Map(
+		existing.filter((m) => m.type === 'tool' && m.streaming).map((m) => [m.id, m]),
 	);
-	const dbThoughtContents = new Set(
-		filteredDb.filter((m) => m.role === 'assistant').map((m) => m.content)
-	);
-	const streaming = existing.filter((m) => {
-		if (dbIds.has(m.id)) return false;
-		// Still streaming: always keep, whatever it is.
-		if (m.streaming) return true;
-		// Finalized live reasoning: drop when the DB already persisted the
-		// same text (the DB copy is authoritative).
-		if (m.type === 'reasoning') {
-			return m.content !== '' && !dbReasoningContents.has(m.content);
+	const out = [];
+	const emitted = new Set();
+	for (const m of dbMessages) {
+		const live = liveAskById.get(m.id) ?? liveStreamingToolById.get(m.id);
+		if (live) {
+			out.push(live);
+			emitted.add(live.id);
+			continue;
 		}
-		// Finalized live thought: keep only when the DB has no equivalent
-		// assistant message (prevents duplicates AND drops — the snap may
-		// have arrived before the DB write).
-		if (m.id.startsWith('thought-')) {
-			return m.content !== '' && !dbThoughtContents.has(m.content);
-		}
-		// Anything else finalized (user bubbles, tool cards) is represented
-		// by the DB copy; drop the live version.
-		return false;
-	});
-	// Ask cards: a session paused on an `ask` question loses its options and
-	// awaiting state when rebuilt from the DB (review builds `options: []`,
-	// `awaiting: false`). If a live ask card is still awaiting, prefer it
-	// over the DB card so the user can answer from the quick-reply buttons.
-	const liveAskAwaiting = existing.find((m) => m.type === 'ask' && m.awaiting);
-	if (liveAskAwaiting) {
-		filteredDb = filteredDb.filter((m) => !(m.type === 'ask'));
-		const others = streaming.filter((m) => m.id !== liveAskAwaiting.id);
-		return [...filteredDb, liveAskAwaiting, ...others];
+		out.push(m);
+		emitted.add(m.id);
 	}
-	return [...filteredDb, ...streaming];
+	for (const m of existing) {
+		if (emitted.has(m.id)) continue;
+		if (m.streaming) {
+			out.push(m);
+			continue;
+		}
+		if (m.type === 'tool' || m.type === 'ask') continue;
+		if (m.role !== 'assistant') continue;
+		out.push(m);
+	}
+	return out;
 }
 
 export function buildReviewMessages(data) {
@@ -88,6 +80,11 @@ export function buildReviewMessages(data) {
 	const msgIds = new Set();
 	for (const msg of msgs) {
 		msgIds.add(msg.id);
+		// Ask question messages carry the `__ask__` tool_call_id sentinel:
+		// the question is rendered as the ask CARD (built from the step row
+		// below), so the message bubble would duplicate it. Skipping by
+		// marker avoids any content comparison.
+		if (msg.tool_call_id === ASK_MSG_TOOL_CALL_ID) continue;
 		items.push({
 			id: msg.id,
 			role: msg.role,
@@ -105,18 +102,23 @@ export function buildReviewMessages(data) {
 	// Thought-only steps are skipped because their text is already
 	// represented in session messages, avoiding duplication.
 	for (const step of data.steps || []) {
-		const stepId = `step-${step.id}`;
+		// The DB stores the step row under the very `step-*` id the backend
+		// minted for the live tool card, so the badge and the live card are
+		// one entity.
+		const stepId = step.id;
 		if (msgIds.has(stepId)) continue;
 		if (!step.action_tool) continue;
 		// Silent tool steps (input `"silent": true`) are hidden in the live
 		// chat; keep them hidden here so review matches the live view.
 		if (step.silent) continue;
 		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
-		// The `ask` tool surfaces the question as a dedicated question card.
-		// Its question text is ALSO persisted as an assistant session message,
-		// so mark that message as the card (awaiting=false, no buttons after
-		// reload) and skip a separate session-message bubble to remove the
-		// duplicate display.
+		// The `ask` tool surfaces the question as a dedicated question card
+		// under the step row's id (matching the live card). Its question text
+		// is ALSO persisted as an assistant session message for resume
+		// re-seeding; new records mark that message with the `__ask__`
+		// sentinel (skipped above), legacy records are matched by content.
+		// Either way the message bubble is dropped so the card never
+		// duplicates it.
 		if (step.action_tool === 'ask') {
 			// The persisted step observation is the raw tool JSON
 			// ({"ask":true,"question":...,"hint":...}), not the readable
@@ -144,70 +146,50 @@ export function buildReviewMessages(data) {
 			// session's ask card is still awaiting a reply. Without this, a
 			// session switch / reload renders the card without quick-reply
 			// buttons and the user cannot answer from the chat view.
-			const sessionPaused = data.session?.status === 'Paused';
-			// When the model batches multiple ask calls into one step, the
-			// persisted assistant message joins the questions with "\n\n",
-			// while each step observes only its own question. Match either the
-			// exact question or the joined text, and skip adding a separate
-			// raw tool badge for any matched question so the batch renders as
-			// a single ask card, not a card + duplicate badge.
-			let deduped = false;
+			// (DB status is lowercase: "paused" covers Paused and
+			// PausedAwaitingAnswer.)
+			const sessionPaused = data.session?.status === 'paused';
+			// Legacy-only pairing: when the model batches multiple ask calls
+			// into one step, the message joins the questions with "\n\n",
+			// while each step observes only its own question.
 			if (askText) {
-				for (let i = 0; i < items.length; i++) {
-					const item = items[i];
-					if (item.role !== 'assistant') continue;
-					const isAskMatch =
-						item.content === askText ||
-						(item.type == null && item.content.startsWith(`${askText}\n\n`)) ||
-						(item.type === 'ask' && item.content.includes(askText));
-					if (isAskMatch) {
-						if (item.type == null) {
-							items[i] = {
-								...item,
-								type: 'ask',
-								toolName: 'ask',
-								options: askOptions,
-								awaiting: sessionPaused,
-							};
-						}
-						deduped = true;
-						break;
-					}
-				}
+				const matchIdx = items.findIndex(
+					(item) =>
+						item.role === 'assistant' &&
+						(item.content === askText ||
+							(item.type == null && item.content.startsWith(`${askText}\n\n`))),
+				);
+				if (matchIdx >= 0) items.splice(matchIdx, 1);
 			}
-			if (deduped) continue;
-			// No matching session message (e.g. an old session without the
-			// persisted question): still surface the extracted question as an
-			// ask card instead of a raw JSON tool badge.
+			items.push({
+				id: stepId,
+				role: 'assistant',
+				content: askText || '',
+				type: 'ask',
+				toolName: 'ask',
+				options: askOptions,
+				awaiting: sessionPaused,
+				voice: false,
+				time: formatMessageTime(step.created_at),
+				_ts: Date.parse(step.created_at) || 0,
+				streaming: false,
+				stepNumber: step.step_number,
+			});
+			continue;
+		}
 		items.push({
 			id: stepId,
 			role: 'assistant',
-			content: askText || '',
-			type: 'ask',
-			toolName: 'ask',
-			options: askOptions,
-			awaiting: sessionPaused,
+			content: obs || '',
+			type: 'tool',
+			toolName: step.action_tool,
 			voice: false,
 			time: formatMessageTime(step.created_at),
 			_ts: Date.parse(step.created_at) || 0,
 			streaming: false,
-		stepNumber: step.step_number,
-	});
-		continue;
+			stepNumber: step.step_number,
+		});
 	}
-	items.push({
-		id: stepId,
-		role: 'assistant',
-		content: obs || '',
-		type: 'tool',
-		toolName: step.action_tool,
-		voice: false,
-		time: formatMessageTime(step.created_at),
-		_ts: Date.parse(step.created_at) || 0,
-		streaming: false,
-		stepNumber: step.step_number,
-	});
-}
 	// Thought-only steps are not added as separate items (their text is in
 	// session messages), but we still need their step_number for stepNumber
 	// inference — otherwise sessions with no tool steps (e.g. errored on the

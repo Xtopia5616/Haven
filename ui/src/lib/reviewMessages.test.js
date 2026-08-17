@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReviewMessages, mergeLiveStreaming } from './reviewMessages.js';
+import { buildReviewMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './reviewMessages.js';
 import { formatMessageTime } from './stores.js';
 
 const sampleSession = {
@@ -44,7 +44,7 @@ describe('buildReviewMessages', () => {
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's1', action_tool: 'file', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-s1', action_tool: 'file', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
 			],
 		});
 		expect(items).toHaveLength(2);
@@ -108,8 +108,10 @@ describe('buildReviewMessages', () => {
 
 	it('renders an ask step as a dedup question card, not a raw tool badge', () => {
 		// The ask tool persists the question BOTH as an assistant session
-		// message and as a step observation. It must surface once, as an
-		// `ask`-type card (no "Calling ask / Result" duplicate).
+		// message (marked `__ask__` in new records, or unmarked legacy) and as
+		// a step observation. It must surface once, as an `ask`-type card
+		// under the STEP row's id (the id the live card used) — no
+		// "Calling ask / Result" duplicate, no extra question bubble.
 		const items = buildReviewMessages({
 			session: sampleSession,
 			messages: [
@@ -118,7 +120,7 @@ describe('buildReviewMessages', () => {
 			],
 			steps: [
 				{
-					id: 's1',
+					id: 'step-s1',
 					action_tool: 'ask',
 					observation: '你想要怎么处理？A 还是 B？',
 					thought: null,
@@ -129,13 +131,46 @@ describe('buildReviewMessages', () => {
 		});
 		expect(items).toHaveLength(2);
 		expect(items[1]).toMatchObject({
-			id: 'm2',
+			id: 'step-s1',
 			type: 'ask',
 			toolName: 'ask',
 			content: '你想要怎么处理？A 还是 B？',
 		});
 		const toolBadges = items.filter((i) => i.type === 'tool');
 		expect(toolBadges).toHaveLength(0);
+		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
+	});
+
+	it('skips the marked ask question message by the __ask__ sentinel', () => {
+		// New records mark the question message with the `__ask__`
+		// tool_call_id sentinel; the review build drops it by marker alone —
+		// no content comparison with the step observation.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '继续吗？', message_type: 'text', tool_call_id: '__ask__', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			toolName: 'ask',
+			content: '继续吗？',
+			options: ['A', 'B'],
+		});
+		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
 	});
 
 	it('extracts the question from a raw JSON ask observation for dedup', () => {
@@ -150,7 +185,7 @@ describe('buildReviewMessages', () => {
 			],
 			steps: [
 				{
-					id: 's1',
+					id: 'step-s1',
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '哪个文件？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
 					thought: null,
@@ -160,7 +195,7 @@ describe('buildReviewMessages', () => {
 			],
 		});
 		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({ id: 'm2', type: 'ask', content: '哪个文件？' });
+		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'ask', content: '哪个文件？' });
 		const toolBadges = items.filter((i) => i.type === 'tool');
 		expect(toolBadges).toHaveLength(0);
 	});
@@ -176,7 +211,7 @@ describe('buildReviewMessages', () => {
 			],
 			steps: [
 				{
-					id: 's1',
+					id: 'step-s1',
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '继续吗？', context: null, awaiting_answer: true, hint: 'The session is paused.' }),
 					thought: null,
@@ -197,11 +232,13 @@ describe('buildReviewMessages', () => {
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
 	});
 
-	it('dedups the first question when multiple ask calls are batched into one message', () => {
+	it('renders each ask call of a batched step as its own card', () => {
 		// When the model batches two ask calls in one step, the persisted
-		// assistant message joins the questions with "\n\n". Each step observes
-		// only its own question. Both should still render as ask cards with no
-		// raw tool badge or duplicated text.
+		// assistant message joins the questions with "\n\n" while each step
+		// observes only its own question. The joined message is dropped
+		// (marker or legacy content match) and every step renders its own
+		// card, mirroring the live view — no raw tool badge, no duplicate
+		// text bubble.
 		const items = buildReviewMessages({
 			session: sampleSession,
 			messages: [
@@ -209,14 +246,14 @@ describe('buildReviewMessages', () => {
 				{ id: 'm2', role: 'assistant', content: 'Q1？\n\nQ2？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
 			],
 			steps: [
-				{ id: 's1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 's2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
+				{ id: 'step-s1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-s2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
 			],
 		});
-		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({ type: 'ask', content: 'Q1？\n\nQ2？' });
-		expect(items.filter((i) => i.type === 'ask')).toHaveLength(1);
+		expect(items).toHaveLength(3);
+		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
 	});
 
 	it('matches an interrupted user message to its steering/supplement thought step', () => {
@@ -241,15 +278,16 @@ describe('buildReviewMessages', () => {
 	it('restores ask options and awaiting from a paused session', () => {
 		// A session paused on an ask question must rebuild the card with its
 		// quick-reply options and awaiting state, otherwise the user cannot
-		// answer from the chat view after a switch/reload.
+		// answer from the chat view after a switch/reload. The DB stores the
+		// status lowercase ("paused" covers Paused and PausedAwaitingAnswer).
 		const items = buildReviewMessages({
-			session: { ...sampleSession, status: 'Paused' },
+			session: { ...sampleSession, status: 'paused' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
 			steps: [
 				{
-					id: 's1',
+					id: 'step-s1',
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
 					thought: null,
@@ -269,13 +307,13 @@ describe('buildReviewMessages', () => {
 
 	it('keeps ask cards non-awaiting for non-paused sessions', () => {
 		const items = buildReviewMessages({
-			session: { ...sampleSession, status: 'Completed' },
+			session: { ...sampleSession, status: 'completed' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],
 			steps: [
 				{
-					id: 's1',
+					id: 'step-s1',
 					action_tool: 'ask',
 					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'], awaiting_answer: true }),
 					thought: null,
@@ -316,50 +354,48 @@ describe('mergeLiveStreaming', () => {
 
 	it('appends streaming messages not already in the DB', () => {
 		const existing = [
-			{ id: 'tool-t-1-0-call1', type: 'tool', stepNumber: 2, streaming: true },
+			{ id: 'step-s2', type: 'tool', stepNumber: 2, streaming: true },
 		];
 		const merged = mergeLiveStreaming(dbMessages, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-1-0-call1']);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-s2']);
 	});
 
 	it('drops streaming messages whose id already exists in the DB', () => {
 		const existing = [
 			{ id: 'm1', streaming: true },
-			{ id: 'tool-t-1-0-call1', streaming: true },
+			{ id: 'step-other', type: 'tool', streaming: true },
 		];
 		const merged = mergeLiveStreaming(dbMessages, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-1-0-call1']);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-other']);
 		// The DB copy wins; the duplicate streaming copy is not appended twice.
 		expect(merged.filter((m) => m.id === 'm1')).toHaveLength(1);
 	});
 
-	it('drops DB tool-step badges already represented by a live tool card when dropToolSteps', () => {
-		const existing = [
-			{ id: 'tool-t-1-0-call1', type: 'tool', stepNumber: 1, streaming: true },
+	it('keeps a single tool card when the live card and the DB badge share the step id', () => {
+		// The live tool card and the DB step badge are the SAME entity now
+		// (both keyed by the backend-minted `step-*` id), so the merge can
+		// never show a card plus a badge for one step.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-1', type: 'tool', toolName: 'file', stepNumber: 1, streaming: false },
 		];
-		const merged = mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true });
-		// step-s1 (stepNumber 1) is dropped because a live card covers step 1.
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'tool-t-1-0-call1']);
+		const existing = [
+			{ id: 'step-1', type: 'tool', toolName: 'file', stepNumber: 1, streaming: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-1']);
+		expect(merged.filter((m) => m.id === 'step-1')).toHaveLength(1);
 	});
 
-	it('keeps DB tool badges for steps with no live card even with dropToolSteps', () => {
-		const existing = [
-			{ id: 'tool-t-2-0-call2', type: 'tool', stepNumber: 2, streaming: true },
-		];
-		const merged = mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true });
-		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'tool-t-2-0-call2']);
-	});
-
-	it('dedups finalized live reasoning against the DB copy', () => {
-		// DB reasoning (id `msg.*`) and live reasoning (id `reasoning-*`)
-		// carry different ids for the same step; after the live block is
-		// finalized it must not double-render as two "Thinking…" bubbles.
+	it('dedups finalized live reasoning against the DB copy by id', () => {
+		// The live reasoning bubble and the persisted reasoning row share the
+		// minted message id, so the DB copy simply replaces the live one.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
 			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
 		];
 		const existing = [
-			{ id: 'reasoning-t-1-0', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		const reasoning = merged.filter((m) => m.type === 'reasoning');
@@ -372,19 +408,19 @@ describe('mergeLiveStreaming', () => {
 		// the block entirely.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
-			{ id: 'reasoning-t-1-0', role: 'assistant', type: 'reasoning', content: '新鲜推理', streaming: false },
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '新鲜推理', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toContain('reasoning-t-1-0');
+		expect(merged.map((m) => m.id)).toContain('msg-9');
 	});
 
 	it('keeps finalized live thought text missing from the DB', () => {
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
-			{ id: 'thought-t-1-0', role: 'assistant', content: '已定稿但未持久化', streaming: false },
+			{ id: 'msg-8', role: 'assistant', content: '已定稿但未持久化', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toContain('thought-t-1-0');
+		expect(merged.map((m) => m.id)).toContain('msg-8');
 	});
 
 	it('keeps the interrupted partial reasoning after a continue resync', () => {
@@ -392,27 +428,111 @@ describe('mergeLiveStreaming', () => {
 		// from the DB, the resync must NOT clear the already-streamed
 		// "Thinking…" block. handleContinue preserves it by leaving it out of
 		// partialIds; mergeLiveStreaming keeps it because the DB (post-truncate)
-		// has no matching reasoning content.
+		// has no row with that id.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
-			{ id: 'reasoning-t-1-0', role: 'assistant', type: 'reasoning', content: '先想想一部分', streaming: false },
+			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '先想想一部分', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toContain('reasoning-t-1-0');
-		expect(merged.find((m) => m.id === 'reasoning-t-1-0').content).toBe('先想想一部分');
+		expect(merged.map((m) => m.id)).toContain('msg-9');
+		expect(merged.find((m) => m.id === 'msg-9').content).toBe('先想想一部分');
 	});
 
-	it('prefers a live awaiting ask card over the DB ask card', () => {
+	it('drops finalized live tool cards with no DB row (interrupted/transient)', () => {
+		// An interrupted tool card has no step row; a web_search indicator is
+		// never persisted. Both are transient — the DB rebuild drops them.
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'step-cut', type: 'tool', toolName: 'shell', content: 'Interrupted', streaming: false },
+			{ id: 'tool-t-1-0-web_search', type: 'tool', toolName: 'web_search', content: '已联网搜索', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1']);
+	});
+
+	it('drops finalized live user bubbles not in the DB (placeholder copies)', () => {
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'placeholder-xyz', role: 'user', content: 'hi', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1']);
+	});
+
+	it('prefers a live awaiting ask card over the DB ask card of the same id', () => {
+		// The DB build may lack quick-reply options/awaiting (the pause status
+		// can land after the observation); the awaiting live card wins for the
+		// same step id so the user can answer.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'msg-7', role: 'assistant', type: 'ask', content: '继续吗？', options: [], awaiting: false, streaming: false },
+			{ id: 'step-7', role: 'assistant', type: 'ask', content: '继续吗？', options: [], awaiting: false, streaming: false },
 		];
 		const existing = [
-			{ id: 'tool-t-1-0-call9', type: 'ask', toolName: 'ask', content: '继续吗？', options: ['A', 'B'], awaiting: true, streaming: false },
+			{ id: 'step-7', type: 'ask', toolName: 'ask', content: '继续吗？', options: ['A', 'B'], awaiting: true, streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		const asks = merged.filter((m) => m.type === 'ask');
 		expect(asks).toHaveLength(1);
-		expect(asks[0]).toMatchObject({ id: 'tool-t-1-0-call9', options: ['A', 'B'], awaiting: true });
+		expect(asks[0]).toMatchObject({ id: 'step-7', options: ['A', 'B'], awaiting: true });
+	});
+
+	it('prefers EVERY awaiting live ask card in a batched step', () => {
+		// Two asks in one batch: both live cards are awaiting in the
+		// observation→pause race window; both must keep their options, not
+		// just the first.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-1', role: 'assistant', type: 'ask', content: 'Q1？', options: [], awaiting: false, streaming: false },
+			{ id: 'step-2', role: 'assistant', type: 'ask', content: 'Q2？', options: [], awaiting: false, streaming: false },
+		];
+		const existing = [
+			{ id: 'step-1', type: 'ask', toolName: 'ask', content: 'Q1？', options: ['A'], awaiting: true, streaming: false },
+			{ id: 'step-2', type: 'ask', toolName: 'ask', content: 'Q2？', options: ['B'], awaiting: true, streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		const asks = merged.filter((m) => m.type === 'ask');
+		expect(asks).toHaveLength(2);
+		expect(asks[0]).toMatchObject({ id: 'step-1', options: ['A'], awaiting: true });
+		expect(asks[1]).toMatchObject({ id: 'step-2', options: ['B'], awaiting: true });
+	});
+
+	it('keeps the live streaming tool card over its empty DB badge mid-tool', () => {
+		// The step row exists from tool start with a NULL observation, so the
+		// DB badge is EMPTY while the live card is still streaming. Switching
+		// sessions mid-tool must keep the live card, not freeze an empty
+		// badge (the old dropToolSteps behavior, now id-based).
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, streaming: false },
+		];
+		const existing = [
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: '', streaming: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-9']);
+		expect(merged.find((m) => m.id === 'step-9')).toMatchObject({ streaming: true });
+	});
+
+	it('lets a FINALIZED live tool card yield to the DB badge', () => {
+		// Once the observation lands (live card finalized), the DB copy wins
+		// as before — the streaming preference only applies mid-tool.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: 'done', streaming: false },
+		];
+		const existing = [
+			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: 'done', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged).toEqual(db);
+	});
+});
+
+describe('ASK_MSG_TOOL_CALL_ID sentinel', () => {
+	it('pins the marker the backend persists ask question messages with', () => {
+		// Must stay in sync with `ASK_MSG_TOOL_CALL_ID` in
+		// crates/agent/src/react.rs; the review builder skips marked messages
+		// by this exact string.
+		expect(ASK_MSG_TOOL_CALL_ID).toBe('__ask__');
 	});
 });

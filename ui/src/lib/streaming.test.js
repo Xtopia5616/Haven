@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { accumulateStreamChunk, applyThoughtSnap, thoughtSegmentIds, stepId, toolId, finalizeStreamBlocks, newToolMessage } from './streaming.js';
+import { accumulateStreamChunk, applyThoughtSnap, webSearchId, finalizeStreamBlocks, newToolMessage } from './streaming.js';
 
-const STEP_ID = 'thought-t-1-0';
-const REASONING_ID = 'reasoning-t-1-0';
+const STEP_ID = 'msg-thought-1';
+const REASONING_ID = 'msg-reasoning-1';
 const BASE = {
-	stepId: STEP_ID,
-	stepIdPrefix: 'thought',
+	messageId: STEP_ID,
 	msgType: undefined,
 	stepNumber: 1,
+	runId: 0,
 	time: '10:00',
 };
 
@@ -16,10 +16,11 @@ const chunk = (messages, delta, opts = {}) =>
 
 const snap = (messages, thought, opts = {}) =>
 	applyThoughtSnap(messages, {
-		stepId: STEP_ID,
+		messageId: STEP_ID,
 		reasoningId: REASONING_ID,
 		thought,
 		stepNumber: 1,
+		runId: 0,
 		time: '10:00',
 		...opts,
 	});
@@ -107,8 +108,9 @@ describe('accumulateStreamChunk (thought)', () => {
 });
 
 describe('accumulateStreamChunk (reasoning)', () => {
+	const base = { ...BASE, messageId: REASONING_ID, msgType: 'reasoning' };
+
 	it('never splits reasoning into segments', () => {
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		let m = accumulateStreamChunk([], { ...base, delta: '先想想。' });
 		m = accumulateStreamChunk(m, { ...base, delta: '再想想。' });
 		expect(m).toHaveLength(1);
@@ -116,7 +118,6 @@ describe('accumulateStreamChunk (reasoning)', () => {
 	});
 
 	it('drops chunks after the reasoning block was finalized', () => {
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
 		m = m.map((x) => ({ ...x, streaming: false }));
 		const out = accumulateStreamChunk(m, { ...base, delta: '多余' });
@@ -128,7 +129,6 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		// after the stream is finalized (batcher-flush reconciliation).
 		// It must replace the content, not be dropped — otherwise dropped
 		// trailing characters are lost forever.
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		let m = accumulateStreamChunk([], { ...base, delta: '思考了一部分' });
 		m = m.map((x) => ({ ...x, streaming: false }));
 		const out = accumulateStreamChunk(m, { ...base, delta: '思考了一部分，还有更多' });
@@ -141,7 +141,6 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		// prefix-MISMATCHED partial of the authoritative text. The final
 		// full-text reconcile must still replace it (length-based), or the
 		// reasoning block is permanently truncated.
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		let m = accumulateStreamChunk([], { ...base, delta: '开头的思考' });
 		m = accumulateStreamChunk(m, { ...base, delta: '结尾' });
 		m = m.map((x) => ({ ...x, streaming: false }));
@@ -154,7 +153,6 @@ describe('accumulateStreamChunk (reasoning)', () => {
 	});
 
 	it('rejects a stale incremental delta after finalization', () => {
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		let m = accumulateStreamChunk([], { ...base, delta: '想想' });
 		m = m.map((x) => ({ ...x, streaming: false }));
 		const out = accumulateStreamChunk(m, { ...base, delta: '多余' });
@@ -165,16 +163,33 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		// Interleaved providers may emit text first and reasoning after.
 		// The reasoning must sit ABOVE the answer from the first chunk —
 		// appending it at the end would show Thinking... below the content
-		// until the snap reorders it.
+		// until the snap reorders it. The same-step thought is found by
+		// (stepNumber, runId), since message ids carry no step information.
 		let m = chunk([], '回答文字。');
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		m = accumulateStreamChunk(m, { ...base, delta: '迟到的推理' });
 		expect(m.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
 		expect(m[0]).toMatchObject({ id: REASONING_ID, content: '迟到的推理', streaming: true });
 	});
 
+	it('does not climb above another step with the same number but a different run', () => {
+		// A resumed session reuses step numbers; the reasoning of run 2 must
+		// anchor on run 2's thought, not run 1's.
+		const run1Thought = {
+			id: 'msg-run1',
+			role: 'assistant',
+			type: undefined,
+			content: '上一次的回答',
+			stepNumber: 1,
+			runId: 1,
+			streaming: false,
+		};
+		let m = [run1Thought];
+		m = chunk(m, '这次的回答。');
+		m = accumulateStreamChunk(m, { ...base, delta: '这次的推理' });
+		expect(m.map((x) => x.id)).toEqual([run1Thought.id, REASONING_ID, STEP_ID]);
+	});
+
 	it('appends a reasoning block when no thought message exists yet', () => {
-		const base = { ...BASE, stepIdPrefix: 'reasoning', stepId: REASONING_ID, msgType: 'reasoning' };
 		const m = accumulateStreamChunk([], { ...base, delta: '先推理' });
 		expect(m).toHaveLength(1);
 		expect(m[0].id).toBe(REASONING_ID);
@@ -299,7 +314,7 @@ describe('applyThoughtSnap', () => {
 			streaming: true,
 		};
 		const tool = {
-			id: 'tool-t-1-0-1',
+			id: 'step-tool-1',
 			role: 'assistant',
 			type: 'tool',
 			content: '观察结果',
@@ -312,74 +327,91 @@ describe('applyThoughtSnap', () => {
 		const out = snap(m, '我先查一下。');
 		expect(out.map((x) => x.id)).toEqual(['user-1', REASONING_ID, STEP_ID, tool.id]);
 	});
-});
 
-describe('thoughtSegmentIds', () => {
-	it('matches the base id and its numbered children only', () => {
-		const m = [
-			{ id: 'thought-t-1-0' },
-			{ id: 'thought-t-1-0-1' },
-			{ id: 'thought-t-2-0' },
-			{ id: 'reasoning-t-1-0' },
-		];
-		expect(thoughtSegmentIds(m, 'thought-t-1-0')).toEqual(['thought-t-1-0', 'thought-t-1-0-1']);
+	it('is a no-op replace when the DB message (same id) is already in the list', () => {
+		// The turn finished and the list was rebuilt from the DB, then a
+		// replayed/late `agent:thought` snap arrives. The snap carries the
+		// SAME id the DB copy has, so the reconcile is a plain replace with
+		// identical content — no duplicate is appended.
+		const dbCopy = {
+			id: STEP_ID,
+			role: 'assistant',
+			content: '完整的回答。',
+			streaming: false,
+		};
+		const m = [{ id: 'user-1', role: 'user', content: '问题' }, dbCopy];
+		const out = snap(m, '完整的回答。');
+		expect(out).toEqual(m);
+		expect(out.filter((x) => x.content === '完整的回答。')).toHaveLength(1);
+	});
+
+	it('reconciles replayed chunks onto the DB copy without duplicating it', () => {
+		// Chunks replayed on a fresh context after a remount accumulate onto
+		// the DB copy (same id); the snap then settles it to the identical
+		// authoritative text — one bubble, streaming flag cleared.
+		const dbCopy = {
+			id: STEP_ID,
+			role: 'assistant',
+			content: '完整的回答。',
+			streaming: false,
+		};
+		let m = [dbCopy];
+		m = chunk(m, '完整的回');
+		m = chunk(m, '答。');
+		const out = snap(m, '完整的回答。');
+		expect(out).toEqual([dbCopy]);
+		expect(out).toHaveLength(1);
+	});
+
+	it('keeps appending when the list has no equivalent content', () => {
+		// A fresh page that missed the stream still gets the full text.
+		const m = [{ id: 'user-1', role: 'user', content: '问题' }];
+		const out = snap(m, '完整的回答。');
+		expect(out.map((x) => x.id)).toEqual(['user-1', STEP_ID]);
+		expect(out[1]).toMatchObject({ content: '完整的回答。', streaming: false });
 	});
 });
 
-describe('stepId / toolId factories', () => {
-	it('builds prefixed ids with a default run of 0', () => {
-		expect(stepId('thought', 't', 3, 7)).toBe('thought-t-3-7');
-		expect(stepId('thought', 't', 3, undefined)).toBe('thought-t-3-0');
-		expect(stepId('reasoning', 't', 3, null)).toBe('reasoning-t-3-0');
-		expect(stepId('tool', 't', 3, 0)).toBe('tool-t-3-0');
-	});
-
-	it('builds tool ids by appending the call id or name', () => {
-		expect(toolId('t', 3, 7, 'call-1')).toBe('tool-t-3-7-call-1');
-		expect(toolId('t', 3, undefined, 'read_file')).toBe('tool-t-3-0-read_file');
-	});
-
-	it('produces the exact id shape the old template literals produced', () => {
-		// Regression guard: +page.svelte's streaming handlers must not drift.
-		const tid = 't1';
-		const step = 5;
-		const run = 2;
-		expect(stepId('thought', tid, step, run)).toBe(`thought-${tid}-${step}-${run}`);
-		expect(stepId('reasoning', tid, step, run)).toBe(`reasoning-${tid}-${step}-${run}`);
-		expect(toolId(tid, step, run, 'call-9')).toBe(`tool-${tid}-${step}-${run}-call-9`);
-		expect(toolId(tid, step, run, 'file')).toBe(`tool-${tid}-${step}-${run}-file`);
+describe('webSearchId', () => {
+	it('builds the ephemeral web-search card id with a default run of 0', () => {
+		expect(webSearchId('t', 3, 7)).toBe('tool-t-3-7-web_search');
+		expect(webSearchId('t', 3, undefined)).toBe('tool-t-3-0-web_search');
 	});
 });
 
 describe('finalizeStreamBlocks', () => {
 	it('finalizes reasoning and thought blocks; leaves others alone', () => {
 		const m = [
-			{ id: 'reasoning-t-1-0', streaming: true },
-			{ id: 'thought-t-1-0', streaming: true },
-			{ id: 'thought-t-1-0-1', streaming: true },
-			{ id: 'thought-t-2-0', streaming: true },
+			{ id: 'msg-reasoning-1', streaming: true },
+			{ id: 'msg-thought-1', streaming: true },
+			{ id: 'msg-thought-2', streaming: true },
 			{ id: 'm1', streaming: true },
 		];
-		const out = finalizeStreamBlocks(m, 'reasoning-t-1-0', 'thought-t-1-0');
-		expect(out.find((x) => x.id === 'reasoning-t-1-0')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'thought-t-1-0')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'thought-t-1-0-1')).toMatchObject({ streaming: false });
-		expect(out.find((x) => x.id === 'thought-t-2-0')).toMatchObject({ streaming: true });
+		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
+		expect(out.find((x) => x.id === 'msg-reasoning-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
+		expect(out.find((x) => x.id === 'msg-thought-2')).toMatchObject({ streaming: true });
 		expect(out.find((x) => x.id === 'm1')).toMatchObject({ streaming: true });
 	});
 
 	it('is a no-op when reasoning is missing but the thought exists', () => {
-		const m = [{ id: 'thought-t-1-0', streaming: true }];
-		const out = finalizeStreamBlocks(m, 'reasoning-t-1-0', 'thought-t-1-0');
-		expect(out.find((x) => x.id === 'thought-t-1-0')).toMatchObject({ streaming: false });
+		const m = [{ id: 'msg-thought-1', streaming: true }];
+		const out = finalizeStreamBlocks(m, 'msg-reasoning-1', 'msg-thought-1');
+		expect(out.find((x) => x.id === 'msg-thought-1')).toMatchObject({ streaming: false });
+	});
+
+	it('is a no-op when both ids are unknown', () => {
+		const m = [{ id: 'm1', streaming: true }];
+		const out = finalizeStreamBlocks(m, undefined, undefined);
+		expect(out).toEqual(m);
 	});
 });
 
 describe('newToolMessage', () => {
 	it('builds a plain tool message', () => {
-		const msg = newToolMessage({ id: 'tool-t-1-0-call1', stepNumber: 1, toolName: 'file', time: '10:00' });
+		const msg = newToolMessage({ id: 'step-1', stepNumber: 1, toolName: 'file', time: '10:00' });
 		expect(msg).toEqual({
-			id: 'tool-t-1-0-call1',
+			id: 'step-1',
 			role: 'assistant',
 			content: '',
 			toolName: 'file',
@@ -393,7 +425,7 @@ describe('newToolMessage', () => {
 
 	it('marks ask messages as question cards with options and awaiting', () => {
 		const msg = newToolMessage({
-			id: 'tool-t-1-0-call1',
+			id: 'step-1',
 			stepNumber: 1,
 			toolName: 'ask',
 			content: '继续吗？',

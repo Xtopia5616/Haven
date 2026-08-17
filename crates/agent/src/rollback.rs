@@ -8,9 +8,9 @@
 
 use crate::AgentLayer;
 use crate::sanitize_canonical;
+use crate::session::SessionStatus;
 use crate::types::{BranchPoint, ReActSnapshot, ReActStep};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_session::SessionStatus;
 
 impl AgentLayer {
     /// Roll back a session to a specific branch point. The session is rewound

@@ -1,3 +1,5 @@
+pub mod action_status;
+pub mod actions;
 pub mod ask;
 pub mod audio;
 pub mod clipboard;
@@ -17,8 +19,6 @@ pub mod scheduled_action;
 pub mod self_tool;
 pub mod shell;
 pub mod system;
-pub mod action_status;
-pub mod actions;
 pub mod window;
 
 use std::collections::HashMap;
@@ -33,7 +33,9 @@ use crate::skills::SkillsEngine;
 use crate::skills::runner::SkillRunner;
 
 pub use facts::FactsTool;
-pub use scheduled_action::{ScheduleMode, ScheduleTool, ScheduledActionCenter, ScheduledActionFired};
+pub use scheduled_action::{
+    ScheduleMode, ScheduleTool, ScheduledActionCenter, ScheduledActionFired,
+};
 pub use self_tool::{SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override

@@ -2,7 +2,7 @@
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
-	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/session/src/lib.rs):
+	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/agent/src/session.rs):
 	// after this many seconds an unanswered confirmation is treated as
 	// rejected. The frontend resolves first so the dialog closes promptly
 	// instead of hanging until the backend's fail-closed branch fires.

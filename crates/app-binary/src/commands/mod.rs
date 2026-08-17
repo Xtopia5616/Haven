@@ -8,6 +8,7 @@
 //! because `generate_handler!` resolves each command's `__cmd__` symbol next
 //! to its definition module.
 
+pub mod action;
 pub mod history;
 pub mod log;
 pub mod mcp;
@@ -17,7 +18,6 @@ pub mod recording;
 pub mod session;
 pub mod settings;
 pub mod skills;
-pub mod action;
 
 use crate::app_state::AppState;
 use haven_common::McpServerConfig;
@@ -26,6 +26,20 @@ use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use serde::Serialize;
 use std::sync::Arc;
+use tauri::Emitter;
+
+/// Event name for "the LlmRouter was rebuilt / model config changed". The
+/// frontend +layout listens to this to re-probe LLM connectivity immediately
+/// instead of waiting for the next backoff-scheduled probe (which may be up
+/// to 120s away during a failure-streak).
+pub(crate) const LLM_CONFIG_CHANGED_EVENT: &str = "llm:config_changed";
+
+/// Emit [`LLM_CONFIG_CHANGED_EVENT`] so the frontend probes immediately after
+/// a router hot-swap (settings save, model switch, …). Best-effort: a missing
+/// renderer must never fail the command.
+pub(crate) fn emit_llm_config_changed(app: &tauri::AppHandle) {
+    let _ = app.emit(LLM_CONFIG_CHANGED_EVENT, ());
+}
 
 /// Recording helpers shared with the shell hotkey path in `lib.rs`.
 pub(crate) use recording::{
@@ -35,7 +49,7 @@ pub(crate) use recording::{
 
 #[derive(Serialize)]
 pub struct SessionListResponse {
-    pub sessions: Vec<haven_session::SessionInfo>,
+    pub sessions: Vec<haven_agent::SessionInfo>,
 }
 
 /// Convert any displayable error into a frontend-facing string while logging
@@ -76,13 +90,10 @@ pub(crate) async fn rebuild_router(state: &AppState, ctx: &str) -> Result<(), St
         let guard = state.config_loader.lock().map_err(|e| log_err(ctx, e))?;
         guard.config().clone()
     };
-    let new_router = Arc::new(LlmRouter::new(
-        config
-            .llm
-            .clone()
-            .with_response_cap(config.context_limits.max_response_tokens)
-            .with_reasoning_echo_cap(config.context_limits.reasoning_echo_max_chars),
-    ));
+    let new_router = Arc::new(LlmRouter::new(config.llm.materialize(
+        Some(config.context_limits.max_response_tokens),
+        Some(config.context_limits.reasoning_echo_max_chars),
+    )));
     hot_swap_router(state, new_router).await
 }
 
@@ -152,7 +163,7 @@ pub(crate) async fn hot_swap_router(
                     None
                 }
             };
-        let gateway = Arc::new(haven_gateway::MediaGateway::new(
+        let gateway = Arc::new(haven_input::gateway::MediaGateway::new(
             new_router, stt_client, ocr, tts, image_gen, cfg,
         ));
         state.agent.set_gateway(Some(gateway)).await;

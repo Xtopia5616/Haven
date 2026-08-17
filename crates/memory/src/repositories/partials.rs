@@ -92,6 +92,7 @@ impl Database {
             None,
             &[],
             false,
+            None,
         )?;
         Ok(true)
     }
@@ -165,6 +166,7 @@ mod tests {
             None,
             &[],
             false,
+            None,
         )
         .unwrap();
         assert!(!db.promote_partial_message(&session_id).unwrap());

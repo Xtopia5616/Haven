@@ -1,4 +1,4 @@
-pub use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::types::CanonicalToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
@@ -12,6 +12,31 @@ pub struct Usage {
     // §2.14: model name and cost tracking
     pub model_name: Option<String>,
     pub cost: Option<f64>,
+}
+
+/// Result of a live connectivity probe to a model endpoint. The top-right
+/// status chip maps these to 就绪 / 已断开 / 未配置.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmConnectionStatus {
+    /// Endpoint reachable (GET /models succeeded).
+    Ready,
+    /// Endpoint configured but unreachable (network/auth/server failure).
+    Disconnected,
+    /// No api_key configured for the role — no network probe was attempted.
+    Unconfigured,
+}
+
+impl LlmConnectionStatus {
+    /// Stable wire value used by the `check_llm_connection` Tauri command
+    /// (`"ready"` / `"disconnected"` / `"unconfigured"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Disconnected => "disconnected",
+            Self::Unconfigured => "unconfigured",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,7 +112,8 @@ pub struct LlmResponse {
     /// Internal reasoning/chain-of-thought produced by the model (e.g.
     /// DeepSeek-R1's reasoning_content, Claude's extended thinking).
     pub reasoning: Option<String>,
-    /// Raw `web_search_call` output items (see [`CanonicalMessage::web_search_calls`]).
+    /// Raw `web_search_call` output items (see
+    /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
 }
@@ -222,7 +248,7 @@ pub struct StreamChunk {
     /// "正在联网搜索…" indicator from it.
     pub web_search: Option<WebSearchPhase>,
     /// Raw `web_search_call` items accumulated while streaming (see
-    /// [`CanonicalMessage::web_search_calls`]).
+    /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
     pub web_search_calls: Vec<serde_json::Value>,
 }
 

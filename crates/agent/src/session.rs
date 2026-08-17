@@ -1,6 +1,6 @@
+use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
-use haven_memory::repositories::messages::MessageAttachment;
 use haven_memory::repositories::sessions::Session as DbSession;
 use haven_tools::{ConfirmationResult, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
@@ -12,54 +12,10 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-pub mod partial;
-
 /// A user message queued for injection into the ReAct loop (supplement or
-/// steering). `text` is the plain-text content; `attachments` hold binary
-/// payloads (e.g. images) for multimodal requests.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
-pub struct Supplement {
-    pub text: String,
-    #[serde(default)]
-    pub attachments: Vec<MessageAttachment>,
-    /// True when this message is the user's reply to a pending `ask`
-    /// question. The ReAct loop injects it as a paired answer ("Answer to
-    /// your previous question") instead of generic additional context, so
-    /// the model does not treat the old question as still open and answer
-    /// stale questions again.
-    #[serde(default)]
-    pub is_answer: bool,
-}
-
-impl Supplement {
-    pub fn new(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
-        Self {
-            text: text.into(),
-            attachments,
-            is_answer: false,
-        }
-    }
-
-    pub fn answer(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
-        Self {
-            text: text.into(),
-            attachments,
-            is_answer: true,
-        }
-    }
-}
-
-impl From<String> for Supplement {
-    fn from(text: String) -> Self {
-        Supplement::new(text, vec![])
-    }
-}
-
-impl From<&str> for Supplement {
-    fn from(text: &str) -> Self {
-        Supplement::new(text, vec![])
-    }
-}
+/// steering). Defined in `haven-input` (the unified input crate); re-exported
+/// here so session code keeps using `crate::session::Supplement`.
+pub use haven_input::message::Supplement;
 
 /// Runner invoked by the dispatcher for each picked session. The closure must
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.
@@ -1257,12 +1213,17 @@ impl SessionExecutor {
             .await;
     }
 
+    /// Execute a tool step. `step_id` is the pre-minted `step-*` id the frontend's
+    /// live tool card already uses; the persisted step row reuses it so the live
+    /// card and the review badge are one entity.
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_step(
         &self,
         session_id: &str,
         tool_name: &str,
         input: Value,
         step_num: u32,
+        step_id: &str,
     ) -> anyhow::Result<ToolResult> {
         tracing::info!(
             "execute_step: session={} tool={} input={:?}",
@@ -1378,6 +1339,7 @@ impl SessionExecutor {
                 let session_id = session_id.to_string();
                 let tool_name = tool_name.to_string();
                 let tool_input = input.to_string();
+                let step_id = step_id.to_string();
                 let silent = is_silent_action(&tool_name, &input);
                 move |db| {
                     db.create_action_step(
@@ -1388,6 +1350,7 @@ impl SessionExecutor {
                         risk_level != RiskLevel::Safe,
                         silent,
                         confirmed,
+                        Some(&step_id),
                     )
                 }
             })
@@ -1604,7 +1567,7 @@ mod tests {
 
     fn temp_db_path() -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("haven_session_test_{}.db", uuid::Uuid::new_v4()));
+        p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
         p
     }
 
@@ -1886,11 +1849,11 @@ mod tests {
         assert!(!exec.running_sessions.lock().await.contains(&session.id));
     }
 
-    // 鈹€鈹€鈹€ Data-layer tests (no dispatcher required) 鈹€鈹€鈹€
+    // ─── Data-layer tests (no dispatcher required) ───
 
     fn temp_db() -> Arc<Database> {
         let mut p = std::env::temp_dir();
-        p.push(format!("haven_session_test_{}.db", uuid::Uuid::new_v4()));
+        p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
         Arc::new(Database::open(&p).unwrap())
     }
 
@@ -2192,7 +2155,13 @@ mod tests {
         let exec = Arc::new(SessionExecutor::new(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         let result = exec
-            .execute_step(&session.id, "nonexistent_tool", serde_json::json!({}), 1)
+            .execute_step(
+                &session.id,
+                "nonexistent_tool",
+                serde_json::json!({}),
+                1,
+                "step-any",
+            )
             .await;
         assert!(result.is_err());
     }
@@ -2368,8 +2337,10 @@ mod tests {
 
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
 
-        exec.add_action_completion(&session.id, "action-1 done").await;
-        exec.add_action_completion(&session.id, "action-2 failed").await;
+        exec.add_action_completion(&session.id, "action-1 done")
+            .await;
+        exec.add_action_completion(&session.id, "action-2 failed")
+            .await;
 
         let drained = exec.drain_action_completions(&session.id).await;
         assert_eq!(drained, vec!["action-1 done", "action-2 failed"]);

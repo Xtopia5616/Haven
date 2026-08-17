@@ -6,28 +6,33 @@ use base64::Engine;
 mod compactor;
 mod event;
 mod inference;
+mod partial;
 mod prompt;
 mod react;
 mod rollback;
+mod session;
 mod title;
 mod types;
 
 pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
-pub use haven_session::{RunHandler, SessionExecutor, SessionInfo, SessionStatus};
 pub use inference::InferenceEngine;
 pub use prompt::SystemPromptBuilder;
 pub use react::ReActEngine;
+pub use session::{
+    RunHandler, SessionExecutor, SessionInfo, SessionStatus, StepInfo, ToolExecution,
+};
 pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
 
 use haven_common::config::ContextLimitsConfig;
+use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
-use haven_gateway::coverage::MediaDecision;
-use haven_gateway::intent::GenerateKind;
-use haven_gateway::{AttachmentOutcome, GenerateOutcome};
+use haven_input::coverage::MediaDecision;
+use haven_input::gateway::{AttachmentOutcome, GenerateOutcome};
+use haven_input::intent::GenerateKind;
 use haven_llm::LlmRouter;
 use haven_memory::Database;
-use haven_memory::repositories::messages::{Message, MessageAttachment};
+use haven_memory::repositories::messages::Message;
 use haven_tools::ScheduleMode;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -44,13 +49,21 @@ use crate::title::TitleGenerator;
 /// re-create the row after the real message landed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_session_message(
-    executor: &haven_session::SessionExecutor,
+    executor: &crate::session::SessionExecutor,
     session_id: &str,
     role: &str,
     content: &str,
     message_type: Option<&str>,
     attachments: &[MessageAttachment],
     voice: bool,
+    // When `Some`, insert the row under this pre-minted id instead of
+    // minting a fresh one. Streaming message ids are minted when the
+    // thought/reasoning block starts so the live bubble and the DB row
+    // share one identity.
+    message_id: Option<&str>,
+    // `tool_call_id` for the row (sentinel markers like `__ask__` ride
+    // along here); `None` for ordinary messages.
+    tool_call_id: Option<&str>,
 ) -> anyhow::Result<Message> {
     executor.partials.discard(session_id).await;
     let db = executor.db().clone();
@@ -59,15 +72,18 @@ pub(crate) async fn persist_session_message(
     let content = content.to_string();
     let message_type = message_type.map(String::from);
     let attachments = attachments.to_vec();
+    let message_id = message_id.map(String::from);
+    let tool_call_id = tool_call_id.map(String::from);
     db.run_blocking(move |db| {
         db.add_message_full(
             &session_id,
             &role,
             &content,
             message_type.as_deref(),
-            None,
+            tool_call_id.as_deref(),
             &attachments,
             voice,
+            message_id.as_deref(),
         )
     })
     .await
@@ -228,7 +244,7 @@ pub struct AgentLayer {
     /// `None` in headless/test contexts: attachment pre-processing and
     /// media generation are skipped and the agent handles media inline.
     /// RwLock so provider switches can hot-swap it (like the router).
-    gateway: tokio::sync::RwLock<Option<Arc<haven_gateway::MediaGateway>>>,
+    gateway: tokio::sync::RwLock<Option<Arc<haven_input::gateway::MediaGateway>>>,
 }
 
 /// A recent conversation message used to re-seed context when resuming a
@@ -256,7 +272,7 @@ fn extraction_label(decision: &MediaDecision) -> &'static str {
 /// generated image / speech shows up in the chat like a user attachment.
 fn attachment_from_generated_file(path: &std::path::Path) -> anyhow::Result<MessageAttachment> {
     let bytes = std::fs::read(path)?;
-    let media_type = haven_gateway::modality::detect_media_type(&bytes).to_string();
+    let media_type = haven_input::modality::detect_media_type(&bytes).to_string();
     Ok(MessageAttachment {
         media_type,
         data: base64::engine::general_purpose::STANDARD.encode(&bytes),
@@ -321,7 +337,7 @@ impl AgentLayer {
     /// Install (or clear) the media gateway. Set at app startup and on
     /// provider hot-swaps; tests leave it `None` so the agent behaves
     /// exactly as before.
-    pub async fn set_gateway(&self, gateway: Option<Arc<haven_gateway::MediaGateway>>) {
+    pub async fn set_gateway(&self, gateway: Option<Arc<haven_input::gateway::MediaGateway>>) {
         *self.gateway.write().await = gateway;
     }
 
@@ -334,7 +350,7 @@ impl AgentLayer {
         role: &str,
         content: &str,
         message_type: Option<&str>,
-        attachments: &[haven_memory::repositories::messages::MessageAttachment],
+        attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
         persist_session_message(
@@ -345,6 +361,8 @@ impl AgentLayer {
             message_type,
             attachments,
             voice,
+            None,
+            None,
         )
         .await
     }
@@ -449,9 +467,9 @@ impl AgentLayer {
         self.react_engine.set_max_steps(max_steps);
     }
 
-    /// Live connectivity probe to the default-model endpoint (GET /models).
-    /// Used by the top-right status indicator to show Ready/Disconnected.
-    pub async fn check_llm_connection(&self) -> bool {
+    /// Live three-way connectivity probe to the default-model endpoint. Used
+    /// by the top-right status indicator to show 就绪 / 已断开 / 未配置.
+    pub async fn check_llm_connection(&self) -> haven_llm::LlmConnectionStatus {
         self.react_engine.check_connection().await
     }
 
@@ -575,6 +593,8 @@ impl AgentLayer {
                             Some("text"),
                             &[],
                             false,
+                            None,
+                            None,
                         )
                         .await
                     {
@@ -764,7 +784,10 @@ impl AgentLayer {
                     overdue
                 );
             }
-            let interrupted = restore_tools.background_actions.restore_after_restart().await;
+            let interrupted = restore_tools
+                .background_actions
+                .restore_after_restart()
+                .await;
             if interrupted > 0 {
                 tracing::info!(
                     "marked {} interrupted background action(s) as failed",
@@ -1283,7 +1306,7 @@ impl AgentLayer {
         description: &str,
         context: &str,
         conversation_history: &[ConversationMessage],
-        initial_attachments: &[haven_memory::repositories::messages::MessageAttachment],
+        initial_attachments: &[haven_common::types::MessageAttachment],
     ) -> anyhow::Result<Vec<ReActStep>> {
         tracing::debug!(
             "run_session start: session_id={:?} context={:?} attachments={}",
@@ -1639,9 +1662,9 @@ impl AgentLayer {
     async fn create_session_with_first_message(
         &self,
         input: &str,
-        attachments: &[haven_memory::repositories::messages::MessageAttachment],
+        attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<haven_session::SessionInfo> {
+    ) -> anyhow::Result<crate::session::SessionInfo> {
         let record = self.db.create_session(input, input)?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
@@ -1672,10 +1695,9 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::stream;
-    use haven_common::types::{CanonicalToolCall, RiskLevel};
+    use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, RiskLevel};
     use haven_llm::{
-        CanonicalMessage, CanonicalRole, FinishReason, LlmClient, LlmError, LlmResponse,
-        StreamChunk, ToolDefinition, Usage,
+        FinishReason, LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
     };
     use haven_tools::{Tool, ToolBox, ToolResult, ToolsManager};
     use std::collections::VecDeque;
@@ -1819,7 +1841,7 @@ mod tests {
         );
     }
 
-    // 鈹€鈹€鈹€ Pure-logic and data-layer tests (no LLM required) 鈹€鈹€鈹€
+    // ─── Pure-logic and data-layer tests (no LLM required) ───
 
     fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
         let mut p = std::env::temp_dir();
@@ -2105,8 +2127,7 @@ mod tests {
     async fn persist_message_with_attachments_roundtrips() {
         let (agent, _) = make_test_agent();
         let session = agent.db.create_session("input", "").unwrap();
-        let att =
-            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
+        let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
             .persist_message_parts(
                 &session.id,
@@ -2786,8 +2807,7 @@ mod tests {
             .create_session_with_summary("看图", "看图")
             .await
             .unwrap();
-        let att =
-            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
+        let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
             .persist_message_parts(&session.id, "user", "看图", Some("text"), &[att], false)
             .await
@@ -2830,8 +2850,7 @@ mod tests {
             .unwrap();
         // Image arrives AFTER the session input (a supplement) ??it must not be
         // attached to the initial user turn.
-        let att =
-            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
+        let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
         agent
             .process_input_with_attachments("补充看图", Some(session.id.clone()), &[att], false)
             .await
@@ -3011,6 +3030,7 @@ mod tests {
                         r#"{"text":"hi"}"#,
                         false,
                         false,
+                        None,
                         None,
                     )?;
                     db.complete_action_step(&step.id, "hi", true)?;
@@ -3235,8 +3255,7 @@ mod tests {
             .await
             .unwrap();
 
-        let att =
-            haven_memory::repositories::messages::MessageAttachment::new("image/png", "aGVsbG8=");
+        let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
         let result = agent
             .process_input_with_attachments(
                 "看图",
@@ -3288,7 +3307,7 @@ mod tests {
         agent.inference.infer_facts(&session.id).await;
     }
 
-    // 鈹€鈹€鈹€ Integration tests for the ReAct core loop (refine ??1) 鈹€鈹€鈹€
+    // ─── Integration tests for the ReAct core loop (refine loop) ───
 
     fn make_test_agent_with(
         client: Arc<dyn LlmClient>,
@@ -4132,9 +4151,23 @@ mod tests {
             let session_id = session.id.clone();
             async move { agent.run_session_from_id(&session_id).await }
         });
-        // Wait until the echo step completed and the delayed final LLM call
-        // is in flight, then deliver the user's mid-turn message.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // The second LLM call is `ChunkDelayed` (300 ms) specifically so the
+        // steering can land while it streams. Wait until that call has actually
+        // STARTED (its `seen` entry is pushed before the delay) instead of
+        // racing a fixed wall-clock sleep: under parallel test load the sleep
+        // can overshoot past the delay and the steering would land after the
+        // turn already completed, flaking the assertion below.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if mock.seen.lock().unwrap().len() >= 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "second (delayed) LLM call never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         executor
             .add_steering(&session.id, "stop and use French")
             .await

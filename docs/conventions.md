@@ -78,7 +78,7 @@ tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.displ
 
 | Span 名 | 字段 | 位置 | 覆盖范围 |
 |---|---|---|---|
-| `run_session` | `session_id` | `haven_session::SessionExecutor::start_dispatcher`（handler 处 `.instrument(span)`） | 整个 ReAct 循环：agent / react / compactor / title / inference 的所有嵌套日志 |
+| `run_session` | `session_id` | `haven_agent::SessionExecutor::start_dispatcher`（handler 处 `.instrument(span)`） | 整个 ReAct 循环：agent / react / compactor / title / inference 的所有嵌套日志 |
 | `bg_action` | `action_id` | `haven_tools::BackgroundActions::spawn_shell`（runner future `.instrument(span)`） | 后台任务运行 / 取消 / 输出日志写入 |
 | `action_completion` | `action_id`, `session_id` | `haven_agent::AgentLayer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
 | `scheduled_action_fired` | `action_id`, `session_id` | `haven_agent::AgentLayer` 定时任务 consumer | 定时任务执行与会话恢复 |

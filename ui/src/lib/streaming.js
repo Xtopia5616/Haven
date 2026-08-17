@@ -9,19 +9,16 @@
 // reconciles the step's final text, and the full-text reasoning reconcile
 // repairs characters lost to batcher drops, so the last bubble always
 // matches the persisted message.
+//
+// IDs are NOT constructed here anymore: every streaming event carries the
+// `message_id` / `step_id` the backend minted (the same ids the DB rows are
+// persisted under), so the live bubble, the snap and the review copy are
+// one entity and merges need no content-based dedup.
 
-// ── Step / tool id factories ──────────────────────────────────────────────
-// Single source of truth for the streaming ids. Every event handler builds
-// the same id for the same (session, step, run) triple; a mismatch would split
-// one step into two message streams.
-
-/** `thought-<sessionId>-<step>-<run>` / `reasoning-...` / `tool-...` */
-export const stepId = (prefix, sessionId, stepNumber, runId) =>
-	`${prefix}-${sessionId}-${stepNumber}-${runId ?? 0}`;
-
-/** `tool-<sessionId>-<step>-<run>-<callIdOrName>` */
-export const toolId = (sessionId, stepNumber, runId, callIdOrName) =>
-	`${stepId('tool', sessionId, stepNumber, runId)}-${callIdOrName}`;
+/** `tool-<sessionId>-<step>-<run>-web_search` (provider built-in search card;
+ *  not a persisted entity, so its id never needs to match a DB row). */
+export const webSearchId = (sessionId, stepNumber, runId) =>
+	`tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search`;
 
 /**
  * Finalize every streaming block belonging to a step: the reasoning block
@@ -68,15 +65,9 @@ export function newToolMessage({
 	};
 }
 
-export function thoughtSegmentIds(messages, baseId) {
-	return messages
-		.filter((x) => x.id === baseId || x.id.startsWith(baseId + '-'))
-		.map((x) => x.id);
-}
-
 // Streaming blocks always live at the tail of the conversation (or just in
 // front of the step's own thought message), so scanning backwards finds a
-// unique step id in O(tail-distance) instead of O(whole list) — a full
+// unique message id in O(tail-distance) instead of O(whole list) — a full
 // forward scan per chunk would cost O(n) on every batched flush of a long
 // conversation. The id is unique, so direction never changes the result.
 function lastIndexById(messages, id) {
@@ -92,6 +83,7 @@ function newStreamMessage({
 	streaming = true,
 	msgType = undefined,
 	stepNumber = null,
+	runId = null,
 	time = '',
 }) {
 	return {
@@ -101,6 +93,7 @@ function newStreamMessage({
 		type: msgType,
 		voice: false,
 		stepNumber,
+		runId,
 		time,
 		streaming,
 	};
@@ -109,16 +102,16 @@ function newStreamMessage({
 /**
  * Fold one streamed delta into the in-memory message list for a step.
  * @param {Array<object>} messages
- * @param {{ stepId: string, stepIdPrefix: string, delta: string, msgType: string|undefined, stepNumber: number, time: string }} opts
+ * @param {{ messageId: string, delta: string, msgType: string|undefined, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
 export function accumulateStreamChunk(messages, opts) {
-	const { stepId, stepIdPrefix, delta, msgType, stepNumber, time } = opts;
+	const { messageId, delta, msgType, stepNumber, runId, time } = opts;
 	if (!delta) return messages;
 
 	// One streaming block per step (reasoning and thought alike): no sentence
 	// splitting, so the bubble never fragments mid-stream.
-	const idx = lastIndexById(messages, stepId);
+	const idx = lastIndexById(messages, messageId);
 	if (idx >= 0) {
 		const curr = messages[idx].content || '';
 		// Finalized blocks normally reject new deltas — except the backend's
@@ -150,12 +143,18 @@ export function accumulateStreamChunk(messages, opts) {
 	// already started (text first, thinking later). Appending at the end
 	// would render Thinking... below the answer until the snap finally
 	// reorders it — a visible jump. Insert in front of the same step's
-	// thought message so the order is stable the whole way through.
-	const thoughtBase = `thought${stepId.slice(stepIdPrefix.length)}`;
+	// thought message (matched by (stepNumber, runId), since message ids
+	// carry no step information) so the order is stable the whole way
+	// through. Thought bubbles are assistant text blocks (type undefined)
+	// streamed by this step's run.
 	const insertAt = messages.findIndex(
-		(x) => x.id === thoughtBase || x.id.startsWith(thoughtBase + '-'),
+		(x) =>
+			x.role === 'assistant' &&
+			x.type === undefined &&
+			x.stepNumber === stepNumber &&
+			x.runId === runId,
 	);
-	const newMsg = newStreamMessage({ id: stepId, content: delta, msgType, stepNumber, time });
+	const newMsg = newStreamMessage({ id: messageId, content: delta, msgType, stepNumber, runId, time });
 	if (insertAt < 0) return [...messages, newMsg];
 	const next = [...messages];
 	next.splice(insertAt, 0, newMsg);
@@ -168,29 +167,44 @@ export function accumulateStreamChunk(messages, opts) {
  * message with the complete text. The merged message carries no streaming
  * flag, so any straggler chunk that flushes out of the batcher after the
  * snap is dropped instead of reopening the bubble.
+ *
+ * The snap carries the SAME minted `message_id` the chunks streamed into
+ * (and the DB row is later persisted under), so the reconcile is a plain
+ * id-keyed replace: no content comparison is needed, and a snap arriving
+ * after the list was rebuilt from the DB (page remount / session switch /
+ * event replay) simply finds the authoritative copy and leaves it as is.
  * @param {Array<object>} messages
- * @param {{ stepId: string, reasoningId: string, thought: string, stepNumber: number, time: string }} opts
+ * @param {{ messageId: string, reasoningId?: string, thought: string, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
 export function applyThoughtSnap(messages, opts) {
-	const { stepId, reasoningId, thought, stepNumber, time } = opts;
-	const segIds = thoughtSegmentIds(messages, stepId);
-	const firstSegIdx = messages.findIndex((x) => segIds.includes(x.id));
+	const { messageId, reasoningId, thought, stepNumber, runId, time } = opts;
+	const firstSegIdx = messages.findIndex((x) => x.id === messageId);
 	// Reasoning may stream AFTER the thought text started (providers that
 	// emit text and reasoning interleaved). The reasoning block belongs
 	// above the answer, so pull it out of the list and re-insert it in
 	// front of the merged thought message — otherwise the final order is
 	// [answer, Thinking...] and can never self-heal.
-	const reasoningRaw = messages.find((x) => x.id === reasoningId) ?? null;
+	const reasoningRaw = reasoningId
+		? (messages.find((x) => x.id === reasoningId) ?? null)
+		: null;
 	const reasoning = reasoningRaw ? { ...reasoningRaw, streaming: false } : null;
-	const rest = messages.filter((x) => !segIds.includes(x.id) && x.id !== reasoningId);
-	const merged = newStreamMessage({
-		id: stepId,
-		content: thought,
-		streaming: false,
-		stepNumber,
-		time,
-	});
+	const rest = messages.filter((x) => x.id !== messageId && x.id !== reasoningId);
+	const existing = firstSegIdx >= 0 ? messages[firstSegIdx] : null;
+	// Reconcile in place when the bubble already exists (live streamed block
+	// OR a DB copy with the same id): keep its own time/step metadata, only
+	// content and the streaming flag change. A fresh bubble gets the snap's
+	// metadata.
+	const merged = existing
+		? { ...existing, content: thought, streaming: false }
+		: newStreamMessage({
+				id: messageId,
+				content: thought,
+				streaming: false,
+				stepNumber,
+				runId,
+				time,
+		  });
 	if (firstSegIdx < 0) {
 		const out = [...rest];
 		if (reasoning) out.push(reasoning);
@@ -198,7 +212,7 @@ export function applyThoughtSnap(messages, opts) {
 		return out;
 	}
 	// The merged thought replaces the first segment's slot. `rest` is the
-	// original list with segments + reasoning removed, so `firstSegIdx`
+	// original list with the block + reasoning removed, so `firstSegIdx`
 	// (an index into `messages`) no longer maps directly: subtract every
 	// removed item that sat before the first segment to get the equivalent
 	// position in `rest`. This keeps any preceding user question and any
@@ -207,7 +221,7 @@ export function applyThoughtSnap(messages, opts) {
 	// to those messages.
 	let insertAt = firstSegIdx;
 	for (let i = 0; i < firstSegIdx; i++) {
-		if (segIds.includes(messages[i].id) || messages[i].id === reasoningId) insertAt--;
+		if (messages[i].id === messageId || messages[i].id === reasoningId) insertAt--;
 	}
 	insertAt = Math.max(0, Math.min(insertAt, rest.length));
 	rest.splice(insertAt, 0, merged);

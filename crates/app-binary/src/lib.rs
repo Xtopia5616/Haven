@@ -194,6 +194,7 @@ impl TauriEmitter {
                 thought,
                 step_number,
                 run_id,
+                ..
             } => {
                 tracing::debug!(
                     "TauriEmitter::on_thought: session={} step={} run={} len={}",
@@ -847,9 +848,11 @@ pub fn run() {
             // --------------------- Global hotkey ---------------------
             use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
-            let shortcut = parse_shortcut(&key_binding).unwrap_or_else(|| {
-                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
-            });
+            let shortcut = haven_input::hotkey::KeyCombo::parse(&key_binding)
+                .and_then(|combo| to_tauri_shortcut(&combo))
+                .unwrap_or_else(|| {
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
+                });
 
             let _sc = shortcut;
             let result = handle.global_shortcut().on_shortcut(shortcut, move |app, _sc, event| {
@@ -936,6 +939,7 @@ pub fn run() {
             commands::model::check_llm_connection,
             commands::model::list_models,
             commands::model::discover_models,
+            commands::model::discover_all_models,
             commands::model::switch_model,
             commands::model::set_reasoning_effort,
             commands::model::set_web_search,
@@ -992,64 +996,104 @@ pub fn run() {
         });
 }
 
-fn parse_shortcut(binding: &str) -> Option<tauri_plugin_global_shortcut::Shortcut> {
+/// Convert a neutral [`haven_input::hotkey::KeyCombo`] into the Tauri
+/// global-shortcut type. Parsing/validation already happened in
+/// `haven-input`; this is the only place Tauri shortcut types are built.
+fn to_tauri_shortcut(
+    combo: &haven_input::hotkey::KeyCombo,
+) -> Option<tauri_plugin_global_shortcut::Shortcut> {
+    use haven_input::hotkey::{ALT, CTRL, KeyCode, SHIFT, SUPER};
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
-    let parts: Vec<&str> = binding.split('+').collect();
+
+    const LETTERS: [Code; 26] = [
+        Code::KeyA,
+        Code::KeyB,
+        Code::KeyC,
+        Code::KeyD,
+        Code::KeyE,
+        Code::KeyF,
+        Code::KeyG,
+        Code::KeyH,
+        Code::KeyI,
+        Code::KeyJ,
+        Code::KeyK,
+        Code::KeyL,
+        Code::KeyM,
+        Code::KeyN,
+        Code::KeyO,
+        Code::KeyP,
+        Code::KeyQ,
+        Code::KeyR,
+        Code::KeyS,
+        Code::KeyT,
+        Code::KeyU,
+        Code::KeyV,
+        Code::KeyW,
+        Code::KeyX,
+        Code::KeyY,
+        Code::KeyZ,
+    ];
+    const FUNCTIONS: [Code; 12] = [
+        Code::F1,
+        Code::F2,
+        Code::F3,
+        Code::F4,
+        Code::F5,
+        Code::F6,
+        Code::F7,
+        Code::F8,
+        Code::F9,
+        Code::F10,
+        Code::F11,
+        Code::F12,
+    ];
+
     let mut modifiers = Modifiers::empty();
-    let mut key = "";
-    for part in &parts {
-        match *part {
-            "Ctrl" | "Control" => modifiers |= Modifiers::CONTROL,
-            "Shift" => modifiers |= Modifiers::SHIFT,
-            "Alt" => modifiers |= Modifiers::ALT,
-            "Super" | "Win" | "Cmd" => modifiers |= Modifiers::SUPER,
-            _ => key = part,
-        }
+    if combo.has(CTRL) {
+        modifiers |= Modifiers::CONTROL;
     }
-    let code = match key.to_lowercase().as_str() {
-        "space" => Code::Space,
-        "enter" => Code::Enter,
-        "escape" => Code::Escape,
-        "tab" => Code::Tab,
-        "a" => Code::KeyA,
-        "b" => Code::KeyB,
-        "c" => Code::KeyC,
-        "d" => Code::KeyD,
-        "e" => Code::KeyE,
-        "f" => Code::KeyF,
-        "g" => Code::KeyG,
-        "h" => Code::KeyH,
-        "i" => Code::KeyI,
-        "j" => Code::KeyJ,
-        "k" => Code::KeyK,
-        "l" => Code::KeyL,
-        "m" => Code::KeyM,
-        "n" => Code::KeyN,
-        "o" => Code::KeyO,
-        "p" => Code::KeyP,
-        "q" => Code::KeyQ,
-        "r" => Code::KeyR,
-        "s" => Code::KeyS,
-        "t" => Code::KeyT,
-        "u" => Code::KeyU,
-        "v" => Code::KeyV,
-        "w" => Code::KeyW,
-        "x" => Code::KeyX,
-        "y" => Code::KeyY,
-        "z" => Code::KeyZ,
-        "f1" => Code::F1,
-        "f2" => Code::F2,
-        "f3" => Code::F3,
-        "f4" => Code::F4,
-        "f5" => Code::F5,
-        "f6" => Code::F6,
-        "f7" => Code::F7,
-        "f8" => Code::F8,
-        "f9" => Code::F9,
-        "f10" => Code::F10,
-        "f11" => Code::F11,
-        "f12" => Code::F12,
-        _ => return None,
+    if combo.has(SHIFT) {
+        modifiers |= Modifiers::SHIFT;
+    }
+    if combo.has(ALT) {
+        modifiers |= Modifiers::ALT;
+    }
+    if combo.has(SUPER) {
+        modifiers |= Modifiers::SUPER;
+    }
+    let code = match combo.key() {
+        KeyCode::Space => Code::Space,
+        KeyCode::Enter => Code::Enter,
+        KeyCode::Escape => Code::Escape,
+        KeyCode::Tab => Code::Tab,
+        KeyCode::Backspace => Code::Backspace,
+        KeyCode::Delete => Code::Delete,
+        KeyCode::CapsLock => Code::CapsLock,
+        KeyCode::Home => Code::Home,
+        KeyCode::End => Code::End,
+        KeyCode::PageUp => Code::PageUp,
+        KeyCode::PageDown => Code::PageDown,
+        KeyCode::ArrowLeft => Code::ArrowLeft,
+        KeyCode::ArrowRight => Code::ArrowRight,
+        KeyCode::ArrowUp => Code::ArrowUp,
+        KeyCode::ArrowDown => Code::ArrowDown,
+        KeyCode::Key(c) => LETTERS[(c - b'a') as usize],
+        KeyCode::Digit(d) => {
+            let digits: [Code; 10] = [
+                Code::Digit0,
+                Code::Digit1,
+                Code::Digit2,
+                Code::Digit3,
+                Code::Digit4,
+                Code::Digit5,
+                Code::Digit6,
+                Code::Digit7,
+                Code::Digit8,
+                Code::Digit9,
+            ];
+            digits[(d - b'0') as usize]
+        }
+        KeyCode::F(n) => FUNCTIONS[(n - 1) as usize],
     };
     Some(Shortcut::new(Some(modifiers), code))
 }
@@ -1096,8 +1140,14 @@ fn init_app_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_session::{SessionInfo, SessionStatus};
+    use haven_agent::{SessionInfo, SessionStatus};
     use serde_json::json;
+
+    /// Parse a binding through the unified `haven-input` hotkey parser and
+    /// convert to the Tauri shortcut type (the production startup path).
+    fn parse_shortcut(binding: &str) -> Option<tauri_plugin_global_shortcut::Shortcut> {
+        haven_input::hotkey::KeyCombo::parse(binding).and_then(|combo| to_tauri_shortcut(&combo))
+    }
 
     fn test_session_info() -> SessionInfo {
         SessionInfo {
@@ -1123,6 +1173,7 @@ mod tests {
                     thought: "x".into(),
                     step_number: 1,
                     run_id: 1,
+                    message_id: "msg-1".into(),
                 },
                 "agent:thought",
             ),
@@ -1134,6 +1185,7 @@ mod tests {
                     step_number: 1,
                     run_id: 1,
                     tool_call_id: None,
+                    step_id: "step-1".into(),
                 },
                 "agent:action",
             ),
@@ -1147,6 +1199,7 @@ mod tests {
                     silent: false,
                     tool_call_id: None,
                     ask_options: vec![],
+                    step_id: "step-1".into(),
                 },
                 "agent:observation",
             ),
@@ -1203,6 +1256,7 @@ mod tests {
                     delta: "d".into(),
                     step_number: 1,
                     run_id: 1,
+                    message_id: "msg-1".into(),
                 },
                 "agent:thought_chunk",
             ),
@@ -1212,6 +1266,7 @@ mod tests {
                     delta: "d".into(),
                     step_number: 1,
                     run_id: 1,
+                    message_id: "msg-2".into(),
                 },
                 "agent:reasoning_chunk",
             ),
@@ -1282,6 +1337,7 @@ mod tests {
             thought: "hello".into(),
             step_number: 2,
             run_id: 7,
+            message_id: "msg-1".into(),
         };
         assert_eq!(
             TauriEmitter::variant_payload(&event),
@@ -1290,6 +1346,7 @@ mod tests {
                 "thought": "hello",
                 "step_number": 2,
                 "run_id": 7,
+                "message_id": "msg-1",
             })
         );
     }
@@ -1303,11 +1360,13 @@ mod tests {
             step_number: 1,
             run_id: 1,
             tool_call_id: Some("call-1".into()),
+            step_id: "step-1".into(),
         };
         let payload = TauriEmitter::payload(&event, None);
         assert_eq!(payload["silent"], json!(true));
         assert_eq!(payload["tool_name"], json!("read_file"));
         assert_eq!(payload["tool_call_id"], json!("call-1"));
+        assert_eq!(payload["step_id"], json!("step-1"));
     }
 
     #[test]
@@ -1319,6 +1378,7 @@ mod tests {
             step_number: 1,
             run_id: 1,
             tool_call_id: None,
+            step_id: "step-1".into(),
         };
         let payload = TauriEmitter::payload(&event, None);
         assert_eq!(payload["silent"], json!(false));
@@ -1331,19 +1391,23 @@ mod tests {
             delta: "d".into(),
             step_number: 1,
             run_id: 1,
+            message_id: "msg-1".into(),
         };
         let payload = TauriEmitter::payload(&thought, Some(42));
         assert_eq!(payload["seq"], json!(42));
         assert_eq!(payload["delta"], json!("d"));
+        assert_eq!(payload["message_id"], json!("msg-1"));
 
         let reasoning = AgentEvent::ReasoningChunk {
             session_id: "t".into(),
             delta: "d".into(),
             step_number: 1,
             run_id: 1,
+            message_id: "msg-2".into(),
         };
         let payload = TauriEmitter::payload(&reasoning, Some(43));
         assert_eq!(payload["seq"], json!(43));
+        assert_eq!(payload["message_id"], json!("msg-2"));
     }
 
     #[test]

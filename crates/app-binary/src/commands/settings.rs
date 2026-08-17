@@ -104,13 +104,12 @@ pub async fn update_settings(
     state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
     tick("mcp_manager.start_monitors");
     let new_router = Arc::new(LlmRouter::new(
-        llm_config
-            .with_response_cap(max_response_tokens)
-            .with_reasoning_echo_cap(reasoning_echo_max_chars),
+        llm_config.materialize(Some(max_response_tokens), Some(reasoning_echo_max_chars)),
     ));
     tick("LlmRouter::new");
     hot_swap_router(&state, new_router).await?;
     tick("hot_swap_router");
+    crate::commands::emit_llm_config_changed(&app);
     state.agent.set_max_steps(session_max_steps);
     state.executor.set_max_concurrent(session_max_concurrent);
     state
@@ -137,13 +136,17 @@ pub async fn update_settings(
     if settings.hotkey.key_binding != old_hotkey {
         use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-        if let Some(old_shortcut) = crate::parse_shortcut(&old_hotkey)
+        if let Some(old_shortcut) = haven_input::hotkey::KeyCombo::parse(&old_hotkey)
+            .and_then(|c| crate::to_tauri_shortcut(&c))
             && let Err(e) = app.global_shortcut().unregister(old_shortcut)
         {
             tracing::warn!("failed to unregister old hotkey {}: {}", old_hotkey, e);
         }
 
-        if let Some(new_shortcut) = crate::parse_shortcut(&settings.hotkey.key_binding) {
+        if let Some(new_shortcut) =
+            haven_input::hotkey::KeyCombo::parse(&settings.hotkey.key_binding)
+                .and_then(|c| crate::to_tauri_shortcut(&c))
+        {
             let result =
                 app.global_shortcut()
                     .on_shortcut(new_shortcut, move |_app, _sc, event| {

@@ -5,12 +5,12 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
+use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
 use haven_memory::Database;
-use haven_memory::repositories::messages::MessageAttachment;
-use haven_session::{SessionExecutor, SessionStatus};
 use haven_tools::is_silent_action;
 
 use crate::compactor::{ContextCompactor, estimate_message_tokens};
@@ -33,11 +33,7 @@ fn tool_key(a: &Action) -> String {
 /// the file tool —the raw bytes are never shipped to the model.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
     if att.is_image() {
-        ContentPart::Image {
-            content_type: "image_url".into(),
-            media_type: att.media_type.clone(),
-            data: att.data.clone(),
-        }
+        haven_input::multimodal::image_part(&att.media_type, att.data.clone())
     } else {
         let name = att.filename.as_deref().unwrap_or("attachment");
         match &att.path {
@@ -191,6 +187,24 @@ fn value_conforms_to_prop(prop: &serde_json::Value, value: &serde_json::Value) -
     }
 }
 
+/// Key identifying one streamed block within a run: session, step number,
+/// run id and block kind ("thought" | "reasoning").
+type StreamBlockKey = (String, u32, u64, &'static str);
+
+/// RAII guard clearing a session's minted streaming-message ids when the
+/// ReAct run exits (every path — early returns, `?` propagation, cancels),
+/// so finished sessions never leave stale entries in `step_msg_ids`.
+struct RunMsgIdGuard<'a> {
+    engine: &'a ReActEngine,
+    session_id: String,
+}
+
+impl Drop for RunMsgIdGuard<'_> {
+    fn drop(&mut self) {
+        self.engine.clear_msg_ids_for_session(&self.session_id);
+    }
+}
+
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionExecutor>,
@@ -230,6 +244,15 @@ pub struct ReActEngine {
     /// rebuild bumps the version, instead of re-querying the registry on
     /// every step.
     tool_def_cache: Mutex<HashMap<String, (u64, Vec<ToolDefinition>)>>,
+    /// Minted streaming-message ids: a `StreamBlockKey` → the
+    /// `msg-*` id a streamed thinking/reasoning block accumulates into. The
+    /// id is minted when the block's first chunk streams, reused by every
+    /// chunk event, the `agent:thought` snap, and the final
+    /// `persist_session_message` — so the live bubble and the DB row share
+    /// one identity and the frontend merge needs no content dedup.
+    /// Cleared per session at `run_react_loop` entry (one run = one loop
+    /// invocation), so entries never leak across runs.
+    step_msg_ids: Mutex<HashMap<StreamBlockKey, String>>,
 }
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
@@ -360,7 +383,54 @@ impl ReActEngine {
             context_window_cache: Mutex::new((0, HashMap::new())),
             last_snapshot_step: Mutex::new(HashMap::new()),
             tool_def_cache: Mutex::new(HashMap::new()),
+            step_msg_ids: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Mint (or reuse) the `msg-*` id a streamed thought/reasoning block of
+    /// `(session, step, run, kind)` accumulates into. Constant per block so
+    /// chunk events, the snap and the final persistence share one id.
+    fn ensure_msg_id(&self, session_id: &str, step: u32, run: u64, kind: &'static str) -> String {
+        let mut map = self.step_msg_ids.lock().unwrap();
+        map.entry((session_id.to_string(), step, run, kind))
+            .or_insert_with(|| haven_common::types::new_id("msg"))
+            .clone()
+    }
+
+    /// Read the minted id for a block without consuming it. `None` when the
+    /// block never streamed (the caller then falls back to a fresh id).
+    fn peek_msg_id(
+        &self,
+        session_id: &str,
+        step: u32,
+        run: u64,
+        kind: &'static str,
+    ) -> Option<String> {
+        self.step_msg_ids
+            .lock()
+            .unwrap()
+            .get(&(session_id.to_string(), step, run, kind))
+            .cloned()
+    }
+
+    /// The id a streamed block is persisted under: the minted id when the
+    /// block streamed (the live bubble and the DB row must match), a fresh
+    /// `msg-*` id otherwise. THE single definition of that fallback — every
+    /// persist site must go through here so the "persisted id == streamed
+    /// bubble id" invariant cannot drift per site.
+    fn block_msg_id(&self, session_id: &str, step: u32, run: u64, kind: &'static str) -> String {
+        self.peek_msg_id(session_id, step, run, kind)
+            .unwrap_or_else(|| haven_common::types::new_id("msg"))
+    }
+
+    /// Drop every minted message id belonging to a session. Runs once per
+    /// `run_react_loop` invocation so stale ids from a previous run never
+    /// leak or collide with a fresh run's minted ids.
+    fn clear_msg_ids_for_session(&self, session_id: &str) {
+        self.step_msg_ids
+            .lock()
+            .unwrap()
+            .retain(|(sid, ..), _| sid != session_id);
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
@@ -383,14 +453,13 @@ impl ReActEngine {
         self.current_run_id.store(id, Ordering::SeqCst);
     }
 
-    /// Live connectivity probe to the default-model endpoint (GET /models).
-    /// Used by the top-right status indicator to show Ready/Disconnected.
-    pub async fn check_connection(&self) -> bool {
+    /// Live three-way connectivity probe to the default-model endpoint. Used
+    /// by the top-right status indicator to show 就绪 / 已断开 / 未配置.
+    pub async fn check_connection(&self) -> haven_llm::LlmConnectionStatus {
         let router = self.router();
         router
-            .health_check(haven_llm::EndpointRole::DefaultModel)
+            .connection_status(haven_llm::EndpointRole::DefaultModel)
             .await
-            .is_ok()
     }
 
     fn router(&self) -> Arc<LlmRouter> {
@@ -629,6 +698,17 @@ impl ReActEngine {
         // not once per session lifetime (documented in refactor-dedup.md A9).
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
+        // One run = one loop invocation: minted streaming-message ids from a
+        // previous run of this session are dropped so a fresh run's blocks
+        // always get fresh ids (and stale entries never accumulate). The
+        // guard clears them again on EVERY exit path (early returns, `?`
+        // propagation, cancels), so a session whose last run ends keeps no
+        // entries in the engine-wide map.
+        self.clear_msg_ids_for_session(session_id);
+        let _msg_id_guard = RunMsgIdGuard {
+            engine: self,
+            session_id: session_id.to_string(),
+        };
         tracing::info!(
             "ReAct loop start: session={} run_id={} start_step={} max_steps={} effective_max={}",
             session_id,
@@ -879,8 +959,16 @@ impl ReActEngine {
             );
 
             if let Some(ref reasoning) = response.reasoning {
-                self.persist_session_message(session_id, "assistant", reasoning, Some("reasoning"))
-                    .await;
+                let reasoning_id = self.block_msg_id(session_id, step_num, run_id, "reasoning");
+                self.persist_session_message(
+                    session_id,
+                    "assistant",
+                    reasoning,
+                    Some("reasoning"),
+                    None,
+                    Some(&reasoning_id),
+                )
+                .await;
                 // Reconcile the frontend's streamed reasoning with the
                 // authoritative complete text. The frontend builds reasoning
                 // only from batched deltas, so a dropped/delayed final chunk
@@ -889,13 +977,15 @@ impl ReActEngine {
                 // cumulative-detection (delta.startsWith(curr) —replace)
                 // snap the content to the exact full text. This runs after the
                 // chunk batcher has flushed, so it is guaranteed to be the
-                // last reasoning event for this step.
+                // last reasoning event for this step. The delta carries the
+                // same minted message id the streamed chunks used.
                 emitter
                     .emit(crate::event::AgentEvent::ReasoningChunk {
                         session_id: session_id.into(),
                         delta: reasoning.clone(),
                         step_number: step_num,
                         run_id,
+                        message_id: reasoning_id,
                     })
                     .await;
             }
@@ -1185,8 +1275,15 @@ impl ReActEngine {
             );
 
             if let Some(ref t) = thought {
+                let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
                 EventDispatcher::emit_thought_from(
-                    &emitter, session_id, t, step_num, run_id, &self.db,
+                    &emitter,
+                    session_id,
+                    t,
+                    step_num,
+                    run_id,
+                    &message_id,
+                    &self.db,
                 )
                 .await;
                 history.push(ReActStep {
@@ -1197,7 +1294,7 @@ impl ReActEngine {
                 });
             }
 
-            // 鈹€鈹€ Web search round-trip 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+            // ── Web search round-trip ─────────────────────────────────────
             // `web_search_call` output items come from the provider's
             // server-side search tool (DeepSeek built-in). The search itself
             // runs on the provider; the items must be passed back verbatim in
@@ -1225,8 +1322,16 @@ impl ReActEngine {
                     // carries the search context and produces the answer.
                     // Keep the turn open and let the loop re-request.
                     if let Some(ref t) = thought {
-                        self.persist_session_message(session_id, "assistant", t, Some("text"))
-                            .await;
+                        let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
+                        self.persist_session_message(
+                            session_id,
+                            "assistant",
+                            t,
+                            Some("text"),
+                            None,
+                            Some(&message_id),
+                        )
+                        .await;
                     }
                     self.save_branch_point(
                         session_id,
@@ -1270,6 +1375,12 @@ impl ReActEngine {
                         &question,
                         None,
                         infer,
+                        // The question is the `ask` card's text, not a streamed
+                        // thought bubble: persisted with the `__ask__` marker so
+                        // the review builder skips the message (the card is the
+                        // step row) without content matching.
+                        None,
+                        true,
                     )
                     .await?;
                     return Ok(());
@@ -1355,6 +1466,7 @@ impl ReActEngine {
                     response.reasoning.clone(),
                     Vec::new(),
                 ));
+                let persist_message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
                 self.pause_turn(
                     session_id,
                     canonical,
@@ -1366,6 +1478,8 @@ impl ReActEngine {
                     &msg,
                     Some(step_num),
                     infer,
+                    Some(&persist_message_id),
+                    false,
                 )
                 .await?;
                 return Ok(());
@@ -1415,6 +1529,7 @@ impl ReActEngine {
                         Vec::new(),
                     ));
                 }
+                let persist_message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
                 self.pause_turn(
                     session_id,
                     canonical,
@@ -1426,6 +1541,8 @@ impl ReActEngine {
                     &final_text,
                     Some(step_num),
                     infer,
+                    Some(&persist_message_id),
+                    false,
                 )
                 .await?;
                 return Ok(());
@@ -1434,13 +1551,34 @@ impl ReActEngine {
             if let Some(ref t) = thought {
                 let text = t.trim();
                 if !text.is_empty() {
-                    self.persist_session_message(session_id, "assistant", text, Some("text"))
-                        .await;
+                    let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
+                    self.persist_session_message(
+                        session_id,
+                        "assistant",
+                        text,
+                        Some("text"),
+                        None,
+                        Some(&message_id),
+                    )
+                    .await;
                 }
             }
 
             let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
-            for action in &non_final {
+            // Mint one `step-*` id per action, shared by the Action event,
+            // the tool's step row (created inside execute_step) and the
+            // Observation event, so the live card and the review badge (both
+            // keyed `step-<id>`) are one entity. The ids are indexed by the
+            // action's position in `non_final` (NOT by `tool_call_id`, which
+            // two actions of a malformed provider response could share —
+            // keying by it would collapse both onto one step id and the
+            // second step-row insert would fail the PRIMARY KEY).
+            let action_step_ids: Vec<String> = non_final
+                .iter()
+                .map(|_| haven_common::types::new_id("step"))
+                .collect();
+            for (idx, action) in non_final.iter().enumerate() {
+                let step_id = &action_step_ids[idx];
                 emitter
                     .emit(crate::event::AgentEvent::Action {
                         session_id: session_id.into(),
@@ -1449,6 +1587,7 @@ impl ReActEngine {
                         step_number: step_num,
                         run_id,
                         tool_call_id: action.tool_call_id.clone(),
+                        step_id: step_id.clone(),
                     })
                     .await;
             }
@@ -1506,13 +1645,17 @@ impl ReActEngine {
             use futures_util::StreamExt;
 
             let mut tool_futures = futures_util::stream::FuturesUnordered::new();
-            for action in &non_final {
+            for (idx, action) in non_final.iter().enumerate() {
                 let session_id = session_id.to_string();
                 let tool_name = action.tool_name.clone();
                 let tool_input = action.tool_input.clone();
                 let action = (*action).clone();
                 let max_obs = self.context_limits.max_observation_chars;
                 let executor = self.executor.clone();
+                // The same step id minted at Action-emit time keys the step
+                // row execute_step creates, so the live card id, the DB badge
+                // id and this step id are identical everywhere.
+                let step_id = action_step_ids[idx].clone();
                 tool_futures.push(async move {
                     tracing::debug!(
                         "executing tool '{}' at step {} (input keys: {:?})",
@@ -1533,7 +1676,13 @@ impl ReActEngine {
                             .unwrap_or(0)
                     );
                     let result = executor
-                        .execute_step(&session_id, &tool_name, tool_input.clone(), step_num)
+                        .execute_step(
+                            &session_id,
+                            &tool_name,
+                            tool_input.clone(),
+                            step_num,
+                            &step_id,
+                        )
                         .await;
                     let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
                         match result {
@@ -1603,6 +1752,7 @@ impl ReActEngine {
                         ask_options,
                         notify_title,
                         notify_body,
+                        step_id,
                     )
                 });
             }
@@ -1636,18 +1786,21 @@ impl ReActEngine {
                         // model sees the tool was attempted (and may retry it),
                         // and surface it in the UI as an interrupted
                         // observation card rather than leaving a silent gap.
-                        let interrupted_keys: Vec<Action> = non_final
-                            .iter()
-                            .filter(|a| !completed_tool_keys.contains(&tool_key(a)))
-                            .map(|a| (*a).clone())
-                            .collect();
-                        for action in &interrupted_keys {
+                        for (idx, action) in non_final.iter().enumerate() {
+                            if completed_tool_keys.contains(&tool_key(action)) {
+                                continue;
+                            }
                             let silent_action =
                                 is_silent_action(&action.tool_name, &action.tool_input);
                             let interrupted_text = crate::interrupted_result_text(
                                 &action.tool_name,
                                 &action.tool_input,
                             );
+                            // The card keeps the step id minted at Action time
+                            // (the tool never ran, so no step row exists — the
+                            // card is live-only and drops on DB rebuild, as
+                            // before).
+                            let step_id = action_step_ids[idx].clone();
                             emitter
                                 .emit(crate::event::AgentEvent::Observation {
                                     session_id: session_id.into(),
@@ -1658,6 +1811,7 @@ impl ReActEngine {
                                     silent: silent_action,
                                     tool_call_id: action.tool_call_id.clone(),
                                     ask_options: Vec::new(),
+                                    step_id,
                                 })
                                 .await;
                             canonical.push(CanonicalMessage::tool(
@@ -1668,13 +1822,13 @@ impl ReActEngine {
                                 .iter_mut()
                                 .find(|s| s.step_number == step_num && s.action.is_none())
                             {
-                                step.action = Some(action.clone());
+                                step.action = Some((*action).clone());
                                 step.observation = Some(interrupted_text);
                             } else {
                                 history.push(ReActStep {
                                     step_number: step_num,
                                     thought: None,
-                                    action: Some(action.clone()),
+                                    action: Some((*action).clone()),
                                     observation: Some(interrupted_text),
                                 });
                             }
@@ -1702,6 +1856,7 @@ impl ReActEngine {
                             ask_options,
                             notify_title,
                             notify_body,
+                            step_id,
                         )) = item
                         else {
                             break;
@@ -1762,6 +1917,7 @@ impl ReActEngine {
                                 silent,
                                 tool_call_id: action.tool_call_id.clone(),
                                 ask_options: ask_options.clone(),
+                                step_id,
                             })
                             .await;
 
@@ -1860,6 +2016,11 @@ impl ReActEngine {
                     &question,
                     None,
                     infer,
+                    // The question text is the `ask` card, persisted with the
+                    // `__ask__` marker so the review builder skips the message
+                    // (the card is the step row) without content matching.
+                    None,
+                    true,
                 )
                 .await?;
                 return Ok(());
@@ -1909,6 +2070,8 @@ impl ReActEngine {
         role: &str,
         content: &str,
         message_type: Option<&str>,
+        tool_call_id: Option<&str>,
+        message_id: Option<&str>,
     ) {
         if let Err(e) = crate::persist_session_message(
             &self.executor,
@@ -1918,6 +2081,8 @@ impl ReActEngine {
             message_type,
             &[],
             false,
+            message_id,
+            tool_call_id,
         )
         .await
         {
@@ -1983,6 +2148,14 @@ impl ReActEngine {
         final_text: &str,
         branch_point_step: Option<u32>,
         infer: &(dyn Fn() + Send + Sync),
+        // Pre-minted id of the streamed thought bubble this final text is the
+        // authoritative copy of (`None` mints a fresh id).
+        persist_message_id: Option<&str>,
+        // True when the persisted text is an `ask` question: the message is
+        // marked with the `__ask__` tool_call_id sentinel so the review
+        // builder can skip it (the ask CARD is the step row) without content
+        // matching.
+        is_ask: bool,
     ) -> anyhow::Result<()> {
         tracing::info!(
             "ReAct turn finished: session={} step={} status={} final={} chars",
@@ -1991,8 +2164,26 @@ impl ReActEngine {
             status.as_str(),
             final_text.chars().count()
         );
-        self.persist_session_message(session_id, "assistant", final_text, Some("text"))
-            .await;
+        if std::env::var("HAVEN_DEBUG_PAUSE").is_ok() {
+            eprintln!(
+                "DEBUG pause_turn persist ask={} id={:?} final={}",
+                is_ask, persist_message_id, final_text
+            );
+        }
+        let tool_call_id = if is_ask {
+            Some(Self::ASK_MSG_TOOL_CALL_ID)
+        } else {
+            None
+        };
+        self.persist_session_message(
+            session_id,
+            "assistant",
+            final_text,
+            Some("text"),
+            tool_call_id,
+            persist_message_id,
+        )
+        .await;
         if let Some(step) = branch_point_step {
             self.save_branch_point(session_id, canonical, history, step, branch_points, false)
                 .await;
@@ -2577,24 +2768,38 @@ impl ReActEngine {
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
         if !reasoning_text.trim().is_empty() {
+            let message_id =
+                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
             self.persist_session_message(
                 &ctx.session_id,
                 "assistant",
                 reasoning_text.trim(),
                 Some("reasoning"),
+                None,
+                Some(&message_id),
             )
             .await;
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            self.persist_session_message(&ctx.session_id, "assistant", text, Some("text"))
-                .await;
+            let message_id =
+                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+            self.persist_session_message(
+                &ctx.session_id,
+                "assistant",
+                text,
+                Some("text"),
+                None,
+                Some(&message_id),
+            )
+            .await;
             EventDispatcher::emit_thought_from(
                 &ctx.emitter,
                 &ctx.session_id,
                 text,
                 ctx.step_num,
                 ctx.run_id,
+                &message_id,
                 &self.db,
             )
             .await;
@@ -2607,7 +2812,15 @@ impl ReActEngine {
         self.executor.partials.discard(&ctx.session_id).await;
     }
 
-    /// Save a branch point at the current step before tool execution (鎼?).
+    /// Sentinel persisted in `messages.tool_call_id` for the assistant message
+    /// that carries an `ask` question text. The message exists so resume can
+    /// re-seed the question into the canonical; the review builder skips it
+    /// (the `ask` card is the STEP row, parsed from the observation JSON) by
+    /// this marker instead of content matching. Cannot collide with provider
+    /// `tool_call_id`s, which use `call-*`-style ids.
+    pub(crate) const ASK_MSG_TOOL_CALL_ID: &str = "__ask__";
+
+    /// Save a branch point at the current step before tool execution (—).
     ///
     /// The DB snapshot write is throttled to every `SNAPSHOT_WRITE_INTERVAL`
     /// steps on the happy path (`force = false`): the in-memory branch-point
@@ -2690,6 +2903,12 @@ impl ReActEngine {
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
+        // Mint the block ids this call's chunks accumulate into. Reused by
+        // the chunk events, the snap and the final persistence of this step.
+        let thought_msg_id =
+            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+        let reasoning_msg_id =
+            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
             self.context_limits.event_chunk_batch_max_bytes,
@@ -2701,6 +2920,8 @@ impl ReActEngine {
             std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs),
             cancel.clone(),
             true,
+            thought_msg_id,
+            reasoning_msg_id,
         );
         let started = std::time::Instant::now();
         let result = router
@@ -2749,6 +2970,12 @@ impl ReActEngine {
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
     ) -> Result<LlmResponse, haven_llm::LlmError> {
+        // Retry chunks reuse the primary call's minted ids (same step/run),
+        // so the frontend continues the same bubble instead of splitting it.
+        let thought_msg_id =
+            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+        let reasoning_msg_id =
+            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
             self.context_limits.event_chunk_batch_max_bytes,
@@ -2760,6 +2987,8 @@ impl ReActEngine {
             std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs),
             cancel.clone(),
             false,
+            thought_msg_id,
+            reasoning_msg_id,
         );
         let result = router
             .chat_stream_with_tools_aggregated_cancellable(role, messages, tools, on_chunk, cancel)
@@ -2997,8 +3226,16 @@ impl ReActEngine {
         before_inject_len: usize,
         already_pushed: bool,
     ) {
-        self.persist_session_message(&ctx.session_id, "assistant", final_text, Some("text"))
-            .await;
+        let message_id = self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+        self.persist_session_message(
+            &ctx.session_id,
+            "assistant",
+            final_text,
+            Some("text"),
+            None,
+            Some(&message_id),
+        )
+        .await;
         if !already_pushed {
             canonical.insert(
                 before_inject_len,
@@ -3185,18 +3422,10 @@ impl ReActEngine {
     /// This is the real input budget for the token-usage display, not the
     /// per-response output cap (`max_tokens`).
     fn context_window_for_role(
-        cfg: &haven_common::config::LlmConfig,
+        cfg: &haven_common::config::RouterConfig,
         role: EndpointRole,
     ) -> Option<u32> {
-        let ep = match role {
-            EndpointRole::SmallModel => &cfg.small_model,
-            EndpointRole::DefaultModel => &cfg.default_model,
-            EndpointRole::BalancedModel => &cfg.balanced_model,
-            EndpointRole::ImageModel => &cfg.image_model,
-            EndpointRole::AudioModel => &cfg.audio_model,
-            EndpointRole::EmbeddingModel => &cfg.embedding_model,
-        };
-        Some(haven_llm::registry::context_window_for(ep))
+        Some(haven_llm::registry::context_window_for(cfg.endpoint(role)))
     }
 
     /// Resolve the model's true context window for `role` using a per-router
@@ -3410,17 +3639,21 @@ impl StreamForwarder {
         stall_warn_delay_ms: u64,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
-        partial_store: Arc<haven_session::partial::PartialStore>,
+        partial_store: Arc<crate::partial::PartialStore>,
         checkpoint_min_chars: usize,
         checkpoint_interval: std::time::Duration,
         cancel: tokio_util::sync::CancellationToken,
         forward_reasoning: bool,
+        // Minted ids shared with the chunk events, the snap and the final
+        // persistence, so the live bubble and the DB row match.
+        thought_msg_id: String,
+        reasoning_msg_id: String,
     ) -> (Self, impl FnMut(&haven_llm::StreamChunk) + Send + 'static) {
         let (chunk_tx, reasoning_tx, consumer_handle) =
             EventDispatcher::spawn_chunk_consumer_raw(&ctx.emitter, max_batch_bytes);
         let chunk_tx_c = chunk_tx.clone();
         let reasoning_tx_c = reasoning_tx.clone();
-        let session_id_c = ctx.session_id.clone();
+        let session_id_c = Arc::<str>::from(ctx.session_id.as_str());
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
         let checkpoint_session = ctx.session_id.clone();
@@ -3448,6 +3681,8 @@ impl StreamForwarder {
         let run_id = ctx.run_id;
         let last_chunk_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let last_chunk_c = last_chunk_ms.clone();
+        let thought_mid = Arc::<str>::from(thought_msg_id.as_str());
+        let reasoning_mid = Arc::<str>::from(reasoning_msg_id.as_str());
         let on_chunk = move |c: &haven_llm::StreamChunk| {
             if let Some(t) = c.text.as_deref() {
                 // Single lock scope per chunk: push, read the new length
@@ -3469,9 +3704,13 @@ impl StreamForwarder {
                         None
                     }
                 };
-                if let Err(e) =
-                    chunk_tx_c.try_send((session_id_c.clone(), t.to_string(), step_num, run_id))
-                {
+                if let Err(e) = chunk_tx_c.try_send((
+                    session_id_c.clone(),
+                    thought_mid.clone(),
+                    t.to_string(),
+                    step_num,
+                    run_id,
+                )) {
                     tracing::warn!("thought chunk channel full, dropping: {}", e);
                 }
                 if let Some(snapshot) = checkpoint_snapshot {
@@ -3492,8 +3731,13 @@ impl StreamForwarder {
             if let Some(r) = &c.reasoning {
                 pr.lock().unwrap().push_str(r);
                 if forward_reasoning
-                    && let Err(e) =
-                        reasoning_tx_c.try_send((session_id_c.clone(), r.clone(), step_num, run_id))
+                    && let Err(e) = reasoning_tx_c.try_send((
+                        session_id_c.clone(),
+                        reasoning_mid.clone(),
+                        r.clone(),
+                        step_num,
+                        run_id,
+                    ))
                 {
                     tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                 }
@@ -3501,7 +3745,7 @@ impl StreamForwarder {
             }
             if let Some(phase) = c.web_search {
                 let _ = ws_tx_c.send(AgentEvent::WebSearch {
-                    session_id: session_id_c.clone(),
+                    session_id: session_id_c.to_string(),
                     phase: phase.as_str().to_string(),
                     step_number: step_num,
                     run_id,
@@ -3574,10 +3818,9 @@ impl StreamForwarder {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use haven_common::types::{CanonicalRole, CanonicalToolCall};
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{
-        CanonicalRole, CanonicalToolCall, FinishReason, LlmError, LlmResponse, StreamChunk,
-    };
+    use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use std::pin::Pin;
 
     struct MockLlm;

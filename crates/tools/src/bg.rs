@@ -1029,7 +1029,9 @@ fn render_status_json(action_id: &str, state: &BackgroundActionState) -> Value {
             "started_at": started_at,
             "finished_at": finished_at,
         }),
-        BackgroundActionState::Running { .. } => json!({ "action_id": action_id, "status": "running" }),
+        BackgroundActionState::Running { .. } => {
+            json!({ "action_id": action_id, "status": "running" })
+        }
     }
 }
 
@@ -1667,7 +1669,10 @@ mod tests {
         }
         // The running row of the board carries the same command + output.
         let board = actions.board().await;
-        let row = board.iter().find(|r| r["action_id"] == id).expect("on board");
+        let row = board
+            .iter()
+            .find(|r| r["action_id"] == id)
+            .expect("on board");
         assert!(row["command"].as_str().unwrap().contains("live-line"));
         assert!(row["preview"].as_str().unwrap_or("").contains("live-line"));
     }
@@ -1740,7 +1745,12 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_empty_command_rejected() {
         let actions = Arc::new(BackgroundActions::new());
-        assert!(actions.spawn_shell("  ", "cmd", 20_000, None).await.is_err());
+        assert!(
+            actions
+                .spawn_shell("  ", "cmd", 20_000, None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

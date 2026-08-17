@@ -465,7 +465,9 @@ impl ScheduledActionCenter {
                     args_json.as_deref(),
                     prompt.as_deref(),
                 )
-                .map_err(|e| anyhow::anyhow!("failed to persist scheduled_action '{}': {}", id, e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to persist scheduled_action '{}': {}", id, e)
+                })?;
             }
             scheduled_actions.insert(
                 id.clone(),
@@ -762,7 +764,9 @@ impl Tool for ScheduleTool {
                     anyhow::bail!("watch_action_id cannot be combined with delay_secs or due_at");
                 }
                 if delay.is_none() && due_at.is_none() && watch.is_none() {
-                    anyhow::bail!("one of delay_secs, due_at or watch_action_id is required for set");
+                    anyhow::bail!(
+                        "one of delay_secs, due_at or watch_action_id is required for set"
+                    );
                 }
                 let title = input["title"].as_str().unwrap_or("Haven");
                 let body = input["body"]
@@ -1540,7 +1544,10 @@ mod tests {
             .execute(json!({"operation": "list"}), CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(list.output["scheduled_actions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            list.output["scheduled_actions"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(list.output["scheduled_actions"][0]["id"], json!(id));
         assert_eq!(list.output["scheduled_actions"][0]["body"], json!("water"));
         assert_eq!(list.output["scheduled_actions"][0]["mode"], json!("tool"));

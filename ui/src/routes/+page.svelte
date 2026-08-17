@@ -18,8 +18,7 @@
 	import {
 		accumulateStreamChunk,
 		applyThoughtSnap,
-		stepId,
-		toolId,
+		webSearchId,
 		finalizeStreamBlocks,
 		newToolMessage,
 	} from '$lib/streaming.js';
@@ -487,6 +486,7 @@
 					targetMessageId: msgId,
 				});
 				clearSeqMap(activeSessionId);
+				clearStepBlockIds(activeSessionId);
 				// The backend is the source of truth for what the rollback
 				// deleted (target message + its whole discarded timeline);
 				// rebuild from the DB instead.
@@ -501,6 +501,7 @@
 					targetMessageId: msgId,
 				});
 				clearSeqMap(activeSessionId);
+				clearStepBlockIds(activeSessionId);
 				await resyncSessionMessages(activeSessionId);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
@@ -572,6 +573,7 @@
 		clearSessionTokenStats(sessionId);
 		clearSessionLlmUsage(sessionId);
 		clearSeqMap(sessionId);
+		clearStepBlockIds(sessionId);
 	}
 
 	async function switchToSession(sessionId) {
@@ -590,12 +592,12 @@
 		try {
 			const result = await invoke('get_session_for_review', { sessionId });
 			const dbMessages = buildReviewMessages(result);
-			// Drop DB step badges for steps already represented by a live
-			// tool card (the running session may be mid-step): the live card
-			// keeps streaming its observation. Their ids differ, so plain
-			// id dedup would leave both visible.
+			// Live tool cards and DB step badges share the same `step-*` id
+			// (minted by the backend when the action started), so the merge
+			// dedups them by id alone — a mid-step card keeps streaming its
+			// observation, the DB copy wins once it is finalized.
 			updateSessionMessages(sessionId, (existing) =>
-				mergeLiveStreaming(dbMessages, existing, { dropToolSteps: true }),
+				mergeLiveStreaming(dbMessages, existing),
 			);
 			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
 			restoreSessionLlmUsage(sessionId, result.llm_usage);
@@ -623,6 +625,8 @@
 			clearSessionMessages(endedId);
 			clearSessionTokenStats(endedId);
 			clearSessionLlmUsage(endedId);
+			clearSeqMap(endedId);
+			clearStepBlockIds(endedId);
 		} catch (e) {
 			addNotification(`结束会话失败: ${e}`, 'error', 3000);
 		}
@@ -694,6 +698,7 @@
 				}
 			}
 			clearSeqMap(tid);
+			clearStepBlockIds(tid);
 			// Continue by sending a real user message, so "继续" appears in
 			// the conversation and is delivered to the agent as an
 			// interjection, just like a typed or quick-reply message.
@@ -862,6 +867,37 @@
 	const PENDING_CHUNK_MAX = 2000;
 	let pendingChunkDrops = 0;
 
+	// (session, step, run) → the minted ids of the step's two streaming
+	// blocks. Chunk events register them; the thought snap and the action
+	// handler look up the SIBLING id (a `msg-*` id carries no step
+	// information, so it cannot be derived from another block's id).
+	const stepBlockIds = new Map(); // sessionId -> Map<'step:run', {thoughtId, reasoningId}>
+	function blockKey(stepNumber, runId) {
+		return `${stepNumber}:${runId}`;
+	}
+	function registerBlockId(tid, stepNumber, runId, kind, messageId) {
+		if (!tid || !messageId) return;
+		let perSession = stepBlockIds.get(tid);
+		if (!perSession) stepBlockIds.set(tid, (perSession = new Map()));
+		const key = blockKey(stepNumber, runId);
+		const entry = perSession.get(key) || {};
+		entry[kind] = messageId;
+		perSession.set(key, entry);
+	}
+	function blockIdsOf(tid, stepNumber, runId) {
+		return stepBlockIds.get(tid)?.get(blockKey(stepNumber, runId)) || {};
+	}
+	function clearStepBlockIds(sessionId) {
+		const perSession = stepBlockIds.get(sessionId);
+		if (perSession) {
+			for (const { thoughtId, reasoningId } of perSession.values()) {
+				if (thoughtId) pruneSeq(thoughtId);
+				if (reasoningId) pruneSeq(reasoningId);
+			}
+		}
+		stepBlockIds.delete(sessionId);
+	}
+
 	function flushPendingChunks() {
 		chunkFlushRaf = 0;
 		if (pendingChunks.length === 0) return;
@@ -895,22 +931,24 @@
 				let next = m;
 				for (const c of chunks) {
 					if (c.finalizeReasoning) {
-						const reasoningId = stepId('reasoning', c.tid, c.stepNumber, c.runId);
-						const rIdx = next.findIndex((x) => x.id === reasoningId && x.streaming);
-						if (rIdx >= 0) {
-							next = next.map((x) =>
-								x.id === reasoningId ? { ...x, streaming: false } : x,
-							);
-							pruneSeq(reasoningId);
+						const { reasoningId } = blockIdsOf(c.tid, c.stepNumber, c.runId);
+						if (reasoningId) {
+							const rIdx = next.findIndex((x) => x.id === reasoningId && x.streaming);
+							if (rIdx >= 0) {
+								next = next.map((x) =>
+									x.id === reasoningId ? { ...x, streaming: false } : x,
+								);
+								pruneSeq(reasoningId);
+							}
 						}
 					}
 					if (c.delta) {
 						next = accumulateStreamChunk(next, {
-							stepId: c.sid,
-							stepIdPrefix: c.stepIdPrefix,
+							messageId: c.sid,
 							delta: c.delta,
 							msgType: c.msgType,
 							stepNumber: c.stepNumber,
+							runId: c.runId,
 							time: c.time,
 						});
 					}
@@ -930,13 +968,13 @@
 	}
 
 	// Streaming chunk handler factory: finalizes the preceding reasoning block
-	// on the first thought chunk, dedups by per-step seq, and queues the delta
-	// for the per-frame flush (see flushPendingChunks).
-	function chunkHandler(stepIdPrefix, msgType) {
+	// on the first thought chunk, dedups by per-block seq, and queues the
+	// delta for the per-frame flush (see flushPendingChunks).
+	function chunkHandler(isThought, msgType) {
 		return (event) => {
 			const data = event.payload;
 			const tid = data.session_id;
-			const sid = stepId(stepIdPrefix, tid, data.step_number, data.run_id);
+			const sid = data.message_id;
 			const delta = data.delta || '';
 			const seq = data.seq;
 			// The model-state chip reflects the ACTIVE conversation only:
@@ -946,19 +984,21 @@
 				updateModelState('streaming');
 			}
 			if (seqLastSeen(sid, seq)) return;
+			// Remember this block's minted id so the thought snap and the
+			// action handler can find the sibling reasoning/thought bubble.
+			registerBlockId(tid, data.step_number, data.run_id, isThought ? 'thought' : 'reasoning', sid);
 
 			// Queue the chunk; the reasoning finalize + accumulation run in
 			// order inside the flush, so per-event semantics are unchanged.
 			pendingChunks.push({
 				tid,
 				sid,
-				stepIdPrefix,
 				delta,
 				msgType,
 				stepNumber: data.step_number,
 				runId: data.run_id,
 				time: new Date().toLocaleTimeString(),
-				finalizeReasoning: stepIdPrefix === 'thought',
+				finalizeReasoning: isThought,
 			});
 			if (pendingChunks.length > PENDING_CHUNK_MAX) {
 				pendingChunks.shift();
@@ -981,7 +1021,7 @@
 	// don't re-request the same model list. Concurrent mounts share the
 	// in-flight request, so the duplicate discover_models calls seen on
 	// reload disappear without losing the fresh-on-first-load behavior.
-	function ensureDefaultModelOptions(baseUrl) {
+	function ensureDefaultModelOptions(baseUrl, providerName) {
 		if (defaultModelsCache.baseUrl === baseUrl && defaultModelsCache.list) {
 			modelOptions = defaultModelsCache.list;
 			return;
@@ -1000,7 +1040,7 @@
 		defaultModelsCache.inflight = invoke('discover_models', {
 			baseUrl,
 			apiKey: '',
-			role: 'default_model',
+			provider: providerName || '',
 		})
 			.then((list) => {
 				const next = list || [];
@@ -1021,20 +1061,10 @@
 		defaultModelsCache.inflight.catch(() => {});
 	}
 
-	onMount(async () => {
-		// Hydrate the fresh-start intent from localStorage BEFORE any data
-		// load: the store is in-memory only, but the intent survives app
-		// restarts via `haven.no_auto_restore`. Without this, `loadSessions`
-		// auto-assign would re-select the old conversation on restart and the
-		// persisted intent would be silently defeated. The reviewTarget
-		// branch below (an explicit user choice) clears it again if needed.
-		if (browser && localStorage.getItem(NEW_ACTION_INTENT_KEY)) {
-			newSessionIntentStore.set(true);
-		}
-
-		// Process review target first so loadSessions won't overwrite
-		// activeSessionId with a stale paused session whose messages are gone.
-		const reviewTarget = get(reviewTargetStore);
+	// Open a reviewed conversation (from the history page). The chat view
+	// stays mounted while other tabs are open, so this runs both at mount and
+	// whenever the store changes afterwards.
+	function processReviewTarget(reviewTarget) {
 		if (reviewTarget && reviewTarget.sessionId) {
 			// Opening a reviewed conversation abandons any pending fresh-start
 			// intent (the user chose this conversation explicitly).
@@ -1052,6 +1082,30 @@
 			// Defer clearing so it survives rapid remounts during init.
 			setTimeout(() => reviewTargetStore.set(null), 0);
 		}
+	}
+
+	// The review target set by the history page's "open session" flow must be
+	// handled while the chat view is already mounted. The effect starts with
+	// the current (usually null) value and fires on every store change.
+	$effect(() => {
+		processReviewTarget(get(reviewTargetStore));
+	});
+
+	onMount(async () => {
+		// Hydrate the fresh-start intent from localStorage BEFORE any data
+		// load: the store is in-memory only, but the intent survives app
+		// restarts via `haven.no_auto_restore`. Without this, `loadSessions`
+		// auto-assign would re-select the old conversation on restart and the
+		// persisted intent would be silently defeated. The reviewTarget
+		// branch below (an explicit user choice) clears it again if needed.
+		if (browser && localStorage.getItem(NEW_ACTION_INTENT_KEY)) {
+			newSessionIntentStore.set(true);
+		}
+
+		// Process review target first so loadSessions won't overwrite
+		// activeSessionId with a stale paused session whose messages are gone.
+		const initialReviewTarget = get(reviewTargetStore);
+		processReviewTarget(initialReviewTarget);
 
 		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.
@@ -1110,6 +1164,10 @@
 					// accumulate in memory for the whole session.
 					if (data.status === 'completed' || data.status === 'error') {
 						evictTerminalSessionMemory(data.session_id);
+						// The ACTIVE session is skipped by the eviction guard, but
+						// its streaming bookkeeping is dead too: no further chunk
+						// events will reference these (step, run) keys.
+						clearStepBlockIds(data.session_id);
 					}
 					loadSessions();
 				},
@@ -1119,6 +1177,7 @@
 						clearAskAwaiting(data.session_id);
 					}
 					evictTerminalSessionMemory(data.session_id);
+					clearStepBlockIds(data.session_id);
 					loadSessions();
 				},
 				'session:error': (event) => {
@@ -1136,6 +1195,7 @@
 						);
 					}
 					evictTerminalSessionMemory(session_id);
+					clearStepBlockIds(session_id);
 					loadSessions();
 				},
 				'session:title-updated': (event) => {
@@ -1152,14 +1212,18 @@
 				'agent:thought': (event) => {
 					const data = event.payload;
 					const tid = data.session_id;
-					const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
-					const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
+					// The snap carries the minted message id the chunks streamed
+					// into (and the DB row is persisted under), so the reconcile
+					// is a plain id-keyed replace. The sibling reasoning id comes
+					// from the block registry (a `msg-*` id carries no step info).
+					const thoughtId = data.message_id;
+					const { reasoningId } = blockIdsOf(tid, data.step_number, data.run_id);
 					// The authoritative snap reconciles the streamed text: apply
 					// any queued chunks first so no delta is left to accumulate
 					// onto the finalized message afterwards.
 					flushChunksNow();
-					pruneSeq(thoughtId);
-					pruneSeq(reasoningId);
+					if (thoughtId) pruneSeq(thoughtId);
+					if (reasoningId) pruneSeq(reasoningId);
 					// Deliberately no updateModelState here: the chunk handler
 					// already left the chip in `streaming`, and forcing `ready`
 					// on the thought snapshot causes a visible ready->tool flicker
@@ -1168,21 +1232,22 @@
 					// the transition.
 					updateSessionMessages(tid, (m) =>
 						applyThoughtSnap(m, {
-							stepId: thoughtId,
+							messageId: thoughtId,
 							reasoningId,
 							thought: data.thought,
 							stepNumber: data.step_number,
+							runId: data.run_id,
 							time: new Date().toLocaleTimeString(),
 						}),
 					);
 				},
-				'agent:thought_chunk': chunkHandler('thought', undefined),
-				'agent:reasoning_chunk': chunkHandler('reasoning', 'reasoning'),
+				'agent:thought_chunk': chunkHandler(true, undefined),
+				'agent:reasoning_chunk': chunkHandler(false, 'reasoning'),
 				'agent:web_search': (event) => {
 					const data = event.payload || {};
 					const tid = data.session_id;
 					if (!tid || (activeSessionId && tid !== activeSessionId)) return;
-					const wsId = toolId(tid, data.step_number, data.run_id, 'web_search');
+					const wsId = webSearchId(tid, data.step_number, data.run_id);
 					updateSessionMessages(tid, (m) => {
 						const existing = m.find((x) => x.id === wsId);
 						if (data.phase === 'completed') {
@@ -1245,16 +1310,17 @@
 					// apply queued chunks first so the finalize is complete.
 					flushChunksNow();
 					updateModelState('tool');
-					const toolMsgId = toolId(
+					// The event carries the minted `step-*` id — the same id the
+					// step row is persisted under — so the live card and the
+					// review badge are one entity.
+					const toolMsgId = data.step_id;
+					const { reasoningId, thoughtId } = blockIdsOf(
 						tid,
 						data.step_number,
 						data.run_id,
-						data.tool_call_id || data.tool_name,
 					);
-					const reasoningId = stepId('reasoning', tid, data.step_number, data.run_id);
-					const thoughtId = stepId('thought', tid, data.step_number, data.run_id);
-					pruneSeq(reasoningId);
-					pruneSeq(thoughtId);
+					if (reasoningId) pruneSeq(reasoningId);
+					if (thoughtId) pruneSeq(thoughtId);
 					if (data.silent) {
 						// Silent tool: no card is shown, but the preceding text
 						// must still be finalized so it is inserted immediately.
@@ -1289,12 +1355,9 @@
 					const tid = data.session_id;
 					flushChunksNow();
 					updateModelState('streaming');
-					const toolMsgId = toolId(
-						tid,
-						data.step_number,
-						data.run_id,
-						data.tool_call_id || data.tool_name,
-					);
+					// Same minted step id the matching `agent:action` carried,
+					// so the placeholder fill and the final badge stay one card.
+					const toolMsgId = data.step_id;
 					updateSessionMessages(tid, (m) => {
 						const idx = m.findIndex((x) => x.id === toolMsgId);
 						const msg = newToolMessage({
@@ -1390,13 +1453,18 @@
 		// never delays the conversation render.
 		invoke('get_settings')
 			.then((s) => {
-				const dm = s?.llm?.default_model;
-				if (dm?.model_name) {
-					currentModelId = dm.model_name;
-					currentModelName = dm.model_name;
-				}
-				currentEffort = dm?.reasoning_effort || '';
-				currentWebSearch = dm?.web_search || 'off';
+				// The default_model role references a provider + a model id on
+				// that provider (the "model library" is the provider's fetched
+				// model list). Resolve both for the toolbar switcher.
+				const dmRole = (s?.llm?.roles || []).find((r) => r.role === 'default_model');
+				const dmProvider = dmRole?.provider
+					? (s?.llm?.providers || []).find((p) => p.name === dmRole.provider)
+					: null;
+				const dmModel = dmRole?.model || '';
+				currentModelId = dmModel;
+				currentModelName = dmModel;
+				currentEffort = dmRole?.reasoning_effort || '';
+				currentWebSearch = dmRole?.web_search || 'off';
 				if (s?.hotkey?.key_binding) {
 					hotkeyBinding = s.hotkey.key_binding;
 				}
@@ -1411,8 +1479,8 @@
 						maxFileBytes: cl.max_attachment_file_bytes ?? 20 * 1024 * 1024,
 					};
 				}
-				if (dm?.base_url) {
-					ensureDefaultModelOptions(dm.base_url);
+				if (dmProvider?.base_url) {
+					ensureDefaultModelOptions(dmProvider.base_url, dmProvider.name);
 				}
 			})
 			.catch((e) => {
@@ -1424,7 +1492,7 @@
 		// without waiting for `reopen_session` (a second IPC round-trip that
 		// only makes the session resumable for follow-up messages).
 		const sessionsP = loadSessions();
-		const restoreP = restoreLastConversation(reviewTarget);
+		const restoreP = restoreLastConversation(initialReviewTarget);
 
 		await Promise.all([sessionsP, restoreP, readyP]);
 

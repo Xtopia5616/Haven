@@ -291,7 +291,7 @@ pub async fn process_transcript(
     state: State<'_, Arc<AppState>>,
     transcript: String,
     active_session_id: Option<String>,
-    attachments: Option<Vec<haven_memory::repositories::messages::MessageAttachment>>,
+    attachments: Option<Vec<haven_common::types::MessageAttachment>>,
     voice: Option<bool>,
 ) -> Result<Value, String> {
     let limits = state
@@ -374,15 +374,15 @@ fn sanitize_filename(name: &str) -> String {
 /// disk, keeping the persisted message and DB storage slim. Images pass
 /// through untouched (their base64 payload is needed by the vision model).
 async fn persist_file_attachments(
-    attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
-) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+    attachments: Vec<haven_common::types::MessageAttachment>,
+) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     persist_file_attachments_to(uploads_root(), attachments).await
 }
 
 async fn persist_file_attachments_to(
     root: std::path::PathBuf,
-    attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
-) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+    attachments: Vec<haven_common::types::MessageAttachment>,
+) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     use base64::Engine as _;
 
     let mut images = Vec::new();
@@ -447,9 +447,9 @@ async fn persist_file_attachments_to(
 /// byte caps, decodable base64, files must carry a name). The webview must
 /// not be the sole enforcement point for persisted payloads.
 fn validate_attachments(
-    attachments: Vec<haven_memory::repositories::messages::MessageAttachment>,
+    attachments: Vec<haven_common::types::MessageAttachment>,
     limits: &ContextLimitsConfig,
-) -> Result<Vec<haven_memory::repositories::messages::MessageAttachment>, String> {
+) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     let max_images = limits.max_attachment_images;
     let max_files = limits.max_attachment_files;
     let max_image_bytes = limits.max_attachment_image_bytes;
@@ -490,11 +490,8 @@ fn validate_attachments(
 mod tests {
     use super::*;
 
-    fn att(
-        media_type: &str,
-        data: &str,
-    ) -> haven_memory::repositories::messages::MessageAttachment {
-        haven_memory::repositories::messages::MessageAttachment::new(media_type, data)
+    fn att(media_type: &str, data: &str) -> haven_common::types::MessageAttachment {
+        haven_common::types::MessageAttachment::new(media_type, data)
     }
 
     fn limits() -> haven_common::config::ContextLimitsConfig {

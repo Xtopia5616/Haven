@@ -257,7 +257,9 @@ impl Database {
     /// One persisted action by id (either kind).
     pub fn get_action(&self, id: &str) -> anyhow::Result<Option<ActionRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {ACTION_COLUMNS} FROM actions WHERE id = ?1"))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ACTION_COLUMNS} FROM actions WHERE id = ?1"
+        ))?;
         let mut rows = stmt.query_map([id], row_to_action)?;
         rows.next().transpose().map_err(Into::into)
     }

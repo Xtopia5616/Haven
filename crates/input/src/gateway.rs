@@ -1,4 +1,4 @@
-//! Stage 4: the gateway orchestrator.
+//! Media gateway orchestrator (merged from `haven-gateway`).
 //!
 //! [`MediaGateway`] owns the routing pipeline over the `haven-llm` router
 //! and the dedicated media clients (STT / OCR / TTS / image generation):
@@ -18,16 +18,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use base64::Engine;
 use haven_common::config::MediaConfig;
-use haven_common::prompts::{OCR_SYSTEM_PROMPT, TRANSCRIBE_SYSTEM_PROMPT};
-use haven_common::types::new_id;
-use haven_llm::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use haven_common::prompts::{OCR_SYSTEM_PROMPT, STT_SYSTEM_PROMPT};
+use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
 use haven_llm::{EndpointRole, ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
 
 use crate::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
 use crate::intent::{GenerateKind, Intent, detect_generate_kind, detect_intent};
 use crate::modality::{Modality, detect_media_type, detect_modality, extension_for_media_type};
+use crate::multimodal;
 
 /// Outcome of processing a binary attachment.
 #[derive(Debug, Clone)]
@@ -183,11 +182,7 @@ impl MediaGateway {
             CoverageAction::Ocr => (
                 self.router.vision_role().await,
                 OCR_SYSTEM_PROMPT,
-                ContentPart::Image {
-                    content_type: "image_url".into(),
-                    media_type: media_type.to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                },
+                multimodal::image_part_from_bytes(media_type, bytes),
             ),
             CoverageAction::Stt => {
                 let role = match self.router.stt_role().await {
@@ -196,12 +191,8 @@ impl MediaGateway {
                 };
                 (
                     role,
-                    TRANSCRIBE_SYSTEM_PROMPT,
-                    ContentPart::Audio {
-                        content_type: "input_audio".into(),
-                        media_type: media_type.to_string(),
-                        data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                    },
+                    STT_SYSTEM_PROMPT,
+                    multimodal::audio_part_from_bytes(media_type, bytes),
                 )
             }
             _ => unreachable!("extract_with_main_model only called for Ocr/Stt actions"),

@@ -108,7 +108,10 @@ mod tests {
             actions: Arc::new(BackgroundActions::new()),
         };
         let result = tool.execute(json!({}), CancellationToken::new()).await;
-        assert!(result.is_err(), "actions without a session context must fail");
+        assert!(
+            result.is_err(),
+            "actions without a session context must fail"
+        );
     }
 
     #[tokio::test]

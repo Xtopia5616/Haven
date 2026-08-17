@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::LlmRouter;
-use crate::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 
 /// Outcome of a speech-to-text call: the transcript plus an optional
 /// confidence (0.0-1.0) reported by the provider. `None` confidence means

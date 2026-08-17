@@ -64,6 +64,9 @@ impl Database {
     /// `confirmed` records whether the operation passed the safety gateway
     /// (Some(true)=approved, Some(false)=rejected, None=not gated) so the
     /// decision is persisted on the actual step row at creation time.
+    /// `id` is the pre-minted `step-*` id the live tool card already uses
+    /// (`None` mints a fresh one); passing the same id lets execute_step
+    /// persist the row the frontend's streamed card references.
     #[allow(clippy::too_many_arguments)]
     pub fn create_action_step(
         &self,
@@ -74,8 +77,11 @@ impl Database {
         is_high_risk: bool,
         silent: bool,
         confirmed: Option<bool>,
+        id: Option<&str>,
     ) -> anyhow::Result<SessionStep> {
-        let id = haven_common::types::new_id("step");
+        let id = id
+            .map(String::from)
+            .unwrap_or_else(|| haven_common::types::new_id("step"));
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -225,6 +231,7 @@ mod tests {
                 false,
                 false,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(step.action_tool.as_deref(), Some("read_file"));
@@ -242,7 +249,7 @@ mod tests {
         let db = test_db();
         seed_session(&db, "ses-1");
         let step = db
-            .create_action_step("ses-1", 0, "read_file", "{}", false, false, None)
+            .create_action_step("ses-1", 0, "read_file", "{}", false, false, None, None)
             .unwrap();
         db.complete_action_step(&step.id, "file content here", true)
             .unwrap();
@@ -256,7 +263,7 @@ mod tests {
         let db = test_db();
         seed_session(&db, "ses-1");
         let visible = db
-            .create_action_step("ses-1", 0, "shell", "{}", false, false, None)
+            .create_action_step("ses-1", 0, "shell", "{}", false, false, None, None)
             .unwrap();
         assert!(!visible.silent);
         let silent = db
@@ -267,6 +274,7 @@ mod tests {
                 r#"{"silent": true}"#,
                 false,
                 true,
+                None,
                 None,
             )
             .unwrap();
@@ -288,11 +296,11 @@ mod tests {
     fn get_session_steps_preserves_order_by_index() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        db.create_action_step("ses-1", 2, "c", "{}", false, false, None)
+        db.create_action_step("ses-1", 2, "c", "{}", false, false, None, None)
             .unwrap();
-        db.create_action_step("ses-1", 0, "a", "{}", false, false, None)
+        db.create_action_step("ses-1", 0, "a", "{}", false, false, None, None)
             .unwrap();
-        db.create_action_step("ses-1", 1, "b", "{}", false, false, None)
+        db.create_action_step("ses-1", 1, "b", "{}", false, false, None, None)
             .unwrap();
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 3);

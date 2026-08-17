@@ -1,4 +1,4 @@
-//! Windows 开机自启：通过任务计划程序（schactions）在登录时以
+//! Windows 开机自启：通过任务计划程序（schtasks）在登录时以
 //! `--autostart` 参数启动 Haven，替代原先的注册表 Run 键方案。
 //! 任务计划程序允许携带启动参数，使应用启动后默认隐藏窗口驻留系统
 //! 托盘，通过录音快捷键即可唤起窗口并开始录音。
@@ -20,21 +20,21 @@ pub fn is_autostart_launch() -> bool {
     std::env::args().any(|a| a == AUTOSTART_ARG)
 }
 
-/// 构造 schactions `/TR` 参数值：带引号的可执行文件路径 + 自启参数。
+/// 构造 schtasks `/TR` 参数值：带引号的可执行文件路径 + 自启参数。
 fn build_tr_arg(exe: &Path) -> String {
     format!("\"{}\" {}", exe.display(), AUTOSTART_ARG)
 }
 
 #[cfg(target_os = "windows")]
-fn run_schactions(args: &[&str]) -> Result<std::process::Output, String> {
-    std::process::Command::new("schactions")
+fn run_schtasks(args: &[&str]) -> Result<std::process::Output, String> {
+    std::process::Command::new("schtasks")
         .args(args)
         .output()
-        .map_err(|e| format!("schactions 执行失败: {e}"))
+        .map_err(|e| format!("schtasks 执行失败: {e}"))
 }
 
 #[cfg(target_os = "windows")]
-fn schactions_error(out: &std::process::Output, action: &str) -> String {
+fn schtasks_error(out: &std::process::Output, action: &str) -> String {
     let stderr = haven_common::encoding::decode_lossy(&out.stderr)
         .trim()
         .to_string();
@@ -57,13 +57,20 @@ fn schactions_error(out: &std::process::Output, action: &str) -> String {
 pub fn enable() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件: {e}"))?;
     let tr = build_tr_arg(&exe);
-    let out = run_schactions(&[
-        "/Create", "/F", "/TN", ACTION_NAME, "/TR", &tr, "/SC", "ONLOGON",
+    let out = run_schtasks(&[
+        "/Create",
+        "/F",
+        "/TN",
+        ACTION_NAME,
+        "/TR",
+        &tr,
+        "/SC",
+        "ONLOGON",
     ])?;
     if !out.status.success() {
         return Err(format!(
             "{}（如为权限不足，请以管理员身份运行 Haven 后重试，或检查组策略对任务计划程序的限制）",
-            schactions_error(&out, "创建计划任务")
+            schtasks_error(&out, "创建计划任务")
         ));
     }
     Ok(())
@@ -73,11 +80,11 @@ pub fn enable() -> Result<(), String> {
 #[cfg(target_os = "windows")]
 pub fn disable() -> Result<(), String> {
     if is_enabled()? {
-        let out = run_schactions(&["/Delete", "/F", "/TN", ACTION_NAME])?;
+        let out = run_schtasks(&["/Delete", "/F", "/TN", ACTION_NAME])?;
         if !out.status.success() {
             return Err(format!(
                 "{}（如为权限不足，请以管理员身份运行 Haven 后重试）",
-                schactions_error(&out, "删除计划任务")
+                schtasks_error(&out, "删除计划任务")
             ));
         }
     }
@@ -108,7 +115,7 @@ fn xml_has_autostart_arg(xml: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// schactions 重定向输出在中文系统上是 ANSI(GBK) 代码页（声明却写
+/// schtasks 重定向输出在中文系统上是 ANSI(GBK) 代码页（声明却写
 /// UTF-16）。统一用 decode_lossy：先按 UTF-8 解码，失败回退 GBK/CP936，
 /// 使中文路径可正确比对；若 GBK 也无法还原才退化为替换字符（U+FFFD），
 /// 此时路径比对自动退化为「任务存在」判断。
@@ -135,7 +142,7 @@ fn xml_command_matches(xml: &str, exe: &Path) -> Option<bool> {
 /// 会返回 false，用户重新开启即可用 `/F` 覆盖修复。
 #[cfg(target_os = "windows")]
 pub fn is_enabled() -> Result<bool, String> {
-    let out = run_schactions(&["/Query", "/TN", ACTION_NAME, "/XML"])?;
+    let out = run_schtasks(&["/Query", "/TN", ACTION_NAME, "/XML"])?;
     if !out.status.success() {
         return Ok(false);
     }

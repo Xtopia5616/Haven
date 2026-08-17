@@ -20,6 +20,6 @@ pub use router::{EndpointRole, LlmRouter};
 pub use stt::{McpToolCaller, SttClient, SttResult, build_stt_client};
 pub use tts::{TtsClient, build_tts_client};
 pub use types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FinishReason, LlmError,
-    LlmResponse, StreamChunk, ToolDefinition, ToolFunction, Usage,
+    FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, ToolDefinition,
+    ToolFunction, Usage,
 };

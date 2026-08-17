@@ -7,14 +7,16 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapters::adapter_for;
 use crate::client::{LlmClient, with_retry};
+use haven_common::types::{CanonicalMessage, ContentPart};
+
 use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
 use crate::types::{
-    CanonicalMessage, ContentPart, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
+    Embedding, FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk,
     ToolDefinition, Usage,
 };
 use futures_util::StreamExt;
 use futures_util::future::join_all;
-use haven_common::config::{LlmConfig, ModelEndpoint, compute_cost_usd};
+use haven_common::config::{ModelEndpoint, RouterConfig, compute_cost_usd};
 use tokio::sync::mpsc;
 
 /// Budget for the FIRST chunk of a stream, applied before any data has
@@ -95,56 +97,10 @@ fn scale_stream_idle(base: Duration, messages: &[CanonicalMessage]) -> Duration 
     Duration::from_secs(base_secs.saturating_add(extra_secs.min(cap_extra)).max(1))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EndpointRole {
-    SmallModel,
-    DefaultModel,
-    BalancedModel,
-    ImageModel,
-    AudioModel,
-    EmbeddingModel,
-}
-
-impl EndpointRole {
-    /// Canonical string identifier used in TOML, the frontend protocol, and the
-    /// model commands. Single source of truth for the role name mapping.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SmallModel => "small_model",
-            Self::DefaultModel => "default_model",
-            Self::BalancedModel => "balanced_model",
-            Self::ImageModel => "image_model",
-            Self::AudioModel => "audio_model",
-            Self::EmbeddingModel => "embedding_model",
-        }
-    }
-
-    /// Inverse of [`Self::as_str`]. Returns `None` for unknown role strings
-    /// so callers can validate input from the frontend/CLI.
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "small_model" => Self::SmallModel,
-            "default_model" => Self::DefaultModel,
-            "balanced_model" => Self::BalancedModel,
-            "image_model" => Self::ImageModel,
-            "audio_model" => Self::AudioModel,
-            "embedding_model" => Self::EmbeddingModel,
-            _ => return None,
-        })
-    }
-
-    /// All variants in their canonical order. Useful for iterating every
-    /// endpoint slot without duplicating the list at call sites.
-    pub const ALL: &'static [EndpointRole] = &[
-        Self::SmallModel,
-        Self::DefaultModel,
-        Self::BalancedModel,
-        Self::ImageModel,
-        Self::AudioModel,
-        Self::EmbeddingModel,
-    ];
-}
+/// Model slot roles. The canonical definition lives next to the config it
+/// routes to (`haven_common::config::EndpointRole`); re-exported here so
+/// callers keep a single `haven_llm::EndpointRole` path.
+pub use haven_common::config::EndpointRole;
 
 // ---------------------------------------------------------------------------
 // §2.6: Circuit Breaker state
@@ -310,7 +266,7 @@ type RuntimeStateParts = (
 );
 
 pub struct LlmRouter {
-    config: Arc<RwLock<LlmConfig>>,
+    config: Arc<RwLock<RouterConfig>>,
     pub small_model: Arc<dyn LlmClient>,
     pub default_model: Arc<dyn LlmClient>,
     pub balanced_model: Arc<dyn LlmClient>,
@@ -339,7 +295,7 @@ pub struct LlmRouter {
 }
 
 impl LlmRouter {
-    pub fn new(mut config: LlmConfig) -> Self {
+    pub fn new(mut config: RouterConfig) -> Self {
         // The per-response cap floor (`with_response_cap`) can push
         // `max_tokens` far above a provider's per-model output limit; sending
         // the raw value (e.g. the 1M default floor) makes Anthropic/OpenAI/
@@ -404,7 +360,7 @@ impl LlmRouter {
     /// Config-driven per-role request limit. Clamped to >= 1 so a hand-edited
     /// 0 (or a config without the new field) can never deadlock the router on
     /// an unacquirable permit.
-    fn request_limit(config: &LlmConfig) -> usize {
+    fn request_limit(config: &RouterConfig) -> usize {
         config.max_concurrent_requests.max(1)
     }
 
@@ -558,7 +514,7 @@ impl LlmRouter {
     ) -> Self {
         let (health, stream_rules, semaphores, rate_limited) = Self::runtime_state(64);
         Self {
-            config: Arc::new(RwLock::new(LlmConfig::default())),
+            config: Arc::new(RwLock::new(RouterConfig::default())),
             small_model,
             default_model,
             balanced_model,
@@ -601,15 +557,7 @@ impl LlmRouter {
     /// Returns true if the role has a non-empty api_key configured.
     /// Used by tools that should no-op gracefully when an endpoint is not set up.
     pub async fn is_role_configured(&self, role: EndpointRole) -> bool {
-        let cfg = self.config.read().await;
-        match role {
-            EndpointRole::SmallModel => !cfg.small_model.api_key.is_empty(),
-            EndpointRole::DefaultModel => !cfg.default_model.api_key.is_empty(),
-            EndpointRole::BalancedModel => !cfg.balanced_model.api_key.is_empty(),
-            EndpointRole::ImageModel => !cfg.image_model.api_key.is_empty(),
-            EndpointRole::AudioModel => !cfg.audio_model.api_key.is_empty(),
-            EndpointRole::EmbeddingModel => !cfg.embedding_model.api_key.is_empty(),
-        }
+        self.config.read().await.is_configured(role)
     }
 
     fn health(&self, role: &EndpointRole) -> usize {
@@ -623,18 +571,10 @@ impl LlmRouter {
     #[doc(hidden)]
     pub async fn force_role_configured(&self, role: EndpointRole, configured: bool) {
         let mut cfg = self.config.write().await;
-        let key = if configured {
-            "sk-test".to_string()
+        if configured {
+            cfg.endpoint_mut(role).api_key = "sk-test".to_string();
         } else {
-            String::new()
-        };
-        match role {
-            EndpointRole::SmallModel => cfg.small_model.api_key = key,
-            EndpointRole::DefaultModel => cfg.default_model.api_key = key,
-            EndpointRole::BalancedModel => cfg.balanced_model.api_key = key,
-            EndpointRole::ImageModel => cfg.image_model.api_key = key,
-            EndpointRole::AudioModel => cfg.audio_model.api_key = key,
-            EndpointRole::EmbeddingModel => cfg.embedding_model.api_key = key,
+            cfg.endpoint_mut(role).api_key = String::new();
         }
     }
 
@@ -659,10 +599,10 @@ impl LlmRouter {
     pub async fn stt_role(&self) -> Option<EndpointRole> {
         let cfg = self.config.read().await;
         if cfg.stt_use_audio_model {
-            if cfg.audio_model.api_key.is_empty() {
-                None
-            } else {
+            if cfg.is_configured(EndpointRole::AudioModel) {
                 Some(EndpointRole::AudioModel)
+            } else {
+                None
             }
         } else {
             Some(EndpointRole::DefaultModel)
@@ -674,7 +614,7 @@ impl LlmRouter {
     /// endpoint is configured, otherwise the default model.
     pub async fn vision_role(&self) -> EndpointRole {
         let cfg = self.config.read().await;
-        if cfg.vision_use_image_model && !cfg.image_model.api_key.is_empty() {
+        if cfg.vision_use_image_model && cfg.is_configured(EndpointRole::ImageModel) {
             EndpointRole::ImageModel
         } else {
             EndpointRole::DefaultModel
@@ -1417,24 +1357,39 @@ impl LlmRouter {
         endpoint.health_check().await
     }
 
+    /// Tri-state connectivity probe for the top-right status chip.
+    ///
+    /// - A role without a configured api_key short-circuits to
+    ///   [`LlmConnectionStatus::Unconfigured`] **without any network I/O** —
+    ///   neither the TCP/TLS handshake nor the GET is attempted, so an
+    ///   unset-up install never wastes a probe on a bare default base_url.
+    /// - A configured role runs the same `/models` health check as
+    ///   [`LlmRouter::health_check`] and reports Ready on success /
+    ///   Disconnected on failure.
+    pub async fn connection_status(&self, role: EndpointRole) -> LlmConnectionStatus {
+        if !self.is_role_configured(role).await {
+            return LlmConnectionStatus::Unconfigured;
+        }
+        match self.health_check(role).await {
+            Ok(()) => LlmConnectionStatus::Ready,
+            Err(e) => {
+                tracing::debug!("LLM connection probe failed for {}: {}", role.as_str(), e);
+                LlmConnectionStatus::Disconnected
+            }
+        }
+    }
+
     /// Pre-warm HTTP connections for every configured endpoint so the first
     /// request to any model slot skips TCP+TLS handshake (~50-200ms).
     /// Unconfigured roles (empty `api_key`) are skipped. Each endpoint is
     /// checked concurrently and retried once on transient failure.
     pub async fn prewarm_all(&self) {
         let cfg = self.config.read().await;
-        let configured: Vec<EndpointRole> = [
-            (EndpointRole::SmallModel, &cfg.small_model),
-            (EndpointRole::DefaultModel, &cfg.default_model),
-            (EndpointRole::BalancedModel, &cfg.balanced_model),
-            (EndpointRole::ImageModel, &cfg.image_model),
-            (EndpointRole::AudioModel, &cfg.audio_model),
-            (EndpointRole::EmbeddingModel, &cfg.embedding_model),
-        ]
-        .into_iter()
-        .filter(|(_, endpoint)| !endpoint.api_key.is_empty())
-        .map(|(role, _)| role)
-        .collect();
+        let configured: Vec<EndpointRole> = EndpointRole::ALL
+            .iter()
+            .copied()
+            .filter(|role| cfg.is_configured(*role))
+            .collect();
         drop(cfg);
 
         if configured.is_empty() {
@@ -1475,7 +1430,7 @@ impl LlmRouter {
         );
     }
 
-    pub async fn config(&self) -> tokio::sync::RwLockReadGuard<'_, LlmConfig> {
+    pub async fn config(&self) -> tokio::sync::RwLockReadGuard<'_, RouterConfig> {
         self.config.read().await
     }
 
@@ -1489,15 +1444,7 @@ impl LlmRouter {
         completion_tokens: u32,
     ) -> Option<f64> {
         let cfg = self.config.read().await;
-        let endpoint = match role {
-            EndpointRole::SmallModel => &cfg.small_model,
-            EndpointRole::DefaultModel => &cfg.default_model,
-            EndpointRole::BalancedModel => &cfg.balanced_model,
-            EndpointRole::ImageModel => &cfg.image_model,
-            EndpointRole::AudioModel => &cfg.audio_model,
-            EndpointRole::EmbeddingModel => &cfg.embedding_model,
-        };
-        compute_cost_usd(endpoint, prompt_tokens, completion_tokens)
+        compute_cost_usd(cfg.endpoint(role), prompt_tokens, completion_tokens)
     }
 
     pub fn balanced_model_active(&self) -> bool {
@@ -1521,9 +1468,10 @@ mod tests {
     use super::*;
     use crate::stream_rules::StreamRuleMode;
     use crate::types::LlmError::Unknown;
-    use crate::{CanonicalToolCall, Usage};
+    use crate::types::Usage;
     use async_trait::async_trait;
     use futures_util::stream;
+    use haven_common::types::CanonicalToolCall;
     use std::pin::Pin;
 
     fn llm_message(content: Vec<ContentPart>) -> CanonicalMessage {
@@ -1681,7 +1629,7 @@ mod tests {
 
     #[test]
     fn router_selects_correct_endpoint() {
-        let cfg = LlmConfig::default();
+        let cfg = RouterConfig::default();
         let router = LlmRouter::new(cfg);
         let _sm = router.select_endpoint(EndpointRole::SmallModel);
         let _re = router.select_endpoint(EndpointRole::DefaultModel);
@@ -1693,7 +1641,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_role_configured_reports_api_key_state() {
-        let mut cfg = LlmConfig::default();
+        let mut cfg = RouterConfig::default();
         cfg.small_model.api_key = "sk-test".into();
         cfg.default_model.api_key = String::new();
         cfg.balanced_model.api_key = "sk-bal".into();
@@ -2369,7 +2317,7 @@ mod tests {
 
     #[test]
     fn balanced_model_active_defaults_to_false() {
-        let cfg = LlmConfig::default();
+        let cfg = RouterConfig::default();
         let router = LlmRouter::new(cfg);
         assert!(!router.balanced_model_active());
     }
@@ -2635,7 +2583,7 @@ mod tests {
             client,
         ));
         // Fast retry pacing so the RateLimit error surfaces immediately.
-        let cfg = LlmConfig {
+        let cfg = RouterConfig {
             retry_base_secs: 0,
             retry_factor: 1,
             retry_max_secs: 0,
@@ -2689,7 +2637,7 @@ mod tests {
         // A huge response-cap floor (e.g. the 128k default) must not be sent
         // raw to providers with smaller output budgets: Anthropic/OpenAI/Gemini
         // reject max_tokens above the model limit with HTTP 400.
-        let mut cfg = haven_common::config::AppConfig::default().llm;
+        let mut cfg = RouterConfig::default();
         cfg.default_model.model_name = "gpt-4o-mini".into(); // catalog: 128k
         cfg.default_model.max_tokens = 1_000_000; // absurd cap floor
         let router = LlmRouter::new(cfg);

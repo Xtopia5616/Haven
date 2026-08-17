@@ -24,13 +24,11 @@ anyhow.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 haven-memory = { path = "../memory" }
-haven-session = { path = "../session" }
 haven-tools = { path = "../tools" }
 haven-agent = { path = "../agent" }
 haven-input = { path = "../input" }
 haven-common = { path = "../common" }
 haven-llm = { path = "../llm" }
-haven-gateway = { path = "../gateway" }
 async-trait.workspace = true
 tokio-util.workspace = true
 base64.workspace = true

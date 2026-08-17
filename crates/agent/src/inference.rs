@@ -923,8 +923,9 @@ fn extract_json_array(text: &str) -> String {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use haven_common::types::CanonicalMessage;
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{CanonicalMessage, FinishReason, LlmError, LlmResponse, StreamChunk};
+    use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use haven_memory::repositories::messages::Message;
     use std::pin::Pin;
 

@@ -105,7 +105,10 @@ impl Tool for ShellTool {
         // immediately. The result is pushed back to the session automatically on
         // completion; the agent can list all actions with the `actions` tool.
         if input["background"].as_bool().unwrap_or(false) {
-            let action_id = self.actions.spawn_shell(cmd, &shell, max_chars, cwd).await?;
+            let action_id = self
+                .actions
+                .spawn_shell(cmd, &shell, max_chars, cwd)
+                .await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
                 "action_id": action_id,

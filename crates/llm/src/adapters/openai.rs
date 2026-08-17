@@ -12,9 +12,10 @@ use crate::adapters::{
     build_client, build_headers, health_check_request, normalize_web_search_call_item, send_request,
 };
 use crate::client::{LlmClient, http_status_to_error};
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+
 use crate::types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, Embedding, FinishReason,
-    LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 

@@ -12,10 +12,9 @@ use crate::adapters::{
     spawn_line_reader,
 };
 use crate::client::LlmClient;
-use crate::types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FinishReason, LlmError,
-    LlmResponse, StreamChunk, ToolDefinition, Usage,
-};
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+
+use crate::types::{FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage};
 use haven_common::config::ModelEndpoint;
 
 // ---------------------------------------------------------------------------

@@ -1144,7 +1144,7 @@ impl Tool for SelfTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Dotted config path, e.g. session.max_concurrent or llm.default_model.model_name"
+                    "description": "Dotted config path, e.g. session.max_concurrent or llm.roles (provider/role assignments)"
                 },
                 "value": {
                     "description": "New JSON value for config_set"
@@ -1323,7 +1323,14 @@ mod tests {
     async fn test_config_get_full_masks_api_keys() {
         let (tool, _dir) = make_tool();
         tool.mutate_config(|l| {
-            l.config_mut().llm.default_model.api_key = "super-secret".into();
+            l.config_mut()
+                .llm
+                .providers
+                .push(haven_common::config::ProviderConfig {
+                    name: "openai".into(),
+                    api_key: "super-secret".into(),
+                    ..Default::default()
+                });
             Ok(())
         })
         .unwrap();
@@ -1332,7 +1339,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success);
-        assert_eq!(result.output["llm"]["default_model"]["api_key"], "");
+        assert_eq!(result.output["llm"]["providers"][0]["api_key"], "");
         assert_eq!(result.output["session"]["max_concurrent"], 3);
     }
 
@@ -1341,6 +1348,14 @@ mod tests {
         let (tool, _dir) = make_tool();
         tool.mutate_config(|l| {
             l.config_mut().session.max_concurrent = 7;
+            l.config_mut()
+                .llm
+                .providers
+                .push(haven_common::config::ProviderConfig {
+                    name: "openai".into(),
+                    api_key: "super-secret".into(),
+                    ..Default::default()
+                });
             Ok(())
         })
         .unwrap();
@@ -1367,7 +1382,7 @@ mod tests {
         // api_key paths are masked.
         let result = tool
             .execute(
-                json!({"operation": "config_get", "path": "llm.default_model.api_key"}),
+                json!({"operation": "config_get", "path": "llm.providers.0.api_key"}),
                 CancellationToken::new(),
             )
             .await
@@ -1379,22 +1394,30 @@ mod tests {
     async fn test_config_get_parent_paths_mask_nested_api_keys() {
         let (tool, _dir) = make_tool();
         tool.mutate_config(|l| {
-            l.config_mut().llm.default_model.api_key = "super-secret".into();
+            l.config_mut()
+                .llm
+                .providers
+                .push(haven_common::config::ProviderConfig {
+                    name: "openai".into(),
+                    api_key: "super-secret".into(),
+                    ..Default::default()
+                });
             Ok(())
         })
         .unwrap();
 
-        // Parent paths must not leak the embedded api_key.
+        // The provider path must mask its embedded api_key.
         let result = tool
             .execute(
-                json!({"operation": "config_get", "path": "llm.default_model"}),
+                json!({"operation": "config_get", "path": "llm.providers.0"}),
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert_eq!(result.output["api_key"], "[masked]");
-        assert!(result.output["model_name"].as_str().is_some());
+        assert!(result.output["base_url"].as_str().is_some());
 
+        // The parent `llm` path must mask every nested provider api_key.
         let result = tool
             .execute(
                 json!({"operation": "config_get", "path": "llm"}),
@@ -1402,7 +1425,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.output["default_model"]["api_key"], "[masked]");
+        assert_eq!(result.output["providers"][0]["api_key"], "[masked]");
     }
 
     #[tokio::test]

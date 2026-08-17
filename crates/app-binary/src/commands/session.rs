@@ -365,7 +365,7 @@ pub async fn get_last_conversation(
 mod tests {
     use super::*;
     use crate::commands::SessionListResponse;
-    use haven_memory::repositories::messages::MessageAttachment;
+    use haven_common::types::MessageAttachment;
 
     #[test]
     fn test_session_list_response_serde() {

@@ -158,35 +158,193 @@ impl Default for ModelEndpoint {
     }
 }
 
-/// A named entry in the model library. `endpoint` holds a reusable endpoint
-/// definition; `name` is the unique id referenced by role selection in the
-/// settings UI. Roles are materialized copies of an entry's endpoint, so the
-/// agent/router continue to read role fields directly.
+/// A configured LLM provider: connection-level endpoint definition identified
+/// by `name`. The model library is no longer a manually-maintained list — it
+/// is the union of each provider's `/models` fetch. Roles reference a provider
+/// by name and pick a model id from that provider's fetched list; the router
+/// materializes the six role endpoints from providers + role slots whenever it
+/// is built or hot-swapped (see [`LlmConfig::materialize`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// Unique id referenced by [`RoleConfig::provider`] and the settings UI.
+    pub name: String,
+    /// Legacy provider hint used to derive the wire protocol when `api_style`
+    /// is empty (e.g. `openai` / `anthropic` / `google` / `llama.cpp`).
+    #[serde(default)]
+    pub provider: String,
+    /// Wire protocol style, mirroring [`ModelEndpoint::api_style`]. When empty
+    /// the style is derived from `provider`.
+    #[serde(default)]
+    pub api_style: Option<String>,
+    pub base_url: String,
+    pub api_key: String,
+    // §2.15: auth header customization
+    #[serde(default = "default_auth_header_name")]
+    pub auth_header_name: String,
+    #[serde(default = "default_auth_header_prefix")]
+    pub auth_header_prefix: String,
+    // §2.5: proxy support
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    #[serde(default)]
+    pub no_proxy: Option<String>,
+    // —— optional per-provider defaults adopted by roles without overrides ——
+    /// Default per-response token cap for roles on this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_max_tokens: Option<u32>,
+    /// Default sampling temperature for roles on this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_temperature: Option<f32>,
+    /// Default first-response timeout (secs) for roles on this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_secs: Option<u64>,
+    /// Default streaming idle timeout (secs); `None` = no per-provider
+    /// override (the router's global `stream_idle_timeout_secs` applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_streaming_secs: Option<u64>,
+    /// Default provider built-in web search mode (`off`/`auto`/`always`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_web_search: Option<String>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            provider: "openai".into(),
+            api_style: None,
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: String::new(),
+            auth_header_name: default_auth_header_name(),
+            auth_header_prefix: default_auth_header_prefix(),
+            proxy_url: None,
+            no_proxy: None,
+            default_max_tokens: None,
+            default_temperature: None,
+            default_timeout_secs: None,
+            default_timeout_streaming_secs: None,
+            default_web_search: None,
+        }
+    }
+}
+
+/// Role→(provider, model) assignment for one of the six model slots
+/// ([`EndpointRole`]). `role` holds the canonical slot name (stamped by
+/// [`LlmConfig::set_role`]); `provider` names a [`ProviderConfig`]; `model` is
+/// a model id on that provider. All tuning fields are optional overrides:
+/// `None` falls back to the provider default, then the builtin model catalog
+/// (context window) or [`ModelEndpoint`] built-in defaults. An empty
+/// `provider` means the role is unconfigured.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
-pub struct ModelEntry {
-    pub name: String,
-    pub endpoint: ModelEndpoint,
+pub struct RoleConfig {
+    /// Canonical slot name (e.g. `default_model`). Stamped by the config
+    /// writer, not the UI.
+    #[serde(default)]
+    pub role: String,
+    /// Referenced provider name (empty = role unconfigured).
+    pub provider: String,
+    /// Model id on that provider.
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_1k_input_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_1k_output_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_echo_max_chars: Option<usize>,
+}
+
+impl RoleConfig {
+    /// Stamps the canonical role name (used by [`LlmConfig::set_role`]).
+    pub fn stamp_role(&mut self, role: &str) {
+        self.role = role.to_string();
+    }
+
+    /// True when the slot is fully configured (provider + model both set).
+    pub fn is_assigned(&self) -> bool {
+        !self.provider.is_empty() && !self.model.is_empty()
+    }
+}
+
+/// The six model slots (roles) served by the router. Canonical role names
+/// (`as_str`) are used in TOML, the frontend protocol, and the model
+/// commands; [`LlmConfig::role`] / [`RouterConfig::endpoint`] map a role to
+/// its slot, so the 6-arm role match lives in exactly one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EndpointRole {
+    SmallModel,
+    DefaultModel,
+    BalancedModel,
+    ImageModel,
+    AudioModel,
+    EmbeddingModel,
+}
+
+impl EndpointRole {
+    /// Canonical string identifier used in TOML, the frontend protocol, and
+    /// the model commands. Single source of truth for the role name mapping.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SmallModel => "small_model",
+            Self::DefaultModel => "default_model",
+            Self::BalancedModel => "balanced_model",
+            Self::ImageModel => "image_model",
+            Self::AudioModel => "audio_model",
+            Self::EmbeddingModel => "embedding_model",
+        }
+    }
+
+    /// Inverse of [`Self::as_str`]. Returns `None` for unknown role strings
+    /// so callers can validate input from the frontend/CLI.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "small_model" => Self::SmallModel,
+            "default_model" => Self::DefaultModel,
+            "balanced_model" => Self::BalancedModel,
+            "image_model" => Self::ImageModel,
+            "audio_model" => Self::AudioModel,
+            "embedding_model" => Self::EmbeddingModel,
+            _ => return None,
+        })
+    }
+
+    /// All variants in their canonical order. Useful for iterating every
+    /// endpoint slot without duplicating the list at call sites.
+    pub const ALL: &'static [EndpointRole] = &[
+        Self::SmallModel,
+        Self::DefaultModel,
+        Self::BalancedModel,
+        Self::ImageModel,
+        Self::AudioModel,
+        Self::EmbeddingModel,
+    ];
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LlmConfig {
-    pub small_model: ModelEndpoint,
-    pub default_model: ModelEndpoint,
-    pub balanced_model: ModelEndpoint,
-    pub image_model: ModelEndpoint,
-    pub audio_model: ModelEndpoint,
-    pub embedding_model: ModelEndpoint,
-    /// Model library: named, reusable endpoint definitions that roles can
-    /// reference in the settings UI. Each entry's `name` is unique.
+    /// Configured providers — the connection-level model library. Roles
+    /// reference these by name; the available model ids on each provider are
+    /// fetched from its `/models` endpoint at settings time (see
+    /// `commands::model::discover_all_models`).
     #[serde(default)]
-    pub models: Vec<ModelEntry>,
-    /// Maps a role key (e.g. `default_model`) to the name of the model-library
-    /// entry the role is configured to use. Purely informational for the
-    /// settings UI: the agent reads the materialized role fields directly.
+    pub providers: Vec<ProviderConfig>,
+    /// Role→(provider, model) assignments. A slot with an empty `provider` is
+    /// unconfigured (the router materializes a no-key endpoint for it).
     #[serde(default)]
-    pub role_models: HashMap<String, String>,
+    pub roles: Vec<RoleConfig>,
     // §2.12: router-level total timeout
     pub max_total_duration_secs: u64,
     /// Streaming idle timeout: a stream that delivers no chunk for this long
@@ -225,14 +383,8 @@ pub struct LlmConfig {
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
-            small_model: ModelEndpoint::default(),
-            default_model: ModelEndpoint::default(),
-            balanced_model: ModelEndpoint::default(),
-            image_model: ModelEndpoint::default(),
-            audio_model: ModelEndpoint::default(),
-            embedding_model: ModelEndpoint::default(),
-            models: Vec::new(),
-            role_models: HashMap::new(),
+            providers: Vec::new(),
+            roles: Vec::new(),
             max_total_duration_secs: 180,
             stream_idle_timeout_secs: 20,
             retry_base_secs: 2,
@@ -247,44 +399,269 @@ impl Default for LlmConfig {
 }
 
 impl LlmConfig {
-    /// Apply the global per-response output-cap floor to every role endpoint:
-    /// each endpoint's effective `max_tokens` becomes
-    /// `max(endpoint.max_tokens, cap)`. Called when building the router so a
-    /// small legacy per-endpoint cap (the old default was 8192) can no longer
-    /// truncate long outputs mid-stream; per-endpoint values larger than the
-    /// floor are preserved.
-    pub fn with_response_cap(mut self, cap: u32) -> Self {
-        for ep in [
-            &mut self.small_model,
-            &mut self.default_model,
-            &mut self.balanced_model,
-            &mut self.image_model,
-            &mut self.audio_model,
-            &mut self.embedding_model,
-        ] {
-            ep.max_tokens = ep.max_tokens.max(cap);
-        }
-        self
+    /// Look up a configured role slot by its canonical role name.
+    pub fn role(&self, role: EndpointRole) -> Option<&RoleConfig> {
+        self.roles.iter().find(|r| r.role == role.as_str())
     }
 
-    /// Apply the global reasoning-echo cap to every role endpoint that does
-    /// not already set its own `reasoning_echo_max_chars` override. Called
-    /// when building the router so the cap can be tuned from the "限制"
-    /// settings tab without editing each endpoint.
-    pub fn with_reasoning_echo_cap(mut self, cap: usize) -> Self {
-        for ep in [
+    /// Mutable counterpart of [`Self::role`].
+    pub fn role_mut(&mut self, role: EndpointRole) -> Option<&mut RoleConfig> {
+        self.roles.iter_mut().find(|r| r.role == role.as_str())
+    }
+
+    /// Insert or replace the slot for a role (the `role` field is stamped by
+    /// the canonical name so callers can build a [`RoleConfig`] without it).
+    pub fn set_role(&mut self, role: EndpointRole, mut config: RoleConfig) {
+        let name = role.as_str().to_string();
+        match self.roles.iter_mut().find(|r| r.role == name) {
+            Some(existing) => {
+                config.stamp_role(&name);
+                *existing = config;
+            }
+            None => {
+                let mut config = config;
+                config.stamp_role(&name);
+                self.roles.push(config);
+            }
+        }
+    }
+
+    /// Look up a provider by name.
+    pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
+        self.providers.iter().find(|p| p.name == name)
+    }
+
+    /// True when a role is usable at runtime: it references a configured
+    /// provider (non-empty api_key) and names a model. Used by tools that
+    /// should no-op gracefully when an endpoint is not set up.
+    pub fn is_configured(&self, role: EndpointRole) -> bool {
+        let Some(slot) = self.role(role) else {
+            return false;
+        };
+        if !slot.is_assigned() {
+            return false;
+        }
+        self.provider(slot.provider.as_str())
+            .is_some_and(|p| !p.api_key.is_empty())
+    }
+
+    /// Materialize the endpoint backing a role from its provider + role slot.
+    /// Unassigned roles (or roles referencing a missing provider) materialize
+    /// a no-key [`ModelEndpoint::default`], so callers never panic and the
+    /// router treats them as unconfigured.
+    pub fn materialize_endpoint(&self, role: EndpointRole) -> ModelEndpoint {
+        let mut ep = ModelEndpoint::default();
+        let Some(slot) = self.role(role) else {
+            return ep;
+        };
+        if !slot.is_assigned() {
+            return ep;
+        }
+        let Some(p) = self.provider(slot.provider.as_str()) else {
+            return ep;
+        };
+        ep.model_name = slot.model.clone();
+        ep.api_key = p.api_key.clone();
+        ep.api_style = p.api_style.clone();
+        ep.provider = wire_provider_hint(&p.provider, &p.api_style);
+        ep.base_url = p.base_url.clone();
+        ep.auth_header_name = p.auth_header_name.clone();
+        ep.auth_header_prefix = p.auth_header_prefix.clone();
+        ep.proxy_url = p.proxy_url.clone();
+        ep.no_proxy = p.no_proxy.clone();
+        ep.max_tokens = p.default_max_tokens.unwrap_or(ep.max_tokens);
+        ep.temperature = p.default_temperature.unwrap_or(ep.temperature);
+        ep.timeout_secs = p.default_timeout_secs.unwrap_or(ep.timeout_secs);
+        ep.timeout_streaming_secs = p.default_timeout_streaming_secs;
+        ep.web_search = p.default_web_search.clone();
+        // Per-role overrides win over provider defaults.
+        if let Some(t) = slot.temperature {
+            ep.temperature = t;
+        }
+        if let Some(c) = slot.context_window {
+            ep.context_window = Some(c);
+        }
+        if let Some(c) = slot.cost_per_1k_input_tokens {
+            ep.cost_per_1k_input_tokens = c;
+        }
+        if let Some(c) = slot.cost_per_1k_output_tokens {
+            ep.cost_per_1k_output_tokens = c;
+        }
+        if let Some(m) = slot.max_tokens {
+            ep.max_tokens = m;
+        }
+        if let Some(r) = &slot.reasoning_effort {
+            ep.reasoning_effort = Some(r.clone());
+        }
+        if let Some(w) = &slot.web_search {
+            ep.web_search = Some(w.clone());
+        }
+        if let Some(r) = slot.reasoning_echo_max_chars {
+            ep.reasoning_echo_max_chars = Some(r);
+        }
+        ep
+    }
+
+    /// Build the fully materialized router configuration: one endpoint per
+    /// role plus every router-level tuning knob. Called whenever the router is
+    /// constructed or hot-swapped. `response_cap` / `reasoning_echo_cap`
+    /// mirror the legacy `with_response_cap` / `with_reasoning_echo_cap`
+    /// transforms (applied to the materialized endpoints so hand-edited
+    /// per-role overrides are still respected).
+    pub fn materialize(
+        &self,
+        response_cap: Option<u32>,
+        reasoning_echo_cap: Option<usize>,
+    ) -> RouterConfig {
+        let mut cap = RouterConfig {
+            small_model: self.materialize_endpoint(EndpointRole::SmallModel),
+            default_model: self.materialize_endpoint(EndpointRole::DefaultModel),
+            balanced_model: self.materialize_endpoint(EndpointRole::BalancedModel),
+            image_model: self.materialize_endpoint(EndpointRole::ImageModel),
+            audio_model: self.materialize_endpoint(EndpointRole::AudioModel),
+            embedding_model: self.materialize_endpoint(EndpointRole::EmbeddingModel),
+            max_total_duration_secs: self.max_total_duration_secs,
+            stream_idle_timeout_secs: self.stream_idle_timeout_secs,
+            retry_base_secs: self.retry_base_secs,
+            retry_factor: self.retry_factor,
+            retry_max_secs: self.retry_max_secs,
+            retry_jitter: self.retry_jitter,
+            stt_use_audio_model: self.stt_use_audio_model,
+            vision_use_image_model: self.vision_use_image_model,
+            max_concurrent_requests: self.max_concurrent_requests,
+        };
+        cap.apply_caps(response_cap, reasoning_echo_cap);
+        cap
+    }
+}
+
+/// Normalize the legacy `provider` hint used by [`ModelEndpoint::api_style`]
+/// derivation and the `discover_models` auth scheme when no explicit
+/// `api_style` is configured.
+fn wire_provider_hint(provider_hint: &str, api_style: &Option<String>) -> String {
+    match api_style.as_deref() {
+        Some("anthropic") => "anthropic".into(),
+        Some("gemini") => "gemini".into(),
+        Some("llama.cpp") => "llama.cpp".into(),
+        Some(_) => "openai".into(),
+        None if provider_hint.is_empty() => "openai".into(),
+        None => provider_hint.to_string(),
+    }
+}
+
+/// The fully materialized router configuration: six role endpoints plus the
+/// router-level tuning knobs. Built from [`LlmConfig`] (providers + role
+/// slots) via [`LlmConfig::materialize`] whenever the router is constructed
+/// or hot-swapped — this is exactly the shape [`LlmRouter`] stores and reads,
+/// so runtime hot paths keep working on plain endpoint references.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RouterConfig {
+    pub small_model: ModelEndpoint,
+    pub default_model: ModelEndpoint,
+    pub balanced_model: ModelEndpoint,
+    pub image_model: ModelEndpoint,
+    pub audio_model: ModelEndpoint,
+    pub embedding_model: ModelEndpoint,
+    pub max_total_duration_secs: u64,
+    pub stream_idle_timeout_secs: u64,
+    pub retry_base_secs: u64,
+    pub retry_factor: u32,
+    pub retry_max_secs: u64,
+    pub retry_jitter: f32,
+    pub stt_use_audio_model: bool,
+    pub vision_use_image_model: bool,
+    pub max_concurrent_requests: usize,
+}
+
+impl Default for RouterConfig {
+    fn default() -> Self {
+        Self {
+            small_model: ModelEndpoint::default(),
+            default_model: ModelEndpoint::default(),
+            balanced_model: ModelEndpoint::default(),
+            image_model: ModelEndpoint::default(),
+            audio_model: ModelEndpoint::default(),
+            embedding_model: ModelEndpoint::default(),
+            max_total_duration_secs: 180,
+            stream_idle_timeout_secs: 20,
+            retry_base_secs: 2,
+            retry_factor: 2,
+            retry_max_secs: 30,
+            retry_jitter: 0.2,
+            stt_use_audio_model: true,
+            vision_use_image_model: true,
+            max_concurrent_requests: 2,
+        }
+    }
+}
+
+impl RouterConfig {
+    /// The endpoint slot backing a role. Central role→field mapping: the
+    /// router, agent, and model commands all route through this instead of
+    /// repeating the per-role match across the codebase.
+    pub fn endpoint(&self, role: EndpointRole) -> &ModelEndpoint {
+        match role {
+            EndpointRole::SmallModel => &self.small_model,
+            EndpointRole::DefaultModel => &self.default_model,
+            EndpointRole::BalancedModel => &self.balanced_model,
+            EndpointRole::ImageModel => &self.image_model,
+            EndpointRole::AudioModel => &self.audio_model,
+            EndpointRole::EmbeddingModel => &self.embedding_model,
+        }
+    }
+
+    /// Mutable counterpart of [`Self::endpoint`].
+    pub fn endpoint_mut(&mut self, role: EndpointRole) -> &mut ModelEndpoint {
+        match role {
+            EndpointRole::SmallModel => &mut self.small_model,
+            EndpointRole::DefaultModel => &mut self.default_model,
+            EndpointRole::BalancedModel => &mut self.balanced_model,
+            EndpointRole::ImageModel => &mut self.image_model,
+            EndpointRole::AudioModel => &mut self.audio_model,
+            EndpointRole::EmbeddingModel => &mut self.embedding_model,
+        }
+    }
+
+    /// True when the role has a non-empty api_key configured. Used by tools
+    /// that should no-op gracefully when an endpoint is not set up.
+    pub fn is_configured(&self, role: EndpointRole) -> bool {
+        !self.endpoint(role).api_key.is_empty()
+    }
+
+    /// Owned iteration over every role slot in canonical order (a fixed 6
+    /// elements), used by transforms that apply a value to all endpoints.
+    pub fn endpoints_mut(&mut self) -> impl Iterator<Item = &mut ModelEndpoint> {
+        [
             &mut self.small_model,
             &mut self.default_model,
             &mut self.balanced_model,
             &mut self.image_model,
             &mut self.audio_model,
             &mut self.embedding_model,
-        ] {
-            if ep.reasoning_echo_max_chars.is_none() {
-                ep.reasoning_echo_max_chars = Some(cap);
+        ]
+        .into_iter()
+    }
+
+    /// Apply the global per-response output-cap floor and the global
+    /// reasoning-echo cap to every role endpoint. The response-cap floor
+    /// raises small legacy `max_tokens` values so long outputs are never
+    /// truncated mid-stream (per-endpoint values above the floor are
+    /// preserved); the reasoning-echo cap fills `reasoning_echo_max_chars`
+    /// only where the endpoint does not set its own override.
+    pub fn apply_caps(&mut self, response_cap: Option<u32>, reasoning_echo_cap: Option<usize>) {
+        if let Some(cap) = response_cap {
+            for ep in self.endpoints_mut() {
+                ep.max_tokens = ep.max_tokens.max(cap);
             }
         }
-        self
+        if let Some(cap) = reasoning_echo_cap {
+            for ep in self.endpoints_mut() {
+                if ep.reasoning_echo_max_chars.is_none() {
+                    ep.reasoning_echo_max_chars = Some(cap);
+                }
+            }
+        }
     }
 }
 
@@ -1127,14 +1504,8 @@ settings_pair! {
     log: LogConfig,
     tool_settings: HashMap<String, ToolConfig>,
     ;
-    settings.llm.small_model.api_key = String::new();
-    settings.llm.default_model.api_key = String::new();
-    settings.llm.balanced_model.api_key = String::new();
-    settings.llm.image_model.api_key = String::new();
-    settings.llm.audio_model.api_key = String::new();
-    settings.llm.embedding_model.api_key = String::new();
-    for m in settings.llm.models.iter_mut() {
-        m.endpoint.api_key = String::new();
+    for p in settings.llm.providers.iter_mut() {
+        p.api_key = String::new();
     }
     settings.media.stt.api_key = String::new();
     settings.media.ocr.api_key = String::new();
@@ -1151,6 +1522,20 @@ settings_pair! {
 pub struct ConfigLoader {
     path: PathBuf,
     config: AppConfig,
+}
+
+/// Backup path with a timestamp so a failed or re-corrupted config never
+/// overwrites the last usable recovery copy.
+fn timestamped_backup_path(path: &Path) -> PathBuf {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let base = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("config");
+    path.with_file_name(format!("{base}.toml.{ts}.bak"))
 }
 
 impl ConfigLoader {
@@ -1201,14 +1586,14 @@ impl ConfigLoader {
         }
         tracing::info!("loading config from {}", path.display());
         let content = std::fs::read_to_string(path)?;
-        let config: AppConfig = match toml::from_str(&content) {
+        let config: AppConfig = match toml::from_str::<AppConfig>(&content) {
             Ok(c) => c,
             Err(e) => {
                 // Never silently start with defaults: the next save() would
                 // overwrite the user's config (MCP servers, API keys, skills)
                 // with defaults, destroying it. Back up the unparsable file
                 // so it can be recovered, then continue with defaults.
-                let backup = path.with_extension("toml.bak");
+                let backup = timestamped_backup_path(path);
                 match std::fs::copy(path, &backup) {
                     Ok(_) => tracing::error!(
                         "config parse error at {}; original backed up to {}: {e}",
@@ -1272,26 +1657,19 @@ impl ConfigLoader {
         // automatically and cannot be forgotten (the two structs stay in sync
         // via `From<&AppConfig> for Settings`, which masks keys only).
         let mut llm = settings.llm.clone();
-        for (next, prev) in [
-            (&mut llm.small_model, &prev_llm.small_model),
-            (&mut llm.default_model, &prev_llm.default_model),
-            (&mut llm.balanced_model, &prev_llm.balanced_model),
-            (&mut llm.image_model, &prev_llm.image_model),
-            (&mut llm.audio_model, &prev_llm.audio_model),
-            (&mut llm.embedding_model, &prev_llm.embedding_model),
-        ] {
-            if next.api_key.is_empty() {
-                next.api_key = prev.api_key.clone();
-            }
-        }
-        // Preserve masked library-entry keys, matched by entry name.
-        for entry in llm.models.iter_mut() {
-            if entry.endpoint.api_key.is_empty()
-                && let Some(prev) = prev_llm.models.iter().find(|m| m.name == entry.name)
+        // Preserve masked provider keys, matched by provider name. Roles never
+        // carry keys (the api_key lives on the referenced provider), so no
+        // role-level key preservation is needed.
+        for prov in llm.providers.iter_mut() {
+            if prov.api_key.is_empty()
+                && let Some(prev) = prev_llm.providers.iter().find(|p| p.name == prov.name)
             {
-                entry.endpoint.api_key = prev.endpoint.api_key.clone();
+                prov.api_key = prev.api_key.clone();
             }
         }
+        // Drop unassigned role slots (empty provider) so the on-disk config
+        // stays lean; `#[serde(default)]` refills any missing slot on load.
+        llm.roles.retain(|r| r.is_assigned());
         self.config.llm = llm;
 
         self.config.audio = settings.audio.clone();
@@ -1352,7 +1730,6 @@ impl ConfigLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn default_config_has_expected_values() {
         let cfg = AppConfig::default();
@@ -1424,6 +1801,9 @@ mod tests {
         assert!(cfg.llm.stt_use_audio_model);
         assert!(cfg.llm.vision_use_image_model);
         assert_eq!(cfg.llm.max_concurrent_requests, 2);
+        assert!(cfg.llm.providers.is_empty());
+        assert!(cfg.llm.roles.is_empty());
+        assert_eq!(cfg.llm.materialize(None, None), RouterConfig::default());
     }
 
     #[test]
@@ -1479,54 +1859,127 @@ mod tests {
     }
 
     #[test]
-    fn settings_hide_api_keys() {
+    fn settings_hide_provider_api_keys() {
         let mut cfg = AppConfig::default();
-        cfg.llm.default_model.api_key = "super-secret".to_string();
+        cfg.llm.providers.push(ProviderConfig {
+            name: "openai".into(),
+            api_key: "super-secret".to_string(),
+            ..Default::default()
+        });
         let settings = Settings::from(&cfg);
-        assert!(settings.llm.default_model.api_key.is_empty());
+        assert!(settings.llm.providers[0].api_key.is_empty());
+        // Roles never carry keys (they live on the provider).
+        assert_eq!(settings.llm.roles.len(), 0);
     }
 
     #[test]
-    fn with_response_cap_raises_small_endpoint_caps_and_preserves_large_ones() {
-        let mut cfg = AppConfig::default();
-        cfg.llm.default_model.max_tokens = 4096;
-        cfg.llm.small_model.max_tokens = 20_000;
-        let lifted = cfg.llm.clone().with_response_cap(10_000);
-        // Small legacy cap is raised to the floor.
-        assert_eq!(lifted.default_model.max_tokens, 10_000);
-        // An endpoint already above the floor keeps its own value.
-        assert_eq!(lifted.small_model.max_tokens, 20_000);
+    fn materialize_raises_small_caps_and_preserves_large_ones() {
+        let mut llm = LlmConfig::default();
+        llm.providers.push(ProviderConfig {
+            name: "openai".into(),
+            api_key: "key".into(),
+            default_max_tokens: Some(8192),
+            ..Default::default()
+        });
+        llm.set_role(
+            EndpointRole::SmallModel,
+            RoleConfig {
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+                max_tokens: Some(4096),
+                ..Default::default()
+            },
+        );
+        llm.set_role(
+            EndpointRole::DefaultModel,
+            RoleConfig {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                max_tokens: Some(20_000),
+                ..Default::default()
+            },
+        );
+        let lifted = llm.materialize(Some(10_000), None);
+        // Small role cap is raised to the floor.
+        assert_eq!(lifted.small_model.max_tokens, 10_000);
+        // A role already above the floor keeps its own value.
+        assert_eq!(lifted.default_model.max_tokens, 20_000);
+        // Materialized endpoints carry provider key + role model.
+        assert_eq!(lifted.default_model.api_key, "key");
+        assert_eq!(lifted.default_model.model_name, "gpt-4o");
     }
 
     #[test]
-    fn with_reasoning_echo_cap_fills_unset_endpoints_and_preserves_overrides() {
-        let mut cfg = AppConfig::default();
-        cfg.llm.default_model.reasoning_echo_max_chars = Some(1234);
-        let filled = cfg.llm.clone().with_reasoning_echo_cap(5000);
+    fn materialize_fills_reasoning_echo_and_preserves_overrides() {
+        let mut llm = LlmConfig::default();
+        llm.providers.push(ProviderConfig {
+            name: "openai".into(),
+            api_key: "key".into(),
+            ..Default::default()
+        });
+        llm.set_role(
+            EndpointRole::DefaultModel,
+            RoleConfig {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                reasoning_echo_max_chars: Some(1234),
+                ..Default::default()
+            },
+        );
+        let filled = llm.materialize(None, Some(5000));
         // An endpoint without an override inherits the global cap.
         assert_eq!(filled.small_model.reasoning_echo_max_chars, Some(5000));
-        // A per-endpoint override is preserved.
+        // A per-role override is preserved.
         assert_eq!(filled.default_model.reasoning_echo_max_chars, Some(1234));
     }
 
     #[test]
-    fn apply_settings_preserves_keys_when_empty() {
+    fn apply_settings_preserves_provider_keys_when_empty() {
         let mut cfg = AppConfig::default();
-        cfg.llm.default_model.api_key = "keep-me".to_string();
-        cfg.llm.image_model.api_key = "keep-multi".to_string();
+        cfg.llm.providers.push(ProviderConfig {
+            name: "openai".into(),
+            api_key: "keep-me".to_string(),
+            ..Default::default()
+        });
+        cfg.llm.providers.push(ProviderConfig {
+            name: "custom".into(),
+            api_key: "keep-multi".to_string(),
+            ..Default::default()
+        });
         let mut settings = Settings::from(&cfg);
-        // frontend sends empty api key (masked)
-        settings.llm.default_model.model_name = "new-model".to_string();
-        settings.llm.image_model.model_name = "gpt-4o".to_string();
+        // Frontend sends empty api keys (masked) but a new base URL / model.
+        settings.llm.providers[0].base_url = "https://gateway.example/v1".to_string();
+        settings.llm.providers[1].name = "renamed".to_string();
+        settings.llm.roles.push(RoleConfig {
+            role: "default_model".into(),
+            provider: "openai".into(),
+            model: "new-model".into(),
+            ..Default::default()
+        });
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
         };
         loader.apply_settings(&settings);
-        assert_eq!(loader.config().llm.default_model.api_key, "keep-me");
-        assert_eq!(loader.config().llm.default_model.model_name, "new-model");
-        assert_eq!(loader.config().llm.image_model.api_key, "keep-multi");
-        assert_eq!(loader.config().llm.image_model.model_name, "gpt-4o");
+        // Keys preserved by provider name.
+        assert_eq!(loader.config().llm.providers[0].api_key, "keep-me");
+        assert_eq!(
+            loader.config().llm.providers[0].base_url,
+            "https://gateway.example/v1"
+        );
+        // A renamed provider loses the key (no stable name match), as expected.
+        assert_eq!(loader.config().llm.providers[1].name, "renamed");
+        assert!(loader.config().llm.providers[1].api_key.is_empty());
+        // The role slot was applied.
+        assert_eq!(
+            loader
+                .config()
+                .llm
+                .role(EndpointRole::DefaultModel)
+                .unwrap()
+                .model,
+            "new-model"
+        );
     }
 
     #[test]
@@ -1714,12 +2167,23 @@ mod tests {
         std::fs::write(&path, original).unwrap();
 
         // The corrupt file must NOT be silently discarded: it is backed up
-        // (same name + ".bak") and the loader starts with defaults so a later
+        // (timestamped .bak) and the loader starts with defaults so a later
         // save() can never overwrite the user's config unnoticed.
         let _loader = ConfigLoader::load_from(&path).unwrap();
-        let backup = path.with_extension("toml.bak");
-        assert!(backup.exists());
-        assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+        let backups: Vec<_> = dir
+            .read_dir()
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                let n = e.file_name().into_string().unwrap();
+                n.starts_with("config.toml.") && n.ends_with(".bak")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1, "expected one timestamped backup");
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            original
+        );
         // Sanity: the file itself is untouched until a save happens.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let _ = std::fs::remove_dir_all(&dir);

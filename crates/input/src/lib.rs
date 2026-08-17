@@ -1,8 +1,12 @@
-//! Input pipeline: recording orchestration, VAD and transcription.
+//! Input pipeline: recording orchestration, VAD, transcription and the
+//! multi-modal media gateway (modality detection → intent → routing).
 //!
 //! The pipeline owns the high-level recording state machine; the actual
 //! audio capture lives in [`capture`] (the capture engine thread + CPAL
-//! backend).
+//! backend). The media gateway (formerly the `haven-gateway` crate) routes
+//! binary attachments through dedicated providers (OCR / ASR) with
+//! confidence gating and main-model fallback, and handles generate requests
+//! (TTS / text-to-image).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -20,6 +24,14 @@ use haven_llm::SttClient;
 pub use haven_common::config::AudioConfig;
 
 pub mod capture;
+pub mod coverage;
+pub mod gateway;
+pub mod hotkey;
+pub mod intent;
+pub mod message;
+pub mod modality;
+pub mod multimodal;
+pub mod simulate;
 pub mod vad;
 mod wav;
 

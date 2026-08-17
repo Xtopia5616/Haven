@@ -12,9 +12,10 @@ use crate::adapters::{
     normalize_web_search_call_item, send_request, spawn_line_reader, upsert_web_search_call,
 };
 use crate::client::LlmClient;
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+
 use crate::types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FinishReason, LlmError,
-    LlmResponse, StreamChunk, ToolDefinition, Usage, WebSearchPhase,
+    FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage, WebSearchPhase,
 };
 use haven_common::config::ModelEndpoint;
 

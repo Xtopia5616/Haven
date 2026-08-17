@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn compact_returns_none_for_few_messages() {
         let router = Arc::new(haven_llm::LlmRouter::new(
-            haven_common::config::LlmConfig::default(),
+            haven_common::config::RouterConfig::default(),
         ));
         let compactor = ContextCompactor::new(4096, 512);
         let msgs = vec![

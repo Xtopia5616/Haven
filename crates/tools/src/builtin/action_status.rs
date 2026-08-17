@@ -94,7 +94,10 @@ mod tests {
             actions: Arc::new(BackgroundActions::new()),
         };
         let result = tool
-            .execute(json!({"action_id": "action-nope"}), CancellationToken::new())
+            .execute(
+                json!({"action_id": "action-nope"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(result.success);

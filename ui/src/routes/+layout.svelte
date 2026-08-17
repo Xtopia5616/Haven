@@ -8,18 +8,54 @@
 	import { registerListeners } from '$lib/events.js';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
-	import { fade } from 'svelte/transition';
-	import { cubicOut } from 'svelte/easing';
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.js';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
 	import Logo from '$lib/Logo.svelte';
 	import StatusDot from '$lib/StatusDot.svelte';
 	import NotificationToast from '$lib/NotificationToast.svelte';
+	import ToolsView from '$lib/views/ToolsView.svelte';
+	import HistoryView from '$lib/views/HistoryView.svelte';
+	import SettingsView from '$lib/views/SettingsView.svelte';
 
 	let { children } = $props();
-	let activeTab = $state('chat');
+
+	// Top-level tab state. Views stay MOUNTED once first activated (keep-alive)
+	// instead of being destroyed/re-created on every switch, so switching is
+	// instant and rapid tab clicks never tear down a view that is being
+	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
+	// also makes direct deep links (/tools etc.) restore the right tab.
+	const TAB_IDS = ['chat', 'tools', 'history', 'settings'];
+	function initialTabFromUrl() {
+		if (typeof window === 'undefined') return 'chat';
+		const url = get(page).url;
+		const tabParam = url.searchParams.get('tab');
+		if (tabParam && TAB_IDS.includes(tabParam)) return tabParam;
+		const path = url.pathname;
+		if (path === '/tools') return 'tools';
+		if (path === '/history') return 'history';
+		if (path === '/settings') return 'settings';
+		return 'chat';
+	}
+	const initialTab = initialTabFromUrl();
+	let activeTab = $state(initialTab);
+	// `visited` gates the first mount of each view so the app boots with only
+	// the chat view; once a tab has been opened its view is kept alive.
+	let visited = $state({
+		chat: true,
+		tools: initialTab === 'tools',
+		history: initialTab === 'history',
+		settings: initialTab === 'settings',
+	});
+
+	function switchTab(id) {
+		if (id === activeTab) return;
+		activeTab = id;
+		visited[id] = true;
+		goto('/?tab=' + id, { replaceState: true });
+	}
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => theme = v.theme));
 
@@ -50,6 +86,10 @@
 	// `subscribe` fires synchronously (SSR/mount) with the current value, and
 	// `probeLlmConnection` reads these bindings without awaiting first, so
 	// they must be initialized already.
+	// `llmConnected` is a three-way status from the backend's
+	// `check_llm_connection`: 'ready' | 'disconnected' | 'unconfigured'.
+	// `null` = probe in-flight / never completed (show 检测中, never a false
+	// 就绪).
 	let llmConnected = $state(null);
 	let llmProbeTimer;
 	let llmProbeInFlight = false;
@@ -64,11 +104,14 @@
 		if (modelState !== 'ready' || llmProbeInFlight) return;
 		llmProbeInFlight = true;
 		try {
-			llmConnected = await invoke('check_llm_connection');
-			llmProbeFailureStreak = 0;
+			const status = await invoke('check_llm_connection');
+			llmConnected = status === 'ready' || status === 'disconnected' || status === 'unconfigured'
+				? status
+				: 'disconnected';
+			llmProbeFailureStreak = status === 'ready' ? 0 : Math.min(llmProbeFailureStreak + 1, 4);
 		} catch (e) {
 			logger.warn('+layout', 'check_llm_connection error', e);
-			llmConnected = false;
+			llmConnected = 'disconnected';
 			llmProbeFailureStreak = Math.min(llmProbeFailureStreak + 1, 4);
 		} finally {
 			llmProbeInFlight = false;
@@ -78,18 +121,30 @@
 	// Adaptive schedule: back off on consecutive failures (15s → 30s → 60s →
 	// 120s cap), reset to 15s after a successful probe. A dead endpoint no
 	// longer causes an unconditional multi-second network request every 15s.
+	// Unlike the old version, the next interval is computed AFTER the probe
+	// resolves (the streak it just updated), so the backoff actually tightens
+	// on the first failure instead of lagging one probe behind.
+	function nextLlmProbeInterval() {
+		return llmProbeFailureStreak === 0
+			? LLM_PROBE_INTERVAL_MS
+			: Math.min(
+					LLM_PROBE_INTERVAL_MS * 2 ** llmProbeFailureStreak,
+					LLM_PROBE_MAX_INTERVAL_MS,
+				);
+	}
 	function scheduleLlmProbe() {
-		const interval =
-			llmProbeFailureStreak === 0
-				? LLM_PROBE_INTERVAL_MS
-				: Math.min(
-						LLM_PROBE_INTERVAL_MS * 2 ** llmProbeFailureStreak,
-						LLM_PROBE_MAX_INTERVAL_MS,
-					);
-		llmProbeTimer = setTimeout(() => {
-			probeLlmConnection();
+		clearTimeout(llmProbeTimer);
+		llmProbeTimer = setTimeout(async () => {
+			await probeLlmConnection();
 			scheduleLlmProbe();
-		}, interval);
+		}, nextLlmProbeInterval());
+	}
+	// Force an immediate re-probe (config changed via settings / model switch):
+	// reset the failure backoff, probe now, then resume from the base cadence.
+	function refreshLlmConnection() {
+		llmProbeFailureStreak = 0;
+		probeLlmConnection();
+		scheduleLlmProbe();
 	}
 
 	let notifyCfg = $state({
@@ -108,13 +163,23 @@
 	$effect(() => syncStore(recordingOverlay, (v) => (overlay = v)));
 
 	$effect(() => {
-		if (typeof window !== 'undefined') {
-			const path = $page.url.pathname;
-			if (path === '/tools') activeTab = 'tools';
-			else if (path === '/history') activeTab = 'history';
-			else if (path === '/settings') activeTab = 'settings';
-			else activeTab = 'chat';
+		if (typeof window === 'undefined') return;
+		const url = $page.url;
+		const path = url.pathname;
+		if (path !== '/') {
+			// Legacy direct deep link (/tools, /history, /settings): normalize
+			// to the keep-alive URL scheme so the root route (chat) stays mounted.
+			const t =
+				path === '/tools' ? 'tools' :
+				path === '/history' ? 'history' :
+				path === '/settings' ? 'settings' : 'chat';
+			goto('/?tab=' + t, { replaceState: true });
+			return;
 		}
+		const tabParam = url.searchParams.get('tab');
+		const t = TAB_IDS.includes(tabParam) ? tabParam : 'chat';
+		activeTab = t;
+		visited[t] = true;
 	});
 
 	function setOverlay(patch) {
@@ -561,6 +626,13 @@
 				if (data.session_id && activeId && data.session_id !== activeId) return;
 				updateModelState('stalled');
 			},
+			// Router rebuilt (settings saved / model switched): re-probe LLM
+			// connectivity immediately instead of waiting for the next
+			// backoff-scheduled probe (which can be up to 120s away during a
+			// failure streak).
+			'llm:config_changed': () => {
+				refreshLlmConnection();
+			},
 			'notification:show': (event) => {
 				const data = event.payload || {};
 				const title = data.title || 'Haven';
@@ -625,7 +697,9 @@
 		// fired/cancelled while the UI was away are already gone).
 		refreshActions();
 
-		probeLlmConnection();
+		// The modelStateStore subscribe above fires synchronously on mount
+		// (modelState is 'ready') and triggers the first probe; here we just
+		// start the cadence for all subsequent probes.
 		scheduleLlmProbe();
 		window.addEventListener('click', handleWindowClick);
 	});
@@ -642,10 +716,10 @@
 	});
 
 	const tabs = [
-		{ id: 'chat', label: '对话', href: '/' },
-		{ id: 'tools', label: '工具', href: '/tools' },
-		{ id: 'history', label: '历史', href: '/history' },
-		{ id: 'settings', label: '设置', href: '/settings' },
+		{ id: 'chat', label: '对话' },
+		{ id: 'tools', label: '工具' },
+		{ id: 'history', label: '历史' },
+		{ id: 'settings', label: '设置' },
 	];
 </script>
 
@@ -690,12 +764,18 @@
 						<span class="status-text"
 							>{sessionBusy ? `${busySessions.size} 个会话运行中` : '等待输出'}</span
 						>
-					{:else if llmConnected === false}
+					{:else if llmConnected === 'unconfigured'}
+						<StatusDot color="outline" />
+						<span class="status-text">未配置</span>
+					{:else if llmConnected === 'disconnected'}
 						<StatusDot color="outline" />
 						<span class="status-text">已断开</span>
-					{:else}
+					{:else if llmConnected === 'ready'}
 						<StatusDot color="success" />
 						<span class="status-text">就绪</span>
+					{:else}
+						<StatusDot color="outline" animate={true} />
+						<span class="status-text">检测中</span>
 					{/if}
 					{#if runningActionCount > 0 || pendingScheduledActions.length > 0}
 						<span class="status-badge">{runningActionCount + pendingScheduledActions.length}</span>
@@ -869,27 +949,49 @@
 	</header>
 
 	<nav class="md-tabs tabbar" aria-label="Primary">
-		{#each tabs as tab}
-			<a
-				href={tab.href}
+		{#each tabs as tab (tab.id)}
+			<button
+				type="button"
 				class="md-tab"
 				class:active={activeTab === tab.id}
-				aria-current={activeTab === tab.id ? 'page' : undefined}
-				onclick={() => {
-					activeTab = tab.id;
-				}}
+				aria-selected={activeTab === tab.id}
+				role="tab"
+				onclick={() => switchTab(tab.id)}
 			>
 				<span class="tab-label">{tab.label}</span>
-			</a>
+			</button>
 		{/each}
 	</nav>
 
-	<main class="content" class:content--chat={$page.url.pathname === '/'}>
-		{#key $page.url.pathname}
-			<div class="page-shell" in:fade={{ duration: 280, easing: cubicOut }}>
-				{@render children()}
+	<main class="content" class:content--chat={activeTab === 'chat'}>
+		{#each tabs as tab (tab.id)}
+			<div
+				class="tab-panel"
+				hidden={activeTab !== tab.id}
+				role="tabpanel"
+				aria-hidden={activeTab !== tab.id}
+			>
+				{#if visited[tab.id]}
+					{#if tab.id === 'chat'}
+						<div class="page-shell">
+							{@render children()}
+						</div>
+					{:else if tab.id === 'tools'}
+						<div class="page-shell">
+							<ToolsView />
+						</div>
+					{:else if tab.id === 'history'}
+						<div class="page-shell">
+							<HistoryView />
+						</div>
+					{:else if tab.id === 'settings'}
+						<div class="page-shell">
+							<SettingsView />
+						</div>
+					{/if}
+				{/if}
 			</div>
-		{/key}
+		{/each}
 	</main>
 
 	<RecordingIndicator
@@ -1180,6 +1282,21 @@
 	.page-shell {
 		width: 100%;
 		margin: 0 auto;
+	}
+	/* Keep-alive tab panels: `hidden` hides the inactive views (display:none).
+	 * The [hidden] rules must win over the flex layout used while the chat
+	 * tab is active. */
+	.tab-panel[hidden] {
+		display: none;
+	}
+	.content--chat .tab-panel {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.content--chat .tab-panel[hidden] {
+		display: none;
 	}
 	/* Non-chat routes: cap content at the shared content max-width and
 	 * let it grow with viewport (clamp ensures a sensible minimum on

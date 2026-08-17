@@ -1,5 +1,5 @@
 // Canonical session status vocabulary + UI style mapping. The backend
-// emits these strings via SessionStatus::as_str(); see crates/session/src/lib.rs.
+// emits these strings via SessionStatus::as_str(); see crates/agent/src/session.rs.
 //
 // statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the history page.

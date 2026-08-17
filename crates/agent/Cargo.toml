@@ -18,7 +18,9 @@ haven-memory = { path = "../memory" }
 haven-llm = { path = "../llm" }
 haven-tools = { path = "../tools" }
 haven-common = { path = "../common" }
-haven-session = { path = "../session" }
-haven-gateway = { path = "../gateway" }
+haven-input = { path = "../input" }
 base64.workspace = true
 tiktoken-rs = "0.12"
+
+[dev-dependencies]
+tempfile.workspace = true

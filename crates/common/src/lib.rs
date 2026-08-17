@@ -10,4 +10,6 @@ pub use config::{
 };
 pub use types::McpTransportType;
 
-pub use types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+pub use types::{
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, MessageAttachment,
+};

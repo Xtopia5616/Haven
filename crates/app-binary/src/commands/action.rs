@@ -163,7 +163,10 @@ pub async fn list_action_history(
 /// Remove a persisted action row (fired scheduled_action or terminal action history)
 /// by id. Returns false when no row matched.
 #[tauri::command]
-pub async fn delete_action(state: State<'_, Arc<AppState>>, action_id: String) -> Result<bool, String> {
+pub async fn delete_action(
+    state: State<'_, Arc<AppState>>,
+    action_id: String,
+) -> Result<bool, String> {
     state
         .db
         .delete_action(&action_id)

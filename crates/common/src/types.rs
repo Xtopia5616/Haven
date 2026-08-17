@@ -336,6 +336,48 @@ impl CanonicalToolCall {
     }
 }
 
+/// A binary attachment on a message (e.g. a user-provided image or file).
+/// `data` holds base64-encoded bytes; `media_type` is the MIME type
+/// (e.g. "image/png"). Non-image attachments (user-uploaded files)
+/// additionally carry `filename` (the original name) and `path` (absolute
+/// path on disk, set after the backend persists the bytes so the agent can
+/// read them with the file tool).
+///
+/// Lives in the shared types layer (not the memory crate) so the input /
+/// session / agent layers that carry attachments never depend on the
+/// persistence crate just for this data structure.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct MessageAttachment {
+    pub media_type: String,
+    pub data: String,
+    /// Original file name for non-image attachments (e.g. "report.pdf").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Absolute path where a non-image attachment was persisted on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl MessageAttachment {
+    /// Create a binary attachment without disk metadata (used for images and
+    /// tests). `filename`/`path` are left empty and skipped in serialization.
+    pub fn new(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            media_type: media_type.into(),
+            data: data.into(),
+            filename: None,
+            path: None,
+        }
+    }
+
+    /// True for vision-capable attachments (images), which are injected into
+    /// the model context as image content parts. Everything else is a file
+    /// attachment the agent reads from `path` via the file tool.
+    pub fn is_image(&self) -> bool {
+        self.media_type.starts_with("image/")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

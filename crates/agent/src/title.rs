@@ -1,4 +1,4 @@
-﻿use haven_common::prompts::TITLE_SYSTEM_PROMPT;
+use haven_common::prompts::TITLE_SYSTEM_PROMPT;
 use haven_llm::{EndpointRole, LlmRouter};
 use std::sync::Arc;
 
@@ -56,9 +56,10 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::Stream;
+    use haven_common::types::{CanonicalMessage, CanonicalRole};
     use haven_llm::OpenAiAdapter;
     use haven_llm::client::LlmClient;
-    use haven_llm::types::{CanonicalMessage, CanonicalRole, LlmError, LlmResponse};
+    use haven_llm::types::{LlmError, LlmResponse};
     use std::pin::Pin;
     use std::sync::Mutex;
 

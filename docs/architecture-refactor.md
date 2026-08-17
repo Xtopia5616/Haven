@@ -36,16 +36,17 @@
 ## S1: `DbAction` → `DbSession` 命名统一
 
 ### 动机
-`crates/session/src/lib.rs:4` 将 `haven_memory::repositories::sessions::Session` 别名为 `DbAction`。
+`crates/agent/src/session.rs`（原 `crates/session/src/lib.rs`，2026-08-17 并入 haven-agent）将
+`haven_memory::repositories::sessions::Session` 别名为 `DbSession`。
 AGENTS.md ID 规范中 `act-` 前缀专属「工作单元」（后台任务/定时任务），会话记录叫 `DbAction` 会误导新读者。
 
 ### 改动
-- `crates/session/src/lib.rs`：
+- `crates/agent/src/session.rs`：
   - `use haven_memory::repositories::sessions::Session as DbAction;` → `as DbSession`
   - `from_db_record(record: &DbAction)` → `&DbSession`
 
 ### 验收
-- `cargo check -p haven-session` 通过
+- `cargo check -p haven-agent` 通过
 - 仓库内无 `DbAction` 残留
 
 ### 行为影响

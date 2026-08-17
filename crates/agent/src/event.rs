@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_memory::Database;
-use haven_session::SessionInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,6 +14,11 @@ pub enum AgentEvent {
         thought: String,
         step_number: u32,
         run_id: u64,
+        /// The `msg-*` id this thought is persisted under (minted when the
+        /// step's thought stream started). The frontend uses it as the live
+        /// bubble id, so live streaming, snap and the DB copy share one id
+        /// and merges need no content-based dedup.
+        message_id: String,
     },
     Action {
         session_id: String,
@@ -22,6 +27,10 @@ pub enum AgentEvent {
         step_number: u32,
         run_id: u64,
         tool_call_id: Option<String>,
+        /// The `step-*` id of the step row this action is persisted under
+        /// (minted before the action starts). The frontend uses it as the
+        /// live tool-card id, matching the review badge built from the DB.
+        step_id: String,
     },
     Observation {
         session_id: String,
@@ -34,6 +43,9 @@ pub enum AgentEvent {
         /// Quick-reply options surfaced when the observation comes from the
         /// `ask` tool, so the UI can render clickable answer buttons.
         ask_options: Vec<String>,
+        /// Same `step-*` id the matching `Action` event carried, so the live
+        /// tool card keeps one id through placeholder → fill → DB badge.
+        step_id: String,
     },
     SessionCreated(SessionInfo),
     SessionCompleted {
@@ -53,12 +65,18 @@ pub enum AgentEvent {
         delta: String,
         step_number: u32,
         run_id: u64,
+        /// `msg-*` id of the message this chunk accumulates into. Constant
+        /// for the whole (step, run) block, matching the id the backend
+        /// later persists the final text under.
+        message_id: String,
     },
     ReasoningChunk {
         session_id: String,
         delta: String,
         step_number: u32,
         run_id: u64,
+        /// Same semantics as `ThoughtChunk::message_id`.
+        message_id: String,
     },
     /// Live status of the provider's built-in web search tool. Forwarded from
     /// the stream events (`in_progress` → `searching` → `completed`) so the
@@ -289,7 +307,12 @@ impl AgentEventEmitter for EventBus {
     }
 }
 
-pub(crate) type ChunkSender = tokio::sync::mpsc::Sender<(String, String, u32, u64)>;
+/// One queued chunk item: `(session_id, message_id, delta, step, run_id)`.
+/// Both ids are `Arc<str>` so the producer's per-token hot loop shares one
+/// allocation (a cheap refcount clone) instead of owning a fresh `String`
+/// per chunk; the batcher converts to `String` once per emitted batch.
+pub(crate) type ChunkItem = (Arc<str>, Arc<str>, String, u32, u64);
+pub(crate) type ChunkSender = tokio::sync::mpsc::Sender<ChunkItem>;
 pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 
 /// Per-chunk micro-batching parameters. Incoming per-token chunks are aggregated
@@ -297,18 +320,20 @@ pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 /// the concatenated `delta` is emitted, dramatically reducing Tauri IPC frequency.
 const CHUNK_BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Runs a chunk batcher: aggregates incoming `(session_id, delta, step, run)` tuples
-/// for up to `CHUNK_BATCH_INTERVAL` (or until `max_batch_bytes`), then emits
-/// a single `AgentEvent::ThoughtChunk`/`ReasoningChunk` with the concatenated delta.
-/// A batch boundary is also forced whenever the `(session_id, step, run)` key changes
-/// or the sender half is dropped (flush remainder then exit).
+/// Runs a chunk batcher: aggregates incoming
+/// `(session_id, message_id, delta, step, run)` tuples for up to
+/// `CHUNK_BATCH_INTERVAL` (or until `max_batch_bytes`), then emits a single
+/// `AgentEvent::ThoughtChunk`/`ReasoningChunk` with the concatenated delta and
+/// the block's `message_id`. A batch boundary is also forced whenever the
+/// `(session_id, message_id, step, run)` key changes or the sender half is
+/// dropped (flush remainder then exit).
 async fn run_chunk_batcher(
-    mut rx: tokio::sync::mpsc::Receiver<(String, String, u32, u64)>,
+    mut rx: tokio::sync::mpsc::Receiver<ChunkItem>,
     emitter: Arc<dyn AgentEventEmitter>,
     is_reasoning: bool,
     max_batch_bytes: usize,
 ) {
-    let emit_batch = |tid: String, sn: u32, rid: u64, delta: String| {
+    let emit_batch = |tid: String, mid: String, sn: u32, rid: u64, delta: String| {
         let emitter = emitter.clone();
         async move {
             if delta.is_empty() {
@@ -320,6 +345,7 @@ async fn run_chunk_batcher(
                     delta,
                     step_number: sn,
                     run_id: rid,
+                    message_id: mid,
                 }
             } else {
                 AgentEvent::ThoughtChunk {
@@ -327,6 +353,7 @@ async fn run_chunk_batcher(
                     delta,
                     step_number: sn,
                     run_id: rid,
+                    message_id: mid,
                 }
             };
             emitter.emit(event).await;
@@ -335,13 +362,13 @@ async fn run_chunk_batcher(
 
     loop {
         // Block until the first item of a new batch arrives.
-        let (mut tid, mut delta, mut sn, mut rid) = match rx.recv().await {
+        let (mut tid, mut mid, mut delta, mut sn, mut rid) = match rx.recv().await {
             Some(v) => v,
             None => return,
         };
         // Emit the first chunk immediately so the user sees text without the
         // 50ms batch delay. Subsequent chunks are aggregated normally.
-        emit_batch(tid.clone(), sn, rid, delta.clone()).await;
+        emit_batch(tid.to_string(), mid.to_string(), sn, rid, delta.clone()).await;
         let mut buf = String::new();
         let mut buf_bytes = 0usize;
         delta.clear();
@@ -354,37 +381,38 @@ async fn run_chunk_batcher(
                 biased;
                 val = rx.recv() => {
                     match val {
-                        Some((tid2, delta2, sn2, rid2)) => {
-                            if (tid2.as_str(), sn2, rid2) != (tid.as_str(), sn, rid) {
+                        Some((tid2, mid2, delta2, sn2, rid2)) => {
+                            if (&*tid2, &*mid2, sn2, rid2) != (&*tid, &*mid, sn, rid) {
                                 // key changed: flush current batch, start a new one
-                                emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                                emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
                                 tid = tid2;
+                                mid = mid2;
                                 sn = sn2;
                                 rid = rid2;
                                 buf = delta2;
                                 buf_bytes = buf.len();
                                 deadline = tokio::time::Instant::now() + CHUNK_BATCH_INTERVAL;
                                 if buf_bytes >= max_batch_bytes {
-                                    emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                                    emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
                                     break;
                                 }
                             } else {
                                 buf_bytes += delta2.len();
                                 buf.push_str(&delta2);
                                 if buf_bytes >= max_batch_bytes {
-                                    emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                                    emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
                                     break;
                                 }
                             }
                         }
                         None => {
-                            emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                            emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
                             return;
                         }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                    emit_batch(tid.to_string(), mid.to_string(), sn, rid, std::mem::take(&mut buf)).await;
                     break;
                 }
             }
@@ -396,7 +424,14 @@ async fn run_chunk_batcher(
             // once it has passed the batch flushes on time no matter how hot
             // the producer is, so the UI always receives smooth ~50ms updates.
             if tokio::time::Instant::now() >= deadline {
-                emit_batch(std::mem::take(&mut tid), sn, rid, std::mem::take(&mut buf)).await;
+                emit_batch(
+                    tid.to_string(),
+                    mid.to_string(),
+                    sn,
+                    rid,
+                    std::mem::take(&mut buf),
+                )
+                .await;
                 break;
             }
         }
@@ -540,13 +575,15 @@ impl EventDispatcher {
         thought: &str,
         step_number: u32,
         run_id: u64,
+        message_id: &str,
         db: &Database,
     ) {
         tracing::debug!(
-            "emit_thought: session={} step={} run={} thought_len={}",
+            "emit_thought: session={} step={} run={} msg={} thought_len={}",
             session_id,
             step_number,
             run_id,
+            message_id,
             thought.len()
         );
         if let Err(e) = db.create_thought_step(session_id, step_number as i32, thought) {
@@ -563,6 +600,7 @@ impl EventDispatcher {
                 thought: thought.into(),
                 step_number,
                 run_id,
+                message_id: message_id.into(),
             })
             .await;
     }
@@ -693,7 +731,7 @@ mod tests {
     #[tokio::test]
     async fn batcher_aggregates_into_fewer_emits_and_preserves_content() {
         let emitter = collector_emitter();
-        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChunkItem>(1024);
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
             emitter.clone(),
@@ -703,9 +741,15 @@ mod tests {
 
         // Push 100 tiny per-token chunks faster than the batch interval.
         for i in 0..100u32 {
-            tx.send(("t1".into(), format!("{}", i % 10), 1, 7))
-                .await
-                .unwrap();
+            tx.send((
+                "t1".into(),
+                Arc::from("msg-thought-1"),
+                format!("{}", i % 10),
+                1,
+                7,
+            ))
+            .await
+            .unwrap();
         }
         drop(tx);
         handle.await.unwrap();
@@ -722,16 +766,18 @@ mod tests {
             "expected batching, got {} emits",
             chunks.len()
         );
-        // Every emit carries the same step/run identity.
+        // Every emit carries the same step/run identity and message id.
         for e in &events {
             if let AgentEvent::ThoughtChunk {
                 step_number,
                 run_id,
+                message_id,
                 ..
             } = e
             {
                 assert_eq!(*step_number, 1);
                 assert_eq!(*run_id, 7);
+                assert_eq!(message_id, "msg-thought-1");
             }
         }
     }
@@ -741,7 +787,7 @@ mod tests {
         let emitter: Arc<CollectorEmitter> = Arc::new(CollectorEmitter {
             events: Mutex::new(Vec::new()),
         });
-        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChunkItem>(1024);
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
             emitter.clone(),
@@ -749,8 +795,12 @@ mod tests {
             DEFAULT_CHUNK_BATCH_MAX_BYTES,
         ));
 
-        tx.send(("t2".into(), "hello ".into(), 3, 1)).await.unwrap();
-        tx.send(("t2".into(), "world".into(), 3, 1)).await.unwrap();
+        tx.send(("t2".into(), Arc::from("msg-1"), "hello ".into(), 3, 1))
+            .await
+            .unwrap();
+        tx.send(("t2".into(), Arc::from("msg-1"), "world".into(), 3, 1))
+            .await
+            .unwrap();
         drop(tx);
         // Should NOT need to wait the full 50ms — closing the sender flushes promptly.
         let joined = tokio::time::timeout(std::time::Duration::from_millis(200), handle);
@@ -770,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn batcher_flushes_on_max_bytes_threshold() {
         let emitter = collector_emitter();
-        let (tx, rx) = tokio::sync::mpsc::channel::<(String, String, u32, u64)>(1024);
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChunkItem>(1024);
         let handle = tokio::spawn(run_chunk_batcher(
             rx,
             emitter.clone(),
@@ -780,8 +830,12 @@ mod tests {
 
         // Push enough data to cross the default max-batch threshold mid-batch.
         let big = "x".repeat(DEFAULT_CHUNK_BATCH_MAX_BYTES);
-        tx.send(("t3".into(), big.clone(), 1, 1)).await.unwrap();
-        tx.send(("t3".into(), "tail".into(), 1, 1)).await.unwrap();
+        tx.send(("t3".into(), Arc::from("msg-3"), big.clone(), 1, 1))
+            .await
+            .unwrap();
+        tx.send(("t3".into(), Arc::from("msg-3"), "tail".into(), 1, 1))
+            .await
+            .unwrap();
         drop(tx);
         handle.await.unwrap();
 
@@ -799,6 +853,7 @@ mod tests {
 
         bus.emit(AgentEvent::ThoughtChunk {
             session_id: "t".into(),
+            message_id: "msg-t-1".into(),
             delta: "hi".into(),
             step_number: 1,
             run_id: 1,
@@ -821,6 +876,7 @@ mod tests {
 
         bus.emit(AgentEvent::ThoughtChunk {
             session_id: "t".into(),
+            message_id: "msg-t-1".into(),
             delta: "x".into(),
             step_number: 1,
             run_id: 1,
@@ -839,6 +895,7 @@ mod tests {
 
         bus.emit(AgentEvent::ThoughtChunk {
             session_id: "t".into(),
+            message_id: "msg-t-1".into(),
             delta: "x".into(),
             step_number: 1,
             run_id: 1,
@@ -863,7 +920,7 @@ mod tests {
         p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
         let db = Database::open(&p).unwrap();
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
-        EventDispatcher::emit_thought_from(&bus_dyn, "t", "hello", 1, 1, &db).await;
+        EventDispatcher::emit_thought_from(&bus_dyn, "t", "hello", 1, 1, "msg-t-1", &db).await;
         assert_eq!(collector.events.lock().unwrap().len(), 1);
         assert!(matches!(
             collector.events.lock().unwrap()[0],
@@ -931,6 +988,7 @@ mod tests {
         buffered
             .emit(AgentEvent::ThoughtChunk {
                 session_id: "t".into(),
+                message_id: "msg-t-1".into(),
                 delta: "old-chunk".into(),
                 step_number: 1,
                 run_id: 1,
@@ -943,6 +1001,7 @@ mod tests {
         buffered
             .emit(AgentEvent::ThoughtChunk {
                 session_id: "t".into(),
+                message_id: "msg-t-1".into(),
                 delta: "new-chunk".into(),
                 step_number: 1,
                 run_id: 1,
@@ -980,6 +1039,7 @@ mod tests {
         buffered
             .emit(AgentEvent::ThoughtChunk {
                 session_id: "t".into(),
+                message_id: "msg-t-1".into(),
                 delta: "streamed-partial".into(),
                 step_number: 1,
                 run_id: 1,
@@ -988,6 +1048,7 @@ mod tests {
         buffered
             .emit(AgentEvent::Thought {
                 session_id: "t".into(),
+                message_id: "msg-t-1".into(),
                 thought: "full authoritative text".into(),
                 step_number: 1,
                 run_id: 1,
@@ -996,6 +1057,7 @@ mod tests {
         buffered
             .emit(AgentEvent::ThoughtChunk {
                 session_id: "t".into(),
+                message_id: "msg-t-1".into(),
                 delta: "straggler".into(),
                 step_number: 1,
                 run_id: 1,

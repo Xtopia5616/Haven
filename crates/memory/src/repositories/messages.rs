@@ -1,42 +1,6 @@
 use crate::db::Database;
 use chrono::Utc;
-
-/// A binary attachment on a message (e.g. a user-provided image or file).
-/// `data` holds base64-encoded bytes; `media_type` is the MIME type (e.g. "image/png").
-/// Non-image attachments (user-uploaded files) additionally carry `filename`
-/// (the original name) and `path` (absolute path on disk, set after the
-/// backend persists the bytes so the agent can read them with the file tool).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct MessageAttachment {
-    pub media_type: String,
-    pub data: String,
-    /// Original file name for non-image attachments (e.g. "report.pdf").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filename: Option<String>,
-    /// Absolute path where a non-image attachment was persisted on disk.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-impl MessageAttachment {
-    /// Create a binary attachment without disk metadata (used for images and
-    /// tests). `filename`/`path` are left empty and skipped in serialization.
-    pub fn new(media_type: impl Into<String>, data: impl Into<String>) -> Self {
-        Self {
-            media_type: media_type.into(),
-            data: data.into(),
-            filename: None,
-            path: None,
-        }
-    }
-
-    /// True for vision-capable attachments (images), which are injected into
-    /// the model context as image content parts. Everything else is a file
-    /// attachment the agent reads from `path` via the file tool.
-    pub fn is_image(&self) -> bool {
-        self.media_type.starts_with("image/")
-    }
-}
+use haven_common::types::MessageAttachment;
 
 /// Map a `messages` row (9 columns: id, session_id, role, content, message_type,
 /// created_at, tool_call_id, attachments, voice) into a `Message`. Shared by
@@ -89,6 +53,7 @@ impl Database {
             tool_call_id,
             &[],
             false,
+            None,
         )
     }
 
@@ -109,6 +74,7 @@ impl Database {
             tool_call_id,
             attachments,
             false,
+            None,
         )
     }
 
@@ -122,8 +88,13 @@ impl Database {
         tool_call_id: Option<&str>,
         attachments: &[MessageAttachment],
         voice: bool,
+        // When `Some`, insert the row under this pre-minted id (streamed
+        // block ids minted at stream start); `None` mints a fresh `msg-*`.
+        id: Option<&str>,
     ) -> anyhow::Result<Message> {
-        let id = haven_common::types::new_id("msg");
+        let id = id
+            .map(String::from)
+            .unwrap_or_else(|| haven_common::types::new_id("msg"));
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
@@ -446,8 +417,17 @@ mod tests {
     fn voice_flag_persists_and_roundtrips() {
         let db = test_db();
         let tid = test_session(&db);
-        db.add_message_full(&tid, "user", "voice hello", Some("text"), None, &[], true)
-            .unwrap();
+        db.add_message_full(
+            &tid,
+            "user",
+            "voice hello",
+            Some("text"),
+            None,
+            &[],
+            true,
+            None,
+        )
+        .unwrap();
         db.add_message(&tid, "user", "typed hello", Some("text"), None)
             .unwrap();
         let msgs = db.get_session_messages(&tid).unwrap();
