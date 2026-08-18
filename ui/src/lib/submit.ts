@@ -9,8 +9,8 @@ import {
 	newMessage,
 	newSessionIntentStore,
 	updateSessionMessages,
-} from './stores.js';
-import { invoke } from './tauri.js';
+} from './stores.ts';
+import { invoke } from './tauri.ts';
 
 /**
  * Deliver a user submission (typed input or voice transcript) to the
@@ -35,7 +35,16 @@ import { invoke } from './tauri.js';
  * @param {boolean} [opts.voice=false] - true when forwarded from a voice transcript
  * @returns {Promise<any>} the `process_transcript` result
  */
-export async function submitTranscript(text, { images = null, files = null, voice = false } = {}) {
+interface SubmitOptions {
+	images?: Array<{ media_type: string; data: string }> | null;
+	files?: Array<{ media_type: string; data: string; filename: string }> | null;
+	voice?: boolean;
+}
+
+export async function submitTranscript(
+	text: string,
+	{ images = null, files = null, voice = false }: SubmitOptions = {},
+): Promise<any> {
 	const hasImages = Array.isArray(images) && images.length > 0;
 	const hasFiles = Array.isArray(files) && files.length > 0;
 	const hasAttachments = hasImages || hasFiles;

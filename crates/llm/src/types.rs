@@ -142,6 +142,23 @@ pub struct ToolFunction {
     pub parameters: Value,
 }
 
+/// Canonical tool definition → LLM-boundary tool definition. The agent and
+/// providers consume the shared `haven_common::tools::ToolDef`; only at the
+/// provider boundary is it expressed as the OpenAI-shaped `ToolDefinition`
+/// each adapter converts to its own wire format.
+impl From<haven_common::tools::ToolDef> for ToolDefinition {
+    fn from(def: haven_common::tools::ToolDef) -> Self {
+        ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: def.name,
+                description: def.description,
+                parameters: def.input_schema,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Error)]
 pub enum LlmError {
     #[error("network timeout: {0}")]
@@ -469,5 +486,23 @@ mod tests {
         };
         assert_eq!(tf.name, "echo");
         assert!(tf.description.contains("echoes"));
+    }
+
+    #[test]
+    fn tool_definition_from_tool_def() {
+        let def = haven_common::tools::ToolDef::new(
+            "files",
+            "Read and write files",
+            serde_json::json!({"type": "object"}),
+            haven_common::types::RiskLevel::Safe,
+        );
+        let td = ToolDefinition::from(def);
+        assert_eq!(td.tool_type, "function");
+        assert_eq!(td.function.name, "files");
+        assert_eq!(td.function.description, "Read and write files");
+        assert_eq!(
+            td.function.parameters,
+            serde_json::json!({"type": "object"})
+        );
     }
 }

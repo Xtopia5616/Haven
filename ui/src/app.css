@@ -84,7 +84,7 @@
  * ========================================================================== */
 :root,
 [data-theme='light'] {
-	/* Primary — overridable via --md-accent-hex (set by themeStore.js) */
+	/* Primary — overridable via --md-accent-hex (set by themeStore.ts) */
 	--md-sys-color-primary: var(--md-accent-hex, #3378d6);
 	--md-sys-color-on-primary: #ffffff;
 	--md-sys-color-primary-container: color-mix(in srgb, var(--md-accent-hex, #3378d6) 20%, #ffffff);

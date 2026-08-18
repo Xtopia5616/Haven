@@ -15,8 +15,8 @@
  * @param {KeyboardEvent} e
  * @returns {string | null}
  */
-export function formatCombo(e) {
-	const mods = [];
+export function formatCombo(e: KeyboardEvent): string | null {
+	const mods: string[] = [];
 	if (e.ctrlKey) mods.push('Ctrl');
 	if (e.shiftKey) mods.push('Shift');
 	if (e.altKey) mods.push('Alt');
@@ -25,7 +25,7 @@ export function formatCombo(e) {
 	// Translate the physical key via `code` (layout-independent) so the
 	// binding matches what the OS-level global shortcut registers.
 	const code = e.code || '';
-	let key = null;
+	let key: string | null = null;
 	if (code.startsWith('Key') && code.length === 4) {
 		key = code.slice(3).toUpperCase();
 	} else if (code.startsWith('Digit') && code.length === 6) {

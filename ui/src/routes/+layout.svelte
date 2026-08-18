@@ -1,16 +1,16 @@
 <script>
 	import '../app.css';
-	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertAction, removeAction, refreshActions, actionStore, sessionStore, cancelAction, refreshActionHistory, deleteAction, formatMessageTime } from '$lib/stores.js';
-	import { submitVoiceTranscript } from '$lib/voiceSubmit.js';
-	import { themeStore } from '$lib/themeStore.js';
-	import { invoke } from '$lib/tauri.js';
-	import logger from '$lib/logger.js';
-	import { registerListeners } from '$lib/events.js';
+	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertAction, removeAction, refreshActions, actionStore, sessionStore, cancelAction, refreshActionHistory, deleteAction, formatMessageTime } from '$lib/stores.ts';
+	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
+	import { themeStore } from '$lib/themeStore.ts';
+	import { invoke } from '$lib/tauri.ts';
+	import logger from '$lib/logger.ts';
+	import { registerListeners } from '$lib/events.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import { syncStore } from '$lib/syncStore.js';
+	import { syncStore } from '$lib/syncStore.ts';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
 	import Logo from '$lib/Logo.svelte';

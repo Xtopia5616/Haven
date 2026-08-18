@@ -1,6 +1,8 @@
 use async_trait::async_trait;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use haven_common::hooks::OnceHandler;
 
 /// Unified shell hook surface, replacing the former 10 separate
 /// `Arc<Mutex<Option<Box<dyn Fn…>>>>` callback fields on `DesktopShell`.
@@ -66,29 +68,46 @@ impl Default for ShellState {
 
 pub struct DesktopShell {
     state: Arc<Mutex<ShellState>>,
-    handler: OnceLock<Arc<dyn ShellHandler>>,
+    handler: OnceHandler<dyn ShellHandler>,
 }
 
 impl DesktopShell {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(ShellState::default())),
-            handler: OnceLock::new(),
+            handler: OnceHandler::new(),
         }
     }
 
     /// Install the single shell hook implementation. May only be installed
-    /// once; a second install panics (the handler never changes at runtime).
+    /// once; a second install is ignored and logged (the handler never
+    /// changes at runtime).
     pub fn set_handler(&self, handler: Arc<dyn ShellHandler>) {
-        if self.handler.set(handler).is_err() {
-            panic!("shell handler already installed");
-        }
+        self.handler.set(handler);
     }
 
     /// Snapshot the current handler (installation is one-time, so this is
     /// lock-free) so callers never hold a lock across an await.
     fn handler_snap(&self) -> Option<Arc<dyn ShellHandler>> {
-        self.handler.get().cloned()
+        self.handler.snap()
+    }
+
+    /// Reconcile the tray status from the current shell state. Deriving it
+    /// here — rather than having each call site pass an explicit status to
+    /// `set_tray` — keeps the tray icon a pure function of the state, so a new
+    /// state transition cannot forget to update the tray.
+    async fn derive_tray(&self) {
+        let status = {
+            let state = self.state.lock().await;
+            if state.is_muted {
+                TrayStatus::Muted
+            } else if state.is_recording {
+                TrayStatus::Recording
+            } else {
+                TrayStatus::Normal
+            }
+        };
+        self.set_tray(status).await;
     }
 
     /// Persist the tray status and notify the handler. Skips the notification
@@ -117,7 +136,7 @@ impl DesktopShell {
         if let Some(h) = &handler {
             h.on_recording_stop().await;
         }
-        self.set_tray(TrayStatus::Normal).await;
+        self.derive_tray().await;
     }
 
     /// Sync shell state with a recording started outside the shell (e.g. the
@@ -132,12 +151,7 @@ impl DesktopShell {
             let mut state = self.state.lock().await;
             state.is_recording = recording;
         }
-        self.set_tray(if recording {
-            TrayStatus::Recording
-        } else {
-            TrayStatus::Normal
-        })
-        .await;
+        self.derive_tray().await;
     }
 
     pub async fn toggle_recording(&self) {
@@ -163,12 +177,7 @@ impl DesktopShell {
         } else if let Some(h) = &handler {
             h.on_recording_stop().await;
         }
-        self.set_tray(if new_val {
-            TrayStatus::Recording
-        } else {
-            TrayStatus::Normal
-        })
-        .await;
+        self.derive_tray().await;
     }
 
     pub async fn hold_press(&self) {
@@ -185,7 +194,7 @@ impl DesktopShell {
         if let Some(h) = &handler {
             h.on_recording_start().await;
         }
-        self.set_tray(TrayStatus::Recording).await;
+        self.derive_tray().await;
     }
 
     pub async fn hold_release(&self) {
@@ -199,7 +208,7 @@ impl DesktopShell {
         if let Some(h) = &handler {
             h.on_recording_stop().await;
         }
-        self.set_tray(TrayStatus::Normal).await;
+        self.derive_tray().await;
     }
 
     pub async fn set_muted(&self, muted: bool) {
@@ -225,12 +234,7 @@ impl DesktopShell {
                 h.on_recording_stop().await;
             }
         }
-        self.set_tray(if muted {
-            TrayStatus::Muted
-        } else {
-            TrayStatus::Normal
-        })
-        .await;
+        self.derive_tray().await;
     }
 
     pub async fn set_hold_mode(&self, hold: bool) {

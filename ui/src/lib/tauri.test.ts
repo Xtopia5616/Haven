@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke, listen } from './tauri.js';
+import { invoke, listen } from './tauri.ts';
 
-describe('tauri.js in a non-Tauri environment', () => {
+describe('tauri.ts in a non-Tauri environment', () => {
 	beforeEach(() => {
-		const w = /** @type {any} */ (window);
+		const w = window as any;
 		delete w.__TAURI_INTERNALS__;
 		delete w.__TAURI__;
 	});

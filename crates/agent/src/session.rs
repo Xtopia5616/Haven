@@ -1,3 +1,4 @@
+use haven_common::hooks::OnceHandler;
 use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
@@ -166,16 +167,15 @@ pub struct StepInfo {
     pub confirmed: Option<bool>,
 }
 
-type ConfirmRequestCallback = Arc<
-    Mutex<Option<Box<dyn Fn(haven_common::types::ConfirmId, String, String, RiskLevel) + Send>>>,
->;
+type ConfirmRequestCallback =
+    OnceHandler<dyn Fn(haven_common::types::ConfirmId, String, String, RiskLevel) + Send + Sync>;
 
 /// Terminal-failure callback: invoked when the dispatcher marks a session as
 /// Error on a path that bypasses the ReAct loop's normal error emission
 /// (handler panic / abort). The app layer wires it to emit `session:error` and
 /// the `session:updated` secondary broadcast so the UI never misses a terminal
 /// transition (busy indicators, status chip, session list refresh).
-type SessionErrorCallback = Arc<Mutex<Option<Box<dyn Fn(String, String) + Send>>>>;
+type SessionErrorCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
 
 /// A pending safety-gateway confirmation wait, keyed by a generated step id
 /// in `SessionExecutor::confirm_waits`. The executing session blocks on the oneshot
@@ -271,8 +271,8 @@ impl SessionExecutor {
             dispatch_tx: watch::channel(0).0,
             action_completions: Arc::new(Mutex::new(HashMap::new())),
             confirm_waits: Arc::new(Mutex::new(HashMap::new())),
-            on_confirm_request: Arc::new(Mutex::new(None)),
-            on_session_error: Arc::new(Mutex::new(None)),
+            on_confirm_request: OnceHandler::new(),
+            on_session_error: OnceHandler::new(),
         }
     }
 
@@ -505,7 +505,7 @@ impl SessionExecutor {
                         // surface it through the wired callback — otherwise
                         // the UI keeps the session in its busy set and the chip
                         // would stay stuck on "waiting" forever.
-                        if let Some(cb) = exec_inner.on_session_error.lock().await.as_ref() {
+                        if let Some(cb) = exec_inner.on_session_error.snap() {
                             cb(session_id.clone(), reason);
                         }
                     }
@@ -1485,7 +1485,7 @@ impl SessionExecutor {
         // No confirmation callback wired (unit tests, degraded startup):
         // there is no UI that could ever answer — fail closed so the tool
         // never runs without approval, instead of blocking the session forever.
-        if self.on_confirm_request.lock().await.as_ref().is_none() {
+        if self.on_confirm_request.snap().is_none() {
             self.confirm_waits.lock().await.remove(&step_id);
             tracing::info!(
                 "confirmation for tool '{}' on session {} rejected: no confirmation channel wired",
@@ -1494,7 +1494,7 @@ impl SessionExecutor {
             );
             return false;
         }
-        if let Some(cb) = self.on_confirm_request.lock().await.as_ref() {
+        if let Some(cb) = self.on_confirm_request.snap() {
             cb(
                 step_id.clone(),
                 tid.clone(),
@@ -1599,8 +1599,8 @@ mod tests {
         // lock while the dispatcher fired the callback.
         let notified = Arc::new(std::sync::Mutex::new(None::<(String, String)>));
         let nt = notified.clone();
-        *exec.on_session_error.lock().await =
-            Some(Box::new(move |session_id: String, reason: String| {
+        exec.on_session_error
+            .set(Arc::new(move |session_id: String, reason: String| {
                 *nt.lock().unwrap() = Some((session_id, reason));
             }));
 

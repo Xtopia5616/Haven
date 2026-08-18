@@ -265,9 +265,7 @@ mod tests {
     async fn test_system_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = SystemTool
-            .execute(json!({"category": "os"}), cancel)
-            .await;
+        let result = SystemTool.execute(json!({"category": "os"}), cancel).await;
         assert!(result.is_err());
     }
 }

@@ -53,7 +53,7 @@ describe('ContextMenu', () => {
 			y: 10,
 			items: baseItems(),
 		});
-		expect(getByText('删除').closest('button').classList.contains('danger')).toBe(true);
+		expect(getByText('删除').closest('button')!.classList.contains('danger')).toBe(true);
 	});
 
 	it('flips the menu when it overflows the right viewport edge', async () => {
@@ -64,7 +64,7 @@ describe('ContextMenu', () => {
 			y: 10,
 			items: baseItems(),
 		});
-		const el = /** @type {HTMLElement} */ (container.querySelector('.ctx-menu'));
+		const el = container.querySelector('.ctx-menu') as HTMLElement;
 		await waitFor(() => {
 			const left = parseInt(el.style.left, 10);
 			expect(left).toBeLessThan(window.innerWidth - el.offsetWidth + 8);

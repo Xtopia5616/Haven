@@ -1,12 +1,13 @@
-import logger from '$lib/logger.js';
+import logger from '$lib/logger.ts';
+import type MarkdownIt from 'markdown-it';
 
 // Module-level lazy singleton for the MarkdownIt renderer. Chat bubbles used
 // to each dynamically import markdown-it + highlight.js and construct their
 // own MarkdownIt instance (8 language registrations + a custom fence rule)
 // in onMount — that cost multiplied per bubble and per message. Now the
 // instance is built exactly once on first use and shared by every bubble.
-let md = null;
-let loading = null;
+let md: MarkdownIt | null = null;
+let loading: Promise<MarkdownIt> | null = null;
 
 // Streaming flag read by the fence rule. While true, code blocks render as a
 // plain <pre> (no highlight, no language bar / copy button): half-typed
@@ -20,10 +21,10 @@ let streaming = false;
  * once.
  * @returns {Promise<import('markdown-it').default>}
  */
-export function getMarkdownRenderer() {
+export function getMarkdownRenderer(): Promise<MarkdownIt> {
 	if (md) return Promise.resolve(md);
 	if (loading) return loading;
-	loading = (async () => {
+	const build = (async () => {
 		const [{ default: MarkdownIt }, hljs, javascript, typescript, bash, json, css, xml, rust, yaml] =
 			await Promise.all([
 				import('markdown-it'),
@@ -94,9 +95,10 @@ export function getMarkdownRenderer() {
 		instance.renderer.rules.table_close = () => '</table></div>';
 
 		md = instance;
-		return md;
+		return instance;
 	})();
-	return loading;
+	loading = build;
+	return build;
 }
 
 /**

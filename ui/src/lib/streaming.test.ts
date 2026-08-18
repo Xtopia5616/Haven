@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { accumulateStreamChunk, applyThoughtSnap, webSearchId, finalizeStreamBlocks, newToolMessage } from './streaming.js';
+import { accumulateStreamChunk, applyThoughtSnap, webSearchId, finalizeStreamBlocks, newToolMessage } from './streaming.ts';
 
 const STEP_ID = 'msg-thought-1';
 const REASONING_ID = 'msg-reasoning-1';

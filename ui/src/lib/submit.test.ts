@@ -1,16 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { activeSessionIdStore, sessionMessagesStore } from './stores.js';
+import { activeSessionIdStore, sessionMessagesStore } from './stores.ts';
 
-vi.mock('./tauri.js', () => ({
+vi.mock('./tauri.ts', () => ({
 	invoke: vi.fn(),
 }));
 
-import { invoke } from './tauri.js';
-import { submitTranscript } from './submit.js';
+import { invoke } from './tauri.ts';
+import { submitTranscript } from './submit.ts';
 
-/** @type {import('vitest').Mock} */
-const invokeMock = /** @type {any} */ (invoke);
+const invokeMock = invoke as any;
 
 describe('submitTranscript', () => {
 	beforeEach(() => {

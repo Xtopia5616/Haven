@@ -1,7 +1,7 @@
 <script>
 	import { onMount, onDestroy } from 'svelte';
-	import { invoke } from '$lib/tauri.js';
-	import { themeStore } from '$lib/themeStore.js';
+	import { invoke } from '$lib/tauri.ts';
+	import { themeStore } from '$lib/themeStore.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -9,7 +9,7 @@
 	import StatusDot from '$lib/StatusDot.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
-	import { addNotification } from '$lib/stores.js';
+	import { addNotification } from '$lib/stores.ts';
 	import ModelSettings from './ModelSettings.svelte';
 
 	let llmConfig = $state({

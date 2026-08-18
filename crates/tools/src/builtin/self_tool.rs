@@ -11,9 +11,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::{Tool, ToolRegistry, ToolResult};
 use haven_mcp::{McpClientStatus, McpManager};
 use haven_skills::SkillsEngine;
-use crate::{Tool, ToolRegistry, ToolResult};
 
 /// App-level dependencies for the `self` tool, wired in by the desktop shell.
 /// Everything is optional so headless/test builds work without the full app.

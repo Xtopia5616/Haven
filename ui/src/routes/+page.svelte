@@ -13,21 +13,21 @@
 </script>
 
 <script>
-	import logger from '$lib/logger.js';
-	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.js';
+	import logger from '$lib/logger.ts';
+	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
 	import {
 		accumulateStreamChunk,
 		applyThoughtSnap,
 		webSearchId,
 		finalizeStreamBlocks,
 		newToolMessage,
-	} from '$lib/streaming.js';
+	} from '$lib/streaming.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
 	import { get } from 'svelte/store';
-	import { invoke } from '$lib/tauri.js';
-	import { registerListeners } from '$lib/events.js';
+	import { invoke } from '$lib/tauri.ts';
+	import { registerListeners } from '$lib/events.ts';
 	import {
 		sessionMessagesStore,
 		sessionStore,
@@ -55,9 +55,9 @@
 		DRAFT_KEY,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
-	} from '$lib/stores.js';
-	import { submitTranscript } from '$lib/submit.js';
-	import { syncStore, syncStoreImmediate } from '$lib/syncStore.js';
+	} from '$lib/stores.ts';
+	import { submitTranscript } from '$lib/submit.ts';
+	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
@@ -550,7 +550,7 @@
 		// auto-assign, session:created, auto-restore), otherwise the next message
 		// would append to the old conversation instead of starting a new session.
 		// The intent is cleared only when the user's own submission creates a
-		// session (submit.js) or they explicitly switch to another session. Also
+		// session (submit.ts) or they explicitly switch to another session. Also
 		// persisted to localStorage so the next app launch skips restoring the
 		// previous conversation.
 		newSessionIntentStore.set(true);
@@ -781,7 +781,7 @@
 	});
 
 	// Follow external store writes back into the local state. The effect
-	// above mirrors state → store only; submit.js writes the store directly
+	// above mirrors state → store only; submit.ts writes the store directly
 	// when a submission creates a fresh session (its `SessionCreated` result never
 	// passes through this page), and the view must follow the new session
 	// instead of staying on the blank draft. Guarded with `!activeSessionId`
@@ -1123,7 +1123,7 @@
 						adoptDraftMessages(tid);
 						// Every `session:created` comes from a user submission
 						// (typed or voice) — the fresh-start intent is fulfilled
-						// by submit.js when that submission's invoke resolves.
+						// by submit.ts when that submission's invoke resolves.
 						// This guard only covers the in-flight window between the
 						// session creation event and the invoke resolution: a
 						// submission that started before the 新对话 click must

@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ModelEndpoint {

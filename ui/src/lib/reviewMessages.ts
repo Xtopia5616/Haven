@@ -2,7 +2,7 @@
 // steps) into the chat bubble message list used by the chat page and the
 // history review flow.
 
-import { formatMessageTime } from '$lib/stores.js';
+import { formatMessageTime } from '$lib/stores.ts';
 
 // Sentinel the backend persists in `messages.tool_call_id` for assistant
 // messages that carry an `ask` question text (see
@@ -11,6 +11,54 @@ import { formatMessageTime } from '$lib/stores.js';
 // skips it (the ask CARD is the step row) by this marker instead of content
 // matching. Kept in sync with the Rust const — pinned by a test below.
 export const ASK_MSG_TOOL_CALL_ID = '__ask__';
+
+interface ReviewMessage {
+	id: string;
+	role?: string;
+	content?: string;
+	type?: string | null;
+	voice?: boolean;
+	time?: string;
+	_ts?: number;
+	streaming?: boolean;
+	attachments?: Array<{ media_type: string; data: string }>;
+	options?: string[];
+	awaiting?: boolean;
+	stepNumber?: number | null;
+	toolName?: string;
+}
+
+interface ReviewStep {
+	id: string;
+	action_tool?: string | null;
+	silent?: boolean;
+	observation?: string | null;
+	thought?: string | null;
+	created_at: string;
+	step_number: number;
+}
+
+interface ReviewMsg {
+	id: string;
+	role: string;
+	content: string;
+	message_type?: string | null;
+	voice?: boolean;
+	created_at: string;
+	attachments?: unknown[];
+	tool_call_id?: string | null;
+}
+
+interface ReviewData {
+	session?: {
+		id?: string;
+		status?: string;
+		input_text?: string;
+		created_at?: string;
+	} | null;
+	messages?: ReviewMsg[];
+	steps?: ReviewStep[];
+}
 
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that
@@ -33,7 +81,7 @@ export const ASK_MSG_TOOL_CALL_ID = '__ask__';
  * @param {Array<object>} dbMessages   buildReviewMessages() result
  * @param {Array<object>} existing     current sessionMessages entry
  */
-export function mergeLiveStreaming(dbMessages, existing) {
+export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: ReviewMessage[]): ReviewMessage[] {
 	// Awaiting live ask cards carry quick-reply options the DB build may lack
 	// (the pause status can land after the observation). Prefer EVERY
 	// awaiting card over its DB copy so all questions in a batched step stay
@@ -47,8 +95,8 @@ export function mergeLiveStreaming(dbMessages, existing) {
 	const liveStreamingToolById = new Map(
 		existing.filter((m) => m.type === 'tool' && m.streaming).map((m) => [m.id, m]),
 	);
-	const out = [];
-	const emitted = new Set();
+	const out: ReviewMessage[] = [];
+	const emitted = new Set<string>();
 	for (const m of dbMessages) {
 		const live = liveAskById.get(m.id) ?? liveStreamingToolById.get(m.id);
 		if (live) {
@@ -72,8 +120,8 @@ export function mergeLiveStreaming(dbMessages, existing) {
 	return out;
 }
 
-export function buildReviewMessages(data) {
-	const items = [];
+export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
+	const items: ReviewMessage[] = [];
 	const msgs = data.messages || [];
 	const session = data.session || {};
 
@@ -94,7 +142,7 @@ export function buildReviewMessages(data) {
 			time: formatMessageTime(msg.created_at),
 			_ts: Date.parse(msg.created_at) || 0,
 			streaming: false,
-			attachments: msg.attachments || [],
+			attachments: (msg.attachments || []) as Array<{ media_type: string; data: string }>,
 		});
 	}
 
@@ -156,8 +204,8 @@ export function buildReviewMessages(data) {
 				const matchIdx = items.findIndex(
 					(item) =>
 						item.role === 'assistant' &&
-						(item.content === askText ||
-							(item.type == null && item.content.startsWith(`${askText}\n\n`))),
+						((item.content || '') === askText ||
+							(item.type == null && (item.content || '').startsWith(`${askText}\n\n`))),
 				);
 				if (matchIdx >= 0) items.splice(matchIdx, 1);
 			}
@@ -206,7 +254,7 @@ export function buildReviewMessages(data) {
 		if (!thoughtTrimmed) continue;
 		for (const item of items) {
 			if ((item.role === 'assistant' || item.role === 'user') && item.stepNumber == null
-				&& item.content.trim() === thoughtTrimmed) {
+				&& (item.content || '').trim() === thoughtTrimmed) {
 				item.stepNumber = step.step_number;
 				break;
 			}
@@ -229,21 +277,21 @@ export function buildReviewMessages(data) {
 	// Infer stepNumber for assistant session messages by backward-forward pass.
 	// Backward: tool messages precede their action/observation in time, so
 	// walking backwards assigns stepNumber to preceding assistant messages.
-	let lastStep = null;
+	let lastStep: number | null = null;
 	for (let i = items.length - 1; i >= 0; i--) {
-		if (items[i].stepNumber != null) lastStep = items[i].stepNumber;
+		if (items[i].stepNumber != null) lastStep = items[i].stepNumber as number;
 		else if (items[i].role === 'assistant' && lastStep != null) items[i].stepNumber = lastStep;
 	}
 	// Forward: catch any assistant messages after the last tool message.
 	lastStep = null;
 	for (let i = 0; i < items.length; i++) {
-		if (items[i].stepNumber != null) lastStep = items[i].stepNumber;
+		if (items[i].stepNumber != null) lastStep = items[i].stepNumber as number;
 		else if (items[i].role === 'assistant' && lastStep != null) items[i].stepNumber = lastStep;
 	}
 	// Forward: assign stepNumber of the following assistant response to user messages.
-	let nextStep = null;
+	let nextStep: number | null = null;
 	for (let i = items.length - 1; i >= 0; i--) {
-		if (items[i].stepNumber != null) nextStep = items[i].stepNumber;
+		if (items[i].stepNumber != null) nextStep = items[i].stepNumber as number;
 		else if (items[i].role === 'user' && nextStep != null) items[i].stepNumber = nextStep;
 	}
 	return items;

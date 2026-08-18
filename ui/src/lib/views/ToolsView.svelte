@@ -7,10 +7,10 @@
 	let mcpEditServer = $state(null);
 
 	import { onMount, onDestroy } from 'svelte';
-	import { invoke } from '$lib/tauri.js';
-	import { addNotification } from '$lib/stores.js';
-	import logger from '$lib/logger.js';
-	import { registerOne } from '$lib/events.js';
+	import { invoke } from '$lib/tauri.ts';
+	import { addNotification } from '$lib/stores.ts';
+	import logger from '$lib/logger.ts';
+	import { registerOne } from '$lib/events.ts';
 	import SkillCard from '$lib/SkillCard.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';

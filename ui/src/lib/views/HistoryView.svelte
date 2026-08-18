@@ -48,16 +48,16 @@
 		return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
 	});
 
-	import logger from '$lib/logger.js';
-	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.js';
-	import { formatMessageTime } from '$lib/stores.js';
-	import { statusVariant } from '$lib/sessionStatus.js';
+	import logger from '$lib/logger.ts';
+	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
+	import { formatMessageTime } from '$lib/stores.ts';
+	import { statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
-	import { invoke } from '$lib/tauri.js';
-	import { sessionMessagesStore, updateSessionMessages, clearSessionMessages, reviewTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.js';
-	import { registerOne } from '$lib/events.js';
+	import { invoke } from '$lib/tauri.ts';
+	import { sessionMessagesStore, updateSessionMessages, clearSessionMessages, reviewTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
+	import { registerOne } from '$lib/events.ts';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';

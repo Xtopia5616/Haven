@@ -2,7 +2,7 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { notificationStore } from './stores.js';
+	import { notificationStore } from './stores.ts';
 	// The container stays mounted (empty when idle) and items are only
 	// populated after its first render: toasts inserted into a freshly
 	// created each block play no intro transition (the block effect has not

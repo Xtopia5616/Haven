@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use haven_common::prompts::{MAIN_SYSTEM_PROMPT, TOOL_USAGE_NOTES, render};
+use haven_common::tools::ToolDef;
 use haven_llm::{EndpointRole, LlmRouter};
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
@@ -401,22 +402,20 @@ impl SystemPromptBuilder {
             }
         }
 
-        let schemas = self.tools.registry.list_schemas().await;
-        let new_cache = self.build_sections(version, schemas).await;
+        // Structured tool defs from the registry; no loose JSON re-parsing.
+        let defs = self.tools.registry.list_defs().await;
+        let new_cache = self.build_sections(version, defs).await;
         *self.schema_cache.write().unwrap() = Some(new_cache.clone());
         new_cache
     }
 
-    async fn build_sections(&self, version: u64, schemas: Vec<serde_json::Value>) -> SchemaCache {
+    async fn build_sections(&self, version: u64, defs: Vec<ToolDef>) -> SchemaCache {
         let mut built_in = String::new();
-        for s in &schemas {
-            let name = s["name"].as_str().unwrap_or("");
-            let desc = s["description"].as_str().unwrap_or("");
-
+        for def in &defs {
             // Per-session skill__ and mcp__ tools are never in the global
             // registry (progressive loading), so they won't appear here.
-            if !name.starts_with("skill__") && !name.starts_with("mcp__") {
-                built_in.push_str(&format!("- {}: {}\n", name, desc));
+            if !def.name.starts_with("skill__") && !def.name.starts_with("mcp__") {
+                built_in.push_str(&format!("- {}: {}\n", def.name, def.description));
             }
         }
 

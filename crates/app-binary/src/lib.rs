@@ -709,7 +709,9 @@ pub fn run() {
             let mute = MenuItemBuilder::with_id("mute", "Mute").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &mute, &settings, &quit]).build()?;
+            let menu = MenuBuilder::new(app)
+                .items(&[&show, &mute, &settings, &quit])
+                .build()?;
 
             let tray = TrayIconBuilder::new()
                 .icon(make_tray_icon(TrayStatus::Normal))
@@ -791,10 +793,9 @@ pub fn run() {
                 {
                     let app_h = handle.clone();
                     let shell_arc = state.shell.clone();
-                    state.pipeline.set_handler(Arc::new(HavenInputHandler {
-                        app_h,
-                        shell_arc,
-                    }));
+                    state
+                        .pipeline
+                        .set_handler(Arc::new(HavenInputHandler { app_h, shell_arc }));
                 }
 
                 rt.block_on(shell.set_hold_mode(is_hold));
@@ -804,14 +805,19 @@ pub fn run() {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
                     rt.block_on(async {
-                        *st_arc.executor.on_confirm_request.lock().await = Some(Box::new(move |step_id: haven_common::types::ConfirmId, session_id: String, tool_name: String, risk_level: haven_common::types::RiskLevel| {
-                            let _ = app_h.emit("confirm:requested", serde_json::json!({
-                                "step_id": step_id,
-                                "tool_name": tool_name,
-                                "risk_level": risk_level,
-                                "session_id": session_id,
-                            }));
-                        }));
+                        st_arc.executor.on_confirm_request.set(Arc::new(
+                            move |step_id: haven_common::types::ConfirmId,
+                                  session_id: String,
+                                  tool_name: String,
+                                  risk_level: haven_common::types::RiskLevel| {
+                                let _ = app_h.emit("confirm:requested", serde_json::json!({
+                                    "step_id": step_id,
+                                    "tool_name": tool_name,
+                                    "risk_level": risk_level,
+                                    "session_id": session_id,
+                                }));
+                            },
+                        ));
                     });
                 }
 
@@ -824,29 +830,33 @@ pub fn run() {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
                     rt.block_on(async {
-                        *st_arc.executor.on_session_error.lock().await = Some(Box::new(move |session_id: String, reason: String| {
-                            let _ = app_h.emit(
-                                "session:error",
-                                serde_json::json!({
-                                    "session_id": session_id,
-                                    "error": reason,
-                                }),
-                            );
-                            let _ = app_h.emit(
-                                "session:updated",
-                                serde_json::json!({
-                                    "session_id": session_id,
-                                    "status": "error",
-                                    "title": "",
-                                }),
-                            );
-                        }));
+                        st_arc.executor.on_session_error.set(Arc::new(
+                            move |session_id: String, reason: String| {
+                                let _ = app_h.emit(
+                                    "session:error",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "error": reason,
+                                    }),
+                                );
+                                let _ = app_h.emit(
+                                    "session:updated",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "status": "error",
+                                        "title": "",
+                                    }),
+                                );
+                            },
+                        ));
                     });
                 }
             });
 
             // --------------------- Global hotkey ---------------------
-            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+            use tauri_plugin_global_shortcut::{
+                Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+            };
 
             let shortcut = haven_input::hotkey::KeyCombo::parse(&key_binding)
                 .and_then(|combo| to_tauri_shortcut(&combo))
@@ -855,45 +865,45 @@ pub fn run() {
                 });
 
             let _sc = shortcut;
-            let result = handle.global_shortcut().on_shortcut(shortcut, move |app, _sc, event| {
-                let state = app.state::<Arc<AppState>>();
-                let shell = state.shell.clone();
-                let pipeline = state.pipeline.clone();
-                let app_h = app.clone();
-                let pressed = event.state == ShortcutState::Pressed;
-                // `spawn` (unlike `block_on`) is safe from any thread, so a
-                // shortcut callback firing on the async runtime's own thread
-                // can't panic with "Cannot start a runtime from within a
-                // runtime".
-                tauri::async_runtime::spawn(async move {
-                    let shell_state = shell.get_state().await;
-                    if shell_state.is_muted {
-                        return;
-                    }
-                    // 快捷键唤起：先显示并聚焦前端窗口（含自启隐藏后的
-                    // 后台场景），再开始/结束录音。
-                    if pressed
-                        && let Some(w) = app_h.get_webview_window("main")
-                    {
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
-                    // 未配置录音（STT 不可用）时，快捷键仅唤醒窗口，不尝试
-                    // 开始录音，避免无意义的录音错误提示。
-                    if !pipeline.recording_configured().await {
-                        return;
-                    }
-                    if shell_state.hold_mode {
-                        if pressed {
-                            shell.hold_press().await;
-                        } else {
-                            shell.hold_release().await;
+            let result = handle
+                .global_shortcut()
+                .on_shortcut(shortcut, move |app, _sc, event| {
+                    let state = app.state::<Arc<AppState>>();
+                    let shell = state.shell.clone();
+                    let pipeline = state.pipeline.clone();
+                    let app_h = app.clone();
+                    let pressed = event.state == ShortcutState::Pressed;
+                    // `spawn` (unlike `block_on`) is safe from any thread, so a
+                    // shortcut callback firing on the async runtime's own thread
+                    // can't panic with "Cannot start a runtime from within a
+                    // runtime".
+                    tauri::async_runtime::spawn(async move {
+                        let shell_state = shell.get_state().await;
+                        if shell_state.is_muted {
+                            return;
                         }
-                    } else if pressed {
-                        shell.toggle_recording().await;
-                    }
+                        // 快捷键唤起：先显示并聚焦前端窗口（含自启隐藏后的
+                        // 后台场景），再开始/结束录音。
+                        if pressed && let Some(w) = app_h.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        // 未配置录音（STT 不可用）时，快捷键仅唤醒窗口，不尝试
+                        // 开始录音，避免无意义的录音错误提示。
+                        if !pipeline.recording_configured().await {
+                            return;
+                        }
+                        if shell_state.hold_mode {
+                            if pressed {
+                                shell.hold_press().await;
+                            } else {
+                                shell.hold_release().await;
+                            }
+                        } else if pressed {
+                            shell.toggle_recording().await;
+                        }
+                    });
                 });
-            });
 
             match result {
                 Ok(_) => {
@@ -901,10 +911,13 @@ pub fn run() {
                 }
                 Err(e) => {
                     tracing::warn!("Hotkey conflict detected: {} - {}", key_binding, e);
-                    let _ = handle.emit("hotkey:conflict", serde_json::json!({
-                        "binding": key_binding,
-                        "error": e.to_string(),
-                    }));
+                    let _ = handle.emit(
+                        "hotkey:conflict",
+                        serde_json::json!({
+                            "binding": key_binding,
+                            "error": e.to_string(),
+                        }),
+                    );
                 }
             }
 

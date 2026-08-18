@@ -1,7 +1,7 @@
 <script>
-	import logger from '$lib/logger.js';
-	import { invoke } from '$lib/tauri.js';
-	import { addNotification } from '$lib/stores.js';
+	import logger from '$lib/logger.ts';
+	import { invoke } from '$lib/tauri.ts';
+	import { addNotification } from '$lib/stores.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -9,7 +9,7 @@
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import StatusDot from '$lib/StatusDot.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
-	import { ROLE_KEYS, modelCards } from '$lib/modelRoles.js';
+	import { ROLE_KEYS, modelCards } from '$lib/modelRoles.ts';
 
 	/**
 	 * LLM model configuration (providers + role slots).

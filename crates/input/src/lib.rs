@@ -9,7 +9,7 @@
 //! (TTS / text-to-image).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use capture::{EngineHandle, TARGET_SAMPLE_RATE};
+use haven_common::hooks::OnceHandler;
 use haven_llm::SttClient;
 
 pub use haven_common::config::AudioConfig;
@@ -104,7 +105,7 @@ pub struct InputPipeline {
     /// Audio ring buffer size in seconds (from `context_limits`).
     ring_buffer_secs: Arc<std::sync::Mutex<usize>>,
     vad_detector: Arc<Mutex<vad::VadDetector>>,
-    handler: OnceLock<Arc<dyn InputHandler>>,
+    handler: OnceHandler<dyn InputHandler>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
     stt_client: Arc<Mutex<Option<Arc<dyn SttClient>>>>,
@@ -120,7 +121,7 @@ impl InputPipeline {
             vad_worker: Arc::new(StdMutex::new(None)),
             ring_buffer_secs: Arc::new(std::sync::Mutex::new(20)),
             vad_detector: Arc::new(Mutex::new(vad_detector)),
-            handler: OnceLock::new(),
+            handler: OnceHandler::new(),
             cancel_token: StdMutex::new(None),
             result_rx: StdMutex::new(None),
             stt_client: Arc::new(Mutex::new(None)),
@@ -136,11 +137,9 @@ impl Default for InputPipeline {
 
 impl InputPipeline {
     /// Install the unified input handler. May only be installed once; a second
-    /// install panics (the handler never changes at runtime).
+    /// install is ignored and logged (the handler never changes at runtime).
     pub fn set_handler(&self, handler: Arc<dyn InputHandler>) {
-        if self.handler.set(handler).is_err() {
-            panic!("input handler already installed");
-        }
+        self.handler.set(handler);
     }
 
     /// Replace the unified context limits (audio ring buffer size).
@@ -293,7 +292,7 @@ impl InputPipeline {
                 .expect("vad_worker lock poisoned")
                 .clone(),
             vad_detector: self.vad_detector.clone(),
-            handler: self.handler.get().cloned(),
+            handler: self.handler.snap(),
             failed: handle.stream_failed.clone(),
             silent_abort: handle.silent_abort.clone(),
             mode,
@@ -883,7 +882,7 @@ mod tests {
         }
         let pipeline = InputPipeline::new();
         pipeline.set_handler(Arc::new(StopHandler));
-        assert!(pipeline.handler.get().is_some());
+        assert!(pipeline.handler.is_installed());
     }
 
     #[tokio::test]

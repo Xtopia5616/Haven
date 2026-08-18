@@ -78,7 +78,7 @@ describe('ChatBubble', () => {
 				],
 			}),
 		);
-		const audio = container.querySelector('.attachment-audio');
+		const audio = container.querySelector('.attachment-audio')!;
 		expect(audio).toBeTruthy();
 		expect(audio.getAttribute('src')).toBe('data:audio/mpeg;base64,bXBzLWJ5dGVz');
 		expect(container.querySelector('.attachment-file')).toBeNull();
@@ -101,7 +101,7 @@ describe('ChatBubble', () => {
 			}),
 		);
 		expect(container.querySelectorAll('.attachment-img').length).toBe(0);
-		const chip = container.querySelector('.attachment-file');
+		const chip = container.querySelector('.attachment-file')!;
 		expect(chip).toBeTruthy();
 		expect(chip.textContent).toContain('报告.pdf');
 		expect(screen.getByText('看看这个')).toBeTruthy();
@@ -117,14 +117,14 @@ describe('ChatBubble', () => {
 			ChatBubble,
 			base({ role: 'assistant', content: 'hi', streaming: true }),
 		);
-		const bubble = container.querySelector('.bubble');
+		const bubble = container.querySelector('.bubble')!;
 		expect(bubble.classList.contains('pending')).toBe(false);
 		expect(bubble.classList.contains('assistant')).toBe(true);
 	});
 
 	it('does not apply any pending class to finalized assistant bubbles', () => {
 		const { container } = render(ChatBubble, base({ role: 'assistant', content: 'hi' }));
-		expect(container.querySelector('.bubble').classList.contains('pending')).toBe(false);
+		expect(container.querySelector('.bubble')!.classList.contains('pending')).toBe(false);
 	});
 
 	it('shows the voice icon for voice input', () => {
@@ -139,7 +139,7 @@ describe('ChatBubble', () => {
 
 	it('renders thought messages as italic text', () => {
 		render(ChatBubble, base({ role: 'assistant', content: 'thinking hard', type: 'thought' }));
-		const em = document.querySelector('em.thought');
+		const em = document.querySelector('em.thought')!;
 		expect(em).toBeTruthy();
 		expect(em.textContent).toBe('thinking hard');
 	});
@@ -167,9 +167,9 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = /** @type {HTMLDetailsElement} */ (
-			container.querySelector('details.reasoning-block')
-		);
+		const details = container.querySelector(
+			'details.reasoning-block',
+		) as HTMLDetailsElement;
 		expect(details).toBeTruthy();
 		expect(details.open).toBe(true);
 		expect(details.textContent).toContain('chain of thought');
@@ -185,9 +185,9 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = /** @type {HTMLDetailsElement} */ (
-			container.querySelector('details.reasoning-block')
-		);
+		const details = container.querySelector(
+			'details.reasoning-block',
+		) as HTMLDetailsElement;
 		expect(details.open).toBe(true);
 		await rerender({ streaming: false });
 		expect(details.open).toBe(false);
@@ -203,9 +203,9 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = /** @type {HTMLDetailsElement} */ (
-			container.querySelector('details.reasoning-block')
-		);
+		const details = container.querySelector(
+			'details.reasoning-block',
+		) as HTMLDetailsElement;
 		await rerender({ streaming: false });
 		expect(details.open).toBe(false);
 
@@ -279,7 +279,7 @@ describe('ChatBubble', () => {
 			}),
 		);
 		expect(screen.getByText('▶ Calling shell')).toBeTruthy();
-		const details = /** @type {HTMLDetailsElement} */ (container.querySelector('.tool-card'));
+		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
 		expect(details).toBeTruthy();
 		expect(details.open).toBe(false);
 	});
@@ -295,7 +295,7 @@ describe('ChatBubble', () => {
 				streaming: true,
 			}),
 		);
-		const details = /** @type {HTMLDetailsElement} */ (container.querySelector('.tool-card'));
+		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
 		expect(details.open).toBe(true);
 		await rerender({ streaming: false });
 		expect(details.open).toBe(false);
@@ -311,7 +311,7 @@ describe('ChatBubble', () => {
 				toolName: 'shell',
 			}),
 		);
-		const details = /** @type {HTMLDetailsElement} */ (container.querySelector('.tool-card'));
+		const details = container.querySelector('.tool-card') as HTMLDetailsElement;
 		expect(details.open).toBe(false);
 		details.open = true;
 		await rerender({ content: 'second output' });
@@ -328,7 +328,7 @@ describe('ChatBubble', () => {
 				toolName: 'audio',
 			}),
 		);
-		const card = document.querySelector('.tool-card');
+		const card = document.querySelector('.tool-card')!;
 		expect(card).toBeTruthy();
 		expect(card.textContent).toContain('some plain error text');
 		expect(document.querySelector('details.observation-block')).toBeNull();
@@ -340,7 +340,7 @@ describe('ChatBubble', () => {
 			base({ role: 'assistant', content: 'extra context', type: 'supplement' }),
 		);
 		expect(document.querySelector('.supplement-badge')).toBeTruthy();
-		expect(document.querySelector('.supplement-badge').textContent).toContain('extra context');
+		expect(document.querySelector('.supplement-badge')!.textContent).toContain('extra context');
 	});
 
 	it('renders an ask question card with an awaiting indicator', () => {
@@ -442,7 +442,7 @@ describe('ChatBubble', () => {
 				onContextMenu,
 			}),
 		);
-		await fireEvent.contextMenu(document.querySelector('.bubble'), {
+		await fireEvent.contextMenu(document.querySelector('.bubble')!, {
 			clientX: 11,
 			clientY: 22,
 		});
@@ -462,7 +462,7 @@ describe('ChatBubble', () => {
 
 	it('does not call onContextMenu when no handler is given', async () => {
 		render(ChatBubble, base({ role: 'user', content: 'plain' }));
-		await fireEvent.contextMenu(document.querySelector('.bubble'));
+		await fireEvent.contextMenu(document.querySelector('.bubble')!);
 	});
 });
 
@@ -485,22 +485,22 @@ describe('ChatBubble markdown code fences', () => {
 	it('wraps a fenced code block with a toolbar and language label', async () => {
 		const { container } = renderMd('```js\nconst a = 1;\n```');
 		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
-		expect(container.querySelector('.md-code-lang').textContent).toBe('js');
+		expect(container.querySelector('.md-code-lang')!.textContent).toBe('js');
 		expect(container.querySelector('.md-code-copy')).toBeTruthy();
-		expect(container.querySelector('.md-code-wrap code').textContent).toContain('const a = 1;');
+		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain('const a = 1;');
 	});
 
 	it('labels unknown languages as text and still wraps the block', async () => {
 		const { container } = renderMd('```\nplain lines\n```');
 		await waitFor(() => expect(container.querySelector('.md-code-wrap')).toBeTruthy());
-		expect(container.querySelector('.md-code-lang').textContent).toBe('text');
-		expect(container.querySelector('.md-code-wrap code').textContent).toContain('plain lines');
+		expect(container.querySelector('.md-code-lang')!.textContent).toBe('text');
+		expect(container.querySelector('.md-code-wrap code')!.textContent).toContain('plain lines');
 	});
 
 	it('copies the code text when the copy button is clicked', async () => {
 		const { container } = renderMd('```python\nprint("hi")\n```');
 		await waitFor(() => expect(container.querySelector('.md-code-copy')).toBeTruthy());
-		await fireEvent.click(container.querySelector('.md-code-copy'));
+		await fireEvent.click(container.querySelector('.md-code-copy')!);
 		await waitFor(() => expect(clipboardMock).toHaveBeenCalled());
 		expect(clipboardMock.mock.calls[0][0]).toContain('print("hi")');
 	});
@@ -508,9 +508,9 @@ describe('ChatBubble markdown code fences', () => {
 	it('flashes 已复制 on the button after a successful copy', async () => {
 		const { container } = renderMd('```js\nx\n```');
 		await waitFor(() => expect(container.querySelector('.md-code-copy')).toBeTruthy());
-		const label = container.querySelector('.md-code-copy-text');
+		const label = container.querySelector('.md-code-copy-text')!;
 		vi.useFakeTimers();
-		await fireEvent.click(container.querySelector('.md-code-copy'));
+		await fireEvent.click(container.querySelector('.md-code-copy')!);
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(label.textContent).toBe('已复制');
@@ -523,6 +523,6 @@ describe('ChatBubble markdown code fences', () => {
 		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy());
 		await new Promise((r) => setTimeout(r, 0));
 		expect(container.querySelector('.md-code-wrap')).toBeNull();
-		expect(container.querySelector('.md-content code').textContent).toBe('code');
+		expect(container.querySelector('.md-content code')!.textContent).toBe('code');
 	});
 });

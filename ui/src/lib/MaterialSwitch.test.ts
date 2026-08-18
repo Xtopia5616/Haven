@@ -3,8 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import MaterialSwitch from './MaterialSwitch.svelte';
 
 describe('MaterialSwitch', () => {
-	const input = () =>
-		/** @type {HTMLInputElement} */ (document.querySelector('.md-switch-input'));
+	const input = () => document.querySelector('.md-switch-input') as HTMLInputElement;
 
 	it('renders unchecked by default', () => {
 		render(MaterialSwitch, { onChange: vi.fn() });

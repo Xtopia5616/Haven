@@ -6,9 +6,9 @@
 	//
 	// Supported keys mirror `parse_shortcut` (crates/app-binary/src/lib.rs):
 	// modifiers Ctrl/Shift/Alt/Super + a-z, Space, Enter, Tab, F1-F12. The
-	// shared formatting lives in `hotkeyFormat.js` so it can be unit-tested
-	// for parity with the backend; see `hotkeyFormat.test.js`.
-	import { formatCombo } from './hotkeyFormat.js';
+	// shared formatting lives in `hotkeyFormat.ts` so it can be unit-tested
+	// for parity with the backend; see `hotkeyFormat.test.ts`.
+	import { formatCombo } from './hotkeyFormat.ts';
 	let { value = '', onChange, id = undefined, placeholder = '点击并按下快捷键' } = $props();
 
 	let listening = $state(false);

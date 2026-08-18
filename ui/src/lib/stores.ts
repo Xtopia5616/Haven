@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
-import { invoke } from './tauri.js';
-import logger from '$lib/logger.js';
+import { invoke } from './tauri.ts';
+import logger from '$lib/logger.ts';
 
 export const sessionStore = writable([]);
 
@@ -108,15 +108,15 @@ export async function deleteAction(id) {
 	return invoke('delete_action', { actionId: id });
 }
 
-export const notificationStore = writable([]);
+export const notificationStore = writable<Array<{ id: string; msg: string; type: string }>>([]);
 
 let notificationSeq = 0;
 
-export function addNotification(msg, type = 'info', duration = 3000) {
+export function addNotification(msg: string, type = 'info', duration = 3000) {
 	if (type === 'error') {
 		logger.error('notification', msg);
 	}
-	let id = null;
+	let id: string | null = null;
 	notificationStore.update((n) => {
 		if (n.some((x) => x.msg === msg && x.type === type)) {
 			return n;
@@ -136,7 +136,7 @@ export function addNotification(msg, type = 'info', duration = 3000) {
 // Per-session message storage: { [sessionId: string]: Message[] }
 // Special key '_draft' holds messages that haven't been assigned to a session yet
 // (e.g. transcribed text before the session is created).
-export const sessionMessagesStore = writable({});
+export const sessionMessagesStore = writable<Record<string, any>>({});
 
 export const DRAFT_KEY = '_draft';
 
@@ -284,11 +284,11 @@ export function moveSessionMessages(fromSessionId, toSessionId) {
 
 // Review target for navigating from history to chat with a session context.
 // Set by history page before navigating to /, consumed by +page.svelte on mount.
-export const reviewTargetStore = writable(null);
+export const reviewTargetStore = writable<any>(null);
 
 // Active session ID that persists across SvelteKit page navigations so the
 // send handler and voice recording can supplement the same session.
-export const activeSessionIdStore = writable(null);
+export const activeSessionIdStore = writable<string | null>(null);
 
 // localStorage key recording an explicit "start a fresh conversation" intent
 // that survives app restarts (set by the new-session button, cleared when the
@@ -318,7 +318,7 @@ export const newSessionIntentStore = writable(false);
  *   lastUpdated: number,
  * }}
  */
-export const sessionTokenStatsStore = writable({});
+export const sessionTokenStatsStore = writable<Record<string, any>>({});
 
 /**
  * Update (or insert) the token-stats entry for a session. Replaces the whole
@@ -491,7 +491,23 @@ export function formatMessageTime(input) {
 /**
  * @param {{ role: string, content: string, type?: string|null, voice?: boolean, time?: string, attachments?: Array<{media_type: string, data: string}>, idPrefix?: string }} opts
  */
-export function newMessage({ role, content, type = null, voice = false, time, attachments = [], idPrefix = '' }) {
+export function newMessage({
+	role,
+	content,
+	type = null,
+	voice = false,
+	time = null,
+	attachments = [],
+	idPrefix = '',
+}: {
+	role: string;
+	content: string;
+	type?: string | null;
+	voice?: boolean;
+	time?: string | null;
+	attachments?: Array<{ media_type: string; data: string }>;
+	idPrefix?: string;
+}) {
 	return {
 		id: `${Date.now()}${idPrefix ? `-${idPrefix}` : ''}-${Math.random().toString(36).slice(2, 6)}`,
 		role,
@@ -518,8 +534,9 @@ export const recordingOverlay = writable({
 // Driven by +page.svelte's agent:* event handlers; consumed by +layout.svelte.
 export const modelStateStore = writable('ready');
 
-let modelStateTimer = null;
-export function updateModelState(state, { idleTimeoutMs } = /** @type {{ idleTimeoutMs?: number }} */ ({})) {
+let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
+export function updateModelState(state: string, opts: { idleTimeoutMs?: number } = {}) {
+	const { idleTimeoutMs } = opts;
 	if (modelStateTimer) clearTimeout(modelStateTimer);
 	modelStateTimer = null;
 	modelStateStore.set(state);

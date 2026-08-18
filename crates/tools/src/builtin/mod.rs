@@ -5,8 +5,8 @@ pub mod audio;
 pub mod clipboard;
 pub mod env;
 pub mod facts;
-pub mod files;
 pub mod file_search;
+pub mod files;
 pub mod input;
 pub mod load_mcp;
 pub mod load_skill;
@@ -28,9 +28,9 @@ use tokio::sync::RwLock;
 use crate::ToolBox;
 use crate::ToolRegistry;
 use crate::bg::BackgroundActions;
+use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
-use crate::skill_runner::SkillRunner;
 
 pub use facts::FactsTool;
 pub use scheduled_action::{

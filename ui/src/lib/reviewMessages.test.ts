@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildReviewMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './reviewMessages.js';
-import { formatMessageTime } from './stores.js';
+import { buildReviewMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './reviewMessages.ts';
+import { formatMessageTime } from './stores.ts';
 
 const sampleSession = {
 	id: 'session-1',
@@ -84,7 +84,7 @@ describe('buildReviewMessages', () => {
 				{ id: 's1', action_tool: 'shell', observation: 'ok', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
 			],
 		});
-		expect(items.find((i) => i.id === 'm2').stepNumber).toBe(1);
+		expect(items.find((i) => i.id === 'm2')!.stepNumber).toBe(1);
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
 	});
 
@@ -272,7 +272,7 @@ describe('buildReviewMessages', () => {
 				{ id: 's2', action_tool: null, thought: '网络不好就让我帮忙', step_number: 2, created_at: '2026-08-01T10:02:00Z' },
 			],
 		});
-		expect(items.find((i) => i.id === 'm3').stepNumber).toBe(2);
+		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
 	});
 
 	it('restores ask options and awaiting from a paused session', () => {
@@ -435,7 +435,7 @@ describe('mergeLiveStreaming', () => {
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toContain('msg-9');
-		expect(merged.find((m) => m.id === 'msg-9').content).toBe('先想想一部分');
+		expect(merged.find((m) => m.id === 'msg-9')!.content).toBe('先想想一部分');
 	});
 
 	it('drops finalized live tool cards with no DB row (interrupted/transient)', () => {

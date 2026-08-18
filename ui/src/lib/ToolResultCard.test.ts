@@ -166,7 +166,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 			toolName: 'shell',
 			content: JSON.stringify({ output: 'line1\nline2', truncated: true }),
 		});
-		expect(container.querySelector('.content-preview').textContent).toBe('line1\nline2');
+		expect(container.querySelector('.content-preview')!.textContent).toBe('line1\nline2');
 		expect(screen.getByText('输出过长已截断')).toBeTruthy();
 	});
 
@@ -199,7 +199,7 @@ describe('ToolResultCard raw', () => {
 			content: 'some plain text',
 		});
 		expect(screen.getByText('音频')).toBeTruthy();
-		expect(container.querySelector('.content-preview').textContent).toContain(
+		expect(container.querySelector('.content-preview')!.textContent).toContain(
 			'some plain text',
 		);
 	});
@@ -209,8 +209,8 @@ describe('ToolResultCard raw', () => {
 			toolName: 'action_status',
 			content: JSON.stringify([1, 2, { a: 'b' }]),
 		});
-		expect(container.querySelector('.content-preview').textContent).toContain('"a"');
-		expect(container.querySelector('.content-preview').textContent).toContain('"b"');
+		expect(container.querySelector('.content-preview')!.textContent).toContain('"a"');
+		expect(container.querySelector('.content-preview')!.textContent).toContain('"b"');
 	});
 });
 
@@ -220,9 +220,9 @@ describe('ToolResultCard collapsible', () => {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
-		const details = /** @type {HTMLDetailsElement} */ (
-			container.querySelector('details.tool-card')
-		);
+		const details = container.querySelector(
+			'details.tool-card',
+		) as HTMLDetailsElement;
 		expect(details).toBeTruthy();
 		expect(details.open).toBe(false);
 	});
@@ -233,9 +233,9 @@ describe('ToolResultCard collapsible', () => {
 			content: searchJson([{ path: 'a.rs' }]),
 			streaming: true,
 		});
-		const details = /** @type {HTMLDetailsElement} */ (
-			container.querySelector('details.tool-card')
-		);
+		const details = container.querySelector(
+			'details.tool-card',
+		) as HTMLDetailsElement;
 		expect(details.open).toBe(true);
 		await rerender({ streaming: false });
 		expect(details.open).toBe(false);
@@ -246,11 +246,11 @@ describe('ToolResultCard collapsible', () => {
 			toolName: 'files',
 			content: searchJson([{ path: 'a.rs' }]),
 		});
-		const details = /** @type {HTMLDetailsElement} */ (
-			container.querySelector('details.tool-card')
-		);
+		const details = container.querySelector(
+			'details.tool-card',
+		) as HTMLDetailsElement;
 		expect(details.open).toBe(false);
-		await fireEvent.click(details.querySelector('summary'));
+		await fireEvent.click(details.querySelector('summary')!);
 		expect(details.open).toBe(true);
 		await rerender({ content: searchJson([{ path: 'b.rs' }]) });
 		expect(details.open).toBe(true);

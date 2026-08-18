@@ -178,7 +178,7 @@
 	import { untrack } from 'svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
-	import { copyText } from '$lib/clipboard.js';
+	import { copyText } from '$lib/clipboard.ts';
 
 	let {
 		type = 'tool',

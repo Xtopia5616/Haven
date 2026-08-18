@@ -1,5 +1,5 @@
-import { listen } from './tauri.js';
-import logger from './logger.js';
+import { listen } from './tauri.ts';
+import logger from './logger.ts';
 
 /**
  * Register many Tauri event listeners from a single map and return a handle
@@ -17,9 +17,12 @@ import logger from './logger.js';
  * @param {{ tag?: string }} [opts]
  * @returns {{ ready: Promise<void>, dispose: () => void }}
  */
-export function registerListeners(map, { tag = 'unknown' } = {}) {
+export function registerListeners(
+	map: Record<string, (event: any) => void>,
+	{ tag = 'unknown' }: { tag?: string } = {},
+): { ready: Promise<void>; dispose: () => void } {
 	/** @type {Array<() => void>} */
-	const unlisteners = [];
+	const unlisteners: Array<() => void> = [];
 	let disposed = false;
 	// Promise.all resolves to `void[]`; convert to a plain `Promise<void>` so
 	// callers can `await` it without a stray array type leaking out.
@@ -62,7 +65,11 @@ export function registerListeners(map, { tag = 'unknown' } = {}) {
  * @param {{ tag?: string }} [opts]
  * @returns {Promise<{ dispose: () => void }>}
  */
-export async function registerOne(event, handler, { tag = 'unknown' } = {}) {
+export async function registerOne(
+	event: string,
+	handler: (event: any) => void,
+	{ tag = 'unknown' }: { tag?: string } = {},
+): Promise<{ dispose: () => void }> {
 	try {
 		const unsub = await listen(event, handler);
 		return {

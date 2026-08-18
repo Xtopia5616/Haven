@@ -8,10 +8,10 @@ describe('JsonView', () => {
 			value: { str: 'hi', num: 42, bool: true, nil: null },
 		});
 		expect(screen.getByText('"str"')).toBeTruthy();
-		expect(container.querySelector('.jv-str').textContent).toBe('"hi"');
-		expect(container.querySelector('.jv-num').textContent).toBe('42');
-		expect(container.querySelector('.jv-bool').textContent).toBe('true');
-		expect(container.querySelector('.jv-null').textContent).toBe('null');
+		expect(container.querySelector('.jv-str')!.textContent).toBe('"hi"');
+		expect(container.querySelector('.jv-num')!.textContent).toBe('42');
+		expect(container.querySelector('.jv-bool')!.textContent).toBe('true');
+		expect(container.querySelector('.jv-null')!.textContent).toBe('null');
 	});
 
 	it('renders nested containers collapsed beyond defaultDepth', () => {

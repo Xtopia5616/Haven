@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ACTION_STATUSES, statusColor, statusVariant } from './sessionStatus.js';
+import { ACTION_STATUSES, statusColor, statusVariant } from './sessionStatus.ts';
 
 describe('ACTION_STATUSES', () => {
 	it('covers the canonical backend statuses', () => {

@@ -25,7 +25,5 @@ pub mod multimodal;
 pub use coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
 pub use gateway::{AttachmentOutcome, GenerateOutcome, MediaGateway};
 pub use intent::{GenerateKind, Intent, detect_generate_kind, detect_intent};
-pub use modality::{
-    Modality, detect_media_type, detect_modality, extension_for_media_type,
-};
+pub use modality::{Modality, detect_media_type, detect_modality, extension_for_media_type};
 pub use multimodal::{audio_part_from_bytes, image_part, image_part_from_bytes};

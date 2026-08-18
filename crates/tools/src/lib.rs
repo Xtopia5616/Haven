@@ -35,8 +35,8 @@ pub use haven_mcp::{
 pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
 pub use skill_runner::SkillRunner;
 pub use tool::{
-    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistration, ToolRegistry, ToolResult,
-    ToolSignals, extract_ask_signal, extract_notify_signal, is_silent_action,
+    ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolDef, ToolRegistration, ToolRegistry,
+    ToolResult, ToolSignals, extract_ask_signal, extract_notify_signal, is_silent_action,
 };
 
 /// Convert a qualified tool name (`mcp::server::tool`, `skill::name`) into a
@@ -445,24 +445,30 @@ impl ToolsManager {
         entries
     }
 
-    /// Return tool schemas for a session: global registry schemas merged with
-    /// per-session registered skill/MCP adapters. Called before each LLM step so
-    /// that tools loaded via `load_skill`/`load_mcp` become visible to the model.
-    pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
-        let mut schemas = self.registry.list_schemas().await;
+    /// Structured tool definitions for a session: the global registry merged
+    /// with per-session registered skill/MCP adapters. This is the canonical
+    /// surface the ReAct loop turns into provider tool definitions and the
+    /// schema listing is derived from — no loose JSON assembly in consumers.
+    pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
+        let mut defs = self.registry.list_defs().await;
         let reg = self.session_registrations.read().await;
         if let Some(tools) = reg.get(session_id) {
             for tool in tools.values() {
-                let risk = tool.risk_level(&serde_json::json!({}));
-                schemas.push(serde_json::json!({
-                    "name": tool.name(),
-                    "description": tool.description(),
-                    "risk_level": risk,
-                    "input_schema": tool.input_schema(),
-                }));
+                defs.push(tool.tool_def());
             }
         }
-        schemas
+        defs
+    }
+
+    /// Return tool schemas for a session: global registry schemas derived
+    /// from [`ToolDef`]s merged with per-session registered skill/MCP
+    /// adapters. Convenience JSON view over [`Self::list_defs_for_session`].
+    pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
+        self.list_defs_for_session(session_id)
+            .await
+            .into_iter()
+            .map(|d| d.json())
+            .collect()
     }
 
     /// Insert or replace a single MCP server config in the in-memory map.
@@ -544,13 +550,14 @@ impl ToolsManager {
         tools
             .iter()
             .map(|t| {
-                serde_json::json!({
-                    "name": t.name(),
-                    "description": t.description(),
-                    "risk_level": t.risk_level(&serde_json::json!({})),
-                    "input_schema": t.input_schema(),
-                    "enabled": tool_config_enabled(&settings, &t.name()),
-                })
+                let mut json = t.tool_def().json();
+                json.as_object_mut()
+                    .expect("ToolDef::json returns an object")
+                    .insert(
+                        "enabled".into(),
+                        serde_json::json!(tool_config_enabled(&settings, &t.name())),
+                    );
+                json
             })
             .collect()
     }
@@ -743,6 +750,44 @@ mod tests {
         let mgr = ToolsManager::new();
         let tool = mgr.get_tool("nonexistent").await;
         assert!(tool.is_none());
+    }
+
+    /// Tools that emit a side-channel signal (`ask` / `notify`) must populate
+    /// `ToolResult::signals` through their `signals()` hook — the ReAct loop
+    /// reads structured signals instead of name-matching the output. This
+    /// exercises the full wiring (`execute_tool` → `tool.signals`), so a tool
+    /// that stops declaring its signal fails here instead of silently losing
+    /// the ask/notify behavior.
+    #[tokio::test]
+    async fn test_signal_declaring_tools_populate_result_signals() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        let ask = mgr
+            .execute_tool(
+                None,
+                "ask",
+                json!({"question": "Which file?"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ask.signals.ask_question.as_deref(), Some("Which file?"));
+
+        let notify = mgr
+            .execute_tool(
+                None,
+                "notify",
+                json!({"title": "Build", "body": "Compilation finished"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(notify.signals.notify_title.as_deref(), Some("Build"));
+        assert_eq!(
+            notify.signals.notify_body.as_deref(),
+            Some("Compilation finished")
+        );
     }
 
     #[tokio::test]

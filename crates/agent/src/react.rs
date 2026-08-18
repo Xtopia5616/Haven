@@ -9,7 +9,7 @@ use crate::session::{SessionExecutor, SessionStatus};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
-use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition, ToolFunction};
+use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::Database;
 use haven_tools::is_silent_action;
 
@@ -483,26 +483,15 @@ impl ReActEngine {
         {
             return cached.1;
         }
-        let schemas = self
+        // Structured defs from the manager; the LLM-boundary conversion is a
+        // pure `From<ToolDef>` so nothing here re-parses loose schema JSON.
+        let defs: Vec<ToolDefinition> = self
             .executor
             .get_tools()
-            .list_schemas_for_session(session_id)
-            .await;
-        let defs: Vec<ToolDefinition> = schemas
-            .iter()
-            .map(|s| {
-                let name = s["name"].as_str().unwrap_or("");
-                let desc = s["description"].as_str().unwrap_or("");
-                let params = s["input_schema"].clone();
-                ToolDefinition {
-                    tool_type: "function".into(),
-                    function: ToolFunction {
-                        name: name.into(),
-                        description: desc.into(),
-                        parameters: params,
-                    },
-                }
-            })
+            .list_defs_for_session(session_id)
+            .await
+            .into_iter()
+            .map(Into::into)
             .collect();
         self.tool_def_cache
             .lock()

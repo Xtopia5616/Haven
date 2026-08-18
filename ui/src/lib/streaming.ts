@@ -49,6 +49,14 @@ export function newToolMessage({
 	content = '',
 	streaming = false,
 	askOptions = null,
+}: {
+	id: string;
+	stepNumber: number;
+	toolName: string;
+	time?: string | undefined;
+	content?: string;
+	streaming?: boolean;
+	askOptions?: string[] | null;
 }) {
 	const isAsk = toolName === 'ask';
 	return {

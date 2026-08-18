@@ -59,7 +59,10 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let out = self.client.call_tool(&self.info.name, input, cancel).await?;
+        let out = self
+            .client
+            .call_tool(&self.info.name, input, cancel)
+            .await?;
         Ok(ToolResult {
             success: out.success,
             output: out.output,
@@ -129,9 +132,9 @@ impl Tool for SkillToolAdapter {
 mod tests {
     use super::*;
     use crate::skill_runner::SkillRunner;
+    use haven_common::config::SkillsExecConfig;
     use haven_mcp::McpClient;
     use haven_skills::{Language, SkillManifest, VenvManager};
-    use haven_common::config::SkillsExecConfig;
     use std::path::PathBuf;
 
     /// A test MCP tool adapter backed by a mock client.

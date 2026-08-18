@@ -1,9 +1,9 @@
 <script>
-	import logger from '$lib/logger.js';
+	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
-	import { invoke } from '$lib/tauri.js';
-	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.js';
-	import { syncStore } from '$lib/syncStore.js';
+	import { invoke } from '$lib/tauri.ts';
+	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.ts';
+	import { syncStore } from '$lib/syncStore.ts';
 
 	let {
 		activeSessionId = null,
@@ -35,7 +35,7 @@
 	let pendingFiles = $state([]);
 	// Single hidden picker for both images and files; the picked items are
 	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
-	let attachFileInput = $state(null);
+	let attachFileInput = /** @type {HTMLInputElement | null} */ ($state(null));
 
 	// Recording state (mirror of the global recordingOverlay store) so the
 	// toolbar mic button can toggle start/stop inline.
@@ -47,7 +47,7 @@
 	);
 
 	let transcriptInput = $state('');
-	let transcriptTextarea = $state(null);
+	let transcriptTextarea = /** @type {HTMLTextAreaElement | null} */ ($state(null));
 
 	const hasInput = $derived(
 		transcriptInput.trim().length > 0 || pendingImages.length > 0 || pendingFiles.length > 0,
@@ -204,7 +204,7 @@
 			try {
 				pendingImages = [...pendingImages, await fileToAttachment(f)];
 			} catch (e) {
-				addNotification(e.message || '图片读取失败', 'error', 3000);
+				addNotification((e && e.message) || '图片读取失败', 'error', 3000);
 			}
 		}
 	}

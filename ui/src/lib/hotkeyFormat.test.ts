@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatCombo } from './hotkeyFormat.js';
+import { formatCombo } from './hotkeyFormat.ts';
 
 /**
  * Parity contract with the backend `parse_shortcut`

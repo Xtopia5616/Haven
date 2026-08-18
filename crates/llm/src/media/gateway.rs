@@ -18,10 +18,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::{EndpointRole, ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
 use haven_common::config::MediaConfig;
 use haven_common::prompts::{OCR_SYSTEM_PROMPT, STT_SYSTEM_PROMPT};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
-use crate::{EndpointRole, ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
 
 use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
 use crate::media::intent::{GenerateKind, Intent, detect_generate_kind, detect_intent};
@@ -301,9 +301,9 @@ fn confidence_passes(reported: Option<f32>, threshold: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::LlmClient;
     use crate::types::{LlmError, LlmResponse};
+    use async_trait::async_trait;
     use haven_common::config::OcrConfig;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -362,10 +362,7 @@ mod tests {
             _: Vec<CanonicalMessage>,
         ) -> Result<
             std::pin::Pin<
-                Box<
-                    dyn futures_util::Stream<Item = Result<crate::StreamChunk, LlmError>>
-                        + Send,
-                >,
+                Box<dyn futures_util::Stream<Item = Result<crate::StreamChunk, LlmError>> + Send>,
             >,
             LlmError,
         > {

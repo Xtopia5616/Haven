@@ -2,7 +2,7 @@
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
-	import { copyText } from '$lib/clipboard.js';
+	import { copyText } from '$lib/clipboard.ts';
 
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
 	let expanded = $state(false);

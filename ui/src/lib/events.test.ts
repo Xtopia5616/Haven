@@ -5,15 +5,15 @@ const mocks = vi.hoisted(() => ({
 	error: vi.fn(),
 }));
 
-vi.mock('./tauri.js', () => ({
+vi.mock('./tauri.ts', () => ({
 	listen: mocks.listen,
 }));
 
-vi.mock('./logger.js', () => ({
+vi.mock('./logger.ts', () => ({
 	default: { error: mocks.error, warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import { registerListeners, registerOne } from './events.js';
+import { registerListeners, registerOne } from './events.ts';
 
 const event = (payload) => ({ payload });
 

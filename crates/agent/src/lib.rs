@@ -27,8 +27,8 @@ pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
-use haven_llm::media::{AttachmentOutcome, GenerateKind, GenerateOutcome, MediaDecision};
 use haven_llm::LlmRouter;
+use haven_llm::media::{AttachmentOutcome, GenerateKind, GenerateOutcome, MediaDecision};
 use haven_memory::Database;
 use haven_memory::repositories::messages::Message;
 use haven_tools::ScheduleMode;
@@ -226,7 +226,6 @@ fn repair_interrupted_tool_calls(
         ));
     }
 }
-
 
 mod layer;
 pub use layer::AgentLayer;

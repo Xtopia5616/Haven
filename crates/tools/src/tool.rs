@@ -8,6 +8,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+pub use haven_common::tools::ToolDef;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolResult {
     pub success: bool,
@@ -167,6 +169,19 @@ pub trait Tool: Send + Sync {
     fn risk_level(&self, input: &Value) -> RiskLevel;
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult>;
     fn input_schema(&self) -> Value;
+
+    /// Canonical structured definition of this tool (name / description /
+    /// schema / default risk). `ToolDef` is the unified abstraction the
+    /// registry and manager surface; per-call risk is still refined via
+    /// `risk_level(input)`. Tools may override to e.g. memoize the schema.
+    fn tool_def(&self) -> ToolDef {
+        ToolDef::new(
+            self.name(),
+            self.description(),
+            self.input_schema(),
+            self.risk_level(&Value::Object(Default::default())),
+        )
+    }
 
     fn default_timeout_secs(&self) -> u64 {
         30
@@ -338,19 +353,18 @@ impl ToolRegistry {
         self.snapshot.read().await.tools.clone()
     }
 
-    pub async fn list_schemas(&self) -> Vec<Value> {
+    /// Structured tool definitions of every registered tool. The canonical
+    /// surface for consumers (agent schema builder, prompt builder, UI).
+    pub async fn list_defs(&self) -> Vec<ToolDef> {
         let tools = self.snapshot.read().await.tools.clone();
-        tools
-            .iter()
-            .map(|t| {
-                let risk = t.risk_level(&serde_json::json!({}));
-                serde_json::json!({
-                    "name": t.name(),
-                    "description": t.description(),
-                    "risk_level": risk,
-                    "input_schema": t.input_schema(),
-                })
-            })
+        tools.iter().map(|t| t.tool_def()).collect()
+    }
+
+    pub async fn list_schemas(&self) -> Vec<Value> {
+        self.list_defs()
+            .await
+            .into_iter()
+            .map(|d| d.json())
             .collect()
     }
 
@@ -774,6 +788,29 @@ mod tests {
         assert_eq!(schemas[0]["name"].as_str().unwrap(), "mock");
         assert_eq!(schemas[0]["description"].as_str().unwrap(), "mock");
         assert!(schemas[0]["input_schema"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_registry_list_defs_structured() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(MockTool::new("mock"))).await;
+
+        let defs = registry.list_defs().await;
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "mock");
+        assert_eq!(defs[0].description, "mock");
+        assert_eq!(defs[0].risk_level, RiskLevel::Safe);
+        assert!(defs[0].input_schema.is_object());
+    }
+
+    #[test]
+    fn test_tool_def_default_matches_tool_fields() {
+        let tool = MockTool::new("mock");
+        let def = tool.tool_def();
+        assert_eq!(def.name, tool.name());
+        assert_eq!(def.description, tool.description());
+        assert_eq!(def.input_schema, tool.input_schema());
+        assert_eq!(def.risk_level, tool.risk_level(&serde_json::json!({})));
     }
 
     #[tokio::test]

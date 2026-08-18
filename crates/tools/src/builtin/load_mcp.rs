@@ -8,8 +8,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::llm_tool_name;
-use haven_mcp::McpManager;
 use crate::{Tool, ToolResult};
+use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
     pub mcp_manager: Arc<McpManager>,

@@ -1,4 +1,4 @@
-import { addNotification } from '$lib/stores.js';
+import { addNotification } from '$lib/stores.ts';
 
 /**
  * Copy `text` to the clipboard and surface a toast. Shared by every context

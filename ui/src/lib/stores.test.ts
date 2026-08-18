@@ -24,7 +24,7 @@ import {
 	restoreSessionTokenStats,
 	formatTokenCount,
 	formatCostUsd,
-} from './stores.js';
+} from './stores.ts';
 
 describe('addNotification', () => {
 	beforeEach(() => {

@@ -3,7 +3,7 @@ import { render } from '@testing-library/svelte';
 import StatusDot from './StatusDot.svelte';
 
 describe('StatusDot', () => {
-	const dot = () => /** @type {HTMLElement} */ (document.querySelector('.status-dot'));
+	const dot = () => document.querySelector('.status-dot') as HTMLElement;
 
 	it('defaults to the success color and no animation', () => {
 		render(StatusDot, {});

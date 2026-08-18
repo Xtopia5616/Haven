@@ -1,7 +1,7 @@
 <script>
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
-	import { copyText } from '$lib/clipboard.js';
+	import { copyText } from '$lib/clipboard.ts';
 
 	let { skill, onToggle } = $props();
 	let expanded = $state(false);
@@ -57,7 +57,7 @@
 			return;
 		}
 		try {
-			const { invoke } = await import('$lib/tauri.js');
+			const { invoke } = await import('$lib/tauri.ts');
 			const result = await invoke('execute_skill', {
 				name: skill.name,
 				params,

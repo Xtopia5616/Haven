@@ -3,7 +3,7 @@ import { get } from 'svelte/store';
 
 async function loadThemeStore() {
 	vi.resetModules();
-	return await import('./themeStore.js');
+	return await import('./themeStore.ts');
 }
 
 describe('themeStore', () => {

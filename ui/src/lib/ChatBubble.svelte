@@ -2,8 +2,8 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { imageDataUrl, formatTokenCount } from '$lib/stores.js';
-	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.js';
+	import { imageDataUrl, formatTokenCount } from '$lib/stores.ts';
+	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 
 	let {

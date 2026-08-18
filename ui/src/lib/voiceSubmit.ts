@@ -1,4 +1,4 @@
-import { submitTranscript } from './submit.js';
+import { submitTranscript } from './submit.ts';
 
 /**
  * Deliver a transcribed voice clip through `process_transcript`. The shared
