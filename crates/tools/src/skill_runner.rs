@@ -1,8 +1,7 @@
-use crate::skills::Skill;
-use crate::skills::venv::VenvManager;
 use crate::tool::ToolResult;
 use haven_common::config::SkillsExecConfig;
 use haven_common::encoding;
+use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -41,7 +40,7 @@ impl SkillRunner {
         let entry = skill
             .entry_script()
             .ok_or_else(|| anyhow::anyhow!("missing entry script for skill '{}'", skill.name()))?;
-        if !matches!(skill.language(), crate::skills::Language::Python) {
+        if !matches!(skill.language(), haven_skills::Language::Python) {
             anyhow::bail!(
                 "unsupported language '{}' for skill '{}'",
                 skill.language().as_str(),
@@ -170,7 +169,7 @@ impl SkillRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::{Language, Skill, SkillManifest};
+    use haven_skills::{Language, Skill, SkillManifest};
     use std::path::PathBuf;
 
     fn echo_skill() -> Skill {

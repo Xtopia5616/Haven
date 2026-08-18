@@ -33,7 +33,7 @@ fn tool_key(a: &Action) -> String {
 /// the file tool —the raw bytes are never shipped to the model.
 pub(crate) fn attachment_to_content_part(att: &MessageAttachment) -> ContentPart {
     if att.is_image() {
-        haven_input::multimodal::image_part(&att.media_type, att.data.clone())
+        haven_llm::media::image_part(&att.media_type, att.data.clone())
     } else {
         let name = att.filename.as_deref().unwrap_or("attachment");
         match &att.path {

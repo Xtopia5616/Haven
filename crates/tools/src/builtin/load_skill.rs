@@ -6,8 +6,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::llm_tool_name;
-use crate::skills::SkillsEngine;
-use crate::skills::runner::SkillRunner;
+use haven_skills::SkillsEngine;
+use crate::skill_runner::SkillRunner;
 use crate::{Tool, ToolResult};
 
 pub struct LoadSkillTool {
@@ -90,7 +90,7 @@ impl Tool for LoadSkillTool {
 mod tests {
     use super::*;
     use crate::Tool;
-    use crate::skills::venv::VenvManager;
+    use haven_skills::VenvManager;
     use haven_common::config::SkillsExecConfig;
     use serde_json::json;
     use tempfile::TempDir;

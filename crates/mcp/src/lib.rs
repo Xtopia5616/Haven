@@ -1,6 +1,8 @@
-use crate::ToolResult;
+mod sse;
+use futures_util::StreamExt;
+use sse::SseParser;
 use haven_common::McpTransportType;
-use haven_llm::stt::{McpToolCaller, McpToolOutcome};
+use haven_llm::{McpToolCaller, McpToolOutcome};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -11,16 +13,26 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-mod sse;
-use futures_util::StreamExt;
-use sse::SseParser;
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 static PROTOCOL_VERSION: &str = "2024-11-05";
 static REQUEST_TIMEOUT_SECS: u64 = 30;
+
+// ---------------------------------------------------------------------------
+// Neutral tool-call output
+// ---------------------------------------------------------------------------
+
+/// Result of an MCP `tools/call`, decoupled from any tool-execution crate.
+/// Tool adapters (e.g. in `haven-tools`) map this into their own result type
+/// without the MCP client knowing about it.
+#[derive(Debug, Clone)]
+pub struct McpCallOutput {
+    pub success: bool,
+    pub output: serde_json::Value,
+    pub error: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 helpers
@@ -1208,7 +1220,7 @@ impl McpClient {
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    ) -> anyhow::Result<McpCallOutput> {
         // Rate limiting (refine §4.5)
         {
             let mut rl = self.rate_limiter.lock().await;
@@ -1256,23 +1268,11 @@ impl McpClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        if is_error {
-            Ok(ToolResult {
-                success: false,
-                output,
-                error: Some(text),
-                truncated: false,
-                signals: crate::tool::ToolSignals::default(),
-            })
-        } else {
-            Ok(ToolResult {
-                success: true,
-                output,
-                error: None,
-                truncated: false,
-                signals: crate::tool::ToolSignals::default(),
-            })
-        }
+        Ok(McpCallOutput {
+            success: !is_error,
+            output,
+            error: is_error.then_some(text),
+        })
     }
 
     pub async fn is_alive(&self) -> bool {
@@ -1831,7 +1831,7 @@ impl McpManager {
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
-    ) -> anyhow::Result<ToolResult> {
+    ) -> anyhow::Result<McpCallOutput> {
         let clients = self.clients.lock().await;
         match clients.get(client_name) {
             Some(client) => client.call_tool(tool_name, input, cancel).await,

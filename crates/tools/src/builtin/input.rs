@@ -9,7 +9,7 @@ use crate::{Tool, ToolResult};
 /// (Unicode-safe), press named keys or chords (ctrl+c), click/move/scroll the
 /// mouse. Everything goes through SendInput, which behaves like real input
 /// from the OS perspective. Requires a desktop session — headless/CI runs
-/// will error. The actual input primitives live in `haven_input::simulate`.
+/// will error. The actual input primitives live in `crate::simulate`.
 pub struct InputTool;
 
 #[async_trait]
@@ -88,7 +88,7 @@ impl Tool for InputTool {
                     .filter(|t| !t.trim().is_empty())
                     .ok_or_else(|| anyhow::anyhow!("text is required for type"))?;
                 let chars = text.chars().count();
-                haven_input::simulate::type_text(text)?;
+                crate::simulate::type_text(text)?;
                 serde_json::json!({ "typed": text, "chars": chars })
             }
             "key" => {
@@ -96,7 +96,7 @@ impl Tool for InputTool {
                     .as_str()
                     .filter(|k| !k.trim().is_empty())
                     .ok_or_else(|| anyhow::anyhow!("key is required for key"))?;
-                haven_input::simulate::press_key(key)?;
+                crate::simulate::press_key(key)?;
                 serde_json::json!({ "pressed": key })
             }
             "click" => {
@@ -107,7 +107,7 @@ impl Tool for InputTool {
                     .as_i64()
                     .ok_or_else(|| anyhow::anyhow!("y is required for click"))?;
                 let button = input["button"].as_str().unwrap_or("left");
-                haven_input::simulate::click(x, y, button)?;
+                crate::simulate::click(x, y, button)?;
                 serde_json::json!({ "clicked": [x, y], "button": button })
             }
             "move" => {
@@ -117,12 +117,12 @@ impl Tool for InputTool {
                 let y = input["y"]
                     .as_i64()
                     .ok_or_else(|| anyhow::anyhow!("y is required for move"))?;
-                haven_input::simulate::move_to(x, y)?;
+                crate::simulate::move_to(x, y)?;
                 serde_json::json!({ "moved_to": [x, y] })
             }
             "scroll" => {
                 let delta = input["delta"].as_i64().unwrap_or(1).clamp(-100, 100);
-                haven_input::simulate::scroll(delta)?;
+                crate::simulate::scroll(delta)?;
                 serde_json::json!({ "scrolled": delta })
             }
             _ => anyhow::bail!("unknown input operation: {}", op),

@@ -2,8 +2,8 @@ pub mod adapters;
 pub mod bg;
 pub mod builtin;
 pub mod circuit;
-pub mod mcp;
-pub mod skills;
+pub mod simulate;
+pub mod skill_runner;
 pub mod tool;
 pub mod util;
 
@@ -29,12 +29,11 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use builtin::{ScheduleMode, SelfTool, SelfToolContext};
 pub use circuit::ToolCircuitRegistry;
-pub use mcp::{
+pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
-pub use skills::runner::SkillRunner;
-pub use skills::venv::VenvManager;
-pub use skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine};
+pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
+pub use skill_runner::SkillRunner;
 pub use tool::{
     ConfirmationResult, SafetyGateway, Tool, ToolBox, ToolRegistration, ToolRegistry, ToolResult,
     ToolSignals, extract_ask_signal, extract_notify_signal, is_silent_action,
@@ -142,7 +141,7 @@ impl ToolsManager {
             registry,
             mcp_manager: McpManager::new(),
             mcp_server_configs: Arc::new(RwLock::new(HashMap::new())),
-            skills_engine: skills::SkillsEngine::new(),
+            skills_engine: haven_skills::SkillsEngine::new(),
             skill_runner: Arc::new(RwLock::new(SkillRunner::new(
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
@@ -914,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_schemas_for_session_includes_per_session_tools() {
-        use crate::skills::SkillManifest;
+        use haven_skills::SkillManifest;
 
         let mgr = ToolsManager::new();
         mgr.rebuild_catalog().await;
@@ -929,7 +928,7 @@ mod tests {
             name: "demo".into(),
             description: "demo skill".into(),
             version: None,
-            language: crate::skills::Language::Python,
+            language: haven_skills::Language::Python,
             instructions: "do stuff".into(),
         };
         let skill = Skill::from_manifest_unchecked(manifest, std::path::PathBuf::from("."), true);

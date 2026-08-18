@@ -13,9 +13,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 /// A user message queued for injection into the ReAct loop (supplement or
-/// steering). Defined in `haven-input` (the unified input crate); re-exported
+/// steering). Defined in `haven-common` (the shared types layer); re-exported
 /// here so session code keeps using `crate::session::Supplement`.
-pub use haven_input::message::Supplement;
+pub use haven_common::types::Supplement;
 
 /// Runner invoked by the dispatcher for each picked session. The closure must
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.

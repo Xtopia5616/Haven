@@ -249,29 +249,40 @@
 			.filter((a) => a.kind === 'scheduled')
 			.sort((a, b) => String(a.due_at || '').localeCompare(String(b.due_at || ''))),
 	);
-	const runningActionCount = $derived(
-		backgroundActionEntries.filter((j) => j.status === 'running').length,
+	const runningBackgroundActions = $derived(
+		backgroundActionEntries.filter((j) => j.status === 'running'),
 	);
+	const runningActionCount = $derived(runningBackgroundActions.length);
 
-	// Panel tab filter: 'all' | 'background' | 'scheduled' | 'history'.
-	let actionTab = $state('all');
-
-	// Fired-scheduled-action history (and terminal background-action rows past
-	// the in-memory TTL), fetched on demand when the history tab opens.
+	// Completed-task history (terminal background rows + fired scheduled rows),
+	// fetched whenever the panel opens so it reflects the persisted table.
 	let actionHistory = $state([]);
-	let historyLoaded = $state(false);
 	$effect(() => {
-		if (!actionMenuOpen || actionTab !== 'history' || historyLoaded) return;
-		refreshActionHistory('scheduled', 50).then((rows) => {
-			actionHistory = rows;
-			historyLoaded = true;
-		});
+		if (!actionMenuOpen) return;
+		refreshActionHistory(null, 50).then((rows) => (actionHistory = rows));
 	});
+	// Terminal background rows (not running) and fired scheduled rows only —
+	// pending scheduled actions stay in their own section, running background
+	// actions in the running section, so the completed list never duplicates.
+	const completedActions = $derived(
+		actionHistory.filter(
+			(h) =>
+				(h.kind === 'scheduled' && h.fired) ||
+				(h.kind !== 'scheduled' && h.status && h.status !== 'running'),
+		),
+	);
 
 	// Session titles for background-action rows; mirrored from the chat page's
 	// loadSessions().
 	let sessions = $state([]);
 	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
+
+	// Foreground running tasks: active (non-terminal) conversations.
+	const runningSessions = $derived(
+		sessions.filter(
+			(t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused',
+		),
+	);
 
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
@@ -783,55 +794,52 @@
 				</button>
 				{#if actionMenuOpen}
 					<div class="status-action-menu action-menu">
-						<div class="action-menu-tabs">
-							<button
-								class="action-menu-tab"
-								class:active={actionTab === 'all'}
-								onclick={() => (actionTab = 'all')}
-								type="button"
-								>全部</button
-							>
-							<button
-								class="action-menu-tab"
-								class:active={actionTab === 'background'}
-								onclick={() => (actionTab = 'background')}
-								type="button"
-								>后台任务</button
-							>
-							<button
-								class="action-menu-tab"
-								class:active={actionTab === 'scheduled'}
-								onclick={() => (actionTab = 'scheduled')}
-								type="button"
-								>定时任务</button
-							>
-							<button
-								class="action-menu-tab"
-								class:active={actionTab === 'history'}
-								onclick={() => {
-									actionTab = 'history';
-									historyLoaded = false;
-								}}
-								type="button"
-								>历史</button
-							>
-						</div>
-						{#if actionTab !== 'scheduled'}
-							<div class="action-menu-title">后台任务</div>
-							{#if backgroundActionEntries.length === 0}
-								<div class="action-menu-empty">暂无后台任务</div>
-							{:else}
-								{#each backgroundActionEntries as action}
-									<div class="action-item" class:action-item-running={action.status === 'running'}>
-										<span class="action-dot" style="color: {actionStatusColor(action.status)}"
+						<div class="action-menu-title">正在运行</div>
+						{#if runningSessions.length === 0 && runningBackgroundActions.length === 0}
+							<div class="action-menu-empty">暂无运行中的任务</div>
+						{:else}
+							{#if runningSessions.length > 0}
+								<div class="action-menu-subtitle">前台（会话）</div>
+								{#each runningSessions as t}
+									<div class="action-item" class:action-item-running={t.status === 'running'}>
+										<span
+											class="action-dot"
+											style="color: {t.status === 'running' ? '#44cc44' : '#e0a020'}"
+											>&#9679;</span
+										>
+										<div class="action-item-main">
+											<div class="action-item-top">
+												<span class="action-id">{t.title || t.input}</span>
+												<span
+													class="action-item-status"
+													class:running={t.status === 'running'}
+													>{t.status === 'running'
+														? '运行中'
+														: t.status === 'paused'
+															? '已暂停'
+															: '等待中'}</span
+												>
+											</div>
+											<div class="action-item-sub">
+												<span class="action-session">{t.id}</span>
+											</div>
+										</div>
+									</div>
+								{/each}
+							{/if}
+							{#if runningBackgroundActions.length > 0}
+								<div class="action-menu-subtitle">后台（任务）</div>
+								{#each runningBackgroundActions as action}
+									<div class="action-item action-item-running">
+										<span
+											class="action-dot"
+											style="color: {actionStatusColor(action.status)}"
 											>&#9679;</span
 										>
 										<div class="action-item-main">
 											<div class="action-item-top">
 												<span class="action-id">{action.id}</span>
-												<span
-													class="action-item-status"
-													class:running={action.status === 'running'}
+												<span class="action-item-status running"
 													>{actionStatusLabel(action.status)}</span
 												>
 											</div>
@@ -839,90 +847,91 @@
 												<span class="action-session">{sessionTitleFor(action)}</span>
 												<span class="action-duration">{actionDuration(action)}</span>
 											</div>
-											{#if action.status === 'running' && action.output}
+											{#if action.output}
 												<div class="action-output">{action.output}</div>
 											{/if}
-											{#if action.status === 'failed' && action.error_reason}
-												<div class="action-error">{action.error_reason}</div>
-											{/if}
 										</div>
-										{#if action.status === 'running'}
-											<button
-												class="action-cancel"
-												onclick={() => handleCancelAction(action.id, 'background')}
-												title="停止后台任务"
-												aria-label="停止后台任务"
-												type="button"
-												>&#x2715;</button
+										<button
+											class="action-cancel"
+											onclick={() => handleCancelAction(action.id, 'background')}
+											title="停止后台任务"
+											aria-label="停止后台任务"
+											type="button"
+											>&#x2715;</button
+										>
+									</div>
+								{/each}
+							{/if}
+						{/if}
+						<div class="action-menu-title scheduled-menu-title">定时任务</div>
+						{#if pendingScheduledActions.length === 0}
+							<div class="action-menu-empty">暂无定时任务</div>
+						{:else}
+							{#each pendingScheduledActions as r}
+								<div class="action-item scheduled-item">
+									<span class="scheduled-dot">&#9200;</span>
+									<div class="action-item-main">
+										<div class="action-item-top">
+											<span class="scheduled-title-text">{r.title || r.body}</span>
+											<span class="action-item-status"
+												>{r.mode === 'continue' ? '续接会话' : '执行工具'}</span
 											>
-										{/if}
-									</div>
-								{/each}
-							{/if}
-						{/if}
-						{#if actionTab !== 'background'}
-							<div class="action-menu-title scheduled-menu-title">定时任务</div>
-							{#if pendingScheduledActions.length === 0}
-								<div class="action-menu-empty">暂无定时任务</div>
-							{:else}
-								{#each pendingScheduledActions as r}
-									<div class="action-item scheduled-item">
-										<span class="scheduled-dot">&#9200;</span>
-										<div class="action-item-main">
-											<div class="action-item-top">
-												<span class="scheduled-title-text">{r.title || r.body}</span>
-												<span class="action-item-status"
-													>{r.mode === 'continue' ? '续接会话' : '执行工具'}</span
-												>
-											</div>
-											<div class="action-item-sub">
-												<span class="scheduled-body">{r.body}</span>
-												<span class="action-duration">{scheduledActionCountdown(r.due_at)}</span>
-											</div>
 										</div>
-										<button
-											class="action-cancel"
-											onclick={() => handleCancelAction(r.id, 'scheduled')}
-											title="取消定时任务"
-											aria-label="取消定时任务"
-											type="button"
-											>&#x2715;</button
-										>
-									</div>
-								{/each}
-							{/if}
-						{/if}
-						{#if actionTab === 'history'}
-							<div class="action-menu-title scheduled-menu-title">已触发</div>
-							{#if actionHistory.length === 0}
-								<div class="action-menu-empty">暂无历史记录</div>
-							{:else}
-								{#each actionHistory as h}
-									<div class="action-item scheduled-item">
-										<span class="scheduled-dot">&#9989;</span>
-										<div class="action-item-main">
-											<div class="action-item-top">
-												<span class="scheduled-title-text">{h.title || h.body || '定时任务'}</span>
-												<span class="action-item-status"
-													>{h.mode === 'continue' ? '已续接会话' : '已执行'}</span
-												>
-											</div>
-											<div class="action-item-sub">
-												<span class="scheduled-body">{h.body}</span>
-												<span class="action-duration">{formatHistoryTime(h)}</span>
-											</div>
+										<div class="action-item-sub">
+											<span class="scheduled-body">{r.body}</span>
+											<span class="action-duration">{scheduledActionCountdown(r.due_at)}</span>
 										</div>
-										<button
-											class="action-cancel"
-											onclick={() => handleDeleteHistory(h.id)}
-											title="删除历史记录"
-											aria-label="删除历史记录"
-											type="button"
-											>&#x2715;</button
-										>
 									</div>
-								{/each}
-							{/if}
+									<button
+										class="action-cancel"
+										onclick={() => handleCancelAction(r.id, 'scheduled')}
+										title="取消定时任务"
+										aria-label="取消定时任务"
+										type="button"
+										>&#x2715;</button
+									>
+								</div>
+							{/each}
+						{/if}
+						<div class="action-menu-title scheduled-menu-title">已完成</div>
+						{#if completedActions.length === 0}
+							<div class="action-menu-empty">暂无已完成的任务</div>
+						{:else}
+							{#each completedActions as h}
+								<div class="action-item scheduled-item">
+									<span class="scheduled-dot">&#9989;</span>
+									<div class="action-item-main">
+										<div class="action-item-top">
+											<span class="scheduled-title-text"
+												>{h.kind === 'scheduled'
+													? h.title || h.body || '定时任务'
+													: h.command || h.id}</span
+											>
+											<span class="action-item-status"
+												>{h.kind === 'scheduled'
+													? h.mode === 'continue'
+														? '已续接会话'
+														: '已执行'
+													: actionStatusLabel(h.status)}</span
+											>
+										</div>
+										<div class="action-item-sub">
+											<span class="scheduled-body"
+												>{h.kind === 'scheduled' ? h.body : h.output || h.error_reason || h.id}</span
+											>
+											<span class="action-duration">{formatHistoryTime(h)}</span>
+										</div>
+									</div>
+									<button
+										class="action-cancel"
+										onclick={() => handleDeleteHistory(h.id)}
+										title="删除记录"
+										aria-label="删除记录"
+										type="button"
+										>&#x2715;</button
+									>
+								</div>
+							{/each}
 						{/if}
 					</div>
 				{/if}
@@ -1093,25 +1102,11 @@
 		padding: var(--md-sys-space-xs);
 		box-shadow: var(--md-sys-elevation-2);
 	}
-	.action-menu-tabs {
-		display: flex;
-		gap: var(--md-sys-space-xs);
-		padding: var(--md-sys-space-xs) var(--md-sys-space-xs) 0;
-	}
-	.action-menu-tab {
-		flex: 1;
+	.action-menu-subtitle {
 		font-size: 11px;
-		padding: 4px var(--md-sys-space-sm);
-		border: none;
-		border-radius: var(--md-sys-shape-extra-small);
-		background: transparent;
-		color: var(--md-sys-color-on-surface-variant);
-		cursor: pointer;
-	}
-	.action-menu-tab.active {
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
 		font-weight: 600;
+		color: var(--md-sys-color-on-surface-variant);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-md);
 	}
 	.action-menu-title {
 		font-size: 11px;
@@ -1188,15 +1183,6 @@
 		margin-left: auto;
 		flex-shrink: 0;
 		font-family: var(--md-sys-typescale-mono);
-	}
-	.action-error {
-		margin-top: 4px;
-		font-size: 10px;
-		font-family: var(--md-sys-typescale-mono);
-		color: var(--md-sys-color-error);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
 	}
 	.action-output {
 		margin-top: 4px;

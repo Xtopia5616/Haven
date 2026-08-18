@@ -938,7 +938,7 @@ mod tests {
     fn test_validate_input_enum_hint_included() {
         // The file tool schema declares an enum on `operation`; a missing
         // operation must surface the allowed values so the model can self-correct.
-        let tool = crate::builtin::file::FilesTool::default();
+        let tool = crate::builtin::files::FilesTool::default();
         let err = tool
             .validate_input(&json!({"path": "x.txt"}))
             .unwrap_err()

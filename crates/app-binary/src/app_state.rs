@@ -183,7 +183,7 @@ impl AppState {
                         None
                     }
                 };
-            std::sync::Arc::new(haven_input::gateway::MediaGateway::new(
+            std::sync::Arc::new(haven_llm::media::MediaGateway::new(
                 router.clone(),
                 stt_client,
                 ocr,

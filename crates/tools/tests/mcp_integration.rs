@@ -1,5 +1,5 @@
 use haven_common::{McpServerConfig, McpTransportType};
-use haven_tools::mcp::McpClient;
+use haven_mcp::McpClient;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;

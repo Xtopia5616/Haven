@@ -2047,7 +2047,6 @@ dependencies = [
  "chrono",
  "futures-util",
  "haven-common",
- "haven-input",
  "haven-llm",
  "haven-memory",
  "haven-tools",
@@ -2111,19 +2110,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
  "cpal",
- "encoding_rs",
  "futures-util",
  "haven-common",
  "haven-llm",
+ "haven-tools",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
  "tract-onnx",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2135,6 +2132,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "encoding_rs",
  "futures-util",
  "haven-common",
  "regex",
@@ -2143,6 +2141,25 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "haven-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "haven-common",
+ "haven-llm",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2165,6 +2182,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "haven-skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "haven-common",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "haven-tools"
 version = "0.1.0"
 dependencies = [
@@ -2179,7 +2210,9 @@ dependencies = [
  "haven-common",
  "haven-input",
  "haven-llm",
+ "haven-mcp",
  "haven-memory",
+ "haven-skills",
  "ignore",
  "image",
  "jsonschema",

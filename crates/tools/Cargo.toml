@@ -18,6 +18,8 @@ scraper = "0.27"
 tokio-util.workspace = true
 haven-memory = { path = "../memory" }
 haven-common = { path = "../common" }
+haven-mcp = { path = "../mcp" }
+haven-skills = { path = "../skills" }
 jsonschema = "0.49"
 sysinfo = "0.39"
 arboard = "3.4"
@@ -38,6 +40,7 @@ winreg = "0.56"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Power",
     "Win32_Graphics_Gdi",
 ] }

@@ -5,8 +5,8 @@
 //! function of `(Modality, Intent)` so it can be unit-tested and rendered
 //! for debugging without touching the network.
 
-use crate::intent::Intent;
-use crate::modality::Modality;
+use crate::media::intent::Intent;
+use crate::media::modality::Modality;
 
 /// What should happen to an input after detection and classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,9 +97,9 @@ pub fn coverage_for(modality: Modality, intent: Intent) -> CoverageAction {
 /// attachment). Image generation is the ambiguous default; speech keywords
 /// (朗读/读出来/配音…) route to TTS.
 pub fn coverage_for_generate(user_text: &str) -> CoverageAction {
-    match crate::intent::detect_generate_kind(user_text) {
-        crate::intent::GenerateKind::Speech => CoverageAction::Tts,
-        crate::intent::GenerateKind::Image => CoverageAction::ImageGen,
+    match crate::media::intent::detect_generate_kind(user_text) {
+        crate::media::intent::GenerateKind::Speech => CoverageAction::Tts,
+        crate::media::intent::GenerateKind::Image => CoverageAction::ImageGen,
     }
 }
 

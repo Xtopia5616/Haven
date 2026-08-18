@@ -29,6 +29,11 @@ pub fn scroll(delta: i64) -> anyhow::Result<()> {
     imp::scroll(delta)
 }
 
+/// Every key name [`press_key`] accepts (for UIs, hotkey parsing, tests).
+pub fn accepted_key_names() -> impl Iterator<Item = &'static str> {
+    imp::accepted_key_names()
+}
+
 #[cfg(windows)]
 pub(crate) mod imp {
     use anyhow::anyhow;
@@ -93,7 +98,6 @@ pub(crate) mod imp {
         vk_map().get(name.as_str()).copied()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn accepted_key_names() -> impl Iterator<Item = &'static str> {
         vk_map().keys().copied()
     }
@@ -280,6 +284,10 @@ mod imp {
     pub fn scroll(_delta: i64) -> anyhow::Result<()> {
         Err(anyhow!("input simulation requires Windows"))
     }
+
+    pub fn accepted_key_names() -> impl Iterator<Item = &'static str> {
+        std::iter::empty()
+    }
 }
 
 #[cfg(test)]
@@ -307,7 +315,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_simulation_resolves_every_keycode_name() {
-        use crate::hotkey::KeyCode;
+        use haven_input::hotkey::KeyCode;
         let variants: Vec<KeyCode> = vec![
             KeyCode::Space,
             KeyCode::Enter,

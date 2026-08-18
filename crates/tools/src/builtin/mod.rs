@@ -3,9 +3,9 @@ pub mod actions;
 pub mod ask;
 pub mod audio;
 pub mod clipboard;
-pub mod env_var;
+pub mod env;
 pub mod facts;
-pub mod file;
+pub mod files;
 pub mod file_search;
 pub mod input;
 pub mod load_mcp;
@@ -28,13 +28,13 @@ use tokio::sync::RwLock;
 use crate::ToolBox;
 use crate::ToolRegistry;
 use crate::bg::BackgroundActions;
-use crate::mcp::McpManager;
-use crate::skills::SkillsEngine;
-use crate::skills::runner::SkillRunner;
+use haven_mcp::McpManager;
+use haven_skills::SkillsEngine;
+use crate::skill_runner::SkillRunner;
 
 pub use facts::FactsTool;
 pub use scheduled_action::{
-    ScheduleMode, ScheduleTool, ScheduledActionCenter, ScheduledActionFired,
+    ScheduleMode, ScheduledActionCenter, ScheduledActionFired, ScheduledActionTool,
 };
 pub use self_tool::{SelfTool, SelfToolContext};
 
@@ -75,7 +75,7 @@ pub async fn register_builtin_tools(
 ) {
     tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
     tools.push(Arc::new(ask::AskTool));
-    tools.push(Arc::new(file::FilesTool::new(
+    tools.push(Arc::new(files::FilesTool::new(
         router,
         tool_output_cap(settings, "files", limits.max_observation_chars),
         limits.file_read_max_chars,
@@ -115,14 +115,14 @@ pub async fn register_builtin_tools(
         actions: background_actions,
     }));
     tools.push(Arc::new(input::InputTool));
-    tools.push(Arc::new(scheduled_action::ScheduleTool {
+    tools.push(Arc::new(scheduled_action::ScheduledActionTool {
         center: scheduled_actions,
         // Weak registry probe so `set` can validate tool_name / risk at
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),
     }));
-    tools.push(Arc::new(system::SystemInfoTool));
-    tools.push(Arc::new(env_var::EnvTool {
+    tools.push(Arc::new(system::SystemTool));
+    tools.push(Arc::new(env::EnvTool {
         max_output_chars: tool_output_cap(settings, "env", limits.max_observation_chars),
     }));
     tools.push(Arc::new(window::WindowTool));

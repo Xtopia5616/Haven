@@ -5,10 +5,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-pub struct SystemInfoTool;
+pub struct SystemTool;
 
 #[async_trait]
-impl Tool for SystemInfoTool {
+impl Tool for SystemTool {
     fn name(&self) -> String {
         "system".into()
     }
@@ -166,17 +166,17 @@ mod tests {
 
     #[test]
     fn test_system_tool_name() {
-        assert_eq!(SystemInfoTool.name(), "system");
+        assert_eq!(SystemTool.name(), "system");
     }
 
     #[test]
     fn test_system_tool_risk_level() {
-        assert_eq!(SystemInfoTool.risk_level(&json!({})), RiskLevel::Safe);
+        assert_eq!(SystemTool.risk_level(&json!({})), RiskLevel::Safe);
     }
 
     #[test]
     fn test_system_tool_input_schema() {
-        let schema = SystemInfoTool.input_schema();
+        let schema = SystemTool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let enum_vals = schema["properties"]["category"]["enum"].as_array().unwrap();
         let cats: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
@@ -190,7 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_execute_os() {
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({"category": "os"}), CancellationToken::new())
             .await
             .unwrap();
@@ -203,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_execute_cpu() {
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({"category": "cpu"}), CancellationToken::new())
             .await
             .unwrap();
@@ -215,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_execute_memory() {
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({"category": "memory"}), CancellationToken::new())
             .await
             .unwrap();
@@ -227,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_execute_disk() {
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({"category": "disk"}), CancellationToken::new())
             .await
             .unwrap();
@@ -240,7 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_execute_default_overview() {
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({}), CancellationToken::new())
             .await
             .unwrap();
@@ -253,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_execute_unknown_category_falls_back_to_overview() {
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({"category": "bogus"}), CancellationToken::new())
             .await
             .unwrap();
@@ -265,7 +265,7 @@ mod tests {
     async fn test_system_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = SystemInfoTool
+        let result = SystemTool
             .execute(json!({"category": "os"}), cancel)
             .await;
         assert!(result.is_err());

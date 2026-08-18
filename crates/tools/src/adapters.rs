@@ -4,10 +4,10 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::mcp::{McpClient, McpToolInfo};
-use crate::skills::Skill;
-use crate::skills::runner::SkillRunner;
+use crate::skill_runner::SkillRunner;
 use crate::{Tool, ToolResult};
+use haven_mcp::{McpClient, McpToolInfo};
+use haven_skills::Skill;
 
 // ---------------------------------------------------------------------------
 // McpToolAdapter — wraps an MCP client tool as a dyn Tool
@@ -59,7 +59,14 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        self.client.call_tool(&self.info.name, input, cancel).await
+        let out = self.client.call_tool(&self.info.name, input, cancel).await?;
+        Ok(ToolResult {
+            success: out.success,
+            output: out.output,
+            error: out.error,
+            truncated: false,
+            signals: crate::tool::ToolSignals::default(),
+        })
     }
 }
 
@@ -121,10 +128,9 @@ impl Tool for SkillToolAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::McpClient;
-    use crate::skills::runner::SkillRunner;
-    use crate::skills::venv::VenvManager;
-    use crate::skills::{Language, SkillManifest};
+    use crate::skill_runner::SkillRunner;
+    use haven_mcp::McpClient;
+    use haven_skills::{Language, SkillManifest, VenvManager};
     use haven_common::config::SkillsExecConfig;
     use std::path::PathBuf;
 

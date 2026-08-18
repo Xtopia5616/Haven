@@ -683,17 +683,17 @@
 			try {
 				const result = await invoke('get_session_for_review', { sessionId: tid });
 				updateSessionMessages(tid, (existing) => {
-					const dbMessages = buildReviewMessages(result);
-					const keptExisting = existing.filter((m) => !partialIds.has(m.id));
-					return mergeLiveStreaming(dbMessages, keptExisting);
+				const dbMessages = buildReviewMessages(result);
+				const keptExistingMessages = existing.filter((m) => !partialIds.has(m.id));
+				return mergeLiveStreaming(dbMessages, keptExistingMessages);
 				});
 			} catch (e) {
 				// Fallback: if the resync fails, at least drop the captured
 				// partials so the stale interrupted output is removed.
 				if (partialIds.size > 0) {
 					updateSessionMessages(tid, (m) => {
-						const filtered = m.filter((x) => !partialIds.has(x.id));
-						return filtered.length !== m.length ? filtered : m;
+						const filteredMessages = m.filter((x) => !partialIds.has(x.id));
+						return filteredMessages.length !== m.length ? filteredMessages : m;
 					});
 				}
 			}
@@ -1696,10 +1696,10 @@
 		const ids = resolvedAskIds.get(activeSessionId) || new Set();
 		ids.add(msgId);
 		resolvedAskIds.set(activeSessionId, ids);
-		const remaining = (get(sessionMessagesStore)[activeSessionId] || []).filter(
+		const remainingMessages = (get(sessionMessagesStore)[activeSessionId] || []).filter(
 			(x) => x.type === 'ask' && x.awaiting,
 		);
-		if (remaining.length === 0) {
+		if (remainingMessages.length === 0) {
 			const submitted = resolvedAskIds.get(activeSessionId);
 			resolvedAskIds.delete(activeSessionId);
 			submiactionAnswers(activeSessionId, submitted);

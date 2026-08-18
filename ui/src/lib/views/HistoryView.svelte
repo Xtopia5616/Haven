@@ -325,8 +325,8 @@
 	});
 
 	function exportSelected() {
-		const selected = sessions.filter((t) => selectedIds.has(t.id));
-		downloadSessions(selected);
+		const selectedSessions = sessions.filter((t) => selectedIds.has(t.id));
+		downloadSessions(selectedSessions);
 		cancelSelectMode();
 	}
 

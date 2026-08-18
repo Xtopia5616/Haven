@@ -266,7 +266,7 @@ mod tests {
         // Names simulate treats as pressable keys that a hotkey combo resolves as
         // modifiers instead — the intentional exception list.
         const MODIFIER_EXCEPTIONS: &[&str] = &["shift", "ctrl", "control", "alt", "win", "lwin"];
-        for name in crate::simulate::imp::accepted_key_names() {
+        for name in haven_tools::simulate::accepted_key_names() {
             if MODIFIER_EXCEPTIONS.contains(&name) {
                 continue;
             }

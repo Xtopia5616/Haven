@@ -1,3 +1,10 @@
+//! Skills engine: discovery, parsing, and management of reusable agent
+//! skills (`SKILL.md` + scripts), plus the virtual-environment manager used
+//! to run Python skills sandboxed.
+//!
+//! Execution of a skill as a tool lives in `haven-tools` (the `SkillRunner`
+//! bridges skills into the tool-execution result types).
+
 use anyhow::Context;
 use haven_common::ConfigLoader;
 use serde::{Deserialize, Serialize};
@@ -11,8 +18,9 @@ use tokio::sync::RwLock;
 // Manifest types
 // ---------------------------------------------------------------------------
 
-pub mod runner;
 pub mod venv;
+
+pub use venv::VenvManager;
 
 /// Scripting language supported by a Skill. First-class is `Python`; anything
 /// else is preserved verbatim so the UI/later phases can render it without
@@ -109,8 +117,9 @@ impl Skill {
     }
 
     /// Construct a Skill without going through the normal scan/parse path.
-    /// Used in tests to create inline skills.
-    #[cfg(test)]
+    /// Used by tests (including downstream crates' tests) to create inline
+    /// skills without touching the filesystem.
+    #[doc(hidden)]
     pub fn from_manifest_unchecked(manifest: SkillManifest, root: PathBuf, enabled: bool) -> Self {
         Self {
             manifest,

@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::llm_tool_name;
-use crate::mcp::McpManager;
+use haven_mcp::McpManager;
 use crate::{Tool, ToolResult};
 
 pub struct LoadMcpTool {

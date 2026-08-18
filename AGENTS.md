@@ -100,7 +100,12 @@ npm run check
 
 统一规范见 `docs/conventions.md`（前端 `logger.*` 禁止裸 `console.*`；后端 `tracing` + 命令错误走 `log_err(ctx, e)`；通知事件驱动，前端只经 `addNotification(msg, type, duration)`；Tauri 命令统一 `Result<T, String>`）。
 
+## 命名规范
+
+统一规范见 `docs/naming.md`（Rust/前端各层命名、缩写大小写、跨层 snake↔camel 边界、自查清单）。要点：Rust 文件/模块 snake_case、类型 PascalCase、常量 UPPER_SNAKE；Svelte 组件文件名=组件名（PascalCase）、JS 模块 camelCase、store 尾缀 `Store`；缩写整词统一（`stt`/`ocr`/`tts`）；跨层只在边界转换。
+
 ## Before Committing
 1. Run `/check` (fmt → check → clippy → svelte-check)
 2. Run `/test` (all workspace tests pass)
 3. Run `/test-ui --run` (UI tests pass)
+4. 对照 `docs/naming.md` 自查清单检查本次改动命名（见上文「命名规范」）

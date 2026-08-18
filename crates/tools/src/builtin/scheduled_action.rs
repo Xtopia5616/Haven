@@ -651,7 +651,7 @@ fn action_finished_prompt(action_id: &str, status: &Value) -> String {
 ///   message at fire time.
 /// - `continue`: resume the session that scheduled the scheduled_action, delivering
 ///   `prompt` as the continuation instruction in the same conversation.
-pub struct ScheduleTool {
+pub struct ScheduledActionTool {
     pub center: Arc<ScheduledActionCenter>,
     /// Weak probe into the tool registry so `set` can reject unknown
     /// `tool_name` values and report the scheduled tool's risk level at
@@ -660,7 +660,7 @@ pub struct ScheduleTool {
 }
 
 #[async_trait]
-impl Tool for ScheduleTool {
+impl Tool for ScheduledActionTool {
     fn name(&self) -> String {
         "schedule".into()
     }
@@ -903,8 +903,8 @@ mod tests {
     use crate::{Tool, ToolRegistry};
     use serde_json::json;
 
-    fn make_tool() -> ScheduleTool {
-        ScheduleTool {
+    fn make_tool() -> ScheduledActionTool {
+        ScheduledActionTool {
             center: Arc::new(ScheduledActionCenter::new()),
             registry: None,
         }
@@ -1302,7 +1302,7 @@ mod tests {
                 risk: RiskLevel::Safe,
             }))
             .await;
-        let tool = ScheduleTool {
+        let tool = ScheduledActionTool {
             center: Arc::new(ScheduledActionCenter::new()),
             registry: Some(registry.probe()),
         };
@@ -1357,7 +1357,7 @@ mod tests {
                 risk: RiskLevel::Safe,
             }))
             .await;
-        let tool = ScheduleTool {
+        let tool = ScheduledActionTool {
             center: Arc::new(ScheduledActionCenter::new()),
             registry: Some(registry.probe()),
         };
@@ -1587,7 +1587,7 @@ mod tests {
     async fn test_reminder_fires_and_delivers() {
         let center = Arc::new(ScheduledActionCenter::new());
         let mut rx = center.take_fired_receiver().expect("receiver available");
-        let tool = ScheduleTool {
+        let tool = ScheduledActionTool {
             center: center.clone(),
             registry: None,
         };

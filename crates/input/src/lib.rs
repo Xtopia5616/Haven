@@ -24,14 +24,7 @@ use haven_llm::SttClient;
 pub use haven_common::config::AudioConfig;
 
 pub mod capture;
-pub mod coverage;
-pub mod gateway;
 pub mod hotkey;
-pub mod intent;
-pub mod message;
-pub mod modality;
-pub mod multimodal;
-pub mod simulate;
 pub mod vad;
 mod wav;
 

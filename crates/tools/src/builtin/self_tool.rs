@@ -11,8 +11,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::mcp::{McpClientStatus, McpManager};
-use crate::skills::SkillsEngine;
+use haven_mcp::{McpClientStatus, McpManager};
+use haven_skills::SkillsEngine;
 use crate::{Tool, ToolRegistry, ToolResult};
 
 /// App-level dependencies for the `self` tool, wired in by the desktop shell.

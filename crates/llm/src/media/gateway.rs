@@ -21,12 +21,14 @@ use std::sync::Arc;
 use haven_common::config::MediaConfig;
 use haven_common::prompts::{OCR_SYSTEM_PROMPT, STT_SYSTEM_PROMPT};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
-use haven_llm::{EndpointRole, ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
+use crate::{EndpointRole, ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
 
-use crate::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
-use crate::intent::{GenerateKind, Intent, detect_generate_kind, detect_intent};
-use crate::modality::{Modality, detect_media_type, detect_modality, extension_for_media_type};
-use crate::multimodal;
+use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
+use crate::media::intent::{GenerateKind, Intent, detect_generate_kind, detect_intent};
+use crate::media::modality::{
+    Modality, detect_media_type, detect_modality, extension_for_media_type,
+};
+use crate::media::multimodal;
 
 /// Outcome of processing a binary attachment.
 #[derive(Debug, Clone)]
@@ -300,9 +302,9 @@ fn confidence_passes(reported: Option<f32>, threshold: f32) -> bool {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use crate::LlmClient;
+    use crate::types::{LlmError, LlmResponse};
     use haven_common::config::OcrConfig;
-    use haven_llm::LlmClient;
-    use haven_llm::types::{LlmError, LlmResponse};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // --- mock clients ------------------------------------------------------
@@ -324,7 +326,7 @@ mod tests {
         }
     }
 
-    use haven_llm::OcrResult;
+    use crate::OcrResult;
 
     struct MockStt {
         text: String,
@@ -333,8 +335,8 @@ mod tests {
 
     #[async_trait]
     impl SttClient for MockStt {
-        async fn transcribe(&self, _wav: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
-            Ok(haven_llm::SttResult {
+        async fn transcribe(&self, _wav: &[u8]) -> anyhow::Result<crate::SttResult> {
+            Ok(crate::SttResult {
                 text: self.text.clone(),
                 confidence: self.confidence,
             })
@@ -361,7 +363,7 @@ mod tests {
         ) -> Result<
             std::pin::Pin<
                 Box<
-                    dyn futures_util::Stream<Item = Result<haven_llm::StreamChunk, LlmError>>
+                    dyn futures_util::Stream<Item = Result<crate::StreamChunk, LlmError>>
                         + Send,
                 >,
             >,
@@ -616,8 +618,8 @@ mod tests {
 
     #[async_trait]
     impl ImageGenClient for MockImageGen {
-        async fn generate(&self, _prompt: &str) -> anyhow::Result<haven_llm::GeneratedImage> {
-            Ok(haven_llm::GeneratedImage {
+        async fn generate(&self, _prompt: &str) -> anyhow::Result<crate::GeneratedImage> {
+            Ok(crate::GeneratedImage {
                 media_type: "image/png".into(),
                 data: b"png-bytes".to_vec(),
             })

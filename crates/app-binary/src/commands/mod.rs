@@ -163,7 +163,7 @@ pub(crate) async fn hot_swap_router(
                     None
                 }
             };
-        let gateway = Arc::new(haven_input::gateway::MediaGateway::new(
+        let gateway = Arc::new(haven_llm::media::MediaGateway::new(
             new_router, stt_client, ocr, tts, image_gen, cfg,
         ));
         state.agent.set_gateway(Some(gateway)).await;

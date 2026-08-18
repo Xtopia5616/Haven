@@ -5,7 +5,7 @@
 //! which covers Chinese text files on Windows) → `Unknown`.
 //!
 //! The detected [`Modality`] maps directly to the media gateway's routing
-//! key (see [`crate::gateway`] / [`crate::coverage`]).
+//! key (see [`crate::media::gateway`] / [`crate::media::coverage`]).
 
 /// Detected input modality. Maps directly to the gateway's routing key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
