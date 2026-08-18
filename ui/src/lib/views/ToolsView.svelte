@@ -1,10 +1,15 @@
 <script>
+	/** @typedef {{ name: string; enabled: boolean; [key: string]: any }} ToggleItem */
+
+	/** @type {ToggleItem[]} */
 	let mcpServers = $state([]);
+	/** @type {ToggleItem[]} */
 	let skills = $state([]);
+	/** @type {ToggleItem[]} */
 	let builtinTools = $state([]);
 	let activeTab = $state('builtin');
 	let mcpDialogOpen = $state(false);
-	let mcpEditServer = $state(null);
+	let mcpEditServer = /** @type {Record<string, any> | null} */ ($state(null));
 
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
@@ -16,14 +21,17 @@
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
 	import BuiltinToolCard from '$lib/BuiltinToolCard.svelte';
 
+	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
+	/** @type {{ dispose: () => void }} */
 	let unlistenMcp;
 
 	onMount(async () => {
 		try {
 			const result = await invoke('get_tools');
 			if (result && result.tools) {
-				builtinTools = result.tools
+				const tools = /** @type {Array<any>} */ (result.tools);
+				builtinTools = tools
 					.map((t) => ({
 						name: t.name || 'unknown',
 						desc: t.description || '',
@@ -110,6 +118,14 @@
 	// flip the item locally, invoke the backend command, and roll back on
 	// failure. `refresh` runs after a successful toggle. One implementation
 	// so the three handlers cannot drift (e.g. one forgetting the refresh).
+	/**
+	 * @param {ToggleItem[]} list
+	 * @param {string} name
+	 * @param {boolean} enabled
+	 * @param {(v: ToggleItem[]) => void} setList
+	 * @param {string} invokeCmd
+	 * @param {(() => void | Promise<any>) | null} refresh
+	 */
 	async function toggleItem(list, name, enabled, setList, invokeCmd, refresh) {
 		const prev = list.map((x) => ({ ...x }));
 		setList(list.map((x) => (x.name === name ? { ...x, enabled } : x)));
@@ -127,6 +143,10 @@
 		}
 	}
 
+	/**
+	 * @param {string} name
+	 * @param {boolean} enabled
+	 */
 	async function handleToggle(name, enabled) {
 		await toggleItem(skills, name, enabled, (v) => (skills = v), 'set_skill_enabled', null);
 	}
@@ -155,6 +175,9 @@
 		mcpDialogOpen = true;
 	}
 
+	/**
+	 * @param {Record<string, any>} server
+	 */
 	function openEditDialog(server) {
 		mcpEditServer = server;
 		mcpDialogOpen = true;
@@ -165,6 +188,9 @@
 		mcpEditServer = null;
 	}
 
+	/**
+	 * @param {Record<string, any>} config
+	 */
 	async function handleSave(config) {
 		try {
 			if (mcpEditServer) {
@@ -181,6 +207,9 @@
 		}
 	}
 
+	/**
+	 * @param {string} name
+	 */
 	async function handleRemove(name) {
 		try {
 			await invoke('remove_mcp_server', { name });
@@ -191,6 +220,9 @@
 		}
 	}
 
+	/**
+	 * @param {string} name
+	 */
 	async function handleReconnect(name) {
 		addNotification(`正在刷新 ${name}…`, 'info', 1500);
 		try {
@@ -202,6 +234,10 @@
 		}
 	}
 
+	/**
+	 * @param {string} name
+	 * @param {boolean} enabled
+	 */
 	async function handleMcpToggle(name, enabled) {
 		await toggleItem(
 			mcpServers,
@@ -213,6 +249,10 @@
 		);
 	}
 
+	/**
+	 * @param {string} name
+	 * @param {boolean} enabled
+	 */
 	async function handleToolToggle(name, enabled) {
 		await toggleItem(
 			builtinTools,

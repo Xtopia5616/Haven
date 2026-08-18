@@ -9,7 +9,7 @@ import { formatCombo } from './hotkeyFormat.ts';
  * keys A-Z / Space / Enter / Tab / F1-F12, joined with '+', modifiers first in
  * a fixed order, then the key. Function keys may stand alone.
  */
-function ev(props) {
+function ev(props: KeyboardEventInit) {
 	return new KeyboardEvent('keydown', props);
 }
 

@@ -18,6 +18,9 @@
 
 	let displayValue = $derived(value ? formatDisplay(value) : '');
 
+	/**
+	 * @param {string} iso
+	 */
 	function formatDisplay(iso) {
 		const d = new Date(iso + 'T00:00:00');
 		if (isNaN(d.getTime())) return '';
@@ -48,10 +51,18 @@
 		tempValue = '';
 	}
 
+	/**
+	 * @param {number} y
+	 * @param {number} m
+	 */
 	function daysInMonth(y, m) {
 		return new Date(y, m + 1, 0).getDate();
 	}
 
+	/**
+	 * @param {number} y
+	 * @param {number} m
+	 */
 	function firstDayOfMonth(y, m) {
 		return new Date(y, m, 1).getDay();
 	}
@@ -95,6 +106,9 @@
 		else viewMonth++;
 	}
 
+	/**
+	 * @param {number} day
+	 */
 	function selectDay(day) {
 		const m = String(viewMonth + 1).padStart(2, '0');
 		const d = String(day).padStart(2, '0');
@@ -114,6 +128,9 @@
 		view = 'year';
 	}
 
+	/**
+	 * @param {number} year
+	 */
 	function selectYear(year) {
 		viewYear = year;
 		view = 'calendar';
@@ -150,6 +167,9 @@
 		return viewYear;
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleKeydown(e) {
 		if (e.key === 'Escape') {
 			if (view === 'year') { view = 'calendar'; }
@@ -157,14 +177,25 @@
 		}
 	}
 
+	/**
+	 * @param {MouseEvent} e
+	 */
 	function handleOverlayClick(e) {
 		if (e.target === e.currentTarget) cancel();
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleNonInteractiveKeydown(e) {
 		if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
 	}
 
+	/**
+	 * @param {number} year
+	 * @param {number} month
+	 * @param {number} day
+	 */
 	function isDateDisabled(year, month, day) {
 		const date = new Date(year, month, day);
 		if (min) {

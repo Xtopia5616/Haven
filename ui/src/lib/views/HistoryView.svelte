@@ -1,8 +1,14 @@
 <script>
+	/**
+	 * @typedef {{ id: string; title?: string; input_text?: string; transcript?: string; status: string; created_at: string; [key: string]: any }} HistorySession
+	 */
+
+	/** @type {HistorySession[]} */
 	let sessions = $state([]);
 	let searchQuery = $state('');
-	let searchTimer;
-	let deleteTarget = $state(null);
+	/** @type {ReturnType<typeof setTimeout> | null} */
+	let searchTimer = null;
+	let deleteTarget = /** @type {Record<string, any> | null} */ ($state(null));
 	let showClearDialog = $state(false);
 	let selectMode = $state(false);
 	let selectedIds = $state(new Set());
@@ -18,10 +24,12 @@
 	let endDate = $state('');
 	let showDateFilter = $state(false);
 
+	/** @type {string | null} */
 	let editingTitle = $state(null); // { sessionId, value }
 	let renameValue = $state('');
 
 	// Right-click context menu on a history item (open / rename / export / delete)
+	/** @type {{ open: boolean; x: number; y: number; session: HistorySession | null }} */
 	let ctxMenu = $state({ open: false, x: 0, y: 0, session: null });
 
 	// Tabs: session history vs. memory recall vs. facts management.
@@ -33,11 +41,12 @@
 	];
 
 	// Memory recall (moved from Settings): search stored facts / episodes.
-	let memoryRecall = $state({ query: '', kind: 'fact', results: [], loading: false });
+	let memoryRecall = $state({ query: '', kind: 'fact', results: /** @type {any[]} */ ([]), loading: false });
 
 	// Facts management (moved from Settings): every stored fact plus the
 	// manual-add form. Backed by list_facts / add_fact / delete_fact.
 	// Preferences are facts tagged `preference` (single memory channel).
+	/** @type {any[]} */
 	let facts = $state([]);
 	let factsLoaded = $state(false);
 	let newFact = $state({ predicate: '', object: '', tags: '' });
@@ -72,6 +81,7 @@
 		{ value: 'failed', label: 'Failed' },
 	];
 
+	/** @type {{ dispose: () => void } | null} */
 	let unlistenTitleUpdate = null;
 
 	onMount(async () => {
@@ -97,6 +107,9 @@
 		}
 	});
 
+	/**
+	 * @param {Record<string, any>} extra
+	 */
 	function filterParams(extra) {
 		return {
 			query: searchQuery || null,
@@ -161,6 +174,41 @@
 		loadHistory();
 	}
 
+	/**
+	 * @param {string} v
+	 */
+	function handleStatusFilterChange(v) {
+		statusFilter = v;
+		handleFilterChange();
+	}
+
+	/**
+	 * @param {string} v
+	 */
+	function handleRecallKindChange(v) {
+		memoryRecall.kind = v;
+	}
+
+	/**
+	 * @param {string} v
+	 */
+	function handleStartDateChange(v) {
+		startDate = v;
+		if (endDate && endDate < startDate) endDate = '';
+		handleFilterChange();
+	}
+
+	/**
+	 * @param {string} v
+	 */
+	function handleEndDateChange(v) {
+		endDate = v;
+		handleFilterChange();
+	}
+
+	/**
+	 * @param {HistorySession} session
+	 */
 	async function reviewSession(session) {
 		try {
 			await invoke('reopen_session', { sessionId: session.id });
@@ -181,6 +229,9 @@
 	}
 
 
+	/**
+	 * @param {string} sessionId
+	 */
 	async function deleteSession(sessionId) {
 		try {
 			await invoke('delete_session', { sessionId });
@@ -224,6 +275,9 @@
 		selectedIds = new Set();
 	}
 
+	/**
+	 * @param {string} sessionId
+	 */
 	function toggleSelect(sessionId) {
 		const next = new Set(selectedIds);
 		if (next.has(sessionId)) {
@@ -243,6 +297,9 @@
 	}
 
 
+	/**
+	 * @param {HistorySession} session
+	 */
 	function displayTitle(session) {
 		if (session.title) return session.title;
 		const text = session.input_text || '';
@@ -250,6 +307,9 @@
 		return (m ? m[0].trim() : text.trim()) || 'Untitled';
 	}
 
+	/**
+	 * @param {HistorySession} session
+	 */
 	function startEdit(session) {
 		editingTitle = session.id;
 		if (session.title) {
@@ -266,6 +326,9 @@
 		renameValue = '';
 	}
 
+	/**
+	 * @param {string} sessionId
+	 */
 	async function saveTitle(sessionId) {
 		const value = renameValue.trim();
 		if (!value) { cancelEdit(); return; }
@@ -279,11 +342,18 @@
 		cancelEdit();
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 * @param {string} sessionId
+	 */
 	function handleRenameKeydown(e, sessionId) {
 		if (e.key === 'Enter') { e.preventDefault(); saveTitle(sessionId); }
 		else if (e.key === 'Escape') { cancelEdit(); }
 	}
 
+	/**
+	 * @param {HistorySession[]} sessionsToExport
+	 */
 	function downloadSessions(sessionsToExport) {
 		const json = JSON.stringify(
 			{
@@ -303,6 +373,10 @@
 		URL.revokeObjectURL(url);
 	}
 
+	/**
+	 * @param {MouseEvent} e
+	 * @param {HistorySession} session
+	 */
 	function openCtxMenu(e, session) {
 		e.preventDefault();
 		e.stopPropagation();
@@ -389,6 +463,9 @@
 		}
 	}
 
+	/**
+	 * @param {string} factId
+	 */
 	async function deleteFact(factId) {
 		try {
 			await invoke('delete_fact', { factId });
@@ -472,7 +549,7 @@
 			<MaterialSelect
 				value={statusFilter}
 				options={statusOptions}
-				onChange={(v) => { statusFilter = v; handleFilterChange(); }}
+				onChange={handleStatusFilterChange}
 			/>
 			<button class="md-btn md-btn--outlined" onclick={() => (showDateFilter = true)}>
 				{#if startDate || endDate}
@@ -609,7 +686,7 @@
 						{ value: 'fact', label: 'Facts' },
 						{ value: 'episode', label: 'Conversations' },
 					]}
-					onChange={(v) => { memoryRecall.kind = v; }}
+					onChange={handleRecallKindChange}
 				/>
 				<button class="md-btn md-btn--filled" onclick={runRecall} disabled={memoryRecall.loading}>
 					{memoryRecall.loading ? 'Searching…' : 'Search'}
@@ -708,11 +785,7 @@
 						id="start-date"
 						value={startDate}
 						max={todayISO}
-						onChange={(v) => {
-							startDate = v;
-							if (endDate && endDate < startDate) endDate = '';
-							handleFilterChange();
-						}}
+						onChange={handleStartDateChange}
 					/>
 				</div>
 				<div class="date-field">
@@ -722,7 +795,7 @@
 						value={endDate}
 						min={startDate || undefined}
 						max={todayISO}
-						onChange={(v) => { endDate = v; handleFilterChange(); }}
+						onChange={handleEndDateChange}
 					/>
 				</div>
 			</div>
@@ -750,7 +823,7 @@
 	{/snippet}
 	{#snippet footer()}
 		<button class="md-btn md-btn--text" onclick={() => (deleteTarget = null)}>Cancel</button>
-		<button class="md-btn md-btn--danger" onclick={() => deleteSession(deleteTarget.id)}>
+		<button class="md-btn md-btn--danger" onclick={() => { if (deleteTarget) deleteSession(deleteTarget.id); }}>
 			Delete
 		</button>
 	{/snippet}

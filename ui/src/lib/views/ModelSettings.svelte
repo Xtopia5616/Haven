@@ -46,12 +46,18 @@
 
 	const roleCards = modelCards;
 
+	/**
+	 * @param {string} key
+	 */
 	function roleFor(key) {
-		return (llmConfig.roles || []).find((r) => r.role === key) || null;
+		return (llmConfig.roles || []).find((/** @type {any} */ r) => r.role === key) || null;
 	}
 
 	/** Insert a default slot for a role (returns it), keeping the shared state
 	 *  a plain array the settings page's save flow can serialise. */
+	/**
+	 * @param {string} key
+	 */
 	function ensureRole(key) {
 		const existing = roleFor(key);
 		if (existing) return existing;
@@ -68,14 +74,21 @@
 		return slot;
 	}
 
+	/**
+	 * @param {string} name
+	 */
 	function providerByName(name) {
-		return (llmConfig.providers || []).find((p) => p.name === name);
+		return (llmConfig.providers || []).find((/** @type {any} */ p) => p.name === name);
 	}
 
 	function providerOptions() {
-		return [{ value: '', label: '未配置' }, ...(llmConfig.providers || []).map((p) => ({ value: p.name, label: p.name }))];
+		return [{ value: '', label: '未配置' }, ...(llmConfig.providers || []).map((/** @type {any} */ p) => ({ value: p.name, label: p.name }))];
 	}
 
+	/**
+	 * @param {string} key
+	 * @param {string} providerName
+	 */
 	function setRoleProvider(key, providerName) {
 		const slot = ensureRole(key);
 		slot.provider = providerName;
@@ -85,16 +98,25 @@
 		if (providerName) refreshProviderModels(providerName);
 	}
 
+	/**
+	 * @param {string} providerName
+	 */
 	function roleModelOptions(providerName) {
 		if (!providerName) return [];
-		return (modelsByProvider[providerName] || []).map((m) => ({ value: m.id, label: m.name || m.id }));
+		return (modelsByProvider[providerName] || []).map((/** @type {any} */ m) => ({ value: m.id, label: m.name || m.id }));
 	}
 
+	/**
+	 * @param {string} providerName
+	 */
 	function roleModelLoading(providerName) {
 		if (!providerName) return false;
 		return !!modelFetching[providerName];
 	}
 
+	/**
+	 * @param {string} name
+	 */
 	function isProviderKeyConfigured(name) {
 		return !!keyConfiguredProviders[name];
 	}
@@ -104,8 +126,10 @@
 	// ---------------------------------------------------------------------
 
 	/** provider name → fetched [ModelInfo]. */
+	/** @type {Record<string, any[]>} */
 	let modelsByProvider = $state({});
 	/** provider name → bool (in-flight fetch). */
+	/** @type {Record<string, boolean>} */
 	let modelFetching = $state({});
 	/** One global "refresh" that refetches every configured provider. */
 	let refreshingAll = $state(false);
@@ -113,15 +137,15 @@
 	let lastRefreshNotify = $state(0);
 
 	async function refreshAllModels(silent = false) {
-		const providers = (llmConfig.providers || []).filter((p) => p.base_url.trim());
+		const providers = (llmConfig.providers || []).filter((/** @type {any} */ p) => p.base_url.trim());
 		if (providers.length === 0) return;
 		refreshingAll = true;
 		try {
-			if (providers.some((p) => p.api_key)) {
+			if (providers.some((/** @type {any} */ p) => p.api_key)) {
 				// Some provider has an unsaved key (typed in the dialog): fetch
 				// each provider directly so a fresh key works before it is
 				// persisted by the settings save.
-				await Promise.allSettled(providers.map((p) => refreshProviderModels(p.name)));
+				await Promise.allSettled(providers.map((/** @type {any} */ p) => refreshProviderModels(p.name)));
 			} else {
 				const map = await invoke('discover_all_models');
 				modelsByProvider = map || {};
@@ -134,7 +158,7 @@
 				}
 			}
 		} catch (e) {
-			const msg = typeof e === 'string' ? e : (e?.message || String(e));
+			const msg = typeof e === 'string' ? e : (e instanceof Error ? e.message : String(e));
 			addNotification(`刷新模型列表失败: ${msg}`, 'error', 4000);
 		} finally {
 			refreshingAll = false;
@@ -143,6 +167,9 @@
 
 	/** Refetch one provider's model list — with its unsaved key when present,
 	 *  else the stored key (matched by base URL in the backend). */
+	/**
+	 * @param {string} providerName
+	 */
 	async function refreshProviderModels(providerName) {
 		const p = providerByName(providerName);
 		if (!p || !p.base_url.trim()) return;
@@ -155,7 +182,7 @@
 			});
 			modelsByProvider = { ...modelsByProvider, [providerName]: list || [] };
 		} catch (e) {
-			const msg = typeof e === 'string' ? e : (e?.message || String(e));
+			const msg = typeof e === 'string' ? e : (e instanceof Error ? e.message : String(e));
 			logger.warn('ModelSettings', `discover_models ${providerName} error`, msg);
 			modelsByProvider = { ...modelsByProvider, [providerName]: [] };
 		} finally {
@@ -201,18 +228,30 @@
 	const OPENAI_COMPAT_STT = new Set(['openai', 'groq']);
 	const GEMINI_STT = new Set(['gemini']);
 
+	/**
+	 * @param {string} provider
+	 */
 	function isOpenAiCompatibleStt(provider) {
 		return OPENAI_COMPAT_STT.has(provider);
 	}
 
+	/**
+	 * @param {string} provider
+	 */
 	function isGeminiStt(provider) {
 		return GEMINI_STT.has(provider);
 	}
 
+	/**
+	 * @param {string} provider
+	 */
 	function isCloudSttProvider(provider) {
 		return ['openai', 'groq', 'gemini', 'deepgram', 'assemblyai'].includes(provider);
 	}
 
+	/**
+	 * @param {string} provider
+	 */
 	function sttModelPlaceholder(provider) {
 		if (provider === 'deepgram') return 'nova-3';
 		if (provider === 'assemblyai') return 'assemblyai_default';
@@ -221,10 +260,16 @@
 		return 'whisper-1';
 	}
 
+	/**
+	 * @param {string} provider
+	 */
 	function sttBasePlaceholder(provider) {
 		return isGeminiStt(provider) ? 'https://generativelanguage.googleapis.com/v1beta' : 'https://api.openai.com/v1';
 	}
 
+	/**
+	 * @param {string} provider
+	 */
 	function sttFetchBaseUrl(provider) {
 		if (stt.base_url.trim()) return stt.base_url.trim();
 		if (provider === 'groq') return 'https://api.groq.com/openai/v1';
@@ -232,10 +277,15 @@
 		return 'https://api.openai.com/v1';
 	}
 
+	/** @type {any[]} */
 	let sttModels = $state([]);
 	let sttFetching = $state(false);
-	let sttFetchTimer = null;
+	/** @type {ReturnType<typeof setTimeout> | undefined} */
+	let sttFetchTimer = undefined;
 
+	/**
+	 * @param {string} provider
+	 */
 	function sttModelOptions(provider) {
 		if (provider === 'deepgram') {
 			return [
@@ -272,7 +322,7 @@
 			sttModels = list || [];
 		} catch (e) {
 			sttModels = [];
-			const msg = typeof e === 'string' ? e : (e?.message || String(e));
+			const msg = typeof e === 'string' ? e : (e instanceof Error ? e.message : String(e));
 			addNotification(`获取 STT 模型失败: ${msg}`, 'error', 4000);
 		} finally {
 			sttFetching = false;
@@ -288,6 +338,7 @@
 	// Provider add / edit / delete
 	// ---------------------------------------------------------------------
 
+	/** @type {{ idx: number | null, form: { name: string, api_style: string, base_url: string, api_key: string } | null }} */
 	let providerDialog = $state({ idx: null, form: null });
 
 	function startAddProvider() {
@@ -302,6 +353,9 @@
 		};
 	}
 
+	/**
+	 * @param {number} idx
+	 */
 	function startEditProvider(idx) {
 		const p = llmConfig.providers[idx];
 		providerDialog = {
@@ -323,8 +377,8 @@
 			addNotification('请填写 Provider 名称', 'error', 3000);
 			return;
 		}
-		const others = llmConfig.providers.filter((_, i) => i !== idx);
-		if (others.some((p) => p.name === name)) {
+		const others = llmConfig.providers.filter((/** @type {any} */ _, /** @type {number} */ i) => i !== idx);
+		if (others.some((/** @type {any} */ p) => p.name === name)) {
 			addNotification('Provider 名称已存在', 'error', 3000);
 			return;
 		}
@@ -362,6 +416,9 @@
 		refreshAllModels(true);
 	}
 
+	/**
+	 * @param {number} idx
+	 */
 	function deleteProvider(idx) {
 		const p = llmConfig.providers[idx];
 		if (!p) return;
@@ -391,22 +448,35 @@
 
 	let keyDlg = $state({ open: false, model: '', label: '' });
 
+	/**
+	 * @param {string} model
+	 * @param {string} label
+	 */
 	function openKeyDialog(model, label) {
 		keyDlg = { open: true, model, label };
 	}
 
+	/**
+	 * @param {string} value
+	 */
 	function confirmSttKey(value) {
 		stt.api_key = value;
 		keyConfigured.stt = true;
 		keyDlg = { open: false, model: '', label: '' };
 	}
 
+	/**
+	 * @param {string} style
+	 */
 	function apiStyleLabel(style) {
 		return API_STYLE_OPTIONS.find((o) => o.value === style)?.label || style || '自动';
 	}
 
 	// Keep the STT provider in sync: switching the audio role's STT provider
 	// is independent from the audio ROLE's LLM provider.
+	/**
+	 * @param {string} v
+	 */
 	function setSttProvider(v) {
 		stt.provider = v;
 		if (v === 'llm' || v === 'mcp') {
@@ -475,7 +545,7 @@
 	<p class="cost-hint">上下文窗口留空时自动从内置模型目录解析；成本（USD/1K token）留空则默认 0（不显示成本）。</p>
 </div>
 
-{#snippet rolePicker(card)}
+{#snippet rolePicker(/** @type {any} */ card)}
 	{@const slot = roleFor(card.key)}
 	{#if slot}
 	<div class="model-card">
@@ -490,7 +560,7 @@
 					id="{card.prefix}-provider"
 					value={slot.provider}
 					options={providerOptions()}
-					onChange={(v) => setRoleProvider(card.key, v)}
+					onChange={(/** @type {string} */ v) => setRoleProvider(card.key, v)}
 				/>
 			</div>
 			<div class="model-field">
@@ -502,7 +572,7 @@
 						options={roleModelOptions(slot.provider)}
 						placeholder={slot.model ? slot.model : '从获取的模型列表中选择或输入'}
 						loading={roleModelLoading(slot.provider)}
-						onChange={(v) => { slot.model = v; }}
+						onChange={(/** @type {string} */ v) => { slot.model = v; }}
 						onFocus={() => {
 							if (!modelsByProvider[slot.provider]?.length) {
 								refreshProviderModels(slot.provider);
@@ -523,7 +593,7 @@
 					step={0.1}
 					min={0}
 					max={2}
-					onChange={(v) => { slot.temperature = v; }}
+					onChange={(/** @type {number} */ v) => { slot.temperature = v; }}
 				/>
 			</div>
 			<div class="model-field">
@@ -533,7 +603,7 @@
 					value={slot.context_window ?? 0}
 					step={1024}
 					min={0}
-					onChange={(v) => { slot.context_window = v > 0 ? Math.round(v) : null; }}
+					onChange={(/** @type {number} */ v) => { slot.context_window = v > 0 ? Math.round(v) : null; }}
 				/>
 			</div>
 			<div class="model-field">
@@ -543,7 +613,7 @@
 					value={slot.cost_per_1k_input_tokens ?? 0}
 					step={0.01}
 					min={0}
-					onChange={(v) => { slot.cost_per_1k_input_tokens = v; }}
+					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_input_tokens = v; }}
 				/>
 			</div>
 			<div class="model-field">
@@ -553,7 +623,7 @@
 					value={slot.cost_per_1k_output_tokens ?? 0}
 					step={0.01}
 					min={0}
-					onChange={(v) => { slot.cost_per_1k_output_tokens = v; }}
+					onChange={(/** @type {number} */ v) => { slot.cost_per_1k_output_tokens = v; }}
 				/>
 			</div>
 		</div>
@@ -580,7 +650,7 @@
 								options={mcpServerNames.map((n) => ({ value: n, label: n }))}
 								placeholder="Pick a configured MCP server"
 								loading={false}
-								onChange={(v) => { stt.mcp_server = v; }}
+								onChange={(/** @type {string} */ v) => { stt.mcp_server = v; }}
 							/>
 						</div>
 					{:else if isCloudSttProvider(stt.provider)}
@@ -600,7 +670,7 @@
 								options={sttModelOptions(stt.provider)}
 								placeholder={sttModelPlaceholder(stt.provider)}
 								loading={sttFetching}
-								onChange={(v) => { stt.model = v; }}
+								onChange={(/** @type {string} */ v) => { stt.model = v; }}
 								onFocus={() => scheduleSttFetch()}
 							/>
 						</div>
@@ -627,32 +697,33 @@
 {/snippet}
 
 {#if providerDialog.form}
+{@const pdForm = providerDialog.form}
 <MaterialDialog open={true} title={providerDialog.idx === null ? '添加 Provider' : '编辑 Provider'} onClose={() => { providerDialog = { idx: null, form: null }; }}>
 	{#snippet children()}
 		<div class="lib-form">
 			<div class="model-field">
 				<span class="field-label">名称</span>
-				<input type="text" class="md-input" bind:value={providerDialog.form.name} placeholder="唯一名称，角色据此选择" autocomplete="off" />
+				<input type="text" class="md-input" bind:value={pdForm.name} placeholder="唯一名称，角色据此选择" autocomplete="off" />
 			</div>
 			<div class="model-field">
 				<span class="field-label">API Style（接线协议）</span>
 				<MaterialSelect
 					id="prov-api-style"
-					value={providerDialog.form.api_style}
+					value={pdForm.api_style}
 					options={API_STYLE_OPTIONS}
-					onChange={(v) => { providerDialog.form.api_style = v; }}
+					onChange={(/** @type {string} */ v) => { pdForm.api_style = v; }}
 				/>
 			</div>
 			<div class="model-field">
 				<span class="field-label">Base URL</span>
-				<input type="text" class="md-input" bind:value={providerDialog.form.base_url} placeholder="https://api.openai.com/v1" autocomplete="off" />
+				<input type="text" class="md-input" bind:value={pdForm.base_url} placeholder="https://api.openai.com/v1" autocomplete="off" />
 			</div>
 			<div class="model-field">
 				<span class="field-label">API Key</span>
 				<input
 					type="password"
 					class="md-input"
-					bind:value={providerDialog.form.api_key}
+					bind:value={pdForm.api_key}
 					placeholder={providerDialog.idx !== null ? '已配置，留空保持不变' : ''}
 					autocomplete="off"
 				/>
@@ -684,7 +755,7 @@
 		</p>
 		<div class="form-row switch-row">
 			<span class="switch-label">图片理解使用专用视觉模型</span>
-			<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(v) => { llmConfig.vision_use_image_model = v; }} />
+			<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(/** @type {boolean} */ v) => { llmConfig.vision_use_image_model = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="max-attachment-images">单条消息最多图片数</label>
@@ -694,7 +765,7 @@
 				min={1}
 				max={20}
 				step={1}
-				onChange={(v) => { contextLimits.max_attachment_images = v; }}
+				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_images = v; }}
 			/>
 		</div>
 		<div class="form-row">
@@ -705,7 +776,7 @@
 				min={1}
 				max={50}
 				step={1}
-				onChange={(v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
+				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
 			/>
 		</div>
 		<div class="form-row">
@@ -716,7 +787,7 @@
 				min={512}
 				max={4096}
 				step={64}
-				onChange={(v) => { contextLimits.max_attachment_image_dim_px = v; }}
+				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_dim_px = v; }}
 			/>
 		</div>
 		<div class="form-row">
@@ -727,7 +798,7 @@
 				min={0.1}
 				max={1}
 				step={0.05}
-				onChange={(v) => { contextLimits.attachment_image_jpeg_quality = v; }}
+				onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
 			/>
 		</div>
 	</div>
@@ -745,7 +816,7 @@
 				min={1}
 				max={20}
 				step={1}
-				onChange={(v) => { contextLimits.max_attachment_files = v; }}
+				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_files = v; }}
 			/>
 		</div>
 		<div class="form-row">
@@ -756,7 +827,7 @@
 				min={1}
 				max={100}
 				step={1}
-				onChange={(v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
+				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
 			/>
 		</div>
 	</div>
@@ -768,7 +839,7 @@
 		</p>
 		<div class="form-row switch-row">
 			<span class="switch-label">录音转写使用专用音频模型</span>
-			<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(v) => { llmConfig.stt_use_audio_model = v; }} />
+			<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
 		</div>
 		<p class="model-hint">STT 提供商与录音参数（VAD、采样率、时长上限）在「常规 → Audio / STT」与上方 Audio 角色卡片中配置。</p>
 	</div>

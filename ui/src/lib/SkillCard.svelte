@@ -10,12 +10,14 @@
 		expanded = !expanded;
 	}
 
+	/** @param {boolean} checked */
 	function handleToggle(checked) {
 		onToggle?.(skill.name, checked);
 	}
 
 	let ctxMenu = $state({ open: false, x: 0, y: 0 });
 
+	/** @param {MouseEvent} e */
 	function handleContextMenu(e) {
 		e.preventDefault();
 		e.stopPropagation();
@@ -40,9 +42,10 @@
 	]);
 
 	let previewParams = $state('{}');
-	let previewResult = $state(null);
+	let previewResult = /** @type {string | null} */ ($state(null));
 	let running = $state(false);
 
+	/** @param {MouseEvent} e */
 	async function runPreview(e) {
 		e.stopPropagation();
 		if (running) return;

@@ -28,8 +28,16 @@ impl McpToolAdapter {
         }
     }
 
+    /// Canonical qualified tool name (`mcp::<server>::<tool>`) after LLM name
+    /// sanitization. Single shared implementation for the adapter and the
+    /// `load_mcp` meta-tool, so the name advertised to the model always
+    /// matches the registration key.
+    pub fn qualified_name_of(server_name: &str, tool_name: &str) -> String {
+        crate::llm_tool_name(&format!("mcp::{}::{}", server_name, tool_name))
+    }
+
     fn qualified_name(&self) -> String {
-        crate::llm_tool_name(&format!("mcp::{}::{}", self.server_name, self.info.name))
+        Self::qualified_name_of(&self.server_name, &self.info.name)
     }
 }
 
@@ -87,8 +95,16 @@ impl SkillToolAdapter {
         Self { skill, runner }
     }
 
+    /// Canonical qualified tool name (`skill::<name>`) after LLM name
+    /// sanitization. Single shared implementation for the adapter and the
+    /// `load_skill` meta-tool, so the name advertised to the model always
+    /// matches the registration key.
+    pub fn qualified_name_of(skill_name: &str) -> String {
+        crate::llm_tool_name(&format!("skill::{}", skill_name))
+    }
+
     fn qualified_name(&self) -> String {
-        crate::llm_tool_name(&format!("skill::{}", self.skill.name()))
+        Self::qualified_name_of(self.skill.name())
     }
 }
 

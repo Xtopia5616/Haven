@@ -5,9 +5,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm_tool_name;
 use crate::skill_runner::SkillRunner;
-use crate::{Tool, ToolResult};
+use crate::{SkillToolAdapter, Tool, ToolResult};
 use haven_skills::SkillsEngine;
 
 pub struct LoadSkillTool {
@@ -54,24 +53,23 @@ impl Tool for LoadSkillTool {
         if !skill.enabled() {
             anyhow::bail!("skill '{}' is disabled", skill_name);
         }
-        let schema = serde_json::json!({
-            "name": llm_tool_name(&format!("skill::{}", skill.name())),
-            "description": skill.description(),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "params": {
-                        "type": "object",
-                        "description": skill.instructions()
-                    }
-                },
-                "required": ["params"]
-            }
-        });
+        // The schema comes from the SkillToolAdapter's tool_def() so the
+        // name / description / input_schema advertised to the model are the
+        // exact ones the registered session adapter validates and executes.
+        // Instructions are surfaced alongside (not inside the schema) so the
+        // model still learns how to fill `params` at load time.
+        let skill_instructions = skill.instructions().to_string();
+        let skill_display_name = skill.name().to_string();
+        let runner = self.skill_runner.read().await.clone();
+        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
+        let skill_def = adapter.tool_def().json();
 
-        Ok(ToolResult::ok(
-            serde_json::json!({"skill": schema, "status": "loaded", "skill_name": skill.name()}),
-        ))
+        Ok(ToolResult::ok(serde_json::json!({
+            "skill": skill_def,
+            "instructions": skill_instructions,
+            "status": "loaded",
+            "skill_name": skill_display_name,
+        })))
     }
 
     /// Declare the per-session skill adapter registration so the executor
@@ -179,6 +177,29 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["skill"]["name"], "skill__echo");
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_schema_matches_adapter() {
+        // The `skill` schema advertised to the model must be exactly the
+        // SkillToolAdapter's tool_def() — same name, description and
+        // input_schema — so the loaded tool the model sees is the one the
+        // session adapter validates and executes. Instructions ride along as
+        // a separate field instead of a second schema implementation.
+        let (engine, runner, _dir) = make_engine_with_skill(true).await;
+        let engine_ref = engine.clone();
+        let tool = LoadSkillTool {
+            skills_engine: engine,
+            skill_runner: runner.clone(),
+        };
+        let result = tool
+            .execute(json!({"skill_name": "echo"}), CancellationToken::new())
+            .await
+            .unwrap();
+        let skill = engine_ref.get_skill("echo").await.unwrap();
+        let adapter = SkillToolAdapter::new(Arc::new(skill), runner.read().await.clone());
+        assert_eq!(result.output["skill"], adapter.tool_def().json());
+        assert_eq!(result.output["instructions"], "do echo");
     }
 
     #[tokio::test]

@@ -174,16 +174,16 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 			// session message and rendered as an ask card instead of a raw
 			// JSON tool badge. Older records may store the question directly.
 			let askText = obs;
-			let askOptions = [];
+			let askOptions: string[] = [];
 			if (obs) {
 				try {
-					const parsed = JSON.parse(obs);
+					const parsed: { question?: unknown; options?: unknown } = JSON.parse(obs);
 					if (parsed && typeof parsed.question === 'string') {
 						askText = parsed.question;
 					}
 					if (Array.isArray(parsed.options)) {
-						askOptions = parsed.options.map((o) =>
-							typeof o === 'string' ? o : String(o?.answer ?? o ?? '')
+						askOptions = parsed.options.map((o: unknown) =>
+							typeof o === 'string' ? o : String((o as { answer?: unknown } | null)?.answer ?? o ?? '')
 						);
 					}
 				} catch {

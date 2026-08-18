@@ -15,9 +15,26 @@
 // persisted under), so the live bubble, the snap and the review copy are
 // one entity and merges need no content-based dedup.
 
+/** A chat-bubble message in the live streaming view. */
+export interface StreamMessage {
+	id: string;
+	role?: string;
+	content?: string;
+	type?: string | null;
+	voice?: boolean;
+	stepNumber?: number | null;
+	runId?: number | null;
+	time?: string;
+	streaming?: boolean;
+	url?: string;
+	awaiting?: boolean;
+	options?: string[];
+	_ts?: number;
+}
+
 /** `tool-<sessionId>-<step>-<run>-web_search` (provider built-in search card;
  *  not a persisted entity, so its id never needs to match a DB row). */
-export const webSearchId = (sessionId, stepNumber, runId) =>
+export const webSearchId = (sessionId: string, stepNumber: number, runId: number | null | undefined) =>
 	`tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search`;
 
 /**
@@ -26,9 +43,13 @@ export const webSearchId = (sessionId, stepNumber, runId) =>
  * branches. Finalized blocks drop straggler chunks that flush out of the
  * batcher after the event.
  */
-export function finalizeStreamBlocks(messages, reasoningId, thoughtId) {
+export function finalizeStreamBlocks(
+	messages: StreamMessage[],
+	reasoningId: string | null | undefined,
+	thoughtId: string | null | undefined,
+) {
 	return messages.map((x) =>
-		(x.id === reasoningId || x.id === thoughtId || x.id.startsWith(thoughtId + '-'))
+		(x.id === reasoningId || x.id === thoughtId || (thoughtId != null && x.id.startsWith(thoughtId + '-')))
 			? { ...x, streaming: false }
 			: x
 	);
@@ -78,7 +99,7 @@ export function newToolMessage({
 // unique message id in O(tail-distance) instead of O(whole list) — a full
 // forward scan per chunk would cost O(n) on every batched flush of a long
 // conversation. The id is unique, so direction never changes the result.
-function lastIndexById(messages, id) {
+function lastIndexById(messages: StreamMessage[], id: string) {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		if (messages[i].id === id) return i;
 	}
@@ -93,7 +114,15 @@ function newStreamMessage({
 	stepNumber = null,
 	runId = null,
 	time = '',
-}) {
+}: {
+	id: string;
+	content: string;
+	streaming?: boolean;
+	msgType?: string | undefined;
+	stepNumber?: number | null;
+	runId?: number | null;
+	time?: string;
+}): StreamMessage {
 	return {
 		id,
 		role: 'assistant',
@@ -113,7 +142,7 @@ function newStreamMessage({
  * @param {{ messageId: string, delta: string, msgType: string|undefined, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
-export function accumulateStreamChunk(messages, opts) {
+export function accumulateStreamChunk(messages: StreamMessage[], opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string }): StreamMessage[] {
 	const { messageId, delta, msgType, stepNumber, runId, time } = opts;
 	if (!delta) return messages;
 
@@ -185,7 +214,7 @@ export function accumulateStreamChunk(messages, opts) {
  * @param {{ messageId: string, reasoningId?: string, thought: string, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
-export function applyThoughtSnap(messages, opts) {
+export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: string; reasoningId?: string; thought: string; stepNumber: number; runId: number; time: string }): StreamMessage[] {
 	const { messageId, reasoningId, thought, stepNumber, runId, time } = opts;
 	const firstSegIdx = messages.findIndex((x) => x.id === messageId);
 	// Reasoning may stream AFTER the thought text started (providers that

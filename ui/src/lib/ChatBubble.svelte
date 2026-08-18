@@ -80,6 +80,7 @@
 		if (mdRafId) cancelAnimationFrame(mdRafId);
 	});
 
+	/** @param {any} e */
 	function handleContextMenu(e) {
 		if (onContextMenu) {
 			e.preventDefault();
@@ -109,6 +110,7 @@
 	// delegation survives re-renders of {@html} content and works during
 	// streaming. The whole text of the code block is copied, matching what is
 	// highlighted, without any trailing newline.
+	/** @param {any} e */
 	function handleMdContentClick(e) {
 		const btn = e.target.closest?.('.md-code-copy');
 		if (!btn) return;
@@ -149,6 +151,7 @@
 	//   3. A thin visible scrollbar, because scrollbars are hidden globally.
 	// The CSS vars are written to the fade-hosting wrapper (or the element
 	// itself for plain <pre> that never scrolls, e.g. streaming fences).
+	/** @param {HTMLElement} el */
 	function hintTarget(el) {
 		const wrap = el.parentElement;
 		if (wrap && (wrap.classList.contains('md-code-wrap') || wrap.classList.contains('md-table-wrap'))) {
@@ -156,14 +159,16 @@
 		}
 		return el;
 	}
+	/** @param {any} el */
 	function refreshScrollHint(el) {
 		const target = hintTarget(el);
 		const atLeft = el.scrollLeft <= 0;
 		const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
-		target.style.setProperty('--sh-l', atLeft ? 0 : 1);
-		target.style.setProperty('--sh-r', atRight ? 0 : 1);
+		target.style.setProperty('--sh-l', atLeft ? '0' : '1');
+		target.style.setProperty('--sh-r', atRight ? '0' : '1');
 	}
 
+	/** @param {Event} e */
 	function handleMdScrollCapture(e) {
 		const el = e.target;
 		if (el instanceof HTMLElement && (el.tagName === 'PRE' || el.tagName === 'TABLE')) {
@@ -171,6 +176,7 @@
 		}
 	}
 
+	/** @param {any} e */
 	function handleMdWheel(e) {
 		const el = e.target.closest?.('pre, table');
 		if (!el) return;
@@ -181,6 +187,7 @@
 		el.scrollLeft += e.deltaY;
 	}
 
+	/** @param {HTMLElement} node */
 	function mdContent(node) {
 		let hintRaf = 0;
 		function scheduleRefresh() {

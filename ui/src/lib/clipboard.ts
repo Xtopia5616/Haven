@@ -7,7 +7,7 @@ import { addNotification } from '$lib/stores.ts';
  * @param {string} label Suffix for the success toast, e.g. '名称' -> '已复制名称'
  * @returns {Promise<boolean>} true when the clipboard write succeeded
  */
-export async function copyText(text, label = '') {
+export async function copyText(text: string, label = '') {
 	const value = typeof text === 'string' ? text.trim() : '';
 	if (!value) {
 		addNotification('复制失败：内容为空', 'error', 2000);

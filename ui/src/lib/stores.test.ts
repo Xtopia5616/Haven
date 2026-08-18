@@ -278,7 +278,7 @@ describe('seqLastSeen / pruneSeq / clearSeqMap', () => {
 	});
 
 	it('treats a null sequence as not a replay', () => {
-		expect(seqLastSeen('t-s1', null)).toBe(false);
+		expect(seqLastSeen('t-s1', null as any)).toBe(false);
 	});
 
 	it('pruneSeq forgets the step', () => {
@@ -457,7 +457,7 @@ describe('sessionTokenStatsStore', () => {
 	});
 
 	it('restoreSessionTokenStats no-ops without usage', () => {
-		restoreSessionTokenStats('t1', null);
+		restoreSessionTokenStats('t1', null as any);
 		expect(statsMap().t1).toBeUndefined();
 	});
 });
@@ -478,8 +478,8 @@ describe('formatTokenCount', () => {
 	});
 
 	it('tolerates non-numeric input', () => {
-		expect(formatTokenCount(undefined)).toBe('0');
-		expect(formatTokenCount(/** @type {any} */ ('300'))).toBe('300');
+		expect(formatTokenCount(undefined as any)).toBe('0');
+		expect(formatTokenCount('300' as any)).toBe('300');
 	});
 });
 

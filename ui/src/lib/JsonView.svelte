@@ -26,6 +26,7 @@
 	// change for a live node.
 	let expanded = $state(untrack(() => depth === 0 || depth < defaultDepth));
 	let copied = $state(false);
+	/** @type {ReturnType<typeof setTimeout> | null} */
 	let copyTimer = null;
 
 	function summaryOf() {
@@ -33,6 +34,7 @@
 		return isArray ? `[ ${count} 项 ]` : `{ ${count} 个键 }`;
 	}
 
+	/** @param {string} k */
 	function keyLabel(k) {
 		return indexed ? k : JSON.stringify(k);
 	}
@@ -58,7 +60,7 @@
 		try {
 			await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
 			copied = true;
-			clearTimeout(copyTimer);
+			if (copyTimer) clearTimeout(copyTimer);
 			copyTimer = setTimeout(() => (copied = false), 1500);
 		} catch {
 			// Clipboard unavailable (e.g. non-secure context) — ignore.

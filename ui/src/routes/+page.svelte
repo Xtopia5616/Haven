@@ -5,6 +5,7 @@
 	// duplicate discover_models request against the same default endpoint.
 	// Cache the result per base URL and share in-flight requests so reloads
 	// reuse the list instead of re-hitting the provider's /models endpoint.
+	/** @type {{ baseUrl: string | null, list: any[] | null, inflight: Promise<any> | null }} */
 	const defaultModelsCache = {
 		baseUrl: null,
 		list: null,
@@ -65,7 +66,7 @@
 	import Logo from '$lib/Logo.svelte';
 	import InputRouter from '$lib/InputRouter.svelte';
 
-	let inputRouterRef = $state(null);
+	let inputRouterRef = /** @type {any} */ ($state(null));
 
 	// Attachment & compression limits for the input router, loaded from the
 	// persisted [context_limits] config (editable on the settings "输入格式"
@@ -78,8 +79,8 @@
 		maxFiles: 5,
 		maxFileBytes: 20 * 1024 * 1024,
 	});
-	let messages = $state([]);
-	let sessions = $state([]);
+	let messages = /** @type {Array<any>} */ ($state([]));
+	let sessions = /** @type {Array<any>} */ ($state([]));
 	let confirmDialog = $state({
 		stepId: null,
 		toolName: '',
@@ -95,7 +96,7 @@
 	// model name, displayed on the toolbar button and filtered in the menu.
 	let modelMenuOpen = $state(false);
 	let sessionMenuOpen = $state(false);
-	let modelOptions = $state([]);
+	let modelOptions = /** @type {Array<any>} */ ($state([]));
 	let currentModelName = $state('');
 	let currentModelId = $state('');
 	let currentEffort = $state('');
@@ -150,7 +151,7 @@
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a review conversation opens). Used to render
 	// per-step token chips on tool cards and the widget's per-call tooltip.
-	/** @type {Array<object>} */
+	/** @type {Array<import('$lib/stores.ts').LlmUsage>} */
 	let llmUsage = $state([]);
 	$effect(() =>
 		syncStore(sessionLlmUsageStore, (m) => {
@@ -174,6 +175,7 @@
 	 * @returns {{prompt: number, completion: number, total: number, cost: number, hasCost: boolean, durationMs: number, model: string|null, calls: number}|null}
 	 */
 	const stepUsageCache = new Map();
+	/** @param {number|null} stepNumber */
 	function stepUsage(stepNumber) {
 		if (stepNumber == null || llmUsage.length === 0) return null;
 		const cached = stepUsageCache.get(stepNumber);
@@ -314,6 +316,7 @@
 		{ value: 'always', label: '总是' },
 	];
 
+	/** @param {string} value */
 	async function handleWebSearchSelect(value) {
 		const label = webSearchOptions.find((o) => o.value === value)?.label || '关闭';
 		try {
@@ -325,6 +328,7 @@
 		}
 	}
 
+	/** @param {any} m */
 	async function handleModelSelect(m) {
 		modelMenuOpen = false;
 		try {
@@ -337,6 +341,7 @@
 		}
 	}
 
+	/** @param {string} value */
 	async function handleEffortSelect(value) {
 		const label = effortOptions.find((o) => o.value === value)?.label || '默认';
 		try {
@@ -360,6 +365,7 @@
 		selectedContent: '',
 	});
 
+	/** @param {any} ev */
 	function handleContextMenu(ev) {
 		ctxMenu = {
 			open: true,
@@ -446,18 +452,19 @@
 		{ id: 'copy', label: '复制', icon: 'copy', action: handleCtxCopy },
 	]);
 
+	/** @param {MouseEvent} e */
 	function handleWindowClick(e) {
 		if (modelMenuOpen) {
 			const menu = document.querySelector('.model-menu');
 			const btn = document.querySelector('.model-switch-btn');
-			if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+			if (menu && btn && !menu.contains(/** @type {Node} */ (e.target)) && !btn.contains(/** @type {Node} */ (e.target))) {
 				modelMenuOpen = false;
 			}
 		}
 		if (sessionMenuOpen) {
 			const menu = document.querySelector('.session-menu');
 			const btn = document.querySelector('.session-switch-btn');
-			if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+			if (menu && btn && !menu.contains(/** @type {Node} */ (e.target)) && !btn.contains(/** @type {Node} */ (e.target))) {
 				sessionMenuOpen = false;
 			}
 		}
@@ -485,7 +492,7 @@
 					pause: true,
 					targetMessageId: msgId,
 				});
-				clearSeqMap(activeSessionId);
+				clearSeqMap(/** @type {string} */ (activeSessionId));
 				clearStepBlockIds(activeSessionId);
 				// The backend is the source of truth for what the rollback
 				// deleted (target message + its whole discarded timeline);
@@ -500,7 +507,7 @@
 					pause: false,
 					targetMessageId: msgId,
 				});
-				clearSeqMap(activeSessionId);
+				clearSeqMap(/** @type {string} */ (activeSessionId));
 				clearStepBlockIds(activeSessionId);
 				await resyncSessionMessages(activeSessionId);
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
@@ -516,6 +523,7 @@
 	// Rebuild a session's in-memory message list from the authoritative DB
 	// state. Used after rollback (and by handleContinue) so the UI cannot
 	// diverge from what the backend actually kept/deleted.
+	/** @param {string | null} sessionId */
 	async function resyncSessionMessages(sessionId) {
 		if (!sessionId) return;
 		try {
@@ -567,6 +575,7 @@
 	// message list, token stats and seq bookkeeping (switchToSession reloads
 	// everything from the DB on demand). Keeps parallel-conversation memory
 	// bounded across a long session. Never evicts the active conversation.
+	/** @param {string | null} sessionId */
 	function evictTerminalSessionMemory(sessionId) {
 		if (!sessionId || (activeSessionId && sessionId === activeSessionId)) return;
 		clearSessionMessages(sessionId);
@@ -576,6 +585,7 @@
 		clearStepBlockIds(sessionId);
 	}
 
+	/** @param {string} sessionId */
 	async function switchToSession(sessionId) {
 		sessionMenuOpen = false;
 		// The previously active session is about to be deactivated: if it is
@@ -713,8 +723,8 @@
 
 	// Tauri event listener handle (registered in onMount, disposed in
 	// onDestroy). See eventRegistrations below.
-	let eventRegistrations = null;
-	let messagesEl;
+	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (null);
+	let messagesEl = /** @type {HTMLElement | null | undefined} */ (undefined);
 	let autoFollow = $state(true);
 	let scrollRafPending = false;
 	let dead = false;
@@ -726,6 +736,7 @@
 	// get(store), so we must use .subscribe() to get reactive updates.
 	// Also read the current value once on mount via get(), otherwise values
 	// set before subscription (e.g. by history review) are never received.
+	/** @type {Record<string, any[]>} */
 	let sessionMessagesDict = $state({});
 	$effect(() =>
 		syncStoreImmediate(
@@ -733,7 +744,7 @@
 			(v) => {
 				sessionMessagesDict = v;
 			},
-			get,
+			() => get(sessionMessagesStore),
 		),
 	);
 
@@ -817,7 +828,7 @@
 		if (dead || !messagesEl) return;
 		const list = messagesEl.querySelector('.message-list');
 		if (!list) return;
-		const bubbles = list.querySelectorAll('.bubble');
+		const bubbles = /** @type {NodeListOf<HTMLElement>} */ (list.querySelectorAll('.bubble'));
 		bubbles.forEach((b) => b.style.setProperty('content-visibility', 'visible'));
 		messagesEl.scrollTop = messagesEl.scrollHeight;
 		let frames = 2;
@@ -856,7 +867,7 @@
 	// buffer overflows and drops — and streaming visibly dies ("nothing, then
 	// a big dump"). Events that must see the flushed state (agent:thought
 	// snap, agent:action, agent:observation) flush synchronously first.
-	const pendingChunks = [];
+	const pendingChunks = /** @type {Array<any>} */ ([]);
 	let chunkFlushRaf = 0;
 	// Hard cap on queued chunks: if the webview is hidden/occluded,
 	// requestAnimationFrame can stall indefinitely, so an unbounded queue
@@ -872,9 +883,11 @@
 	// handler look up the SIBLING id (a `msg-*` id carries no step
 	// information, so it cannot be derived from another block's id).
 	const stepBlockIds = new Map(); // sessionId -> Map<'step:run', {thoughtId, reasoningId}>
+	/** @param {number} stepNumber @param {number | string} runId */
 	function blockKey(stepNumber, runId) {
 		return `${stepNumber}:${runId}`;
 	}
+	/** @param {string} tid @param {number} stepNumber @param {number | string} runId @param {string} kind @param {string} messageId */
 	function registerBlockId(tid, stepNumber, runId, kind, messageId) {
 		if (!tid || !messageId) return;
 		let perSession = stepBlockIds.get(tid);
@@ -884,9 +897,11 @@
 		entry[kind] = messageId;
 		perSession.set(key, entry);
 	}
+	/** @param {string} tid @param {number} stepNumber @param {number | string} runId */
 	function blockIdsOf(tid, stepNumber, runId) {
 		return stepBlockIds.get(tid)?.get(blockKey(stepNumber, runId)) || {};
 	}
+	/** @param {string | null} sessionId */
 	function clearStepBlockIds(sessionId) {
 		const perSession = stepBlockIds.get(sessionId);
 		if (perSession) {
@@ -970,8 +985,9 @@
 	// Streaming chunk handler factory: finalizes the preceding reasoning block
 	// on the first thought chunk, dedups by per-block seq, and queues the
 	// delta for the per-frame flush (see flushPendingChunks).
+	/** @param {boolean} isThought @param {string | undefined} msgType */
 	function chunkHandler(isThought, msgType) {
-		return (event) => {
+		return (/** @type {any} */ event) => {
 			const data = event.payload;
 			const tid = data.session_id;
 			const sid = data.message_id;
@@ -1021,6 +1037,7 @@
 	// don't re-request the same model list. Concurrent mounts share the
 	// in-flight request, so the duplicate discover_models calls seen on
 	// reload disappear without losing the fresh-on-first-load behavior.
+	/** @param {string} baseUrl @param {string} providerName */
 	function ensureDefaultModelOptions(baseUrl, providerName) {
 		if (defaultModelsCache.baseUrl === baseUrl && defaultModelsCache.list) {
 			modelOptions = defaultModelsCache.list;
@@ -1064,6 +1081,7 @@
 	// Open a reviewed conversation (from the history page). The chat view
 	// stays mounted while other tabs are open, so this runs both at mount and
 	// whenever the store changes afterwards.
+	/** @param {any} reviewTarget */
 	function processReviewTarget(reviewTarget) {
 		if (reviewTarget && reviewTarget.sessionId) {
 			// Opening a reviewed conversation abandons any pending fresh-start
@@ -1456,9 +1474,9 @@
 				// The default_model role references a provider + a model id on
 				// that provider (the "model library" is the provider's fetched
 				// model list). Resolve both for the toolbar switcher.
-				const dmRole = (s?.llm?.roles || []).find((r) => r.role === 'default_model');
+				const dmRole = (s?.llm?.roles || []).find((/** @type {any} */ r) => r.role === 'default_model');
 				const dmProvider = dmRole?.provider
-					? (s?.llm?.providers || []).find((p) => p.name === dmRole.provider)
+					? (s?.llm?.providers || []).find((/** @type {any} */ p) => p.name === dmRole.provider)
 					: null;
 				const dmModel = dmRole?.model || '';
 				currentModelId = dmModel;
@@ -1576,6 +1594,7 @@
 	// follow-up `reopen_session` (which only lets follow-up messages continue
 	// this session instead of being dropped as a terminal-session supplement) runs
 	// afterwards without blocking the UI.
+	/** @param {any} reviewTarget */
 	async function restoreLastConversation(reviewTarget) {
 		if (
 			reviewTarget ||
@@ -1640,6 +1659,7 @@
 	// NOT part of the submitted message (e.g. the user typed their own reply
 	// instead) must not keep displaying as "已选择/已忽略" — the submitted
 	// user bubble is the record of what was actually sent.
+	/** @param {string} sessionId */
 	function clearAskAwaiting(sessionId) {
 		updateSessionMessages(sessionId, (m) =>
 			m.map((x) => (x.type === 'ask' ? { ...x, awaiting: false, resolved: null } : x)),
@@ -1649,6 +1669,7 @@
 		resolvedAskIds.delete(sessionId);
 	}
 
+	/** @param {string} text @param {any} [images] @param {any} [files] */
 	async function submitMessage(text, images, files) {
 		try {
 			const result = await submitTranscript(text, { images, files });
@@ -1668,6 +1689,7 @@
 	// format (typed text, pasted/picked images, attached files, voice) into a
 	// single payload and forwards it here. The router already cleared its
 	// draft, so the page just delivers the message and resumes auto-follow.
+	/** @param {{ text: string, images: any, files: any }} payload */
 	function handleInputSubmit({ text, images, files }) {
 		autoFollow = true;
 		submitMessage(text, images, files);
@@ -1684,6 +1706,7 @@
 
 	// Mark one pending ask card as resolved (answered via quick reply or
 	// ignored) and submit the composed answers once the batch is complete.
+	/** @param {string} msgId @param {any} resolved */
 	function resolveAsk(msgId, resolved) {
 		if (!activeSessionId || !msgId) return;
 		updateSessionMessages(activeSessionId, (m) =>
@@ -1711,6 +1734,7 @@
 	// question keeps the raw answer; multiple questions quote each one so the
 	// model can map answers back to its questions. Ignored questions are
 	// marked as 忽略.
+	/** @param {string} sessionId @param {any} resolvedIds */
 	function submiactionAnswers(sessionId, resolvedIds) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
 		const asks = (get(sessionMessagesStore)[sessionId] || []).filter(
@@ -1731,6 +1755,7 @@
 	// The agent asked a question and offered quick-reply buttons. The answer
 	// marks that question as resolved; the session resumes only when every
 	// pending question in the batch is answered or ignored (see resolveAsk).
+	/** @param {string} msgId @param {any} answer */
 	function handleQuickReply(msgId, answer) {
 		if (!activeSessionId || !answer) return;
 		resolveAsk(msgId, { answer });
@@ -1738,11 +1763,13 @@
 
 	// The user chooses not to answer a pending question; counting as a
 	// resolution so the batch can resume once all questions are handled.
+	/** @param {string} msgId */
 	function handleIgnoreAsk(msgId) {
 		if (!activeSessionId) return;
 		resolveAsk(msgId, { ignored: true });
 	}
 
+	/** @param {{ stepId: string, approved: boolean, trustSession: boolean }} payload */
 	async function handleConfirm({ stepId, approved, trustSession }) {
 		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
 		// If we only cleared it after `await invoke(...)`, a new

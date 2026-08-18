@@ -27,11 +27,13 @@
 	// Pending image attachments (multimodal): [{ mediaType, data }] with data
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
+	/** @type {any[]} */
 	let pendingImages = $state([]);
 
 	// Pending non-image file attachments: [{ media_type, data, filename, size }].
 	// Read as base64 when picked, persisted by the backend to disk and handed
 	// to the agent as a path the file tool can read.
+	/** @type {any[]} */
 	let pendingFiles = $state([]);
 	// Single hidden picker for both images and files; the picked items are
 	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
@@ -63,6 +65,7 @@
 
 	// Allow the host page to populate the draft box programmatically (e.g.
 	// restoring a message after rollback) via `bind:this`.
+	/** @param {string} text */
 	export function setDraft(text) {
 		transcriptInput = text ?? '';
 	}
@@ -100,6 +103,7 @@
 	}
 
 	/** Read a File as a { media_type, data } attachment without re-encoding. */
+	/** @param {File} file */
 	function readAsAttachment(file) {
 		return new Promise((resolve, reject) => {
 			const reader = new FileReader();
@@ -118,6 +122,7 @@
 	 * Downscale and re-encode an image File to JPEG to reduce payload size.
 	 * Returns null if compression isn't possible (e.g. browser lacks the API).
 	 */
+	/** @param {File} file */
 	async function tryCompressImage(file) {
 		if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
 		try {
@@ -153,6 +158,7 @@
 	 * Compresses to JPEG when the result is smaller than the original;
 	 * otherwise keeps the original encoding.
 	 */
+	/** @param {File} file */
 	async function fileToAttachment(file) {
 		if (file.size > maxImageBytes) {
 			throw new Error(`图片超过 ${Math.round(maxImageBytes / 1024 / 1024)}MB 上限`);
@@ -182,12 +188,14 @@
 	 * generic file (disk path) by MIME type first, then extension — so a
 	 * `.png` with a missing/odd MIME still routes to the image logic.
 	 */
+	/** @param {File} file */
 	function isImageFile(file) {
 		if (file.type && file.type.startsWith('image/')) return true;
 		const ext = (file.name.split('.').pop() || '').toLowerCase();
 		return IMAGE_EXTENSIONS.has(ext);
 	}
 
+	/** @param {FileList | File[]} files */
 	async function addPendingImages(files) {
 		if (!files || files.length === 0) return;
 		const room = maxImages - pendingImages.length;
@@ -204,11 +212,13 @@
 			try {
 				pendingImages = [...pendingImages, await fileToAttachment(f)];
 			} catch (e) {
-				addNotification((e && e.message) || '图片读取失败', 'error', 3000);
+				const em = e instanceof Error ? e.message : '';
+				addNotification(em || '图片读取失败', 'error', 3000);
 			}
 		}
 	}
 
+	/** @param {ClipboardEvent} e */
 	function handlePaste(e) {
 		const items = e.clipboardData?.items;
 		if (!items) return;
@@ -225,10 +235,12 @@
 		}
 	}
 
+	/** @param {number} index */
 	function removePendingImage(index) {
 		pendingImages = pendingImages.filter((_, i) => i !== index);
 	}
 
+	/** @param {number} bytes */
 	function formatFileSize(bytes) {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -238,6 +250,7 @@
 	// Read non-image files as base64 attachments (with the original name) so
 	// the backend can persist them to disk and hand the agent a path. Files
 	// are capped at maxFiles / maxFileBytes, mirroring server validation.
+	/** @param {FileList | File[]} files */
 	async function addPendingFiles(files) {
 		if (!files || files.length === 0) return;
 		const room = maxFiles - pendingFiles.length;
@@ -262,13 +275,15 @@
 					{ media_type, data, filename: f.name, size: f.size },
 				];
 			} catch (e) {
-				addNotification(e.message || '文件读取失败', 'error', 3000);
+				const em = e instanceof Error ? e.message : '';
+				addNotification(em || '文件读取失败', 'error', 3000);
 			}
 		}
 	}
 
 	// Single entry point for the attachment picker: images (by MIME/extension)
 	// go to the vision preview row, everything else to the file chips.
+	/** @param {any} e */
 	function handleAttachSelect(e) {
 		const files = Array.from(e.target.files || []);
 		const images = files.filter(isImageFile);
@@ -278,6 +293,7 @@
 		e.target.value = '';
 	}
 
+	/** @param {number} index */
 	function removePendingFile(index) {
 		pendingFiles = pendingFiles.filter((_, i) => i !== index);
 	}
@@ -296,6 +312,7 @@
 		onsubmit?.({ text, images, files });
 	}
 
+	/** @param {KeyboardEvent} e */
 	function handleKeydown(e) {
 		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();

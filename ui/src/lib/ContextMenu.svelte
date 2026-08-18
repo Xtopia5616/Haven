@@ -32,7 +32,7 @@
 	// icon is a key from the ICONS map above or raw SVG inner markup.
 	let { open = false, x = 0, y = 0, items = [], onClose = () => {} } = $props();
 
-	let menuEl = $state(null);
+	let menuEl = /** @type {HTMLDivElement | null} */ ($state(null));
 	let pos = $state({ x: 0, y: 0 });
 
 	// Flip to the other side of the cursor when the menu would overflow the
@@ -60,13 +60,13 @@
 	// stacked under it.
 	$effect(() => {
 		if (!open) return;
-		function onPointerDown(e) {
-			if (menuEl && !menuEl.contains(e.target)) onClose();
+		function onPointerDown(/** @type {PointerEvent} */ e) {
+			if (menuEl && !menuEl.contains(/** @type {Node | null} */ (e.target))) onClose();
 		}
 		function onContextMenu() {
 			onClose();
 		}
-		function onKeyDown(e) {
+		function onKeyDown(/** @type {KeyboardEvent} */ e) {
 			if (e.key === 'Escape') onClose();
 		}
 		window.addEventListener('pointerdown', onPointerDown);
@@ -79,12 +79,14 @@
 		};
 	});
 
+	/** @param {string} name */
 	function iconMarkup(name) {
 		// Icons resolve strictly against the built-in set; unknown names are
 		// ignored so no caller-supplied string can reach the raw-HTML sink.
-		return ICONS[name] ?? '';
+		return /** @type {Record<string, string>} */ (ICONS)[name] ?? '';
 	}
 
+	/** @param {any} item */
 	function run(item) {
 		item.action?.();
 		onClose();

@@ -6,6 +6,9 @@
 	 */
 	let { checked = false, onChange } = $props();
 
+	/**
+	 * @param {any} e
+	 */
 	function handleChange(e) {
 		onChange?.(e.target.checked);
 	}

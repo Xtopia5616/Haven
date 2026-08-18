@@ -22,10 +22,12 @@
 		expanded = !expanded;
 	}
 
+	/** @param {boolean} checked */
 	function handleToggle(checked) {
 		onToggle?.(server.name, checked);
 	}
 
+	/** @param {any} status */
 	function statusLabel(status) {
 		if (typeof status === 'string') return status;
 		if (status && typeof status === 'object') {
@@ -57,6 +59,7 @@
 
 	let ctxMenu = $state({ open: false, x: 0, y: 0 });
 
+	/** @param {MouseEvent} e */
 	function handleContextMenu(e) {
 		e.preventDefault();
 		e.stopPropagation();

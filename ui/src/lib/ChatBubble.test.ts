@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import ChatBubble from './ChatBubble.svelte';
 
 describe('ChatBubble', () => {
-	const base = (props) => ({ type: null, time: null, ...props });
+	const base = (props: any) => ({ type: null, time: null, ...props });
 
 	it('renders a user bubble with the You label', () => {
 		render(ChatBubble, base({ role: 'user', content: 'hello there' }));
@@ -467,7 +467,7 @@ describe('ChatBubble', () => {
 });
 
 describe('ChatBubble markdown code fences', () => {
-	let clipboardMock;
+	let clipboardMock: any;
 	beforeEach(() => {
 		clipboardMock = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', {
@@ -479,7 +479,7 @@ describe('ChatBubble markdown code fences', () => {
 		vi.useRealTimers();
 	});
 
-	const renderMd = (content) =>
+	const renderMd = (content: string) =>
 		render(ChatBubble, { role: 'assistant', content, type: null, time: null });
 
 	it('wraps a fenced code block with a toolbar and language label', async () => {

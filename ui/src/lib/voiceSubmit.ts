@@ -8,6 +8,6 @@ import { submitTranscript } from './submit.ts';
  * @param {string} text
  * @returns {Promise<any>} the `process_transcript` result
  */
-export function submitVoiceTranscript(text) {
+export function submitVoiceTranscript(text: string) {
 	return submitTranscript(text, { voice: true });
 }

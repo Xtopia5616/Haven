@@ -20,7 +20,7 @@ describe('statusColor', () => {
 	it('falls back to the pending gray for unknown statuses', () => {
 		expect(statusColor('paused_pending')).toBe('#666');
 		expect(statusColor('')).toBe('#666');
-		expect(statusColor(undefined)).toBe('#666');
+		expect(statusColor(undefined as any)).toBe('#666');
 	});
 });
 
@@ -36,6 +36,6 @@ describe('statusVariant', () => {
 
 	it('falls back to default for unknown statuses', () => {
 		expect(statusVariant('paused_pending')).toBe('default');
-		expect(statusVariant(undefined)).toBe('default');
+		expect(statusVariant(undefined as any)).toBe('default');
 	});
 });

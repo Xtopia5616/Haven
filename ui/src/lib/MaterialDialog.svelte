@@ -12,14 +12,23 @@
 	 */
 	let { open = false, onClose, title = '', children, footer, dialogClass = '' } = $props();
 
+	/**
+	 * @param {MouseEvent} e
+	 */
 	function handleOverlayClick(e) {
 		if (e.target === e.currentTarget) onClose?.();
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleKeydown(e) {
 		if (e.key === 'Escape') onClose?.();
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleOverlayKeydown(e) {
 		if (e.key === 'Escape') onClose?.();
 	}

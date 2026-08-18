@@ -13,11 +13,17 @@
 		open = !open;
 	}
 
+	/**
+	 * @param {any} val
+	 */
 	function select(val) {
 		onChange?.(val);
 		open = false;
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleKeydown(e) {
 		if (e.key === 'Escape') open = false;
 	}

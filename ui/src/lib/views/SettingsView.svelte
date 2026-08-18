@@ -28,6 +28,7 @@
 		max_concurrent_requests: 2,
 	});
 
+	/** @type {{ small_model: boolean; default_model: boolean; balanced_model: boolean; image_model: boolean; audio_model: boolean; embedding_model: boolean; stt: boolean; ocr: boolean; tts: boolean; image_gen: boolean; [key: string]: boolean }} */
 	let keyConfigured = $state({
 		small_model: false,
 		default_model: false,
@@ -79,6 +80,7 @@
 	});
 
 	let session = $state({ max_concurrent: 3, max_steps: 30 });
+	/** @type {Record<string, number>} */
 	let contextLimits = $state({
 		compaction_ratio: 0.75,
 		compaction_reserve_tokens: 4096,
@@ -237,22 +239,37 @@
 		normal: g.fields.filter((f) => !f.danger),
 		danger: g.fields.filter((f) => f.danger),
 	}));
+	/** @type {Record<string, boolean>} */
 	let limitDangerOpen = $state({});
-	const isLimitDangerOpen = (id) => limitDangerOpen[id] ?? true;
+	const isLimitDangerOpen = (/** @type {string} */ id) => limitDangerOpen[id] ?? true;
+	/**
+	 * @param {string} id
+	 */
 	function toggleLimitDanger(id) { limitDangerOpen[id] = !isLimitDangerOpen(id); }
 	let allLimitDangerOpen = $derived(LIMIT_VIEWS.every((g) => !g.danger.length || isLimitDangerOpen(g.id)));
+	/**
+	 * @param {boolean} open
+	 */
 	function setAllLimitDanger(open) { for (const g of LIMIT_GROUPS) limitDangerOpen[g.id] = open; }
 
+	/**
+	 * @param {string} key
+	 * @param {number} value
+	 */
 	function limitDisplay(key, value) {
-		const f = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
+		const f = /** @type {any} */ (LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key));
 		if (!f) return value;
 		if (f.mb) return Math.round((value / 1048576) * 10) / 10;
 		if (f.kb) return Math.round((value / 1024) * 10) / 10;
 		if (f.days) return Math.round((value / 86400) * 10) / 10;
 		return value;
 	}
+	/**
+	 * @param {string} key
+	 * @param {number} v
+	 */
 	function limitCommit(key, v) {
-		const f = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
+		const f = /** @type {any} */ (LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key));
 		if (!f) return v;
 		if (f.mb) return Math.round(v * 1048576);
 		if (f.kb) return Math.round(v * 1024);
@@ -305,6 +322,7 @@
 		base_url: '',
 		timeout_secs: 120,
 	});
+	/** @type {{ session_created: { in_app: boolean; windows: boolean }; session_completed: { in_app: boolean; windows: boolean }; session_paused: { in_app: boolean; windows: boolean }; session_resumed: { in_app: boolean; windows: boolean }; session_error: { in_app: boolean; windows: boolean }; [key: string]: { in_app: boolean; windows: boolean } }} */
 	let notification = $state({
 		session_created: { in_app: true, windows: false },
 		session_completed: { in_app: true, windows: true },
@@ -337,9 +355,9 @@
 		for (const s of ['cmd', 'powershell', 'pwsh']) {
 			try {
 				const res = await invoke('check_shell_available', { shell: s });
-				shellAvailable[s] = !!res?.available;
+				shellAvailable[/** @type {'cmd' | 'powershell' | 'pwsh'} */ (s)] = !!res?.available;
 			} catch {
-				shellAvailable[s] = true; // assume available on probe failure
+				shellAvailable[/** @type {'cmd' | 'powershell' | 'pwsh'} */ (s)] = true; // assume available on probe failure
 			}
 		}
 	}
@@ -347,7 +365,7 @@
 	// Log viewer (Logging section): reads the tail of the current log file
 	// via get_log_info / read_log_tail and shows it in a dialog.
 	let logView = $state({ open: false, path: '', content: '', loading: false });
-	let logPreEl = $state(null);
+	let logPreEl = /** @type {HTMLPreElement | null} */ ($state(null));
 
 	async function openLogViewer() {
 		logView.loading = true;
@@ -360,7 +378,7 @@
 			await refreshLogs();
 			logView.open = true;
 		} catch (e) {
-			addNotification(e?.message || '无法读取日志', 'error', 4000);
+			addNotification(e instanceof Error ? e.message : '无法读取日志', 'error', 4000);
 		} finally {
 			logView.loading = false;
 		}
@@ -372,7 +390,7 @@
 			logView.path = data.path;
 			logView.content = data.content;
 		} catch (e) {
-			addNotification(e?.message || '无法读取日志', 'error', 4000);
+			addNotification(e instanceof Error ? e.message : '无法读取日志', 'error', 4000);
 		}
 	}
 
@@ -385,6 +403,7 @@
 
 	// Names of configured MCP servers, offered in the Audio Model card's
 	// Model field when the STT provider is an MCP server.
+	/** @type {string[]} */
 	let mcpServerNames = $state([]);
 	// True once settings + api-key status loaded; passed to ModelSettings so
 	// its audio-card STT selector can initialize from the stored config.
@@ -458,7 +477,7 @@
 					timeout_secs: media.image_gen?.timeout_secs || 120,
 				};
 				// MCP server names for the Audio Model card's MCP STT mode.
-				mcpServerNames = (settings.mcp_servers || []).map((s) => s.name || '').filter(Boolean);
+				mcpServerNames = (settings.mcp_servers || []).map((/** @type {any} */ s) => s.name || '').filter(Boolean);
 			settingsLoaded = true;
 			notification = settings.notification || notification;
 			log = settings.log || log;
@@ -596,12 +615,19 @@
 		autostartEnabled = !autostartEnabled;
 	}
 
+	/**
+	 * @param {string} model
+	 * @param {string} label
+	 */
 	function openKeyDialog(model, label) {
 		keyChangeDialog = { open: true, model, label };
 	}
 
 	// Media-capability keys (OCR / TTS / 文生图). Role and STT keys are
 	// handled by ModelSettings through the same ApiKeyDialog.
+	/**
+	 * @param {string} value
+	 */
 	function confirmMediaKey(value) {
 		if (keyChangeDialog.model === 'ocr') {
 			ocr.api_key = value;
@@ -614,6 +640,9 @@
 		keyChangeDialog = { open: false, model: '', label: '' };
 	}
 
+	/**
+	 * @param {string} hex
+	 */
 	function contrastText(hex) {
 		const r = parseInt(hex.slice(1, 3), 16);
 		const g = parseInt(hex.slice(3, 5), 16);
@@ -647,11 +676,11 @@
 		<h2>Hotkeys</h2>
 		<div class="form-row">
 			<label for="hotkey-binding">Key Binding</label>
-			<HotkeyInput id="hotkey-binding" value={hotkeyBinding} onChange={(v) => { hotkeyBinding = v; }} />
+			<HotkeyInput id="hotkey-binding" value={hotkeyBinding} onChange={(/** @type {string} */ v) => { hotkeyBinding = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="hotkey-mode">Mode</label>
-			<MaterialSelect id="hotkey-mode" value={hotkeyMode} options={[{ value: 'toggle', label: 'Toggle (press to start/stop)' }, { value: 'hold', label: 'Hold (push-to-talk)' }]} onChange={(v) => { hotkeyMode = v; }} />
+			<MaterialSelect id="hotkey-mode" value={hotkeyMode} options={[{ value: 'toggle', label: 'Toggle (press to start/stop)' }, { value: 'hold', label: 'Hold (push-to-talk)' }]} onChange={(/** @type {string} */ v) => { hotkeyMode = v; }} />
 		</div>
 	</div>
 
@@ -659,19 +688,19 @@
 		<h2>Audio</h2>
 		<div class="form-row">
 			<label for="audio-sample-rate">Sample Rate</label>
-			<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(v) => { audio.sample_rate = v; }} />
+			<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(/** @type {number} */ v) => { audio.sample_rate = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="audio-channels">Channels</label>
-			<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(v) => { audio.channels = v; }} />
+			<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(/** @type {number} */ v) => { audio.channels = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="audio-max-duration">Max Duration (sec)</label>
-			<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(v) => { audio.max_duration_secs = v; }} />
+			<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(/** @type {number} */ v) => { audio.max_duration_secs = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="audio-silence-timeout">Silence Timeout (ms)</label>
-			<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(v) => { audio.silence_timeout_ms = v; }} />
+			<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(/** @type {number} */ v) => { audio.silence_timeout_ms = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="audio-vad-threshold">VAD Threshold</label>
@@ -685,7 +714,7 @@
 		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 行的 API Style 下拉框及其字段中完成。此处仅设置转写超时与置信度阈值。</p>
 		<div class="form-row">
 			<label for="stt-timeout">Timeout (sec)</label>
-			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(v) => { stt.timeout_secs = v; }} />
+			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(/** @type {number} */ v) => { stt.timeout_secs = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="stt-min-confidence">Min Confidence</label>
@@ -707,7 +736,7 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">Provider</span>
-					<MaterialSelect id="ocr-provider" value={ocr.provider} options={OCR_PROVIDER_OPTIONS} onChange={(v) => { ocr.provider = v; }} />
+					<MaterialSelect id="ocr-provider" value={ocr.provider} options={OCR_PROVIDER_OPTIONS} onChange={(/** @type {string} */ v) => { ocr.provider = v; }} />
 				</div>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
@@ -742,7 +771,7 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">Timeout (sec)</span>
-					<MaterialNumberField id="ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={(v) => { ocr.timeout_secs = v; }} />
+					<MaterialNumberField id="ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { ocr.timeout_secs = v; }} />
 				</div>
 			</div>
 		</div>
@@ -755,7 +784,7 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">Provider</span>
-					<MaterialSelect id="tts-provider" value={tts.provider} options={TTS_PROVIDER_OPTIONS} onChange={(v) => { tts.provider = v; }} />
+					<MaterialSelect id="tts-provider" value={tts.provider} options={TTS_PROVIDER_OPTIONS} onChange={(/** @type {string} */ v) => { tts.provider = v; }} />
 				</div>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
@@ -793,7 +822,7 @@
 				{#if tts.provider !== 'none'}
 					<div class="model-field">
 						<span class="field-label">Timeout (sec)</span>
-						<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={(v) => { tts.timeout_secs = v; }} />
+						<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { tts.timeout_secs = v; }} />
 					</div>
 				{/if}
 			</div>
@@ -807,7 +836,7 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">Provider</span>
-					<MaterialSelect id="ig-provider" value={imageGen.provider} options={IMAGE_GEN_PROVIDER_OPTIONS} onChange={(v) => { imageGen.provider = v; }} />
+					<MaterialSelect id="ig-provider" value={imageGen.provider} options={IMAGE_GEN_PROVIDER_OPTIONS} onChange={(/** @type {string} */ v) => { imageGen.provider = v; }} />
 				</div>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
@@ -834,7 +863,7 @@
 					</div>
 					<div class="model-field">
 						<span class="field-label">Timeout (sec)</span>
-						<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={(v) => { imageGen.timeout_secs = v; }} />
+						<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={(/** @type {number} */ v) => { imageGen.timeout_secs = v; }} />
 					</div>
 				{/if}
 			</div>
@@ -846,15 +875,15 @@
 		<p class="model-hint">Max Concurrent 控制同时运行的会话数；LLM Per-Endpoint Concurrency 限制每个模型端点（角色）同时在途的请求数。后者低于前者时，超出上限的模型请求会排队等待，避免多个会话同时请求同一服务商触发限流（429）。</p>
 		<div class="form-row">
 			<label for="session-max-concurrent">Max Concurrent</label>
-			<MaterialNumberField id="session-max-concurrent" value={session.max_concurrent} min={1} max={10} onChange={(v) => { session.max_concurrent = v; }} />
+			<MaterialNumberField id="session-max-concurrent" value={session.max_concurrent} min={1} max={10} onChange={(/** @type {number} */ v) => { session.max_concurrent = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="llm-max-concurrent-requests">LLM Per-Endpoint Concurrency</label>
-			<MaterialNumberField id="llm-max-concurrent-requests" value={llmConfig.max_concurrent_requests} min={1} max={16} onChange={(v) => { llmConfig.max_concurrent_requests = v; }} />
+			<MaterialNumberField id="llm-max-concurrent-requests" value={llmConfig.max_concurrent_requests} min={1} max={16} onChange={(/** @type {number} */ v) => { llmConfig.max_concurrent_requests = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="session-max-steps">Max Steps</label>
-			<MaterialNumberField id="session-max-steps" value={session.max_steps} min={1} max={100} onChange={(v) => { session.max_steps = v; }} />
+			<MaterialNumberField id="session-max-steps" value={session.max_steps} min={1} max={100} onChange={(/** @type {number} */ v) => { session.max_steps = v; }} />
 		</div>
 	</div>
 
@@ -863,7 +892,7 @@
 		<p class="model-hint">Agent 的 shell 工具默认使用的命令行解释器。模型仍可在调用时通过 shell 参数临时指定其他 shell（cmd / powershell / pwsh）。</p>
 		<div class="form-row">
 			<label for="default-shell">Default Shell</label>
-			<MaterialSelect id="default-shell" value={defaultShell} options={shellOptions()} onChange={(v) => { defaultShell = v; }} />
+			<MaterialSelect id="default-shell" value={defaultShell} options={shellOptions()} onChange={(/** @type {string} */ v) => { defaultShell = v; }} />
 		</div>
 		{#if defaultShell === 'pwsh' && shellAvailable.pwsh === false}
 			<div class="shell-warning">
@@ -877,11 +906,11 @@
 		<h2>Memory</h2>
 		<div class="form-row">
 			<label for="memory-window-size">Window Size</label>
-			<MaterialNumberField id="memory-window-size" value={memory.session_window_size} min={10} max={500} onChange={(v) => { memory.session_window_size = v; }} />
+			<MaterialNumberField id="memory-window-size" value={memory.session_window_size} min={10} max={500} onChange={(/** @type {number} */ v) => { memory.session_window_size = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="memory-retention">Retention (days)</label>
-			<MaterialNumberField id="memory-retention" value={memory.history_retention_days} min={1} max={365} onChange={(v) => { memory.history_retention_days = v; }} />
+			<MaterialNumberField id="memory-retention" value={memory.history_retention_days} min={1} max={365} onChange={(/** @type {number} */ v) => { memory.history_retention_days = v; }} />
 		</div>
 		<h3 class="model-group-heading">Maintenance</h3>
 		<p class="model-hint">维护会清理重复、敏感、过期的事实与残留向量。</p>
@@ -971,7 +1000,7 @@
 				{ value: 'medium', label: 'Medium & above' },
 				{ value: 'high', label: 'High & above' },
 				{ value: 'critical', label: 'Critical only' },
-			]} onChange={(v) => { security.min_risk_level = v; }} />
+			]} onChange={(/** @type {string} */ v) => { security.min_risk_level = v; }} />
 		</div>
 		<p class="model-hint">Operations at or above this risk level will require your confirmation. Low-level operations (file read, window list) will auto-approve.</p>
 	</div>
@@ -992,8 +1021,8 @@
 		] as ev (ev.key)}
 			<div class="notify-grid-row">
 				<span class="switch-label">{ev.label}</span>
-				<MaterialSwitch checked={notification[ev.key].in_app} onChange={(v) => { notification[ev.key].in_app = v; }} />
-				<MaterialSwitch checked={notification[ev.key].windows} onChange={(v) => { notification[ev.key].windows = v; }} />
+				<MaterialSwitch checked={notification[ev.key].in_app} onChange={(/** @type {boolean} */ v) => { notification[ev.key].in_app = v; }} />
+				<MaterialSwitch checked={notification[ev.key].windows} onChange={(/** @type {boolean} */ v) => { notification[ev.key].windows = v; }} />
 			</div>
 		{/each}
 	</div>
@@ -1005,7 +1034,7 @@
 		</div>
 		<div class="form-row switch-row">
 			<span class="switch-label">File Logging</span>
-			<MaterialSwitch checked={log.file_enabled} onChange={(v) => { log.file_enabled = v; }} />
+			<MaterialSwitch checked={log.file_enabled} onChange={(/** @type {boolean} */ v) => { log.file_enabled = v; }} />
 		</div>
 		<div class="form-row">
 			<label for="log-level">Log Level</label>
@@ -1015,7 +1044,7 @@
 				{ value: 'info', label: 'Info' },
 				{ value: 'warn', label: 'Warn' },
 				{ value: 'error', label: 'Error' },
-			]} onChange={(v) => { log.level = v; }} />
+			]} onChange={(/** @type {string} */ v) => { log.level = v; }} />
 		</div>
 	</div>
 
@@ -1040,7 +1069,7 @@
 	/>
 {/if}
 
-	{#snippet limitRow(f, boxed = false)}
+	{#snippet limitRow(/** @type {any} */ f, boxed = false)}
 	<div class="form-row limit-row" class:danger-row={f.danger && !boxed}>
 		<div class="limit-label">
 			<label for="limit-{f.key}">{f.label}</label>
@@ -1058,7 +1087,7 @@
 				step={f.step ?? 1}
 				min={f.min ?? 0}
 				max={f.max ?? 100000000}
-				onChange={(v) => { contextLimits[f.key] = limitCommit(f.key, v); }}
+				onChange={(/** @type {number} */ v) => { contextLimits[f.key] = limitCommit(f.key, v); }}
 			/>
 			<span class="limit-unit">{f.unit}</span>
 		</div>

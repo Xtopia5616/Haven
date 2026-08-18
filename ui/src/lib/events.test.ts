@@ -15,7 +15,7 @@ vi.mock('./logger.ts', () => ({
 
 import { registerListeners, registerOne } from './events.ts';
 
-const event = (payload) => ({ payload });
+const event = (payload: any) => ({ payload });
 
 describe('registerListeners', () => {
 	beforeEach(() => {
@@ -63,8 +63,8 @@ describe('registerListeners', () => {
 	});
 
 	it('dispose before a pending listen resolves still cleans up on resolution', async () => {
-		/** @type {(unsub: () => void) => void} */
-		let resolveListen;
+		/** @type {((unsub: () => void) => void) | undefined} */
+		let resolveListen: any;
 		mocks.listen.mockReturnValue(new Promise((r) => (resolveListen = r)));
 
 		const regs = registerListeners({ 'agent:thought': vi.fn() });

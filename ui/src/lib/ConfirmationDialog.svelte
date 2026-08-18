@@ -37,6 +37,9 @@
 		onConfirm?.({ stepId, approved: true, trustSession: true });
 	}
 
+	/**
+	 * @param {KeyboardEvent} event
+	 */
 	function handleOverlayKeydown(event) {
 		if (event.key === 'Enter' || event.key === ' ') {
 			event.preventDefault();

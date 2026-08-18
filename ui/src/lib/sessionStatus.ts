@@ -6,7 +6,7 @@
 
 export const ACTION_STATUSES = ['pending', 'running', 'paused', 'completed', 'failed', 'error'];
 
-const COLOR_MAP = {
+const COLOR_MAP: Record<string, string> = {
 	pending: '#666',
 	running: '#44cc44',
 	paused: '#ccaa44',
@@ -15,7 +15,7 @@ const COLOR_MAP = {
 	error: '#ff4444',
 };
 
-const VARIANT_MAP = {
+const VARIANT_MAP: Record<string, string> = {
 	pending: 'default',
 	running: 'primary',
 	paused: 'warning',
@@ -24,10 +24,10 @@ const VARIANT_MAP = {
 	error: 'error',
 };
 
-export function statusColor(status) {
+export function statusColor(status: string) {
 	return COLOR_MAP[status] || '#666';
 }
 
-export function statusVariant(status) {
+export function statusVariant(status: string) {
 	return VARIANT_MAP[status] || 'default';
 }

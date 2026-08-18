@@ -96,15 +96,22 @@
 		saving = false;
 	}
 
+	/** @param {MouseEvent} e */
 	function handleOverlayClick(e) {
 		if (e.target === e.currentTarget) onClose();
 	}
 
+	/** @param {KeyboardEvent} e */
 	function handleKeydown(e) {
-		if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+		if (e.key === 'Enter' && (/** @type {HTMLElement} */ (e.target)).tagName !== 'TEXTAREA') {
 			e.preventDefault();
 			handleSave();
 		}
+	}
+
+	/** @param {any} v */
+	function handleTransportChange(v) {
+		transport = v;
 	}
 </script>
 
@@ -133,7 +140,7 @@
 		</label>
 		<div class="field">
 			<span>Transport</span>
-			<MaterialSelect value={transport} options={transportOptions} onChange={(v) => (transport = v)} />
+			<MaterialSelect value={transport} options={transportOptions} onChange={(/** @type {string} */ v) => (transport = v)} />
 		</div>
 
 		{#if isHttp()}

@@ -110,7 +110,7 @@ export function getMarkdownRenderer(): Promise<MarkdownIt> {
  * @param {boolean} [isStreaming]
  * @returns {string}
  */
-export function renderMarkdown(text, isStreaming = false) {
+export function renderMarkdown(text: string, isStreaming = false) {
 	if (!md) return '';
 	streaming = isStreaming;
 	try {

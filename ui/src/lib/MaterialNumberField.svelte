@@ -3,6 +3,9 @@
 
 	let stepDecimals = $derived(String(step).split('.')[1]?.length ?? 0);
 
+	/**
+	 * @param {number} v
+	 */
 	function roundToStep(v) {
 		let factor = 10 ** stepDecimals;
 		return Math.round(v * factor) / factor;
@@ -20,6 +23,9 @@
 		onChange?.(next);
 	}
 
+	/**
+	 * @param {any} e
+	 */
 	function handleInput(e) {
 		let val = e.target.value === '' ? 0 : Number(e.target.value);
 		if (min !== undefined) val = Math.max(val, Number(min));

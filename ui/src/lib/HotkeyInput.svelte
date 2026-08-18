@@ -21,6 +21,9 @@
 		listening = false;
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleKeydown(e) {
 		if (!listening) return;
 		// Prevent the browser from acting on the combo while capturing.

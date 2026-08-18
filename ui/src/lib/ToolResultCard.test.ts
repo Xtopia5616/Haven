@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import ToolResultCard, { canRenderToolResult, parseToolResult } from './ToolResultCard.svelte';
 
-const searchJson = (results, extra = {}) =>
+const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
 
 describe('canRenderToolResult', () => {

@@ -2,7 +2,7 @@ import { writable } from 'svelte/store';
 import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 
-export const sessionStore = writable([]);
+export const sessionStore = writable<any[]>([]);
 
 /**
  * Action registry (background actions + pending scheduled actions):
@@ -16,20 +16,20 @@ export const sessionStore = writable([]);
  * `action:finished` events (registered in +layout.svelte, hydrated via
  * `refreshActions`).
  */
-export const actionStore = writable({});
+export const actionStore = writable<Record<string, unknown>>({});
 
 /** Cap terminal entries so a long session cannot grow the store unbounded. */
 const ACTION_STORE_MAX = 64;
 
-function actionKey(payload) {
+function actionKey(payload: { id?: string; action_id?: string }) {
 	return payload?.id || payload?.action_id || null;
 }
 
-export function upsertAction(payload) {
-	const key = actionKey(payload);
+export function upsertAction(payload: Record<string, unknown>) {
+	const key = actionKey(payload as { id?: string; action_id?: string });
 	if (!key) return;
 	actionStore.update((m) => {
-		const prev = m[key] || {};
+		const prev = (m as Record<string, Record<string, unknown>>)[key] || {};
 		const next = {
 			...prev,
 			...payload,
@@ -49,7 +49,7 @@ export function upsertAction(payload) {
 }
 
 /** Drop a action (fired or cancelled scheduled action, action removed server-side). */
-export function removeAction(id) {
+export function removeAction(id: string) {
 	if (!id) return;
 	actionStore.update((m) => {
 		if (!(id in m)) return m;
@@ -68,10 +68,10 @@ export async function refreshActions() {
 		// events, fired scheduled actions leave the pending list), so they must
 		// not linger as stale rows.
 		actionStore.update((m) => {
-			const next = {};
+			const next: Record<string, Record<string, unknown>> = {};
 			for (const row of rows) {
-				const key = actionKey(row);
-				if (key) next[key] = { ...(m[key] || {}), ...row, id: key };
+				const key = actionKey(row as { id?: string; action_id?: string });
+				if (key) next[key] = { ...((m[key] as Record<string, unknown>) || {}), ...(row as Record<string, unknown>), id: key };
 			}
 			return next;
 		});
@@ -80,7 +80,7 @@ export async function refreshActions() {
 	}
 }
 
-export async function cancelAction(id, kind = 'background') {
+export async function cancelAction(id: string, kind = 'background') {
 	return invoke('cancel_action', { actionId: id, kind });
 }
 
@@ -93,7 +93,7 @@ export async function cancelAction(id, kind = 'background') {
  * @param {number} [limit]
  * @returns {Promise<Array>}
  */
-export async function refreshActionHistory(kind = 'scheduled', limit = 50) {
+export async function refreshActionHistory(kind: string | null = 'scheduled', limit = 50) {
 	try {
 		const rows = await invoke('list_action_history', { kind, limit });
 		return Array.isArray(rows) ? rows : [];
@@ -104,7 +104,7 @@ export async function refreshActionHistory(kind = 'scheduled', limit = 50) {
 }
 
 /** Delete a persisted action row (history cleanup) by id. */
-export async function deleteAction(id) {
+export async function deleteAction(id: string) {
 	return invoke('delete_action', { actionId: id });
 }
 
@@ -136,22 +136,22 @@ export function addNotification(msg: string, type = 'info', duration = 3000) {
 // Per-session message storage: { [sessionId: string]: Message[] }
 // Special key '_draft' holds messages that haven't been assigned to a session yet
 // (e.g. transcribed text before the session is created).
-export const sessionMessagesStore = writable<Record<string, any>>({});
+export const sessionMessagesStore = writable<Record<string, any[]>>({});
 
 export const DRAFT_KEY = '_draft';
 
-export function setSessionMessages(sessionId, messages) {
+export function setSessionMessages(sessionId: string, messages: unknown[]) {
 	sessionMessagesStore.update((m) => ({ ...m, [sessionId]: messages }));
 }
 
-export function addSessionMessage(sessionId, msg) {
+export function addSessionMessage(sessionId: string, msg: unknown) {
 	sessionMessagesStore.update((m) => {
 		const list = m[sessionId] || [];
 		return { ...m, [sessionId]: [...list, msg] };
 	});
 }
 
-export function updateSessionMessages(sessionId, fn) {
+export function updateSessionMessages(sessionId: string, fn: (list: any[]) => any[]) {
 	sessionMessagesStore.update((m) => {
 		const list = m[sessionId] || [];
 		const nextList = fn(list);
@@ -166,7 +166,7 @@ export function updateSessionMessages(sessionId, fn) {
 // Track per-step streaming sequence numbers to detect and reject duplicates
 // from Tauri event replay after page navigation.
 const seqMap = new Map();
-export function seqLastSeen(stepId, seq) {
+export function seqLastSeen(stepId: string, seq: number) {
 	if (seq == null) return false;
 	const last = seqMap.get(stepId) ?? -1;
 	if (seq <= last) return true;
@@ -175,17 +175,17 @@ export function seqLastSeen(stepId, seq) {
 }
 
 /** Remove seq tracking for a completed step to keep the map bounded. */
-export function pruneSeq(stepId) {
+export function pruneSeq(stepId: string) {
 	seqMap.delete(stepId);
 }
 
-export function clearSeqMap(sessionId) {
+export function clearSeqMap(sessionId: string) {
 	for (const key of seqMap.keys()) {
 		if (key.includes(sessionId)) seqMap.delete(key);
 	}
 }
 
-export function clearSessionMessages(sessionId) {
+export function clearSessionMessages(sessionId: string) {
 	if (!sessionId) return;
 	clearSeqMap(sessionId);
 	sessionMessagesStore.update((m) => {
@@ -200,7 +200,7 @@ export function clearSessionMessages(sessionId) {
 // builder assigns them the FOLLOWING assistant's stepNumber — cutting
 // ON a user message would drop user input from the view even though
 // the backend kept it).
-function cutIndexForStep(list, targetStep) {
+function cutIndexForStep(list: any[], targetStep: number) {
 	return list.findIndex(
 		(x) => x.stepNumber != null && x.stepNumber >= targetStep && x.role !== 'user',
 	);
@@ -221,10 +221,10 @@ function cutIndexForStep(list, targetStep) {
  * though the backend kept it in the session (rollback only discards
  * messages persisted after the branch point).
  */
-export function truncateSessionMessages(sessionId, targetStep) {
+export function truncateSessionMessages(sessionId: string, targetStep: number) {
 	if (!sessionId) return;
 	sessionMessagesStore.update((m) => {
-		const list = m[sessionId];
+		const list = m[sessionId] as unknown[] | undefined;
 		if (!list || list.length === 0) return m;
 		const cutIdx = cutIndexForStep(list, targetStep);
 		if (cutIdx === -1) return m;
@@ -240,7 +240,7 @@ export function truncateSessionMessages(sessionId, targetStep) {
 
 // Move all messages from `fromKey` to `toKey` in a single store update.
 // No-op when `fromKey` is missing, empty, or equal to `toKey`.
-function _moveMessages(m, fromKey, toKey) {
+function _moveMessages(m: Record<string, any[]>, fromKey: string, toKey: string) {
 	if (!fromKey || !toKey || fromKey === toKey) return m;
 	const list = m[fromKey];
 	if (!list || list.length === 0) return m;
@@ -266,7 +266,7 @@ function _moveMessages(m, fromKey, toKey) {
 }
 
 // Move draft messages to a real session (called when session:created fires).
-export function adoptDraftMessages(sessionId) {
+export function adoptDraftMessages(sessionId: string) {
 	sessionMessagesStore.update((m) => _moveMessages(m, DRAFT_KEY, sessionId));
 }
 
@@ -278,7 +278,7 @@ export function adoptDraftMessages(sessionId) {
  * message would stay hidden in the old key while the new session only shows the
  * agent's reply.
  */
-export function moveSessionMessages(fromSessionId, toSessionId) {
+export function moveSessionMessages(fromSessionId: string, toSessionId: string) {
 	sessionMessagesStore.update((m) => _moveMessages(m, fromSessionId, toSessionId));
 }
 
@@ -320,13 +320,25 @@ export const newSessionIntentStore = writable(false);
  */
 export const sessionTokenStatsStore = writable<Record<string, any>>({});
 
+/** One LLM call's usage detail row. */
+export interface LlmUsage {
+	step_number?: number | null;
+	role?: string;
+	model?: string | null;
+	prompt_tokens?: number;
+	completion_tokens?: number;
+	total_tokens?: number;
+	cost_usd?: number | null;
+	has_cost?: boolean;
+	duration_ms?: number | null;
+	created_at?: string;
+}
+
 /**
  * Update (or insert) the token-stats entry for a session. Replaces the whole
  * session entry so stale fields don't accumulate across event variants.
- * @param {string} sessionId
- * @param {object} stats
  */
-export function updateSessionTokenStats(sessionId, stats) {
+export function updateSessionTokenStats(sessionId: string, stats: Record<string, unknown>) {
 	if (!sessionId) return;
 	sessionTokenStatsStore.update((m) => ({
 		...m,
@@ -335,7 +347,7 @@ export function updateSessionTokenStats(sessionId, stats) {
 }
 
 /** Clear token stats for a finished/reset session. */
-export function clearSessionTokenStats(sessionId) {
+export function clearSessionTokenStats(sessionId: string) {
 	if (!sessionId) return;
 	sessionTokenStatsStore.update((m) => {
 		if (!(sessionId in m)) return m;
@@ -359,7 +371,11 @@ export function clearSessionTokenStats(sessionId) {
  * @param {object} usage - { prompt_tokens, completion_tokens, total_tokens, cost_usd, has_cost }
  * @param {boolean} [estimated]
  */
-export function restoreSessionTokenStats(sessionId, usage, estimated = false) {
+export function restoreSessionTokenStats(
+	sessionId: string,
+	usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cost_usd?: number | null; has_cost?: boolean },
+	estimated = false,
+) {
 	if (!sessionId || !usage) return;
 	const hasCost = !!usage.has_cost && usage.cost_usd != null;
 	updateSessionTokenStats(sessionId, {
@@ -386,7 +402,7 @@ export function restoreSessionTokenStats(sessionId, usage, estimated = false) {
  * created_at }.
  * @type {import('svelte/store').Writable<Record<string, Array<object>>>}
  */
-export const sessionLlmUsageStore = writable({});
+export const sessionLlmUsageStore = writable<Record<string, LlmUsage[]>>({});
 
 /**
  * Restore the per-call usage-detail list for a session (from
@@ -395,16 +411,14 @@ export const sessionLlmUsageStore = writable({});
  * and the stale detail for discarded steps must not linger in the store
  * (mirrors restoreSessionTokenStats's unconditional overwrite). Only `undefined`
  * (backend predates the field) is ignored.
- * @param {string} sessionId
- * @param {Array<object>} [usageList]
  */
-export function restoreSessionLlmUsage(sessionId, usageList) {
+export function restoreSessionLlmUsage(sessionId: string, usageList: LlmUsage[]) {
 	if (!sessionId || !Array.isArray(usageList)) return;
 	sessionLlmUsageStore.update((m) => ({ ...m, [sessionId]: usageList }));
 }
 
 /** Clear per-call usage detail for a finished/reset session. */
-export function clearSessionLlmUsage(sessionId) {
+export function clearSessionLlmUsage(sessionId: string) {
 	if (!sessionId) return;
 	sessionLlmUsageStore.update((m) => {
 		if (!(sessionId in m)) return m;
@@ -422,7 +436,7 @@ export function clearSessionLlmUsage(sessionId) {
  * @param {number} n
  * @returns {string}
  */
-export function formatTokenCount(n) {
+export function formatTokenCount(n: number) {
 	const v = Number(n) || 0;
 	if (v < 1_000) return String(v);
 	if (v < 10_000) {
@@ -444,7 +458,7 @@ export function formatTokenCount(n) {
  *   1.5        -> "$1.50"
  * @param {number | null | undefined} v
  */
-export function formatCostUsd(v) {
+export function formatCostUsd(v: number | null | undefined) {
 	if (v == null || !Number.isFinite(v)) return null;
 	if (v === 0) return '$0.00';
 	if (v < 0.01) return `$${v.toFixed(4)}`;
@@ -458,7 +472,7 @@ export function formatCostUsd(v) {
  * ChatBubble rendering.
  * @param {{ media_type: string, data: string }} att
  */
-export function imageDataUrl(att) {
+export function imageDataUrl(att: { media_type: string; data: string }) {
 	return `data:${att.media_type};base64,${att.data}`;
 }
 
@@ -471,7 +485,7 @@ export function imageDataUrl(att) {
  * @param {Date|string|number} input
  * @returns {string}
  */
-export function formatMessageTime(input) {
+export function formatMessageTime(input: Date | string | number) {
 	const d = input instanceof Date ? input : new Date(input);
 	const now = new Date();
 	const sameDay =

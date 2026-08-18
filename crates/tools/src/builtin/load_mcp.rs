@@ -7,8 +7,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm_tool_name;
-use crate::{Tool, ToolResult};
+use crate::{McpToolAdapter, Tool, ToolResult};
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
@@ -80,15 +79,12 @@ impl Tool for LoadMcpTool {
             })?;
 
         let tools = client.tools_cache().await;
+        // Schemas come from the per-tool McpToolAdapter's tool_def() so the
+        // name / description / input_schema advertised to the model are the
+        // exact ones the registered session adapter validates and executes.
         let tool_schemas: Vec<Value> = tools
             .into_iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": llm_tool_name(&format!("mcp::{}::{}", server_name, t.name)),
-                    "description": t.description,
-                    "input_schema": t.input_schema,
-                })
-            })
+            .map(|info| McpToolAdapter::new(client.clone(), server_name, info).tool_def().json())
             .collect();
 
         let mut result = serde_json::json!({

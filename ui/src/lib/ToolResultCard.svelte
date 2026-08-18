@@ -128,7 +128,7 @@
 	/**
 	 * Match a JSON observation against a dedicated renderer shape.
 	 * @param {string} toolName
-	 * @param {object} data
+	 * @param {any} data
 	 * @returns {object | null}
 	 */
 	function customShape(toolName, data) {
@@ -207,7 +207,7 @@
 		lastStreaming = streaming;
 	});
 	let kind = $derived(parsed?.kind ?? null);
-	let data = $derived(parsed?.data ?? {});
+	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
 	// The `raw` kind carries data: null for plain text and the parsed JSON
 	// value for arrays/primitives; `data` above would collapse the null to {},
 	// so resolve the body text here against the original `parsed` payload.
@@ -241,7 +241,7 @@
 	let processFilter = $state('');
 	let processShowAll = $state(false);
 	const PROC_VISIBLE_LIMIT = 50;
-	let processList = $derived(Array.isArray(data.processes) ? data.processes : []);
+	let processList = $derived(/** @type {any[]} */ (Array.isArray(data.processes) ? data.processes : []));
 	let filteredProcesses = $derived(
 		processFilter
 			? processList.filter((p) =>
@@ -257,10 +257,12 @@
 			: filteredProcesses.slice(0, PROC_VISIBLE_LIMIT),
 	);
 	let maxProcMem = $derived(processList.reduce((m, p) => Math.max(m, Number(p.memory) || 0), 0));
+	/** @param {any} p */
 	function memPct(p) {
 		if (!maxProcMem) return 0;
 		return Math.min(100, ((Number(p.memory) || 0) / maxProcMem) * 100);
 	}
+	/** @type {Record<string, string>} */
 	const PROC_STATUS_LABELS = {
 		Run: '运行中',
 		Sleep: '休眠',
@@ -271,9 +273,11 @@
 		Tracing: '跟踪',
 		Unknown: '未知',
 	};
+	/** @param {any} status */
 	function procStatusLabel(status) {
 		return PROC_STATUS_LABELS[String(status ?? '')] ?? String(status ?? '未知');
 	}
+	/** @param {any} status */
 	function procStatusClass(status) {
 		const s = String(status ?? '').toLowerCase();
 		if (s.includes('run')) return 'running';
@@ -285,7 +289,7 @@
 
 	// ── Environment renderer state ─────────────────────────────────────────
 	let envFilter = $state('');
-	let envList = $derived(Array.isArray(data.variables) ? data.variables : []);
+	let envList = $derived(/** @type {any[]} */ (Array.isArray(data.variables) ? data.variables : []));
 	let filteredEnv = $derived(
 		envFilter
 			? envList.filter((v) => {
@@ -301,6 +305,7 @@
 				})
 			: envList,
 	);
+	/** @param {string} text */
 	async function copyEnvValue(text) {
 		try {
 			await navigator.clipboard.writeText(text);
@@ -312,6 +317,7 @@
 	// Right-click context menu: copy the raw observation text.
 	let ctxMenu = $state({ open: false, x: 0, y: 0 });
 
+	/** @param {MouseEvent} e */
 	function handleContextMenu(e) {
 		e.preventDefault();
 		e.stopPropagation();

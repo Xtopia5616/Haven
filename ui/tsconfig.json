@@ -10,7 +10,7 @@
 		"skipLibCheck": true,
 		"sourceMap": true,
 		"strict": true,
-		"noImplicitAny": false,
+		"noImplicitAny": true,
 		"moduleResolution": "bundler"
 	}
 }

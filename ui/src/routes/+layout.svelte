@@ -43,6 +43,7 @@
 	let activeTab = $state(initialTab);
 	// `visited` gates the first mount of each view so the app boots with only
 	// the chat view; once a tab has been opened its view is kept alive.
+	/** @type {Record<string, boolean>} */
 	let visited = $state({
 		chat: true,
 		tools: initialTab === 'tools',
@@ -50,6 +51,7 @@
 		settings: initialTab === 'settings',
 	});
 
+	/** @param {string} id */
 	function switchTab(id) {
 		if (id === activeTab) return;
 		activeTab = id;
@@ -69,8 +71,8 @@
 		vadState: 'silent',
 	});
 	let duration = $state(0);
-	let durationTimer;
-	let processingTimer;
+	let durationTimer = /** @type {ReturnType<typeof setInterval> | null} */ (null);
+	let processingTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 	let modelState = $state('ready'); // synced from modelStateStore on mount
 	// Whether ANY session is busy (pending/running). The model-state events only
 	// fire while chunks flow; a session whose LLM call is stuck (idle timeout,
@@ -90,8 +92,8 @@
 	// `check_llm_connection`: 'ready' | 'disconnected' | 'unconfigured'.
 	// `null` = probe in-flight / never completed (show 检测中, never a false
 	// 就绪).
-	let llmConnected = $state(null);
-	let llmProbeTimer;
+	let llmConnected = /** @type {string | null} */ ($state(null));
+	let llmProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
 	let llmProbeInFlight = false;
 	let llmProbeFailureStreak = 0;
 	const LLM_PROBE_INTERVAL_MS = 15000;
@@ -177,11 +179,12 @@
 			return;
 		}
 		const tabParam = url.searchParams.get('tab');
-		const t = TAB_IDS.includes(tabParam) ? tabParam : 'chat';
+		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
 		activeTab = t;
 		visited[t] = true;
 	});
 
+	/** @param {object} patch */
 	function setOverlay(patch) {
 		recordingOverlay.update((v) => ({ ...v, ...patch }));
 	}
@@ -201,6 +204,7 @@
 
 	// Reset the recording overlay to its "hidden" state. Use after the user
 	// finishes a session, errors out, or is force-stopped by mute/tray.
+	/** @param {string | null} [reason] */
 	function resetOverlay(reason = null) {
 		setOverlay({ visible: false, isRecording: false, processing: false, reason });
 		stopTimer();
@@ -256,7 +260,7 @@
 
 	// Completed-task history (terminal background rows + fired scheduled rows),
 	// fetched whenever the panel opens so it reflects the persisted table.
-	let actionHistory = $state([]);
+	let actionHistory = /** @type {Array<any>} */ ($state([]));
 	$effect(() => {
 		if (!actionMenuOpen) return;
 		refreshActionHistory(null, 50).then((rows) => (actionHistory = rows));
@@ -274,7 +278,7 @@
 
 	// Session titles for background-action rows; mirrored from the chat page's
 	// loadSessions().
-	let sessions = $state([]);
+	let sessions = /** @type {Array<any>} */ ($state([]));
 	$effect(() => syncStore(sessionStore, (v) => (sessions = v)));
 
 	// Foreground running tasks: active (non-terminal) conversations.
@@ -292,6 +296,7 @@
 		return () => clearInterval(t);
 	});
 
+	/** @param {string} id */
 	async function handleDeleteHistory(id) {
 		try {
 			await deleteAction(id);
@@ -302,6 +307,7 @@
 		}
 	}
 
+	/** @param {string} status */
 	function actionStatusLabel(status) {
 		switch (status) {
 			case 'running':
@@ -317,6 +323,7 @@
 		}
 	}
 
+	/** @param {string} status */
 	function actionStatusColor(status) {
 		switch (status) {
 			case 'running':
@@ -332,12 +339,14 @@
 		}
 	}
 
+	/** @param {any} action */
 	function sessionTitleFor(action) {
 		if (!action.session_id) return '';
 		const t = sessions.find((x) => x.id === action.session_id);
 		return t?.title || t?.input || action.session_id;
 	}
 
+	/** @param {any} action */
 	function actionDuration(action) {
 		const start = new Date(action.started_at).getTime();
 		if (isNaN(start)) return '';
@@ -352,6 +361,7 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
+	/** @param {string} actionId @param {string} [kind] */
 	async function handleCancelAction(actionId, kind = 'background') {
 		try {
 			const ok = await cancelAction(actionId, kind);
@@ -371,6 +381,7 @@
 		}
 	}
 
+	/** @param {string} dueAt */
 	function scheduledActionCountdown(dueAt) {
 		const due = new Date(dueAt).getTime();
 		if (isNaN(due)) return '';
@@ -385,6 +396,7 @@
 		return `${Math.floor(hrs / 24)}天后`;
 	}
 
+	/** @param {any} h */
 	function formatHistoryTime(h) {
 		const ts = h.finished_at || h.started_at || h.due_at;
 		if (!ts) return '';
@@ -393,17 +405,18 @@
 		return formatMessageTime(d);
 	}
 
+	/** @param {MouseEvent} e */
 	function handleWindowClick(e) {
 		if (actionMenuOpen) {
 			const menu = document.querySelector('.status-action-menu');
 			const chip = document.querySelector('.status-chip-btn');
-			if (menu && chip && !menu.contains(e.target) && !chip.contains(e.target)) {
+			if (menu && chip && !menu.contains(/** @type {Node} */ (e.target)) && !chip.contains(/** @type {Node} */ (e.target))) {
 				actionMenuOpen = false;
 			}
 		}
 	}
 
-	let eventRegistrations = null;
+	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (null);
 
 	onMount(async () => {
 		// Load notify config + hotkey binding in background — don't block

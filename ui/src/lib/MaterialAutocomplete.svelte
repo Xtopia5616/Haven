@@ -41,6 +41,9 @@
 		onChange?.(text);
 	}
 
+	/**
+	 * @param {any} opt
+	 */
 	function pick(opt) {
 		text = opt.value;
 		onChange?.(opt.value);
@@ -48,6 +51,9 @@
 		inputRef?.focus();
 	}
 
+	/**
+	 * @param {KeyboardEvent} e
+	 */
 	function handleKeydown(e) {
 		if (e.key === 'Escape') {
 			open = false;

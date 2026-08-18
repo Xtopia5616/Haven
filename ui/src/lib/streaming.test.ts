@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { StreamMessage } from './streaming.ts';
 import { accumulateStreamChunk, applyThoughtSnap, webSearchId, finalizeStreamBlocks, newToolMessage } from './streaming.ts';
 
 const STEP_ID = 'msg-thought-1';
@@ -11,10 +12,17 @@ const BASE = {
 	time: '10:00',
 };
 
-const chunk = (messages, delta, opts = {}) =>
-	accumulateStreamChunk(messages, { ...BASE, delta, ...opts });
+const chunk = (
+	messages: StreamMessage[],
+	delta: string,
+	opts: { msgType?: string; stepNumber?: number; runId?: number; time?: string } = {},
+): StreamMessage[] => accumulateStreamChunk(messages, { ...BASE, delta, ...opts });
 
-const snap = (messages, thought, opts = {}) =>
+const snap = (
+	messages: StreamMessage[],
+	thought: string,
+	opts: { reasoningId?: string; stepNumber?: number; runId?: number; time?: string } = {},
+): StreamMessage[] =>
 	applyThoughtSnap(messages, {
 		messageId: STEP_ID,
 		reasoningId: REASONING_ID,
@@ -25,7 +33,7 @@ const snap = (messages, thought, opts = {}) =>
 		...opts,
 	});
 
-const last = (messages) => messages[messages.length - 1];
+const last = (messages: StreamMessage[]) => messages[messages.length - 1];
 
 describe('accumulateStreamChunk (thought)', () => {
 	it('creates a streaming message for the first chunk', () => {
@@ -183,7 +191,7 @@ describe('accumulateStreamChunk (reasoning)', () => {
 			runId: 1,
 			streaming: false,
 		};
-		let m = [run1Thought];
+		let m: StreamMessage[] = [run1Thought];
 		m = chunk(m, '这次的回答。');
 		m = accumulateStreamChunk(m, { ...base, delta: '这次的推理' });
 		expect(m.map((x) => x.id)).toEqual([run1Thought.id, REASONING_ID, STEP_ID]);
@@ -281,7 +289,7 @@ describe('applyThoughtSnap', () => {
 			content: '先推理',
 			streaming: true,
 		};
-		let m = [reasoning];
+		let m: StreamMessage[] = [reasoning];
 		m = chunk(m, '回答文字。');
 		const out = snap(m, '回答文字。');
 		expect(out.map((x) => x.id)).toEqual([REASONING_ID, STEP_ID]);
@@ -297,7 +305,7 @@ describe('applyThoughtSnap', () => {
 			content: '思考中',
 			streaming: true,
 		};
-		let m = [user, reasoning];
+		let m: StreamMessage[] = [user, reasoning];
 		m = chunk(m, '回答。');
 		const out = snap(m, '回答。');
 		expect(out.map((x) => x.id)).toEqual(['user-1', REASONING_ID, STEP_ID]);
@@ -321,7 +329,7 @@ describe('applyThoughtSnap', () => {
 			streaming: false,
 			stepNumber: 1,
 		};
-		let m = [user, reasoning];
+		let m: StreamMessage[] = [user, reasoning];
 		m = chunk(m, '我先查一下。');
 		m = [...m, tool];
 		const out = snap(m, '我先查一下。');
@@ -355,7 +363,7 @@ describe('applyThoughtSnap', () => {
 			content: '完整的回答。',
 			streaming: false,
 		};
-		let m = [dbCopy];
+		let m: StreamMessage[] = [dbCopy];
 		m = chunk(m, '完整的回');
 		m = chunk(m, '答。');
 		const out = snap(m, '完整的回答。');
