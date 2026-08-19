@@ -1,6 +1,13 @@
 use crate::db::Database;
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use haven_common::types::MessageAttachment;
+
+/// Milliseconds-precision RFC3339: rows written within the same second must
+/// remain distinguishable for the review timeline rebuild (the messages and
+/// session_steps tables are interleaved by created_at on read).
+pub(crate) fn now_rfc3339_millis() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
 
 /// Map a `messages` row (9 columns: id, session_id, role, content, message_type,
 /// created_at, tool_call_id, attachments, voice) into a `Message`. Shared by
@@ -95,7 +102,15 @@ impl Database {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
-        let now = Utc::now().to_rfc3339();
+        // Strictly monotonic per session: two writes landing within the same
+        // millisecond (or a clock step backwards) must stay distinguishable —
+        // rollback's `delete_messages_after` deletes with `created_at > ?`
+        // and would otherwise fail to discard the later message.
+        let now = now_rfc3339_millis();
+        let created_at = match self.get_last_message_created_at(session_id) {
+            Some(last) if last >= now => Self::bump_millis(&last),
+            _ => now,
+        };
         let conn = self.conn();
         conn.execute(
             "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice)
@@ -106,7 +121,7 @@ impl Database {
                 role,
                 content,
                 message_type,
-                now,
+                created_at,
                 tool_call_id,
                 Self::serialize_attachments(attachments),
                 voice,
@@ -120,11 +135,22 @@ impl Database {
             role: role.into(),
             content: content.into(),
             message_type: message_type.map(String::from),
-            created_at: now,
+            created_at,
             tool_call_id: tool_call_id.map(String::from),
             attachments: attachments.to_vec(),
             voice,
         })
+    }
+
+    /// Step a stored `created_at` forward by one millisecond, keeping strict
+    /// ordering when a new write collides with the session's latest row.
+    /// Falls back to the current time when the stored value cannot be parsed.
+    fn bump_millis(last: &str) -> String {
+        match chrono::DateTime::parse_from_rfc3339(last) {
+            Ok(ts) => (ts + chrono::Duration::milliseconds(1))
+                .to_rfc3339_opts(SecondsFormat::Millis, true),
+            Err(_) => now_rfc3339_millis(),
+        }
     }
 
     fn serialize_attachments(attachments: &[MessageAttachment]) -> Option<String> {
@@ -185,6 +211,31 @@ impl Database {
         Ok(msgs)
     }
 
+    /// Return every message persisted strictly after the given timestamp
+    /// (ascending). Resume uses this to recover inputs that landed after the
+    /// restored snapshot (supplements/steering/answers persisted to the DB
+    /// while paused or after a crash): anything newer than `saved_at` cannot
+    /// be in the snapshot's canonical, so no content comparison is needed.
+    pub fn get_session_messages_since(
+        &self,
+        session_id: &str,
+        since: &str,
+    ) -> anyhow::Result<Vec<Message>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
+                    attachments, voice
+             FROM messages WHERE session_id = ?1 AND created_at > ?2
+             ORDER BY created_at ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![session_id, since], map_message_row)?;
+        let mut msgs = Vec::new();
+        for row in rows {
+            msgs.push(row?);
+        }
+        Ok(msgs)
+    }
+
     pub fn delete_session_messages(&self, session_id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -216,6 +267,27 @@ impl Database {
         conn.execute(
             "DELETE FROM messages WHERE id = ?1 AND session_id = ?2",
             rusqlite::params![message_id, session_id],
+        )?;
+        self.cache_invalidate_messages(session_id);
+        Ok(())
+    }
+
+    /// Forward-date a message row's `created_at`. Mid-turn interjections
+    /// (steering) are persisted at SUBMIT time — before the interrupted
+    /// step's thought row lands — so the review rebuild would order them
+    /// before the text they interrupted. The ReAct loop calls this when it
+    /// actually injects the message, moving the row to its logical position
+    /// (after the interrupted thought, before the answer to it).
+    pub fn update_message_created_at(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        created_at: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "UPDATE messages SET created_at = ?1 WHERE id = ?2 AND session_id = ?3",
+            rusqlite::params![created_at, message_id, session_id],
         )?;
         self.cache_invalidate_messages(session_id);
         Ok(())
@@ -340,6 +412,22 @@ mod tests {
         let msgs = db.get_session_messages_limit(&tid, 1).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "world");
+    }
+
+    #[test]
+    fn get_session_messages_since_returns_only_newer_rows() {
+        let db = test_db();
+        let tid = test_session(&db);
+        let first = db.add_message(&tid, "user", "before", None, None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let cutoff = now_rfc3339_millis();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let second = db.add_message(&tid, "user", "after", None, None).unwrap();
+
+        let since = db.get_session_messages_since(&tid, &cutoff).unwrap();
+        assert_eq!(since.len(), 1, "only rows after the cutoff");
+        assert_eq!(since[0].id, second.id);
+        assert_ne!(since[0].id, first.id, "the earlier row must be excluded");
     }
 
     #[test]
@@ -481,6 +569,40 @@ mod tests {
         db.delete_messages_from(&tid, &m1.created_at).unwrap();
         let msgs = db.get_session_messages(&tid).unwrap();
         assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn update_message_created_at_reorders_row_after_other_messages() {
+        let db = test_db();
+        let tid = test_session(&db);
+        // The steering row is persisted at submit; the interrupted step's
+        // thought row lands later. Forward-dating the steering row must
+        // move it AFTER the thought row in read order.
+        let steering = db
+            .add_message(&tid, "user", "steering", None, None)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let thought = db
+            .add_message(&tid, "assistant", "被打断的思考", None, None)
+            .unwrap();
+        let order_before: Vec<String> = db
+            .get_session_messages(&tid)
+            .unwrap()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        assert_eq!(order_before, vec![steering.id.clone(), thought.id.clone()]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let now = now_rfc3339_millis();
+        db.update_message_created_at(&tid, &steering.id, &now)
+            .unwrap();
+        let order_after: Vec<String> = db
+            .get_session_messages(&tid)
+            .unwrap()
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
+        assert_eq!(order_after, vec![thought.id.clone(), steering.id.clone()]);
     }
 
     #[test]

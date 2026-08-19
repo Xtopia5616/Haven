@@ -7,6 +7,37 @@ use crate::{Tool, ToolResult};
 
 pub struct RegistryTool;
 
+/// Registry operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryOperation {
+    Get,
+    Set,
+    Delete,
+    List,
+}
+
+/// Typed parameters for `RegistryTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `RegistryTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct RegistryParams {
+    /// Operation to perform; defaults to `list`.
+    #[serde(default)]
+    pub operation: Option<RegistryOperation>,
+    /// Registry path, e.g. HKCU:\Software\Microsoft\Windows\CurrentVersion.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Value name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Value data (for set).
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Value type for set.
+    #[serde(default, rename = "type")]
+    pub value_type: Option<String>,
+}
+
 /// Normalize a registry path into `(hive_upper, subpath)`.
 ///
 /// Accepts many common formats:
@@ -104,7 +135,22 @@ impl Tool for RegistryTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `RegistryParams`,
+    /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let params = crate::tool::parse_tool_input::<RegistryParams>(&self.name(), input)?;
+        self.run(params, cancel).await
+    }
+}
+
+impl RegistryTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: RegistryParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
@@ -114,9 +160,9 @@ impl Tool for RegistryTool {
             use winreg::RegKey;
             use winreg::enums::*;
 
-            let op = input["operation"].as_str().unwrap_or("list");
-            let path = input["path"]
-                .as_str()
+            let op = params.operation.unwrap_or(RegistryOperation::List);
+            let path = params
+                .path
                 .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
             // Parse hive from path using the shared normalizer.
@@ -134,46 +180,46 @@ impl Tool for RegistryTool {
             }
 
             match op {
-                "get" => {
-                    let name = input["name"]
-                        .as_str()
+                RegistryOperation::Get => {
+                    let name = params
+                        .name
                         .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
-                    let (hive, subpath) = parse_hive(path)?;
+                    let (hive, subpath) = parse_hive(&path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_READ)?;
-                    let val: String = key.get_value(name)?;
+                    let val: String = key.get_value(&name)?;
                     Ok(ToolResult::ok(
                         serde_json::json!({"path": path, "name": name, "value": val}),
                     ))
                 }
-                "set" => {
-                    let name = input["name"]
-                        .as_str()
+                RegistryOperation::Set => {
+                    let name = params
+                        .name
                         .ok_or_else(|| anyhow::anyhow!("name is required for set"))?;
-                    let value = input["value"]
-                        .as_str()
+                    let value = params
+                        .value
                         .ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
-                    let val_type = input["type"].as_str().unwrap_or("String");
-                    let (hive, subpath) = parse_hive(path)?;
+                    let val_type = params.value_type.unwrap_or_else(|| "String".into());
+                    let (hive, subpath) = parse_hive(&path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_WRITE)?;
 
-                    match val_type {
-                        "String" => key.set_value(name, &value)?,
+                    match val_type.as_str() {
+                        "String" => key.set_value(&name, &value)?,
                         "DWord" => {
                             let v: u32 = value
                                 .parse()
                                 .map_err(|_| anyhow::anyhow!("invalid DWord value: {}", value))?;
-                            key.set_value(name, &v)?;
+                            key.set_value(&name, &v)?;
                         }
                         "QWord" => {
                             let v: u64 = value
                                 .parse()
                                 .map_err(|_| anyhow::anyhow!("invalid QWord value: {}", value))?;
-                            key.set_value(name, &v)?;
+                            key.set_value(&name, &v)?;
                         }
                         "Binary" => {
-                            let bytes = parse_hex_bytes(value)?;
+                            let bytes = parse_hex_bytes(&value)?;
                             key.set_raw_value(
-                                name,
+                                &name,
                                 &winreg::RegValue {
                                     bytes: bytes.into(),
                                     vtype: winreg::enums::REG_BINARY,
@@ -183,10 +229,10 @@ impl Tool for RegistryTool {
                         "ExpandString" => {
                             // REG_EXPAND_SZ: same text storage as String, but
                             // marked expandable so %VAR% resolves on read.
-                            let mut bytes = utf16le_bytes(value);
+                            let mut bytes = utf16le_bytes(&value);
                             bytes.extend_from_slice(&[0, 0]); // trailing NUL
                             key.set_raw_value(
-                                name,
+                                &name,
                                 &winreg::RegValue {
                                     bytes: bytes.into(),
                                     vtype: winreg::enums::REG_EXPAND_SZ,
@@ -203,7 +249,7 @@ impl Tool for RegistryTool {
                             }
                             bytes.extend_from_slice(&[0, 0]); // final empty string
                             key.set_raw_value(
-                                name,
+                                &name,
                                 &winreg::RegValue {
                                     bytes: bytes.into(),
                                     vtype: winreg::enums::REG_MULTI_SZ,
@@ -216,11 +262,11 @@ impl Tool for RegistryTool {
                         serde_json::json!({"set": true, "path": path, "name": name}),
                     ))
                 }
-                "delete" => {
-                    let (hive, subpath) = parse_hive(path)?;
+                RegistryOperation::Delete => {
+                    let (hive, subpath) = parse_hive(&path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_WRITE)?;
-                    if let Some(name) = input["name"].as_str() {
-                        key.delete_value(name)?;
+                    if let Some(name) = params.name {
+                        key.delete_value(&name)?;
                     } else {
                         drop(key);
                         hive.delete_subkey(&subpath)?;
@@ -229,8 +275,8 @@ impl Tool for RegistryTool {
                         serde_json::json!({"deleted": true, "path": path}),
                     ))
                 }
-                "list" => {
-                    let (hive, subpath) = parse_hive(path)?;
+                RegistryOperation::List => {
+                    let (hive, subpath) = parse_hive(&path)?;
                     let key = hive.open_subkey_with_flags(&subpath, KEY_READ)?;
                     let names: Vec<String> = key
                         .enum_values()
@@ -243,13 +289,12 @@ impl Tool for RegistryTool {
                         "subkeys": subkeys
                     })))
                 }
-                _ => anyhow::bail!("unknown registry operation: {}", op),
             }
         }
 
         #[cfg(not(windows))]
         {
-            let _ = input;
+            let _ = params;
             anyhow::bail!("registry operations are only supported on Windows")
         }
     }

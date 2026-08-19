@@ -379,6 +379,21 @@ impl SessionExecutor {
         tracing::info!("session concurrency ceiling: {} -> {}", cur, new_max);
     }
 
+    /// Remove the session from the cross-session messaging registry (graceful
+    /// shutdown: `agents_list` no longer shows it). Mailboxes and archives
+    /// are kept, so late messages remain deliverable (reported offline) and
+    /// the history survives a later re-registration. Fire-and-forget.
+    fn unregister_from_inbox(session_id: &str) {
+        let sid = session_id.to_string();
+        let sid_err = sid.clone();
+        tokio::spawn(async move {
+            let bus = haven_tools::inbox::InboxBus::default_root();
+            if let Ok(Err(e)) = tokio::task::spawn_blocking(move || bus.unregister(&sid)).await {
+                tracing::debug!("messaging unregister failed for {sid_err}: {e}");
+            }
+        });
+    }
+
     /// Persist a session status to the DB with a small number of retries. SQLite
     /// writes through the blocking pool can transiently fail with SQLITE_BUSY;
     /// a short retry turns that into extra latency instead of a diverged
@@ -635,17 +650,23 @@ impl SessionExecutor {
     }
 
     pub async fn add_supplement(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
-        self.add_supplement_with_attachments(session_id, text, &[])
+        self.add_supplement_with_attachments(session_id, text, &[], None)
             .await
     }
 
+    /// `message_id` is the id of the persisted user message row this
+    /// supplement's words were stored under (persisted at submit time by
+    /// `process_input`). The ReAct loop's `push_user_context` creates the
+    /// anchoring thought-step row under that same id, so review/rollback
+    /// resolve the step by id. `None` when no row was persisted.
     pub async fn add_supplement_with_attachments(
         &self,
         session_id: &str,
         text: &str,
         attachments: &[MessageAttachment],
+        message_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.push_supplement(session_id, text, attachments, false)
+        self.push_supplement(session_id, text, attachments, false, message_id)
             .await
     }
 
@@ -657,8 +678,9 @@ impl SessionExecutor {
         session_id: &str,
         text: &str,
         attachments: &[MessageAttachment],
+        message_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.push_supplement(session_id, text, attachments, true)
+        self.push_supplement(session_id, text, attachments, true, message_id)
             .await
     }
 
@@ -668,6 +690,7 @@ impl SessionExecutor {
         text: &str,
         attachments: &[MessageAttachment],
         is_answer: bool,
+        message_id: Option<String>,
     ) -> anyhow::Result<()> {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let Some(entry) = entry else {
@@ -675,9 +698,9 @@ impl SessionExecutor {
         };
         let mut session = entry.lock().await;
         let supplement = if is_answer {
-            Supplement::answer(text, attachments.to_vec())
+            Supplement::answer_with_message_id(text, attachments.to_vec(), message_id)
         } else {
-            Supplement::new(text, attachments.to_vec())
+            Supplement::new_with_message_id(text, attachments.to_vec(), message_id)
         };
         session.supplement_queue.push(supplement);
         tracing::debug!(
@@ -701,7 +724,7 @@ impl SessionExecutor {
     /// Add a steering item: interrupts the current tool sequence and is
     /// injected as context immediately (refine 搂1.2).
     pub async fn add_steering(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
-        self.add_steering_with_attachments(session_id, text, &[])
+        self.add_steering_with_attachments(session_id, text, &[], None)
             .await
     }
 
@@ -710,15 +733,18 @@ impl SessionExecutor {
         session_id: &str,
         text: &str,
         attachments: &[MessageAttachment],
+        message_id: Option<String>,
     ) -> anyhow::Result<()> {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let Some(entry) = entry else {
             anyhow::bail!("session '{}' not found", session_id)
         };
         let mut session = entry.lock().await;
-        session
-            .steering_queue
-            .push(Supplement::new(text, attachments.to_vec()));
+        session.steering_queue.push(Supplement::with_message_id(
+            text,
+            attachments.to_vec(),
+            message_id,
+        ));
         tracing::debug!(
             "session {} steering added ({} chars, {} attachments)",
             session_id,
@@ -787,6 +813,23 @@ impl SessionExecutor {
         (supplements, steering, action_results)
     }
 
+    /// Non-draining check for pending user-facing context (supplements or
+    /// steering). Resume uses it to decide whether post-snapshot inputs must
+    /// be recovered from the DB: when the queues still hold the inputs (the
+    /// pause → answer flow in the same process), the ReAct loop injects them
+    /// and the DB copy must NOT be re-queued; after a restart the queues are
+    /// empty and the DB is the only source.
+    pub async fn has_pending_context(&self, session_id: &str) -> bool {
+        let entry = { self.sessions.lock().await.get(session_id).cloned() };
+        match entry {
+            Some(entry) => {
+                let session = entry.lock().await;
+                !session.supplement_queue.is_empty() || !session.steering_queue.is_empty()
+            }
+            None => false,
+        }
+    }
+
     /// End a session. Since the user explicitly asked to end it, the session is
     /// always marked as Completed —regardless of whether it was still
     /// Running (forced stop) or Paused (naturally finished). Clean up
@@ -853,6 +896,7 @@ impl SessionExecutor {
         self.dequeue_pending(session_id).await;
         self.cleanup_session_maps(session_id).await;
         self.sessions.lock().await.remove(session_id);
+        Self::unregister_from_inbox(session_id);
         // The conversation is over — its trusted risk levels must not outlive
         // it (a later conversation must ask again).
         self.tools
@@ -1022,6 +1066,7 @@ impl SessionExecutor {
             self.dequeue_pending(session_id).await;
             self.cleanup_session_maps(session_id).await;
             self.tools.unregister_session(session_id).await;
+            Self::unregister_from_inbox(session_id);
             // The conversation ended — drop its trusted risk levels too (the
             // ReAct loop / dispatcher-panic path reaches terminal status
             // through here, not `end_session`, so this must happen on every
@@ -1967,7 +2012,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
-        exec.add_answer_with_attachments(&session.id, "the answer", &[])
+        exec.add_answer_with_attachments(&session.id, "the answer", &[], None)
             .await
             .unwrap();
         exec.add_supplement(&session.id, "plain context")
@@ -1987,7 +2032,7 @@ mod tests {
         let exec = SessionExecutor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
-        exec.add_supplement_with_attachments(&session.id, "看图", std::slice::from_ref(&att))
+        exec.add_supplement_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
             .await
             .unwrap();
         let drained = exec.get_supplements(&session.id).await;

@@ -11,6 +11,106 @@ pub struct EnvTool {
     pub max_output_chars: usize,
 }
 
+/// Environment operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvOperation {
+    Get,
+    Set,
+    Unset,
+    List,
+}
+
+/// Typed parameters for `EnvTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `EnvTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EnvParams {
+    /// Operation to perform; defaults to `list`.
+    #[serde(default)]
+    pub operation: Option<EnvOperation>,
+    /// Environment variable name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Value for set operation.
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl EnvTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: EnvParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+
+        match params.operation.unwrap_or(EnvOperation::List) {
+            EnvOperation::Get => {
+                let name = params
+                    .name
+                    .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
+                match env::var(&name) {
+                    Ok(val) => Ok(ToolResult::ok(
+                        serde_json::json!({"name": name, "value": val}),
+                    )),
+                    Err(env::VarError::NotPresent) => Ok(ToolResult {
+                        success: true,
+                        output: serde_json::json!({"name": name, "value": null}),
+                        error: None,
+                        truncated: false,
+                        signals: crate::tool::ToolSignals::default(),
+                    }),
+                    Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
+                }
+            }
+            EnvOperation::Set => {
+                let name = params
+                    .name
+                    .ok_or_else(|| anyhow::anyhow!("name is required for set"))?;
+                let value = params
+                    .value
+                    .ok_or_else(|| anyhow::anyhow!("value is required for set"))?;
+                unsafe {
+                    env::set_var(&name, &value);
+                }
+                Ok(ToolResult::ok(
+                    serde_json::json!({"set": true, "name": name, "value": value}),
+                ))
+            }
+            EnvOperation::Unset => {
+                let name = params
+                    .name
+                    .ok_or_else(|| anyhow::anyhow!("name is required for unset"))?;
+                unsafe {
+                    env::remove_var(&name);
+                }
+                Ok(ToolResult::ok(
+                    serde_json::json!({"removed": true, "name": name}),
+                ))
+            }
+            EnvOperation::List => {
+                let vars: Vec<Value> = env::vars()
+                    .map(|(k, v)| serde_json::json!({"name": k, "value": v}))
+                    .collect();
+                let count = vars.len();
+                let max_chars = self.max_output_chars;
+                let (mut result, truncated) =
+                    crate::util::json_list_within_budget("variables", vars, count, max_chars);
+                if truncated {
+                    result["hint"] = serde_json::json!(
+                        "Environment listing truncated to the max chars budget. Use get with a specific variable name to read its full value."
+                    );
+                }
+                Ok(ToolResult::ok(result))
+            }
+        }
+    }
+}
+
 impl Default for EnvTool {
     fn default() -> Self {
         Self {
@@ -47,76 +147,11 @@ impl Tool for EnvTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `EnvParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-
-        let op = input["operation"].as_str().unwrap_or("list");
-
-        match op {
-            "get" => {
-                let name = input["name"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("name is required for get"))?;
-                match env::var(name) {
-                    Ok(val) => Ok(ToolResult::ok(
-                        serde_json::json!({"name": name, "value": val}),
-                    )),
-                    Err(env::VarError::NotPresent) => Ok(ToolResult {
-                        success: true,
-                        output: serde_json::json!({"name": name, "value": null}),
-                        error: None,
-                        truncated: false,
-                        signals: crate::tool::ToolSignals::default(),
-                    }),
-                    Err(e) => anyhow::bail!("failed to read env var '{}': {}", name, e),
-                }
-            }
-            "set" => {
-                let name = input["name"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("name is required for set"))?
-                    .to_string();
-                let value = input["value"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("value is required for set"))?
-                    .to_string();
-                unsafe {
-                    env::set_var(&name, &value);
-                }
-                Ok(ToolResult::ok(
-                    serde_json::json!({"set": true, "name": name, "value": value}),
-                ))
-            }
-            "unset" => {
-                let name = input["name"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("name is required for unset"))?;
-                unsafe {
-                    env::remove_var(name);
-                }
-                Ok(ToolResult::ok(
-                    serde_json::json!({"removed": true, "name": name}),
-                ))
-            }
-            "list" => {
-                let vars: Vec<Value> = env::vars()
-                    .map(|(k, v)| serde_json::json!({"name": k, "value": v}))
-                    .collect();
-                let count = vars.len();
-                let max_chars = self.max_output_chars;
-                let (mut result, truncated) =
-                    crate::util::json_list_within_budget("variables", vars, count, max_chars);
-                if truncated {
-                    result["hint"] = serde_json::json!(
-                        "Environment listing truncated to the max chars budget. Use get with a specific variable name to read its full value."
-                    );
-                }
-                Ok(ToolResult::ok(result))
-            }
-            _ => anyhow::bail!("unknown env operation: {}", op),
-        }
+        let params = crate::tool::parse_tool_input::<EnvParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -289,5 +324,28 @@ mod tests {
             .execute(json!({"operation": "list"}), cancel)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_env_native_entry_lands_in_run() {
+        let name = unique_var_name("NATIVE");
+        unsafe {
+            env::set_var(&name, "v2");
+        }
+        let result = EnvTool::default()
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Get),
+                    name: Some(name.clone()),
+                    value: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["value"], "v2");
+        unsafe {
+            env::remove_var(&name);
+        }
     }
 }

@@ -106,6 +106,86 @@ describe('buildReviewMessages', () => {
 		expect(items.map((i) => i.id)).toEqual(['early', 'late']);
 	});
 
+	it('orders a tool card by completed_at so it cannot land after the answer it precedes', () => {
+		// Regression: the step row's created_at (tool START) ties with the
+		// PRECEDING thought's row (same second), and the stable `_ts` sort
+		// kept "all messages before all steps" — the card was pushed below
+		// the following answer. The card's logical position is when its
+		// observation landed (completed_at), which sits between the thought
+		// and the next message whenever the tool spans a second boundary.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等，我查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+					completed_at: '2026-08-01T10:01:01Z',
+				},
+			],
+		});
+		expect(items.map((i) => i.id)).toEqual(['m1', 'm2', 'step-s1', 'm3']);
+	});
+
+	it('keeps a same-second tool card before its answer with ms timestamps', () => {
+		// Millisecond-precision rows (the backend writes them since the
+		// ordering fix): the answer row is persisted AFTER the tool
+		// completed, so its created_at is later than the card's completed_at
+		// even within one second — the card sorts between thought and answer.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00.100Z', attachments: [] },
+				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:01:00.900Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00.100Z',
+					completed_at: '2026-08-01T10:01:00.500Z',
+				},
+			],
+		});
+		expect(items.map((i) => i.id)).toEqual(['m1', 'm2', 'step-s1', 'm3']);
+	});
+
+	it('falls back to created_at for cards without completed_at', () => {
+		// Steps that never completed (interrupted/failed) have no
+		// completed_at; the card keeps its creation time as the sort key.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+					completed_at: null,
+				},
+			],
+		});
+		expect(items.map((i) => i.id)).toEqual(['m1', 'step-s1', 'm2']);
+	});
+
 	it('renders an ask step as a dedup question card, not a raw tool badge', () => {
 		// The ask tool persists the question BOTH as an assistant session
 		// message (marked `__ask__` in new records, or unmarked legacy) and as
@@ -254,6 +334,93 @@ describe('buildReviewMessages', () => {
 		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
 		expect(items.filter((i) => i.id === 'm2')).toHaveLength(0);
+	});
+
+	it('links an ask card to its question message persisted under the step id', () => {
+		// New records persist ONE question message per ask step, under the
+		// step row's id (the message is the card's content authority). The
+		// review build must skip the message by id and render the card from
+		// it — no sentinel, no content comparison.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'ask',
+			toolName: 'ask',
+			content: '继续吗？',
+			options: ['A', 'B'],
+		});
+		expect(items.filter((i) => i.id === 'step-s1')).toHaveLength(1);
+	});
+
+	it('renders each ask of a batched step from its own id-shared message', () => {
+		// The batched-ask case on new records: one message per ask step,
+		// each under its step id — both cards render, each from its message.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'assistant', content: 'Q1？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{ id: 'step-s2', role: 'assistant', content: 'Q2？', message_type: 'text', created_at: '2026-08-01T10:01:01Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-s1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{ id: 'step-s2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
+			],
+		});
+		expect(items).toHaveLength(3);
+		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
+		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
+	});
+
+	it('resolves a thought stepNumber by id when the message shares the step id', () => {
+		// New records persist the thought text only in messages, and the
+		// thought step row under the SAME id — no content matching needed.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-t1', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-t1', action_tool: null, thought: null, silent: false, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		expect(items).toHaveLength(2);
+		expect(items.find((i) => i.id === 'step-t1')!.stepNumber).toBe(1);
+	});
+
+	it('resolves a supplement user message stepNumber by id', () => {
+		// Steering/supplement inputs: the thought step row is created under
+		// the user message's own id (no thought text), so the interrupted
+		// input resolves to its step by id after reload.
+		const items = buildReviewMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'm3', action_tool: null, thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+			],
+		});
+		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
 	});
 
 	it('matches an interrupted user message to its steering/supplement thought step', () => {
@@ -529,10 +696,11 @@ describe('mergeLiveStreaming', () => {
 });
 
 describe('ASK_MSG_TOOL_CALL_ID sentinel', () => {
-	it('pins the marker the backend persists ask question messages with', () => {
-		// Must stay in sync with `ASK_MSG_TOOL_CALL_ID` in
-		// crates/agent/src/react.rs; the review builder skips marked messages
-		// by this exact string.
+	it('pins the legacy marker old ask question messages carry', () => {
+		// New records no longer set the marker (the question message is
+		// persisted under the ask step row's id instead); the string stays
+		// pinned so legacy rows with it are still skipped by the review
+		// builder.
 		expect(ASK_MSG_TOOL_CALL_ID).toBe('__ask__');
 	});
 });

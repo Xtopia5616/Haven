@@ -18,6 +18,41 @@ pub struct ActionsTool {
     pub actions: Arc<BackgroundActions>,
 }
 
+/// Typed parameters for `ActionsTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `ActionsTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActionsParams {
+    /// Private owning session id, injected by the tools manager.
+    #[serde(default, rename = "_session_id")]
+    pub session_id: Option<String>,
+    /// Optional filter: only list actions in this state.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+impl ActionsTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: ActionsParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let session_id = params
+            .session_id
+            .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
+        let filter = params.status;
+        let mut rows = self.actions.list_for_session(&session_id).await;
+        if let Some(f) = filter.as_deref() {
+            rows.retain(|r| r["status"].as_str() == Some(f));
+        }
+        Ok(ToolResult::ok(serde_json::json!({ "actions": rows })))
+    }
+}
+
 #[async_trait]
 impl Tool for ActionsTool {
     fn name(&self) -> String {
@@ -51,19 +86,11 @@ impl Tool for ActionsTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `ActionsParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let session_id = input["_session_id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
-        let filter = input["status"].as_str().map(|s| s.to_string());
-        let mut rows = self.actions.list_for_session(session_id).await;
-        if let Some(f) = filter.as_deref() {
-            rows.retain(|r| r["status"].as_str() == Some(f));
-        }
-        Ok(ToolResult::ok(serde_json::json!({ "actions": rows })))
+        let params = crate::tool::parse_tool_input::<ActionsParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -135,5 +162,24 @@ mod tests {
         };
         let result = tool.execute(json!({"_session_id": "ses-x"}), cancel).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_actions_tool_native_entry_lands_in_run() {
+        let tool = ActionsTool {
+            actions: Arc::new(BackgroundActions::new()),
+        };
+        let result = tool
+            .run(
+                ActionsParams {
+                    session_id: Some("ses-x".into()),
+                    status: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["actions"], json!([]));
     }
 }

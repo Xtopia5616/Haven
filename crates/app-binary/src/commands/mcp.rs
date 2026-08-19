@@ -265,39 +265,80 @@ pub async fn mcp_tool_call(
     }))
 }
 
+/// Spawn the health monitor for a live MCP client. The `self` tool's
+/// mcp_add/update/toggle ops connect clients without a monitor (the LLM path
+/// does not need one), so the app commands re-attach it after routing through
+/// the tool — same wiring as `reconnect_mcp`.
+async fn spawn_monitor_if_client(state: &AppState, name: &str) {
+    let Some(client) = state.tools.mcp_manager.get_client(name).await else {
+        return;
+    };
+    let discovery = state
+        .config_loader
+        .lock()
+        .map(|l| l.config().mcp_discovery.clone())
+        .unwrap_or_default();
+    let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
+    let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
+    let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
+    let max_retries = discovery.reconnect_max_retries;
+    let status_tx = state.tools.mcp_manager.status_tx();
+    client.spawn_monitor(
+        health_interval,
+        initial_backoff,
+        max_backoff,
+        max_retries,
+        status_tx,
+    );
+}
+
 #[tauri::command]
 pub async fn add_mcp_server(
     state: State<'_, Arc<AppState>>,
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Persist to the shared config loader (single source of truth) so the
-    // in-memory copy stays in sync with disk and later `self` tool writes
-    // can never resurrect stale values.
-    let discovery = {
-        let mut loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("add_mcp_server", e))?;
-        loader.config_mut().mcp_servers.push(config.clone());
-        loader.save().map_err(|e| log_err("add_mcp_server", e))?;
-        loader.config().mcp_discovery.clone()
-    };
+    // Route the config mutation through the `self` tool's native entry
+    // (mcp_add): one implementation for the UI dialog and the LLM. The op
+    // persists to the shared loader, keeps the in-memory index in sync, and
+    // connects when enabled (UI always adds enabled servers).
+    crate::commands::run_self_op(
+        &state,
+        "add_mcp_server",
+        haven_tools::SelfParams {
+            operation: haven_tools::SelfOperation::McpAdd,
+            name: Some(config.name.clone()),
+            transport: Some(config.transport.as_str().to_string()),
+            command: Some(config.command.clone()),
+            url: Some(config.url.clone()),
+            args: Some(config.args.clone()),
+            env: Some(config.env.clone()),
+            cwd: config.cwd.clone(),
+            enabled: Some(config.enabled),
+            auto_connect: Some(config.enabled),
+            ..Default::default()
+        },
+    )
+    .await?;
 
-    // Create client and connect
-    let client = connect_and_monitor(&state, &discovery, &config, "add_mcp_server").await?;
-    state.tools.mcp_manager.add_client(client).await;
-    // Keep the in-memory server_configs map in sync so `load_mcp` and the
-    // MCP server index reflect the newly added server.
-    state.tools.upsert_mcp_server_config(config.clone()).await;
-    // Rebuild tool catalog so MCP tools appear in the Reasoner's tool list.
+    // App-level aftermath: health monitor + catalog rebuild + UI event.
+    spawn_monitor_if_client(&state, &config.name).await;
     state.tools.rebuild_catalog().await;
-
+    let connected = state
+        .tools
+        .mcp_manager
+        .get_client(&config.name)
+        .await
+        .is_some();
     let _ = app.emit(
         "mcp:status_change",
         McpStatusChangeEvent {
             name: config.name,
-            status: McpClientStatus::Connected,
+            status: if connected {
+                McpClientStatus::Connected
+            } else {
+                McpClientStatus::Disconnected
+            },
         },
     );
     Ok(())
@@ -310,53 +351,37 @@ pub async fn update_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (config_changed, discovery) = {
-        let mut loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("update_mcp_server", e))?;
-        let servers = &mut loader.config_mut().mcp_servers;
-        let Some(existing) = servers.iter_mut().find(|s| s.name == name) else {
-            return Err(format!("MCP server '{}' not found", name));
-        };
-        let config_changed = existing.transport != config.transport
-            || existing.command != config.command
-            || existing.args != config.args
-            || existing.env != config.env
-            || existing.cwd != config.cwd
-            || existing.url != config.url;
-        *existing = config.clone();
-        loader.save().map_err(|e| log_err("update_mcp_server", e))?;
-        (config_changed, loader.config().mcp_discovery.clone())
-    };
-    // If command/args/env changed, reconnect; if only enabled, toggle
-    if config_changed {
-        state.tools.mcp_manager.remove_client(&name).await;
-        if config.enabled {
-            let client =
-                connect_and_monitor(&state, &discovery, &config, "update_mcp_server").await?;
-            state.tools.mcp_manager.add_client(client).await;
-        }
-    } else if config.enabled {
-        // Toggle from disabled to enabled
-        let client = connect_and_monitor(&state, &discovery, &config, "update_mcp_server").await?;
-        state.tools.mcp_manager.add_client(client).await;
-    } else {
-        // Disabled: shutdown
-        state.tools.mcp_manager.remove_client(&name).await;
-    }
+    // Route through the `self` tool's native entry (mcp_update). The op
+    // reconnects before persisting when the connection profile changed and
+    // rolls the config back on a failed connect (stricter than the old
+    // persist-then-connect order).
+    crate::commands::run_self_op(
+        &state,
+        "update_mcp_server",
+        haven_tools::SelfParams {
+            operation: haven_tools::SelfOperation::McpUpdate,
+            name: Some(name.clone()),
+            transport: Some(config.transport.as_str().to_string()),
+            command: Some(config.command.clone()),
+            url: Some(config.url.clone()),
+            args: Some(config.args.clone()),
+            env: Some(config.env.clone()),
+            cwd: config.cwd.clone(),
+            enabled: Some(config.enabled),
+            ..Default::default()
+        },
+    )
+    .await?;
 
-    // Keep server_configs in sync with the updated config.
-    state.tools.upsert_mcp_server_config(config.clone()).await;
-
-    // Rebuild tool catalog for consistency with add/remove/toggle commands.
+    // App-level aftermath: health monitor + catalog rebuild + UI event.
+    spawn_monitor_if_client(&state, &name).await;
     state.tools.rebuild_catalog().await;
-
+    let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
     let _ = app.emit(
         "mcp:status_change",
         McpStatusChangeEvent {
-            name: config.name,
-            status: if config.enabled {
+            name,
+            status: if connected {
                 McpClientStatus::Connected
             } else {
                 McpClientStatus::Disconnected
@@ -372,23 +397,23 @@ pub async fn remove_mcp_server(
     name: String,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Remove from config via the shared loader (single source of truth).
-    {
-        let mut loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("remove_mcp_server", e))?;
-        loader.config_mut().mcp_servers.retain(|s| s.name != name);
-        loader.save().map_err(|e| log_err("remove_mcp_server", e))?;
-    }
+    // Route through the `self` tool's native entry (mcp_remove): removes the
+    // server from config via the shared loader, shuts down the live client,
+    // and drops it from the in-memory index.
+    crate::commands::run_self_op(
+        &state,
+        "remove_mcp_server",
+        haven_tools::SelfParams {
+            operation: haven_tools::SelfOperation::McpRemove,
+            name: Some(name.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
 
-    // Shutdown and remove from manager
-    state.tools.mcp_manager.remove_client(&name).await;
-    state.tools.remove_mcp_server_config(&name).await;
-
-    // Rebuild tool catalog so removed MCP tools disappear from the Reasoner.
+    // App-level aftermath: catalog rebuild so removed MCP tools disappear
+    // from the Reasoner, plus the UI status event.
     state.tools.rebuild_catalog().await;
-
     let _ = app.emit(
         "mcp:status_change",
         McpStatusChangeEvent {
@@ -399,28 +424,6 @@ pub async fn remove_mcp_server(
     Ok(())
 }
 
-/// Flip the `enabled` flag for an MCP server in the persisted config via the
-/// shared loader (single source of truth) and save.
-async fn persist_mcp_enabled(
-    state: &State<'_, Arc<AppState>>,
-    name: &str,
-    enabled: bool,
-) -> Result<(), String> {
-    let mut loader = state
-        .config_loader
-        .lock()
-        .map_err(|e| log_err("toggle_mcp_server", e))?;
-    if let Some(existing) = loader
-        .config_mut()
-        .mcp_servers
-        .iter_mut()
-        .find(|s| s.name == name)
-    {
-        existing.enabled = enabled;
-    }
-    loader.save().map_err(|e| log_err("toggle_mcp_server", e))
-}
-
 #[tauri::command]
 pub async fn toggle_mcp_server(
     state: State<'_, Arc<AppState>>,
@@ -428,45 +431,30 @@ pub async fn toggle_mcp_server(
     enabled: bool,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (existing_config, discovery) = {
-        let loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("toggle_mcp_server", e))?;
-        let Some(existing) = loader.config().mcp_servers.iter().find(|s| s.name == name) else {
-            return Err(format!("MCP server '{}' not found", name));
-        };
-        (existing.clone(), loader.config().mcp_discovery.clone())
-    };
-    let mut config = existing_config;
-    config.enabled = enabled;
+    // Route through the `self` tool's native entry (mcp_toggle). The op
+    // connects before persisting when enabling (rolling the config back on a
+    // failed connect) and shuts the live client down when disabling.
+    crate::commands::run_self_op(
+        &state,
+        "toggle_mcp_server",
+        haven_tools::SelfParams {
+            operation: haven_tools::SelfOperation::McpToggle,
+            name: Some(name.clone()),
+            enabled: Some(enabled),
+            ..Default::default()
+        },
+    )
+    .await?;
 
-    // Persist via the shared loader (single source of truth) so the in-memory
-    // copy never diverges from disk.
-    if enabled {
-        // Reconnect. Connect BEFORE persisting the enabled flag: if the
-        // server is unreachable, config must stay disabled so it never
-        // diverges from the (absent) live client and monitor.
-        let client = connect_and_monitor(&state, &discovery, &config, "toggle_mcp_server").await?;
-        persist_mcp_enabled(&state, &name, true).await?;
-        state.tools.mcp_manager.add_client(client).await;
-    } else {
-        // Disable: no connect to validate, persist the flag now.
-        persist_mcp_enabled(&state, &name, false).await?;
-        state.tools.mcp_manager.remove_client(&name).await;
-    }
-
-    // Keep server_configs in sync (enabled flag changed).
-    state.tools.upsert_mcp_server_config(config.clone()).await;
-
-    // Rebuild tool catalog so the tool list reflects the toggle.
+    // App-level aftermath: health monitor + catalog rebuild + UI event.
+    spawn_monitor_if_client(&state, &name).await;
     state.tools.rebuild_catalog().await;
-
+    let connected = state.tools.mcp_manager.get_client(&name).await.is_some();
     let _ = app.emit(
         "mcp:status_change",
         McpStatusChangeEvent {
             name,
-            status: if enabled {
+            status: if connected {
                 McpClientStatus::Connected
             } else {
                 McpClientStatus::Disconnected

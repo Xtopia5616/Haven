@@ -11,11 +11,14 @@ use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::Database;
+use haven_tools::inbox::{InboxBus, MessageType};
 use haven_tools::is_silent_action;
 
 use crate::compactor::{ContextCompactor, estimate_message_tokens};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 use crate::types::{Action, BranchPoint, ReActStep};
+use chrono::Utc;
+use tokio::sync::watch;
 
 /// Stable identity for a tool call across the action/observation UI pairing,
 /// matching the frontend's `tool_call_id || tool_name` id so an interrupted
@@ -77,6 +80,17 @@ async fn choose_agent_role(router: &LlmRouter, has_image: bool) -> EndpointRole 
 /// surfaced as a notification (in-app toast + Windows) instead.
 const BUDGET_EXHAUSTED_TITLE: &str = "任务步骤上限已用尽";
 const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任务已暂停。发一条消息即可继续。";
+
+/// Fallback interval (in ReAct steps) for the automatic cross-session inbox
+/// check. Delivery notifications drive the check in-process (immediate), and
+/// this cadence only catches missed notifications (e.g. another process
+/// wrote to the mailbox).
+const MESSAGING_POLL_EVERY_STEPS: u32 = 3;
+
+/// Per-message text cap when injecting cross-session messages into the
+/// model context (defensive: a full message is at most 16 KiB, but a burst
+/// must not flood the observation budget).
+const MESSAGING_INJECT_CHARS: usize = 400;
 
 /// Nudge appended to the retry call when a text-only response looks cut off
 /// (truncated generation or text ending mid-sentence). The retry is private
@@ -205,6 +219,35 @@ impl Drop for RunMsgIdGuard<'_> {
     }
 }
 
+/// State for the automatic cross-session inbox check, one per engine (shared
+/// across sessions — each session's mailbox is keyed by its own id).
+struct MessagingState {
+    /// Shared file bus (default root, process-wide notifier).
+    bus: InboxBus,
+    /// Delivery notifications: `changed()` fires when any mailbox got a
+    /// message, so sessions react immediately instead of only polling.
+    rx: watch::Receiver<u64>,
+    /// Steps since the last actual inbox drain (fallback cadence for
+    /// missed notifications, e.g. a different process wrote the mailbox).
+    steps_since_poll: u32,
+    /// Session title cache for the registry heartbeat (read once from the
+    /// DB; titles change rarely).
+    title_cache: HashMap<String, Option<String>>,
+}
+
+impl MessagingState {
+    fn new() -> Self {
+        let bus = InboxBus::default_root();
+        let rx = bus.subscribe();
+        Self {
+            bus,
+            rx,
+            steps_since_poll: 0,
+            title_cache: HashMap::new(),
+        }
+    }
+}
+
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionExecutor>,
@@ -218,6 +261,10 @@ pub struct ReActEngine {
     /// parallel sessions each track their own counters. Reset on session
     /// completion to avoid leaking finished-session entries.
     cumulative_usage: Mutex<HashMap<String, CumulativeUsage>>,
+    /// Cross-session messaging integration: heartbeat + automatic inbox
+    /// polling driven by in-process delivery notifications (see
+    /// `maybe_poll_inbox`).
+    messaging: Mutex<MessagingState>,
     /// Reusable per-session serialization buffers for ReAct snapshots (see
     /// `save_snapshot_with_branches`): avoids a fresh allocation for every
     /// per-step snapshot write. Keyed by `session_id` so parallel sessions never
@@ -267,6 +314,11 @@ struct SnapshotView<'a> {
     step_number: u32,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     branch_points: &'a HashMap<u32, BranchPoint>,
+    /// `saved_at` is written at serialization time: resume uses it to recover
+    /// messages persisted after this snapshot by timestamp (see
+    /// `ReActSnapshot::saved_at`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    saved_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -359,6 +411,15 @@ impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
     }
 }
 
+/// `message_inbox` result is an empty poll (`count: 0`): nothing for the
+/// user to see, so the observation card is suppressed.
+fn empty_inbox_output(result: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result)
+        .ok()
+        .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+        == Some(0)
+}
+
 impl ReActEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -378,6 +439,7 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             current_run_id: AtomicU64::new(0),
             cumulative_usage: Mutex::new(HashMap::new()),
+            messaging: Mutex::new(MessagingState::new()),
             snapshot_bufs: Mutex::new(HashMap::new()),
             token_estimate_cache: Mutex::new(HashMap::new()),
             context_window_cache: Mutex::new((0, HashMap::new())),
@@ -387,13 +449,21 @@ impl ReActEngine {
         }
     }
 
-    /// Mint (or reuse) the `msg-*` id a streamed thought/reasoning block of
+    /// Mint (or reuse) the id a streamed thought/reasoning block of
     /// `(session, step, run, kind)` accumulates into. Constant per block so
     /// chunk events, the snap and the final persistence share one id.
+    ///
+    /// A `thought` block is the content view of a ReAct step: its id is
+    /// minted with the `step-` prefix so the message row and the thought
+    /// step row (created in `emit_thought_from` under the same id) are one
+    /// entity. `reasoning` blocks have no step row and keep `msg-` ids.
     fn ensure_msg_id(&self, session_id: &str, step: u32, run: u64, kind: &'static str) -> String {
         let mut map = self.step_msg_ids.lock().unwrap();
         map.entry((session_id.to_string(), step, run, kind))
-            .or_insert_with(|| haven_common::types::new_id("msg"))
+            .or_insert_with(|| {
+                let prefix = if kind == "thought" { "step" } else { "msg" };
+                haven_common::types::new_id(prefix)
+            })
             .clone()
     }
 
@@ -415,12 +485,16 @@ impl ReActEngine {
 
     /// The id a streamed block is persisted under: the minted id when the
     /// block streamed (the live bubble and the DB row must match), a fresh
-    /// `msg-*` id otherwise. THE single definition of that fallback — every
-    /// persist site must go through here so the "persisted id == streamed
-    /// bubble id" invariant cannot drift per site.
+    /// id otherwise (prefix follows `ensure_msg_id`'s per-kind rule). THE
+    /// single definition of that fallback — every persist site must go
+    /// through here so the "persisted id == streamed bubble id" invariant
+    /// cannot drift per site.
     fn block_msg_id(&self, session_id: &str, step: u32, run: u64, kind: &'static str) -> String {
         self.peek_msg_id(session_id, step, run, kind)
-            .unwrap_or_else(|| haven_common::types::new_id("msg"))
+            .unwrap_or_else(|| {
+                let prefix = if kind == "thought" { "step" } else { "msg" };
+                haven_common::types::new_id(prefix)
+            })
     }
 
     /// Drop every minted message id belonging to a session. Runs once per
@@ -535,14 +609,22 @@ impl ReActEngine {
                 prefix,
                 &supplement.text,
                 &supplement.attachments,
+                supplement.message_id.as_deref(),
             )
             .await;
             injected = true;
         }
 
         for s in &steering {
-            self.push_user_context(ctx, canonical, "Steering", &s.text, &s.attachments)
-                .await;
+            self.push_user_context(
+                ctx,
+                canonical,
+                "Steering",
+                &s.text,
+                &s.attachments,
+                s.message_id.as_deref(),
+            )
+            .await;
             injected = true;
         }
 
@@ -562,12 +644,145 @@ impl ReActEngine {
         injected
     }
 
+    /// Cross-session messaging integration, run at the top of every ReAct
+    /// step (after `inject_pending_context`, before the LLM call):
+    ///
+    /// 1. **Heartbeat** — re-register this session (`last_seen = now`) with
+    ///    its DB title, every step, so long-thinking sessions stay `online`
+    ///    and `agents_list`/the UI can show what a session is about.
+    /// 2. **Automatic inbox check** — drain the mailbox when an in-process
+    ///    delivery notification arrived (push, immediate) or every
+    ///    [`MESSAGING_POLL_EVERY_STEPS`] steps (fallback for cross-process
+    ///    writers). Each message is injected as low-trust user context for
+    ///    the next LLM call — no reliance on the agent remembering to poll.
+    /// 3. **Receipts** — freshly read messages are auto-acked so senders
+    ///    learn their message was consumed.
+    async fn maybe_poll_inbox(
+        &self,
+        session_id: &str,
+        ctx: &StepCtx,
+        canonical: &mut Vec<CanonicalMessage>,
+    ) {
+        // Session title for the registry (read once from the DB, then cached
+        // per session; never hold the engine mutex across an await).
+        let cached_title = {
+            let st = self.messaging.lock().unwrap();
+            st.title_cache.get(session_id).cloned()
+        };
+        let title = match cached_title {
+            Some(t) => t,
+            None => {
+                let t = self
+                    .db
+                    .run_blocking({
+                        let sid = session_id.to_string();
+                        move |db| {
+                            let title = db.get_session(&sid).ok().flatten().and_then(|s| s.title);
+                            Ok::<Option<String>, anyhow::Error>(title)
+                        }
+                    })
+                    .await
+                    .unwrap_or(None);
+                self.messaging
+                    .lock()
+                    .unwrap()
+                    .title_cache
+                    .insert(session_id.to_string(), t.clone());
+                t
+            }
+        };
+
+        let (bus, due) = {
+            let mut st = self.messaging.lock().unwrap();
+            let bus = st.bus.clone();
+            st.steps_since_poll += 1;
+            let notified = st.rx.has_changed().unwrap_or(false);
+            if notified {
+                let _ = st.rx.borrow_and_update();
+            }
+            let due = notified || st.steps_since_poll >= MESSAGING_POLL_EVERY_STEPS;
+            if due {
+                st.steps_since_poll = 0;
+            }
+            (bus, due)
+        };
+
+        // Heartbeat on the blocking pool, every step regardless of polling.
+        let sid = session_id.to_string();
+        let hb_sid = sid.clone();
+        let hb_title = title.clone();
+        let hb_bus = bus.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = hb_bus.register_with_title(&hb_sid, &[], hb_title.as_deref());
+        })
+        .await
+        .ok();
+
+        if !due {
+            return;
+        }
+
+        let poll_sid = sid.clone();
+        let messages = match tokio::task::spawn_blocking(move || {
+            let read = bus.read_and_archive(&poll_sid)?;
+            let _receipts = bus.send_receipts(&poll_sid, &read);
+            Ok::<_, anyhow::Error>(read)
+        })
+        .await
+        {
+            Ok(Ok(msgs)) => msgs,
+            Ok(Err(e)) => {
+                tracing::debug!("messaging inbox poll failed for {session_id}: {e}");
+                return;
+            }
+            Err(e) => {
+                tracing::debug!("messaging inbox poll join failed: {e}");
+                return;
+            }
+        };
+        if messages.is_empty() {
+            return;
+        }
+
+        let mut text = String::new();
+        for env in &messages {
+            let body: String = env.text.chars().take(MESSAGING_INJECT_CHARS).collect();
+            match env.r#type {
+                MessageType::Receipt => {
+                    let of = env.in_reply_to.as_deref().unwrap_or("<unknown>");
+                    text.push_str(&format!(
+                        "[Read receipt] {} read your message {of}\n",
+                        env.from
+                    ));
+                }
+                _ => {
+                    text.push_str(&format!(
+                        "[Cross-session message from {} ({})]: {body}\n",
+                        env.from, env.r#type
+                    ));
+                }
+            }
+        }
+        self.push_user_context(
+            ctx,
+            canonical,
+            "Cross-session message",
+            text.trim_end(),
+            &[],
+            None,
+        )
+        .await;
+    }
+
     /// Emit a Supplement event, persist a matching thought-step row and push
     /// a user message into the canonical array. Shared by the supplement and
     /// steering queues (identical mechanics, different text prefixes) so the
-    /// two paths cannot drift. The thought-step row lets the session message
-    /// be matched back to a step after a reload; without it an interrupted
-    /// input would have no determinable step for review/rollback.
+    /// two paths cannot drift. The thought-step row anchors the user message
+    /// to a step after a reload: the row is created under the message's own
+    /// id (`message_id`, persisted at submit time) so review/rollback can
+    /// resolve the step by id; without it an interrupted input would have no
+    /// determinable step. The step row stores no text — the user message row
+    /// is the single content authority.
     async fn push_user_context(
         &self,
         ctx: &StepCtx,
@@ -575,6 +790,7 @@ impl ReActEngine {
         prefix: &str,
         text: &str,
         attachments: &[MessageAttachment],
+        message_id: Option<&str>,
     ) {
         ctx.emitter
             .emit(crate::event::AgentEvent::Supplement {
@@ -584,14 +800,17 @@ impl ReActEngine {
                 run_id: ctx.run_id,
             })
             .await;
+        let step_id = message_id
+            .map(String::from)
+            .unwrap_or_else(|| haven_common::types::new_id("step"));
         let _ = self
             .db
             .run_blocking({
                 let session_id = ctx.session_id.clone();
-                let text = text.to_string();
+                let step_id = step_id.clone();
                 let step_num = ctx.step_num;
                 move |db| {
-                    if let Err(e) = db.create_thought_step(&session_id, step_num as i32, &text) {
+                    if let Err(e) = db.create_thought_step(&session_id, step_num as i32, &step_id) {
                         tracing::warn!(
                             "create_thought_step failed (session={} step={}): {}",
                             session_id,
@@ -605,58 +824,13 @@ impl ReActEngine {
             .await;
         let mut content = vec![ContentPart::text(format!("{prefix}: {text}"))];
         content.extend(attachments.iter().map(attachment_to_content_part));
-        // Deduplicate repeated user inputs. Two failure modes to avoid:
-        // 1. Rapid repeat clicks (several "继续" while the session is paused or
-        //    erroring) pile identical User messages into the canonical, and
-        //    the model reads a stack of the same instruction as separate new
-        //    questions.
-        // 2. Terse commands carry no information beyond "proceed" — any
-        //    earlier identical input in this run makes a new one redundant.
-        //    Full-length messages are deduplicated only when ADJACENT (a
-        //    repeated question separated by an assistant turn is legitimate).
-        let new_text = format!("{prefix}: {text}");
-        let is_terse_command = text.trim().chars().count() <= 10;
-        let skip = if is_terse_command {
-            canonical.iter().rev().any(|m| {
-                m.role == CanonicalRole::User
-                    && m.content.iter().any(|p| match p {
-                        ContentPart::Text(t) => Self::strip_user_prefix(t) == new_text,
-                        _ => false,
-                    })
-            })
-        } else {
-            canonical.last().is_some_and(|m| {
-                m.role == CanonicalRole::User
-                    && m.content.iter().any(|p| match p {
-                        ContentPart::Text(t) => Self::strip_user_prefix(t) == new_text,
-                        _ => false,
-                    })
-            })
-        };
-        if skip {
-            tracing::debug!(
-                "push_user_context: skipping duplicate {} input '{}'",
-                prefix,
-                text.chars().take(40).collect::<String>()
-            );
-            return;
-        }
+        // No content-based dedup here: duplicate submissions are prevented at
+        // the UI layer (the submit path is in-flight locked), and the DB rows
+        // carry unique ids that anchor each input to its own step row. The
+        // canonical is an append-only transcript of what the user actually
+        // sent — collapsing identical inputs would silently drop legitimate
+        // repeated turns (e.g. the user saying "继续" twice on purpose).
         canonical.push(CanonicalMessage::user(content));
-    }
-
-    /// Strip the injection prefix ("Additional context from user: —, "Answer
-    /// to your previous question: —, "Steering: —) so duplicate detection
-    /// compares the actual user text across differently-prefixed injections.
-    fn strip_user_prefix(text: &str) -> &str {
-        const PREFIXES: [&str; 3] = [
-            "Additional context from user: ",
-            "Answer to your previous question: ",
-            "Steering: ",
-        ];
-        PREFIXES
-            .iter()
-            .find_map(|p| text.strip_prefix(p))
-            .unwrap_or(text)
     }
 
     /// Shared ReAct loop body. Runs from `start_step` through `max_steps`.
@@ -821,6 +995,11 @@ impl ReActEngine {
             // background-action results as context at the top of each step so
             // they land in the gap between tool calls and the next LLM call.
             self.inject_pending_context(&ctx, canonical).await;
+
+            // Cross-session messaging: heartbeat + automatic inbox check
+            // (in-process delivery notifications drive it; the step cadence
+            // is the fallback).
+            self.maybe_poll_inbox(session_id, &ctx, canonical).await;
 
             // Scan for image content once per step; the flag is shared by the
             // compactor window selection and the endpoint role below, so the
@@ -1364,12 +1543,15 @@ impl ReActEngine {
                         &question,
                         None,
                         infer,
-                        // The question is the `ask` card's text, not a streamed
-                        // thought bubble: persisted with the `__ask__` marker so
-                        // the review builder skips the message (the card is the
-                        // step row) without content matching.
+                        // The question is re-persisted as a plain assistant
+                        // message (fresh id, `is_ask` false so pause_turn
+                        // persists it): the row re-seeds the resume canonical.
+                        // The review renders the ask CARD from the original
+                        // question message (persisted under the ask step's id
+                        // at pause time) and drops this fresh bubble by
+                        // content match (legacy path).
                         None,
-                        true,
+                        false,
                     )
                     .await?;
                     return Ok(());
@@ -1760,8 +1942,11 @@ impl ReActEngine {
             let mut completed_tool_keys: HashSet<String> = HashSet::new();
             // If the agent invoked the `ask` tool, the session must pause and
             // wait for the user's reply (delivered as a supplement). Collect
-            // every question in the batch so all are surfaced.
+            // every question in the batch so all are surfaced, plus the step
+            // row id of each ask action: the question message is persisted
+            // under that id so the ask card and its content share one entity.
             let mut asked_questions: Vec<String> = Vec::new();
+            let mut ask_step_ids: Vec<String> = Vec::new();
             // Drain tool results while remaining responsive to cancellation.
             // Without select!, a cancel arriving mid-batch would only be
             // detected at the next step boundary —after all tools finish.
@@ -1874,11 +2059,17 @@ impl ReActEngine {
                         // process_input —supplement —Paused → Pending resume.
                         if let Some(q) = &ask_question {
                             asked_questions.push(q.clone());
+                            ask_step_ids.push(step_id.clone());
                         }
                         // `ask` must never be silent: hiding the question
                         // while the session pauses for an answer would leave the
                         // user waiting on a question they can't see.
-                        let silent = is_silent_action(&tool_name, &action.tool_input);
+                        let silent = is_silent_action(&tool_name, &action.tool_input)
+                            // An empty message_inbox poll carries no user
+                            // information — hide the card instead of spamming
+                            // the chat on every routine check.
+                            || (tool_name == "message_inbox"
+                                && empty_inbox_output(&step_result));
                         // For `ask`, the chat/review bubble shows the readable
                         // question text; the canonical (model) context keeps
                         // the raw JSON so the model can still parse the flag.
@@ -1961,6 +2152,29 @@ impl ReActEngine {
             // answer as context at the top of the next step).
             if !asked_questions.is_empty() {
                 let question = asked_questions.join("\n\n");
+                // Persist one question message per ask step, each under the
+                // step row's id: the message row is the ask card's content
+                // authority (the step row only carries execution state), and
+                // the shared id lets the review builder link them without
+                // content matching or a sentinel. The message row also
+                // re-seeds the question into the canonical on resume. A
+                // defensive fresh id keeps the question visible even if a
+                // step row is missing.
+                for (i, q) in asked_questions.iter().enumerate() {
+                    let msg_id = ask_step_ids
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| haven_common::types::new_id("step"));
+                    self.persist_session_message(
+                        session_id,
+                        "assistant",
+                        q,
+                        Some("text"),
+                        None,
+                        Some(&msg_id),
+                    )
+                    .await;
+                }
                 // TOCTOU: a reply that arrived during the drain window went to
                 // the steering queue (session was still Running). Convert it to a
                 // supplement and, if present, resume immediately as Pending so
@@ -1976,7 +2190,12 @@ impl ReActEngine {
                     // not re-answer the old question on resume.
                     if let Err(e) = self
                         .executor
-                        .add_answer_with_attachments(session_id, &s.text, &s.attachments)
+                        .add_answer_with_attachments(
+                            session_id,
+                            &s.text,
+                            &s.attachments,
+                            s.message_id.clone(),
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -2005,9 +2224,9 @@ impl ReActEngine {
                     &question,
                     None,
                     infer,
-                    // The question text is the `ask` card, persisted with the
-                    // `__ask__` marker so the review builder skips the message
-                    // (the card is the step row) without content matching.
+                    // The question messages were persisted above (one per ask
+                    // step, under the step ids); `is_ask` tells pause_turn to
+                    // skip its own persist.
                     None,
                     true,
                 )
@@ -2140,10 +2359,9 @@ impl ReActEngine {
         // Pre-minted id of the streamed thought bubble this final text is the
         // authoritative copy of (`None` mints a fresh id).
         persist_message_id: Option<&str>,
-        // True when the persisted text is an `ask` question: the message is
-        // marked with the `__ask__` tool_call_id sentinel so the review
-        // builder can skip it (the ask CARD is the step row) without content
-        // matching.
+        // True when this pause follows an `ask` batch: the question message
+        // rows were already persisted by the caller (one per ask step, under
+        // the step ids), so the persist below is skipped.
         is_ask: bool,
     ) -> anyhow::Result<()> {
         tracing::info!(
@@ -2159,20 +2377,17 @@ impl ReActEngine {
                 is_ask, persist_message_id, final_text
             );
         }
-        let tool_call_id = if is_ask {
-            Some(Self::ASK_MSG_TOOL_CALL_ID)
-        } else {
-            None
-        };
-        self.persist_session_message(
-            session_id,
-            "assistant",
-            final_text,
-            Some("text"),
-            tool_call_id,
-            persist_message_id,
-        )
-        .await;
+        if !is_ask {
+            self.persist_session_message(
+                session_id,
+                "assistant",
+                final_text,
+                Some("text"),
+                None,
+                persist_message_id,
+            )
+            .await;
+        }
         if let Some(step) = branch_point_step {
             self.save_branch_point(session_id, canonical, history, step, branch_points, false)
                 .await;
@@ -2691,6 +2906,7 @@ impl ReActEngine {
             history,
             step_number,
             branch_points,
+            saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
         };
         // Serialize into the session's own buffer inside a scoped block so the
         // mutex guard is dropped before the await below (the guard is not
@@ -2800,14 +3016,6 @@ impl ReActEngine {
         // writes.
         self.executor.partials.discard(&ctx.session_id).await;
     }
-
-    /// Sentinel persisted in `messages.tool_call_id` for the assistant message
-    /// that carries an `ask` question text. The message exists so resume can
-    /// re-seed the question into the canonical; the review builder skips it
-    /// (the `ask` card is the STEP row, parsed from the observation JSON) by
-    /// this marker instead of content matching. Cannot collide with provider
-    /// `tool_call_id`s, which use `call-*`-style ids.
-    pub(crate) const ASK_MSG_TOOL_CALL_ID: &str = "__ask__";
 
     /// Save a branch point at the current step before tool execution (—).
     ///
@@ -3811,6 +4019,17 @@ mod tests {
     use haven_llm::client::LlmClient;
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use std::pin::Pin;
+
+    #[test]
+    fn empty_inbox_output_detects_only_empty_polls() {
+        assert!(empty_inbox_output(r#"{"count": 0, "messages": []}"#));
+        assert!(empty_inbox_output(r#"{"count":0}"#));
+        assert!(!empty_inbox_output(
+            r#"{"count": 1, "messages": [{"id": "msg-x"}]}"#
+        ));
+        assert!(!empty_inbox_output("not json"));
+        assert!(!empty_inbox_output(r#"{"count": null}"#));
+    }
 
     struct MockLlm;
 

@@ -7,6 +7,97 @@ use crate::{Tool, ToolResult};
 
 pub struct WindowTool;
 
+/// Window operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowOperation {
+    List,
+    Foreground,
+    Focus,
+    Close,
+    Screenshot,
+}
+
+/// Typed parameters for `WindowTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `WindowTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct WindowParams {
+    /// Operation to perform; defaults to `list`.
+    #[serde(default)]
+    pub operation: Option<WindowOperation>,
+    /// Window title to match (substring, used for focus/close).
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Filter windows by PID.
+    #[serde(default)]
+    pub pid: Option<i64>,
+    /// Optional output path for screenshot; defaults to a temp file.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+impl WindowTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: WindowParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+
+        let filter_pid = params.pid.map(|p| p as u32);
+        let title = params.title;
+
+        match params.operation.unwrap_or(WindowOperation::List) {
+            WindowOperation::List => {
+                let windows = imp::enumerate_windows(filter_pid)?;
+                let count = windows.len();
+                let max = 200usize;
+                let truncated = count > max;
+                let windows = if truncated {
+                    windows.into_iter().take(max).collect::<Vec<_>>()
+                } else {
+                    windows
+                };
+                let mut result = serde_json::json!({"windows": windows, "count": count});
+                if truncated {
+                    result["truncated"] = serde_json::Value::Bool(true);
+                    result["hint"] = serde_json::json!(format!(
+                        "More than {} windows are open; only the first {} are listed. Filter by pid to narrow the result.",
+                        max, max
+                    ));
+                }
+                Ok(ToolResult::ok(result))
+            }
+            WindowOperation::Foreground => {
+                let fg = imp::get_foreground_window_info()?;
+                Ok(ToolResult::ok(fg))
+            }
+            WindowOperation::Focus => {
+                let t = title.ok_or_else(|| anyhow::anyhow!("title is required for focus"))?;
+                imp::focus_window_by_title(&t)?;
+                Ok(ToolResult::ok(serde_json::json!({"focused": t})))
+            }
+            WindowOperation::Close => {
+                let t = title.ok_or_else(|| anyhow::anyhow!("title is required for close"))?;
+                imp::close_window_by_title(&t)?;
+                Ok(ToolResult::ok(serde_json::json!({"closed": t})))
+            }
+            WindowOperation::Screenshot => {
+                let path = params
+                    .path
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| std::path::PathBuf::from(p.trim()));
+                let shot = imp::capture_screen(path)?;
+                Ok(ToolResult::ok(shot))
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for WindowTool {
     fn name(&self) -> String {
@@ -40,60 +131,11 @@ impl Tool for WindowTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `WindowParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-
-        let op = input["operation"].as_str().unwrap_or("list").to_string();
-        let filter_pid = input["pid"].as_i64().map(|p| p as u32);
-        let title = input["title"].as_str().map(|s| s.to_string());
-
-        match op.as_str() {
-            "list" => {
-                let windows = imp::enumerate_windows(filter_pid)?;
-                let count = windows.len();
-                let max = 200usize;
-                let truncated = count > max;
-                let windows = if truncated {
-                    windows.into_iter().take(max).collect::<Vec<_>>()
-                } else {
-                    windows
-                };
-                let mut result = serde_json::json!({"windows": windows, "count": count});
-                if truncated {
-                    result["truncated"] = serde_json::Value::Bool(true);
-                    result["hint"] = serde_json::json!(format!(
-                        "More than {} windows are open; only the first {} are listed. Filter by pid to narrow the result.",
-                        max, max
-                    ));
-                }
-                Ok(ToolResult::ok(result))
-            }
-            "foreground" => {
-                let fg = imp::get_foreground_window_info()?;
-                Ok(ToolResult::ok(fg))
-            }
-            "focus" => {
-                let t = title.ok_or_else(|| anyhow::anyhow!("title is required for focus"))?;
-                imp::focus_window_by_title(&t)?;
-                Ok(ToolResult::ok(serde_json::json!({"focused": t})))
-            }
-            "close" => {
-                let t = title.ok_or_else(|| anyhow::anyhow!("title is required for close"))?;
-                imp::close_window_by_title(&t)?;
-                Ok(ToolResult::ok(serde_json::json!({"closed": t})))
-            }
-            "screenshot" => {
-                let path = input["path"]
-                    .as_str()
-                    .filter(|p| !p.trim().is_empty())
-                    .map(|p| std::path::PathBuf::from(p.trim()));
-                let shot = imp::capture_screen(path)?;
-                Ok(ToolResult::ok(shot))
-            }
-            _ => anyhow::bail!("unknown window operation: {}", op),
-        }
+        let params = crate::tool::parse_tool_input::<WindowParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -547,6 +589,22 @@ mod tests {
         cancel.cancel();
         let result = WindowTool
             .execute(json!({"operation": "list"}), cancel)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_window_native_entry_lands_in_run() {
+        let result = WindowTool
+            .run(
+                WindowParams {
+                    operation: Some(WindowOperation::Focus),
+                    title: Some("haven-test-no-such-window-xyz".into()),
+                    pid: None,
+                    path: None,
+                },
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err());
     }

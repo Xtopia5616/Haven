@@ -275,10 +275,10 @@ fn estimate_session_usage(
             }
         }
     }
+    // Tool input/observation are stored only in steps (never in messages);
+    // thought text lives in the message stream, so it is already counted
+    // above and must not be re-counted here.
     for s in steps {
-        if let Some(t) = &s.thought {
-            total += estimate_text(t);
-        }
         if let Some(i) = &s.action_input {
             total += estimate_text(i);
         }

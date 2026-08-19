@@ -30,6 +30,10 @@ pub struct SelfToolContext {
     pub log_path: Option<PathBuf>,
     /// Runtime log-level switcher (wired to the tracing reload layer).
     pub set_log_level: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// Weak handle to the running `ToolsManager` so the tool enable/disable
+    /// ops can apply the runtime change (in-memory `tool_settings` +
+    /// catalog rebuild) after persisting config. `None` in headless builds.
+    pub tools_weak: Option<std::sync::Weak<crate::ToolsManager>>,
 }
 
 /// Operations the `self` tool understands.
@@ -41,6 +45,8 @@ const OPERATIONS: &[&str] = &[
     "skill_enable",
     "skill_disable",
     "skill_create",
+    "tool_enable",
+    "tool_disable",
     "mcp_list",
     "mcp_connect",
     "mcp_disconnect",
@@ -141,15 +147,133 @@ impl SelfTool {
             }
         }
     }
+}
 
-    fn op(input: &Value) -> anyhow::Result<&str> {
-        let op = input["operation"]
-            .as_str()
-            .filter(|o| OPERATIONS.contains(o))
-            .ok_or_else(|| {
-                anyhow::anyhow!("operation must be one of: {}", OPERATIONS.join(", "))
-            })?;
-        Ok(op)
+/// `self` operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfOperation {
+    #[default]
+    Status,
+    ConfigGet,
+    ConfigSet,
+    SkillsList,
+    SkillEnable,
+    SkillDisable,
+    SkillCreate,
+    ToolEnable,
+    ToolDisable,
+    McpList,
+    McpConnect,
+    McpDisconnect,
+    McpAdd,
+    McpUpdate,
+    McpToggle,
+    McpRemove,
+    McpReload,
+    LogsTail,
+    LogsLevel,
+    Sessions,
+    Errors,
+}
+
+/// Typed parameters for `SelfTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `SelfTool::run`.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct SelfParams {
+    /// What to do.
+    pub operation: SelfOperation,
+    /// Dotted config path, e.g. session.max_concurrent or llm.roles.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// New JSON value for config_set.
+    #[serde(default)]
+    pub value: Option<Value>,
+    /// Skill or MCP server name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// MCP server command to spawn (mcp_add / mcp_update).
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Command-line args for the MCP server (mcp_add / mcp_update).
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// KEY=VALUE environment variables for the MCP server.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
+    /// Working directory to spawn the MCP server from.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Enabled flag (mcp_add default true; mcp_update / mcp_toggle set it).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Connect the new MCP server right away (mcp_add, default true).
+    #[serde(default)]
+    pub auto_connect: Option<bool>,
+    /// Skill description shown to the agent (skill_create).
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The '## Instructions' body of the new SKILL.md (skill_create).
+    #[serde(default)]
+    pub instructions: Option<String>,
+    /// Skill language (skill_create, only 'python' is supported).
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Skill version string (skill_create, optional).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Optional content of scripts/main.py for the new skill (skill_create).
+    #[serde(default)]
+    pub script: Option<String>,
+    /// Row/line limit (default 10-50, max 500 for logs).
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Log level: trace, debug, info, warn, error.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// MCP transport (mcp_add): stdio or http.
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// HTTP endpoint URL (mcp_add with transport http).
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl SelfTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: SelfParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let output = match params.operation {
+            SelfOperation::Status => self.op_status().await?,
+            SelfOperation::ConfigGet => self.op_config_get(&params).await?,
+            SelfOperation::ConfigSet => self.op_config_set(&params).await?,
+            SelfOperation::SkillsList => self.op_skills_list().await?,
+            SelfOperation::SkillEnable => self.op_skill_set(&params, true).await?,
+            SelfOperation::SkillDisable => self.op_skill_set(&params, false).await?,
+            SelfOperation::SkillCreate => self.op_skill_create(&params).await?,
+            SelfOperation::ToolEnable => self.op_tool_set(&params, true).await?,
+            SelfOperation::ToolDisable => self.op_tool_set(&params, false).await?,
+            SelfOperation::McpList => self.op_mcp_list().await?,
+            SelfOperation::McpConnect => self.op_mcp_connect(&params).await?,
+            SelfOperation::McpDisconnect => self.op_mcp_disconnect(&params).await?,
+            SelfOperation::McpAdd => self.op_mcp_add(&params).await?,
+            SelfOperation::McpUpdate => self.op_mcp_update(&params).await?,
+            SelfOperation::McpToggle => self.op_mcp_toggle(&params).await?,
+            SelfOperation::McpRemove => self.op_mcp_remove(&params).await?,
+            SelfOperation::McpReload => self.op_mcp_reload().await?,
+            SelfOperation::LogsTail => self.op_logs_tail(&params).await?,
+            SelfOperation::LogsLevel => self.op_logs_level(&params).await?,
+            SelfOperation::Sessions => self.op_sessions(&params).await?,
+            SelfOperation::Errors => self.op_errors(&params).await?,
+        };
+        Ok(ToolResult::ok(output))
     }
 
     async fn op_status(&self) -> anyhow::Result<Value> {
@@ -246,9 +370,9 @@ impl SelfTool {
         Ok(out)
     }
 
-    async fn op_config_get(&self, input: &Value) -> anyhow::Result<Value> {
+    async fn op_config_get(&self, params: &SelfParams) -> anyhow::Result<Value> {
         let loader = self.read_config()?;
-        let Some(path) = input["path"].as_str().filter(|p| !p.is_empty()) else {
+        let Some(path) = params.path.as_deref().filter(|p| !p.is_empty()) else {
             // Full view with API keys masked.
             return Ok(serde_json::to_value(loader.settings()).unwrap_or_default());
         };
@@ -266,14 +390,15 @@ impl SelfTool {
         Ok(value)
     }
 
-    async fn op_config_set(&self, input: &Value) -> anyhow::Result<Value> {
-        let path = input["path"]
-            .as_str()
+    async fn op_config_set(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let path = params
+            .path
+            .as_deref()
             .filter(|p| !p.is_empty())
             .ok_or_else(|| anyhow::anyhow!("path is required for config_set"))?;
-        let value = input
-            .get("value")
-            .cloned()
+        let value = params
+            .value
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("value is required for config_set"))?;
 
         self.mutate_config(|loader| {
@@ -344,9 +469,10 @@ impl SelfTool {
         Ok(serde_json::json!({ "skills": skills }))
     }
 
-    async fn op_skill_set(&self, input: &Value, enabled: bool) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_skill_set(&self, params: &SelfParams, enabled: bool) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -371,18 +497,59 @@ impl SelfTool {
         }))
     }
 
-    async fn op_skill_create(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    /// Enable/disable a builtin tool. Persists `tool_settings.<name>.enabled`
+    /// to config.toml and applies the change at runtime through the
+    /// `ToolsManager` (in-memory `tool_settings` + catalog rebuild), so the
+    /// toggle takes effect on the agent's next step. `tool_enable` /
+    /// `tool_disable` are the `self` tool twin of the UI's tool switches.
+    async fn op_tool_set(&self, params: &SelfParams, enabled: bool) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "name is required (the builtin tool to {}able)",
+                    if enabled { "en" } else { "dis" }
+                )
+            })?;
+        self.mutate_config(|loader| {
+            loader
+                .config_mut()
+                .tool_settings
+                .entry(name.to_string())
+                .or_default()
+                .enabled = enabled;
+            Ok(())
+        })?;
+        // Runtime apply: in-memory tool_settings + catalog rebuild. Skipped
+        // (config still persisted) in headless/test builds without a manager.
+        if let Some(tools) = self.context.tools_weak.as_ref().and_then(|w| w.upgrade()) {
+            tools.set_tool_enabled(name, enabled).await;
+        }
+        Ok(serde_json::json!({
+            "name": name,
+            "enabled": enabled,
+            "saved": true,
+            "note": "take effect immediately"
+        }))
+    }
+
+    async fn op_skill_create(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the new skill name)"))?;
         validate_skill_name(name)?;
-        let description = input["description"]
-            .as_str()
+        let description = params
+            .description
+            .as_deref()
             .filter(|d| !d.is_empty())
             .ok_or_else(|| anyhow::anyhow!("description is required"))?;
-        let instructions = input["instructions"]
-            .as_str()
+        let instructions = params
+            .instructions
+            .as_deref()
             .filter(|i| !i.is_empty())
             .ok_or_else(|| {
                 anyhow::anyhow!("instructions are required (the '## Instructions' body)")
@@ -393,7 +560,7 @@ impl SelfTool {
                 self.max_instructions_bytes
             );
         }
-        let language = input["language"].as_str().unwrap_or("python");
+        let language = params.language.as_deref().unwrap_or("python");
         // Only Python skills are executable: `SkillRunner::run` rejects any
         // other language at fire time (skills/runner.rs), so reject
         // unsupported values here and let the agent learn immediately
@@ -401,8 +568,9 @@ impl SelfTool {
         if language != "python" {
             anyhow::bail!("unsupported language '{language}': only 'python' is supported");
         }
-        let version = input["version"]
-            .as_str()
+        let version = params
+            .version
+            .as_deref()
             .map(|v| v.replace(['\n', '\r'], " ").trim().to_string())
             .filter(|v| !v.is_empty());
         if let Some(v) = &version
@@ -410,7 +578,7 @@ impl SelfTool {
         {
             anyhow::bail!("version too long (max 64 characters)");
         }
-        let script = input["script"].as_str().map(str::to_string);
+        let script = params.script.clone();
         if let Some(s) = &script
             && s.len() > self.max_script_bytes
         {
@@ -516,9 +684,10 @@ impl SelfTool {
         Ok(serde_json::json!({ "servers": self.mcp_status().await }))
     }
 
-    async fn op_mcp_connect(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_mcp_connect(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to connect)"))?;
         let config = self
@@ -541,9 +710,10 @@ impl SelfTool {
         Ok(serde_json::json!({ "name": name, "connected": true }))
     }
 
-    async fn op_mcp_disconnect(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_mcp_disconnect(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to disconnect)"))?;
         if let Some(client) = self.mcp_manager.get_client(name).await {
@@ -553,22 +723,25 @@ impl SelfTool {
         Ok(serde_json::json!({ "name": name, "connected": false }))
     }
 
-    async fn op_mcp_add(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_mcp_add(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to add)"))?;
-        let transport = match input["transport"].as_str().unwrap_or("stdio") {
+        let transport = match params.transport.as_deref().unwrap_or("stdio") {
             "stdio" => McpTransportType::Stdio,
             "http" => McpTransportType::Http,
             other => anyhow::bail!("unknown transport '{}' (expected 'stdio' or 'http')", other),
         };
-        let command = input["command"]
-            .as_str()
+        let command = params
+            .command
+            .as_deref()
             .filter(|c| !c.is_empty())
             .map(str::to_string);
-        let url = input["url"]
-            .as_str()
+        let url = params
+            .url
+            .as_deref()
             .filter(|u| !u.is_empty())
             .map(str::to_string);
         match transport {
@@ -580,14 +753,15 @@ impl SelfTool {
             }
             _ => {}
         }
-        let args = string_array(input, "args");
-        let env = string_array(input, "env");
-        let cwd = input["cwd"]
-            .as_str()
+        let args = params.args.clone().unwrap_or_default();
+        let env = params.env.clone().unwrap_or_default();
+        let cwd = params
+            .cwd
+            .as_deref()
             .filter(|c| !c.is_empty())
             .map(str::to_string);
-        let enabled = input["enabled"].as_bool().unwrap_or(true);
-        let auto_connect = input["auto_connect"].as_bool().unwrap_or(true);
+        let enabled = params.enabled.unwrap_or(true);
+        let auto_connect = params.auto_connect.unwrap_or(true);
 
         let config = McpServerConfig {
             name: name.to_string(),
@@ -645,9 +819,10 @@ impl SelfTool {
     }
 
     /// Update an existing MCP server's command/args/env/enabled by name.
-    async fn op_mcp_update(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_mcp_update(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to update)"))?;
         let existing = self
@@ -660,19 +835,31 @@ impl SelfTool {
             .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not found in config", name))?;
 
         let mut updated = existing.clone();
-        if let Some(command) = input["command"].as_str().filter(|c| !c.is_empty()) {
+        if let Some(command) = params.command.as_deref().filter(|c| !c.is_empty()) {
             updated.command = command.to_string();
         }
-        if input.get("args").is_some() {
-            updated.args = string_array(input, "args");
+        if params.args.is_some() {
+            updated.args = params.args.clone().unwrap_or_default();
         }
-        if input.get("env").is_some() {
-            updated.env = string_array(input, "env");
+        if params.env.is_some() {
+            updated.env = params.env.clone().unwrap_or_default();
         }
-        if input.get("cwd").is_some() {
-            updated.cwd = input["cwd"].as_str().map(str::to_string);
+        if params.cwd.is_some() {
+            updated.cwd = params.cwd.clone();
         }
-        if let Some(enabled) = input["enabled"].as_bool() {
+        if let Some(url) = params.url.clone() {
+            updated.url = url;
+        }
+        if let Some(transport) = params.transport.as_deref() {
+            updated.transport = match transport {
+                "stdio" => McpTransportType::Stdio,
+                "http" => McpTransportType::Http,
+                other => {
+                    anyhow::bail!("unknown transport '{}' (expected 'stdio' or 'http')", other)
+                }
+            };
+        }
+        if let Some(enabled) = params.enabled {
             updated.enabled = enabled;
         }
 
@@ -681,13 +868,14 @@ impl SelfTool {
     }
 
     /// Toggle an existing MCP server's enabled flag (the UI toggle equivalent).
-    async fn op_mcp_toggle(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_mcp_toggle(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to toggle)"))?;
-        let enabled = input["enabled"]
-            .as_bool()
+        let enabled = params
+            .enabled
             .ok_or_else(|| anyhow::anyhow!("enabled (boolean) is required for mcp_toggle"))?;
         let existing = self
             .read_config()?
@@ -706,9 +894,10 @@ impl SelfTool {
 
     /// Remove an MCP server from config, the in-memory index, and the live
     /// client manager.
-    async fn op_mcp_remove(&self, input: &Value) -> anyhow::Result<Value> {
-        let name = input["name"]
-            .as_str()
+    async fn op_mcp_remove(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let name = params
+            .name
+            .as_deref()
             .filter(|n| !n.is_empty())
             .ok_or_else(|| anyhow::anyhow!("name is required (the MCP server to remove)"))?;
         self.mutate_config(|loader| {
@@ -851,8 +1040,8 @@ impl SelfTool {
         }))
     }
 
-    async fn op_logs_tail(&self, input: &Value) -> anyhow::Result<Value> {
-        let limit = input["limit"].as_i64().unwrap_or(50).clamp(1, 500) as usize;
+    async fn op_logs_tail(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let limit = params.limit.unwrap_or(50).clamp(1, 500) as usize;
         let path = self
             .context
             .log_path
@@ -876,9 +1065,10 @@ impl SelfTool {
         }))
     }
 
-    async fn op_logs_level(&self, input: &Value) -> anyhow::Result<Value> {
-        let level = input["level"]
-            .as_str()
+    async fn op_logs_level(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let level = params
+            .level
+            .as_deref()
             .map(str::to_lowercase)
             .filter(|l| matches!(l.as_str(), "trace" | "debug" | "info" | "warn" | "error"))
             .ok_or_else(|| {
@@ -905,9 +1095,9 @@ impl SelfTool {
     /// `op_sessions` / `op_errors`; returns `None` when no DB is attached.
     fn list_actions_for_op(
         &self,
-        input: &Value,
+        params: &SelfParams,
     ) -> anyhow::Result<Option<(i64, Vec<haven_memory::repositories::sessions::Session>)>> {
-        let limit = input["limit"].as_i64().unwrap_or(10).clamp(1, 50);
+        let limit = params.limit.unwrap_or(10).clamp(1, 50);
         let Some(db) = &self.context.db else {
             return Ok(None);
         };
@@ -925,8 +1115,8 @@ impl SelfTool {
         }
     }
 
-    async fn op_sessions(&self, input: &Value) -> anyhow::Result<Value> {
-        let Some((_limit, sessions)) = self.list_actions_for_op(input)? else {
+    async fn op_sessions(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let Some((_limit, sessions)) = self.list_actions_for_op(params)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
         let rows: Vec<Value> = sessions
@@ -945,8 +1135,8 @@ impl SelfTool {
         Ok(serde_json::json!({ "sessions": rows }))
     }
 
-    async fn op_errors(&self, input: &Value) -> anyhow::Result<Value> {
-        let Some((_limit, sessions)) = self.list_actions_for_op(input)? else {
+    async fn op_errors(&self, params: &SelfParams) -> anyhow::Result<Value> {
+        let Some((_limit, sessions)) = self.list_actions_for_op(params)? else {
             return Ok(serde_json::json!({ "unavailable": true }));
         };
         let rows: Vec<Value> = sessions
@@ -1078,19 +1268,6 @@ fn set_value_at(root: &mut Value, path: &str, value: Value) -> anyhow::Result<()
     Ok(())
 }
 
-/// Extract an array of strings from `input[key]`, ignoring non-string
-/// elements (used by `mcp_add` for `args` / `env`).
-fn string_array(input: &Value, key: &str) -> Vec<String> {
-    input[key]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Validate a skill name for safe use as a directory and as the
 /// `skill__<name>` tool identifier (after sanitization).
 fn validate_skill_name(name: &str) -> anyhow::Result<()> {
@@ -1126,6 +1303,8 @@ impl Tool for SelfTool {
             || op == "logs_level"
             || op == "skill_enable"
             || op == "skill_disable"
+            || op == "tool_enable"
+            || op == "tool_disable"
         {
             RiskLevel::Medium
         } else {
@@ -1151,11 +1330,20 @@ impl Tool for SelfTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Skill or MCP server name"
+                    "description": "Skill, MCP server, or builtin tool name"
                 },
                 "command": {
                     "type": "string",
                     "description": "MCP server command to spawn (mcp_add / mcp_update)"
+                },
+                "transport": {
+                    "type": "string",
+                    "enum": ["stdio", "http"],
+                    "description": "MCP transport (mcp_add default stdio; mcp_update can change it)"
+                },
+                "url": {
+                    "type": "string",
+                    "description": "HTTP endpoint URL for the MCP server (mcp_add / mcp_update with transport http)"
                 },
                 "args": {
                     "type": "array",
@@ -1173,7 +1361,7 @@ impl Tool for SelfTool {
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Enabled flag (mcp_add default true; mcp_update / mcp_toggle set it explicitly)"
+                    "description": "Enabled flag (mcp_add default true; mcp_update / mcp_toggle set it explicitly; tool_enable / tool_disable pick the state from the operation)"
                 },
                 "auto_connect": {
                     "type": "boolean",
@@ -1212,40 +1400,18 @@ impl Tool for SelfTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `SelfParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let op = Self::op(&input)?;
-        let output = match op {
-            "status" => self.op_status().await?,
-            "config_get" => self.op_config_get(&input).await?,
-            "config_set" => self.op_config_set(&input).await?,
-            "skills_list" => self.op_skills_list().await?,
-            "skill_enable" => self.op_skill_set(&input, true).await?,
-            "skill_disable" => self.op_skill_set(&input, false).await?,
-            "skill_create" => self.op_skill_create(&input).await?,
-            "mcp_list" => self.op_mcp_list().await?,
-            "mcp_connect" => self.op_mcp_connect(&input).await?,
-            "mcp_disconnect" => self.op_mcp_disconnect(&input).await?,
-            "mcp_add" => self.op_mcp_add(&input).await?,
-            "mcp_update" => self.op_mcp_update(&input).await?,
-            "mcp_toggle" => self.op_mcp_toggle(&input).await?,
-            "mcp_remove" => self.op_mcp_remove(&input).await?,
-            "mcp_reload" => self.op_mcp_reload().await?,
-            "logs_tail" => self.op_logs_tail(&input).await?,
-            "logs_level" => self.op_logs_level(&input).await?,
-            "sessions" => self.op_sessions(&input).await?,
-            "errors" => self.op_errors(&input).await?,
-            _ => anyhow::bail!("unknown operation '{}'", op),
-        };
-        Ok(ToolResult::ok(output))
+        let params = crate::tool::parse_tool_input::<SelfParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolsManager;
     use haven_common::config::McpServerConfig;
     use serde_json::json;
     use tempfile::TempDir;
@@ -1259,6 +1425,7 @@ mod tests {
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
             set_log_level: None,
+            tools_weak: None,
         };
         let tool = SelfTool::new(
             ctx,
@@ -2442,7 +2609,10 @@ mod tests {
             .execute(json!({"operation": "explode"}), CancellationToken::new())
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("operation must be one of"));
+        assert!(
+            err.to_string().contains("unknown variant `explode`"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -2454,5 +2624,61 @@ mod tests {
         assert_eq!(root["c"]["d"], json!(true));
         assert_eq!(value_at(&root, "a.b.1"), Some(&json!(99)));
         assert!(value_at(&root, "a.b.9").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tool_disable_applies_runtime_and_persists() {
+        let mgr = Arc::new(ToolsManager::new());
+        let dir = TempDir::new().unwrap();
+        let loader = Arc::new(std::sync::Mutex::new(
+            ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap(),
+        ));
+        let ctx = SelfToolContext {
+            config_loader: Some(loader.clone()),
+            db: None,
+            router: None,
+            log_path: None,
+            set_log_level: None,
+            tools_weak: Some(Arc::downgrade(&mgr)),
+        };
+        mgr.set_self_context(ctx).await;
+        assert!(mgr.get_tool("shell").await.is_some());
+
+        let tool = mgr.self_tool().await.expect("self tool wired");
+        let result = tool
+            .run(
+                SelfParams {
+                    operation: SelfOperation::ToolDisable,
+                    name: Some("shell".into()),
+                    ..Default::default()
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        // Runtime: the disabled tool must leave the registry the agent sees.
+        assert!(
+            mgr.get_tool("shell").await.is_none(),
+            "disabled tool must leave the registry"
+        );
+        // Persisted: config.toml carries the flag through the shared loader.
+        let persisted = loader.lock().unwrap().config().tool_settings["shell"].enabled;
+        assert!(!persisted);
+    }
+
+    #[tokio::test]
+    async fn test_tool_enable_json_entry_roundtrip() {
+        let (tool, dir) = make_tool();
+        let result = tool
+            .execute(
+                json!({"operation": "tool_enable", "name": "clipboard"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.output["enabled"].as_bool().unwrap());
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        assert!(loader.config().tool_settings["clipboard"].enabled);
     }
 }

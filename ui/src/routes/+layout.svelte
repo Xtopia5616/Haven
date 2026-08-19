@@ -18,6 +18,7 @@
 	import NotificationToast from '$lib/NotificationToast.svelte';
 	import ToolsView from '$lib/views/ToolsView.svelte';
 	import HistoryView from '$lib/views/HistoryView.svelte';
+	import AgentMessagingView from '$lib/views/AgentMessagingView.svelte';
 	import SettingsView from '$lib/views/SettingsView.svelte';
 
 	let { children } = $props();
@@ -27,7 +28,7 @@
 	// instant and rapid tab clicks never tear down a view that is being
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
 	// also makes direct deep links (/tools etc.) restore the right tab.
-	const TAB_IDS = ['chat', 'tools', 'history', 'settings'];
+	const TAB_IDS = ['chat', 'tools', 'history', 'agents', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
@@ -36,6 +37,7 @@
 		const path = url.pathname;
 		if (path === '/tools') return 'tools';
 		if (path === '/history') return 'history';
+		if (path === '/agents') return 'agents';
 		if (path === '/settings') return 'settings';
 		return 'chat';
 	}
@@ -48,6 +50,7 @@
 		chat: true,
 		tools: initialTab === 'tools',
 		history: initialTab === 'history',
+		agents: initialTab === 'agents',
 		settings: initialTab === 'settings',
 	});
 
@@ -171,11 +174,12 @@
 		if (path !== '/') {
 			// Legacy direct deep link (/tools, /history, /settings): normalize
 			// to the keep-alive URL scheme so the root route (chat) stays mounted.
-			const t =
-				path === '/tools' ? 'tools' :
-				path === '/history' ? 'history' :
-				path === '/settings' ? 'settings' : 'chat';
-			goto('/?tab=' + t, { replaceState: true });
+		const t =
+			path === '/tools' ? 'tools' :
+			path === '/history' ? 'history' :
+			path === '/agents' ? 'agents' :
+			path === '/settings' ? 'settings' : 'chat';
+		goto('/?tab=' + t, { replaceState: true });
 			return;
 		}
 		const tabParam = url.searchParams.get('tab');
@@ -743,6 +747,7 @@
 		{ id: 'chat', label: '对话' },
 		{ id: 'tools', label: '工具' },
 		{ id: 'history', label: '历史' },
+		{ id: 'agents', label: '消息' },
 		{ id: 'settings', label: '设置' },
 	];
 </script>
@@ -1005,6 +1010,10 @@
 					{:else if tab.id === 'history'}
 						<div class="page-shell">
 							<HistoryView />
+						</div>
+					{:else if tab.id === 'agents'}
+						<div class="page-shell">
+							<AgentMessagingView />
 						</div>
 					{:else if tab.id === 'settings'}
 						<div class="page-shell">

@@ -27,6 +27,10 @@
 		load_mcp: '加载 MCP',
 		load_skill: '加载技能',
 		web_search: '联网搜索',
+		agents_list: 'Agent 列表',
+		message_send: '发送消息',
+		message_inbox: '消息收件箱',
+		message_reply: '回复消息',
 	};
 
 	/** @param {unknown} v */

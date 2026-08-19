@@ -13,6 +13,7 @@ pub mod history;
 pub mod log;
 pub mod mcp;
 pub mod memory;
+pub mod messaging;
 pub mod model;
 pub mod recording;
 pub mod session;
@@ -63,6 +64,34 @@ pub(crate) fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
     tracing::error!("command `{}` failed", ctx);
     tracing::error!("command error: {}", e);
     e.to_string()
+}
+
+/// Run one `self` tool operation through its native entry (entry ① of the
+/// builtin two-entry contract). Settings-modifying Tauri commands route
+/// through here so the config mutation lives in ONE implementation (the
+/// `self` tool) shared with the LLM's JSON `execute` path (entry ②). Errors
+/// surface as the tool's `error` message (or the operation error directly).
+pub(crate) async fn run_self_op(
+    state: &AppState,
+    ctx: &str,
+    params: haven_tools::builtin::SelfParams,
+) -> Result<haven_tools::ToolResult, String> {
+    let self_tool = state
+        .tools
+        .self_tool()
+        .await
+        .ok_or_else(|| format!("{ctx}: self tool is not wired"))?;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let result = self_tool
+        .run(params, cancel)
+        .await
+        .map_err(|e| log_err(ctx, e))?;
+    if !result.success {
+        return Err(result
+            .error
+            .unwrap_or_else(|| "self tool operation failed".into()));
+    }
+    Ok(result)
 }
 
 /// Build the JSON payload returned to the frontend when a tool call needs

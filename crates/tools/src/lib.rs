@@ -2,6 +2,7 @@ pub mod adapters;
 pub mod bg;
 pub mod builtin;
 pub mod circuit;
+pub mod inbox;
 pub mod simulate;
 pub mod skill_runner;
 pub mod tool;
@@ -27,7 +28,7 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 }
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
-pub use builtin::{ScheduleMode, SelfTool, SelfToolContext};
+pub use builtin::{ScheduleMode, SelfOperation, SelfParams, SelfTool, SelfToolContext};
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
@@ -111,6 +112,11 @@ pub struct ToolsManager {
     /// router, log file). Wired in by the desktop shell; `None` in headless
     /// tests so the tool is simply not registered.
     self_context: RwLock<Option<builtin::SelfToolContext>>,
+    /// The registered `self` tool instance (the same Arc pushed into the
+    /// catalog). Typed handle so app commands can call its native `run`
+    /// entry for settings modifications instead of duplicating the mutation
+    /// logic. `None` in headless builds.
+    self_tool: RwLock<Option<Arc<builtin::SelfTool>>>,
     /// Shared clipboard history for the `clipboard` tool. Lives on the
     /// manager (not the tool) so it survives catalog rebuilds.
     pub clipboard_history: Arc<builtin::clipboard::ClipboardHistory>,
@@ -157,6 +163,7 @@ impl ToolsManager {
             background_actions,
             scheduled_actions,
             self_context: RwLock::new(None),
+            self_tool: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
             catalog_version: AtomicU64::new(0),
@@ -191,6 +198,29 @@ impl ToolsManager {
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
         *self.tool_settings.write().await = settings;
+        self.rebuild_catalog().await;
+    }
+
+    /// The registered `self` tool instance, when the desktop shell wired the
+    /// app context. App commands call its native `run(SelfParams)` entry for
+    /// settings modifications so config mutation lives in one place (the
+    /// `self` tool), with the JSON `execute` path serving the LLM.
+    pub async fn self_tool(&self) -> Option<Arc<builtin::SelfTool>> {
+        self.self_tool.read().await.clone()
+    }
+
+    /// Flip the `enabled` flag for one builtin tool in the in-memory
+    /// `tool_settings` and rebuild the catalog so the toggle takes effect on
+    /// the agent's next step. The config.toml persistence is done by the
+    /// caller (the `self` tool's `tool_enable`/`tool_disable` ops, which call
+    /// this after persisting).
+    pub async fn set_tool_enabled(&self, name: &str, enabled: bool) {
+        let mut settings = self.tool_settings.write().await;
+        settings
+            .entry(name.to_string())
+            .or_insert_with(ToolConfig::default)
+            .enabled = enabled;
+        drop(settings);
         self.rebuild_catalog().await;
     }
 
@@ -268,7 +298,7 @@ impl ToolsManager {
         let settings = self.tool_settings.read().await;
         let limits = self.context_limits.read().await.clone();
         let audio_pipeline = self.audio_pipeline.read().await.clone();
-        builtin::register_builtin_tools(
+        let self_tool_arc = builtin::register_builtin_tools(
             &mut all_tools,
             &self.skills_engine,
             &self.skill_runner,
@@ -286,6 +316,7 @@ impl ToolsManager {
             audio_pipeline,
         )
         .await;
+        *self.self_tool.write().await = self_tool_arc;
 
         // Keep the full list (enabled + disabled) for the UI, and exclude
         // disabled tools from the registry the agent sees.

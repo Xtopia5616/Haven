@@ -988,6 +988,8 @@ pub fn run() {
             commands::session::update_session_title,
             commands::log::get_log_info,
             commands::log::read_log_tail,
+            commands::messaging::list_messaging_agents,
+            commands::messaging::get_messaging_history,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Haven app")

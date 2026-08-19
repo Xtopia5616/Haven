@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -15,66 +16,70 @@ pub struct NetworkTool {
     pub max_body_bytes: usize,
 }
 
-impl Default for NetworkTool {
-    fn default() -> Self {
-        Self {
-            max_retries: 2,
-            backoff_base_secs: 1,
-            max_body_bytes: 1024 * 1024,
+/// HTTP method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum NetworkMethod {
+    Get,
+    Post,
+}
+
+impl NetworkMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NetworkMethod::Get => "GET",
+            NetworkMethod::Post => "POST",
         }
     }
 }
 
-#[async_trait]
-impl Tool for NetworkTool {
-    fn name(&self) -> String {
-        "network".into()
-    }
-    fn description(&self) -> String {
-        "Fetch web pages or API data via HTTP GET/POST. HTML pages are converted to plain text by default; pass as_html to get the raw HTML instead.".into()
-    }
+/// Typed parameters for `NetworkTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `NetworkTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NetworkParams {
+    /// HTTP method; defaults to GET.
+    #[serde(default)]
+    pub method: Option<NetworkMethod>,
+    /// The URL to request.
+    pub url: String,
+    /// Optional HTTP headers as key-value pairs.
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+    /// Request body for POST.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Return the raw HTML instead of converting HTML pages to plain text
+    /// (default false).
+    #[serde(default)]
+    pub as_html: Option<bool>,
+    /// Request timeout in seconds (default 15).
+    #[serde(default)]
+    pub timeout_secs: Option<i64>,
+}
 
-    fn risk_level(&self, _input: &Value) -> RiskLevel {
-        RiskLevel::Medium
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
-                "url": { "type": "string", "description": "The URL to request" },
-                "headers": { "type": "object", "description": "Optional HTTP headers as key-value pairs" },
-                "body": { "type": "string", "description": "Request body for POST" },
-                "as_html": { "type": "boolean", "description": "Return the raw HTML instead of converting HTML pages to plain text (default false)" },
-                "timeout_secs": { "type": "integer", "description": "Request timeout in seconds", "default": 15 }
-            },
-            "required": ["url"]
-        })
-    }
-
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+impl NetworkTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: NetworkParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
 
-        let url = input["url"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("url is required"))?
-            .to_string();
-        let method = input["method"].as_str().unwrap_or("GET").to_string();
-        let timeout_secs = input["timeout_secs"].as_i64().unwrap_or(15) as u64;
+        let url = params.url;
+        let method = params
+            .method
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| "GET".to_string());
+        let timeout_secs = params.timeout_secs.unwrap_or(15) as u64;
 
-        let body = input["body"].as_str().map(|s| s.to_string());
-        let as_html = input["as_html"].as_bool().unwrap_or(false);
-        let headers = input["headers"]
-            .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let body = params.body;
+        let as_html = params.as_html.unwrap_or(false);
+        let headers: Vec<(String, String)> =
+            params.headers.unwrap_or_default().into_iter().collect();
 
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -124,6 +129,52 @@ impl Tool for NetworkTool {
         }
 
         anyhow::bail!("unreachable: network tool retry loop exhausted")
+    }
+}
+
+impl Default for NetworkTool {
+    fn default() -> Self {
+        Self {
+            max_retries: 2,
+            backoff_base_secs: 1,
+            max_body_bytes: 1024 * 1024,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for NetworkTool {
+    fn name(&self) -> String {
+        "network".into()
+    }
+    fn description(&self) -> String {
+        "Fetch web pages or API data via HTTP GET/POST. HTML pages are converted to plain text by default; pass as_html to get the raw HTML instead.".into()
+    }
+
+    fn risk_level(&self, _input: &Value) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
+                "url": { "type": "string", "description": "The URL to request" },
+                "headers": { "type": "object", "description": "Optional HTTP headers as key-value pairs" },
+                "body": { "type": "string", "description": "Request body for POST" },
+                "as_html": { "type": "boolean", "description": "Return the raw HTML instead of converting HTML pages to plain text (default false)" },
+                "timeout_secs": { "type": "integer", "description": "Request timeout in seconds", "default": 15 }
+            },
+            "required": ["url"]
+        })
+    }
+
+    /// Entry ②: LLM JSON entry — convert/validate into `NetworkParams`, then
+    /// land in the same implementation as entry ①.
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let params = crate::tool::parse_tool_input::<NetworkParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -647,7 +698,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("unsupported method")
+                .contains("unknown variant `PUT`")
         );
     }
 
@@ -657,7 +708,12 @@ mod tests {
             .execute(json!({"method": "GET"}), CancellationToken::new())
             .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("url is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing field `url`")
+        );
     }
 
     #[tokio::test]
@@ -671,5 +727,26 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_network_native_entry_lands_in_run() {
+        let url = serve_once("200 OK", "text/plain", "hello native").await;
+        let result = NetworkTool::default()
+            .run(
+                NetworkParams {
+                    method: Some(NetworkMethod::Get),
+                    url: url.clone(),
+                    headers: None,
+                    body: None,
+                    as_html: None,
+                    timeout_secs: Some(5),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["status"], 200);
+        assert_eq!(result.output["body"], "hello native");
     }
 }

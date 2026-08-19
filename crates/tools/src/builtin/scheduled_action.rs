@@ -659,6 +659,206 @@ pub struct ScheduledActionTool {
     pub(crate) registry: Option<RegistryProbe>,
 }
 
+/// Schedule operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleOperation {
+    Set,
+    List,
+    Cancel,
+}
+
+/// Typed parameters for `ScheduledActionTool`. Entry ① (native `run`) and
+/// entry ② (`Tool::execute` with LLM JSON) both land in
+/// `ScheduledActionTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ScheduledActionParams {
+    /// set = schedule, list = pending, cancel = stop one.
+    pub operation: ScheduleOperation,
+    /// Delay in seconds before firing (set only).
+    #[serde(default)]
+    pub delay_secs: Option<i64>,
+    /// Absolute fire time, ISO 8601 (set only).
+    #[serde(default)]
+    pub due_at: Option<String>,
+    /// Set only: fire when this background action finishes or fails.
+    #[serde(default)]
+    pub watch_action_id: Option<String>,
+    /// Action when it fires (set only): tool or continue.
+    #[serde(default)]
+    pub mode: Option<ScheduleMode>,
+    /// Scheduled action title (defaults to 'Haven').
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Scheduled action message shown when it fires (set only).
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Tool to call when it fires (set only, mode=tool).
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    /// Arguments for the tool call (set only, mode=tool).
+    #[serde(default)]
+    pub tool_args: Option<Value>,
+    /// Continuation instruction delivered on resume (set only, mode=continue).
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Scheduled action id returned by set (cancel only).
+    #[serde(default)]
+    pub action_id: Option<String>,
+    /// Private owning session id, injected by the tools manager.
+    #[serde(default, rename = "_session_id")]
+    pub session_id: Option<String>,
+}
+
+impl ScheduledActionTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: ScheduledActionParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        match params.operation {
+            ScheduleOperation::Set => {
+                let delay = params.delay_secs;
+                let due_at = params.due_at;
+                let watch_action_id = params.watch_action_id;
+                let watch = watch_action_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|w| !w.is_empty());
+                if watch.is_some() && (delay.is_some() || due_at.is_some()) {
+                    anyhow::bail!("watch_action_id cannot be combined with delay_secs or due_at");
+                }
+                if delay.is_none() && due_at.is_none() && watch.is_none() {
+                    anyhow::bail!(
+                        "one of delay_secs, due_at or watch_action_id is required for set"
+                    );
+                }
+                let title = params.title.as_deref().unwrap_or("Haven");
+                let body = params
+                    .body
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("body is required for set"))?;
+                let mode = params.mode.unwrap_or(ScheduleMode::Tool);
+                if watch.is_some() && mode != ScheduleMode::Continue {
+                    anyhow::bail!(
+                        "watch_action_id requires mode 'continue' (the scheduled_action fires by resuming the session with the action result)"
+                    );
+                }
+                // `_session_id` is injected privately by ToolsManager::execute_tool
+                // (never part of the LLM-visible schema or step history) so the
+                // scheduled_action knows which session to resume in continue mode.
+                let session_id = params.session_id;
+                if mode == ScheduleMode::Continue && session_id.is_none() {
+                    anyhow::bail!(
+                        "continue mode requires an active session to resume (internal error)"
+                    );
+                }
+                let tool_name = params.tool_name;
+                let tool_args = params.tool_args.filter(|v| !v.is_null());
+                // Eager existence check at schedule time: a typo'd tool name
+                // would otherwise fail only at fire time (in a detached timer,
+                // hours later, with no LLM to recover). Per-session skill/MCP
+                // adapters are not in the global registry and cannot be
+                // scheduled as fire-time calls. Skipped in headless/test
+                // builds where no registry is wired.
+                let risk_level = if mode == ScheduleMode::Tool {
+                    match &self.registry {
+                        Some(probe) => {
+                            let Some(tool_name) = tool_name.as_deref() else {
+                                anyhow::bail!("tool_name is required when mode is 'tool'");
+                            };
+                            let Some(tool) = probe.find(tool_name).await else {
+                                anyhow::bail!(
+                                    "tool '{}' is not a registered tool; schedule a builtin tool call instead (per-session skill/MCP tools cannot be scheduled for fire time)",
+                                    tool_name
+                                );
+                            };
+                            Some(tool.risk_level(tool_args.as_ref().unwrap_or(&Value::Null)))
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let prompt = params.prompt;
+                let id = self
+                    .center
+                    .set(ScheduledActionSpec {
+                        due_at: due_at.clone(),
+                        delay_secs: delay.map(|d| d as u64),
+                        watch_action_id: watch_action_id.clone(),
+                        title: title.to_string(),
+                        body: body.to_string(),
+                        mode,
+                        session_id,
+                        tool_name,
+                        tool_args,
+                        prompt,
+                    })
+                    .await?;
+                let fires_at = if watch.is_some() {
+                    String::new()
+                } else {
+                    due_at
+                        .and_then(|d| chrono::DateTime::parse_from_rfc3339(d.trim()).ok())
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_else(|| {
+                            (chrono::Utc::now() + chrono::Duration::seconds(delay.unwrap_or(0)))
+                                .to_rfc3339()
+                        })
+                };
+                let mut output = serde_json::json!({
+                    "id": id,
+                    "mode": mode.as_str(),
+                    "fires_at": fires_at,
+                    "wakes_session": mode == ScheduleMode::Continue,
+                    "note": "The scheduled_action fires while the app is running; overdue ones fire on next startup.",
+                });
+                if let Some(action_id) = &watch_action_id {
+                    output["watch_action_id"] = serde_json::json!(action_id);
+                    output["note"] = serde_json::json!(format!(
+                        "Fires when background action {action_id} finishes or fails, resuming this session with the action's result. Action-watch scheduled_actions are in-memory only (the watched action cannot survive a restart)."
+                    ));
+                }
+                if let Some(risk) = risk_level {
+                    output["risk_level"] = serde_json::json!(risk);
+                    if risk >= RiskLevel::Medium {
+                        output["may_require_confirmation"] = serde_json::json!(true);
+                        if let Some(note) = output["note"].as_str() {
+                            output["note"] = serde_json::json!(format!(
+                                "{} The scheduled tool may require user confirmation when it fires; if nobody confirms in time, the call is skipped.",
+                                note
+                            ));
+                        }
+                    }
+                }
+                Ok(ToolResult::ok(output))
+            }
+            ScheduleOperation::List => {
+                let rows = self.center.list().await;
+                Ok(ToolResult::ok(
+                    serde_json::json!({ "scheduled_actions": rows }),
+                ))
+            }
+            ScheduleOperation::Cancel => {
+                let id = params
+                    .action_id
+                    .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
+                if self.center.cancel(&id).await {
+                    Ok(ToolResult::ok(serde_json::json!({ "cancelled": id })))
+                } else {
+                    anyhow::bail!("scheduled_action '{}' not found or already fired", id)
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for ScheduledActionTool {
     fn name(&self) -> String {
@@ -744,156 +944,12 @@ impl Tool for ScheduledActionTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into
+    /// `ScheduledActionParams`, then land in the same implementation as
+    /// entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let op = input["operation"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("operation is required (set, list or cancel)"))?;
-        match op {
-            "set" => {
-                let delay = input["delay_secs"].as_i64();
-                let due_at = input["due_at"].as_str();
-                let watch_action_id = input["watch_action_id"].as_str().map(str::to_string);
-                let watch = watch_action_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|w| !w.is_empty());
-                if watch.is_some() && (delay.is_some() || due_at.is_some()) {
-                    anyhow::bail!("watch_action_id cannot be combined with delay_secs or due_at");
-                }
-                if delay.is_none() && due_at.is_none() && watch.is_none() {
-                    anyhow::bail!(
-                        "one of delay_secs, due_at or watch_action_id is required for set"
-                    );
-                }
-                let title = input["title"].as_str().unwrap_or("Haven");
-                let body = input["body"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("body is required for set"))?;
-                let mode = match input["mode"].as_str().unwrap_or("tool") {
-                    "tool" => ScheduleMode::Tool,
-                    "continue" => ScheduleMode::Continue,
-                    other => {
-                        anyhow::bail!(
-                            "unknown scheduled_action mode: {other} (expected tool or continue)"
-                        )
-                    }
-                };
-                if watch.is_some() && mode != ScheduleMode::Continue {
-                    anyhow::bail!(
-                        "watch_action_id requires mode 'continue' (the scheduled_action fires by resuming the session with the action result)"
-                    );
-                }
-                // `_session_id` is injected privately by ToolsManager::execute_tool
-                // (never part of the LLM-visible schema or step history) so the
-                // scheduled_action knows which session to resume in continue mode.
-                let session_id = input["_session_id"].as_str().map(str::to_string);
-                if mode == ScheduleMode::Continue && session_id.is_none() {
-                    anyhow::bail!(
-                        "continue mode requires an active session to resume (internal error)"
-                    );
-                }
-                let tool_name = input["tool_name"].as_str().map(str::to_string);
-                let tool_args = input.get("tool_args").filter(|v| !v.is_null()).cloned();
-                // Eager existence check at schedule time: a typo'd tool name
-                // would otherwise fail only at fire time (in a detached timer,
-                // hours later, with no LLM to recover). Per-session skill/MCP
-                // adapters are not in the global registry and cannot be
-                // scheduled as fire-time calls. Skipped in headless/test
-                // builds where no registry is wired.
-                let risk_level = if mode == ScheduleMode::Tool {
-                    match &self.registry {
-                        Some(probe) => {
-                            let Some(tool_name) = tool_name.as_deref() else {
-                                anyhow::bail!("tool_name is required when mode is 'tool'");
-                            };
-                            let Some(tool) = probe.find(tool_name).await else {
-                                anyhow::bail!(
-                                    "tool '{}' is not a registered tool; schedule a builtin tool call instead (per-session skill/MCP tools cannot be scheduled for fire time)",
-                                    tool_name
-                                );
-                            };
-                            Some(tool.risk_level(tool_args.as_ref().unwrap_or(&Value::Null)))
-                        }
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                let prompt = input["prompt"].as_str();
-                let id = self
-                    .center
-                    .set(ScheduledActionSpec {
-                        due_at: due_at.map(str::to_string),
-                        delay_secs: delay.map(|d| d as u64),
-                        watch_action_id: watch_action_id.clone(),
-                        title: title.to_string(),
-                        body: body.to_string(),
-                        mode,
-                        session_id,
-                        tool_name,
-                        tool_args,
-                        prompt: prompt.map(str::to_string),
-                    })
-                    .await?;
-                let fires_at = if watch.is_some() {
-                    String::new()
-                } else {
-                    due_at
-                        .and_then(|d| chrono::DateTime::parse_from_rfc3339(d.trim()).ok())
-                        .map(|d| d.to_rfc3339())
-                        .unwrap_or_else(|| {
-                            (chrono::Utc::now() + chrono::Duration::seconds(delay.unwrap_or(0)))
-                                .to_rfc3339()
-                        })
-                };
-                let mut output = serde_json::json!({
-                    "id": id,
-                    "mode": mode.as_str(),
-                    "fires_at": fires_at,
-                    "wakes_session": mode == ScheduleMode::Continue,
-                    "note": "The scheduled_action fires while the app is running; overdue ones fire on next startup.",
-                });
-                if let Some(action_id) = &watch_action_id {
-                    output["watch_action_id"] = serde_json::json!(action_id);
-                    output["note"] = serde_json::json!(format!(
-                        "Fires when background action {action_id} finishes or fails, resuming this session with the action's result. Action-watch scheduled_actions are in-memory only (the watched action cannot survive a restart)."
-                    ));
-                }
-                if let Some(risk) = risk_level {
-                    output["risk_level"] = serde_json::json!(risk);
-                    if risk >= RiskLevel::Medium {
-                        output["may_require_confirmation"] = serde_json::json!(true);
-                        if let Some(note) = output["note"].as_str() {
-                            output["note"] = serde_json::json!(format!(
-                                "{} The scheduled tool may require user confirmation when it fires; if nobody confirms in time, the call is skipped.",
-                                note
-                            ));
-                        }
-                    }
-                }
-                Ok(ToolResult::ok(output))
-            }
-            "list" => {
-                let rows = self.center.list().await;
-                Ok(ToolResult::ok(
-                    serde_json::json!({ "scheduled_actions": rows }),
-                ))
-            }
-            "cancel" => {
-                let id = input["action_id"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("action_id is required for cancel"))?;
-                if self.center.cancel(id).await {
-                    Ok(ToolResult::ok(serde_json::json!({ "cancelled": id })))
-                } else {
-                    anyhow::bail!("scheduled_action '{}' not found or already fired", id)
-                }
-            }
-            _ => anyhow::bail!("unknown scheduled_action operation: {}", op),
-        }
+        let params = crate::tool::parse_tool_input::<ScheduledActionParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 

@@ -14,6 +14,57 @@ pub struct LoadSkillTool {
     pub skill_runner: Arc<RwLock<SkillRunner>>,
 }
 
+/// Typed parameters for `LoadSkillTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `LoadSkillTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct LoadSkillParams {
+    /// The name of the skill to load.
+    pub skill_name: String,
+}
+
+impl LoadSkillTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: LoadSkillParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let skill_name = params.skill_name;
+        if skill_name.is_empty() {
+            anyhow::bail!("skill_name is required");
+        }
+        let skill = self
+            .skills_engine
+            .get_skill(&skill_name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("skill '{}' not found", skill_name))?;
+        if !skill.enabled() {
+            anyhow::bail!("skill '{}' is disabled", skill_name);
+        }
+        // The schema comes from the SkillToolAdapter's tool_def() so the
+        // name / description / input_schema advertised to the model are the
+        // exact ones the registered session adapter validates and executes.
+        // Instructions are surfaced alongside (not inside the schema) so the
+        // model still learns how to fill `params` at load time.
+        let skill_instructions = skill.instructions().to_string();
+        let skill_display_name = skill.name().to_string();
+        let runner = self.skill_runner.read().await.clone();
+        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
+        let skill_def = adapter.tool_def().json();
+
+        Ok(ToolResult::ok(serde_json::json!({
+            "skill": skill_def,
+            "instructions": skill_instructions,
+            "status": "loaded",
+            "skill_name": skill_display_name,
+        })))
+    }
+}
+
 #[async_trait]
 impl Tool for LoadSkillTool {
     fn name(&self) -> String {
@@ -37,39 +88,11 @@ impl Tool for LoadSkillTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `LoadSkillParams`,
+    /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let skill_name = input["skill_name"].as_str().unwrap_or("");
-        if skill_name.is_empty() {
-            anyhow::bail!("skill_name is required");
-        }
-        let skill = self
-            .skills_engine
-            .get_skill(skill_name)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("skill '{}' not found", skill_name))?;
-        if !skill.enabled() {
-            anyhow::bail!("skill '{}' is disabled", skill_name);
-        }
-        // The schema comes from the SkillToolAdapter's tool_def() so the
-        // name / description / input_schema advertised to the model are the
-        // exact ones the registered session adapter validates and executes.
-        // Instructions are surfaced alongside (not inside the schema) so the
-        // model still learns how to fill `params` at load time.
-        let skill_instructions = skill.instructions().to_string();
-        let skill_display_name = skill.name().to_string();
-        let runner = self.skill_runner.read().await.clone();
-        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        let skill_def = adapter.tool_def().json();
-
-        Ok(ToolResult::ok(serde_json::json!({
-            "skill": skill_def,
-            "instructions": skill_instructions,
-            "status": "loaded",
-            "skill_name": skill_display_name,
-        })))
+        let params = crate::tool::parse_tool_input::<LoadSkillParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 
     /// Declare the per-session skill adapter registration so the executor
@@ -213,5 +236,24 @@ mod tests {
             .execute(json!({"skill_name": "nope"}), CancellationToken::new())
             .await;
         assert!(result.is_err(), "unknown skill should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_native_entry_lands_in_run() {
+        let (engine, runner, _dir) = make_engine_with_skill(true).await;
+        let tool = LoadSkillTool {
+            skills_engine: engine,
+            skill_runner: runner,
+        };
+        let result = tool
+            .run(
+                LoadSkillParams {
+                    skill_name: "echo".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["skill"]["name"], "skill__echo");
     }
 }

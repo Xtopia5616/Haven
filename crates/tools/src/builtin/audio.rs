@@ -18,15 +18,56 @@ const MAX_RECORD_SECS: f64 = 60.0;
 /// Play or record audio. `record` captures through the shared input pipeline
 /// (same engine/STT as user voice input) and returns the transcription;
 /// `play` is not yet implemented (no playback engine exists).
+/// Play or record audio. `record` captures through the shared input pipeline
+/// (same engine/STT as user voice input) and returns the transcription;
+/// `play` is not yet implemented (no playback engine exists).
 pub struct AudioTool {
     /// Shared capture/STT pipeline. `None` in headless/test contexts where
     /// recording is unavailable; the `record` operation then fails cleanly.
     pipeline: Option<Arc<InputPipeline>>,
 }
 
+/// Audio operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioOperation {
+    Record,
+    Play,
+}
+
+/// Typed parameters for `AudioTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `AudioTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AudioParams {
+    /// What to do with audio.
+    pub operation: AudioOperation,
+    /// Path to audio file for play operation.
+    #[serde(default)]
+    pub file_path: Option<String>,
+    /// Recording duration in seconds (default 10, max 60).
+    #[serde(default)]
+    pub duration: Option<f64>,
+    /// Text to synthesize for TTS.
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
 impl AudioTool {
     pub fn new(pipeline: Option<Arc<InputPipeline>>) -> Self {
         Self { pipeline }
+    }
+
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: AudioParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        match params.operation {
+            AudioOperation::Record => self.record(&params, cancel).await,
+            AudioOperation::Play => Err(anyhow::anyhow!("audio tool: play is not yet implemented")),
+        }
     }
 }
 
@@ -76,14 +117,11 @@ impl Tool for AudioTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `AudioParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        match input["operation"].as_str() {
-            Some("record") => self.record(&input, cancel).await,
-            Some("play") => Err(anyhow::anyhow!("audio tool: play is not yet implemented")),
-            _ => Err(anyhow::anyhow!(
-                "audio tool: unknown operation, expected \"record\" or \"play\""
-            )),
-        }
+        let params = crate::tool::parse_tool_input::<AudioParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -92,7 +130,11 @@ impl AudioTool {
     /// and return the transcript. Never disturbs the user-facing recording
     /// UI: the pipeline's timed mode skips VAD auto-stop and handler
     /// notifications, and a user recording in flight is reported as an error.
-    async fn record(&self, input: &Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+    async fn record(
+        &self,
+        params: &AudioParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         let Some(pipeline) = &self.pipeline else {
             return Err(anyhow::anyhow!(
                 "audio tool: recording is unavailable in this context"
@@ -103,8 +145,8 @@ impl AudioTool {
                 "audio tool: STT is not configured; enable an STT provider to record audio"
             ));
         }
-        let duration = input["duration"]
-            .as_f64()
+        let duration = params
+            .duration
             .unwrap_or(DEFAULT_RECORD_SECS)
             .clamp(1.0, MAX_RECORD_SECS);
         match pipeline.get_state().await {
@@ -232,6 +274,23 @@ mod tests {
             .execute(json!({"operation": "record_x"}), CancellationToken::new())
             .await;
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("unknown operation"));
+        assert!(err.to_string().contains("unknown variant `record_x`"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_native_entry_lands_in_run() {
+        let result = AudioTool::new(None)
+            .run(
+                AudioParams {
+                    operation: AudioOperation::Record,
+                    file_path: None,
+                    duration: None,
+                    text: None,
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unavailable"));
     }
 }

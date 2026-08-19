@@ -530,6 +530,84 @@ impl Default for FilesTool {
     }
 }
 
+/// Files operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesOperation {
+    Read,
+    Write,
+    Edit,
+    Copy,
+    Move,
+    Delete,
+    List,
+    Summary,
+    Search,
+}
+
+/// Typed parameters for `FilesTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `FilesTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct FilesParams {
+    /// What to do with the file; defaults to `read`.
+    #[serde(default)]
+    pub operation: Option<FilesOperation>,
+    /// File or directory path to operate on.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Destination path (copy/move).
+    #[serde(default)]
+    pub destination: Option<String>,
+    /// Content to write (write operation).
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Text to search for (edit operation).
+    #[serde(default)]
+    pub old_string: Option<String>,
+    /// Replacement text (edit operation).
+    #[serde(default)]
+    pub new_string: Option<String>,
+    /// Byte offset to start reading from (bytes mode).
+    #[serde(default)]
+    pub offset: Option<u64>,
+    /// Max bytes to read (bytes mode).
+    #[serde(default)]
+    pub limit: Option<u64>,
+    /// 1-based first line to read, summarize, or search within.
+    #[serde(default)]
+    pub start_line: Option<u64>,
+    /// 1-based last line to read, summarize, or search within.
+    #[serde(default)]
+    pub end_line: Option<u64>,
+    /// Optional focus/topic (summary operation, or image understanding).
+    #[serde(default)]
+    pub focus: Option<String>,
+    /// Max input characters sent to the summarizer (summary operation).
+    #[serde(default)]
+    pub max_chars: Option<u64>,
+    /// Root directory to search from (search operation).
+    #[serde(default)]
+    pub root: Option<String>,
+    /// Filename glob or regex pattern (search operation).
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Search mode: filename or content.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Maximum directory depth. 0 = unlimited.
+    #[serde(default)]
+    pub max_depth: Option<i64>,
+    /// Maximum results to return.
+    #[serde(default)]
+    pub max_results: Option<i64>,
+    /// Skip hidden files and directories.
+    #[serde(default)]
+    pub ignore_hidden: Option<bool>,
+    /// Skip files larger than this many bytes in content mode. 0 = unlimited.
+    #[serde(default)]
+    pub max_file_size: Option<u64>,
+}
+
 impl FilesTool {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -559,57 +637,16 @@ impl FilesTool {
             search,
         }
     }
-}
 
-#[async_trait]
-impl Tool for FilesTool {
-    fn name(&self) -> String {
-        "files".into()
-    }
-    fn description(&self) -> String {
-        "Read, write, edit, copy, move, delete, list, summarize, or search files (text files; images via vision)".into()
-    }
-
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        match input["operation"].as_str() {
-            Some("delete") => RiskLevel::High,
-            Some("edit") | Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
-            Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
-            _ => RiskLevel::Low,
-        }
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "What to do with the file (required): read, write, edit, copy, move, delete, list, summary, or search" },
-                "path": { "type": "string", "description": "File or directory path to operate on (required)" },
-                "destination": { "type": "string" },
-                "content": { "type": "string" },
-                "old_string": { "type": "string", "description": "Text to search for (edit operation)" },
-                "new_string": { "type": "string", "description": "Replacement text (edit operation)" },
-                "offset": { "type": "integer", "description": "Byte offset to start reading from (bytes mode)", "default": 0, "minimum": 0 },
-                "limit": { "type": "integer", "description": "Max bytes to read (bytes mode)", "default": self.max_read_chars, "minimum": 1, "maximum": self.max_byte_read },
-                "start_line": { "type": "integer", "description": "1-based first line to read, summarize, or search within (lines mode / summary / search content mode)", "default": 1 },
-                "end_line": { "type": "integer", "description": "1-based last line to read, summarize, or search within (lines mode / summary / search content mode). When omitted, start_line + {} lines are read.", "default": self.line_span },
-                "focus": { "type": "string", "description": "Optional focus/topic (summary operation, or image understanding in read operation)" },
-                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": self.summary_input_chars },
-                "root": { "type": "string", "description": "Root directory to search from (search operation)" },
-                "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search. (search operation)" },
-                "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers) (search operation)" },
-                "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited. (search operation)", "default": 10 },
-                "max_results": { "type": "integer", "description": format!("Maximum results to return (capped at {}) (search operation)", self.search.max_results_cap), "default": 50 },
-                "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories (search operation)", "default": true },
-                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited. (search operation)", "default": self.search.max_file_size }
-            },
-            "required": ["operation", "path"]
-        })
-    }
-
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let op = input["operation"].as_str().unwrap_or("read");
-        let path = sanitize_path(input["path"].as_str().unwrap_or(""))?;
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: FilesParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let op = params.operation.unwrap_or(FilesOperation::Read);
+        let path = sanitize_path(params.path.as_deref().unwrap_or_default())?;
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
@@ -617,37 +654,27 @@ impl Tool for FilesTool {
         }
 
         match op {
-            "read" => {
-                let has_line_args =
-                    input.get("start_line").is_some() || input.get("end_line").is_some();
-                let has_byte_args = input.get("offset").is_some() || input.get("limit").is_some();
+            FilesOperation::Read => {
+                let has_line_args = params.start_line.is_some() || params.end_line.is_some();
+                let has_byte_args = params.offset.is_some() || params.limit.is_some();
                 if has_line_args {
-                    let start_line = input
-                        .get("start_line")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(1)
-                        .max(1);
-                    let end_line = input
-                        .get("end_line")
-                        .and_then(|v| v.as_u64())
+                    let start_line = params.start_line.unwrap_or(1).max(1);
+                    let end_line = params
+                        .end_line
                         .unwrap_or(start_line + self.line_span)
                         .max(start_line);
                     read_lines(&path, start_line, end_line, max_chars, self.max_line_chars).await
                 } else if has_byte_args {
-                    let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let limit = input
-                        .get("limit")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(self.max_read_chars);
+                    let offset = params.offset.unwrap_or(0);
+                    let limit = params.limit.unwrap_or(self.max_read_chars);
                     read_bytes(&path, offset, limit, max_chars, self.max_byte_read).await
                 } else {
-                    let focus = input["focus"].as_str().map(|s| s.to_string());
                     read_full(
                         &path,
                         max_chars,
                         self.max_read_chars,
                         self.vision_max_bytes,
-                        focus.as_deref(),
+                        params.focus.as_deref(),
                         self.summarizer.clone(),
                         cancel.clone(),
                         self.summary_timeout_secs,
@@ -655,9 +682,9 @@ impl Tool for FilesTool {
                     .await
                 }
             }
-            "write" => {
-                let content = input["content"].as_str().unwrap_or("");
-                tokio::fs::write(&path, content).await?;
+            FilesOperation::Write => {
+                let content = params.content.unwrap_or_default();
+                tokio::fs::write(&path, &content).await?;
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
@@ -665,11 +692,11 @@ impl Tool for FilesTool {
                     serde_json::json!({"written": true, "path": path}),
                 ))
             }
-            "edit" => {
-                let old = input["old_string"].as_str().ok_or_else(|| {
+            FilesOperation::Edit => {
+                let old = params.old_string.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("'old_string' is required for edit operation")
                 })?;
-                let new = input["new_string"].as_str().unwrap_or("");
+                let new = params.new_string.unwrap_or_default();
                 // edit rewrites the whole file; refuse files beyond the read cap
                 // to avoid loading multi-hundred-MB files into memory.
                 let meta = tokio::fs::metadata(&path).await?;
@@ -720,15 +747,15 @@ impl Tool for FilesTool {
                         signals: crate::tool::ToolSignals::default(),
                     });
                 }
-                let result = content.replace(old, new);
+                let result = content.replace(old, &new);
                 tokio::fs::write(&path, &result).await?;
                 let line = content[..positions[0]].matches('\n').count() + 1;
                 Ok(ToolResult::ok(
                     serde_json::json!({"edited": true, "path": path, "line": line}),
                 ))
             }
-            "copy" => {
-                let dest = sanitize_path(input["destination"].as_str().unwrap_or(""))?;
+            FilesOperation::Copy => {
+                let dest = sanitize_path(&params.destination.unwrap_or_default())?;
                 tokio::fs::copy(&path, &dest).await?;
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
@@ -737,8 +764,8 @@ impl Tool for FilesTool {
                     serde_json::json!({"copied": true, "from": path, "to": dest}),
                 ))
             }
-            "move" => {
-                let dest = sanitize_path(input["destination"].as_str().unwrap_or(""))?;
+            FilesOperation::Move => {
+                let dest = sanitize_path(&params.destination.unwrap_or_default())?;
                 match tokio::fs::rename(&path, &dest).await {
                     Ok(()) => {}
                     // Cross-device rename (e.g. C: → D:) fails with EXDEV;
@@ -756,7 +783,7 @@ impl Tool for FilesTool {
                     serde_json::json!({"moved": true, "from": path, "to": dest}),
                 ))
             }
-            "delete" => {
+            FilesOperation::Delete => {
                 tokio::fs::remove_file(&path).await?;
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
@@ -765,7 +792,7 @@ impl Tool for FilesTool {
                     serde_json::json!({"deleted": true, "path": path}),
                 ))
             }
-            "list" => {
+            FilesOperation::List => {
                 let mut entries = tokio::fs::read_dir(&path).await?;
                 let mut names = Vec::new();
                 let mut truncated = false;
@@ -790,18 +817,14 @@ impl Tool for FilesTool {
                 }
                 Ok(ToolResult::ok(result))
             }
-            "summary" => {
-                let start_line = input
-                    .get("start_line")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1)
-                    .max(1);
-                let end_line = input.get("end_line").and_then(|v| v.as_u64()).unwrap_or(0);
-                let focus = input["focus"].as_str().map(|s| s.to_string());
+            FilesOperation::Summary => {
+                let start_line = params.start_line.unwrap_or(1).max(1);
+                let end_line = params.end_line.unwrap_or(0);
+                let focus = params.focus.clone();
                 // Untrusted input: clamp the summarizer input budget so a huge
                 // value cannot buffer the whole file or ship a giant payload.
-                let input_budget = input["max_chars"]
-                    .as_u64()
+                let input_budget = params
+                    .max_chars
                     .unwrap_or(self.summary_input_chars as u64)
                     .min(self.summary_input_chars as u64)
                     .max(1) as usize;
@@ -818,9 +841,67 @@ impl Tool for FilesTool {
                 )
                 .await
             }
-            "search" => self.search.search(input, cancel).await,
-            _ => anyhow::bail!("unknown file operation: {}", op),
+            FilesOperation::Search => {
+                // The search engine keeps its own (Value-based) input contract;
+                // rebuild it from the typed params so it reads the same fields.
+                let search_input = serde_json::to_value(params.clone())?;
+                self.search.search(search_input, cancel).await
+            }
         }
+    }
+}
+
+#[async_trait]
+impl Tool for FilesTool {
+    fn name(&self) -> String {
+        "files".into()
+    }
+    fn description(&self) -> String {
+        "Read, write, edit, copy, move, delete, list, summarize, or search files (text files; images via vision)".into()
+    }
+
+    fn risk_level(&self, input: &Value) -> RiskLevel {
+        match input["operation"].as_str() {
+            Some("delete") => RiskLevel::High,
+            Some("edit") | Some("copy") | Some("write") | Some("move") => RiskLevel::Medium,
+            Some("search") if input["mode"].as_str() == Some("content") => RiskLevel::Medium,
+            _ => RiskLevel::Low,
+        }
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["read", "write", "edit", "copy", "move", "delete", "list", "summary", "search"], "description": "What to do with the file (required): read, write, edit, copy, move, delete, list, summary, or search" },
+                "path": { "type": "string", "description": "File or directory path to operate on (required)" },
+                "destination": { "type": "string" },
+                "content": { "type": "string" },
+                "old_string": { "type": "string", "description": "Text to search for (edit operation)" },
+                "new_string": { "type": "string", "description": "Replacement text (edit operation)" },
+                "offset": { "type": "integer", "description": "Byte offset to start reading from (bytes mode)", "default": 0, "minimum": 0 },
+                "limit": { "type": "integer", "description": "Max bytes to read (bytes mode)", "default": self.max_read_chars, "minimum": 1, "maximum": self.max_byte_read },
+                "start_line": { "type": "integer", "description": "1-based first line to read, summarize, or search within (lines mode / summary / search content mode)", "default": 1 },
+                "end_line": { "type": "integer", "description": "1-based last line to read, summarize, or search within (lines mode / summary / search content mode). When omitted, start_line + {} lines are read.", "default": self.line_span },
+                "focus": { "type": "string", "description": "Optional focus/topic (summary operation, or image understanding in read operation)" },
+                "max_chars": { "type": "integer", "description": "Max input characters sent to the summarizer (summary operation)", "default": self.summary_input_chars },
+                "root": { "type": "string", "description": "Root directory to search from (search operation)" },
+                "pattern": { "type": "string", "description": "Filename glob or regex pattern (e.g. *.rs, test_*.py, config\\.json$). In content mode the pattern is a regex; invalid regex falls back to literal substring search. (search operation)" },
+                "mode": { "type": "string", "enum": ["filename", "content"], "default": "filename", "description": "Search mode: filename (match file names) or content (full-text grep with line numbers) (search operation)" },
+                "max_depth": { "type": "integer", "description": "Maximum directory depth. 0 = unlimited. (search operation)", "default": 10 },
+                "max_results": { "type": "integer", "description": format!("Maximum results to return (capped at {}) (search operation)", self.search.max_results_cap), "default": 50 },
+                "ignore_hidden": { "type": "boolean", "description": "Skip hidden files and directories (search operation)", "default": true },
+                "max_file_size": { "type": "integer", "description": "Skip files larger than this many bytes in content mode. 0 = unlimited. (search operation)", "default": self.search.max_file_size }
+            },
+            "required": ["operation", "path"]
+        })
+    }
+
+    /// Entry ②: LLM JSON entry — convert/validate into `FilesParams`, then
+    /// land in the same implementation as entry ①.
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let params = crate::tool::parse_tool_input::<FilesParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -1634,5 +1715,42 @@ mod tests {
             .execute(json!({"operation": "read", "path": "file.txt"}), cancel)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_native_entry_lands_in_run() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("native.txt");
+        let path_str = file.to_string_lossy().to_string();
+        let result = FilesTool::default()
+            .run(
+                FilesParams {
+                    operation: Some(FilesOperation::Write),
+                    path: Some(path_str.clone()),
+                    destination: None,
+                    content: Some("native content".into()),
+                    old_string: None,
+                    new_string: None,
+                    offset: None,
+                    limit: None,
+                    start_line: None,
+                    end_line: None,
+                    focus: None,
+                    max_chars: None,
+                    root: None,
+                    pattern: None,
+                    mode: None,
+                    max_depth: None,
+                    max_results: None,
+                    ignore_hidden: None,
+                    max_file_size: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.output["written"].as_bool().unwrap());
+        let content = tokio::fs::read_to_string(&file).await.unwrap();
+        assert_eq!(content, "native content");
     }
 }

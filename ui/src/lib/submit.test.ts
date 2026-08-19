@@ -174,4 +174,38 @@ describe('submitTranscript', () => {
 		await submitTranscript('hi');
 		expect(/** @type {any[]} */ (invokeMock.mock.calls)[0][1].activeSessionId).toBe('session-a');
 	});
+
+	it('joins an in-flight submission instead of stacking duplicates', async () => {
+		let resolveInvoke: (v: unknown) => void;
+		invokeMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveInvoke = resolve;
+			})
+		);
+		activeSessionIdStore.set('session-a');
+
+		const first = submitTranscript('继续', { voice: false });
+		const second = submitTranscript('继续', { voice: false });
+		// Both callers share ONE in-flight promise: the invoke is called once.
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+
+		resolveInvoke!({});
+		await Promise.all([first, second]);
+
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		expect(list).toHaveLength(1); // a concurrent duplicate must not add a second bubble
+	});
+
+	it('releases the lock after a failed submission so a retry can submit again', async () => {
+		invokeMock.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({});
+		activeSessionIdStore.set('session-a');
+		await expect(submitTranscript('try 1')).rejects.toThrow('boom');
+		await submitTranscript('try 2');
+
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		expect(list).toHaveLength(1);
+		expect(list[0].content).toBe('try 2');
+	});
 });

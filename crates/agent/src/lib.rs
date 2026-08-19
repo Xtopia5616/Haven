@@ -885,6 +885,10 @@ mod tests {
 
     #[tokio::test]
     async fn resume_dedups_conversation_prefix_against_canonical() {
+        // A legacy snapshot may carry `[conversation]`-wrapped lines from an
+        // older resume implementation. They must be stripped, and nothing may
+        // be re-injected on top of the canonical's full transcript — the
+        // snapshot is the single authority for everything it contains.
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
         let session = executor.create_session("hello").await.unwrap();
@@ -923,6 +927,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -960,9 +965,9 @@ mod tests {
     async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         // Supplement/steering inputs are pushed into the canonical with a
         // text prefix ("Additional context from user: —, "Steering: —)
-        // while the DB stores the raw text. A resume that only matched raw
-        // text would re-inject the input as a fresh User message, making the
-        // model answer it again as a new question.
+        // while the DB stores the raw text. A legacy snapshot (no saved_at)
+        // is trusted as complete: nothing is recovered, so the already
+        // prefixed inputs are never re-injected as fresh user turns.
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
         let session = executor.create_session("hello").await.unwrap();
@@ -990,6 +995,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -1025,9 +1031,10 @@ mod tests {
     #[tokio::test]
     async fn resume_keeps_repeated_same_text_turns() {
         // Two distinct turns with identical text (user said "好的" twice) are
-        // both legitimate history. Count-based dedup consumes one canonical
-        // occurrence per DB message; the second identical message must still
-        // be re-seeded instead of being silently dropped.
+        // both legitimate history. The snapshot is the single authority for
+        // everything it contains; a message persisted AFTER the snapshot's
+        // saved_at is recovered by timestamp — identical text is recovered
+        // too (timestamp recovery never drops a repeated turn).
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
         let session = executor.create_session("hello").await.unwrap();
@@ -1039,12 +1046,10 @@ mod tests {
             .persist_message_parts(&session.id, "assistant", "好的", Some("text"), &[], false)
             .await
             .unwrap();
-        agent
-            .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
-            .await
-            .unwrap();
-        // Canonical holds only the first "好的" turn pair (the second user
-        // "好的" is the one missing from the snapshot).
+        // Snapshot saved right after the first pair: its saved_at sits
+        // between the persisted rows and the second user "好的" below.
+        let msgs_before = agent.db.get_session_messages(&session.id).unwrap();
+        let saved_at = msgs_before[1].created_at.clone();
         let canonical = vec![
             CanonicalMessage::system(vec![ContentPart::text("sys")]),
             CanonicalMessage::user_text("好的"),
@@ -1055,10 +1060,16 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: Some(saved_at),
         };
         agent
             .db
             .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+        // The second identical user turn lands after the snapshot.
+        agent
+            .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
+            .await
             .unwrap();
 
         agent.run_session_from_id(&session.id).await.unwrap();
@@ -1077,18 +1088,103 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            user_texts
-                .iter()
-                .filter(|t| t.as_str() == "[conversation] [user] 好的")
-                .count(),
-            1,
-            "the second identical user turn must be re-seeded (count-based dedup): {:?}",
-            user_texts
-        );
-        assert_eq!(
             user_texts.iter().filter(|t| t.as_str() == "好的").count(),
             1,
             "the first user turn must not be duplicated: {:?}",
+            user_texts
+        );
+        assert_eq!(
+            user_texts
+                .iter()
+                .filter(|t| t.starts_with("Additional context from user: 好的"))
+                .count(),
+            1,
+            "the second identical user turn must be recovered by timestamp: {:?}",
+            user_texts
+        );
+        assert!(
+            user_texts.iter().all(|t| !t.starts_with("[conversation] ")),
+            "no [conversation]-wrapped lines may exist: {:?}",
+            user_texts
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_does_not_recover_messages_before_saved_at() {
+        // Timestamp recovery is bounded by the snapshot's saved_at: rows
+        // persisted before it are already represented in the canonical and
+        // must NOT be re-queued, even when the canonical never carried them
+        // as user turns (e.g. an ask question persisted under the step id).
+        let (agent, executor) = make_test_agent();
+        agent.set_emitter(make_recording_emitter());
+        let session = executor.create_session("hello").await.unwrap();
+        agent
+            .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
+            .await
+            .unwrap();
+        let saved_at = agent.db.get_session_messages(&session.id).unwrap()[0]
+            .created_at
+            .clone();
+        let canonical = vec![
+            CanonicalMessage::system(vec![ContentPart::text("sys")]),
+            CanonicalMessage::user_text("hello"),
+            CanonicalMessage::assistant(
+                vec![ContentPart::text("hi there")],
+                None,
+                None,
+                Vec::new(),
+            ),
+        ];
+        let snapshot = ReActSnapshot {
+            canonical,
+            history: vec![],
+            step_number: 1,
+            branch_points: HashMap::new(),
+            saved_at: Some(saved_at),
+        };
+        agent
+            .db
+            .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
+            .unwrap();
+        // Assistant rows older than saved_at are not recovered either.
+        agent
+            .persist_message_parts(
+                &session.id,
+                "assistant",
+                "hi there",
+                Some("text"),
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+
+        agent.run_session_from_id(&session.id).await.unwrap();
+
+        let saved: ReActSnapshot =
+            serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+        let user_texts: Vec<String> = saved
+            .canonical
+            .iter()
+            .filter(|m| m.role == CanonicalRole::User)
+            .filter_map(|m| {
+                m.content.iter().find_map(|p| match p {
+                    ContentPart::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            user_texts.iter().filter(|t| t.as_str() == "hello").count(),
+            1,
+            "nothing older than saved_at may be recovered: {:?}",
+            user_texts
+        );
+        assert!(
+            user_texts
+                .iter()
+                .all(|t| !t.starts_with("Additional context from user:")),
+            "no post-snapshot supplement may appear: {:?}",
             user_texts
         );
     }
@@ -1096,9 +1192,11 @@ mod tests {
     #[tokio::test]
     async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         // Compaction replaces the old turns with a summary inside the
-        // canonical but leaves the DB message stream untouched. Re-seeding
-        // the window would resurrect every summarized-away turn and undo the
-        // compaction, so a compacted canonical must skip the re-seed.
+        // canonical but leaves the DB message stream untouched. Recovery is
+        // timestamp-bounded (only rows newer than the snapshot's saved_at are
+        // re-queued), so the summarized-away turns — all older than the
+        // snapshot — are never resurrected; a compacted canonical stays
+        // compacted across resume.
         let (agent, executor) = make_test_agent();
         agent.set_emitter(make_recording_emitter());
         let session = executor.create_session("hello").await.unwrap();
@@ -1133,6 +1231,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -1207,6 +1306,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -1491,6 +1591,7 @@ mod tests {
             history,
             step_number: 2,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -1562,7 +1663,7 @@ mod tests {
             .run_blocking({
                 let session_id = session.id.clone();
                 move |db| {
-                    db.create_thought_step(&session_id, 1, "let me echo first")?;
+                    db.create_thought_step(&session_id, 1, "step-echo-thought")?;
                     let step = db.create_action_step(
                         &session_id,
                         2,
@@ -3075,30 +3176,17 @@ mod tests {
         assert_eq!(questions, 1, "ask question must appear exactly once");
         assert_eq!(finals, 1, "final answer must appear exactly once");
 
-        // Step rows from the failed attempt must be overwritten too ??the
+        // Step rows from the failed attempt must be overwritten too — the
         // review history stays linear (only branching splits timelines).
-        let stale_steps = steps
-            .iter()
-            .filter(|s| {
-                s.thought
-                    .as_deref()
-                    .is_some_and(|t| t.contains("Let me think"))
-            })
-            .count();
+        // Thought rows carry no text anymore (the text lives in messages),
+        // so count by step number: the failed attempt's step-2 rows must be
+        // gone, leaving only the retried step.
+        let step2_rows = steps.iter().filter(|s| s.step_number == 2).count();
         assert_eq!(
-            stale_steps, 0,
+            step2_rows, 1,
             "step rows from the failed attempt should be deleted, got {:?}",
             steps
         );
-        let final_steps = steps
-            .iter()
-            .filter(|s| {
-                s.thought
-                    .as_deref()
-                    .is_some_and(|t| t.contains("Answer accepted."))
-            })
-            .count();
-        assert_eq!(final_steps, 1, "retried step must appear exactly once");
     }
 
     #[tokio::test]
@@ -3698,6 +3786,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -3708,6 +3797,9 @@ mod tests {
             .db
             .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
+        // The partial lands strictly AFTER the user row (the continue
+        // truncation deletes rows created_at > the last user message).
+        std::thread::sleep(std::time::Duration::from_millis(5));
         agent
             .db
             .add_message(
@@ -3801,6 +3893,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         agent
             .db
@@ -3810,6 +3903,9 @@ mod tests {
             .db
             .add_message(&session.id, "user", "hello", Some("text"), None)
             .unwrap();
+        // The partial must land strictly after the user row (rollback
+        // truncates rows created_at > the snapshot's last message ts).
+        std::thread::sleep(std::time::Duration::from_millis(5));
         agent
             .db
             .add_message(&session.id, "assistant", "partial", Some("text"), None)
@@ -3891,6 +3987,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points,
+            saved_at: None,
         };
         agent
             .db
@@ -3983,6 +4080,7 @@ mod tests {
             history: vec![],
             step_number: 2,
             branch_points,
+            saved_at: None,
         };
         agent
             .db
@@ -4065,6 +4163,7 @@ mod tests {
             history: vec![],
             step_number: 2,
             branch_points,
+            saved_at: None,
         };
         agent
             .db
@@ -4146,6 +4245,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points,
+            saved_at: None,
         };
         agent
             .db
@@ -4313,6 +4413,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points,
+            saved_at: None,
         };
         agent
             .db
@@ -4424,6 +4525,7 @@ mod tests {
             history: vec![],
             step_number: 2,
             branch_points,
+            saved_at: None,
         };
         agent
             .db

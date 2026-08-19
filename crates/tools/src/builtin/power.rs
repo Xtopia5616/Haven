@@ -7,6 +7,58 @@ use crate::{Tool, ToolResult};
 
 pub struct PowerTool;
 
+/// Power operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerOperation {
+    Status,
+    Lock,
+    Sleep,
+    Hibernate,
+}
+
+/// Typed parameters for `PowerTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `PowerTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct PowerParams {
+    /// Operation to perform; defaults to `status`.
+    #[serde(default)]
+    pub operation: Option<PowerOperation>,
+}
+
+impl PowerTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: PowerParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+
+        match params.operation.unwrap_or(PowerOperation::Status) {
+            PowerOperation::Status => {
+                let status = imp::get_power_status()?;
+                Ok(ToolResult::ok(status))
+            }
+            PowerOperation::Lock => {
+                imp::lock_workstation()?;
+                Ok(ToolResult::ok(serde_json::json!({"locked": true})))
+            }
+            PowerOperation::Sleep => {
+                imp::sleep()?;
+                Ok(ToolResult::ok(serde_json::json!({"sleep": true})))
+            }
+            PowerOperation::Hibernate => {
+                imp::hibernate()?;
+                Ok(ToolResult::ok(serde_json::json!({"hibernate": true})))
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Tool for PowerTool {
     fn name(&self) -> String {
@@ -33,32 +85,11 @@ impl Tool for PowerTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `PowerParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-
-        let op = input["operation"].as_str().unwrap_or("status").to_string();
-
-        match op.as_str() {
-            "status" => {
-                let status = imp::get_power_status()?;
-                Ok(ToolResult::ok(status))
-            }
-            "lock" => {
-                imp::lock_workstation()?;
-                Ok(ToolResult::ok(serde_json::json!({"locked": true})))
-            }
-            "sleep" => {
-                imp::sleep()?;
-                Ok(ToolResult::ok(serde_json::json!({"sleep": true})))
-            }
-            "hibernate" => {
-                imp::hibernate()?;
-                Ok(ToolResult::ok(serde_json::json!({"hibernate": true})))
-            }
-            _ => anyhow::bail!("unknown power operation: {}", op),
-        }
+        let params = crate::tool::parse_tool_input::<PowerParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -264,5 +295,19 @@ mod tests {
             .execute(json!({"operation": "status"}), cancel)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_power_native_entry_lands_in_run() {
+        let result = PowerTool
+            .run(
+                PowerParams {
+                    operation: Some(PowerOperation::Status),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
     }
 }

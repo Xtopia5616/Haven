@@ -7,38 +7,31 @@ use crate::{Tool, ToolResult};
 
 pub struct SystemTool;
 
-#[async_trait]
-impl Tool for SystemTool {
-    fn name(&self) -> String {
-        "system".into()
-    }
-    fn description(&self) -> String {
-        "Query system information: CPU, memory, disk usage, OS info, hostname, uptime".into()
-    }
+/// Typed parameters for `SystemTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `SystemTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SystemParams {
+    /// Category to query; unknown values fall back to the `overview` set.
+    #[serde(default)]
+    pub category: Option<String>,
+}
 
-    fn risk_level(&self, _input: &Value) -> RiskLevel {
-        RiskLevel::Safe
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "enum": ["overview", "cpu", "memory", "disk", "os", "all"],
-                    "default": "overview"
-                }
-            }
-        })
-    }
-
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+impl SystemTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: SystemParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
 
-        let category = input["category"].as_str().unwrap_or("overview").to_string();
+        let category = params
+            .category
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "overview".to_string());
 
         let info = tokio::task::spawn_blocking(move || {
             // Build only what the requested category needs: the OS info is
@@ -74,6 +67,40 @@ impl Tool for SystemTool {
         .await?;
 
         Ok(ToolResult::ok(info))
+    }
+}
+
+#[async_trait]
+impl Tool for SystemTool {
+    fn name(&self) -> String {
+        "system".into()
+    }
+    fn description(&self) -> String {
+        "Query system information: CPU, memory, disk usage, OS info, hostname, uptime".into()
+    }
+
+    fn risk_level(&self, _input: &Value) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["overview", "cpu", "memory", "disk", "os", "all"],
+                    "default": "overview"
+                }
+            }
+        })
+    }
+
+    /// Entry ②: LLM JSON entry — convert/validate into `SystemParams`, then
+    /// land in the same implementation as entry ①.
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let params = crate::tool::parse_tool_input::<SystemParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -267,5 +294,19 @@ mod tests {
         cancel.cancel();
         let result = SystemTool.execute(json!({"category": "os"}), cancel).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_system_native_entry_lands_in_run() {
+        let result = SystemTool
+            .run(
+                SystemParams {
+                    category: Some("os".into()),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.output["os"]["hostname"].is_string());
     }
 }

@@ -10,6 +10,7 @@ pub mod files;
 pub mod input;
 pub mod load_mcp;
 pub mod load_skill;
+pub mod messaging;
 pub mod network;
 pub mod notify;
 pub mod power;
@@ -36,7 +37,7 @@ pub use facts::FactsTool;
 pub use scheduled_action::{
     ScheduleMode, ScheduledActionCenter, ScheduledActionFired, ScheduledActionTool,
 };
-pub use self_tool::{SelfTool, SelfToolContext};
+pub use self_tool::{SelfOperation, SelfParams, SelfTool, SelfToolContext};
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
 /// when set, else the global observation budget
@@ -72,7 +73,8 @@ pub async fn register_builtin_tools(
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
-) {
+) -> Option<Arc<self_tool::SelfTool>> {
+    let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
     tools.push(Arc::new(ask::AskTool));
     tools.push(Arc::new(files::FilesTool::new(
@@ -134,6 +136,20 @@ pub async fn register_builtin_tools(
     }));
     tools.push(Arc::new(notify::NotifyTool));
     tools.push(Arc::new(power::PowerTool));
+    // Cross-session messaging: one shared file bus, four tools. Registered
+    // unconditionally (no DB/app wiring needed); agents lazily register
+    // themselves on their first messaging call.
+    let messaging_bus = Arc::new(crate::inbox::InboxBus::default_root());
+    tools.push(Arc::new(messaging::AgentsListTool::new(
+        messaging_bus.clone(),
+    )));
+    tools.push(Arc::new(messaging::MessageSendTool::new(
+        messaging_bus.clone(),
+    )));
+    tools.push(Arc::new(messaging::MessageInboxTool::new(
+        messaging_bus.clone(),
+    )));
+    tools.push(Arc::new(messaging::MessageReplyTool::new(messaging_bus)));
     tools.push(Arc::new(load_skill::LoadSkillTool {
         skills_engine: skills_engine.clone(),
         skill_runner: skill_runner.clone(),
@@ -146,7 +162,7 @@ pub async fn register_builtin_tools(
         // Facts memory needs the DB; like SelfTool it only registers once the
         // desktop shell wires the app context (headless builds skip it).
         tools.push(Arc::new(facts::FactsTool::new(ctx.db.clone())));
-        tools.push(Arc::new(self_tool::SelfTool::new(
+        let tool = Arc::new(self_tool::SelfTool::new(
             ctx,
             skills_engine.clone(),
             mcp_manager.clone(),
@@ -154,8 +170,11 @@ pub async fn register_builtin_tools(
             registry,
             limits.self_tool_max_instructions_bytes,
             limits.self_tool_max_script_bytes,
-        )));
+        ));
+        self_tool_arc = Some(tool.clone());
+        tools.push(tool);
     }
+    self_tool_arc
 }
 
 #[cfg(test)]

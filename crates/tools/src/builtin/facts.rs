@@ -33,14 +33,50 @@ pub struct FactsTool {
     db: Option<Arc<Database>>,
 }
 
+/// Facts operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FactsOperation {
+    Search,
+    List,
+    Remember,
+    Forget,
+}
+
+/// Typed parameters for `FactsTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `FactsTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct FactsParams {
+    /// Operation to perform; defaults to `search`.
+    #[serde(default)]
+    pub operation: Option<FactsOperation>,
+    /// Free-text query matched against fact subject, predicate, object and
+    /// tags (operation=search only).
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Maximum number of results (default 10 for search, 20 for list).
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Short attribute key (required for remember and forget).
+    #[serde(default)]
+    pub predicate: Option<String>,
+    /// The value to remember; or a specific value to delete (optional for
+    /// forget, required for remember).
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Optional for remember: identity, preference, workspace, project.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
 impl FactsTool {
     pub fn new(db: Option<Arc<Database>>) -> Self {
         Self { db }
     }
 
-    fn parse_limit(input: &Value, default: usize) -> usize {
-        input["limit"]
-            .as_i64()
+    fn parse_limit(params: &FactsParams, default: usize) -> usize {
+        params
+            .limit
             .map(|l| l.clamp(1, 50) as usize)
             .unwrap_or(default)
     }
@@ -74,49 +110,49 @@ impl FactsTool {
         json!({ "facts": rows })
     }
 
-    fn execute_search(&self, input: &Value, db: &Database) -> anyhow::Result<ToolResult> {
-        let query = input["query"]
-            .as_str()
-            .map(|s| s.trim())
+    fn execute_search(&self, params: &FactsParams, db: &Database) -> anyhow::Result<ToolResult> {
+        let query = params
+            .query
+            .as_deref()
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("query is required for operation=search"))?;
-        let limit = Self::parse_limit(input, 10);
+        let limit = Self::parse_limit(params, 10);
         let mut facts = self.visible_facts(db.search_facts(query)?);
         facts.truncate(limit);
         Ok(ToolResult::ok(self.to_output_rows(&facts)))
     }
 
-    fn execute_list(&self, input: &Value, db: &Database) -> anyhow::Result<ToolResult> {
-        let limit = Self::parse_limit(input, 20);
+    fn execute_list(&self, params: &FactsParams, db: &Database) -> anyhow::Result<ToolResult> {
+        let limit = Self::parse_limit(params, 20);
         let mut facts = self.visible_facts(db.get_facts("user")?);
         facts.truncate(limit);
         Ok(ToolResult::ok(self.to_output_rows(&facts)))
     }
 
-    fn execute_remember(&self, input: &Value, db: &Database) -> anyhow::Result<ToolResult> {
-        let predicate = input["predicate"]
-            .as_str()
-            .map(|s| s.trim())
+    fn execute_remember(&self, params: &FactsParams, db: &Database) -> anyhow::Result<ToolResult> {
+        let predicate = params
+            .predicate
+            .as_deref()
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("predicate is required for operation=remember"))?;
-        let object = input["object"]
-            .as_str()
-            .map(|s| s.trim())
+        let object = params
+            .object
+            .as_deref()
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("object is required for operation=remember"))?;
         if is_sensitive_predicate(predicate) || is_sensitive_object(object) {
             anyhow::bail!("refusing to remember credential-like values");
         }
-        let tags: Vec<&str> = input["tags"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| t.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let tags: Vec<&str> = params
+            .tags
+            .iter()
+            .flatten()
+            .map(|t| t.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
         let fact = db.set_user_fact("user", predicate, object, &tags)?;
         Ok(ToolResult::ok(json!({
             "stored": {
@@ -130,18 +166,42 @@ impl FactsTool {
         })))
     }
 
-    fn execute_forget(&self, input: &Value, db: &Database) -> anyhow::Result<ToolResult> {
-        let predicate = input["predicate"]
-            .as_str()
-            .map(|s| s.trim())
+    fn execute_forget(&self, params: &FactsParams, db: &Database) -> anyhow::Result<ToolResult> {
+        let predicate = params
+            .predicate
+            .as_deref()
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .ok_or_else(|| anyhow::anyhow!("predicate is required for operation=forget"))?;
-        let object = input["object"]
-            .as_str()
+        let object = params
+            .object
+            .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
         let deleted = db.delete_facts_by_triple("user", predicate, object)?;
         Ok(ToolResult::ok(json!({ "deleted": deleted })))
+    }
+
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: FactsParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let Some(db) = self.db.as_ref() else {
+            anyhow::bail!("facts database is not available");
+        };
+
+        match params.operation.unwrap_or(FactsOperation::Search) {
+            FactsOperation::Search => self.execute_search(&params, db),
+            FactsOperation::List => self.execute_list(&params, db),
+            FactsOperation::Remember => self.execute_remember(&params, db),
+            FactsOperation::Forget => self.execute_forget(&params, db),
+        }
     }
 }
 
@@ -204,22 +264,11 @@ impl Tool for FactsTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `FactsParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let Some(db) = self.db.as_ref() else {
-            anyhow::bail!("facts database is not available");
-        };
-        let operation = input["operation"].as_str().unwrap_or("search");
-
-        match operation {
-            "search" => self.execute_search(&input, db),
-            "list" => self.execute_list(&input, db),
-            "remember" => self.execute_remember(&input, db),
-            "forget" => self.execute_forget(&input, db),
-            other => anyhow::bail!("unknown operation '{}'", other),
-        }
+        let params = crate::tool::parse_tool_input::<FactsParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -522,5 +571,27 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn test_native_entry_lands_in_run() {
+        let (tool, _db, _dir) = db_with_facts();
+        let result = tool
+            .run(
+                FactsParams {
+                    operation: Some(FactsOperation::Search),
+                    query: Some("Rust".into()),
+                    limit: None,
+                    predicate: None,
+                    object: None,
+                    tags: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let facts = result.output["facts"].as_array().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["object"], "Rust");
     }
 }

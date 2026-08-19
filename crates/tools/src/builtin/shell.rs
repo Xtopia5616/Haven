@@ -31,70 +31,57 @@ impl Default for ShellTool {
     }
 }
 
+/// Typed parameters for `ShellTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `ShellTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ShellParams {
+    /// Shell command to execute.
+    pub command: String,
+    /// Which shell to run the command in (default: the app-configured shell).
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// If true, hide output from the user (agent always sees it).
+    #[serde(default)]
+    pub silent: Option<bool>,
+    /// Run the command in the background and return an action_id immediately.
+    #[serde(default)]
+    pub background: Option<bool>,
+    /// Working directory to run the command in (default: shared Temp dir).
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
 impl ShellTool {
-    /// Resolve the `shell` and `cwd` arguments from tool input, applying the
-    /// configured default shell when the model omits `shell`. Shared by the
-    /// foreground and background execution paths.
-    fn resolve_shell_and_cwd(&self, input: &Value) -> (String, Option<PathBuf>) {
-        let shell = input["shell"]
-            .as_str()
+    /// Resolve the `shell` and `cwd` arguments, applying the configured
+    /// default shell when the caller omits `shell`. Shared by the foreground
+    /// and background execution paths.
+    fn resolve_shell_and_cwd(
+        &self,
+        shell_arg: Option<&str>,
+        cwd_arg: Option<&str>,
+    ) -> (String, Option<PathBuf>) {
+        let shell = shell_arg
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| self.default_shell.clone());
-        let cwd = input["cwd"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
+        let cwd = cwd_arg.filter(|s| !s.is_empty()).map(PathBuf::from);
         (shell, cwd)
     }
-}
 
-#[async_trait]
-impl Tool for ShellTool {
-    fn name(&self) -> String {
-        "shell".into()
-    }
-    fn description(&self) -> String {
-        "Execute a shell command on the user's PC. The default shell is user-configurable in the app settings (cmd / Windows PowerShell / PowerShell 7, reported in the result's shell field; any shell is selectable per call via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. Commands that exceed the timeout are automatically moved to the background and keep running.".into()
-    }
-
-    fn risk_level(&self, _input: &Value) -> RiskLevel {
-        RiskLevel::High
-    }
-
-    /// Shell commands get a generous timeout (5 min) so long-running
-    /// foreground work (git clone, npm install, build scripts) has room to
-    /// finish; truly hung commands are moved to the background by the tools
-    /// manager on timeout instead of failing the step.
-    fn default_timeout_secs(&self) -> u64 {
-        300
-    }
-
-    fn input_schema(&self) -> Value {
-        #[cfg(windows)]
-        let shells = ["cmd", "powershell", "pwsh"];
-        #[cfg(not(windows))]
-        let shells = ["sh", "bash"];
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": { "type": "string", "description": "Shell command to execute" },
-                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
-                "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. The result is pushed back to you automatically when the action finishes; list all actions with the actions tool.", "default": false },
-                "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
-            },
-            "required": ["command"]
-        })
-    }
-
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let cmd = input["command"].as_str().unwrap_or("");
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: ShellParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let cmd = params.command;
         if cmd.is_empty() {
             anyhow::bail!("command is required");
         }
-        let silent = input["silent"].as_bool().unwrap_or(false);
-        let (shell, cwd) = self.resolve_shell_and_cwd(&input);
+        let silent = params.silent.unwrap_or(false);
+        let (shell, cwd) =
+            self.resolve_shell_and_cwd(params.shell.as_deref(), params.cwd.as_deref());
         let max_chars = self.max_output_chars;
 
         if cancel.is_cancelled() {
@@ -104,10 +91,10 @@ impl Tool for ShellTool {
         // Background mode: hand the command to the action registry and return
         // immediately. The result is pushed back to the session automatically on
         // completion; the agent can list all actions with the `actions` tool.
-        if input["background"].as_bool().unwrap_or(false) {
+        if params.background.unwrap_or(false) {
             let action_id = self
                 .actions
-                .spawn_shell(cmd, &shell, max_chars, cwd)
+                .spawn_shell(&cmd, &shell, max_chars, cwd)
                 .await?;
             return Ok(ToolResult::ok(serde_json::json!({
                 "background": true,
@@ -118,7 +105,7 @@ impl Tool for ShellTool {
             })));
         }
 
-        let mut std_cmd = bg::build_shell_command_silent(&shell, cmd);
+        let mut std_cmd = bg::build_shell_command_silent(&shell, &cmd);
         if let Some(cwd) = cwd {
             std_cmd.current_dir(cwd);
         }
@@ -227,7 +214,7 @@ impl Tool for ShellTool {
             );
             let log_path = log_path.to_string_lossy().into_owned();
             output["log_path"] = serde_json::Value::String(log_path.clone());
-            err_text = bg::append_windows_diagnostics(&shell, cmd, &err_text);
+            err_text = bg::append_windows_diagnostics(&shell, &cmd, &err_text);
             err_text = format!("{}\n[full output: {}]", err_text.trim_end(), log_path);
             Ok(ToolResult {
                 success: false,
@@ -237,6 +224,53 @@ impl Tool for ShellTool {
                 signals: crate::tool::ToolSignals::default(),
             })
         }
+    }
+}
+
+#[async_trait]
+impl Tool for ShellTool {
+    fn name(&self) -> String {
+        "shell".into()
+    }
+    fn description(&self) -> String {
+        "Execute a shell command on the user's PC. The default shell is user-configurable in the app settings (cmd / Windows PowerShell / PowerShell 7, reported in the result's shell field; any shell is selectable per call via the shell parameter). Syntax differs between shells: `&&` chaining works only in cmd; PowerShell parses `&&` as an error — use `;` instead. Commands that exceed the timeout are automatically moved to the background and keep running.".into()
+    }
+
+    fn risk_level(&self, _input: &Value) -> RiskLevel {
+        RiskLevel::High
+    }
+
+    /// Shell commands get a generous timeout (5 min) so long-running
+    /// foreground work (git clone, npm install, build scripts) has room to
+    /// finish; truly hung commands are moved to the background by the tools
+    /// manager on timeout instead of failing the step.
+    fn default_timeout_secs(&self) -> u64 {
+        300
+    }
+
+    fn input_schema(&self) -> Value {
+        #[cfg(windows)]
+        let shells = ["cmd", "powershell", "pwsh"];
+        #[cfg(not(windows))]
+        let shells = ["sh", "bash"];
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "Shell command to execute" },
+                "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
+                "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
+                "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. The result is pushed back to you automatically when the action finishes; list all actions with the actions tool.", "default": false },
+                "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
+            },
+            "required": ["command"]
+        })
+    }
+
+    /// Entry ②: LLM JSON entry — convert/validate into `ShellParams`, then
+    /// land in the same implementation as entry ①.
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let params = crate::tool::parse_tool_input::<ShellParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 
     /// Re-run a timed-out foreground command as a background action so the session
@@ -248,7 +282,8 @@ impl Tool for ShellTool {
         if cmd.trim().is_empty() {
             return None;
         }
-        let (shell, cwd) = self.resolve_shell_and_cwd(input);
+        let (shell, cwd) =
+            self.resolve_shell_and_cwd(input["shell"].as_str(), input["cwd"].as_str());
         let max_chars = self.max_output_chars;
         let action_id = self
             .actions

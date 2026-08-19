@@ -87,6 +87,8 @@ npm run check
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。
+- **内容行与执行行共用 id**（同一实体在 `messages` 与 `session_steps` 各存一面，内容只落 messages，另一面只存执行态）：assistant thought 的消息行与 thought 步骤行共用 `step-*` id（流式气泡 id 按 `step` 前缀 mint，`session_steps.thought` 列新数据不再写入）；补充输入/steering 的 thought 步骤行与用户消息行共用 `msg-*` id（消息行先落库，步骤行以 `message_id` 复用）；ask 问题消息行与 ask 步骤行共用 `step-*` id（问题文本只落 messages，resume 的 snapshot-less 重建跳过 `action_tool='ask'` 步骤）。旧库行保留旧格式，前端按 id 关联、内容匹配仅作 legacy 兜底。
+- **resume 恢复补充输入按时间不按内容**：`ReActSnapshot` 带 `saved_at`，resume 时仅当 executor 队列为空（崩溃/重启）才把 `created_at > saved_at` 的 user 消息重新排队；canonical 快照是唯一权威，禁止再引入内容比对去重。前端提交在 `submitTranscript` 有 in-flight 锁（并发提交共享同一 promise），后端不再对用户输入做内容去重。
 - Rust/DB/事件字段统一 snake_case `xxx_id`（`session_id`、`action_id`、`message_id`…）；前端在边界转 camelCase `xxxId`。
 - 术语：**session** = 对话（ReAct 主实体）；**action** = 工作单元（后台任务/定时任务，`actions` 表 kind 区分）；任务/作业/提醒统一叫任务，UI 文案一律「会话」「任务」「后台任务」「定时任务」。
 - 实体 ID newtype 集中在 `haven_common::types`（`id_newtype!` 宏生成，`struct X(pub String)`，serde 按普通字符串序列化）：目前只有 `ConfirmId`/`SessionId` 在运行时被使用，其余实体继续用 `String`；新增真正需要类型隔离的实体 ID 时再补 newtype，不要提前定义未使用的类型。

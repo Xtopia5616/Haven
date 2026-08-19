@@ -294,6 +294,19 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// Convert LLM JSON input into a builtin tool's typed params (entry ② of the
+/// builtin two-entry contract: ① `XxxTool::run(&XxxParams)` native call with
+/// zero serialization, ② `Tool::execute(Value)` JSON entry that converts and
+/// validates here, then lands in the same `run`). Serde reports missing
+/// fields, wrong types, and unknown enum variants with their allowed values.
+pub fn parse_tool_input<T: serde::de::DeserializeOwned>(
+    tool_name: &str,
+    input: Value,
+) -> anyhow::Result<T> {
+    serde_json::from_value(input)
+        .map_err(|e| anyhow::anyhow!("invalid '{}' input: {}", tool_name, e))
+}
+
 pub type ToolBox = Arc<dyn Tool>;
 
 /// Combined tools + name index under a single RwLock so rebuilds update

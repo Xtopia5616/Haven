@@ -10,54 +10,49 @@ pub struct ProcessTool {
     pub max_output_chars: usize,
 }
 
-impl Default for ProcessTool {
-    fn default() -> Self {
-        Self {
-            max_output_chars: 20_000,
-        }
-    }
+/// Process operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessOperation {
+    List,
+    Launch,
+    Kill,
 }
 
-#[async_trait]
-impl Tool for ProcessTool {
-    fn name(&self) -> String {
-        "process".into()
-    }
-    fn description(&self) -> String {
-        "List, launch, or kill processes".into()
-    }
+/// Typed parameters for `ProcessTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `ProcessTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ProcessParams {
+    /// Operation to perform; defaults to `list`.
+    #[serde(default)]
+    pub operation: Option<ProcessOperation>,
+    /// Command to run for the launch operation.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Process id for the kill operation.
+    #[serde(default)]
+    pub pid: Option<i64>,
+    /// Working directory for the launched command. Defaults to the shared
+    /// Temp working directory.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
 
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        match input["operation"].as_str() {
-            Some("kill") => RiskLevel::High,
-            Some("launch") => RiskLevel::Medium,
-            _ => RiskLevel::Low,
-        }
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "operation": { "type": "string", "enum": ["list", "launch", "kill"] },
-                "command": { "type": "string" },
-                "pid": { "type": "integer" },
-                "cwd": { "type": "string", "description": "Working directory for the launched command. Defaults to the shared Temp working directory.", "default": null }
-            },
-            "required": ["operation"]
-        })
-    }
-
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let op = input["operation"].as_str().unwrap_or("list");
+impl ProcessTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: ProcessParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
         let max_chars = self.max_output_chars;
 
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-
-        match op {
-            "list" => {
+        match params.operation.unwrap_or(ProcessOperation::List) {
+            ProcessOperation::List => {
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
                 let processes: Vec<Value> = tokio::task::spawn_blocking(move || {
                     let system = sysinfo::System::new_all();
                     let mut processes: Vec<Value> = system
@@ -98,19 +93,22 @@ impl Tool for ProcessTool {
                 }
                 Ok(ToolResult::ok(output))
             }
-            "launch" => {
-                let cmd = input["command"].as_str().unwrap_or("");
+            ProcessOperation::Launch => {
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                let cmd = params.command.unwrap_or_default();
                 if cmd.is_empty() {
                     anyhow::bail!("command is required for launch");
                 }
                 // Fire-and-forget: no kill_on_drop (dropping the Child would
                 // terminate the launched process).
                 let mut child = tokio::process::Command::new("cmd");
-                child.args(["/c", cmd]);
+                child.args(["/c", &cmd]);
                 // Default to the shared Temp working directory so launched
                 // commands do not execute in the app's own working directory.
                 child.current_dir(haven_common::default_work_dir());
-                if let Some(cwd) = input["cwd"].as_str().filter(|s| !s.is_empty()) {
+                if let Some(cwd) = params.cwd.filter(|s| !s.is_empty()) {
                     child.current_dir(cwd);
                 }
                 // Route launched commands through a locally detected proxy
@@ -128,8 +126,8 @@ impl Tool for ProcessTool {
                 child.spawn()?;
                 Ok(ToolResult::ok(serde_json::json!({"launched": cmd})))
             }
-            "kill" => {
-                let pid = input["pid"].as_i64().unwrap_or(0) as u32;
+            ProcessOperation::Kill => {
+                let pid = params.pid.unwrap_or(0) as u32;
                 if pid == 0 {
                     anyhow::bail!("valid pid is required");
                 }
@@ -157,8 +155,53 @@ impl Tool for ProcessTool {
                 }
                 Ok(ToolResult::ok(serde_json::json!({"killed": pid})))
             }
-            _ => anyhow::bail!("unknown process operation: {}", op),
         }
+    }
+}
+
+impl Default for ProcessTool {
+    fn default() -> Self {
+        Self {
+            max_output_chars: 20_000,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ProcessTool {
+    fn name(&self) -> String {
+        "process".into()
+    }
+    fn description(&self) -> String {
+        "List, launch, or kill processes".into()
+    }
+
+    fn risk_level(&self, input: &Value) -> RiskLevel {
+        match input["operation"].as_str() {
+            Some("kill") => RiskLevel::High,
+            Some("launch") => RiskLevel::Medium,
+            _ => RiskLevel::Low,
+        }
+    }
+
+    fn input_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string", "enum": ["list", "launch", "kill"] },
+                "command": { "type": "string" },
+                "pid": { "type": "integer" },
+                "cwd": { "type": "string", "description": "Working directory for the launched command. Defaults to the shared Temp working directory.", "default": null }
+            },
+            "required": ["operation"]
+        })
+    }
+
+    /// Entry ②: LLM JSON entry — convert/validate into `ProcessParams`, then
+    /// land in the same implementation as entry ①.
+    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        let params = crate::tool::parse_tool_input::<ProcessParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -283,5 +326,22 @@ mod tests {
             .execute(json!({"operation": "list"}), cancel)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_process_native_entry_lands_in_run() {
+        let result = ProcessTool::default()
+            .run(
+                ProcessParams {
+                    operation: Some(ProcessOperation::Launch),
+                    command: Some("echo hello".into()),
+                    pid: None,
+                    cwd: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["launched"], "echo hello");
     }
 }

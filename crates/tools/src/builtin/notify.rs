@@ -14,6 +14,49 @@ use crate::{Tool, ToolResult};
 /// Unlike `ask`, this does not pause the session — the loop keeps running.
 pub struct NotifyTool;
 
+/// Typed parameters for `NotifyTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `NotifyTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NotifyParams {
+    /// Short notification title. Defaults to 'Haven'.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// The notification message body shown to the user.
+    pub body: String,
+}
+
+impl NotifyTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: NotifyParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let body = params.body.trim().to_string();
+        if body.is_empty() {
+            anyhow::bail!("body must not be empty");
+        }
+        let title = params
+            .title
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Haven".to_string());
+
+        // The `notify` flag is the signal the ReAct loop keys on to emit the
+        // Notification event (in-app toast + Windows notification).
+        Ok(ToolResult::ok(serde_json::json!({
+            "notify": true,
+            "title": title,
+            "body": body,
+            "delivered_to": ["in_app", "windows"],
+        })))
+    }
+}
+
 #[async_trait]
 impl Tool for NotifyTool {
     fn name(&self) -> String {
@@ -46,32 +89,11 @@ impl Tool for NotifyTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `NotifyParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let body = input["body"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("body is required for notify"))?
-            .trim()
-            .to_string();
-        if body.is_empty() {
-            anyhow::bail!("body must not be empty");
-        }
-        let title = input["title"]
-            .as_str()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Haven".to_string());
-
-        // The `notify` flag is the signal the ReAct loop keys on to emit the
-        // Notification event (in-app toast + Windows notification).
-        Ok(ToolResult::ok(serde_json::json!({
-            "notify": true,
-            "title": title,
-            "body": body,
-            "delivered_to": ["in_app", "windows"],
-        })))
+        let params = crate::tool::parse_tool_input::<NotifyParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 
     /// Declare the toast signal so the loop emits the Notification event
@@ -161,5 +183,30 @@ mod tests {
         cancel.cancel();
         let result = NotifyTool.execute(json!({"body": "x"}), cancel).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_notify_native_entry_lands_in_run() {
+        let result = NotifyTool
+            .run(
+                NotifyParams {
+                    title: Some("Build".into()),
+                    body: "Compilation finished".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["title"], "Build");
+        assert_eq!(result.output["body"], "Compilation finished");
+    }
+
+    #[tokio::test]
+    async fn test_notify_json_entry_rejects_wrong_type() {
+        let result = NotifyTool
+            .execute(json!({"body": 42}), CancellationToken::new())
+            .await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid 'notify' input"), "{err}");
     }
 }

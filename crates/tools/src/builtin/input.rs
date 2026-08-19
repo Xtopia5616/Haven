@@ -12,6 +12,124 @@ use crate::{Tool, ToolResult};
 /// will error. The actual input primitives live in `crate::simulate`.
 pub struct InputTool;
 
+/// Input operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputOperation {
+    Type,
+    Key,
+    Click,
+    Move,
+    Scroll,
+}
+
+/// Mouse button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputButton {
+    Left,
+    Right,
+    Middle,
+}
+
+impl InputButton {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InputButton::Left => "left",
+            InputButton::Right => "right",
+            InputButton::Middle => "middle",
+        }
+    }
+}
+
+/// Typed parameters for `InputTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `InputTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct InputParams {
+    /// What to send.
+    pub operation: InputOperation,
+    /// Text to type (type only; supports any Unicode).
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Key name or chord (enter, esc, tab, ctrl+c).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Screen x in pixels (click/move).
+    #[serde(default)]
+    pub x: Option<i64>,
+    /// Screen y in pixels (click/move).
+    #[serde(default)]
+    pub y: Option<i64>,
+    /// Mouse button (click only; default left).
+    #[serde(default)]
+    pub button: Option<InputButton>,
+    /// Wheel steps (scroll only; positive = up/away, negative = down/toward).
+    #[serde(default)]
+    pub delta: Option<i64>,
+}
+
+impl InputTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: InputParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let result = match params.operation {
+            InputOperation::Type => {
+                let text = params
+                    .text
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("text is required for type"))?;
+                let chars = text.chars().count();
+                crate::simulate::type_text(text)?;
+                serde_json::json!({ "typed": text, "chars": chars })
+            }
+            InputOperation::Key => {
+                let key = params
+                    .key
+                    .as_deref()
+                    .filter(|k| !k.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("key is required for key"))?;
+                crate::simulate::press_key(key)?;
+                serde_json::json!({ "pressed": key })
+            }
+            InputOperation::Click => {
+                let x = params
+                    .x
+                    .ok_or_else(|| anyhow::anyhow!("x is required for click"))?;
+                let y = params
+                    .y
+                    .ok_or_else(|| anyhow::anyhow!("y is required for click"))?;
+                let button = params.button.unwrap_or(InputButton::Left);
+                crate::simulate::click(x, y, button.as_str())?;
+                serde_json::json!({ "clicked": [x, y], "button": button.as_str() })
+            }
+            InputOperation::Move => {
+                let x = params
+                    .x
+                    .ok_or_else(|| anyhow::anyhow!("x is required for move"))?;
+                let y = params
+                    .y
+                    .ok_or_else(|| anyhow::anyhow!("y is required for move"))?;
+                crate::simulate::move_to(x, y)?;
+                serde_json::json!({ "moved_to": [x, y] })
+            }
+            InputOperation::Scroll => {
+                let delta = params.delta.unwrap_or(1).clamp(-100, 100);
+                crate::simulate::scroll(delta)?;
+                serde_json::json!({ "scrolled": delta })
+            }
+        };
+        Ok(ToolResult::ok(result))
+    }
+}
+
 #[async_trait]
 impl Tool for InputTool {
     fn name(&self) -> String {
@@ -74,60 +192,11 @@ impl Tool for InputTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `InputParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let op = input["operation"].as_str().ok_or_else(|| {
-            anyhow::anyhow!("operation is required (type, key, click, move, scroll)")
-        })?;
-        let result = match op {
-            "type" => {
-                let text = input["text"]
-                    .as_str()
-                    .filter(|t| !t.trim().is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("text is required for type"))?;
-                let chars = text.chars().count();
-                crate::simulate::type_text(text)?;
-                serde_json::json!({ "typed": text, "chars": chars })
-            }
-            "key" => {
-                let key = input["key"]
-                    .as_str()
-                    .filter(|k| !k.trim().is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("key is required for key"))?;
-                crate::simulate::press_key(key)?;
-                serde_json::json!({ "pressed": key })
-            }
-            "click" => {
-                let x = input["x"]
-                    .as_i64()
-                    .ok_or_else(|| anyhow::anyhow!("x is required for click"))?;
-                let y = input["y"]
-                    .as_i64()
-                    .ok_or_else(|| anyhow::anyhow!("y is required for click"))?;
-                let button = input["button"].as_str().unwrap_or("left");
-                crate::simulate::click(x, y, button)?;
-                serde_json::json!({ "clicked": [x, y], "button": button })
-            }
-            "move" => {
-                let x = input["x"]
-                    .as_i64()
-                    .ok_or_else(|| anyhow::anyhow!("x is required for move"))?;
-                let y = input["y"]
-                    .as_i64()
-                    .ok_or_else(|| anyhow::anyhow!("y is required for move"))?;
-                crate::simulate::move_to(x, y)?;
-                serde_json::json!({ "moved_to": [x, y] })
-            }
-            "scroll" => {
-                let delta = input["delta"].as_i64().unwrap_or(1).clamp(-100, 100);
-                crate::simulate::scroll(delta)?;
-                serde_json::json!({ "scrolled": delta })
-            }
-            _ => anyhow::bail!("unknown input operation: {}", op),
-        };
-        Ok(ToolResult::ok(result))
+        let params = crate::tool::parse_tool_input::<InputParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -206,5 +275,36 @@ mod tests {
             .execute(json!({"operation": "move", "x": 1, "y": 1}), cancel)
             .await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_native_entry_lands_in_run() {
+        let err = InputTool
+            .run(
+                InputParams {
+                    operation: InputOperation::Type,
+                    text: None,
+                    key: None,
+                    x: None,
+                    y: None,
+                    button: None,
+                    delta: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("text is required for type"));
+    }
+
+    #[tokio::test]
+    async fn test_json_entry_rejects_unknown_operation() {
+        let err = InputTool
+            .execute(json!({"operation": "bogus"}), CancellationToken::new())
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("invalid 'input' input"), "{msg}");
+        assert!(msg.contains("unknown variant `bogus`"), "{msg}");
     }
 }

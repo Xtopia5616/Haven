@@ -586,7 +586,10 @@ impl EventDispatcher {
             message_id,
             thought.len()
         );
-        if let Err(e) = db.create_thought_step(session_id, step_number as i32, thought) {
+        // The step row shares the streamed bubble's id (the message row is
+        // persisted under the same id) and stores no text: the thought text
+        // lives exclusively in the `messages` table.
+        if let Err(e) = db.create_thought_step(session_id, step_number as i32, message_id) {
             tracing::warn!(
                 "create_thought_step failed (session={} step={}): {}",
                 session_id,

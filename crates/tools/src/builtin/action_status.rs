@@ -14,6 +14,30 @@ pub struct ActionStatusTool {
     pub actions: Arc<BackgroundActions>,
 }
 
+/// Typed parameters for `ActionStatusTool`. Entry ① (native `run`) and entry
+/// ② (`Tool::execute` with LLM JSON) both land in `ActionStatusTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActionStatusParams {
+    /// The action id returned by a shell(background: true) call.
+    pub action_id: String,
+}
+
+impl ActionStatusTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: ActionStatusParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let status = self.actions.status(&params.action_id).await;
+        Ok(ToolResult::ok(status))
+    }
+}
+
 #[async_trait]
 impl Tool for ActionStatusTool {
     fn name(&self) -> String {
@@ -41,15 +65,11 @@ impl Tool for ActionStatusTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `ActionStatusParams`,
+    /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let action_id = input["action_id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("action_id is required for status"))?;
-        let status = self.actions.status(action_id).await;
-        Ok(ToolResult::ok(status))
+        let params = crate::tool::parse_tool_input::<ActionStatusParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 }
 
@@ -122,5 +142,22 @@ mod tests {
         };
         let result = tool.execute(json!({"action_id": "action-x"}), cancel).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_status_native_entry_lands_in_run() {
+        let tool = ActionStatusTool {
+            actions: Arc::new(BackgroundActions::new()),
+        };
+        let result = tool
+            .run(
+                ActionStatusParams {
+                    action_id: "action-nope".into(),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["status"], "not_found");
     }
 }

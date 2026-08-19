@@ -88,6 +88,30 @@ pub struct ClipboardTool {
     entry_max_chars: usize,
 }
 
+/// Clipboard operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardOperation {
+    Read,
+    Write,
+    History,
+}
+
+/// Typed parameters for `ClipboardTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `ClipboardTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ClipboardParams {
+    /// Operation to perform; defaults to `read`.
+    #[serde(default)]
+    pub operation: Option<ClipboardOperation>,
+    /// Content for the write operation.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Entry limit for the history operation (clamped to the tool cap).
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
 impl ClipboardTool {
     pub fn new(
         history: Arc<ClipboardHistory>,
@@ -134,15 +158,27 @@ impl Tool for ClipboardTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `ClipboardParams`,
+    /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let op = input["operation"].as_str().unwrap_or("read");
+        let params = crate::tool::parse_tool_input::<ClipboardParams>(&self.name(), input)?;
+        self.run(params, cancel).await
+    }
+}
 
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-
-        match op {
-            "read" => {
+impl ClipboardTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: ClipboardParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        match params.operation.unwrap_or(ClipboardOperation::Read) {
+            ClipboardOperation::Read => {
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
                 let text = tokio::task::spawn_blocking(|| -> anyhow::Result<String> {
                     let mut cb = arboard::Clipboard::new()?;
                     cb.get_text()
@@ -162,11 +198,10 @@ impl Tool for ClipboardTool {
                 }
                 Ok(ToolResult::ok(result))
             }
-            "write" => {
-                let content = input["content"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("'content' is required for write operation"))?
-                    .to_string();
+            ClipboardOperation::Write => {
+                let content = params
+                    .content
+                    .ok_or_else(|| anyhow::anyhow!("'content' is required for write operation"))?;
 
                 tokio::task::spawn_blocking({
                     let content = content.clone();
@@ -184,9 +219,12 @@ impl Tool for ClipboardTool {
                 self.history.record(content);
                 Ok(ToolResult::ok(serde_json::json!({"written": true})))
             }
-            "history" => {
-                let limit = input["limit"]
-                    .as_u64()
+            ClipboardOperation::History => {
+                if cancel.is_cancelled() {
+                    anyhow::bail!("cancelled");
+                }
+                let limit = params
+                    .limit
                     .map(|l| (l.min(self.max_history_limit as u64)) as usize)
                     .unwrap_or(self.default_limit);
                 let entries = self.history.recent(limit);
@@ -208,7 +246,6 @@ impl Tool for ClipboardTool {
                     "total": self.history.len(),
                 })))
             }
-            _ => anyhow::bail!("unknown clipboard operation: {}", op),
         }
     }
 }
@@ -388,5 +425,24 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["content"], "item-4");
         assert_eq!(result.output["total"], 5);
+    }
+
+    #[tokio::test]
+    async fn test_clipboard_native_entry_lands_in_run() {
+        let tool = test_tool();
+        tool.history.record("native".into());
+        let result = tool
+            .run(
+                ClipboardParams {
+                    operation: Some(ClipboardOperation::History),
+                    content: None,
+                    limit: Some(10),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let entries = result.output["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["content"], "native");
     }
 }

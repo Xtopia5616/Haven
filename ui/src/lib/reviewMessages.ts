@@ -4,12 +4,11 @@
 
 import { formatMessageTime } from '$lib/stores.ts';
 
-// Sentinel the backend persists in `messages.tool_call_id` for assistant
-// messages that carry an `ask` question text (see
-// `ASK_MSG_TOOL_CALL_ID` in crates/agent/src/react.rs). The message exists
-// so resume can re-seed the question into the canonical; the review builder
-// skips it (the ask CARD is the step row) by this marker instead of content
-// matching. Kept in sync with the Rust const — pinned by a test below.
+// Sentinel the backend used to persist in `messages.tool_call_id` for
+// assistant messages carrying an `ask` question text. New records no
+// longer set it: the question message is persisted under the ask step row's
+// id, so the review builder skips it by id and renders the ask CARD from
+// the message. Legacy rows still carry the sentinel — kept for them.
 export const ASK_MSG_TOOL_CALL_ID = '__ask__';
 
 interface ReviewMessage {
@@ -35,6 +34,9 @@ interface ReviewStep {
 	observation?: string | null;
 	thought?: string | null;
 	created_at: string;
+	/** Tool/ask completion time (observation landed). `null` for rows that
+	 * never completed (failed mid-execution); falls back to created_at. */
+	completed_at?: string | null;
 	step_number: number;
 }
 
@@ -125,13 +127,21 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 	const msgs = data.messages || [];
 	const session = data.session || {};
 
+	// Message rows persisted under a step row's id (ask questions on new
+	// records, thought/supplement content on new records) are the content
+	// view of that step: lookups by id below replace all content matching.
+	const msgById = new Map(msgs.map((m) => [m.id, m]));
+	const askStepIds = new Set(
+		(data.steps || []).filter((s) => s.action_tool === 'ask').map((s) => s.id),
+	);
+
 	const msgIds = new Set();
 	for (const msg of msgs) {
 		msgIds.add(msg.id);
-		// Ask question messages carry the `__ask__` tool_call_id sentinel:
-		// the question is rendered as the ask CARD (built from the step row
-		// below), so the message bubble would duplicate it. Skipping by
-		// marker avoids any content comparison.
+		// New records persist the ask question message under the ask step
+		// row's id: skip it here (the ask CARD below renders it). Legacy
+		// records carry the `__ask__` sentinel — skip those too.
+		if (askStepIds.has(msg.id)) continue;
 		if (msg.tool_call_id === ASK_MSG_TOOL_CALL_ID) continue;
 		items.push({
 			id: msg.id,
@@ -146,40 +156,47 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 		});
 	}
 
-	// Steps only supplement action/observation (tool) badges.
+	// Steps only supplement action/observation (tool/ask) badges.
 	// Thought-only steps are skipped because their text is already
-	// represented in session messages, avoiding duplication.
+	// represented in session messages (the step row shares the message's id),
+	// avoiding duplication.
 	for (const step of data.steps || []) {
 		// The DB stores the step row under the very `step-*` id the backend
 		// minted for the live tool card, so the badge and the live card are
-		// one entity.
+		// one entity. New ask records ALSO persist their question message
+		// under this id — the card below renders that message, so it must
+		// not be deduped away.
 		const stepId = step.id;
-		if (msgIds.has(stepId)) continue;
 		if (!step.action_tool) continue;
+		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
 		// Silent tool steps (input `"silent": true`) are hidden in the live
 		// chat; keep them hidden here so review matches the live view.
 		if (step.silent) continue;
 		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
-		// under the step row's id (matching the live card). Its question text
-		// is ALSO persisted as an assistant session message for resume
-		// re-seeding; new records mark that message with the `__ask__`
-		// sentinel (skipped above), legacy records are matched by content.
-		// Either way the message bubble is dropped so the card never
-		// duplicates it.
+		// under the step row's id (matching the live card). New records keep
+		// the question text in the message row persisted under that id (the
+		// single content authority; the row also re-seeds resume); legacy
+		// records parse it from the observation JSON instead.
+		// The card's LOGICAL position is when its content (the observation /
+		// question) landed — `completed_at` — not when the tool started. The
+		// step row's created_at (tool START) can fall in the same second as the
+		// following message row, and the stable `_ts` sort would push the card
+		// AFTER the answer it precedes. completed_at always sits between the
+		// preceding thought and the next message. The displayed time keeps
+		// created_at so the card matches the live view (action start).
+		const cardTs = Date.parse(step.completed_at || step.created_at) || 0;
 		if (step.action_tool === 'ask') {
-			// The persisted step observation is the raw tool JSON
-			// ({"ask":true,"question":...,"hint":...}), not the readable
-			// question. Extract the question so it can be matched against the
-			// session message and rendered as an ask card instead of a raw
-			// JSON tool badge. Older records may store the question directly.
-			let askText = obs;
+			const askMsg = msgById.get(stepId);
+			let askText = askMsg ? askMsg.content : null;
 			let askOptions: string[] = [];
 			if (obs) {
 				try {
 					const parsed: { question?: unknown; options?: unknown } = JSON.parse(obs);
 					if (parsed && typeof parsed.question === 'string') {
-						askText = parsed.question;
+						if (!askText) askText = parsed.question;
+					} else if (!askText) {
+						askText = obs;
 					}
 					if (Array.isArray(parsed.options)) {
 						askOptions = parsed.options.map((o: unknown) =>
@@ -187,7 +204,9 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 						);
 					}
 				} catch {
-					// Not JSON — keep the raw text as-is.
+					// Not JSON: legacy rows store the readable question
+					// directly in the observation.
+					if (!askText) askText = obs;
 				}
 			}
 			// The session pauses to wait for the user's answer, so a paused
@@ -199,7 +218,10 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 			const sessionPaused = data.session?.status === 'paused';
 			// Legacy-only pairing: when the model batches multiple ask calls
 			// into one step, the message joins the questions with "\n\n",
-			// while each step observes only its own question.
+			// while each step observes only its own question. Also covers
+			// the pending-ask re-persist path (the question is re-persisted
+			// as a plain assistant message). New records match by id above,
+			// so this content comparison only ever fires for legacy rows.
 			if (askText) {
 				const matchIdx = items.findIndex(
 					(item) =>
@@ -219,7 +241,7 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 				awaiting: sessionPaused,
 				voice: false,
 				time: formatMessageTime(step.created_at),
-				_ts: Date.parse(step.created_at) || 0,
+				_ts: cardTs,
 				streaming: false,
 				stepNumber: step.step_number,
 			});
@@ -233,7 +255,7 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 			toolName: step.action_tool,
 			voice: false,
 			time: formatMessageTime(step.created_at),
-			_ts: Date.parse(step.created_at) || 0,
+			_ts: cardTs,
 			streaming: false,
 			stepNumber: step.step_number,
 		});
@@ -242,13 +264,18 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 	// session messages), but we still need their step_number for stepNumber
 	// inference — otherwise sessions with no tool steps (e.g. errored on the
 	// first LLM call) leave all messages without a stepNumber, breaking
-	// rollback. Match by content (trimmed) to the corresponding session
-	// message. User items are matched too: interjections (steering) and
-	// answers to paused sessions (supplements) are persisted as thought steps
-	// carrying the user's own words, so the input must resolve to that step
-	// even when nothing follows it (e.g. the session errored right after).
+	// rollback. New records share the id between the thought/supplement
+	// message row and its step row, so the stepNumber resolves by id alone.
+	// Legacy rows carry the thought text (user steering/supplements included,
+	// whose words were stored on the thought row) — match those by trimmed
+	// content so old conversations keep working.
 	for (const step of data.steps || []) {
 		if (step.action_tool) continue;
+		const byId = items.find((i) => i.id === step.id && i.stepNumber == null);
+		if (byId) {
+			byId.stepNumber = step.step_number;
+			continue;
+		}
 		if (step.thought == null) continue;
 		const thoughtTrimmed = step.thought.trim();
 		if (!thoughtTrimmed) continue;

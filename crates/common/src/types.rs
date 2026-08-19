@@ -397,22 +397,57 @@ pub struct Supplement {
     /// stale questions again.
     #[serde(default)]
     pub is_answer: bool,
+    /// Persisted message row id of a mid-turn user input (steering,
+    /// supplement or ask answer). The row is written at submit time, so the
+    /// ReAct loop uses the id to anchor the input's thought-step row (same
+    /// id, no content matching) and forward-dates the steering row's
+    /// `created_at` when it injects — the review rebuild then orders it
+    /// after the interrupted thought instead of before it. `None` when no
+    /// row was persisted (e.g. tests, direct API use).
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 impl Supplement {
     pub fn new(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
+        Self::with_message_id(text, attachments, None)
+    }
+
+    pub fn answer(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
+        Self::answer_with_message_id(text, attachments, None)
+    }
+
+    pub fn with_message_id(
+        text: impl Into<String>,
+        attachments: Vec<MessageAttachment>,
+        message_id: Option<String>,
+    ) -> Self {
+        Self::new_with_message_id(text, attachments, message_id)
+    }
+
+    pub fn new_with_message_id(
+        text: impl Into<String>,
+        attachments: Vec<MessageAttachment>,
+        message_id: Option<String>,
+    ) -> Self {
         Self {
             text: text.into(),
             attachments,
             is_answer: false,
+            message_id,
         }
     }
 
-    pub fn answer(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {
+    pub fn answer_with_message_id(
+        text: impl Into<String>,
+        attachments: Vec<MessageAttachment>,
+        message_id: Option<String>,
+    ) -> Self {
         Self {
             text: text.into(),
             attachments,
             is_answer: true,
+            message_id,
         }
     }
 }
@@ -626,6 +661,7 @@ mod tests {
             text: "任务完成了吗".into(),
             attachments: vec![],
             is_answer: true,
+            message_id: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Supplement = serde_json::from_str(&json).unwrap();

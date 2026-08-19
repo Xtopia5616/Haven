@@ -308,6 +308,9 @@ impl AppState {
             router: Some(router.clone()),
             log_path,
             set_log_level,
+            // The self tool's tool_enable/tool_disable ops apply the runtime
+            // change through the running ToolsManager after persisting config.
+            tools_weak: Some(Arc::downgrade(&tools)),
         };
         tools.set_self_context(self_ctx).await;
 

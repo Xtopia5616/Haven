@@ -21,9 +21,11 @@ pub struct AgentLayer {
     gateway: tokio::sync::RwLock<Option<Arc<haven_llm::media::MediaGateway>>>,
 }
 
-/// A recent conversation message used to re-seed context when resuming a
-/// session. Kept as (role, content) pairs so the resume path can deduplicate
-/// against the restored canonical instead of blindly duplicating every turn.
+/// A recent conversation message (role, content) used by the FRESH-run path
+/// to embed recent history into the system prompt (`run_session` →
+/// `prompt_builder.build`). Resume does not use this type anymore: the
+/// canonical snapshot is the single authority and post-snapshot inputs are
+/// recovered by timestamp, not by content comparison.
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationMessage {
     role: String,
@@ -572,9 +574,10 @@ impl AgentLayer {
     }
 
     /// Load the most recent conversation messages for a session as (role,
-    /// content) pairs. The resume path deduplicates them against the
-    /// restored canonical before injecting, so the fresh-run system-prompt
-    /// path (`prompt_builder.build`) and the resume path share one source.
+    /// content) pairs, for the FRESH-run system-prompt path
+    /// (`prompt_builder.build`). Resume does not consume this: the restored
+    /// canonical snapshot is the single authority, and post-snapshot inputs
+    /// are recovered by timestamp in `run_session_resumed`.
     fn load_conversation_history(&self, session_id: &str) -> Vec<ConversationMessage> {
         self.db
             .get_session_messages_limit(session_id, self.conversation_window_size)
@@ -686,8 +689,7 @@ impl AgentLayer {
                     // since in-memory registrations are lost on app restart.
                     self.restore_per_session_tools(session_id, &snapshot.history)
                         .await;
-                    self.run_session_resumed(session_id, snapshot, &conv_history, run_id)
-                        .await
+                    self.run_session_resumed(session_id, snapshot, run_id).await
                 }
                 Err(e) => {
                     // A corrupt or schema-drifted react_state silently
@@ -845,7 +847,6 @@ impl AgentLayer {
         &self,
         session_id: &str,
         snapshot: ReActSnapshot,
-        conversation_history: &[ConversationMessage],
         run_id: u64,
     ) -> anyhow::Result<Vec<ReActStep>> {
         let mut history = snapshot.history;
@@ -853,135 +854,63 @@ impl AgentLayer {
         let start_step = snapshot.step_number;
         let mut branch_points = snapshot.branch_points;
 
-        if !conversation_history.is_empty() {
-            // The restored canonical already contains the full transcript in
-            // the common (non-compacted) case, and may itself carry
-            // `[conversation]` lines left by a previous resume ??blindly
-            // re-inserting the recent window would duplicate every turn and
-            // make the model treat stale questions as newly pending (it then
-            // answers questions from long ago instead of the current one).
-            // Strip stale `[conversation]` lines, then re-seed only messages
-            // whose content is not already present in the canonical.
-            canonical.retain(|m| {
-                !(m.role == CanonicalRole::User
-                    && m.content.iter().any(
-                        |p| matches!(p, ContentPart::Text(t) if t.starts_with("[conversation] ")),
-                    ))
-            });
-            // Compaction replaced the old turns with a summary inside the
-            // canonical, but the DB message stream was left untouched. If we
-            // re-seed the recent window here, every summarized-away turn is
-            // resurrected as a fresh User message, undoing the compaction and
-            // making the model re-answer stale questions (the summary would
-            // also be duplicated alongside the restored originals). Skip the
-            // re-seed entirely when the canonical already carries a
-            // compaction summary.
-            let compacted = canonical.iter().any(|m| {
-                m.content.iter().any(|p| {
-                    matches!(
-                        p,
-                        ContentPart::Text(t)
-                            if t.starts_with(haven_common::prompts::COMPACTED_SUMMARY_PREFIX)
+        // Legacy cleanup: snapshots saved by older resume implementations may
+        // carry `[conversation]`-wrapped lines from a previous re-seed. New
+        // snapshots never produce them, so strip defensively.
+        canonical.retain(|m| {
+            !(m.role == CanonicalRole::User
+                && m.content
+                    .iter()
+                    .any(|p| matches!(p, ContentPart::Text(t) if t.starts_with("[conversation] "))))
+        });
+
+        // Post-snapshot recovery, by TIMESTAMP instead of content matching:
+        // any message persisted after the snapshot's `saved_at` cannot be in
+        // the restored canonical, so it is unambiguously new — supplements,
+        // steering and `ask` answers that arrived while paused, or were
+        // persisted before a crash and lost from the in-memory queues. The
+        // canonical snapshot is the single authority for everything older.
+        //
+        // When the in-memory queues still hold the inputs (the pause → answer
+        // flow in the same process), they are injected by the ReAct loop and
+        // the DB copy must NOT be re-queued — that would double-inject.
+        if let Some(saved_at) = snapshot.saved_at.as_deref()
+            && !self.executor.has_pending_context(session_id).await
+        {
+            let pending = self
+                .db
+                .get_session_messages_since(session_id, saved_at)
+                .unwrap_or_default();
+            let mut restored = 0usize;
+            for msg in pending {
+                // Only user inputs are re-queued: assistant rows newer
+                // than the snapshot only exist mid-stream (persisted
+                // before their canonical push) and are recovered by the
+                // partial-message path instead.
+                if msg.role != "user" {
+                    continue;
+                }
+                if self
+                    .executor
+                    .add_supplement_with_attachments(
+                        session_id,
+                        &msg.content,
+                        &msg.attachments,
+                        Some(msg.id.clone()),
                     )
-                })
-            });
-            if compacted {
-                tracing::debug!(
-                    "run_session_resumed: canonical is compacted; skipping conversation re-seed"
-                );
-            } else {
-                // Count occurrences instead of a plain membership set: two
-                // distinct turns with identical text (e.g. the user said
-                // "好的" twice) are both legitimate history, and a set-based
-                // dedup would silently drop the second one. Each DB message
-                // consumes one occurrence from the canonical tally; only
-                // messages that exhaust the tally are re-seeded.
-                let mut present: HashMap<String, usize> = HashMap::new();
-                for t in canonical
-                    .iter()
-                    .flat_map(|m| m.content.iter())
-                    .filter_map(|p| match p {
-                        ContentPart::Text(t) => Some(t.clone()),
-                        _ => None,
-                    })
+                    .await
+                    .is_ok()
                 {
-                    *present.entry(t.clone()).or_default() += 1;
-                    // History is carried in two wrapped forms besides plain
-                    // text: `[conversation] [role] content` (a previous
-                    // resume's re-seed, stripped above for User but possibly
-                    // still present for Assistant) and `  [role] content`
-                    // (history embedded in the system prompt by `run_session`,
-                    // indented under "Additional context:"). Both represent
-                    // the same raw content, which must count as "already
-                    // present" or every resume would duplicate the whole
-                    // recent window on top of the system prompt.
-                    let rest = t.strip_prefix("[conversation] ").unwrap_or(&t);
-                    let rest = rest.trim_start();
-                    if let Some((head, tail)) = rest.split_once(']')
-                        && head.starts_with('[')
-                        && matches!(&head[1..], "user" | "assistant" | "system" | "tool")
-                    {
-                        *present.entry(tail.trim_start().to_string()).or_default() += 1;
-                    }
+                    restored += 1;
                 }
-                // Supplement/steering inputs are pushed into the canonical
-                // with a text prefix ("Additional context from user: —,
-                // "Answer to your previous question: —, "Steering: —) while
-                // the DB stores the raw text only. Exact-match dedup would
-                // re-inject those inputs on every resume, so register the
-                // un-prefixed variant as present too.
-                let prefixes = [
-                    "Additional context from user: ",
-                    "Answer to your previous question: ",
-                    "Steering: ",
-                ];
-                let prefixed: Vec<(String, usize)> = present
-                    .iter()
-                    .filter_map(|(t, n)| {
-                        prefixes
-                            .iter()
-                            .find_map(|p| t.strip_prefix(p))
-                            .map(|rest| (rest.to_string(), *n))
-                    })
-                    .collect();
-                for (t, n) in prefixed {
-                    *present.entry(t).or_default() += n;
-                }
-                let sys_end = canonical
-                    .iter()
-                    .position(|m| m.role != CanonicalRole::System)
-                    .unwrap_or(canonical.len());
-                let mut inserted = 0usize;
-                for msg in conversation_history {
-                    let remaining = present.entry(msg.content.clone()).or_insert(0);
-                    if *remaining > 0 {
-                        *remaining -= 1;
-                        continue;
-                    }
-                    // Re-seed with the message's original role: DB-stored
-                    // assistant turns (e.g. a paused `ask` question) flattened
-                    // to User would otherwise make the model treat the old
-                    // question as a new open prompt and answer it again.
-                    let content = format!("[conversation] [{}] {}", msg.role, msg.content);
-                    let cm = if msg.role == "assistant" {
-                        CanonicalMessage::assistant(
-                            vec![ContentPart::text(content)],
-                            None,
-                            None,
-                            Vec::new(),
-                        )
-                    } else {
-                        CanonicalMessage::user_text(content)
-                    };
-                    canonical.insert(sys_end + inserted, cm);
-                    inserted += 1;
-                }
-                if inserted > 0 {
-                    tracing::debug!(
-                        "run_session_resumed: seeded {} conversation message(s) missing from canonical",
-                        inserted
-                    );
-                }
+            }
+            if restored > 0 {
+                tracing::info!(
+                    "run_session_resumed: recovered {} post-snapshot input(s) for session {} (saved_at {})",
+                    restored,
+                    session_id,
+                    saved_at
+                );
             }
         }
 
@@ -1022,9 +951,12 @@ impl AgentLayer {
     /// ```
     ///
     /// Thought-only rows are skipped: their text is already present in the
-    /// DB message stream re-seeded by the caller. Rows without an
-    /// observation (an interrupted in-flight tool) are skipped too —the
-    /// dangling assistant tool_call would be dropped by sanitize anyway.
+    /// DB message stream re-seeded by the caller. `ask` rows are skipped
+    /// too: the question re-seeds from its message row (persisted under the
+    /// step's id), so rebuilding the raw ask tool call would duplicate the
+    /// question in the canonical. Rows without an observation (an
+    /// interrupted in-flight tool) are skipped too —the dangling assistant
+    /// tool_call would be dropped by sanitize anyway.
     fn rebuild_tool_chain_from_steps(
         &self,
         session_id: &str,
@@ -1038,6 +970,9 @@ impl AgentLayer {
             let Some(tool) = step.action_tool else {
                 continue;
             };
+            if tool == "ask" {
+                continue;
+            }
             let Some(obs) = step.observation else {
                 continue;
             };
@@ -1291,7 +1226,12 @@ impl AgentLayer {
             let steering_delivered = state == Some(SessionStatus::Running)
                 && match self
                     .executor
-                    .add_steering_with_attachments(&session_id, transcript, attachments)
+                    .add_steering_with_attachments(
+                        &session_id,
+                        transcript,
+                        attachments,
+                        persisted_msg.as_ref().map(|m| m.id.clone()),
+                    )
                     .await
                 {
                     Ok(()) => true,
@@ -1320,12 +1260,22 @@ impl AgentLayer {
                 );
                 let was_in_memory = if is_answer {
                     self.executor
-                        .add_answer_with_attachments(&session_id, transcript, attachments)
+                        .add_answer_with_attachments(
+                            &session_id,
+                            transcript,
+                            attachments,
+                            persisted_msg.as_ref().map(|m| m.id.clone()),
+                        )
                         .await
                         .is_ok()
                 } else {
                     self.executor
-                        .add_supplement_with_attachments(&session_id, transcript, attachments)
+                        .add_supplement_with_attachments(
+                            &session_id,
+                            transcript,
+                            attachments,
+                            persisted_msg.as_ref().map(|m| m.id.clone()),
+                        )
                         .await
                         .is_ok()
                 };
@@ -1395,7 +1345,12 @@ impl AgentLayer {
                     } else {
                         if is_answer {
                             self.executor
-                                .add_answer_with_attachments(&session_id, transcript, attachments)
+                                .add_answer_with_attachments(
+                                    &session_id,
+                                    transcript,
+                                    attachments,
+                                    persisted_msg.as_ref().map(|m| m.id.clone()),
+                                )
                                 .await?;
                         } else {
                             self.executor
@@ -1403,6 +1358,7 @@ impl AgentLayer {
                                     &session_id,
                                     transcript,
                                     attachments,
+                                    persisted_msg.as_ref().map(|m| m.id.clone()),
                                 )
                                 .await?;
                         }

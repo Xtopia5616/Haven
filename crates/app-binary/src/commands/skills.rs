@@ -40,25 +40,24 @@ pub async fn set_skill_enabled(
     name: String,
     enabled: bool,
 ) -> Result<(), String> {
-    state
-        .tools
-        .skills_engine
-        .set_enabled(&name, enabled)
-        .await
-        .map_err(|e| log_err("set_skill_enabled", e))?;
-    // The engine's `set_enabled` already syncs its internal filter so the
-    // toggle survives `refresh_from_disk`. Persist the filter to config.toml
-    // via the shared loader (single source of truth) so it also survives app
-    // restart and never diverges from the in-memory copy.
-    let filter = state.tools.skills_engine.enabled_filter().await;
-    {
-        let mut loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("set_skill_enabled", e))?;
-        loader.config_mut().skills.enabled = filter;
-        loader.save().map_err(|e| log_err("set_skill_enabled", e))?;
-    }
+    // Route through the `self` tool's native entry: one implementation for
+    // the UI toggle and the LLM's skill_enable / skill_disable ops. The op
+    // flips the engine filter and persists `skills.enabled` to config.toml
+    // via the shared loader.
+    crate::commands::run_self_op(
+        &state,
+        "set_skill_enabled",
+        haven_tools::SelfParams {
+            operation: if enabled {
+                haven_tools::SelfOperation::SkillEnable
+            } else {
+                haven_tools::SelfOperation::SkillDisable
+            },
+            name: Some(name),
+            ..Default::default()
+        },
+    )
+    .await?;
 
     // Rebuild tool catalog so the enable/disable takes effect in the Reasoner.
     state.tools.rebuild_catalog().await;
@@ -72,33 +71,25 @@ pub async fn set_tool_enabled(
     name: String,
     enabled: bool,
 ) -> Result<(), String> {
-    // Persist via the shared loader (single source of truth) so the in-memory
-    // copy never diverges from disk and later settings saves can't resurrect
-    // stale values.
-    {
-        let mut loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("set_tool_enabled", e))?;
-        let entry = loader
-            .config_mut()
-            .tool_settings
-            .entry(name.clone())
-            .or_insert_with(haven_common::config::ToolConfig::default);
-        entry.enabled = enabled;
-        loader.save().map_err(|e| log_err("set_tool_enabled", e))?;
-    }
-
-    // Push the updated settings into the runtime manager. `set_tool_settings`
-    // rebuilds the catalog so the toggle takes effect in the Reasoner.
-    let tool_settings = {
-        let loader = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("set_tool_enabled", e))?;
-        loader.config().tool_settings.clone()
-    };
-    state.tools.set_tool_settings(tool_settings).await;
+    // Route through the `self` tool's native entry: one implementation for
+    // the UI switch and the LLM's tool_enable / tool_disable ops. The op
+    // persists `tool_settings.<name>.enabled` to config.toml AND applies the
+    // runtime change (in-memory tool_settings + catalog rebuild) through the
+    // ToolsManager, so the toggle takes effect in the Reasoner immediately.
+    crate::commands::run_self_op(
+        &state,
+        "set_tool_enabled",
+        haven_tools::SelfParams {
+            operation: if enabled {
+                haven_tools::SelfOperation::ToolEnable
+            } else {
+                haven_tools::SelfOperation::ToolDisable
+            },
+            name: Some(name),
+            ..Default::default()
+        },
+    )
+    .await?;
 
     Ok(())
 }

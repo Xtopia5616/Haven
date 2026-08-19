@@ -26,6 +26,14 @@ pub struct ReActSnapshot {
     /// Branch points keyed by step number for tree-structured rollback (§2).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub branch_points: HashMap<u32, BranchPoint>,
+    /// Wall-clock time the snapshot was written. Resume uses it to recover
+    /// messages submitted AFTER the snapshot (supplements/steering/answers
+    /// persisted to the DB while paused or after a crash) by TIMESTAMP —
+    /// anything newer than this cannot be in the canonical, so no content
+    /// comparison is needed. Missing on legacy snapshots: the canonical is
+    /// trusted as complete and nothing is re-seeded.
+    #[serde(default)]
+    pub saved_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +176,7 @@ mod tests {
             history: vec![],
             step_number: 7,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         snapshot.branch_points.insert(
             4,
@@ -193,6 +202,7 @@ mod tests {
             history: vec![],
             step_number: 1,
             branch_points: HashMap::new(),
+            saved_at: None,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("branch_points"));

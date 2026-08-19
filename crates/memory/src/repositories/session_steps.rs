@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::repositories::messages::now_rfc3339_millis;
 use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -27,26 +28,33 @@ pub struct SessionStep {
 }
 
 impl Database {
-    /// Create a thought-only step using the new schema fields directly.
+    /// Create a thought-only step row under a PRE-MINTED id.
+    ///
+    /// The row is the execution-state anchor of a streamed thought (or a user
+    /// supplement/steering input): its id is the SAME id its content message
+    /// row is persisted under in the `messages` table, so the review builder
+    /// links the two without content matching. The `thought` column is
+    /// intentionally NOT written — the text lives exclusively in the
+    /// `messages` table (single content authority). Legacy rows keep their
+    /// text.
     pub fn create_thought_step(
         &self,
         session_id: &str,
         step_number: i32,
-        thought: &str,
+        id: &str,
     ) -> anyhow::Result<SessionStep> {
-        let id = haven_common::types::new_id("step");
-        let now = Utc::now().to_rfc3339();
+        let now = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute(
             "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, thought, status, is_high_risk, created_at)
-             VALUES (?1, ?2, ?3, 'thought', ?4, ?4, 'completed', 0, ?5)",
-            rusqlite::params![id, session_id, step_number, thought, now],
+             VALUES (?1, ?2, ?3, 'thought', ?1, NULL, 'completed', 0, ?4)",
+            rusqlite::params![id, session_id, step_number, now],
         )?;
         Ok(SessionStep {
-            id,
+            id: id.into(),
             session_id: session_id.into(),
             step_number,
-            thought: Some(thought.into()),
+            thought: None,
             action_tool: None,
             action_input: None,
             observation: None,
@@ -209,13 +217,17 @@ mod tests {
         let db = test_db();
         seed_session(&db, "ses-1");
         let step = db
-            .create_thought_step("ses-1", 0, "I should check the file")
+            .create_thought_step("ses-1", 0, "step-thought-1")
             .unwrap();
-        assert_eq!(step.thought.as_deref(), Some("I should check the file"));
+        // The id is pre-minted (shared with the content message row) and the
+        // thought column stays empty: the text lives in `messages`.
+        assert_eq!(step.id, "step-thought-1");
+        assert!(step.thought.is_none());
         assert!(step.action_tool.is_none());
         assert!(step.action_input.is_none());
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, "step-thought-1");
     }
 
     #[test]
@@ -314,11 +326,11 @@ mod tests {
     fn delete_session_steps_after_removes_only_newer_rows() {
         let db = test_db();
         seed_session(&db, "ses-1");
-        let first = db.create_thought_step("ses-1", 1, "first").unwrap();
+        let first = db.create_thought_step("ses-1", 1, "step-first").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         let cutoff = chrono::Utc::now().to_rfc3339();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let second = db.create_thought_step("ses-1", 2, "second").unwrap();
+        let second = db.create_thought_step("ses-1", 2, "step-second").unwrap();
 
         db.delete_session_steps_after("ses-1", &cutoff).unwrap();
         let steps = db.get_session_steps("ses-1").unwrap();

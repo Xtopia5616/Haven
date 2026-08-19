@@ -13,6 +13,16 @@ import {
 import { invoke } from './tauri.ts';
 
 /**
+ * In-flight submission lock. The backend no longer deduplicates repeated
+ * user inputs by content (the canonical is an append-only transcript), so
+ * rapid duplicate submissions — double-clicking "继续", quick-reply spam,
+ * a voice transcript racing a typed send — must be prevented here. Only one
+ * submission may be in flight at a time; concurrent calls share the
+ * in-flight promise and resolve with the same result.
+ */
+let inflight: Promise<any> | null = null;
+
+/**
  * Deliver a user submission (typed input or voice transcript) to the
  * backend through the same `process_transcript` path so voice input
  * continues the currently open conversation instead of starting a new one.
@@ -42,6 +52,22 @@ interface SubmitOptions {
 }
 
 export async function submitTranscript(
+	text: string,
+	{ images = null, files = null, voice = false }: SubmitOptions = {},
+): Promise<any> {
+	// In-flight lock: while a submission is pending, concurrent submissions
+	// join it instead of stacking duplicate user messages. The promise is
+	// released (and the lock cleared) when the shared submission settles.
+	if (inflight) return inflight;
+	inflight = doSubmit(text, { images, files, voice });
+	try {
+		return await inflight;
+	} finally {
+		inflight = null;
+	}
+}
+
+async function doSubmit(
 	text: string,
 	{ images = null, files = null, voice = false }: SubmitOptions = {},
 ): Promise<any> {

@@ -14,6 +14,56 @@ use crate::{Tool, ToolResult};
 /// it asked and the user's answer, then continues.
 pub struct AskTool;
 
+/// Typed parameters for `AskTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `AskTool::run`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct AskParams {
+    /// The question to ask the human.
+    pub question: String,
+    /// Optional suggested answers, each becomes a quick-reply button.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// Optional context: why you are asking and what you have considered.
+    #[serde(default)]
+    pub context: Option<String>,
+}
+
+impl AskTool {
+    /// Entry ①: structured native interface (internal code calls — zero
+    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    pub async fn run(
+        &self,
+        params: AskParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let question = params.question.trim().to_string();
+        if question.is_empty() {
+            anyhow::bail!("question must not be empty");
+        }
+        let context = params.context;
+        let options: Vec<String> = params
+            .options
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        // The `ask` flag is the signal the ReAct loop keys on to pause the
+        // session and wait for the user's reply (delivered as a supplement).
+        Ok(ToolResult::ok(serde_json::json!({
+            "ask": true,
+            "question": question,
+            "context": context,
+            "options": options,
+            "awaiting_answer": true,
+            "hint": "The session is paused. The user's next message will be used as the answer and the session will resume.",
+        })))
+    }
+}
+
 #[async_trait]
 impl Tool for AskTool {
     fn name(&self) -> String {
@@ -51,39 +101,11 @@ impl Tool for AskTool {
         })
     }
 
+    /// Entry ②: LLM JSON entry — convert/validate into `AskParams`, then
+    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        let question = input["question"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("question is required for ask"))?
-            .trim()
-            .to_string();
-        if question.is_empty() {
-            anyhow::bail!("question must not be empty");
-        }
-        let context = input["context"].as_str().map(|s| s.to_string());
-        let options: Vec<String> = input["options"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // The `ask` flag is the signal the ReAct loop keys on to pause the
-        // session and wait for the user's reply (delivered as a supplement).
-        Ok(ToolResult::ok(serde_json::json!({
-            "ask": true,
-            "question": question,
-            "context": context,
-            "options": options,
-            "awaiting_answer": true,
-            "hint": "The session is paused. The user's next message will be used as the answer and the session will resume.",
-        })))
+        let params = crate::tool::parse_tool_input::<AskParams>(&self.name(), input)?;
+        self.run(params, cancel).await
     }
 
     /// Declare the question signal so the ReAct loop pauses the session without
@@ -175,5 +197,31 @@ mod tests {
         cancel.cancel();
         let result = AskTool.execute(json!({"question": "x"}), cancel).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ask_native_entry_lands_in_run() {
+        let result = AskTool
+            .run(
+                AskParams {
+                    question: "which?".into(),
+                    options: vec!["A".into(), " B ".into(), "".into()],
+                    context: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["question"], "which?");
+        assert_eq!(result.output["options"], serde_json::json!(["A", "B"]));
+    }
+
+    #[tokio::test]
+    async fn test_ask_json_entry_rejects_wrong_type() {
+        let result = AskTool
+            .execute(json!({"question": 42}), CancellationToken::new())
+            .await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid 'ask' input"), "{err}");
     }
 }
