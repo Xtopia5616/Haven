@@ -1067,7 +1067,7 @@ impl ReActEngine {
                     .map(|m| (m.role, m.content.len()))
                     .collect::<Vec<_>>()
             );
-            let response = match self
+            let mut response = match self
                 .call_step_llm(
                     &ctx,
                     router.clone(),
@@ -1246,6 +1246,12 @@ impl ReActEngine {
                             if t2.is_some() || !a2.is_empty() {
                                 thought = t2;
                                 actions = a2;
+                                // The retry produced the content: the whole
+                                // response must follow it, or the canonical
+                                // assistant message would carry the retry's
+                                // tool calls WITHOUT its reasoning (DeepSeek
+                                // thinking mode 400s on the next request).
+                                response = retry_resp;
                                 break;
                             }
                             tracing::warn!(
@@ -1333,6 +1339,7 @@ impl ReActEngine {
                     tool_calls: None,
                     reasoning: None,
                     web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
                 });
                 // Cancellable so an interruption (rollback / end_session) aborts
                 // the retry promptly instead of letting its stream run to
@@ -1358,6 +1365,11 @@ impl ReActEngine {
                         if t2.is_some() || !a2.is_empty() {
                             thought = t2;
                             actions = a2;
+                            // Same reasoning-attachment rule as the
+                            // empty-response retry: the canonical push must
+                            // carry the retry response's own reasoning, not
+                            // the cut-off original's.
+                            response = retry_resp;
                         } else {
                             tracing::warn!(
                                 "ReAct step {} cut-off retry also returned an empty response",
@@ -1482,8 +1494,13 @@ impl ReActEngine {
                 canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(push_text.to_string())],
                     None,
-                    response.reasoning.clone(),
+                    if response.thinking_blocks.is_empty() {
+                        response.reasoning.clone()
+                    } else {
+                        None
+                    },
                     response.web_search_calls.clone(),
+                    response.thinking_blocks.clone(),
                 ));
                 if actions.is_empty() {
                     // Search round: no answer yet, the follow-up request
@@ -1634,8 +1651,13 @@ impl ReActEngine {
                 canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(msg.clone())],
                     None,
-                    response.reasoning.clone(),
+                    if response.thinking_blocks.is_empty() {
+                        response.reasoning.clone()
+                    } else {
+                        None
+                    },
                     Vec::new(),
+                    response.thinking_blocks.clone(),
                 ));
                 let persist_message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
                 self.pause_turn(
@@ -1696,8 +1718,13 @@ impl ReActEngine {
                     canonical.push(CanonicalMessage::assistant(
                         vec![ContentPart::text(final_text.clone())],
                         None,
-                        response.reasoning.clone(),
+                        if response.thinking_blocks.is_empty() {
+                            response.reasoning.clone()
+                        } else {
+                            None
+                        },
                         Vec::new(),
+                        response.thinking_blocks.clone(),
                     ));
                 }
                 let persist_message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
@@ -1798,8 +1825,13 @@ impl ReActEngine {
                 canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(push_text.to_string())],
                     tool_calls,
-                    response.reasoning.clone(),
+                    if response.thinking_blocks.is_empty() {
+                        response.reasoning.clone()
+                    } else {
+                        None
+                    },
                     response.web_search_calls.clone(),
+                    response.thinking_blocks.clone(),
                 ));
             }
 
@@ -3441,6 +3473,7 @@ impl ReActEngine {
                     None,
                     reasoning,
                     Vec::new(),
+                    Vec::new(),
                 ),
             );
         }
@@ -4220,6 +4253,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -4235,6 +4269,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -4313,6 +4348,7 @@ mod tests {
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -4606,6 +4642,7 @@ mod tests {
                     arguments: serde_json::json!({}),
                 }]),
                 None,
+                Vec::new(),
                 Vec::new(),
             ),
             CanonicalMessage::tool(

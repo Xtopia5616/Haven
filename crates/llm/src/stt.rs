@@ -190,6 +190,7 @@ impl SttClient for LlmSttAdapter {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
 

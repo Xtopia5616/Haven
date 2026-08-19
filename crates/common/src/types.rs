@@ -255,6 +255,15 @@ pub struct CanonicalMessage {
     /// context from them). Never parsed or rewritten.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
+    /// Raw Anthropic `thinking` content blocks (`{"type":"thinking",
+    /// "thinking":…, "signature":…}`). Carried verbatim so tool-use turns can
+    /// echo them back: Anthropic validates thinking blocks against their
+    /// signature and 400s a follow-up request that omits or rewrites them.
+    /// The Anthropic adapter appends an internal `__layout` marker entry that
+    /// records each block's original position; the adapter strips it before
+    /// the echo. Other consumers treat the list as opaque.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_blocks: Vec<serde_json::Value>,
 }
 
 impl CanonicalMessage {
@@ -266,6 +275,7 @@ impl CanonicalMessage {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -277,6 +287,7 @@ impl CanonicalMessage {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -289,6 +300,7 @@ impl CanonicalMessage {
         tool_calls: Option<Vec<CanonicalToolCall>>,
         reasoning: Option<String>,
         web_search_calls: Vec<serde_json::Value>,
+        thinking_blocks: Vec<serde_json::Value>,
     ) -> Self {
         Self {
             role: CanonicalRole::Assistant,
@@ -297,6 +309,7 @@ impl CanonicalMessage {
             tool_call_id: None,
             reasoning,
             web_search_calls,
+            thinking_blocks,
         }
     }
 
@@ -308,6 +321,7 @@ impl CanonicalMessage {
             tool_call_id,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 }
@@ -564,6 +578,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
 
         assert_eq!(msg.role, CanonicalRole::System);
@@ -581,6 +596,7 @@ mod tests {
             tool_call_id: Some("call_abc".into()),
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -598,6 +614,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
 
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -612,6 +629,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
 
         assert_eq!(msg.role, CanonicalRole::Tool);
@@ -695,6 +713,7 @@ mod tests {
                 arguments: serde_json::json!({"cmd": "ls"}),
             }]),
             Some("chain of thought".into()),
+            Vec::new(),
             Vec::new(),
         );
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -797,6 +816,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -818,6 +838,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();

@@ -81,12 +81,23 @@
 	});
 	let messages = /** @type {Array<any>} */ ($state([]));
 	let sessions = /** @type {Array<any>} */ ($state([]));
+	// Pending security confirmations not yet shown, in arrival order. A
+	// batched ReAct step can fire several gated tool calls at once; each one
+	// must wait for its own user answer, so they are queued and displayed one
+	// at a time instead of auto-rejecting the visible dialog.
+	let confirmQueue = /** @type {Array<any>} */ ($state([]));
+	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/agent/src/session.rs)
+	// and ConfirmationDialog.svelte's TIMEOUT_SECONDS. The countdown shown for
+	// a queued confirmation starts from its server-side deadline (arrival +
+	// this window), not from when the dialog is finally displayed.
+	const CONFIRM_TIMEOUT_MS = 120_000;
 	let confirmDialog = $state({
 		stepId: null,
 		toolName: '',
 		sessionId: '',
 		sessionTitle: '',
 		riskLevel: 'medium',
+		deadlineAt: null,
 	});
 	let activeSessionId = $state(get(activeSessionIdStore));
 	let rollbackDialog = $state({ open: false, stepNumber: null, role: '', content: '', msgId: '' });
@@ -1403,30 +1414,33 @@
 					// surfaced — dropping them would leave the tool call waiting
 					// forever. The dialog shows which session the operation belongs
 					// to so an approval is never misattributed.
+					//
+					// Multiple pending requests are QUEUED and shown one at a time:
+					// a batched ReAct step can fire several gated tool calls at once,
+					// and every one must wait for its own user answer. Auto-rejecting
+					// the visible dialog when a second request arrives for the same
+					// session would silently deny the first operation the user never
+					// got to choose on — every request has a live backend wait, so
+					// there is no "moved on" case that needs a defensive denial.
 					const tid = data.session_id || '';
-					// Auto-reject a superseded dialog ONLY when the new request
-					// belongs to the same session (a session firing a second
-					// confirmation has moved on from the first — the backend
-					// must not wait forever for a resolve it will never see).
-					// A different session's request must NOT deny the pending one:
-					// the user may have just approved it (the resolve races the
-					// auto-reject), and its wait is already bounded by the
-					// backend's fail-closed timeout.
-					if (confirmDialog.stepId && confirmDialog.sessionId === tid) {
-						invoke('resolve_confirmation', {
-							stepId: confirmDialog.stepId,
-							confirmed: false,
-							trustSession: false,
-						}).catch(() => {});
-					}
 					const session = sessions.find((t) => t.id === tid);
-					confirmDialog = {
-						stepId: data.step_id,
-						toolName: data.tool_name,
-						sessionId: tid,
-						sessionTitle: session?.title || (tid || ''),
-						riskLevel: data.risk_level || 'medium',
-					};
+					confirmQueue = [
+						...confirmQueue,
+						{
+							stepId: data.step_id,
+							toolName: data.tool_name,
+							sessionId: tid,
+							sessionTitle: session?.title || (tid || ''),
+							riskLevel: data.risk_level || 'medium',
+							// The backend's CONFIRM_WAIT_TIMEOUT starts when the
+							// request is created, not when the dialog is shown.
+							// Recording the arrival time lets a queued dialog
+							// count down from the TRUE server deadline instead of
+							// granting a fresh window the backend will never honor.
+							receivedAt: Date.now(),
+						},
+					];
+					showNextConfirm();
 				},
 				// Token usage / cost stats — emitted after every LLM step.
 				'agent:usage': (event) => {
@@ -1769,14 +1783,26 @@
 		resolveAsk(msgId, { ignored: true });
 	}
 
+	// Show the next queued confirmation once the current one is resolved
+	// (either by the user or by the dialog's timeout). Entries are shown in
+	// arrival order so every pending operation still gets its own decision.
+	function showNextConfirm() {
+		if (confirmDialog.stepId || confirmQueue.length === 0) return;
+		const [next, ...rest] = confirmQueue;
+		confirmQueue = rest;
+		confirmDialog = {
+			...next,
+			deadlineAt: next.receivedAt + CONFIRM_TIMEOUT_MS,
+		};
+	}
+
 	/** @param {{ stepId: string, approved: boolean, trustSession: boolean }} payload */
 	async function handleConfirm({ stepId, approved, trustSession }) {
 		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
 		// If we only cleared it after `await invoke(...)`, a new
-		// `confirm:requested` for the same session arriving during that window
-		// would see the stale stepId and auto-reject (confirmed: false) the very
-		// step the user just approved — the two resolves race and the denial can
-		// win, so the user's Allow is reported as a rejection.
+		// `confirm:requested` arriving during that window would find the old
+		// stepId still set and hold the queue hostage until the stale dialog
+		// was dismissed.
 		const resolvedStep = stepId;
 		confirmDialog = {
 			stepId: null,
@@ -1784,7 +1810,12 @@
 			sessionId: '',
 			sessionTitle: '',
 			riskLevel: 'medium',
+			deadlineAt: null,
 		};
+		// Surface the next queued confirmation immediately (before the IPC
+		// await) so a batched step's remaining operations stay answerable
+		// back-to-back instead of piling up behind the in-flight resolve.
+		showNextConfirm();
 		if (!resolvedStep) return;
 		try {
 			await invoke('resolve_confirmation', {
@@ -1805,6 +1836,7 @@
 		sessionId={confirmDialog.sessionId}
 		sessionTitle={confirmDialog.sessionTitle}
 		riskLevel={confirmDialog.riskLevel}
+		deadlineAt={confirmDialog.deadlineAt}
 		onConfirm={handleConfirm}
 	/>
 

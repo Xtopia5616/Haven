@@ -33,6 +33,14 @@ pub fn estimate_message_tokens(messages: &[CanonicalMessage]) -> u32 {
         if let Some(r) = &msg.reasoning {
             total += estimate_tokens(r);
         }
+        // Anthropic thinking text is carried as raw `thinking_blocks` when the
+        // redundant `reasoning` copy is dropped; count it either way so
+        // reasoning-heavy conversations still trigger compaction.
+        for block in &msg.thinking_blocks {
+            if let Some(t) = block.get("thinking").and_then(serde_json::Value::as_str) {
+                total += estimate_tokens(t);
+            }
+        }
         if msg.tool_calls.is_some() {
             total += 50;
         }
@@ -223,6 +231,7 @@ impl ContextCompactor {
                     // Compaction summarizes away the old turns; any search
                     // context they carried is intentionally not carried over.
                     Vec::new(),
+                    Vec::new(),
                 ));
                 compacted.extend_from_slice(suffix);
 
@@ -257,6 +266,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -378,6 +388,7 @@ mod tests {
             tool_call_id: Some("call_1".into()),
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 

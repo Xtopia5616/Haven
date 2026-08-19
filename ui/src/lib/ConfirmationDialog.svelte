@@ -8,21 +8,31 @@
 	// instead of hanging until the backend's fail-closed branch fires.
 	const TIMEOUT_SECONDS = 120;
 
-	let { stepId, toolName, sessionId, sessionTitle, riskLevel, onConfirm } = $props();
+	// `deadlineAt` (epoch ms) is the backend's deadline for this confirmation:
+	// it starts when the request was created, not when the dialog is shown.
+	// Queued confirmations therefore count down from their real remaining
+	// budget instead of being granted a fresh window the server never honors.
+	// Falls back to `now + TIMEOUT_SECONDS` for safety.
+	let { stepId, toolName, sessionId, sessionTitle, riskLevel, deadlineAt, onConfirm } = $props();
 	let remaining = $state(TIMEOUT_SECONDS);
 
 	$effect(() => {
 		const sid = stepId;
-		remaining = TIMEOUT_SECONDS;
 		if (!sid) return;
-		const id = setInterval(() => {
-			remaining -= 1;
+		const deadline = deadlineAt || Date.now() + TIMEOUT_SECONDS * 1000;
+		let id = /** @type {ReturnType<typeof setInterval> | undefined} */ (undefined);
+		const tick = () => {
+			remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 			if (remaining <= 0) {
-				clearInterval(id);
+				if (id) clearInterval(id);
 				onConfirm?.({ stepId: sid, approved: false, trustSession: false });
 			}
-		}, 1000);
-		return () => clearInterval(id);
+		};
+		id = setInterval(tick, 1000);
+		tick();
+		return () => {
+			if (id) clearInterval(id);
+		};
 	});
 
 	function handleCancel() {

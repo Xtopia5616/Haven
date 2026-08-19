@@ -945,6 +945,7 @@ mod tests {
                 model: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })
         }
         async fn chat_stream(

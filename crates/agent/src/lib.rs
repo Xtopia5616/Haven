@@ -302,6 +302,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             };
             Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
         }
@@ -708,6 +709,7 @@ mod tests {
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
         assert_eq!(thought, Some("Session done.".into()));
@@ -736,6 +738,7 @@ mod tests {
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 2);
         assert_eq!(thought, Some("Opening file.".into()));
@@ -768,6 +771,7 @@ mod tests {
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         let (thought, actions) = ReActEngine::parse_default_model_response(&resp, 1);
         assert_eq!(thought, Some("All done.".into()));
@@ -918,6 +922,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+                Vec::new(),
             ),
             CanonicalMessage::user_text("[conversation] [user] hello"),
             CanonicalMessage::user_text("[conversation] [assistant] hi there"),
@@ -1053,7 +1058,13 @@ mod tests {
         let canonical = vec![
             CanonicalMessage::system(vec![ContentPart::text("sys")]),
             CanonicalMessage::user_text("好的"),
-            CanonicalMessage::assistant(vec![ContentPart::text("好的")], None, None, Vec::new()),
+            CanonicalMessage::assistant(
+                vec![ContentPart::text("好的")],
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            ),
         ];
         let snapshot = ReActSnapshot {
             canonical,
@@ -1132,6 +1143,7 @@ mod tests {
                 vec![ContentPart::text("hi there")],
                 None,
                 None,
+                Vec::new(),
                 Vec::new(),
             ),
         ];
@@ -1224,6 +1236,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+                Vec::new(),
             ),
         ];
         let snapshot = ReActSnapshot {
@@ -1276,6 +1289,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
@@ -1292,6 +1306,7 @@ mod tests {
                     arguments: serde_json::json!({"question": "which file?"}),
                 }]),
                 None,
+                Vec::new(),
                 Vec::new(),
             ),
             CanonicalMessage::tool(
@@ -1353,6 +1368,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
@@ -1400,6 +1416,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Here is the complete answer.".into()),
@@ -1410,6 +1427,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
@@ -1543,6 +1561,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -1558,6 +1577,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1566,6 +1586,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Assistant,
@@ -1578,6 +1599,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let history = vec![ReActStep {
@@ -1644,6 +1666,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -1729,6 +1752,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -2408,6 +2432,7 @@ mod tests {
                 model: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })
         }
         async fn chat_with_tools(
@@ -2621,6 +2646,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -2635,6 +2661,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -2674,6 +2701,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -2688,6 +2716,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -2746,6 +2775,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             // Delayed final answer: the steering is added while this call is
             // in flight, so the final-content branch must pick it up.
@@ -2763,6 +2793,7 @@ mod tests {
                     reasoning: None,
                     web_search: None,
                     web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
                 },
                 300,
             ),
@@ -2780,6 +2811,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -2865,6 +2897,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -2879,6 +2912,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -2945,6 +2979,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             // The loop pauses after `ask`, so a second response is never
             // consumed; include a final_answer anyway to catch regressions
@@ -2962,6 +2997,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3011,6 +3047,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             // Step 2 (after resume): final answer.
             ScriptedResponse::Chunk(StreamChunk {
@@ -3026,6 +3063,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3089,6 +3127,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             // Step 2 (after the answer): streams a partial thought, then fails.
             ScriptedResponse::ChunkThenErr(
@@ -3101,6 +3140,7 @@ mod tests {
                     reasoning: None,
                     web_search: None,
                     web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
                 },
                 LlmError::Unknown("mock mid-stream failure".into()),
             ),
@@ -3118,6 +3158,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3213,6 +3254,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -3227,6 +3269,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3285,6 +3328,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3349,6 +3393,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Done.".into()),
@@ -3363,6 +3408,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3429,6 +3475,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         )]));
         let (agent, executor) = make_test_agent_with(mock.clone(), tools);
@@ -3585,6 +3632,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Chunk(StreamChunk {
                 text: Some("Second answer.".into()),
@@ -3595,6 +3643,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let client: Arc<dyn LlmClient> = mock.clone();
@@ -3712,6 +3761,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             ScriptedResponse::Err(LlmError::ContextLengthExceeded),
             ScriptedResponse::Chunk(StreamChunk {
@@ -3727,6 +3777,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ]));
         let (agent, executor) = make_test_agent_with(mock, tools);
@@ -3782,6 +3833,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }],
             history: vec![],
             step_number: 1,
@@ -3887,6 +3939,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let snapshot = ReActSnapshot {
             canonical: canonical.clone(),
@@ -3962,6 +4015,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -3970,6 +4024,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();
@@ -4064,6 +4119,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let mut branch_points = HashMap::new();
         branch_points.insert(
@@ -4147,6 +4203,7 @@ mod tests {
             tool_call_id: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let mut branch_points = HashMap::new();
         branch_points.insert(
@@ -4220,6 +4277,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4228,6 +4286,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();
@@ -4388,6 +4447,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4396,6 +4456,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();
@@ -4491,6 +4552,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4499,6 +4561,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             // The steering was pushed into the canonical with its prefix.
             CanonicalMessage {
@@ -4508,6 +4571,7 @@ mod tests {
                 tool_call_id: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let mut branch_points = HashMap::new();

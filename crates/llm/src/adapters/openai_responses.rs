@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use crate::adapters::{
     LineMode, build_client, build_headers, empty_chunk, health_check_request,
-    normalize_web_search_call_item, send_request, spawn_line_reader, upsert_web_search_call,
+    normalize_web_search_call_item, reasoning_text_from_thinking_blocks, requires_reasoning_echo,
+    send_request, spawn_line_reader, upsert_web_search_call,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -240,6 +241,14 @@ impl OpenAiResponsesAdapter {
         }
     }
 
+    /// True when the endpoint is in the reasoning-echo class (DeepSeek /
+    /// Kimi / MiMo), whose thinking mode requires the assistant's reasoning to
+    /// be echoed back on every request carrying tool-call history (see
+    /// `convert_input`).
+    fn requires_reasoning_echo(&self) -> bool {
+        requires_reasoning_echo(&self.endpoint)
+    }
+
     /// Cap for the per-turn reasoning echo in `convert_input`. Full reasoning
     /// (10k+ chars per turn) makes request bodies balloon and providers stall
     /// mid-inference; the tail of each turn preserves the conclusions.
@@ -286,9 +295,16 @@ impl OpenAiResponsesAdapter {
     /// System prompts go to the top-level `instructions` field; assistant
     /// tool calls become standalone `function_call` items; tool results
     /// become `function_call_output` items.
+    ///
+    /// `requires_reasoning_echo` is set for endpoints whose Responses-compat
+    /// layer demands the assistant's reasoning_text be echoed back on every
+    /// request carrying tool-call history (DeepSeek thinking mode). DeepSeek
+    /// validates presence, not content, so a tool-call turn on which the
+    /// model skipped thinking still needs an (empty) reasoning item injected.
     fn convert_input(
         msgs: Vec<CanonicalMessage>,
         max_reasoning_echo_chars: usize,
+        requires_reasoning_echo: bool,
     ) -> (Vec<Value>, Option<String>) {
         let mut instructions: Vec<String> = Vec::new();
         let mut items: Vec<Value> = Vec::new();
@@ -322,7 +338,21 @@ impl OpenAiResponsesAdapter {
                     // thinking mode must be passed back to the API.") or — on
                     // the streaming path — a silent empty/truncated stream.
                     // `reasoning` was persisted on the assistant message for
-                    // exactly this purpose.
+                    // exactly this purpose. Anthropic messages carry the text
+                    // only as raw `thinking_blocks` (the agent drops the
+                    // redundant `reasoning` copy), so it is reconstructed
+                    // before the echo.
+                    let reasoning = m
+                        .reasoning
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            let t = reasoning_text_from_thinking_blocks(&m.thinking_blocks);
+                            let t = t.trim();
+                            (!t.is_empty()).then(|| t.to_string())
+                        });
                     //
                     // The echo is capped: full reasoning (10k+ chars per turn
                     // is routine) makes the request body balloon to 150-200KB,
@@ -331,12 +361,7 @@ impl OpenAiResponsesAdapter {
                     // Keeping the TAIL of each turn's reasoning preserves the
                     // conclusions while bounding the request; the provider
                     // validates presence, not length.
-                    if let Some(r) = m
-                        .reasoning
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|r| !r.is_empty())
-                    {
+                    if let Some(r) = reasoning.as_deref() {
                         let text: String = if r.len() > max_reasoning_echo_chars {
                             // Last `max_reasoning_echo_chars` chars: the tail
                             // carries the turn's conclusions, which the next
@@ -354,6 +379,21 @@ impl OpenAiResponsesAdapter {
                         items.push(json!({
                             "type": "reasoning",
                             "content": [{"type": "reasoning_text", "text": text}]
+                        }));
+                    } else if requires_reasoning_echo
+                        && (m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+                            || !m.web_search_calls.is_empty())
+                    {
+                        // DeepSeek checks PRESENCE of the reasoning item, not
+                        // its content: a tool-call / web-search turn on which
+                        // the model produced no reasoning_text (it may skip
+                        // thinking for a turn) still must echo the item or the
+                        // next request 400s. Inject an empty one — the same
+                        // shape the provider itself emits, so the round-trip
+                        // stays canonical.
+                        items.push(json!({
+                            "type": "reasoning",
+                            "content": [{"type": "reasoning_text", "text": ""}]
                         }));
                     }
                     // `web_search_call` items are passed back verbatim: the
@@ -432,6 +472,7 @@ impl OpenAiResponsesAdapter {
             self.endpoint
                 .reasoning_echo_max_chars
                 .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+            self.requires_reasoning_echo(),
         );
         let mut tools_json = Self::convert_tools(tools);
         // `tool_choice` semantics: `None` (no tools at all), string
@@ -558,6 +599,7 @@ impl OpenAiResponsesAdapter {
                 Some(reasoning)
             },
             web_search_calls,
+            thinking_blocks: Vec::new(),
         })
     }
 
@@ -692,6 +734,7 @@ impl OpenAiResponsesAdapter {
                                 reasoning: None,
                                 web_search: None,
                                 web_search_calls: state.web_search_calls.drain(..).collect(),
+                                thinking_blocks: Vec::new(),
                             })
                         };
                         state.done = true;
@@ -852,6 +895,7 @@ impl OpenAiResponsesAdapter {
                                 reasoning: None,
                                 web_search: None,
                                 web_search_calls: state.web_search_calls.drain(..).collect(),
+                                thinking_blocks: Vec::new(),
                             }),
                             state,
                         ))
@@ -995,6 +1039,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1003,11 +1048,13 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (items, instructions) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(instructions.as_deref(), Some("you are helpful"));
         assert_eq!(items.len(), 1);
@@ -1030,6 +1077,7 @@ mod tests {
                 }]),
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1038,11 +1086,13 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items.len(), 3);
         assert_eq!(items[0]["role"], "assistant");
@@ -1073,6 +1123,7 @@ mod tests {
                 }]),
                 reasoning: Some("  I should read the file first.  ".into()),
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1081,11 +1132,13 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items.len(), 4);
         assert_eq!(items[0]["role"], "assistant");
@@ -1097,6 +1150,57 @@ mod tests {
         );
         assert_eq!(items[2]["type"], "function_call");
         assert_eq!(items[3]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn convert_input_synthesizes_empty_reasoning_for_tool_turns_when_echo_required() {
+        // DeepSeek thinking mode validates PRESENCE of the reasoning item,
+        // not content: a tool-call turn on which the model skipped thinking
+        // (reasoning absent) must still echo an (empty) reasoning item, or
+        // the next request 400s. Only the DeepSeek echo is synthesized.
+        let msgs = vec![
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
+                content: vec![ContentPart::text("let me check")],
+                tool_call_id: None,
+                tool_calls: Some(vec![CanonicalToolCall {
+                    id: "call_1".into(),
+                    name: "file".into(),
+                    arguments: serde_json::json!({"operation": "read"}),
+                }]),
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
+                content: vec![ContentPart::text("result body")],
+                tool_call_id: Some("call_1".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        ];
+        let (with_echo, _) = OpenAiResponsesAdapter::convert_input(
+            msgs.clone(),
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            true,
+        );
+        assert_eq!(with_echo.len(), 4);
+        assert_eq!(with_echo[1]["type"], "reasoning");
+        assert_eq!(with_echo[1]["content"][0]["type"], "reasoning_text");
+        assert_eq!(with_echo[1]["content"][0]["text"], "");
+        assert_eq!(with_echo[2]["type"], "function_call");
+        assert_eq!(with_echo[3]["type"], "function_call_output");
+        // Without the echo requirement the reasoning item must not appear.
+        let (no_echo, _) = OpenAiResponsesAdapter::convert_input(
+            msgs,
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
+        );
+        assert_eq!(no_echo.len(), 3);
+        assert_eq!(no_echo[1]["type"], "function_call");
     }
 
     #[test]
@@ -1115,10 +1219,12 @@ mod tests {
             tool_calls: None,
             reasoning: Some(long.clone()),
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items.len(), 2);
         let echoed = items[1]["content"][0]["text"].as_str().unwrap();
@@ -1146,10 +1252,12 @@ mod tests {
             tool_calls: None,
             reasoning: Some("   ".into()),
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["role"], "assistant");
@@ -1175,10 +1283,12 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items[0]["content"][0]["type"], "input_image");
         assert!(
@@ -1208,6 +1318,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }],
             Vec::new(),
             true,
@@ -1327,10 +1438,12 @@ mod tests {
                 "id": "ws_1",
                 "status": "in_progress"
             })],
+            thinking_blocks: Vec::new(),
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "assistant");
@@ -1363,10 +1476,12 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: vec![ws.clone()],
+            thinking_blocks: Vec::new(),
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            false,
         );
         assert_eq!(items.len(), 2);
         assert_eq!(items[1], ws);

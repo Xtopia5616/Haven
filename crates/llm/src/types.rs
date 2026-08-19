@@ -116,6 +116,12 @@ pub struct LlmResponse {
     /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_search_calls: Vec<serde_json::Value>,
+    /// Raw Anthropic `thinking` content blocks (see
+    /// [`haven_common::types::CanonicalMessage::thinking_blocks`]). Carried so
+    /// the agent can echo them back verbatim on tool-use turns. May include
+    /// the adapter's internal trailing `__layout` marker entry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_blocks: Vec<serde_json::Value>,
 }
 
 /// A batch of text embeddings produced by the dedicated `embedding_model`
@@ -267,6 +273,11 @@ pub struct StreamChunk {
     /// Raw `web_search_call` items accumulated while streaming (see
     /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
     pub web_search_calls: Vec<serde_json::Value>,
+    /// Raw Anthropic `thinking` content blocks accumulated while streaming (see
+    /// [`haven_common::types::CanonicalMessage::thinking_blocks`]). Emitted
+    /// when a thinking block completes so the aggregation keeps them verbatim;
+    /// the final chunk may carry the adapter's internal `__layout` marker.
+    pub thinking_blocks: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -428,6 +439,7 @@ mod tests {
             reasoning: None,
             web_search: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         assert_eq!(chunk.text, Some("delta".into()));
         assert!(chunk.tool_calls.is_empty());
@@ -454,6 +466,7 @@ mod tests {
             reasoning: None,
             web_search: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         assert_eq!(chunk.tool_calls.len(), 1);
         assert_eq!(chunk.tool_calls[0].name, "shell");

@@ -208,6 +208,42 @@ pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_j
     item
 }
 
+/// True when the endpoint's thinking mode requires the assistant's reasoning
+/// to be echoed back on every request that carries tool-call history
+/// (chat-completions: `reasoning_content`; Responses compat: `reasoning_text`).
+/// The affected APIs validate PRESENCE of the field, not its content — an
+/// empty echo passes — so a tool-call turn on which the model skipped thinking
+/// still needs the item injected. Providers in this class: DeepSeek
+/// (thinking mode), Moonshot/Kimi K2.x+ (thinking on by default for the plain
+/// `kimi-k2.6` model id), and MiMo. Matched by provider hint, base URL and
+/// model name so a proxied/gatewayed endpoint is caught too.
+pub(crate) fn requires_reasoning_echo(endpoint: &ModelEndpoint) -> bool {
+    const REASONING_ECHO_PROVIDERS: [&str; 4] = ["deepseek", "kimi", "moonshot", "mimo"];
+    let hay = [&endpoint.provider, &endpoint.base_url, &endpoint.model_name]
+        .map(String::as_str)
+        .join(" ")
+        .to_ascii_lowercase();
+    REASONING_ECHO_PROVIDERS.iter().any(|p| hay.contains(p))
+}
+
+/// Reconstruct the plain reasoning text from raw Anthropic `thinking` blocks.
+/// Mirrors the anthropic adapter's `reasoning` assembly exactly (concatenation
+/// of the `thinking` fields of `type == "thinking"` blocks, in order; redacted
+/// data is skipped). Lets OpenAI-compatible adapters echo reasoning when the
+/// canonical carries only the raw echo-capable blocks (the agent drops the
+/// redundant `reasoning` copy on Anthropic messages).
+pub(crate) fn reasoning_text_from_thinking_blocks(blocks: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for b in blocks {
+        if b.get("type").and_then(serde_json::Value::as_str) == Some("thinking")
+            && let Some(t) = b.get("thinking").and_then(serde_json::Value::as_str)
+        {
+            out.push_str(t);
+        }
+    }
+    out
+}
+
 /// Insert a captured `web_search_call` item into `calls`, replacing any
 /// earlier item with the same `id`. The `output_item.added` skeleton arrives
 /// first; a later `web_search_call.completed` payload — when the provider
@@ -238,6 +274,7 @@ pub(crate) fn empty_chunk() -> StreamChunk {
         reasoning: None,
         web_search: None,
         web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
     }
 }
 
@@ -356,6 +393,88 @@ pub(crate) fn spawn_line_reader<S>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requires_reasoning_echo_covers_reasoning_echo_providers() {
+        // DeepSeek (both native and proxied).
+        let deepseek = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com/v1".into(),
+            model_name: "deepseek-v4-flash".into(),
+            ..Default::default()
+        };
+        assert!(requires_reasoning_echo(&deepseek));
+        let proxied = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            model_name: "deepseek-reasoner".into(),
+            ..Default::default()
+        };
+        assert!(requires_reasoning_echo(&proxied));
+        // Moonshot / Kimi K2.x (thinking on by default).
+        let kimi = ModelEndpoint {
+            provider: "moonshot".into(),
+            base_url: "https://api.moonshot.ai/v1".into(),
+            model_name: "kimi-k2.6".into(),
+            ..Default::default()
+        };
+        assert!(requires_reasoning_echo(&kimi));
+        let kimi_cn = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            model_name: "kimi-k2.7-code".into(),
+            ..Default::default()
+        };
+        assert!(requires_reasoning_echo(&kimi_cn));
+        // MiMo.
+        let mimo = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://platform.xiaomimimo.com/v1".into(),
+            model_name: "MiMo-7B-RL".into(),
+            ..Default::default()
+        };
+        assert!(requires_reasoning_echo(&mimo));
+        // Providers without the requirement must not be padded.
+        let openai = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model_name: "gpt-5".into(),
+            ..Default::default()
+        };
+        assert!(!requires_reasoning_echo(&openai));
+        let zhipu = ModelEndpoint {
+            provider: "zhipu".into(),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            model_name: "glm-5".into(),
+            ..Default::default()
+        };
+        assert!(!requires_reasoning_echo(&zhipu));
+    }
+
+    #[test]
+    fn reasoning_text_from_thinking_blocks_concatenates_thinking_only() {
+        let blocks = vec![
+            serde_json::json!({"type": "thinking", "thinking": "first part", "signature": "s1"}),
+            serde_json::json!({"type": "text", "text": "visible"}),
+            serde_json::json!({"type": "thinking", "thinking": "second part"}),
+            serde_json::json!({"type": "redacted_thinking", "data": "redacted"}),
+        ];
+        // Mirrors the anthropic adapter's `reasoning` assembly: only
+        // `type == "thinking"` text, concatenated in order, redacted skipped.
+        assert_eq!(
+            reasoning_text_from_thinking_blocks(&blocks),
+            "first partsecond part"
+        );
+    }
+
+    #[test]
+    fn reasoning_text_from_thinking_blocks_empty_for_no_thinking() {
+        assert_eq!(
+            reasoning_text_from_thinking_blocks(&[serde_json::json!({"type": "text"})]),
+            ""
+        );
+        assert_eq!(reasoning_text_from_thinking_blocks(&[]), "");
+    }
 
     #[test]
     fn api_style_explicit_wins() {

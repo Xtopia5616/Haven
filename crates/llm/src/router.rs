@@ -55,6 +55,13 @@ fn estimate_prompt_tokens(messages: &[CanonicalMessage]) -> u64 {
         if let Some(reasoning) = &m.reasoning {
             total += (reasoning.chars().count() as u64) / 4;
         }
+        // Anthropic thinking text is carried as raw `thinking_blocks` when the
+        // redundant `reasoning` copy is dropped; count it either way.
+        for block in &m.thinking_blocks {
+            if let Some(t) = block.get("thinking").and_then(serde_json::Value::as_str) {
+                total += (t.chars().count() as u64) / 4;
+            }
+        }
         if let Some(calls) = &m.tool_calls {
             for c in calls {
                 // Serialize into a counting sink: the arguments are JSON
@@ -1219,6 +1226,7 @@ impl LlmRouter {
         let mut model: Option<String> = None;
         let mut reasoning = String::new();
         let mut web_search_calls = Vec::new();
+        let mut thinking_blocks = Vec::new();
 
         loop {
             tokio::select! {
@@ -1272,6 +1280,9 @@ impl LlmRouter {
                             }
                             if !chunk.web_search_calls.is_empty() {
                                 web_search_calls.extend(chunk.web_search_calls.clone());
+                            }
+                            if !chunk.thinking_blocks.is_empty() {
+                                thinking_blocks.extend(chunk.thinking_blocks.clone());
                             }
                             if chunk.finish_reason.is_some() {
                                 finish_reason = chunk.finish_reason;
@@ -1337,6 +1348,7 @@ impl LlmRouter {
                 Some(reasoning)
             },
             web_search_calls,
+            thinking_blocks,
         })
     }
 
@@ -1482,6 +1494,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }
     }
 
@@ -1573,6 +1586,7 @@ mod tests {
                     model: None,
                     reasoning: None,
                     web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
                 })
             }
         }
@@ -1592,6 +1606,7 @@ mod tests {
                     model: None,
                     reasoning: None,
                     web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
                 })
             }
         }
@@ -1773,6 +1788,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: Some("world!".into()),
@@ -1783,6 +1799,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: None,
@@ -1797,6 +1814,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: None,
@@ -1813,6 +1831,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ];
 
@@ -1906,6 +1925,7 @@ mod tests {
                     reasoning: None,
                     web_search: None,
                     web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
                 })
             };
             Ok(Box::pin(stream::unfold(0u8, move |i| async move {
@@ -1987,6 +2007,7 @@ mod tests {
                 reasoning: None,
                 web_search: Some(WebSearchPhase::InProgress),
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: None,
@@ -1997,6 +2018,7 @@ mod tests {
                 reasoning: None,
                 web_search: Some(WebSearchPhase::Searching),
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: None,
@@ -2011,6 +2033,7 @@ mod tests {
                     "id": "ws_1",
                     "status": "completed"
                 })],
+                thinking_blocks: Vec::new(),
             }),
             Ok(StreamChunk {
                 text: Some("answer with citations".into()),
@@ -2021,6 +2044,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }),
         ];
 
@@ -2075,6 +2099,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -2147,6 +2172,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -2416,6 +2442,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -2443,6 +2470,7 @@ mod tests {
                 reasoning: None,
                 web_search: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })],
             fail_chat: false,
         }) as Arc<dyn LlmClient>;
@@ -2485,6 +2513,7 @@ mod tests {
                 model: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })
         }
         async fn chat_stream(

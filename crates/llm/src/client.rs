@@ -72,6 +72,7 @@ pub trait LlmClient: Send + Sync {
             reasoning: None,
             web_search: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         let final_chunk = StreamChunk {
             text: None,
@@ -82,6 +83,7 @@ pub trait LlmClient: Send + Sync {
             reasoning: None,
             web_search: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
         Ok(Box::pin(futures_util::stream::iter(vec![
             Ok(chunk),
@@ -363,6 +365,7 @@ mod tests {
                 model: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             })
         })
         .await;
@@ -397,6 +400,7 @@ mod tests {
                         model: None,
                         reasoning: None,
                         web_search_calls: Vec::new(),
+                        thinking_blocks: Vec::new(),
                     })
                 }
             }

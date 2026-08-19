@@ -9,7 +9,8 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    build_client, build_headers, health_check_request, normalize_web_search_call_item, send_request,
+    build_client, build_headers, health_check_request, normalize_web_search_call_item,
+    reasoning_text_from_thinking_blocks, requires_reasoning_echo, send_request,
 };
 use crate::client::{LlmClient, http_status_to_error};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -213,7 +214,22 @@ impl OpenAiAdapter {
         build_headers(&self.endpoint, "Authorization", true)
     }
 
-    fn convert_messages(msgs: Vec<CanonicalMessage>) -> Vec<OpenAiMessage> {
+    /// True when the endpoint's thinking mode requires the assistant's
+    /// reasoning to be echoed back on every request that carries tool-call
+    /// history (DeepSeek / Kimi / MiMo: `reasoning_content`).
+    fn requires_reasoning_echo(&self) -> bool {
+        requires_reasoning_echo(&self.endpoint)
+    }
+
+    /// `requires_reasoning_echo` is set for endpoints whose thinking mode
+    /// demands the assistant's reasoning be echoed back on every request that
+    /// carries tool-call history (DeepSeek: `reasoning_content`). DeepSeek
+    /// validates presence, not content, so a tool-call turn on which the
+    /// model skipped thinking needs an empty `reasoning_content` injected.
+    fn convert_messages(
+        msgs: Vec<CanonicalMessage>,
+        requires_reasoning_echo: bool,
+    ) -> Vec<OpenAiMessage> {
         msgs.into_iter()
             .map(|m| {
                 // When the assistant message carries tool_calls, the content
@@ -271,6 +287,21 @@ impl OpenAiAdapter {
                         .collect();
                     Some(serde_json::Value::Array(parts))
                 };
+                // Anthropic messages carry the thinking text only as raw
+                // `thinking_blocks` (the agent drops the redundant `reasoning`
+                // copy); reconstruct it so the reasoning echo still applies.
+                let reasoning = m.reasoning.or_else(|| {
+                    let t = reasoning_text_from_thinking_blocks(&m.thinking_blocks);
+                    (!t.is_empty()).then_some(t)
+                });
+                // DeepSeek thinking mode validates PRESENCE of
+                // `reasoning_content`, not its content: a tool-call / web-search
+                // turn on which the model skipped thinking must still carry the
+                // field (empty is accepted) or the next request 400s.
+                let requires_reasoning_pad = requires_reasoning_echo
+                    && reasoning.as_ref().is_none_or(|r| r.trim().is_empty())
+                    && (m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+                        || !m.web_search_calls.is_empty());
                 let tool_calls = m.tool_calls.map(|calls| {
                     calls
                         .into_iter()
@@ -297,7 +328,11 @@ impl OpenAiAdapter {
                     content,
                     tool_call_id: m.tool_call_id,
                     tool_calls,
-                    reasoning_content: m.reasoning,
+                    reasoning_content: if requires_reasoning_pad {
+                        Some(String::new())
+                    } else {
+                        reasoning
+                    },
                     // `web_search_call` items are echoed back for the
                     // stateless chat API to restore the search context, with
                     // the `action` discriminator filled when the captured
@@ -356,9 +391,17 @@ impl OpenAiAdapter {
         let has_tools = !tools.is_empty();
         OpenAiRequest {
             model: self.endpoint.model_name.clone(),
-            messages: Self::convert_messages(messages),
+            messages: Self::convert_messages(messages, self.requires_reasoning_echo()),
             max_tokens: Some(self.endpoint.max_tokens),
-            temperature: Some(self.endpoint.temperature),
+            // Reasoning models (o1/o3-family, reasoning_effort configured)
+            // reject a non-default temperature; the Responses adapter skips
+            // it for the same reason. Omit it whenever the endpoint pins a
+            // reasoning effort — the provider's default (1.0) applies.
+            temperature: self
+                .endpoint
+                .reasoning_effort
+                .is_none()
+                .then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
                 Some(Self::convert_tools(tools))
@@ -441,6 +484,7 @@ impl OpenAiAdapter {
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
             reasoning,
             web_search_calls,
+            thinking_blocks: Vec::new(),
         };
         tracing::trace!(
             "parse_openai_response: text={} chars, tool_calls={}, reasoning={}, usage p/c/t={}/{}/{}",
@@ -708,6 +752,7 @@ impl OpenAiAdapter {
                                     reasoning: None,
                                     web_search: None,
                                     web_search_calls: std::mem::take(&mut state.web_search_acc),
+                                    thinking_blocks: Vec::new(),
                                 })
                             };
                         state.done = true;
@@ -777,6 +822,7 @@ impl OpenAiAdapter {
                                     model: state.last_model.clone(),
                                     web_search: None,
                                     web_search_calls: Vec::new(),
+                                    thinking_blocks: Vec::new(),
                                 }),
                                 state,
                             ))
@@ -791,6 +837,7 @@ impl OpenAiAdapter {
                                     model: state.last_model.clone(),
                                     web_search: None,
                                     web_search_calls: Vec::new(),
+                                    thinking_blocks: Vec::new(),
                                 }),
                                 state,
                             ))
@@ -951,6 +998,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }])
             .await
             .unwrap_err();
@@ -1055,12 +1103,47 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: vec![ws.clone()],
+            thinking_blocks: Vec::new(),
         }];
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
         let body = client.build_request_body(msgs, Vec::new(), false);
         let out = body.messages[0].web_search_call.first().cloned().unwrap();
         assert_eq!(out, ws);
+    }
+
+    #[test]
+    fn convert_messages_derives_reasoning_from_thinking_blocks() {
+        // Anthropic messages carry the thinking text only as raw
+        // `thinking_blocks` (the agent drops the redundant `reasoning` copy);
+        // the reasoning echo must still work when such a message is sent to an
+        // OpenAI-compatible reasoning-echo provider.
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("checked")],
+            tool_call_id: None,
+            tool_calls: Some(vec![CanonicalToolCall {
+                id: "call_1".into(),
+                name: "file".into(),
+                arguments: serde_json::json!({"operation": "read"}),
+            }]),
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: vec![
+                serde_json::json!({"type": "thinking", "thinking": "let me check", "signature": "s1"}),
+                serde_json::json!({"type": "redacted_thinking", "data": "redacted"}),
+            ],
+        }];
+        let ep = ModelEndpoint {
+            provider: "deepseek".into(),
+            ..Default::default()
+        };
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(msgs, Vec::new(), false);
+        assert_eq!(
+            body.messages[0].reasoning_content.as_deref(),
+            Some("let me check")
+        );
     }
 
     #[test]
@@ -1079,6 +1162,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: vec![ws.clone()],
+            thinking_blocks: Vec::new(),
         }];
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
@@ -1207,6 +1291,31 @@ mod tests {
     }
 
     #[test]
+    fn build_request_body_omits_temperature_for_reasoning_effort_models() {
+        // o1/o3-family models reject a non-default temperature; when a
+        // reasoning_effort is pinned the temperature field must be omitted
+        // (provider default 1.0 applies).
+        let ep = ModelEndpoint {
+            temperature: 0.7,
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(vec![], vec![], false);
+        assert!(body.temperature.is_none());
+        assert_eq!(body.reasoning_effort.as_deref(), Some("high"));
+        // Without reasoning_effort the configured temperature is sent.
+        let ep = ModelEndpoint {
+            temperature: 0.7,
+            reasoning_effort: None,
+            ..Default::default()
+        };
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(vec![], vec![], false);
+        assert_eq!(body.temperature, Some(0.7));
+    }
+
+    #[test]
     fn build_request_body_without_tools_has_none() {
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
@@ -1267,8 +1376,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         assert_eq!(openai_msgs.len(), 1);
         let content = openai_msgs[0].content.as_ref().unwrap();
         assert!(content.is_array());
@@ -1290,8 +1400,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         assert_eq!(openai_msgs.len(), 1);
         assert!(openai_msgs[0].content.is_none());
     }
@@ -1305,8 +1416,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         assert_eq!(openai_msgs[0].role, "system");
     }
 
@@ -1319,8 +1431,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         assert_eq!(openai_msgs[0].role, "assistant");
     }
 
@@ -1333,8 +1446,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         assert_eq!(openai_msgs[0].role, "tool");
         assert_eq!(openai_msgs[0].tool_call_id.as_deref(), Some("call_1"));
     }
@@ -1348,8 +1462,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         let content = openai_msgs[0].content.as_ref().unwrap();
         assert!(content.is_string());
         assert_eq!(content.as_str().unwrap(), "hello");
@@ -1368,8 +1483,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         let content = openai_msgs[0].content.as_ref().unwrap();
         let arr = content.as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -1391,8 +1507,9 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg]);
+        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
         let content = openai_msgs[0].content.as_ref().unwrap();
         let arr = content.as_array().unwrap();
         assert_eq!(arr.len(), 1);

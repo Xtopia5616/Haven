@@ -993,6 +993,7 @@ impl AgentLayer {
                 }]),
                 None,
                 Vec::new(),
+                Vec::new(),
             ));
             canonical.push(CanonicalMessage::tool(
                 vec![ContentPart::text(obs)],

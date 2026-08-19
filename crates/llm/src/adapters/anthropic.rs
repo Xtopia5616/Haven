@@ -79,6 +79,14 @@ struct AnthropicResponseBlock {
     name: Option<String>,
     #[serde(default)]
     input: Option<Value>,
+    /// Thinking-block signature. Anthropic validates it against the thinking
+    /// text on echo, so it must be captured and passed back verbatim.
+    #[serde(default)]
+    signature: Option<String>,
+    /// `redacted_thinking` payload. Redacted thinking blocks must also be
+    /// echoed back verbatim on tool-use turns.
+    #[serde(default)]
+    data: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -140,6 +148,9 @@ struct AnthropicStreamBlock {
     name: Option<String>,
     #[serde(default)]
     input: Option<Value>,
+    /// Thinking-block signature delivered on the `content_block_start` event.
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +230,149 @@ impl AnthropicAdapter {
             .join("\n")
     }
 
+    /// Internal marker key embedded in `thinking_blocks` that records the
+    /// original content-block order at capture time. Stripped before the
+    /// echo, so Anthropic never sees it. Signature validation is unaffected
+    /// by position, so the echo is free to restore the exact interleaving.
+    const LAYOUT_KEY: &str = "__layout";
+    /// Layout entry kind: the block lives in `thinking_blocks`.
+    const LAYOUT_KIND_THINKING: u8 = 0;
+    /// Layout entry kind: the block lives in `tool_calls`.
+    const LAYOUT_KIND_TOOL_USE: u8 = 1;
+
+    /// If the trailing entry of `blocks` is the internal `__layout` marker,
+    /// remove it and decode the layout: one `(kind, pos, text_before)` triple
+    /// per original content block, in original order (`pos` = index in the
+    /// provider content array, `text_before` = char count of visible text
+    /// accumulated before that block).
+    fn split_layout(blocks: &mut Vec<Value>) -> Option<Vec<(u8, usize, usize)>> {
+        let last = blocks.last_mut()?;
+        if !last.is_object() {
+            return None;
+        }
+        let entry = last.get(Self::LAYOUT_KEY)?.clone();
+        let layout: Vec<(u8, usize, usize)> = serde_json::from_value(entry).ok()?;
+        blocks.pop();
+        Some(layout)
+    }
+
+    /// Rebuild an assistant message's content blocks in the original
+    /// interleaved order (thinking ↔ text ↔ tool_use) from the capture-time
+    /// layout. The visible text is spliced back into segments at the recorded
+    /// boundaries; adjacent original text blocks merge into one segment,
+    /// which is semantically identical. Returns `None` when the layout is
+    /// absent or inconsistent (legacy snapshots, hand-built messages, or
+    /// content rewritten downstream), letting the caller fall back to the
+    /// legacy front-loaded order.
+    fn rebuild_ordered_blocks(
+        content: &[ContentPart],
+        thinking_blocks: &[Value],
+        tool_calls: Option<&[CanonicalToolCall]>,
+        layout: &[(u8, usize, usize)],
+    ) -> Option<Vec<Value>> {
+        // Non-text parts (e.g. images) have no position in the layout; keep
+        // the legacy order for such messages.
+        if content.iter().any(|p| !matches!(p, ContentPart::Text(_))) {
+            return None;
+        }
+        let text: String = content
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let calls = tool_calls.unwrap_or_default();
+        let text_len = text.chars().count();
+
+        let (think_count, call_count) =
+            layout
+                .iter()
+                .fold((0usize, 0usize), |(t, c), (kind, _, _)| {
+                    if *kind == Self::LAYOUT_KIND_THINKING {
+                        (t + 1, c)
+                    } else {
+                        (t, c + 1)
+                    }
+                });
+        if think_count != thinking_blocks.len() || call_count != calls.len() {
+            return None;
+        }
+
+        let mut out = Vec::new();
+        let mut prev_pos: Option<usize> = None;
+        let mut prev_tb = 0usize;
+        let mut think_idx = 0usize;
+        let mut call_idx = 0usize;
+        for (kind, pos, tb) in layout {
+            if let Some(p) = prev_pos
+                && *pos <= p
+            {
+                return None;
+            }
+            if *tb < prev_tb || *tb > text_len {
+                return None;
+            }
+            prev_pos = Some(*pos);
+            if *tb > prev_tb {
+                out.push(json!({
+                    "type": "text",
+                    "text": text
+                        .chars()
+                        .skip(prev_tb)
+                        .take(*tb - prev_tb)
+                        .collect::<String>()
+                }));
+            }
+            match *kind {
+                Self::LAYOUT_KIND_THINKING => {
+                    out.push(thinking_blocks[think_idx].clone());
+                    think_idx += 1;
+                }
+                _ => {
+                    let tc = &calls[call_idx];
+                    out.push(json!({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments
+                    }));
+                    call_idx += 1;
+                }
+            }
+            prev_tb = *tb;
+        }
+        if text_len > prev_tb {
+            out.push(json!({
+                "type": "text",
+                "text": text.chars().skip(prev_tb).collect::<String>()
+            }));
+        }
+        Some(out)
+    }
+
+    /// Legacy assistant block order: all thinking blocks first, then the
+    /// visible content, then the tool calls.
+    fn legacy_assistant_blocks(
+        captured: Vec<Value>,
+        content: &[ContentPart],
+        tool_calls: Option<Vec<CanonicalToolCall>>,
+    ) -> Vec<Value> {
+        let mut blocks = captured;
+        blocks.extend(Self::content_to_blocks(content));
+        if let Some(calls) = tool_calls {
+            for tc in calls {
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.arguments
+                }));
+            }
+        }
+        blocks
+    }
+
     fn content_to_blocks(parts: &[ContentPart]) -> Vec<Value> {
         let mut blocks = Vec::new();
         for p in parts {
@@ -285,17 +439,30 @@ impl AnthropicAdapter {
                     }
                 }
                 CanonicalRole::Assistant => {
-                    let mut blocks = Self::content_to_blocks(&m.content);
-                    if let Some(calls) = m.tool_calls {
-                        for tc in calls {
-                            blocks.push(json!({
-                                "type": "tool_use",
-                                "id": tc.id,
-                                "name": tc.name,
-                                "input": tc.arguments
-                            }));
+                    // Echo the raw thinking blocks verbatim (text + signature):
+                    // Anthropic 400s a tool-use turn that omits or rewrites
+                    // them. `thinking_blocks` holds the exact
+                    // `{"type":"thinking",…}` JSON captured upstream, plus an
+                    // internal `__layout` marker that records each block's
+                    // original position so the echo restores the exact
+                    // interleaved order instead of front-loading the thinking
+                    // blocks (position does not affect signature validation).
+                    let calls = m.tool_calls;
+                    let mut captured = m.thinking_blocks;
+                    let blocks = match Self::split_layout(&mut captured) {
+                        Some(layout) => {
+                            match Self::rebuild_ordered_blocks(
+                                &m.content,
+                                &captured,
+                                calls.as_deref(),
+                                &layout,
+                            ) {
+                                Some(ordered) => ordered,
+                                None => Self::legacy_assistant_blocks(captured, &m.content, calls),
+                            }
                         }
-                    }
+                        None => Self::legacy_assistant_blocks(captured, &m.content, calls),
+                    };
                     if blocks.is_empty() {
                         continue;
                     }
@@ -374,7 +541,12 @@ impl AnthropicAdapter {
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
-        for block in json.content {
+        let mut thinking_blocks = Vec::new();
+        // Original position of each captured block (index in the content
+        // array + visible-text char count before it) so the next tool-use
+        // request can restore the exact interleaved order on echo.
+        let mut layout: Vec<(u8, usize, usize)> = Vec::new();
+        for (i, block) in json.content.into_iter().enumerate() {
             match block.block_type.as_deref() {
                 Some("text") => {
                     if let Some(t) = block.text {
@@ -384,6 +556,29 @@ impl AnthropicAdapter {
                 Some("thinking") => {
                     if let Some(t) = block.thinking {
                         reasoning.push_str(&t);
+                        // Keep the raw thinking block (text + signature) so the
+                        // next tool-use request can echo it back verbatim.
+                        let mut block_json = json!({
+                            "type": "thinking",
+                            "thinking": t,
+                        });
+                        if let Some(sig) = block.signature {
+                            block_json["signature"] = Value::String(sig);
+                        }
+                        thinking_blocks.push(block_json);
+                        layout.push((Self::LAYOUT_KIND_THINKING, i, text.chars().count()));
+                    }
+                }
+                Some("redacted_thinking") => {
+                    // Redacted thinking (extended-thinking safety redaction)
+                    // must be echoed back verbatim too; the data is not real
+                    // thinking text, so it never feeds `reasoning`.
+                    if let Some(data) = block.data {
+                        thinking_blocks.push(json!({
+                            "type": "redacted_thinking",
+                            "data": data,
+                        }));
+                        layout.push((Self::LAYOUT_KIND_THINKING, i, text.chars().count()));
                     }
                 }
                 Some("tool_use") => {
@@ -393,10 +588,14 @@ impl AnthropicAdapter {
                             name,
                             arguments: block.input.unwrap_or_default(),
                         });
+                        layout.push((Self::LAYOUT_KIND_TOOL_USE, i, text.chars().count()));
                     }
                 }
                 _ => {}
             }
+        }
+        if !layout.is_empty() {
+            thinking_blocks.push(json!({Self::LAYOUT_KEY: layout}));
         }
         let usage = json
             .usage
@@ -423,6 +622,7 @@ impl AnthropicAdapter {
                 Some(reasoning)
             },
             web_search_calls: Vec::new(),
+            thinking_blocks,
         })
     }
 
@@ -504,12 +704,20 @@ impl AnthropicAdapter {
             tool_id: String,
             tool_name: String,
             tool_input: String,
+            thinking: String,
+            thinking_signature: String,
+            /// Original content-block index (for the echo layout marker).
+            pos: usize,
+            /// Char count of accumulated visible text when this block started
+            /// (for the echo layout marker).
+            text_before: usize,
         }
 
         #[derive(PartialEq)]
         enum BlockKind {
             Text,
             Thinking,
+            RedactedThinking,
             ToolUse,
         }
 
@@ -519,6 +727,10 @@ impl AnthropicAdapter {
             /// Per-content-block streaming state, indexed by Anthropic block index.
             blocks: Vec<BlockState>,
             accumulated_text: String,
+            /// Capture-time layout: `(kind, pos, text_before)` per content
+            /// block, in order. Emitted as the trailing `__layout` marker on
+            /// the final chunk so the echo can restore the interleaving.
+            layout: Vec<(u8, usize, usize)>,
             last_model: Option<String>,
             stop_reason: Option<FinishReason>,
             usage: Option<Usage>,
@@ -533,6 +745,7 @@ impl AnthropicAdapter {
                 done: false,
                 blocks: Vec::new(),
                 accumulated_text: String::new(),
+                layout: Vec::new(),
                 last_model: None,
                 stop_reason: None,
                 usage: None,
@@ -549,7 +762,7 @@ impl AnthropicAdapter {
                         {
                             Err(LlmError::StreamTruncated)
                         } else {
-                            Ok(StreamChunk {
+                            let mut final_chunk = StreamChunk {
                                 text: None,
                                 tool_calls: Vec::new(),
                                 finish_reason: state.stop_reason,
@@ -558,7 +771,14 @@ impl AnthropicAdapter {
                                 reasoning: None,
                                 web_search: None,
                                 web_search_calls: Vec::new(),
-                            })
+                                thinking_blocks: Vec::new(),
+                            };
+                            if !state.layout.is_empty() {
+                                final_chunk.thinking_blocks.push(json!({
+                                    Self::LAYOUT_KEY: state.layout
+                                }));
+                            }
+                            Ok(final_chunk)
                         };
                         state.done = true;
                         return Some((chunk, state));
@@ -593,10 +813,16 @@ impl AnthropicAdapter {
                                 tool_id: String::new(),
                                 tool_name: String::new(),
                                 tool_input: String::new(),
+                                thinking: String::new(),
+                                thinking_signature: String::new(),
+                                pos: 0,
+                                text_before: 0,
                             });
                         }
                         {
                             let block = &mut state.blocks[index];
+                            block.pos = index;
+                            block.text_before = state.accumulated_text.chars().count();
                             match content_block.block_type.as_deref() {
                                 Some("tool_use") => {
                                     block.kind = BlockKind::ToolUse;
@@ -612,7 +838,21 @@ impl AnthropicAdapter {
                                         }
                                     }
                                 }
-                                Some("thinking") => block.kind = BlockKind::Thinking,
+                                Some("thinking") => {
+                                    block.kind = BlockKind::Thinking;
+                                    // The signature arrives on the start event;
+                                    // without it the echo of this block would be
+                                    // rejected with a 400 on the next turn.
+                                    block.thinking_signature =
+                                        content_block.signature.unwrap_or_default();
+                                }
+                                Some("redacted_thinking") => {
+                                    // Redacted thinking deltas accumulate into
+                                    // `block.thinking` like plain thinking; the
+                                    // stop handler re-emits them as a
+                                    // `redacted_thinking` block for the echo.
+                                    block.kind = BlockKind::RedactedThinking;
+                                }
                                 _ => block.kind = BlockKind::Text,
                             }
                         }
@@ -629,7 +869,10 @@ impl AnthropicAdapter {
                                 chunk.text = Some(text);
                             }
                             AnthropicStreamDelta::ThinkingDelta { thinking } => {
-                                chunk.reasoning = Some(thinking);
+                                chunk.reasoning = Some(thinking.clone());
+                                if let Some(block) = state.blocks.get_mut(index) {
+                                    block.thinking.push_str(&thinking);
+                                }
                             }
                             AnthropicStreamDelta::InputJsonDelta { partial_json } => {
                                 if let Some(block) = state.blocks.get_mut(index) {
@@ -643,14 +886,60 @@ impl AnthropicAdapter {
                     Ok(AnthropicStreamEvent::ContentBlockStop { index }) => {
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        if let Some(block) = state.blocks.get(index)
-                            && block.kind == BlockKind::ToolUse
-                        {
-                            chunk.tool_calls.push(CanonicalToolCall {
-                                id: block.tool_id.clone(),
-                                name: block.tool_name.clone(),
-                                arguments: CanonicalToolCall::from_wire_args(&block.tool_input),
-                            });
+                        if let Some(block) = state.blocks.get(index) {
+                            match block.kind {
+                                BlockKind::ToolUse => {
+                                    chunk.tool_calls.push(CanonicalToolCall {
+                                        id: block.tool_id.clone(),
+                                        name: block.tool_name.clone(),
+                                        arguments: CanonicalToolCall::from_wire_args(
+                                            &block.tool_input,
+                                        ),
+                                    });
+                                    state.layout.push((
+                                        Self::LAYOUT_KIND_TOOL_USE,
+                                        block.pos,
+                                        block.text_before,
+                                    ));
+                                }
+                                BlockKind::Thinking => {
+                                    // Emit the completed thinking block (text +
+                                    // signature) so the aggregation keeps it
+                                    // verbatim for the next request's echo.
+                                    if !block.thinking.is_empty() {
+                                        let mut block_json = json!({
+                                            "type": "thinking",
+                                            "thinking": block.thinking.clone(),
+                                        });
+                                        if !block.thinking_signature.is_empty() {
+                                            block_json["signature"] =
+                                                Value::String(block.thinking_signature.clone());
+                                        }
+                                        chunk.thinking_blocks.push(block_json);
+                                        state.layout.push((
+                                            Self::LAYOUT_KIND_THINKING,
+                                            block.pos,
+                                            block.text_before,
+                                        ));
+                                    }
+                                }
+                                BlockKind::RedactedThinking => {
+                                    // Redacted thinking must also round-trip
+                                    // verbatim; the deltas held `data` chunks.
+                                    if !block.thinking.is_empty() {
+                                        chunk.thinking_blocks.push(json!({
+                                            "type": "redacted_thinking",
+                                            "data": block.thinking.clone(),
+                                        }));
+                                        state.layout.push((
+                                            Self::LAYOUT_KIND_THINKING,
+                                            block.pos,
+                                            block.text_before,
+                                        ));
+                                    }
+                                }
+                                BlockKind::Text => {}
+                            }
                         }
                         Some((Ok(chunk), state))
                     }
@@ -669,19 +958,23 @@ impl AnthropicAdapter {
                     Ok(AnthropicStreamEvent::MessageStop) => {
                         state.saw_message_stop = true;
                         state.done = true;
-                        Some((
-                            Ok(StreamChunk {
-                                text: None,
-                                tool_calls: Vec::new(),
-                                finish_reason: state.stop_reason,
-                                usage: state.usage.take(),
-                                model: state.last_model.clone(),
-                                reasoning: None,
-                                web_search: None,
-                                web_search_calls: Vec::new(),
-                            }),
-                            state,
-                        ))
+                        let mut final_chunk = StreamChunk {
+                            text: None,
+                            tool_calls: Vec::new(),
+                            finish_reason: state.stop_reason,
+                            usage: state.usage.take(),
+                            model: state.last_model.clone(),
+                            reasoning: None,
+                            web_search: None,
+                            web_search_calls: Vec::new(),
+                            thinking_blocks: Vec::new(),
+                        };
+                        if !state.layout.is_empty() {
+                            final_chunk.thinking_blocks.push(json!({
+                                Self::LAYOUT_KEY: state.layout
+                            }));
+                        }
+                        Some((Ok(final_chunk), state))
                     }
                     Ok(AnthropicStreamEvent::Ping) | Ok(AnthropicStreamEvent::Other) => {
                         let mut chunk = empty_chunk();
@@ -853,6 +1146,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -861,6 +1155,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (out, system) = AnthropicAdapter::convert_messages(msgs);
@@ -881,6 +1176,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::System,
@@ -889,6 +1185,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -897,6 +1194,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (_, system) = AnthropicAdapter::convert_messages(msgs);
@@ -912,6 +1210,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -934,6 +1233,7 @@ mod tests {
             }]),
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -944,6 +1244,278 @@ mod tests {
         assert_eq!(content[1]["id"], "toolu_2");
         assert_eq!(content[1]["name"], "file");
         assert_eq!(content[1]["input"]["operation"], "read");
+    }
+
+    #[test]
+    fn convert_messages_echoes_thinking_blocks_verbatim() {
+        let thinking = serde_json::json!({
+            "type": "thinking",
+            "thinking": "let me plan this out",
+            "signature": "sig_abc123"
+        });
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("checking")],
+            tool_call_id: None,
+            tool_calls: Some(vec![CanonicalToolCall {
+                id: "toolu_3".into(),
+                name: "file".into(),
+                arguments: serde_json::json!({"operation": "read"}),
+            }]),
+            reasoning: Some("let me plan this out".into()),
+            web_search_calls: Vec::new(),
+            thinking_blocks: vec![thinking.clone()],
+        }];
+        let (out, _) = AnthropicAdapter::convert_messages(msgs);
+        assert_eq!(out.len(), 1);
+        let content = out[0].content.as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        // The raw thinking block is echoed first, verbatim (type + text +
+        // signature), ahead of the text and tool_use blocks.
+        assert_eq!(content[0], thinking);
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[2]["type"], "tool_use");
+        assert_eq!(content[2]["id"], "toolu_3");
+    }
+
+    fn resp_block(
+        block_type: &str,
+        text: Option<&str>,
+        thinking: Option<&str>,
+        id: Option<&str>,
+        name: Option<&str>,
+        input: Option<Value>,
+        signature: Option<&str>,
+    ) -> AnthropicResponseBlock {
+        AnthropicResponseBlock {
+            block_type: Some(block_type.into()),
+            text: text.map(String::from),
+            thinking: thinking.map(String::from),
+            id: id.map(String::from),
+            name: name.map(String::from),
+            input,
+            signature: signature.map(String::from),
+            data: None,
+        }
+    }
+
+    /// Parse a response and echo the resulting canonical message back,
+    /// returning the converted content blocks.
+    fn parse_and_echo(content: Vec<AnthropicResponseBlock>) -> Vec<Value> {
+        let ep = ModelEndpoint::default();
+        let client = AnthropicAdapter::new(ep);
+        let resp = client
+            .parse_response(
+                AnthropicResponse {
+                    content,
+                    stop_reason: None,
+                    usage: None,
+                    model: None,
+                },
+                None,
+            )
+            .unwrap();
+        let msg = CanonicalMessage::assistant(
+            vec![ContentPart::text(resp.text.clone())],
+            Some(resp.tool_calls),
+            resp.reasoning.clone(),
+            Vec::new(),
+            resp.thinking_blocks,
+        );
+        let (out, _) = AnthropicAdapter::convert_messages(vec![msg]);
+        out[0].content.as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn convert_messages_echo_restores_interleaved_thinking_text_tool_use() {
+        // Original: [thinking, text, tool_use] — the echo must restore the
+        // interleaving instead of front-loading the thinking block.
+        let content = parse_and_echo(vec![
+            resp_block(
+                "thinking",
+                None,
+                Some("plan"),
+                None,
+                None,
+                None,
+                Some("sig_1"),
+            ),
+            resp_block("text", Some("Let me check"), None, None, None, None, None),
+            resp_block(
+                "tool_use",
+                None,
+                None,
+                Some("toolu_1"),
+                Some("file"),
+                Some(json!({"operation": "read"})),
+                None,
+            ),
+        ]);
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["thinking"], "plan");
+        assert_eq!(content[0]["signature"], "sig_1");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "Let me check");
+        assert_eq!(content[2]["type"], "tool_use");
+        assert_eq!(content[2]["id"], "toolu_1");
+    }
+
+    #[test]
+    fn convert_messages_echo_restores_multi_tool_interleaving() {
+        // Original: [thinking, tool_use, thinking, tool_use, text]. The final
+        // text must stay after both tool calls, and each thinking block must
+        // stay with its tool_use.
+        let content = parse_and_echo(vec![
+            resp_block(
+                "thinking",
+                None,
+                Some("think one"),
+                None,
+                None,
+                None,
+                Some("sig_1"),
+            ),
+            resp_block(
+                "tool_use",
+                None,
+                None,
+                Some("toolu_1"),
+                Some("file"),
+                Some(json!({"op": 1})),
+                None,
+            ),
+            resp_block(
+                "thinking",
+                None,
+                Some("think two"),
+                None,
+                None,
+                None,
+                Some("sig_2"),
+            ),
+            resp_block(
+                "tool_use",
+                None,
+                None,
+                Some("toolu_2"),
+                Some("file"),
+                Some(json!({"op": 2})),
+                None,
+            ),
+            resp_block("text", Some("all done"), None, None, None, None, None),
+        ]);
+        let types: Vec<&str> = content
+            .iter()
+            .map(|b| b["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            types,
+            ["thinking", "tool_use", "thinking", "tool_use", "text"]
+        );
+        assert_eq!(content[0]["thinking"], "think one");
+        assert_eq!(content[1]["id"], "toolu_1");
+        assert_eq!(content[2]["thinking"], "think two");
+        assert_eq!(content[3]["id"], "toolu_2");
+        assert_eq!(content[4]["text"], "all done");
+    }
+
+    #[test]
+    fn convert_messages_echo_restores_text_before_thinking() {
+        // Original: [text, thinking, tool_use].
+        let content = parse_and_echo(vec![
+            resp_block("text", Some("preface"), None, None, None, None, None),
+            resp_block(
+                "thinking",
+                None,
+                Some("plan"),
+                None,
+                None,
+                None,
+                Some("sig_1"),
+            ),
+            resp_block(
+                "tool_use",
+                None,
+                None,
+                Some("toolu_1"),
+                Some("file"),
+                Some(json!({})),
+                None,
+            ),
+        ]);
+        let types: Vec<&str> = content
+            .iter()
+            .map(|b| b["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["text", "thinking", "tool_use"]);
+        assert_eq!(content[0]["text"], "preface");
+        // The layout marker is stripped before the echo; the thinking block
+        // is emitted verbatim.
+        assert_eq!(content[1]["signature"], "sig_1");
+        assert!(content[1].get("__layout").is_none());
+    }
+
+    #[test]
+    fn convert_messages_echo_falls_back_on_inconsistent_layout() {
+        // A hand-built message whose layout marker does not match the actual
+        // thinking blocks must fall back to the legacy front-loaded order
+        // instead of emitting a malformed echo.
+        let thinking = serde_json::json!({
+            "type": "thinking",
+            "thinking": "plan",
+            "signature": "sig_x",
+        });
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("checking")],
+            tool_call_id: None,
+            tool_calls: Some(vec![CanonicalToolCall {
+                id: "toolu_9".into(),
+                name: "file".into(),
+                arguments: serde_json::json!({"operation": "read"}),
+            }]),
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: vec![
+                thinking.clone(),
+                // Layout claims two thinking blocks but only one exists.
+                json!({"__layout": [[0, 0, 0], [0, 1, 0]]}),
+            ],
+        }];
+        let (out, _) = AnthropicAdapter::convert_messages(msgs);
+        let content = out[0].content.as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0], thinking);
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[2]["type"], "tool_use");
+        assert_eq!(content[2]["id"], "toolu_9");
+    }
+
+    #[test]
+    fn convert_messages_echo_falls_back_when_layout_text_before_exceeds_text() {
+        // Layout claims 10 chars of text before the thinking block, but the
+        // message only carries 3 — the echo must fall back, not panic.
+        let thinking = serde_json::json!({
+            "type": "thinking",
+            "thinking": "plan",
+            "signature": "sig_x",
+        });
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("abc")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: vec![thinking.clone(), json!({"__layout": [[0, 0, 10]]})],
+        }];
+        let (out, _) = AnthropicAdapter::convert_messages(msgs);
+        let content = out[0].content.as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0], thinking);
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "abc");
     }
 
     #[test]
@@ -959,6 +1531,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         let content = out[0].content.as_array().unwrap();
@@ -977,6 +1550,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert!(out.is_empty());
@@ -999,6 +1573,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             }],
             Vec::new(),
             true,
@@ -1041,6 +1616,8 @@ mod tests {
                 id: None,
                 name: None,
                 input: None,
+                signature: None,
+                data: None,
             }],
             stop_reason: Some("end_turn".into()),
             usage: Some(AnthropicUsage {
@@ -1076,6 +1653,8 @@ mod tests {
                     id: None,
                     name: None,
                     input: None,
+                    signature: None,
+                    data: None,
                 },
                 AnthropicResponseBlock {
                     block_type: Some("tool_use".into()),
@@ -1084,6 +1663,8 @@ mod tests {
                     id: Some("toolu_9".into()),
                     name: Some("file".into()),
                     input: Some(json!({"operation": "read", "path": "."})),
+                    signature: None,
+                    data: None,
                 },
             ],
             stop_reason: Some("tool_use".into()),
@@ -1112,6 +1693,8 @@ mod tests {
                     id: None,
                     name: None,
                     input: None,
+                    signature: Some("sig_1".into()),
+                    data: None,
                 },
                 AnthropicResponseBlock {
                     block_type: Some("text".into()),
@@ -1120,6 +1703,8 @@ mod tests {
                     id: None,
                     name: None,
                     input: None,
+                    signature: None,
+                    data: None,
                 },
             ],
             stop_reason: None,
@@ -1131,6 +1716,81 @@ mod tests {
         let resp = client.parse_response(json, None).unwrap();
         assert_eq!(resp.text, "final answer");
         assert_eq!(resp.reasoning.as_deref(), Some("inner monologue"));
+        // The raw thinking block (text + signature) is preserved verbatim for
+        // the next request's echo, followed by the internal layout marker that
+        // records its original position (block at index 0, no text before).
+        assert_eq!(resp.thinking_blocks.len(), 2);
+        assert_eq!(resp.thinking_blocks[0]["type"], "thinking");
+        assert_eq!(resp.thinking_blocks[0]["thinking"], "inner monologue");
+        assert_eq!(resp.thinking_blocks[0]["signature"], "sig_1");
+        assert_eq!(resp.thinking_blocks[1], json!({"__layout": [[0, 0, 0]]}));
+    }
+
+    #[test]
+    fn parse_response_thinking_block_without_signature_omits_field() {
+        let json = AnthropicResponse {
+            content: vec![AnthropicResponseBlock {
+                block_type: Some("thinking".into()),
+                text: None,
+                thinking: Some("no sig".into()),
+                id: None,
+                name: None,
+                input: None,
+                signature: None,
+                data: None,
+            }],
+            stop_reason: None,
+            usage: None,
+            model: None,
+        };
+        let ep = ModelEndpoint::default();
+        let client = AnthropicAdapter::new(ep);
+        let resp = client.parse_response(json, None).unwrap();
+        assert_eq!(resp.thinking_blocks.len(), 2);
+        assert!(resp.thinking_blocks[0].get("signature").is_none());
+        assert_eq!(resp.reasoning.as_deref(), Some("no sig"));
+    }
+
+    #[test]
+    fn parse_response_redacted_thinking_captured_for_echo() {
+        let json = AnthropicResponse {
+            content: vec![
+                AnthropicResponseBlock {
+                    block_type: Some("redacted_thinking".into()),
+                    text: None,
+                    thinking: None,
+                    id: None,
+                    name: None,
+                    input: None,
+                    signature: None,
+                    data: Some("base64-redacted".into()),
+                },
+                AnthropicResponseBlock {
+                    block_type: Some("text".into()),
+                    text: Some("answer".into()),
+                    thinking: None,
+                    id: None,
+                    name: None,
+                    input: None,
+                    signature: None,
+                    data: None,
+                },
+            ],
+            stop_reason: None,
+            usage: None,
+            model: None,
+        };
+        let ep = ModelEndpoint::default();
+        let client = AnthropicAdapter::new(ep);
+        let resp = client.parse_response(json, None).unwrap();
+        assert_eq!(resp.text, "answer");
+        // Redacted data never leaks into visible reasoning, but the block is
+        // kept verbatim so the next tool-use request can echo it back.
+        assert_eq!(resp.reasoning, None);
+        assert_eq!(resp.thinking_blocks.len(), 2);
+        assert_eq!(resp.thinking_blocks[0]["type"], "redacted_thinking");
+        assert_eq!(resp.thinking_blocks[0]["data"], "base64-redacted");
+        assert_eq!(resp.thinking_blocks[1], json!({"__layout": [[0, 0, 0]]}));
     }
 
     #[test]
@@ -1157,6 +1817,33 @@ mod tests {
             assert_eq!(content_block.name.as_deref(), Some("file"));
         } else {
             panic!("expected tool_use block start");
+        }
+
+        // The thinking block's signature arrives on `content_block_start` and
+        // must be captured for the verbatim echo.
+        let thinking_start: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"thinking","signature":"sig_stream_1"}}"#,
+        )
+        .unwrap();
+        if let AnthropicStreamEvent::ContentBlockStart { content_block, .. } = thinking_start {
+            assert_eq!(content_block.signature.as_deref(), Some("sig_stream_1"));
+        } else {
+            panic!("expected thinking block start");
+        }
+
+        // `redacted_thinking` blocks stream the same `thinking_delta` data
+        // chunks; the start event only marks the block type.
+        let redacted_start: AnthropicStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":3,"content_block":{"type":"redacted_thinking"}}"#,
+        )
+        .unwrap();
+        if let AnthropicStreamEvent::ContentBlockStart { content_block, .. } = redacted_start {
+            assert_eq!(
+                content_block.block_type.as_deref(),
+                Some("redacted_thinking")
+            );
+        } else {
+            panic!("expected redacted_thinking block start");
         }
 
         let delta: AnthropicStreamEvent = serde_json::from_str(

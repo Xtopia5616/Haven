@@ -105,6 +105,10 @@ struct GeminiResponsePart {
     text: Option<String>,
     #[serde(default)]
     function_call: Option<GeminiFunctionCall>,
+    /// Gemini thinking-mode marker: parts carrying `"thought": true` hold the
+    /// model's internal reasoning and MUST NOT be shown as assistant text.
+    #[serde(default)]
+    thought: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +191,15 @@ impl GeminiAdapter {
         // tool calls so tool results reference the function name.
         let mut call_id_to_name: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // Call ids in the order the latest assistant DECLARED them. Gemini
+        // pairs each `functionResponse` with the `functionCall` of the same
+        // name by position, so parallel calls to the SAME tool must have
+        // their results emitted in declaration order — the canonical holds
+        // them in completion order, which could swap them.
+        let mut declared_order: Vec<String> = Vec::new();
+        // Consecutive tool results buffered until the next non-tool message
+        // (or end of input), then flushed in declaration order.
+        let mut pending_tool_results: Vec<(String, String)> = Vec::new();
         for m in msgs {
             match m.role {
                 CanonicalRole::System => {
@@ -199,39 +212,40 @@ impl GeminiAdapter {
                 CanonicalRole::User | CanonicalRole::Tool => {
                     let is_tool_result =
                         matches!(m.role, CanonicalRole::Tool) || m.tool_call_id.is_some();
-                    let mut parts = Vec::new();
                     if is_tool_result {
                         let call_id = m.tool_call_id.unwrap_or_default();
-                        let name = call_id_to_name
-                            .get(&call_id)
-                            .cloned()
-                            .unwrap_or_else(|| call_id.clone());
                         let text = Self::text_content(&m.content);
-                        parts.push(GeminiPart {
-                            text: None,
-                            inline_data: None,
-                            function_call: None,
-                            function_response: Some(json!({
-                                "name": name,
-                                "response": {"result": text}
-                            })),
-                        });
+                        pending_tool_results.push((call_id, text));
                     } else {
-                        parts.extend(Self::content_to_parts(&m.content));
+                        Self::flush_pending_tool_results(
+                            &mut out,
+                            &mut pending_tool_results,
+                            &declared_order,
+                            &call_id_to_name,
+                        );
+                        let parts = Self::content_to_parts(&m.content);
+                        if parts.is_empty() {
+                            continue;
+                        }
+                        out.push(GeminiContent {
+                            role: "user".into(),
+                            parts,
+                        });
                     }
-                    if parts.is_empty() {
-                        continue;
-                    }
-                    out.push(GeminiContent {
-                        role: "user".into(),
-                        parts,
-                    });
                 }
                 CanonicalRole::Assistant => {
+                    Self::flush_pending_tool_results(
+                        &mut out,
+                        &mut pending_tool_results,
+                        &declared_order,
+                        &call_id_to_name,
+                    );
                     let mut parts = Self::content_to_parts(&m.content);
                     if let Some(calls) = &m.tool_calls {
+                        declared_order.clear();
                         for tc in calls {
                             call_id_to_name.insert(tc.id.clone(), tc.name.clone());
+                            declared_order.push(tc.id.clone());
                             parts.push(GeminiPart {
                                 text: None,
                                 inline_data: None,
@@ -253,12 +267,66 @@ impl GeminiAdapter {
                 }
             }
         }
+        Self::flush_pending_tool_results(
+            &mut out,
+            &mut pending_tool_results,
+            &declared_order,
+            &call_id_to_name,
+        );
         let system = if system_parts.is_empty() {
             None
         } else {
             Some(json!({"parts": [{"text": system_parts.join("\n\n")}]}))
         };
         (out, system)
+    }
+
+    /// Emit buffered tool results as `functionResponse` user contents, ordered
+    /// by the assistant's DECLARATION order. Gemini pairs each
+    /// `functionResponse` with the `functionCall` of the same name by
+    /// position, so parallel calls to the same tool must have their results
+    /// emitted in declaration order — the canonical holds them in completion
+    /// order, which would swap them. Results whose call id was never declared
+    /// (orphans) keep their arrival order at the end.
+    fn flush_pending_tool_results(
+        out: &mut Vec<GeminiContent>,
+        pending: &mut Vec<(String, String)>,
+        declared_order: &[String],
+        call_id_to_name: &std::collections::HashMap<String, String>,
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+        let mut items: Vec<(usize, (String, String))> = pending
+            .drain(..)
+            .map(|(call_id, text)| {
+                let pos = declared_order
+                    .iter()
+                    .position(|id| *id == call_id)
+                    .unwrap_or(usize::MAX);
+                (pos, (call_id, text))
+            })
+            .collect();
+        // Stable sort: unknown call ids keep their arrival order at the end.
+        items.sort_by_key(|(pos, _)| *pos);
+        for (_, (call_id, text)) in items {
+            let name = call_id_to_name
+                .get(&call_id)
+                .cloned()
+                .unwrap_or_else(|| call_id.clone());
+            out.push(GeminiContent {
+                role: "user".into(),
+                parts: vec![GeminiPart {
+                    text: None,
+                    inline_data: None,
+                    function_call: None,
+                    function_response: Some(json!({
+                        "name": name,
+                        "response": {"result": text}
+                    })),
+                }],
+            });
+        }
     }
 
     fn text_content(parts: &[ContentPart]) -> String {
@@ -365,6 +433,7 @@ impl GeminiAdapter {
         model: Option<String>,
     ) -> Result<LlmResponse, LlmError> {
         let mut text = String::new();
+        let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
         let mut finish_reason = None;
         if let Some(candidate) = json.candidates.and_then(|c| c.into_iter().next()) {
@@ -374,7 +443,14 @@ impl GeminiAdapter {
                 .and_then(Self::finish_reason_of);
             if let Some(content) = candidate.content {
                 for part in content.parts {
-                    if let Some(t) = part.text {
+                    if part.thought == Some(true) {
+                        // Thinking-mode parts are internal reasoning, not
+                        // assistant output: route to `reasoning` (displayed as
+                        // a thought bubble), never into the visible answer.
+                        if let Some(t) = part.text {
+                            reasoning.push_str(&t);
+                        }
+                    } else if let Some(t) = part.text {
                         text.push_str(&t);
                     }
                     if let Some(fc) = part.function_call
@@ -405,8 +481,13 @@ impl GeminiAdapter {
             finish_reason,
             usage,
             model: model.or_else(|| Some(self.endpoint.model_name.clone())),
-            reasoning: None,
+            reasoning: if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning)
+            },
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         })
     }
 
@@ -488,7 +569,12 @@ impl GeminiAdapter {
             rx: mpsc::UnboundedReceiver<String>,
             done: bool,
             /// Accumulated text per part index (deltas are emitted as suffixes).
-            text_parts: Vec<String>,
+            /// Tracks EVERY part (including `thought: true` reasoning parts) so
+            /// prefix-stripping stays aligned on the part index.
+            part_texts: Vec<String>,
+            /// Accumulated reasoning per thinking part index (emitted as
+            /// reasoning deltas, mirroring the text delta logic).
+            reasoning_parts: Vec<String>,
             /// Accumulated tool calls per functionCall part index.
             tool_calls_acc: Vec<CanonicalToolCall>,
             accumulated_text: String,
@@ -504,7 +590,8 @@ impl GeminiAdapter {
             UnfoldState {
                 rx: chunk_rx,
                 done: false,
-                text_parts: Vec::new(),
+                part_texts: Vec::new(),
+                reasoning_parts: Vec::new(),
                 tool_calls_acc: Vec::new(),
                 accumulated_text: String::new(),
                 last_model: None,
@@ -534,6 +621,7 @@ impl GeminiAdapter {
                                 reasoning: None,
                                 web_search: None,
                                 web_search_calls: Vec::new(),
+                                thinking_blocks: Vec::new(),
                             })
                         };
                         state.done = true;
@@ -566,24 +654,54 @@ impl GeminiAdapter {
                             if let Some(content) = candidate.content {
                                 for (idx, part) in content.parts.into_iter().enumerate() {
                                     if let Some(t) = part.text {
-                                        state.accumulated_text.push_str(&t);
                                         // Previous text is always a prefix of
                                         // the new text; emit only the delta.
-                                        let delta = if let Some(prev) = state.text_parts.get(idx) {
-                                            t.strip_prefix(prev).unwrap_or(&t).to_string()
-                                        } else {
-                                            t.clone()
-                                        };
-                                        if state.text_parts.len() <= idx {
-                                            state.text_parts.push(t);
-                                        } else {
-                                            state.text_parts[idx] = t;
-                                        }
-                                        if !delta.is_empty() {
-                                            if chunk.text.is_none() {
-                                                chunk.text = Some(String::new());
+                                        let delta = match state.part_texts.get(idx) {
+                                            Some(prev) => {
+                                                t.strip_prefix(prev).unwrap_or(&t).to_string()
                                             }
-                                            chunk.text.as_mut().unwrap().push_str(&delta);
+                                            None => t.clone(),
+                                        };
+                                        if state.part_texts.len() <= idx {
+                                            state.part_texts.push(t);
+                                        } else {
+                                            state.part_texts[idx] = t;
+                                        }
+                                        if delta.is_empty() {
+                                            continue;
+                                        }
+                                        if part.thought == Some(true) {
+                                            // Thinking-mode part: reasoning
+                                            // delta, never visible assistant
+                                            // text. Mirror the text-delta
+                                            // suffix logic per part index.
+                                            let prev = state.reasoning_parts.get(idx);
+                                            let rdelta = match prev {
+                                                Some(prev) => {
+                                                    let full = state.part_texts[idx].clone();
+                                                    full.strip_prefix(prev)
+                                                        .unwrap_or(&delta)
+                                                        .to_string()
+                                                }
+                                                None => delta.clone(),
+                                            };
+                                            if !rdelta.is_empty() {
+                                                if state.reasoning_parts.len() <= idx {
+                                                    state
+                                                        .reasoning_parts
+                                                        .push(state.part_texts[idx].clone());
+                                                } else {
+                                                    state.reasoning_parts[idx] =
+                                                        state.part_texts[idx].clone();
+                                                }
+                                                let r =
+                                                    chunk.reasoning.get_or_insert_with(String::new);
+                                                r.push_str(&rdelta);
+                                            }
+                                        } else {
+                                            state.accumulated_text.push_str(&delta);
+                                            let c = chunk.text.get_or_insert_with(String::new);
+                                            c.push_str(&delta);
                                         }
                                     }
                                     if let Some(fc) = part.function_call
@@ -748,6 +866,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -756,6 +875,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (contents, system) = GeminiAdapter::convert_contents(msgs);
@@ -777,6 +897,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         assert_eq!(contents.len(), 1);
@@ -804,6 +925,7 @@ mod tests {
                 }]),
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -812,6 +934,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
@@ -822,6 +945,63 @@ mod tests {
         // The assistant's functionCall keeps the function name (never the id).
         let fc = contents[0].parts[1].function_call.as_ref().unwrap();
         assert_eq!(fc["name"], "read_file");
+    }
+
+    #[test]
+    fn convert_contents_parallel_same_tool_results_follow_declaration_order() {
+        // Two parallel calls to the SAME tool: Gemini pairs functionResponse
+        // parts with functionCall parts by name + position, so results must
+        // be emitted in DECLARATION order even when the canonical holds them
+        // in completion order (c2 finished first).
+        let msgs = vec![
+            CanonicalMessage {
+                role: CanonicalRole::Assistant,
+                content: vec![ContentPart::text("doing")],
+                tool_call_id: None,
+                tool_calls: Some(vec![
+                    CanonicalToolCall {
+                        id: "c1".into(),
+                        name: "shell".into(),
+                        arguments: serde_json::json!({"cmd": "echo one"}),
+                    },
+                    CanonicalToolCall {
+                        id: "c2".into(),
+                        name: "shell".into(),
+                        arguments: serde_json::json!({"cmd": "echo two"}),
+                    },
+                ]),
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
+                content: vec![ContentPart::text("out-two")],
+                tool_call_id: Some("c2".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+            CanonicalMessage {
+                role: CanonicalRole::Tool,
+                content: vec![ContentPart::text("out-one")],
+                tool_call_id: Some("c1".into()),
+                tool_calls: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        ];
+        let (contents, _) = GeminiAdapter::convert_contents(msgs);
+        assert_eq!(contents.len(), 3);
+        // First result in the emitted stream belongs to c1 (the first
+        // declared call), even though c2 completed first.
+        let fr1 = contents[1].parts[0].function_response.as_ref().unwrap();
+        assert_eq!(fr1["name"], "shell");
+        assert_eq!(fr1["response"]["result"], "out-one");
+        let fr2 = contents[2].parts[0].function_response.as_ref().unwrap();
+        assert_eq!(fr2["response"]["result"], "out-two");
     }
 
     #[test]
@@ -845,6 +1025,7 @@ mod tests {
                 ]),
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -853,6 +1034,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -861,6 +1043,7 @@ mod tests {
                 tool_calls: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
             },
         ];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
@@ -883,6 +1066,7 @@ mod tests {
             }]),
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         assert_eq!(contents.len(), 1);
@@ -912,6 +1096,7 @@ mod tests {
             tool_calls: None,
             reasoning: None,
             web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         let inline = contents[0].parts[0].inline_data.as_ref().unwrap();
@@ -920,6 +1105,40 @@ mod tests {
         let inline = contents[0].parts[1].inline_data.as_ref().unwrap();
         assert_eq!(inline["mime_type"], "audio/wav");
         assert_eq!(inline["data"], "d3d3");
+    }
+
+    #[test]
+    fn parse_response_thought_parts_route_to_reasoning_not_text() {
+        // Gemini 2.5 thinking mode returns `"thought": true` parts. They must
+        // never leak into the visible assistant text; they surface as reasoning.
+        let json = GeminiResponse {
+            candidates: Some(vec![GeminiCandidate {
+                content: Some(GeminiResponseContent {
+                    parts: vec![
+                        GeminiResponsePart {
+                            text: Some("I should read the file first.".into()),
+                            function_call: None,
+                            thought: Some(true),
+                        },
+                        GeminiResponsePart {
+                            text: Some("Final answer.".into()),
+                            function_call: None,
+                            thought: Some(false),
+                        },
+                    ],
+                }),
+                finish_reason: Some("STOP".into()),
+            }]),
+            usage_metadata: None,
+            model_version: None,
+        };
+        let client = GeminiAdapter::new(ModelEndpoint::default());
+        let resp = client.parse_response(json, None).unwrap();
+        assert_eq!(resp.text, "Final answer.");
+        assert_eq!(
+            resp.reasoning.as_deref(),
+            Some("I should read the file first.")
+        );
     }
 
     #[test]
@@ -984,6 +1203,7 @@ mod tests {
                         GeminiResponsePart {
                             text: Some("checking".into()),
                             function_call: None,
+                            thought: None,
                         },
                         GeminiResponsePart {
                             text: None,
@@ -991,6 +1211,7 @@ mod tests {
                                 name: Some("file".into()),
                                 args: Some(json!({"operation": "read"})),
                             }),
+                            thought: None,
                         },
                     ],
                 }),
