@@ -172,7 +172,9 @@ impl DesktopNotifications {
                 self.show_windows_toast("Haven", format!("会话出错: {}", error));
             }
             AgentEvent::SessionUpdated { session_id, status }
-                if status == "paused" || status == "paused_awaiting_answer" =>
+                if status == "paused"
+                    || status == "paused_awaiting_answer"
+                    || status == "paused_awaiting_confirm" =>
             {
                 if !self.windows_enabled(|n| n.session_paused.windows, false) {
                     return;
@@ -186,7 +188,10 @@ impl DesktopNotifications {
                 let prev = self.previous_session_status(session_id);
                 if !matches!(
                     prev.as_deref(),
-                    Some("paused") | Some("paused_awaiting_answer") | Some("error")
+                    Some("paused")
+                        | Some("paused_awaiting_answer")
+                        | Some("paused_awaiting_confirm")
+                        | Some("error")
                 ) {
                     return;
                 }

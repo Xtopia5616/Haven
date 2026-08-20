@@ -1,9 +1,110 @@
-//! LLM streaming step: StreamForwarder, primary/retry stream, call_step_llm.
+//! LLM streaming step: StreamForwarder, StreamSession, call_step_llm.
 //!
-//! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
+//! Phase 1 mechanical extract; Phase 5 / E1 wraps the stream behind
+//! [`StreamSession`] so the thin loop only consumes [`StepResponse`] /
+//! [`StepCallOutcome`] and never constructs [`StreamForwarder`].
 
 use super::*;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, ToolDefinition};
+
+/// Aggregated result of one streamed LLM call (Phase 5 / E1).
+/// Currently surfaced via [`StepCallOutcome::Response`]'s `LlmResponse`; the
+/// duration is recorded inside `call_step_llm` / usage emit. Kept as the
+/// explicit E1 type so future hooks can take it without reshaping the loop.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(super) struct StepResponse {
+    pub response: LlmResponse,
+    /// Wall-clock duration of the primary (or compaction-retry) API call.
+    pub duration_ms: Option<u64>,
+}
+
+/// Streaming session for one step: primary call + empty/cut-off retries.
+/// Owns partial buffers and msg-id reuse; the loop only matches outcomes.
+pub(super) struct StreamSession<'a> {
+    engine: &'a ReActEngine,
+    ctx: &'a StepCtx,
+    router: Arc<LlmRouter>,
+    role: EndpointRole,
+    tools: &'a [ToolDefinition],
+    cancel: tokio_util::sync::CancellationToken,
+    partial_thought: &'a Arc<std::sync::Mutex<String>>,
+    partial_reasoning: &'a Arc<std::sync::Mutex<String>>,
+}
+
+impl<'a> StreamSession<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        engine: &'a ReActEngine,
+        ctx: &'a StepCtx,
+        router: Arc<LlmRouter>,
+        role: EndpointRole,
+        tools: &'a [ToolDefinition],
+        cancel: tokio_util::sync::CancellationToken,
+        partial_thought: &'a Arc<std::sync::Mutex<String>>,
+        partial_reasoning: &'a Arc<std::sync::Mutex<String>>,
+    ) -> Self {
+        Self {
+            engine,
+            ctx,
+            router,
+            role,
+            tools,
+            cancel,
+            partial_thought,
+            partial_reasoning,
+        }
+    }
+
+    /// Primary step call including compaction retry / fatal paths.
+    pub(super) async fn run(
+        &self,
+        llm_messages: &mut Vec<CanonicalMessage>,
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &[ReActStep],
+        branch_points: &mut HashMap<u32, BranchPoint>,
+    ) -> StepCallOutcome {
+        match self
+            .engine
+            .call_step_llm(
+                self.ctx,
+                self.router.clone(),
+                self.role,
+                llm_messages,
+                self.tools,
+                self.cancel.clone(),
+                canonical,
+                history,
+                branch_points,
+                self.partial_thought,
+                self.partial_reasoning,
+            )
+            .await
+        {
+            StepCallOutcome::Response(resp) => StepCallOutcome::Response(resp),
+            other => other,
+        }
+    }
+
+    /// Empty / cut-off retry: reuses the primary call's minted msg-ids.
+    pub(super) async fn retry(
+        &self,
+        messages: &[CanonicalMessage],
+    ) -> Result<LlmResponse, haven_llm::LlmError> {
+        self.engine
+            .stream_retry_step(
+                self.ctx,
+                self.router.clone(),
+                self.role,
+                messages,
+                self.tools,
+                self.cancel.clone(),
+                self.partial_thought,
+                self.partial_reasoning,
+            )
+            .await
+    }
+}
 
 /// A provider stream that delivers no chunk for this long is announced to the
 /// UI as `StreamStalled` — long before the router's idle timeout aborts the

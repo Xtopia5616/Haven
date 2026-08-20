@@ -24,6 +24,9 @@ struct SnapshotView<'a> {
     /// Explicit ask-awaiting flag (Phase 4 / C5); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     awaiting_answer: Option<&'a crate::types::AskPending>,
+    /// Explicit confirm-awaiting batch (Phase 5 / E3); see `ReActSnapshot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    awaiting_confirm: Option<&'a crate::types::ConfirmPending>,
 }
 
 /// Update a session's status and emit the `SessionUpdated` event, in that order.
@@ -209,6 +212,8 @@ impl ReActEngine {
         // state and cannot auto-wake an answer-blocked session.
         let reason = if status.is_awaiting_answer() {
             PauseReason::Ask
+        } else if status.is_awaiting_confirm() {
+            PauseReason::Confirm
         } else {
             PauseReason::TurnEnd
         };
@@ -313,6 +318,7 @@ impl ReActEngine {
         branch_points: &HashMap<u32, BranchPoint>,
     ) {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
+        let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
         let view = SnapshotView {
             canonical,
             history,
@@ -320,6 +326,7 @@ impl ReActEngine {
             branch_points,
             saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             awaiting_answer: awaiting.as_ref(),
+            awaiting_confirm: awaiting_confirm.as_ref(),
         };
         // Serialize into the session's own buffer inside a scoped block so the
         // mutex guard is dropped before the await below (the guard is not

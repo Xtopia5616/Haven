@@ -1019,6 +1019,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -1088,6 +1089,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -1160,6 +1162,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: Some(saved_at),
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -1242,6 +1245,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: Some(saved_at),
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -1335,6 +1339,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -1413,6 +1418,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -1706,6 +1712,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -3953,6 +3960,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
             awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4062,6 +4070,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4159,6 +4168,7 @@ mod tests {
             branch_points,
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4254,6 +4264,7 @@ mod tests {
             branch_points,
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4339,6 +4350,7 @@ mod tests {
             branch_points,
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4424,6 +4436,7 @@ mod tests {
             branch_points,
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4595,6 +4608,7 @@ mod tests {
             branch_points,
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db
@@ -4711,6 +4725,7 @@ mod tests {
             branch_points,
             saved_at: None,
                    awaiting_answer: None,
+                    awaiting_confirm: None,
         };
         agent
             .db

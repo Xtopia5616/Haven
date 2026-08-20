@@ -2,7 +2,7 @@
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
 
-use super::retries::{CUT_OFF_RETRY_NUDGE, MID_ACTION_RETRY_NUDGE};
+use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::tool_batch::ToolBatchOutcome;
 use super::*;
 use crate::types::{BranchPoint, ReActStep};
@@ -69,6 +69,32 @@ impl ReActEngine {
         // `status_rx` — when status is already Paused* at step head we write
         // a snapshot and return `LoopExit::Paused`. Resume is solely the
         // dispatcher reclaiming Pending (F1 single scheduler).
+
+        // Phase 5 / E3: after confirm decisions wake the session, finish the
+        // gated tools that were left without results when we paused — before
+        // sanitize would repair them as Interrupted.
+        if self
+            .executor
+            .get_awaiting_confirm(session_id)
+            .await
+            .is_some_and(|p| p.all_decided())
+        {
+            match self
+                .finish_confirm_batch(
+                    session_id,
+                    canonical,
+                    history,
+                    branch_points,
+                    &emitter,
+                    infer,
+                    run_id,
+                )
+                .await?
+            {
+                ToolBatchOutcome::Continue => {}
+                ToolBatchOutcome::Done(exit) => return Ok(exit),
+            }
+        }
 
         for step_num in start_step..=effective_max {
             last_step = step_num;
@@ -205,19 +231,24 @@ impl ReActEngine {
                     .map(|m| (m.role, m.content.len()))
                     .collect::<Vec<_>>()
             );
-            let mut response = match self
-                .call_step_llm(
-                    &ctx,
-                    router.clone(),
-                    role,
+            // Phase 5 / E1: stream via StreamSession — loop never builds
+            // StreamForwarder; retries reuse the same session (msg-ids).
+            let stream = super::stream_step::StreamSession::new(
+                self,
+                &ctx,
+                router.clone(),
+                role,
+                &tools,
+                cancel_res.clone(),
+                &partial_thought,
+                &partial_reasoning,
+            );
+            let mut response = match stream
+                .run(
                     &mut llm_messages,
-                    &tools,
-                    cancel_res.clone(),
                     canonical,
                     history,
                     branch_points,
-                    &partial_thought,
-                    &partial_reasoning,
                 )
                 .await
             {
@@ -299,105 +330,42 @@ impl ReActEngine {
             let (mut thought, mut actions) =
                 Self::parse_default_model_response(&response, step_num);
 
-            // Empty-response retry budget for THIS step. A completely empty
-            // model response (no text, no reasoning, no tool calls) is almost
-            // always a transient upstream glitch. Retry the same context up
-            // to `context_limits.empty_response_max_retries` times before concluding the model
-            // decided nothing — otherwise the session would instantly "complete"
-            // with a "No action decided." message and pause without answering.
-            // Declared per step so an earlier empty response in this run
-            // cannot starve a later incident of its retries; the exhausted
-            // state (reached 0) also drives the explicit error path below.
+            // Phase 5 / G3: empty / cut-off classification lives in
+            // ResponsePolicy via hooks.after_llm — the thin loop has no
+            // phrase literals and only orchestrates retries.
             let mut empty_retries_remaining = self.context_limits.empty_response_max_retries;
-            // A response carrying `web_search_call` items is NOT empty: it is
-            // a server-side search round that must round-trip instead.
-            if thought.is_none() && actions.is_empty() && response.web_search_calls.is_empty() {
-                while empty_retries_remaining > 0 {
-                    empty_retries_remaining -= 1;
-                    if cancel_res.is_cancelled() {
-                        self.save_exit_snapshot(
-                            session_id,
-                            canonical,
-                            history,
-                            step_num,
-                            branch_points,
-                        )
-                        .await;
-                        return Ok(LoopExit::Cancelled);
-                    }
-                    // Settling delay between attempts: an upstream glitch that
-                    // just produced an empty stream often clears within a
-                    // second or two. Cancellable: a user rollback / end_session
-                    // during the delay must not wait out the whole sleep — the
-                    // retry loop is exited as soon as the token fires, so the
-                    // handler releases the running slot promptly instead of
-                    // blocking the rollback's 5s wait.
-                    tokio::select! {
-                        _ = cancel_res.cancelled() => {
-                            self.save_exit_snapshot(session_id, canonical, history, step_num, branch_points)
-                                .await;
-                            return Ok(LoopExit::Cancelled);
-                        }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(
-                            self.context_limits.empty_response_retry_delay_ms,
-                        )) => {}
-                    }
-                    if cancel_res.is_cancelled() {
-                        self.save_exit_snapshot(
-                            session_id,
-                            canonical,
-                            history,
-                            step_num,
-                            branch_points,
-                        )
-                        .await;
-                        return Ok(LoopExit::Cancelled);
-                    }
-                    tracing::warn!(
-                        "ReAct step {} session {} model returned an empty response; retrying ({} left)",
-                        step_num,
-                        session_id,
-                        empty_retries_remaining
-                    );
-                    // Cancellable: end_session / rollback must be able to abort
-                    // the retries mid-flight (the non-cancellable variant
-                    // would also grant each attempt a fresh total-duration
-                    // budget instead of sharing the step's cancellation).
-                    // Chunks are forwarded live so a recovering provider is
-                    // visible instead of freezing the UI for the whole budget.
-                    match self
-                        .stream_retry_step(
-                            &ctx,
-                            router.clone(),
-                            role,
-                            &llm_messages,
-                            &tools,
-                            cancel_res.clone(),
-                            &partial_thought,
-                            &partial_reasoning,
-                        )
-                        .await
-                    {
-                        Ok(retry_resp) => {
-                            let (t2, a2) =
-                                Self::parse_default_model_response(&retry_resp, step_num);
-                            if t2.is_some() || !a2.is_empty() {
-                                thought = t2;
-                                actions = a2;
-                                // The retry produced the content: the whole
-                                // response must follow it, or the canonical
-                                // assistant message would carry the retry's
-                                // tool calls WITHOUT its reasoning (DeepSeek
-                                // thinking mode 400s on the next request).
-                                response = retry_resp;
-                                break;
-                            }
-                            tracing::warn!(
-                                "ReAct step {} retry also returned an empty response",
-                                step_num
-                            );
-                        }
-                        Err(haven_llm::LlmError::Cancelled) => {
+            let pending_ask = self
+                .executor
+                .get_awaiting_answer(session_id)
+                .await
+                .is_some()
+                || Self::canonical_has_pending_ask(canonical);
+            loop {
+                let policy_state = ResponsePolicyState {
+                    empty_retries_remaining,
+                    empty_retry_delay_ms: self.context_limits.empty_response_retry_delay_ms,
+                    cut_off_retries_used: cut_off_retries,
+                    cut_off_retries_max: self.context_limits.cut_off_retries,
+                    pending_ask,
+                };
+                let action = self
+                    .hooks
+                    .after_llm(
+                        self,
+                        &ctx,
+                        &thought,
+                        &actions,
+                        &response,
+                        canonical,
+                        policy_state,
+                    )
+                    .await;
+                match action {
+                    AfterLlmAction::Accept => break,
+                    AfterLlmAction::RetryEmpty { delay_ms } => {
+                        empty_retries_remaining =
+                            empty_retries_remaining.saturating_sub(1);
+                        if cancel_res.is_cancelled() {
                             self.save_exit_snapshot(
                                 session_id,
                                 canonical,
@@ -408,135 +376,133 @@ impl ReActEngine {
                             .await;
                             return Ok(LoopExit::Cancelled);
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "ReAct step {} empty-response retry failed: {}",
+                        tokio::select! {
+                            _ = cancel_res.cancelled() => {
+                                self.save_exit_snapshot(session_id, canonical, history, step_num, branch_points)
+                                    .await;
+                                return Ok(LoopExit::Cancelled);
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+                        }
+                        if cancel_res.is_cancelled() {
+                            self.save_exit_snapshot(
+                                session_id,
+                                canonical,
+                                history,
                                 step_num,
-                                e
-                            );
+                                branch_points,
+                            )
+                            .await;
+                            return Ok(LoopExit::Cancelled);
                         }
-                    }
-                }
-            }
-
-            // A text-only response that ends without an explicit tool call is
-            // only trusted as a deliberate final answer when it looks
-            // complete: the provider reported Stop AND the text does not end
-            // mid-sentence AND the agent is not still mid-session. Anything else
-            // —a truncated generation (Length / ContentFilter / unknown
-            // finish), text cut off mid-thought, or a mid-session narration that
-            // stopped without issuing the tool call it described —must not
-            // end the turn presenting a partial answer as final.
-            // Retry with a continuation nudge (never persisted into the
-            // canonical), up to `context_limits.cut_off_retries` times; if every retry is
-            // also unusable, fall back to the original text below.
-            // Prefer the explicit awaiting flag (C5); fall back to the legacy
-            // JSON scan only when the flag is absent (older snapshots).
-            let pending_ask = self
-                .executor
-                .get_awaiting_answer(session_id)
-                .await
-                .is_some()
-                || Self::canonical_has_pending_ask(canonical);
-            // Responses that carried a web search call must never be re-asked:
-            // the search round itself is a legitimate (non-cut-off) outcome,
-            // and retrying would trigger a duplicate server-side search.
-            while cut_off_retries < self.context_limits.cut_off_retries
-                && !pending_ask
-                && response.web_search_calls.is_empty()
-                && Self::is_suspect_final(&thought, &actions, &response, canonical)
-            {
-                cut_off_retries += 1;
-                if cancel_res.is_cancelled() {
-                    self.save_exit_snapshot(
-                        session_id,
-                        canonical,
-                        history,
-                        step_num,
-                        branch_points,
-                    )
-                    .await;
-                    return Ok(LoopExit::Cancelled);
-                }
-                // Mid-session narrations get a stronger nudge that explicitly asks
-                // for the pending tool call; plain truncation gets the generic
-                // continuation nudge.
-                let mid_session = Self::canonical_has_pending_tool_context(canonical);
-                let nudge = if mid_session {
-                    MID_ACTION_RETRY_NUDGE
-                } else {
-                    CUT_OFF_RETRY_NUDGE
-                };
-                tracing::warn!(
-                    "ReAct step {} session {} response looks cut off (finish={:?}, mid_session={}); retrying (attempt {}/{})",
-                    step_num,
-                    session_id,
-                    response.finish_reason,
-                    mid_session,
-                    cut_off_retries,
-                    self.context_limits.cut_off_retries
-                );
-                let mut retry_messages = llm_messages.clone();
-                retry_messages.push(CanonicalMessage {
-                    role: CanonicalRole::User,
-                    content: vec![ContentPart::text(nudge)],
-                    tool_call_id: None,
-                    tool_calls: None,
-                    reasoning: None,
-                    web_search_calls: Vec::new(),
-                    thinking_blocks: Vec::new(),
-                });
-                // Cancellable so an interruption (rollback / end_session) aborts
-                // the retry promptly instead of letting its stream run to
-                // completion after the session was cancelled (the empty-response
-                // retry below uses the same cancellable variant). Chunks are
-                // forwarded live like the primary call, so a resumed provider
-                // streams visibly instead of freezing the UI mid-step.
-                match self
-                    .stream_retry_step(
-                        &ctx,
-                        router.clone(),
-                        role,
-                        &retry_messages,
-                        &tools,
-                        cancel_res.clone(),
-                        &partial_thought,
-                        &partial_reasoning,
-                    )
-                    .await
-                {
-                    Ok(retry_resp) => {
-                        let (t2, a2) = Self::parse_default_model_response(&retry_resp, step_num);
-                        if t2.is_some() || !a2.is_empty() {
-                            thought = t2;
-                            actions = a2;
-                            // Same reasoning-attachment rule as the
-                            // empty-response retry: the canonical push must
-                            // carry the retry response's own reasoning, not
-                            // the cut-off original's.
-                            response = retry_resp;
-                        } else {
-                            tracing::warn!(
-                                "ReAct step {} cut-off retry also returned an empty response",
-                                step_num
-                            );
-                            break;
-                        }
-                    }
-                    Err(haven_llm::LlmError::Cancelled) => {
-                        self.save_exit_snapshot(
-                            session_id,
-                            canonical,
-                            history,
+                        tracing::warn!(
+                            "ReAct step {} session {} model returned an empty response; retrying ({} left)",
                             step_num,
-                            branch_points,
-                        )
-                        .await;
-                        return Ok(LoopExit::Cancelled);
+                            session_id,
+                            empty_retries_remaining
+                        );
+                        match stream.retry(&llm_messages).await {
+                            Ok(retry_resp) => {
+                                let (t2, a2) =
+                                    Self::parse_default_model_response(&retry_resp, step_num);
+                                if t2.is_some() || !a2.is_empty() {
+                                    thought = t2;
+                                    actions = a2;
+                                    response = retry_resp;
+                                } else {
+                                    tracing::warn!(
+                                        "ReAct step {} retry also returned an empty response",
+                                        step_num
+                                    );
+                                }
+                            }
+                            Err(haven_llm::LlmError::Cancelled) => {
+                                self.save_exit_snapshot(
+                                    session_id,
+                                    canonical,
+                                    history,
+                                    step_num,
+                                    branch_points,
+                                )
+                                .await;
+                                return Ok(LoopExit::Cancelled);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "ReAct step {} empty-response retry failed: {}",
+                                    step_num,
+                                    e
+                                );
+                            }
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("ReAct step {} cut-off retry failed: {}", step_num, e);
-                        break;
+                    AfterLlmAction::RetryCutOff { nudge } => {
+                        cut_off_retries += 1;
+                        if cancel_res.is_cancelled() {
+                            self.save_exit_snapshot(
+                                session_id,
+                                canonical,
+                                history,
+                                step_num,
+                                branch_points,
+                            )
+                            .await;
+                            return Ok(LoopExit::Cancelled);
+                        }
+                        tracing::warn!(
+                            "ReAct step {} session {} response looks cut off (finish={:?}); retrying (attempt {}/{})",
+                            step_num,
+                            session_id,
+                            response.finish_reason,
+                            cut_off_retries,
+                            self.context_limits.cut_off_retries
+                        );
+                        let mut retry_messages = llm_messages.clone();
+                        retry_messages.push(CanonicalMessage {
+                            role: CanonicalRole::User,
+                            content: vec![ContentPart::text(nudge)],
+                            tool_call_id: None,
+                            tool_calls: None,
+                            reasoning: None,
+                            web_search_calls: Vec::new(),
+                            thinking_blocks: Vec::new(),
+                        });
+                        match stream.retry(&retry_messages).await {
+                            Ok(retry_resp) => {
+                                let (t2, a2) =
+                                    Self::parse_default_model_response(&retry_resp, step_num);
+                                if t2.is_some() || !a2.is_empty() {
+                                    thought = t2;
+                                    actions = a2;
+                                    response = retry_resp;
+                                } else {
+                                    tracing::warn!(
+                                        "ReAct step {} cut-off retry also returned an empty response",
+                                        step_num
+                                    );
+                                    break;
+                                }
+                            }
+                            Err(haven_llm::LlmError::Cancelled) => {
+                                self.save_exit_snapshot(
+                                    session_id,
+                                    canonical,
+                                    history,
+                                    step_num,
+                                    branch_points,
+                                )
+                                .await;
+                                return Ok(LoopExit::Cancelled);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "ReAct step {} cut-off retry failed: {}",
+                                    step_num,
+                                    e
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             }

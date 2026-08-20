@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -37,6 +37,8 @@ struct Migration {
 ///   "forget this fact" path work against rows written by older binaries.
 /// - v3: allow `paused_awaiting_answer` on `sessions.status` (Phase 4 / F2)
 ///   so ask-gate survives process restart without JSON heuristics.
+/// - v4: allow `paused_awaiting_confirm` on `sessions.status` (Phase 5 / E3)
+///   so safety-confirm pause survives process restart.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -45,6 +47,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         apply: migrate_v3_paused_awaiting_answer_status,
+    },
+    Migration {
+        version: 4,
+        apply: migrate_v4_paused_awaiting_confirm_status,
     },
 ];
 
@@ -145,6 +151,55 @@ fn migrate_v3_paused_awaiting_answer_status(conn: &rusqlite::Connection) -> anyh
     Ok(())
 }
 
+/// Expand `sessions.status` CHECK to include `paused_awaiting_confirm`.
+/// Same rebuild pattern as v3 (SQLite cannot ALTER CHECK in place).
+fn migrate_v4_paused_awaiting_confirm_status(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let has_sessions = table_exists(conn, "sessions")?;
+    let has_v4 = table_exists(conn, "sessions_v4")?;
+    if !has_sessions && has_v4 {
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            ALTER TABLE sessions_v4 RENAME TO sessions;
+            PRAGMA foreign_keys=ON;
+            "#,
+        )?;
+        return Ok(());
+    }
+    if !has_sessions {
+        return Ok(());
+    }
+    if has_v4 {
+        conn.execute_batch("DROP TABLE IF EXISTS sessions_v4")?;
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    conn.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        CREATE TABLE sessions_v4 (
+            id TEXT PRIMARY KEY,
+            input_text TEXT NOT NULL DEFAULT '',
+            title TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','running','paused','paused_awaiting_answer','paused_awaiting_confirm','completed','failed','error')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            transcript TEXT NOT NULL DEFAULT '',
+            react_state TEXT
+        );
+        INSERT INTO sessions_v4
+            (id, input_text, title, status, created_at, updated_at, transcript, react_state)
+        SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
+          FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_v4 RENAME TO sessions;
+        COMMIT;
+        "#,
+    )?;
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
+    Ok(())
+}
+
 fn user_version(conn: &rusqlite::Connection) -> anyhow::Result<i32> {
     Ok(conn
         .prepare("PRAGMA user_version")?
@@ -178,7 +233,7 @@ const SCHEMA_SQL: &[&str] = &[
         input_text TEXT NOT NULL DEFAULT '',
         title TEXT,
         status TEXT NOT NULL DEFAULT 'pending'
-            CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
+            CHECK(status IN ('pending','running','paused','paused_awaiting_answer','paused_awaiting_confirm','completed','failed','error')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         transcript TEXT NOT NULL DEFAULT '',
@@ -847,6 +902,53 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1, "orphan sessions_v3 must be renamed, not wiped");
         assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v4_migration_allows_paused_awaiting_confirm_status() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        // Simulate a v3 DB whose CHECK still rejects the new status.
+        set_user_version(&conn, 3).unwrap();
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE sessions_v3 (
+                id TEXT PRIMARY KEY,
+                input_text TEXT NOT NULL DEFAULT '',
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                transcript TEXT NOT NULL DEFAULT '',
+                react_state TEXT
+            );
+            INSERT INTO sessions_v3
+                (id, input_text, title, status, created_at, updated_at, transcript, react_state)
+            SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
+              FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_v3 RENAME TO sessions;
+            PRAGMA foreign_keys=ON;
+            "#,
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO sessions (id, status) VALUES ('ses-conf', 'paused_awaiting_confirm')",
+                [],
+            )
+            .is_err(),
+            "v3 CHECK must reject paused_awaiting_confirm"
+        );
+        init_schema(&conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.execute(
+            "INSERT INTO sessions (id, status) VALUES ('ses-conf', 'paused_awaiting_confirm')",
+            [],
+        )
+        .expect("v4 CHECK must accept paused_awaiting_confirm");
     }
 
     #[test]

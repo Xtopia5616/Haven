@@ -355,7 +355,8 @@ impl AgentLayer {
             state,
             Some(SessionStatus::Error)
                 | Some(SessionStatus::Paused)
-                | Some(SessionStatus::PausedAwaitingAnswer)
+                 | Some(SessionStatus::PausedAwaitingAnswer)
+                 | Some(SessionStatus::PausedAwaitingConfirm)
         ) {
             return Err(anyhow::anyhow!(
                 "session is not in a retryable state (current: {:?})",
@@ -393,11 +394,17 @@ impl AgentLayer {
         // checkpoint can resurrect the row.
         self.executor.partials.discard(session_id).await;
 
-        // Skipping an ask via continue must drop the C5 gate (status alone
-        // flipping to Pending is not enough — the loop still reads the flag).
+        // Skipping an ask / confirm via continue must drop the gate (status
+        // alone flipping to Pending is not enough — the loop still reads the
+        // flag).
         if matches!(state, Some(SessionStatus::PausedAwaitingAnswer)) {
             self.executor
                 .clear_awaiting_answer_persisted(session_id)
+                .await;
+        }
+        if matches!(state, Some(SessionStatus::PausedAwaitingConfirm)) {
+            self.executor
+                .clear_awaiting_confirm_persisted(session_id)
                 .await;
         }
 

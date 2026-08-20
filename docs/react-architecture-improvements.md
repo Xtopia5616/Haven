@@ -224,7 +224,7 @@ enum LoopExit {
 
 ### E. 流式与工具执行
 
-#### E1. 抽出流式管线 `[待办]` · P1
+#### E1. 抽出流式管线 `[完成]` · P1
 
 - **问题**：`StreamForwarder`、`stream_llm_step`、`stream_retry_step`、`call_step_llm`、`partial` 与循环体耦合。
 - **方向**：`StreamSession::run(...) -> StepResponse`；循环只消费结果；partial 经 hook 写盘。
@@ -238,7 +238,7 @@ enum LoopExit {
 - **风险**：cancel interrupt 语义必须字节级保持。
 - **验收**：工具批单测覆盖并行、取消、ask、失败 nudge。
 
-#### E3. Confirm 改为可暂停，而非工具内阻塞 `[待办]` · P1
+#### E3. Confirm 改为可暂停，而非工具内阻塞 `[完成]` · P1
 
 - **问题**：`await_confirmation` 最长 120s 堵在工具 future 内；并行批被一个 gated 工具拖死（`session.rs`）。
 - **方向**：`before_tool` → `NeedConfirm` → 会话 pause（类 ask），用户确认后 `continue` 再执行该工具。
@@ -330,7 +330,7 @@ trait LoopHooks: Send + Sync {
 - **风险**：与 `sanitize_canonical` 顺序。
 - **验收**：顺序固定为 inject → hooks.before_step → sanitize → LLM；有注释契约；禁用 infer 的单测不触达 SQLite maintenance。
 
-#### G3. 响应策略（empty / cut-off）外置 `[待办]` · P1
+#### G3. 响应策略（empty / cut-off）外置 `[完成]` · P1
 
 - **问题**：中英截断短语表、`is_suspect_final`、`finish_reason` 逻辑在核心循环（≈L1164–1397, L2567+）。
 - **方向**：`ResponsePolicy::classify -> Accept | Retry { nudge } | Error`；`after_llm` 调用。
@@ -491,3 +491,4 @@ trait LoopHooks: Send + Sync {
 | 2026-08-20 | F2 风险表述改为迁移层现状；参考链去掉缺失的 `performance-review.md`；G2 交叉链到 memory backlog |
 | 2026-08-20 | G2 / 参考链对齐 `memory-architecture.md` §三协作短期 S4 / 长期 L3 |
 | 2026-08-20 | **Phase 4**：D1 队列收敛为 steering + follow_up（`FollowUp` alias、`follow_up_queue`、旧 `add_supplement*` 保留）；C3 去掉 steering→answer 转队列，改为原地 `mark_user_queues_as_answer`；C5 snapshot/`SessionExecutor` 显式 `awaiting_answer: AskPending`；F2 DB/wire `paused_awaiting_answer`（SCHEMA_VERSION=3）+ UI `isPausedStatus`。 |
+| 2026-08-20 | **Phase 5**：G3 `ResponsePolicy` + `LoopHooks::after_llm`（empty/cut-off 短语迁出循环）；E1 `StreamSession`/`StepResponse`（循环只消费结果，重试复用 msg-id）；E3 `before_tool`→`NeedConfirm` 预检，普通工具先跑完再 `PausedAwaitingConfirm` pause，`resolve_confirmation` 写 decision 后 `finish_confirm_batch` 再执行；SCHEMA_VERSION=4 + UI `paused_awaiting_confirm`。调度路径仍保留 bounded `await_confirmation`。 |

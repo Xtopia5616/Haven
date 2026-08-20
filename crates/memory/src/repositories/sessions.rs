@@ -393,7 +393,10 @@ impl Database {
             // History "Paused" covers both scheduling pause and ask-awaiting
             // (Phase 4 / F2 distinct wire status).
             if s == "paused" {
-                wheres.push("status IN ('paused','paused_awaiting_answer')".into());
+                wheres.push(
+                    "status IN ('paused','paused_awaiting_answer','paused_awaiting_confirm')"
+                        .into(),
+                );
             } else {
                 wheres.push("status = ?".into());
                 params.push(Box::new(s.to_owned()));

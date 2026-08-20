@@ -412,8 +412,9 @@ impl AgentLayer {
                     // user, not on action results). Check both DB/status flavor
                     // and the C5 in-memory/snapshot flag (resume may restore
                     // the flag before status is upgraded from legacy "paused").
-                    let awaiting = matches!(&state, Some(s) if s.is_awaiting_answer())
-                        || agent.executor.get_awaiting_answer(&tid).await.is_some();
+                    let awaiting = matches!(&state, Some(s) if s.blocks_auto_wake())
+                        || agent.executor.get_awaiting_answer(&tid).await.is_some()
+                        || agent.executor.get_awaiting_confirm(&tid).await.is_some();
                     if state == Some(SessionStatus::Paused) && !awaiting {
                         if let Err(e) = agent
                             .executor
@@ -518,6 +519,9 @@ impl AgentLayer {
                                     &tool_name,
                                     args,
                                     CancellationToken::new(),
+                                    // Scheduled / headless: keep bounded
+                                    // await_confirmation (no ReAct pause).
+                                    None,
                                 )
                                 .await;
                             match outcome {
@@ -754,10 +758,6 @@ impl AgentLayer {
                         session_id,
                         snapshot.history.len()
                     );
-                    // The snapshot may end with a dangling assistant tool_call
-                    // message (saved before tool results were appended). Sending it
-                    // to the LLM on resume triggers a 400 error, so trim it first.
-                    Self::trim_dangling_tool_call(&mut snapshot.canonical, &mut snapshot.history);
                     // Re-register per-session tools (skills/MCP) from saved history,
                     // since in-memory registrations are lost on app restart.
                     self.restore_per_session_tools(session_id, &snapshot.history)
@@ -788,6 +788,49 @@ impl AgentLayer {
                         self.executor
                             .set_awaiting_answer(session_id, Some(pending))
                             .await;
+                    }
+                    // Phase 5 / E3: restore confirm gate. Prefer in-memory
+                    // (same-process decisions already recorded) over the
+                    // snapshot so resolve_confirmation is not wiped.
+                    if self.executor.get_awaiting_confirm(session_id).await.is_none() {
+                        if let Some(pending) = snapshot.awaiting_confirm.clone() {
+                            if matches!(
+                                self.executor.get_session_state(session_id).await,
+                                Some(SessionStatus::Paused)
+                            ) {
+                                if let Err(e) = self
+                                    .executor
+                                    .update_session_status(
+                                        session_id,
+                                        SessionStatus::PausedAwaitingConfirm,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "failed to upgrade session {} to paused_awaiting_confirm on resume: {}",
+                                        session_id,
+                                        e
+                                    );
+                                }
+                            }
+                            self.executor
+                                .set_awaiting_confirm(session_id, Some(pending))
+                                .await;
+                        }
+                    }
+                    // Skip trim when a confirm batch still needs results —
+                    // sanitize would mark gated tools Interrupted before
+                    // finish_confirm_batch can append real observations.
+                    let has_confirm = self
+                        .executor
+                        .get_awaiting_confirm(session_id)
+                        .await
+                        .is_some();
+                    if !has_confirm {
+                        Self::trim_dangling_tool_call(
+                            &mut snapshot.canonical,
+                            &mut snapshot.history,
+                        );
                     }
                     self.run_session_resumed(session_id, snapshot, run_id).await
                 }
@@ -1366,10 +1409,12 @@ impl AgentLayer {
 
             let state = self.executor.get_session_state(&session_id).await;
 
-            // Phase 4 / D1 routing:
-            //   Running              → steering
-            //   PausedAwaitingAnswer → follow_up (is_answer / reply_to)
-            //   Paused / other       → follow_up
+            // Phase 4 / D1 routing (+ Phase 5 / E3 confirm gate):
+            //   Running                 → steering
+            //   PausedAwaitingAnswer    → follow_up (is_answer / reply_to)
+            //   PausedAwaitingConfirm   → follow_up, but do NOT wake (confirm
+            //                             dialog is the only resume path)
+            //   Paused / other          → follow_up
             // If the steering queue is unavailable (session vanished from
             // memory between the state read and the enqueue), fall through
             // to the follow-up path instead of failing: the user message is
@@ -1517,14 +1562,29 @@ impl AgentLayer {
                                 )
                                 .await?;
                         }
-                        if matches!(fresh_state, Some(s) if s.is_paused()) {
+                        // Confirm-awaiting: free-text must not wake — only
+                        // resolve_confirmation finishes the gated batch.
+                        let confirm_blocked =
+                            matches!(&fresh_state, Some(s) if s.is_awaiting_confirm())
+                                || self
+                                    .executor
+                                    .get_awaiting_confirm(&session_id)
+                                    .await
+                                    .is_some();
+                        if matches!(fresh_state, Some(s) if s.is_paused()) && !confirm_blocked {
                             self.set_session_status(&session_id, SessionStatus::Pending)
                                 .await?;
                         }
                     }
                     return Ok(ProcessResult::Supplemented);
                 }
-                if matches!(state.as_ref(), Some(s) if s.is_paused()) {
+                let confirm_blocked = matches!(&state, Some(s) if s.is_awaiting_confirm())
+                    || self
+                        .executor
+                        .get_awaiting_confirm(&session_id)
+                        .await
+                        .is_some();
+                if matches!(state.as_ref(), Some(s) if s.is_paused()) && !confirm_blocked {
                     self.set_session_status(&session_id, SessionStatus::Pending)
                         .await?;
                 }

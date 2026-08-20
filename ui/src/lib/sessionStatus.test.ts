@@ -13,6 +13,7 @@ describe('ACTION_STATUSES', () => {
 			'running',
 			'paused',
 			'paused_awaiting_answer',
+			'paused_awaiting_confirm',
 			'completed',
 			'failed',
 			'error',
@@ -24,6 +25,7 @@ describe('isPausedStatus', () => {
 	it('treats both pause flavors as paused', () => {
 		expect(isPausedStatus('paused')).toBe(true);
 		expect(isPausedStatus('paused_awaiting_answer')).toBe(true);
+		expect(isPausedStatus('paused_awaiting_confirm')).toBe(true);
 		expect(isPausedStatus('pending')).toBe(false);
 		expect(isPausedStatus(undefined)).toBe(false);
 	});
@@ -35,6 +37,7 @@ describe('statusColor', () => {
 		expect(statusColor('running')).toBe('var(--md-sys-color-success)');
 		expect(statusColor('paused')).toBe('#ccaa44');
 		expect(statusColor('paused_awaiting_answer')).toBe('#ccaa44');
+		expect(statusColor('paused_awaiting_confirm')).toBe('#ccaa44');
 		expect(statusColor('completed')).toBe('#4488ff');
 		expect(statusColor('failed')).toBe('#ff4444');
 		expect(statusColor('error')).toBe('#ff4444');
@@ -53,6 +56,7 @@ describe('statusVariant', () => {
 		expect(statusVariant('running')).toBe('primary');
 		expect(statusVariant('paused')).toBe('warning');
 		expect(statusVariant('paused_awaiting_answer')).toBe('warning');
+		expect(statusVariant('paused_awaiting_confirm')).toBe('warning');
 		expect(statusVariant('completed')).toBe('success');
 		expect(statusVariant('failed')).toBe('error');
 		expect(statusVariant('error')).toBe('error');

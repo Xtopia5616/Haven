@@ -48,6 +48,10 @@ pub enum SessionStatus {
     /// `paused_awaiting_answer` (Phase 4 / F2) so restart restores the ask
     /// gate without JSON heuristics.
     PausedAwaitingAnswer,
+    /// Paused because a safety-gated tool needs user confirmation (Phase 5 / E3).
+    /// Background-action completions must NOT auto-wake — same gate as ask.
+    /// Persisted as `paused_awaiting_confirm`.
+    PausedAwaitingConfirm,
     Completed,
     Error,
 }
@@ -59,6 +63,7 @@ impl SessionStatus {
             SessionStatus::Running => "running",
             SessionStatus::Paused => "paused",
             SessionStatus::PausedAwaitingAnswer => "paused_awaiting_answer",
+            SessionStatus::PausedAwaitingConfirm => "paused_awaiting_confirm",
             SessionStatus::Completed => "completed",
             SessionStatus::Error => "error",
         }
@@ -70,6 +75,7 @@ impl SessionStatus {
             "running" => SessionStatus::Running,
             "paused" => SessionStatus::Paused,
             "paused_awaiting_answer" => SessionStatus::PausedAwaitingAnswer,
+            "paused_awaiting_confirm" => SessionStatus::PausedAwaitingConfirm,
             "completed" => SessionStatus::Completed,
             "error" => SessionStatus::Error,
             // Unknown/corrupt DB statuses must not silently map to Pending:
@@ -85,17 +91,32 @@ impl SessionStatus {
         }
     }
 
-    /// True for both pause flavors: scheduling pause and ask-awaiting pause.
+    /// True for every pause flavor: scheduling, ask-awaiting, confirm-awaiting.
     pub fn is_paused(&self) -> bool {
         matches!(
             self,
-            SessionStatus::Paused | SessionStatus::PausedAwaitingAnswer
+            SessionStatus::Paused
+                | SessionStatus::PausedAwaitingAnswer
+                | SessionStatus::PausedAwaitingConfirm
         )
     }
 
     /// True when the pause is blocked on a human answer to an `ask` tool.
     pub fn is_awaiting_answer(&self) -> bool {
         matches!(self, SessionStatus::PausedAwaitingAnswer)
+    }
+
+    /// True when the pause is blocked on a safety confirmation (Phase 5 / E3).
+    pub fn is_awaiting_confirm(&self) -> bool {
+        matches!(self, SessionStatus::PausedAwaitingConfirm)
+    }
+
+    /// True when background-action completions must not auto-wake the session.
+    pub fn blocks_auto_wake(&self) -> bool {
+        matches!(
+            self,
+            SessionStatus::PausedAwaitingAnswer | SessionStatus::PausedAwaitingConfirm
+        )
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -250,8 +271,13 @@ pub struct SessionExecutor {
     /// Explicit ask-awaiting flag per session (Phase 4 / C5). Mirrored into
     /// `ReActSnapshot.awaiting_answer` on pause and restored on resume.
     awaiting_answer: Arc<Mutex<HashMap<String, crate::types::AskPending>>>,
+    /// Explicit confirm-awaiting batch per session (Phase 5 / E3). Mirrored
+    /// into `ReActSnapshot.awaiting_confirm` on pause and restored on resume.
+    awaiting_confirm: Arc<Mutex<HashMap<String, crate::types::ConfirmPending>>>,
     /// Pending user confirmations for safety-gated tool calls, keyed by the
     /// generated step id reported in the `confirm:requested` event.
+    /// Used by the legacy blocking path (`await_confirmation`) for scheduled
+    /// / headless tool runs; ReAct sessions use `awaiting_confirm` instead.
     confirm_waits: Arc<Mutex<HashMap<haven_common::types::ConfirmId, ConfirmWait>>>,
     /// Coordinated lifecycle for checkpointed stream text (checkpoint /
     /// promote / discard), shared with the agent loop and the end/rollback
@@ -278,6 +304,7 @@ impl SessionExecutor {
             dispatch_tx: watch::channel(0).0,
             action_completions: Arc::new(Mutex::new(HashMap::new())),
             awaiting_answer: Arc::new(Mutex::new(HashMap::new())),
+            awaiting_confirm: Arc::new(Mutex::new(HashMap::new())),
             confirm_waits: Arc::new(Mutex::new(HashMap::new())),
             on_confirm_request: OnceHandler::new(),
             on_session_error: OnceHandler::new(),
@@ -942,6 +969,162 @@ impl SessionExecutor {
             .await;
     }
 
+    pub async fn set_awaiting_confirm(
+        &self,
+        session_id: &str,
+        pending: Option<crate::types::ConfirmPending>,
+    ) {
+        let mut map = self.awaiting_confirm.lock().await;
+        match pending {
+            Some(p) => {
+                map.insert(session_id.to_string(), p);
+            }
+            None => {
+                map.remove(session_id);
+            }
+        }
+    }
+
+    pub async fn get_awaiting_confirm(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::types::ConfirmPending> {
+        self.awaiting_confirm.lock().await.get(session_id).cloned()
+    }
+
+    pub async fn clear_awaiting_confirm(&self, session_id: &str) {
+        self.awaiting_confirm.lock().await.remove(session_id);
+    }
+
+    /// Clear the in-memory confirm gate and rewrite `react_state` so a crash
+    /// after continuation cannot resurrect `awaiting_confirm` from a stale
+    /// snapshot (Phase 5 / E3).
+    pub async fn clear_awaiting_confirm_persisted(&self, session_id: &str) {
+        self.clear_awaiting_confirm(session_id).await;
+        let sid = session_id.to_string();
+        let _ = self
+            .db
+            .run_blocking(move |db| {
+                let Some(json) = db.get_react_state(&sid)? else {
+                    return Ok(());
+                };
+                let Ok(mut snapshot) =
+                    serde_json::from_str::<crate::types::ReActSnapshot>(&json)
+                else {
+                    return Ok(());
+                };
+                if snapshot.awaiting_confirm.take().is_none() {
+                    return Ok(());
+                }
+                let rewritten = serde_json::to_string(&snapshot)?;
+                db.save_react_state(&sid, &rewritten)?;
+                Ok(())
+            })
+            .await;
+    }
+
+    /// Record a pause-based confirm decision. When every tool in the batch
+    /// has a decision, transition the session to Pending so the dispatcher
+    /// re-enters the loop and re-executes approved tools (Phase 5 / E3).
+    async fn resolve_confirm_pause(
+        &self,
+        step_id: &haven_common::types::ConfirmId,
+        confirmed: bool,
+    ) -> Option<(RiskLevel, String)> {
+        let confirm_key = step_id.to_string();
+        let mut map = self.awaiting_confirm.lock().await;
+        let mut found: Option<(String, RiskLevel)> = None;
+        let mut persist: Option<(String, crate::types::ConfirmPending)> = None;
+        let mut wake_sid: Option<String> = None;
+        for (session_id, pending) in map.iter_mut() {
+            if let Some(tool) = pending
+                .tools
+                .iter_mut()
+                .find(|t| t.confirm_id == confirm_key)
+            {
+                // One-shot: ignore late/duplicate resolves so reject→approve
+                // cannot flip a denied gated tool back to runnable.
+                if tool.decision.is_some() {
+                    return None;
+                }
+                tool.decision = Some(confirmed);
+                found = Some((session_id.clone(), tool.risk_level));
+                persist = Some((session_id.clone(), pending.clone()));
+                if pending.all_decided() {
+                    wake_sid = Some(session_id.clone());
+                }
+                break;
+            }
+        }
+        drop(map);
+        if let Some((sid, pending)) = persist {
+            self.persist_awaiting_confirm(&sid, &pending).await;
+        }
+        if let Some(sid) = wake_sid {
+            // Wake the dispatcher: continuation runs approved tools.
+            if let Err(e) = self
+                .update_session_status(&sid, SessionStatus::Pending)
+                .await
+            {
+                tracing::warn!(
+                    "resolve_confirm_pause: failed to wake session {}: {}",
+                    sid,
+                    e
+                );
+            }
+        }
+        found.map(|(s, l)| (l, s))
+    }
+
+    /// Rewrite `react_state.awaiting_confirm` so confirm decisions survive
+    /// restart (Phase 5 / E3).
+    async fn persist_awaiting_confirm(
+        &self,
+        session_id: &str,
+        pending: &crate::types::ConfirmPending,
+    ) {
+        let sid = session_id.to_string();
+        let pending = pending.clone();
+        let _ = self
+            .db
+            .run_blocking(move |db| {
+                let Some(json) = db.get_react_state(&sid)? else {
+                    return Ok(());
+                };
+                let Ok(mut snapshot) =
+                    serde_json::from_str::<crate::types::ReActSnapshot>(&json)
+                else {
+                    return Ok(());
+                };
+                snapshot.awaiting_confirm = Some(pending);
+                let rewritten = serde_json::to_string(&snapshot)?;
+                db.save_react_state(&sid, &rewritten)?;
+                Ok(())
+            })
+            .await;
+    }
+
+    /// Request confirmations for a gated batch without blocking (Phase 5 / E3).
+    /// Emits `confirm:requested` for each tool; the loop pauses and exits.
+    pub async fn request_confirm_batch(
+        &self,
+        session_id: &str,
+        pending: crate::types::ConfirmPending,
+    ) {
+        for tool in &pending.tools {
+            let confirm_id: haven_common::types::ConfirmId = tool.confirm_id.clone().into();
+            if let Some(cb) = self.on_confirm_request.snap() {
+                cb(
+                    confirm_id,
+                    session_id.to_string(),
+                    tool.tool_name.clone(),
+                    tool.risk_level,
+                );
+            }
+        }
+        self.set_awaiting_confirm(session_id, Some(pending)).await;
+    }
+
     /// End a session. Since the user explicitly asked to end it, the session is
     /// always marked as Completed —regardless of whether it was still
     /// Running (forced stop) or Paused (naturally finished). Clean up
@@ -1042,6 +1225,7 @@ impl SessionExecutor {
         self.status_tx.lock().await.remove(session_id);
         self.action_completions.lock().await.remove(session_id);
         self.awaiting_answer.lock().await.remove(session_id);
+        self.awaiting_confirm.lock().await.remove(session_id);
     }
 
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
@@ -1076,6 +1260,7 @@ impl SessionExecutor {
         self.status_tx.lock().await.clear();
         self.action_completions.lock().await.clear();
         self.awaiting_answer.lock().await.clear();
+        self.awaiting_confirm.lock().await.clear();
     }
 
     /// Subscribe to a session's status changes. Level-triggered: the receiver
@@ -1242,26 +1427,35 @@ impl SessionExecutor {
             // Claim by the dispatcher.
             (Pending, Running) => true,
             // Park / finish a queued session without dispatching it.
-            (Pending, Paused) | (Pending, PausedAwaitingAnswer) => true,
+            (Pending, Paused)
+            | (Pending, PausedAwaitingAnswer)
+            | (Pending, PausedAwaitingConfirm) => true,
             (Pending, Completed) | (Pending, Error) => true,
-            // Pause for a user reply / scheduling / budget checkpoint.
-            (Running, Paused) | (Running, PausedAwaitingAnswer) => true,
-            // Immediate resume: the ask was answered in the same turn
+            // Pause for a user reply / confirm / scheduling / budget checkpoint.
+            (Running, Paused)
+            | (Running, PausedAwaitingAnswer)
+            | (Running, PausedAwaitingConfirm) => true,
+            // Immediate resume: the ask/confirm was answered in the same turn
             // (pause_turn → Pending while the handler is still alive).
             (Running, Pending) => true,
             // Natural completion / failure.
             (Running, Completed) | (Running, Error) => true,
             // Resume paths (user message, action completion, continue flow).
-            (Paused, Pending) | (PausedAwaitingAnswer, Pending) => true,
-            // Re-pause with an answer requirement.
-            (Paused, PausedAwaitingAnswer) => true,
+            (Paused, Pending)
+            | (PausedAwaitingAnswer, Pending)
+            | (PausedAwaitingConfirm, Pending) => true,
+            // Re-pause with an answer / confirm requirement.
+            (Paused, PausedAwaitingAnswer) | (Paused, PausedAwaitingConfirm) => true,
             // Defensive force-resume when a tool executes on a paused session
             // (see `execute_step`; kept from the pre-validation era).
-            (Paused, Running) | (PausedAwaitingAnswer, Running) => true,
+            (Paused, Running)
+            | (PausedAwaitingAnswer, Running)
+            | (PausedAwaitingConfirm, Running) => true,
             // Finish / fail a paused session (end_session's own path also exists,
             // but explicit transitions are kept valid).
             (Paused, Completed) | (Paused, Error) => true,
             (PausedAwaitingAnswer, Completed) | (PausedAwaitingAnswer, Error) => true,
+            (PausedAwaitingConfirm, Completed) | (PausedAwaitingConfirm, Error) => true,
             // User-driven exceptions: reopen a finished session for review
             // (history flow), retry an errored session from its snapshot.
             (Completed, Paused) | (Error, Paused) => true,
@@ -1526,21 +1720,53 @@ impl SessionExecutor {
         step_num: u32,
         step_id: &str,
     ) -> anyhow::Result<ToolResult> {
-        tracing::info!(
-            "execute_step: session={} tool={} input={:?}",
+        self.execute_step_inner(session_id, tool_name, input, step_num, step_id, None)
+            .await
+    }
+
+    /// Like [`execute_step`], but skips the blocking confirm wait when
+    /// `pre_confirmed` is set (Phase 5 / E3 resume after pause-confirm).
+    pub async fn execute_step_preconfirmed(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        step_id: &str,
+        pre_confirmed: bool,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_step_inner(
             session_id,
             tool_name,
-            input
+            input,
+            step_num,
+            step_id,
+            Some(pre_confirmed),
+        )
+        .await
+    }
+
+    async fn execute_step_inner(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        step_id: &str,
+        pre_confirmed: Option<bool>,
+    ) -> anyhow::Result<ToolResult> {
+        tracing::debug!(
+            "execute_step: session={} tool={} input={:?} pre_confirmed={:?}",
+            session_id,
+            tool_name,
+            input,
+            pre_confirmed
         );
         {
             let entry = { self.sessions.lock().await.get(session_id).cloned() };
             if let Some(entry) = entry {
                 let session = entry.lock().await;
                 let prev = session.status.clone();
-                // Phase 2 / F1 + E4: never force memory back to Running.
-                // Refusing Paused*/terminal keeps an in-flight pause from
-                // being undone mid-batch. Pending is allowed (tests and
-                // some direct run paths never go through try_claim).
                 if prev.is_paused() || prev.is_terminal() {
                     let err = format!(
                         "execute_step: session {} is {}; refusing to execute tool '{}'",
@@ -1564,7 +1790,13 @@ impl SessionExecutor {
 
         let cancel = self.cancellation_token(session_id).await;
         let gated = match self
-            .execute_gated(Some(session_id), tool_name, input.clone(), cancel)
+            .execute_gated(
+                Some(session_id),
+                tool_name,
+                input.clone(),
+                cancel,
+                pre_confirmed,
+            )
             .await
         {
             Ok(gated) => gated,
@@ -1710,6 +1942,7 @@ impl SessionExecutor {
         tool_name: &str,
         input: Value,
         cancel: CancellationToken,
+        pre_confirmed: Option<bool>,
     ) -> anyhow::Result<ToolExecution> {
         let risk_level = self
             .tools
@@ -1740,26 +1973,52 @@ impl SessionExecutor {
                 });
             }
             ConfirmationResult::RequiresConfirmation { .. } => {
-                if !self
-                    .await_confirmation(session_id, tool_name, risk_level)
-                    .await
-                {
-                    return Ok(ToolExecution {
-                        result: ToolResult {
-                            success: false,
-                            output: Value::Null,
-                            error: Some(format!(
-                                "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
-                                tool_name
-                            )),
-                            truncated: false,
-                            signals: haven_tools::ToolSignals::default(),
-                        },
-                        risk_level,
-                        confirmed: Some(false),
-                    });
+                // Phase 5 / E3: pause-confirm resume supplies pre_confirmed so
+                // we never block inside the tool future. Scheduled / headless
+                // callers still use the bounded await_confirmation path.
+                match pre_confirmed {
+                    Some(true) => {
+                        confirmed = Some(true);
+                    }
+                    Some(false) => {
+                        return Ok(ToolExecution {
+                            result: ToolResult {
+                                success: false,
+                                output: Value::Null,
+                                error: Some(format!(
+                                    "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                                    tool_name
+                                )),
+                                truncated: false,
+                                signals: haven_tools::ToolSignals::default(),
+                            },
+                            risk_level,
+                            confirmed: Some(false),
+                        });
+                    }
+                    None => {
+                        if !self
+                            .await_confirmation(session_id, tool_name, risk_level)
+                            .await
+                        {
+                            return Ok(ToolExecution {
+                                result: ToolResult {
+                                    success: false,
+                                    output: Value::Null,
+                                    error: Some(format!(
+                                        "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                                        tool_name
+                                    )),
+                                    truncated: false,
+                                    signals: haven_tools::ToolSignals::default(),
+                                },
+                                risk_level,
+                                confirmed: Some(false),
+                            });
+                        }
+                        confirmed = Some(true);
+                    }
                 }
-                confirmed = Some(true);
             }
         }
         let result = self
@@ -1855,20 +2114,65 @@ impl SessionExecutor {
     /// the `confirmed` returned by `execute_gated`); this method only unblocks
     /// the ReAct loop waiting on the oneshot. Every step id handed here comes
     /// from a `confirm:requested` payload, which is only emitted by
-    /// `await_confirmation` — so an id not present in `confirm_waits` is stale
-    /// (already resolved or cancelled); there is no legacy path.
+    /// `await_confirmation` / pause-confirm request — so an id not present in
+    /// `confirm_waits` (and not in `awaiting_confirm`) is stale.
     pub async fn resolve_confirmation(
         &self,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
     ) -> anyhow::Result<Option<(RiskLevel, Option<String>)>> {
+        // Legacy / scheduled path: oneshot wait inside execute_gated.
         if let Some(wait) = self.confirm_waits.lock().await.remove(step_id) {
             let level = wait.risk_level;
             let session_id = wait.session_id;
             let _ = wait.tx.send(confirmed);
             return Ok(Some((level, session_id)));
         }
+        // Phase 5 / E3: pause-based confirm — record decision and wake when
+        // every pending gated tool in the batch has been answered.
+        if let Some((level, session_id)) = self
+            .resolve_confirm_pause(step_id, confirmed)
+            .await
+        {
+            return Ok(Some((level, Some(session_id))));
+        }
         Ok(None)
+    }
+
+    /// Safety-gateway pre-check used by `LoopHooks::before_tool` (Phase 5 / E3).
+    /// Does not block — `RequiresConfirmation` means the batch should pause.
+    pub async fn check_tool_gate(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> ConfirmationResult {
+        let risk_level = self
+            .tools
+            .get_risk_level(Some(session_id), tool_name, input)
+            .await;
+        self.tools
+            .safety_gateway
+            .check(Some(session_id), tool_name, input, risk_level)
+            .await
+    }
+
+    /// Resume decision for a gated tool after a confirm pause (Phase 5 / E3).
+    /// `Some(true)` = approved, `Some(false)` = declined, `None` = not in a
+    /// confirm-continuation batch.
+    pub async fn confirm_decision_for(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> Option<bool> {
+        let guard = self.awaiting_confirm.lock().await;
+        let pending = guard.get(session_id)?;
+        pending
+            .tools
+            .iter()
+            .find(|t| t.tool_name == tool_name && t.tool_input == *input)
+            .and_then(|t| t.decision)
     }
 }
 

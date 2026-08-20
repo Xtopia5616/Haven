@@ -3,13 +3,14 @@
 //
 // statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the history page.
-// isPausedStatus() covers both plain pause and ask-awaiting pause (F2).
+// isPausedStatus() covers plain pause, ask-awaiting (F2), and confirm-awaiting (E3).
 
 export const ACTION_STATUSES = [
 	'pending',
 	'running',
 	'paused',
 	'paused_awaiting_answer',
+	'paused_awaiting_confirm',
 	'completed',
 	'failed',
 	'error',
@@ -20,6 +21,7 @@ const COLOR_MAP: Record<string, string> = {
 	running: 'var(--md-sys-color-success)',
 	paused: '#ccaa44',
 	paused_awaiting_answer: '#ccaa44',
+	paused_awaiting_confirm: '#ccaa44',
 	completed: '#4488ff',
 	failed: '#ff4444',
 	error: '#ff4444',
@@ -30,13 +32,18 @@ const VARIANT_MAP: Record<string, string> = {
 	running: 'primary',
 	paused: 'warning',
 	paused_awaiting_answer: 'warning',
+	paused_awaiting_confirm: 'warning',
 	completed: 'success',
 	failed: 'error',
 	error: 'error',
 };
 
 export function isPausedStatus(status: string | undefined | null): boolean {
-	return status === 'paused' || status === 'paused_awaiting_answer';
+	return (
+		status === 'paused' ||
+		status === 'paused_awaiting_answer' ||
+		status === 'paused_awaiting_confirm'
+	);
 }
 
 export function statusColor(status: string) {

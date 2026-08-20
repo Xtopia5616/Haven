@@ -22,7 +22,7 @@ mod inject;
 mod r#loop;
 mod retries;
 mod snapshot_io;
-mod stream_step;
+pub(crate) mod stream_step;
 mod tool_batch;
 
 use hooks::{LoopHooksHandle, default_hooks};
@@ -263,6 +263,8 @@ pub enum PauseReason {
     TurnEnd,
     /// `ask` tool (or pending-ask re-surface).
     Ask,
+    /// Safety-gated tool awaiting user confirmation (Phase 5 / E3).
+    Confirm,
     /// Per-run `max_steps` exhausted.
     Budget,
     /// Observed Paused* at step head or mid-batch (external flip).
@@ -1490,148 +1492,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn looks_cut_off_detects_mid_sentence_endings() {
-        assert!(ReActEngine::looks_cut_off("让我先查一下，")); // trailing comma
-        assert!(ReActEngine::looks_cut_off("checking the file,"));
-        assert!(ReActEngine::looks_cut_off("waiting for result...")); // ellipsis
-        assert!(ReActEngine::looks_cut_off("然后需要："));
-        assert!(!ReActEngine::looks_cut_off("好的，已经完成了。"));
-        assert!(!ReActEngine::looks_cut_off("The answer is 42."));
-        assert!(!ReActEngine::looks_cut_off("完成"));
-    }
-
-    #[test]
-    fn is_suspect_final_trusts_explicit_tool_calls() {
-        let explicit = Action {
-            tool_name: "final_answer".into(),
-            tool_input: serde_json::Value::Null,
-            is_final: true,
-            tool_call_id: Some("c1".into()),
-        };
-        let r = resp("done", vec![], Some(FinishReason::ToolCalls));
-        assert!(!ReActEngine::is_suspect_final(
-            &Some("done".into()),
-            &[explicit],
-            &r,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn is_suspect_final_flags_truncated_finish() {
-        for finish in [
-            Some(FinishReason::Length),
-            Some(FinishReason::ContentFilter),
-            None,
-        ] {
-            let r = resp("partial text", vec![], finish);
-            assert!(
-                ReActEngine::is_suspect_final(&Some("partial text".into()), &[], &r, &[]),
-                "finish={finish:?} must be suspect"
-            );
-        }
-    }
-
-    #[test]
-    fn is_suspect_final_flags_stop_with_cut_off_text_but_accepts_complete() {
-        let r = resp("让我先查一下，", vec![], Some(FinishReason::Stop));
-        assert!(ReActEngine::is_suspect_final(
-            &Some("让我先查一下，".into()),
-            &[],
-            &r,
-            &[]
-        ));
-        let r2 = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
-        assert!(!ReActEngine::is_suspect_final(
-            &Some("好的，已经完成了。".into()),
-            &[],
-            &r2,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn is_suspect_final_ignores_empty_thought() {
-        let r = resp("", vec![], Some(FinishReason::Length));
-        assert!(!ReActEngine::is_suspect_final(&None, &[], &r, &[]));
-    }
-
-    #[test]
-    fn is_suspect_final_flags_stop_with_planning_ending() {
-        let r = resp("接下来我需要确认一下", vec![], Some(FinishReason::Stop));
-        assert!(ReActEngine::is_suspect_final(
-            &Some("接下来我需要确认一下".into()),
-            &[],
-            &r,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn is_suspect_final_flags_mid_session_text_only_stop() {
-        // Tool result pending (no user message after it): a text-only Stop
-        // must not be trusted as final even though the text is complete.
-        let canonical = vec![
-            CanonicalMessage::user_text("检查工具"),
-            CanonicalMessage::assistant(
-                vec![ContentPart::text("接下来")],
-                Some(vec![CanonicalToolCall {
-                    id: "c1".into(),
-                    name: "mcp_list".into(),
-                    arguments: serde_json::json!({}),
-                }]),
-                None,
-                Vec::new(),
-                Vec::new(),
-            ),
-            CanonicalMessage::tool(
-                vec![ContentPart::text(r#"{"success":true,"output":"[tools]"}"#)],
-                Some("c1".into()),
-            ),
-        ];
-        let r = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
-        assert!(ReActEngine::is_suspect_final(
-            &Some("好的，已经完成了。".into()),
-            &[],
-            &r,
-            &canonical
-        ));
-    }
-
-    #[test]
-    fn is_suspect_final_accepts_text_only_stop_on_fresh_turn() {
-        // No tool result in this turn: a clean text-only Stop is final.
-        let canonical = vec![CanonicalMessage::user_text("你好")];
-        let r = resp("好的，已经完成了。", vec![], Some(FinishReason::Stop));
-        assert!(!ReActEngine::is_suspect_final(
-            &Some("好的，已经完成了。".into()),
-            &[],
-            &r,
-            &canonical
-        ));
-    }
-
-    #[test]
-    fn canonical_has_pending_tool_context_detects_mid_session() {
-        let mid = vec![
-            CanonicalMessage::user_text("go"),
-            CanonicalMessage::tool(vec![ContentPart::text("ok")], Some("c1".into())),
-        ];
-        assert!(ReActEngine::canonical_has_pending_tool_context(&mid));
-        let fresh = vec![
-            CanonicalMessage::user_text("first"),
-            CanonicalMessage::tool(vec![ContentPart::text("ok")], Some("c1".into())),
-            CanonicalMessage::user_text("second question"),
-        ];
-        assert!(!ReActEngine::canonical_has_pending_tool_context(&fresh));
-    }
-
-    #[test]
-    fn looks_cut_off_flags_planning_endings() {
-        assert!(ReActEngine::looks_cut_off("接下来"));
-        assert!(ReActEngine::looks_cut_off("确认一下"));
-        assert!(!ReActEngine::looks_cut_off("好的，已经完成了。"));
-        assert!(!ReActEngine::looks_cut_off("完成"));
-    }
 }

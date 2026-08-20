@@ -26,6 +26,39 @@ pub struct AskPending {
     pub step_ids: Vec<String>,
 }
 
+/// One gated tool awaiting (or holding) a confirm decision (Phase 5 / E3).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfirmPendingTool {
+    pub confirm_id: String,
+    pub tool_name: String,
+    pub tool_input: Value,
+    pub step_id: String,
+    pub risk_level: haven_common::types::RiskLevel,
+    /// `None` = still waiting; `Some(true/false)` = user decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<bool>,
+}
+
+/// Pending safety-confirm batch persisted in the snapshot (Phase 5 / E3).
+/// Set when `before_tool` returns `NeedConfirm`; cleared when the batch is
+/// finished (all tools executed after decisions) or declined results written.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ConfirmPending {
+    pub step_number: u32,
+    #[serde(default)]
+    pub tools: Vec<ConfirmPendingTool>,
+}
+
+impl ConfirmPending {
+    pub fn all_decided(&self) -> bool {
+        !self.tools.is_empty() && self.tools.iter().all(|t| t.decision.is_some())
+    }
+
+    pub fn any_approved(&self) -> bool {
+        self.tools.iter().any(|t| t.decision == Some(true))
+    }
+}
+
 /// Serializable snapshot of the ReAct loop state for pause/resume (§1.3).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReActSnapshot {
@@ -50,6 +83,12 @@ pub struct ReActSnapshot {
     /// `paused_awaiting_answer` (F2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting_answer: Option<AskPending>,
+    /// Explicit confirm-awaiting batch (Phase 5 / E3). Set when a gated tool
+    /// pauses the run; decisions are filled by `resolve_confirmation`. Cleared
+    /// after the continuation finishes executing approved/declined tools.
+    /// Survives restart together with DB status `paused_awaiting_confirm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_confirm: Option<ConfirmPending>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +234,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
             awaiting_answer: None,
+            awaiting_confirm: None,
         };
         snapshot.branch_points.insert(
             4,
@@ -222,6 +262,7 @@ mod tests {
             branch_points: HashMap::new(),
             saved_at: None,
             awaiting_answer: None,
+            awaiting_confirm: None,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("branch_points"));
@@ -244,6 +285,7 @@ mod tests {
                 question: "which file?".into(),
                 step_ids: vec!["step-abc".into()],
             }),
+            awaiting_confirm: None,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         let back: ReActSnapshot = serde_json::from_str(&json).unwrap();

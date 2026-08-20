@@ -2,9 +2,10 @@
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
 
+use super::hooks::BeforeToolAction;
 use super::*;
-use crate::types::{Action, BranchPoint, ReActStep};
-use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart};
+use crate::types::{Action, BranchPoint, ConfirmPending, ConfirmPendingTool, ReActStep};
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_tools::is_silent_action;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -275,18 +276,122 @@ impl ReActEngine {
 
         use futures_util::StreamExt;
 
-        let mut tool_futures = futures_util::stream::FuturesUnordered::new();
+        // Phase 5 / E3: pre-check every non-final action before spawning.
+        // Proceed tools run in parallel; Block writes a failure observation
+        // immediately; NeedConfirm is collected and pauses after the drain.
+        let gate_ctx = StepCtx {
+            session_id: session_id.to_string(),
+            step_num,
+            run_id,
+            emitter: emitter.clone(),
+        };
+        let mut need_confirm: Vec<ConfirmPendingTool> = Vec::new();
+        let mut proceed: Vec<(usize, Action, Option<bool>)> = Vec::new();
+        let mut any_tool_failure = false;
+        // Bounded per-step failure evidence (tool name + error tail) used
+        // to classify failures as environmental vs logic when composing
+        // the retry nudge — a broken proxy or a missing command must not
+        // push the model to abandon a sound approach.
+        let mut failure_signals: Vec<(String, String)> = Vec::new();
+        // Tool calls in this batch that already produced a result, keyed
+        // by the same identity the action/observation pairing uses. When
+        // the batch is cancelled mid-flight, every `non_final` action NOT
+        // in this set was cut off — it must still be repaired with an
+        // "Interrupted" result and surfaced, not silently dropped.
+        let mut completed_tool_keys: HashSet<String> = HashSet::new();
+        // If the agent invoked the `ask` tool, the session must pause and
+        // wait for the user's reply (delivered as a supplement). Collect
+        // every question in the batch so all are surfaced, plus the step
+        // row id of each ask action: the question message is persisted
+        // under that id so the ask card and its content share one entity.
+        let mut asked_questions: Vec<String> = Vec::new();
+        let mut ask_step_ids: Vec<String> = Vec::new();
+
         for (idx, action) in non_final.iter().enumerate() {
+            match self
+                .hooks
+                .before_tool(self, &gate_ctx, &action.tool_name, &action.tool_input)
+                .await
+            {
+                BeforeToolAction::Proceed { confirmed } => {
+                    proceed.push((idx, (*action).clone(), confirmed));
+                }
+                BeforeToolAction::Block { error } => {
+                    any_tool_failure = true;
+                    if failure_signals.len() < 3 {
+                        let cap: String = error.chars().take(600).collect();
+                        failure_signals.push((action.tool_name.clone(), cap));
+                    }
+                    let step_id = action_step_ids[idx].clone();
+                    let silent = is_silent_action(&action.tool_name, &action.tool_input);
+                    self.executor
+                        .finish_interrupted_step(
+                            session_id,
+                            &action.tool_name,
+                            &action.tool_input,
+                            step_num,
+                            &step_id,
+                            &error,
+                        )
+                        .await;
+                    emitter
+                        .emit(crate::event::AgentEvent::Observation {
+                            session_id: session_id.into(),
+                            observation: error.clone(),
+                            tool_name: action.tool_name.clone(),
+                            step_number: step_num,
+                            run_id,
+                            silent,
+                            tool_call_id: action.tool_call_id.clone(),
+                            ask_options: Vec::new(),
+                            step_id,
+                        })
+                        .await;
+                    if let Some(last) = history
+                        .last_mut()
+                        .filter(|s| s.step_number == step_num && s.action.is_none())
+                    {
+                        last.action = Some((*action).clone());
+                        last.observation = Some(error.clone());
+                    } else {
+                        history.push(ReActStep {
+                            step_number: step_num,
+                            thought: None,
+                            action: Some((*action).clone()),
+                            observation: Some(error.clone()),
+                        });
+                    }
+                    canonical.push(CanonicalMessage::tool(
+                        vec![ContentPart::text(error)],
+                        action.tool_call_id.clone(),
+                    ));
+                    completed_tool_keys.insert(tool_key(action));
+                }
+                BeforeToolAction::NeedConfirm { risk_level } => {
+                    need_confirm.push(ConfirmPendingTool {
+                        confirm_id: haven_common::types::new_id("conf"),
+                        tool_name: action.tool_name.clone(),
+                        tool_input: action.tool_input.clone(),
+                        step_id: action_step_ids[idx].clone(),
+                        risk_level,
+                        decision: None,
+                    });
+                }
+            }
+        }
+
+        let mut tool_futures = futures_util::stream::FuturesUnordered::new();
+        for (idx, action, confirmed) in proceed {
             let session_id = session_id.to_string();
             let tool_name = action.tool_name.clone();
             let tool_input = action.tool_input.clone();
-            let action = (*action).clone();
             let max_obs = self.context_limits.max_observation_chars;
             let executor = self.executor.clone();
             // The same step id minted at Action-emit time keys the step
             // row execute_step creates, so the live card id, the DB badge
             // id and this step id are identical everywhere.
             let step_id = action_step_ids[idx].clone();
+            let pre_confirmed = confirmed == Some(true);
             tool_futures.push(async move {
                 tracing::debug!(
                     "executing tool '{}' at step {} (input keys: {:?})",
@@ -306,15 +411,28 @@ impl ReActEngine {
                         .map(|o| serde_json::to_string(o).map(|s| s.len()).unwrap_or(0))
                         .unwrap_or(0)
                 );
-                let result = executor
-                    .execute_step(
-                        &session_id,
-                        &tool_name,
-                        tool_input.clone(),
-                        step_num,
-                        &step_id,
-                    )
-                    .await;
+                let result = if pre_confirmed {
+                    executor
+                        .execute_step_preconfirmed(
+                            &session_id,
+                            &tool_name,
+                            tool_input.clone(),
+                            step_num,
+                            &step_id,
+                            true,
+                        )
+                        .await
+                } else {
+                    executor
+                        .execute_step(
+                            &session_id,
+                            &tool_name,
+                            tool_input.clone(),
+                            step_num,
+                            &step_id,
+                        )
+                        .await
+                };
                 let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
                     match result {
                         Ok(r) => {
@@ -388,25 +506,6 @@ impl ReActEngine {
             });
         }
 
-        let mut any_tool_failure = false;
-        // Bounded per-step failure evidence (tool name + error tail) used
-        // to classify failures as environmental vs logic when composing
-        // the retry nudge — a broken proxy or a missing command must not
-        // push the model to abandon a sound approach.
-        let mut failure_signals: Vec<(String, String)> = Vec::new();
-        // Tool calls in this batch that already produced a result, keyed
-        // by the same identity the action/observation pairing uses. When
-        // the batch is cancelled mid-flight, every `non_final` action NOT
-        // in this set was cut off — it must still be repaired with an
-        // "Interrupted" result and surfaced, not silently dropped.
-        let mut completed_tool_keys: HashSet<String> = HashSet::new();
-        // If the agent invoked the `ask` tool, the session must pause and
-        // wait for the user's reply (delivered as a supplement). Collect
-        // every question in the batch so all are surfaced, plus the step
-        // row id of each ask action: the question message is persisted
-        // under that id so the ask card and its content share one entity.
-        let mut asked_questions: Vec<String> = Vec::new();
-        let mut ask_step_ids: Vec<String> = Vec::new();
         // Drain tool results while remaining responsive to cancellation.
         // Without select!, a cancel arriving mid-batch would only be
         // detected at the next step boundary —after all tools finish.
@@ -606,13 +705,77 @@ impl ReActEngine {
             }
         }
 
-        // Skip the retry nudge when the batch asked the user: it would be
-        // baked into the paused snapshot ahead of the user's real answer,
-        // contradicting the pending question.
-        if any_tool_failure && asked_questions.is_empty() && step_num < max_steps - 1 {
+        // Skip the retry nudge when the batch asked the user or is about to
+        // pause for confirm: it would be baked into the paused snapshot ahead
+        // of the user's real answer / decision.
+        if any_tool_failure
+            && asked_questions.is_empty()
+            && need_confirm.is_empty()
+            && step_num < max_steps - 1
+        {
             canonical.push(CanonicalMessage::user_text(Self::build_failure_nudge(
                 &failure_signals,
             )));
+        }
+
+        // Phase 5 / E3: confirm before ask when both appear in one batch.
+        // Ask pause used to return first and drop NeedConfirm tools (Action
+        // cards + assistant tool_calls with no results → Interrupted repair).
+        // Prefer confirm pause; stash ask pending so finish_confirm_batch's
+        // next turn still surfaces the question.
+        if !need_confirm.is_empty() {
+            if !asked_questions.is_empty() {
+                let question = asked_questions.join("\n\n");
+                for (i, q) in asked_questions.iter().enumerate() {
+                    let msg_id = ask_step_ids
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| haven_common::types::new_id("step"));
+                    self.persist_session_message(
+                        session_id,
+                        "assistant",
+                        q,
+                        Some("text"),
+                        None,
+                        Some(&msg_id),
+                    )
+                    .await;
+                }
+                self.executor
+                    .set_awaiting_answer(
+                        session_id,
+                        Some(crate::types::AskPending {
+                            question,
+                            step_ids: ask_step_ids.clone(),
+                        }),
+                    )
+                    .await;
+            }
+            let pending = ConfirmPending {
+                step_number: step_num,
+                tools: need_confirm,
+            };
+            self.executor
+                .request_confirm_batch(session_id, pending)
+                .await;
+            self.pause_turn(
+                session_id,
+                canonical,
+                history,
+                step_num + 1,
+                branch_points,
+                emitter,
+                SessionStatus::PausedAwaitingConfirm,
+                "Waiting for confirmation…",
+                None,
+                infer,
+                None,
+                false,
+            )
+            .await?;
+            return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
+                reason: PauseReason::Confirm,
+            }));
         }
 
         // The agent asked the human a question: pause so the user can
@@ -744,6 +907,237 @@ impl ReActEngine {
 
         Ok(ToolBatchOutcome::Continue)
     }
+
+    /// Resume after a confirm pause: execute decided gated tools without
+    /// re-emitting Action cards (those were already shown when the batch
+    /// paused). Appends observations / history / canonical for each tool.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn finish_confirm_batch(
+        &self,
+        session_id: &str,
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &mut Vec<ReActStep>,
+        branch_points: &mut HashMap<u32, BranchPoint>,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        infer: &(dyn Fn(bool) + Send + Sync),
+        run_id: u64,
+    ) -> anyhow::Result<ToolBatchOutcome> {
+        let Some(pending) = self.executor.get_awaiting_confirm(session_id).await else {
+            return Ok(ToolBatchOutcome::Continue);
+        };
+        let step_num = pending.step_number;
+        let max_obs = self.context_limits.max_observation_chars;
+
+        for tool in &pending.tools {
+            let Some(decision) = tool.decision else {
+                continue;
+            };
+            let tool_call_id = tool_call_id_for(canonical, &tool.tool_name, &tool.tool_input);
+            let action = Action {
+                tool_name: tool.tool_name.clone(),
+                tool_input: tool.tool_input.clone(),
+                is_final: false,
+                tool_call_id: tool_call_id.clone(),
+            };
+
+            if decision {
+                let result = self
+                    .executor
+                    .execute_step_preconfirmed(
+                        session_id,
+                        &tool.tool_name,
+                        tool.tool_input.clone(),
+                        step_num,
+                        &tool.step_id,
+                        true,
+                    )
+                    .await;
+                let (text, is_error, ask_question, ask_options, notify_title, notify_body) =
+                    match result {
+                        Ok(r) => {
+                            let text = r.summary_text();
+                            let text = if text.len() > max_obs {
+                                let cutoff = text.floor_char_boundary(max_obs);
+                                format!(
+                                    "{}[... truncated {} chars omitted]",
+                                    &text[..cutoff],
+                                    text.len() - cutoff
+                                )
+                            } else {
+                                text
+                            };
+                            (
+                                text,
+                                !r.success,
+                                r.signals.ask_question.clone(),
+                                r.signals.ask_options.clone(),
+                                r.signals.notify_title.clone(),
+                                r.signals.notify_body.clone(),
+                            )
+                        }
+                        Err(e) => (e.to_string(), true, None, Vec::new(), None, None),
+                    };
+                let _ = is_error;
+                if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
+                    emitter
+                        .emit(crate::event::AgentEvent::Notification {
+                            session_id: session_id.into(),
+                            title: title.clone(),
+                            body: body.clone(),
+                        })
+                        .await;
+                }
+                let silent = is_silent_action(&tool.tool_name, &tool.tool_input)
+                    || (tool.tool_name == "message_inbox" && empty_inbox_output(&text));
+                let display_observation = if let Some(q) = &ask_question {
+                    q.clone()
+                } else if let Some(title) = &notify_title {
+                    let body = notify_body.clone().unwrap_or_default();
+                    if body.is_empty() {
+                        text.clone()
+                    } else {
+                        format!("Notification sent: {title}: {body}")
+                    }
+                } else {
+                    text.clone()
+                };
+                emitter
+                    .emit(crate::event::AgentEvent::Observation {
+                        session_id: session_id.into(),
+                        observation: display_observation.clone(),
+                        tool_name: tool.tool_name.clone(),
+                        step_number: step_num,
+                        run_id,
+                        silent,
+                        tool_call_id: tool_call_id.clone(),
+                        ask_options,
+                        step_id: tool.step_id.clone(),
+                    })
+                    .await;
+                if let Some(last) = history
+                    .last_mut()
+                    .filter(|s| s.step_number == step_num && s.action.is_none())
+                {
+                    last.action = Some(action.clone());
+                    last.observation = Some(display_observation);
+                } else {
+                    history.push(ReActStep {
+                        step_number: step_num,
+                        thought: None,
+                        action: Some(action),
+                        observation: Some(display_observation),
+                    });
+                }
+                canonical.push(CanonicalMessage::tool(
+                    vec![ContentPart::text(text)],
+                    tool_call_id,
+                ));
+            } else {
+                let error = format!(
+                    "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                    tool.tool_name
+                );
+                let silent = is_silent_action(&tool.tool_name, &tool.tool_input);
+                self.executor
+                    .finish_interrupted_step(
+                        session_id,
+                        &tool.tool_name,
+                        &tool.tool_input,
+                        step_num,
+                        &tool.step_id,
+                        &error,
+                    )
+                    .await;
+                emitter
+                    .emit(crate::event::AgentEvent::Observation {
+                        session_id: session_id.into(),
+                        observation: error.clone(),
+                        tool_name: tool.tool_name.clone(),
+                        step_number: step_num,
+                        run_id,
+                        silent,
+                        tool_call_id: tool_call_id.clone(),
+                        ask_options: Vec::new(),
+                        step_id: tool.step_id.clone(),
+                    })
+                    .await;
+                if let Some(last) = history
+                    .last_mut()
+                    .filter(|s| s.step_number == step_num && s.action.is_none())
+                {
+                    last.action = Some(action.clone());
+                    last.observation = Some(error.clone());
+                } else {
+                    history.push(ReActStep {
+                        step_number: step_num,
+                        thought: None,
+                        action: Some(action),
+                        observation: Some(error.clone()),
+                    });
+                }
+                canonical.push(CanonicalMessage::tool(
+                    vec![ContentPart::text(error)],
+                    tool_call_id,
+                ));
+            }
+        }
+
+        self.executor
+            .clear_awaiting_confirm_persisted(session_id)
+            .await;
+
+        // Same-batch ask was stashed while confirm paused first: surface it now.
+        if let Some(ask) = self.executor.get_awaiting_answer(session_id).await {
+            self.executor.mark_user_queues_as_answer(session_id).await;
+            let has_answer = self.executor.has_pending_context(session_id).await;
+            let status = if has_answer {
+                self.executor.clear_awaiting_answer(session_id).await;
+                SessionStatus::Pending
+            } else {
+                SessionStatus::PausedAwaitingAnswer
+            };
+            self.pause_turn(
+                session_id,
+                canonical,
+                history,
+                step_num + 1,
+                branch_points,
+                emitter,
+                status,
+                &ask.question,
+                None,
+                infer,
+                None,
+                true,
+            )
+            .await?;
+            return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
+                reason: PauseReason::Ask,
+            }));
+        }
+
+        Ok(ToolBatchOutcome::Continue)
+    }
+}
+
+fn tool_call_id_for(
+    canonical: &[CanonicalMessage],
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+) -> Option<String> {
+    for msg in canonical.iter().rev() {
+        if msg.role != CanonicalRole::Assistant {
+            continue;
+        }
+        if let Some(calls) = &msg.tool_calls
+            && let Some(call) = calls
+                .iter()
+                .find(|c| c.name == tool_name && c.arguments == *tool_input)
+        {
+            return Some(call.id.clone());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
