@@ -74,27 +74,6 @@ impl Database {
         )
     }
 
-    pub fn add_message_with_attachments(
-        &self,
-        session_id: &str,
-        role: &str,
-        content: &str,
-        message_type: Option<&str>,
-        tool_call_id: Option<&str>,
-        attachments: &[MessageAttachment],
-    ) -> anyhow::Result<Message> {
-        self.add_message_full(
-            session_id,
-            role,
-            content,
-            message_type,
-            tool_call_id,
-            attachments,
-            false,
-            None,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn add_message_full(
         &self,
@@ -300,16 +279,6 @@ impl Database {
             msgs.push(row?);
         }
         Ok(msgs)
-    }
-
-    pub fn delete_session_messages(&self, session_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "DELETE FROM messages WHERE session_id = ?1",
-            rusqlite::params![session_id],
-        )?;
-        self.cache_invalidate_messages(session_id);
-        Ok(())
     }
 
     /// Return the `created_at` of the most recent message in a session, or
@@ -561,17 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_session_messages_clears_all() {
-        let db = test_db();
-        let tid = test_session(&db);
-        db.add_message(&tid, "user", "msg1", None, None).unwrap();
-        db.add_message(&tid, "user", "msg2", None, None).unwrap();
-        db.delete_session_messages(&tid).unwrap();
-        let msgs = db.get_session_messages(&tid).unwrap();
-        assert!(msgs.is_empty());
-    }
-
-    #[test]
     fn add_message_with_tool_call_id() {
         let db = test_db();
         let tid = test_session(&db);
@@ -583,17 +541,19 @@ mod tests {
     }
 
     #[test]
-    fn add_message_with_attachments_roundtrip() {
+    fn add_message_full_with_attachments_roundtrip() {
         let db = test_db();
         let tid = test_session(&db);
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
-        db.add_message_with_attachments(
+        db.add_message_full(
             &tid,
             "user",
             "看图",
             Some("text"),
             None,
             std::slice::from_ref(&att),
+            false,
+            None,
         )
         .unwrap();
         let msgs = db.get_session_messages(&tid).unwrap();

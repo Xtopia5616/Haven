@@ -3,8 +3,12 @@ mod autostart;
 mod commands;
 mod desktop;
 mod events;
+mod logging;
+mod notification;
 
 use crate::desktop::TrayStatus;
+use crate::logging::init_tracing;
+use crate::notification::DesktopNotifications;
 use app_state::AppState;
 use haven_agent::{AgentEvent, AgentEventEmitter};
 use haven_common::config::LogConfig;
@@ -14,74 +18,14 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri_plugin_notification::NotificationExt;
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
-use tracing_subscriber::prelude::*;
 use tracing_subscriber::reload;
-
-/// Initialize the tracing subscriber with console output and optional rolling file output.
-/// A single reloadable filter is applied at the subscriber level so runtime
-/// log-level changes affect both console and file output simultaneously.
-fn init_tracing(
-    log_cfg: &LogConfig,
-) -> (
-    Vec<reload::Handle<EnvFilter, Registry>>,
-    Arc<std::sync::Mutex<LogConfig>>,
-) {
-    let level_str = log_cfg.level.as_str();
-
-    // Single reloadable filter applied at the subscriber level — both
-    // console and file layers inherit it, so updating the filter at
-    // runtime changes both outputs.
-    let (reloadable, handle) = reload::Layer::new(EnvFilter::new(format!("haven={}", level_str)));
-
-    let subscriber = tracing_subscriber::registry().with(reloadable);
-
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_line_number(true);
-
-    let subscriber = subscriber.with(fmt_layer);
-
-    let handles = vec![handle];
-
-    if log_cfg.file_enabled {
-        let log_path = log_cfg
-            .file_path
-            .clone()
-            .unwrap_or_else(LogConfig::default_log_path);
-        if let Some(parent) = log_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            eprintln!("failed to create log directory {}: {}", parent.display(), e);
-        }
-        let file_appender = tracing_appender::rolling::daily(
-            log_path.parent().unwrap_or(std::path::Path::new(".")),
-            log_path
-                .file_stem()
-                .unwrap_or(std::ffi::OsStr::new("haven")),
-        );
-        let file_layer = tracing_subscriber::fmt::layer()
-            .with_writer(file_appender)
-            .with_target(true)
-            .with_line_number(true)
-            .with_ansi(false);
-
-        let subscriber = subscriber.with(file_layer);
-        let _ = tracing::subscriber::set_global_default(subscriber);
-    } else {
-        let _ = tracing::subscriber::set_global_default(subscriber);
-    }
-
-    let log_config = Arc::new(std::sync::Mutex::new(log_cfg.clone()));
-    (handles, log_config)
-}
 
 struct TauriEmitter {
     handle: tauri::AppHandle,
     chunk_seq: AtomicU64,
+    notifications: DesktopNotifications,
 }
 
 #[async_trait::async_trait]
@@ -95,10 +39,19 @@ impl AgentEventEmitter for TauriEmitter {
             }
             _ => None,
         };
-        let payload = Self::payload(&event, chunk_seq);
+        // Cache titles from create/rename/complete before any path that may
+        // resolve a display title (SessionUpdated fill, toasts, secondary).
+        self.notifications.remember_session_status(&event);
+        let mut payload = Self::payload(&event, chunk_seq);
+        // SessionUpdated wire historically sent title:""; fill a safe display
+        // title so in-app toast matches Windows (never raw input).
+        if let AgentEvent::SessionUpdated { session_id, .. } = &event {
+            payload["title"] =
+                serde_json::json!(self.notifications.session_display_title(session_id));
+        }
         let _ = self.handle.emit(channel, payload);
         self.emit_secondary(&event);
-        self.maybe_show_toast(&event);
+        self.notifications.maybe_show_toast(&event);
     }
 }
 
@@ -256,7 +209,7 @@ impl TauriEmitter {
                     session_id,
                     status
                 );
-                if status == "paused" {
+                if status == "paused" || status == "paused_awaiting_answer" {
                     tracing::warn!(
                         "TauriEmitter emitting session:updated with paused status for session {}",
                         session_id
@@ -304,134 +257,11 @@ impl TauriEmitter {
             AgentEvent::SessionError { session_id, .. } => serde_json::json!({
                 "session_id": session_id,
                 "status": "error",
-                "title": "",
+                "title": self.notifications.session_display_title(session_id),
             }),
             _ => return,
         };
         let _ = self.handle.emit("session:updated", payload);
-    }
-
-    /// 四个通知变体的 Windows 桌面通知（其余变体直接返回）。
-    fn maybe_show_toast(&self, event: &AgentEvent) {
-        match event {
-            AgentEvent::SessionCreated(session) => {
-                let notify = self
-                    .handle
-                    .state::<Arc<AppState>>()
-                    .config_loader
-                    .lock()
-                    .map(|c| c.config().notification.session_created.windows)
-                    .unwrap_or(false);
-                if notify {
-                    let display = if session.input.is_empty() {
-                        &session.id
-                    } else {
-                        &session.input
-                    };
-                    let _ = self
-                        .handle
-                        .notification()
-                        .builder()
-                        .title("Haven")
-                        .body(format!("New session: {}", display))
-                        .show();
-                }
-            }
-            AgentEvent::SessionCompleted {
-                session_id: _,
-                title,
-            } => {
-                let notify = self
-                    .handle
-                    .state::<Arc<AppState>>()
-                    .config_loader
-                    .lock()
-                    .map(|c| c.config().notification.session_completed.windows)
-                    .unwrap_or(true);
-                if notify {
-                    let _ = self
-                        .handle
-                        .notification()
-                        .builder()
-                        .title("Haven")
-                        .body(format!("Session completed: {}", title))
-                        .show();
-                }
-            }
-            AgentEvent::SessionError {
-                session_id: _,
-                error,
-            } => {
-                let notify = self
-                    .handle
-                    .state::<Arc<AppState>>()
-                    .config_loader
-                    .lock()
-                    .map(|c| c.config().notification.session_error.windows)
-                    .unwrap_or(true);
-                if notify {
-                    let _ = self
-                        .handle
-                        .notification()
-                        .builder()
-                        .title("Haven - Error")
-                        .body(format!("Session error: {}", error))
-                        .show();
-                }
-            }
-            AgentEvent::SessionUpdated { session_id, status } if status == "pending" => {
-                // A transition to Pending after a Paused/Error state is a
-                // resume (continue flow, ask answer, action-completion wake).
-                // Surface it as a Windows toast when enabled so the user
-                // knows the session is running again without checking the app.
-                let notify = self
-                    .handle
-                    .state::<Arc<AppState>>()
-                    .config_loader
-                    .lock()
-                    .map(|c| c.config().notification.session_resumed.windows)
-                    .unwrap_or(false);
-                if notify {
-                    let display = self
-                        .handle
-                        .state::<Arc<AppState>>()
-                        .db
-                        .get_session(session_id)
-                        .ok()
-                        .flatten()
-                        .and_then(|t| {
-                            t.title
-                                .filter(|s| !s.is_empty())
-                                .or_else(|| (!t.input_text.is_empty()).then_some(t.input_text))
-                        })
-                        .unwrap_or_else(|| session_id.clone());
-                    let _ = self
-                        .handle
-                        .notification()
-                        .builder()
-                        .title("Haven")
-                        .body(format!("Session resumed: {}", display))
-                        .show();
-                }
-            }
-            AgentEvent::Notification {
-                session_id: _,
-                title,
-                body,
-            } => {
-                // In-app toast: the frontend shows it via addNotification.
-                // Windows desktop notification. The `notify` tool is an
-                // explicit agent request, so both channels are used by default.
-                let _ = self
-                    .handle
-                    .notification()
-                    .builder()
-                    .title(if title.is_empty() { "Haven" } else { title })
-                    .body(body)
-                    .show();
-            }
-            _ => {}
-        }
     }
 }
 
@@ -698,6 +528,7 @@ pub fn run() {
             let emitter = Arc::new(TauriEmitter {
                 handle: handle.clone(),
                 chunk_seq: AtomicU64::new(0),
+                notifications: DesktopNotifications::new(handle.clone()),
             });
             // Decouple the agent loops from the Tauri IPC subscriber chain:
             // emits become bounded-channel sends drained by a consumer session,
@@ -979,6 +810,7 @@ pub fn run() {
             commands::session::end_session,
             commands::session::resolve_confirmation,
             commands::skills::get_tools,
+            commands::skills::reset_tool_circuits,
             commands::recording::get_recording_state,
             commands::history::get_history,
             commands::history::count_history,
@@ -1592,24 +1424,6 @@ mod tests {
             assert_eq!(img.width(), 32, "failed for {:?}", status);
             assert_eq!(img.height(), 32, "failed for {:?}", status);
         }
-    }
-
-    #[test]
-    fn test_init_tracing_creates_handle() {
-        let cfg = LogConfig::default();
-        let (_handles, _log_cfg) = init_tracing(&cfg);
-        let cfg_ref = _log_cfg.lock().unwrap();
-        assert_eq!(cfg_ref.level.as_str(), "info");
-    }
-
-    #[test]
-    fn test_init_tracing_with_file_enabled() {
-        let cfg = LogConfig {
-            file_enabled: true,
-            file_path: Some(std::env::temp_dir().join("haven_test_log")),
-            ..Default::default()
-        };
-        let (_handles, _log_cfg) = init_tracing(&cfg);
     }
 
     #[test]

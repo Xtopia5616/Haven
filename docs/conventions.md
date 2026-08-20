@@ -1,8 +1,25 @@
 # Haven 通知 / 日志 / 错误处理规范
 
-> 版本: v1.0 | 日期: 2026-08-09
+> 版本: v1.3 | 日期: 2026-08-20
 
-本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。规范以现有代码中的事实模式为基础（`crates/app-binary/src/lib.rs`、`crates/app-binary/src/commands.rs`、`ui/src/lib/stores.js`、`ui/src/lib/logger.js`），新代码必须遵守；存量代码若与本规范冲突，逐步迁移对齐。
+本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。
+
+**事实来源（以代码为准）**：
+
+| 域 | 路径 |
+|---|---|
+| 后端 tracing 初始化 / 命令错误日志 | `crates/app-binary/src/logging.rs`（`init_tracing`、`log_err`） |
+| 事件发射（channel / payload） | `crates/app-binary/src/lib.rs`（`TauriEmitter`） |
+| Windows 桌面通知 | `crates/app-binary/src/notification.rs`（`DesktopNotifications`） |
+| 通知配置 | `crates/common/src/config/misc.rs`（`NotificationConfig` / `NotifyChannels`） |
+| 前端日志 | `ui/src/lib/logger.ts` |
+| 错误文案归一 | `ui/src/lib/formatError.ts`（`formatError`） |
+| 应用内 toast | `ui/src/lib/stores.ts`（`addNotification`）+ `ui/src/lib/NotificationToast.svelte` |
+| 事件监听注册 | `ui/src/lib/events.ts`（`registerListeners` / `registerOne`） |
+| 事件 → toast 映射 | `ui/src/routes/+layout.svelte` |
+| invoke 错误日志 | `ui/src/lib/tauri.ts` |
+
+新代码必须遵守；存量代码若与本规范冲突，按 §6 待对齐项逐步迁移。
 
 ---
 
@@ -13,139 +30,195 @@
 3. [错误处理规范](#3-错误处理规范)
 4. [跨端映射表](#4-跨端映射表)
 5. [新增代码检查清单](#5-新增代码检查清单)
+6. [待对齐 / 可优化](#6-待对齐--可优化)
+7. [「Haven」/「haven」大小写](#7-havenhaven-大小写规范)
 
 ---
 
 ## 1. 日志规范
 
-### 1.1 前端（`ui/src/lib/logger.js`）
+### 1.1 分层职责
+
+| 层 | 用途 | 入口 | 禁止 |
+|---|---|---|---|
+| 前端开发日志 | 调试 / 排障，用户不可见 | `logger.*` | 裸 `console.*`（`logger.ts` 内部除外） |
+| 后端运行日志 | 生命周期、错误、并发上下文 | `tracing::{error,warn,info,debug,trace}!` | `println!` / `eprintln!` / `dbg!`（`init_tracing` 创建日志目录失败的一次 `eprintln!` 除外） |
+| 用户可见反馈 | toast / Windows 通知 | `addNotification` / `maybe_show_toast` | 用日志代替用户提示，或用 toast 代替调试日志 |
+
+**原则**：日志给开发者看；通知给用户看。二者可同时发生（例如命令失败：`log_err` 记全量 + 前端 `addNotification` 摘要），但职责不互换。
+
+### 1.2 前端（`ui/src/lib/logger.ts`）
 
 **唯一入口**：`logger.debug / logger.info / logger.warn / logger.error(context, msg, ...args)`。
 
-- **禁止直接调用 `console.*`**（`logger.js` 内部除外）。现有违规点已迁移：`stores.js`、`tauri.js` 中曾出现的裸 `console.warn` 一律改为 `logger.warn(...)`。
-- **`context` 使用模块短名**，小驼峰：`stores`、`events`、`invoke`、`markdownRenderer`、`notification`、`tauri`。
-- **级别门控**：`currentLevel` 在 DEV 为 `debug`，生产为 `info`，即 `debug` 级别日志只在开发环境输出。
-- `addNotification` 的 `error` 类型自动调用 `logger.error('notification', msg)`，调用方无需重复记录。
+- **`context`**：模块短名，小驼峰。常用：`stores`、`events`、`invoke`、`notification`、`tauri`、`+layout`、页面/组件短名。
+- **级别门控**：`currentLevel` 在 DEV 为 `debug`，生产为 `info`；`debug` 只在开发环境输出。
+- **与 toast 的关系**：`addNotification(..., 'error')` 会自动 `logger.error('notification', msg)`；调用方**不要**再对同一条消息打一遍 error 日志。
+- **invoke 失败**：`tauri.ts::invoke` 已在抛出前 `logger.error('invoke', ...)`；页面 `catch` 只负责用户提示，不再记日志。
 
-**示例**：
-
-```js
-import logger from '$lib/logger.js';
+```ts
+import logger from '$lib/logger.ts';
 
 logger.warn('stores', 'refreshSkills failed', e);
-logger.error('invoke', `'${cmd}' failed`, e);
+logger.error('+layout', 'get_settings error', e);
 ```
 
-### 1.2 Rust 后端（`tracing`）
+### 1.3 Rust 后端（`tracing`）
 
-**框架**：`tracing` + `tracing_subscriber`，初始化集中在 `crates/app-binary/src/lib.rs::init_tracing`（console + 可选按日滚动文件，共用同一个 reloadable `EnvFilter("haven={level}")`）。target 必须落在 `haven` 前缀下（各 crate 名天然满足，如 `haven_agent`、`haven_tools`），否则会被 EnvFilter 过滤掉。
+**框架**：`tracing` + `tracing_subscriber`，初始化集中在 `crates/app-binary/src/logging.rs::init_tracing`（console + 可选按日滚动文件，共用同一个 reloadable `EnvFilter("haven={level}")`）。target 必须落在 `haven` 前缀下（各 crate 名天然满足），否则会被 EnvFilter 过滤。
 
 **级别语义**：
 
 | 级别 | 用途 | 示例 |
 |---|---|---|
-| `error` | 不可恢复失败、用户可见失败、panic | 命令失败、任务出错、`PANIC at ...` |
-| `warn` | 可恢复异常、降级、重试 | 热键冲突、录音启动失败、任务暂停 |
-| `info` | 生命周期事件 | 应用初始化/退出、任务创建/完成、通知发出 |
+| `error` | 不可恢复失败、用户可见失败、panic、命令失败 | `log_err`、任务出错、`PANIC at ...` |
+| `warn` | 可恢复异常、降级、重试、冲突 | 热键冲突、录音启动失败、任务暂停 |
+| `info` | 生命周期事件 | 应用初始化/退出、会话创建/完成、通知发出 |
 | `debug` | 每步细节（ReAct 循环、流式 chunk） | thought/action/observation 摘要 |
 | `trace` | 预留，底层数据包级 | — |
 
-**格式约定**：事件消息统一为 `模块::方法: 描述`，上下文用 `key=value` 内联（与 `TauriEmitter::trace_event` 一致），描述含上下文时使用 `tracing` 结构化字段 `tracing::debug!(action_id, step_number, ...)`。禁止 `println!` / `eprintln!` / `dbg!` 输出日志。
+**格式约定**：
 
-**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`commands.rs`），该函数固定输出两行：
+- 事件消息优先 `模块::方法: 描述`（与 `TauriEmitter::trace_event` 一致）。
+- 上下文优先用 **tracing 结构化字段**（`session_id = %id`），便于 grep；存量文本内联 ID（`session {}`）保留，新增/修改优先结构化字段。
+- 禁止为打日志而改变函数签名；拿不到 ID 时依赖所在并发边界的 span。
+
+**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出），固定输出两行：
 
 ```text
 command `{ctx}` failed
 command error: {e}
 ```
 
-保留 `command error:` 前缀行是为了让日志采集/仪表盘可以稳定 grep。禁止手写 `map_err(|e| e.to_string())` 而不记录日志。
+保留 `command error:` 前缀行是为了让日志采集可稳定 grep。禁止手写 `map_err(|e| e.to_string())` 而不记录日志。
 
-**Panic**：全局 panic hook 已在 `lib.rs` 设置，自动输出 `PANIC at {file}:{line}: {msg}` + backtrace，业务代码无需自行处理 panic。
+**Panic**：全局 panic hook 已设置，自动输出 `PANIC at {file}:{line}: {msg}` + backtrace；业务代码无需自行处理 panic。
 
-### 1.3 ID 上下文（多会话 / 多任务并行可区分）
+### 1.4 ID 上下文（多会话 / 多任务并行可区分）
 
-凡是会话、任务（后台任务与定时任务）等**并发实体**的日志，必须携带对应 ID（`session_id` / `action_id`），使并行日志可直观区分。两条机制配合：
+并发实体日志必须能区分 `session_id` / `action_id`。两条机制配合：
 
-**a) 结构化字段**：日志宏中直接传 ID 字段，fmt 输出形如 `session_id=ses-xxx msg`，可稳定 grep：
+**a) 结构化字段**：
 
 ```rust
 tracing::info!(session_id = %session_id, "dispatcher spawning handler");
 tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.display());
 ```
 
-**b) Span 上下文**（推荐）：在并发边界建立 `info_span!`，span 内的所有日志**自动**携带 ID 前缀，无需每个调用点手写。已在以下位置建立（新并发边界须照此办理）：
+**b) Span 上下文**（推荐）：在并发边界建立 `info_span!`，span 内日志自动携带字段。当前已建立：
 
 | Span 名 | 字段 | 位置 | 覆盖范围 |
 |---|---|---|---|
-| `run_session` | `session_id` | `haven_agent::SessionExecutor::start_dispatcher`（handler 处 `.instrument(span)`） | 整个 ReAct 循环：agent / react / compactor / title / inference 的所有嵌套日志 |
-| `bg_action` | `action_id` | `haven_tools::BackgroundActions::spawn_shell`（runner future `.instrument(span)`） | 后台任务运行 / 取消 / 输出日志写入 |
-| `action_completion` | `action_id`, `session_id` | `haven_agent::AgentLayer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
-| `scheduled_action_fired` | `action_id`, `session_id` | `haven_agent::AgentLayer` 定时任务 consumer | 定时任务执行与会话恢复 |
+| `run_session` | `session_id` | `haven_agent::session`（handler `.instrument(span)`） | 整个 ReAct 循环嵌套日志 |
+| `bg_action` | `action_id` | `haven_tools::bg`（runner `.instrument(span)`） | 后台任务运行 / 取消 / 输出写入 |
+| `action_completion` | `action_id`, `session_id` | `haven_agent::layer` 任务完成 consumer | 任务结果注入 / 会话唤醒 / 通知 |
+| `scheduled_action_fired` | `action_id`, `session_id` | `haven_agent::layer` 定时任务 consumer | 定时任务触发与会话恢复 |
 
 规则：
 
-- 日志点所在函数**已有** ID 参数/变量时，优先结构化字段（a）；没有时依赖所在并发边界的 span（b）。
-- 已有文本内联 ID（如 `session {}`）的存量日志保留，新增/修改的日志优先结构化字段。
-- 禁止为日志引入新的参数传递（`session_id` 不可用时交给 span）；不要为了打日志改变函数签名。
+- 函数已有 ID 参数/变量 → 优先结构化字段（a）；否则依赖 span（b）。
 - 全局性日志（初始化、统计、健康探测）不强制带 ID。
 
-### 1.4 运行时调整
+### 1.5 运行时调整
 
-日志级别可通过 `AppState.log_filter_handles` 中暴露的 `reload::Handle` 在运行时修改（console 与文件输出同步生效）。代码不得绕过该句柄直接改 `EnvFilter`。
+日志级别通过 `AppState.log_filter_handles` 中的 `reload::Handle` 在运行时修改（console 与文件同步）。代码不得绕过该句柄直接改 `EnvFilter`。设置页「Logging」区块写入后走同一通道。
 
 ---
 
 ## 2. 通知规范
 
-### 2.1 分层模型
-
-通知分两个独立通道，由事件驱动，各通道受配置独立控制：
+### 2.1 分层模型（双通道）
 
 ```
-AgentEvent ──► emit(channel, payload) ──► 前端事件 handler
-     │                                      ├─ 应用内 toast（notificationStore）
-     │                                      └─ （由 notifyCfg.in_app 控制）
-     └─ maybe_show_toast（后端）──► Windows 桌面通知（config.notification.*.windows）
+AgentEvent / 其它后端事件
+        │
+        ├─ emit(channel, payload) ──► +layout registerListeners
+        │                                 └─ notifyCfg.*.in_app ? addNotification : 忽略
+        │
+        └─ maybe_show_toast ─────────► Windows 桌面通知
+                                          └─ config.notification.*.windows ? show : 忽略
+                                             （AgentEvent::Notification 例外：默认总是弹 Windows）
 ```
 
-- **后端只负责发事件与（按配置）弹桌面通知，绝不直接驱动前端 UI**（通过 `tauri::Emitter`）。
-- 前端收到事件后按 `notifyCfg`（来自 `settings.notification`）决定是否显示 toast。
+- **后端**只发事件 +（按配置）弹桌面通知，**绝不**直接操作前端 toast store。
+- **前端**事件驱动 toast 集中在 `+layout.svelte` 的 `registerListeners`；页面组件**禁止**自行 `listen` 后再弹系统级事件 toast。
+- **页面内用户操作反馈**（保存失败、复制成功等）可在页面直接 `addNotification`，不走事件总线。
 
-### 2.2 应用内 toast API（`ui/src/lib/stores.js`）
+### 2.2 谁可以弹 toast
+
+| 场景 | 入口 | 是否受 `notifyCfg` 控制 |
+|---|---|---|
+| 会话生命周期（创建/完成/暂停/恢复/出错） | `+layout` 事件 handler | 是（`in_app`） |
+| Agent 显式 `notify` / 定时任务通知 | `notification:show` | 否（始终 toast；Windows 亦默认开） |
+| 录音 / 转写 / 静音 / 热键冲突 / MCP 状态 | `+layout` 事件 handler | 否（操作反馈，无独立配置项） |
+| 后台任务完成（非当前会话） | `+layout` `action:finished` | 否；当前会话内完成不弹（对话里已有结果） |
+| 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
+
+### 2.3 应用内 toast API（`ui/src/lib/stores.ts`）
 
 **唯一入口**：`addNotification(msg, type = 'info', duration = 3000)`。
 
-- `type` 取值：`info` | `success` | `warning` | `error`（渲染在 `NotificationToast.svelte`）。
-- **去重**：同 `msg` + 同 `type` 的 toast 不重复显示（store 内建）。
-- **时长建议**：`info` 3s、`success` 3s、`warning` 4s、`error` 5s；阻塞性/需长时间阅读的消息可到 5s，不超过 5s。
-- **消息语言**：与 UI 一致使用中文；变量用模板字符串拼接，如 `` `任务出错: ${errMsg}` ``。
-- `error` 类型会自动写入 `logger.error`，调用方不再重复记录。
-- 事件驱动的 toast 一律通过 `+layout.svelte` 的 `registerListeners` 事件映射集中处理，页面组件内不自行 `listen` 后弹 toast。
+- `type`：`info` | `success` | `warning` | `error`（由 `NotificationToast.svelte` 渲染）。
+- **去重**：同 `msg` + 同 `type` 已在队列中则不再插入。
+- **时长建议**：
 
-**示例**：
+| type | 建议 duration | 说明 |
+|---|---|---|
+| `info` | 1500–3000 | 轻量确认（已复制、已切换）用短；状态提示用 3s |
+| `success` | 2500–3000 | |
+| `warning` | 3000–4000 | |
+| `error` | 4000–5000 | 上限 5s；需长时间阅读也不超过 5s |
 
-```js
-import { addNotification } from '$lib/stores.js';
+- **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`Balanced Model`、`MCP`、产品名 `Haven`）可保留英文。
+- `error` 类型自动 `logger.error('notification', msg)`，调用方不再重复记日志。
 
-addNotification(`任务已完成: ${title}`, 'success');
+```ts
+import { addNotification } from '$lib/stores.ts';
+
+addNotification(`会话已完成: ${title}`, 'success');
 addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
+addNotification(e?.message || '操作失败', 'error', 4000);
 ```
 
-### 2.3 后端事件流
+### 2.4 后端事件与桌面通知
 
-- **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …），channel 映射的唯一事实来源是 `TauriEmitter::channel`（`lib.rs`）；新增 `AgentEvent` 变体必须在 `channel` 中登记并补测试。
-- **任务（action）事件**：后台任务（kind=`background`）与定时任务（kind=`scheduled`）统一为「任务」，共用同一组事件 `action:created` / `action:updated` / `action:output` / `action:finished`。事件由 `haven_tools` 直接 emit（`bg.rs` / `builtin/scheduled_action.rs` 的 `EventSink`），不走 `TauriEmitter::channel`。payload 区分：后台任务带 `action_id`，定时任务带 `id`；前端 `actionStore` 统一归一化（`id = payload.id || payload.action_id`，条目带 `kind: 'background'|'scheduled'`）。
-- **wire 载荷**：统一 snake_case JSON（`{session_id, status, title}`），前端在边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
-- **桌面通知**：统一走 `TauriEmitter::maybe_show_toast`，每个变体先查 `config.notification.{event}.windows` 再决定是否 `notification().builder()...show()`。`notify` 工具（`AgentEvent::Notification`）是 agent 显式请求，双通道默认全开。
-- **配置**：`NotificationConfig { in_app, windows }`（`haven_common::config`），事件维度 `session_created` / `session_completed` / `session_paused` / `session_error`。默认值见 `config.rs` 的 `Default` 实现；新增可通知事件必须同步扩展该结构与设置页。
+- **事件命名**：`domain:action`（`session:created`、`agent:thought`、`recording:error`、`notification:show` …）。`AgentEvent` → channel 的唯一事实来源是 `TauriEmitter::channel`；新增变体必须登记并补单测。
+- **任务（action）事件**：后台任务与定时任务共用 `action:created` / `action:updated` / `action:output` / `action:finished`，由 `haven_tools` 直接 emit，不走 `TauriEmitter::channel`。payload：后台带 `action_id`，定时带 `id`；前端 `actionStore` 归一化（`id = payload.id || payload.action_id`，`kind: 'background'|'scheduled'`）。
+- **wire 载荷**：统一 snake_case JSON；前端边界转 camelCase。敏感/内部字段不外泄（见 `payload` 对 `SessionCreated` 的投影）。
+- **桌面通知**：统一走 `DesktopNotifications::maybe_show_toast`（`notification.rs`，由 `TauriEmitter` 委托）。文案与应用内 toast 对齐（中文）：
 
-### 2.4 新增通知事件流程模板
+| 事件 | 读配置键 | 默认 windows | 文案 |
+|---|---|---|---|
+| `SessionCreated` | `session_created.windows` | `false` | `新会话: {title\|\|id}`（禁止用 `input`） |
+| `SessionCompleted` | `session_completed.windows` | `true` | `会话已完成: …` |
+| `SessionError` | `session_error.windows` | `true` | `会话出错: …` |
+| `SessionUpdated` status=`paused` | `session_paused.windows` | `false` | `会话已暂停: …` |
+| `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
+| `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
 
-1. 在 `haven_agent::AgentEvent` 增加变体；
-2. 在 `TauriEmitter::channel` 登记 channel，`payload`/`variant_payload` 确认 wire 形状，补 `lib.rs` 单测；
-3. 如需桌面通知，在 `maybe_show_toast` 中按配置弹窗（并补 `trace_event` 日志）；
-4. 前端在 `+layout.svelte` 的 `registerListeners` 映射中处理，按 `notifyCfg` 决定是否 `addNotification`。
+标题统一产品名 `Haven`。
+
+### 2.5 配置（`NotificationConfig`）
+
+定义于 `crates/common/src/config/misc.rs`：
+
+```text
+session_created / session_completed / session_paused / session_resumed / session_error
+  └─ NotifyChannels { in_app: bool, windows: bool }
+```
+
+默认值：`in_app` 全部 `true`；`windows` 仅 `session_completed` / `session_error` 为 `true`，其余 `false`。
+
+- 设置页「Notifications」网格与此五键一一对应。
+- 新增可配置通知事件时：**结构体 Default + 设置页 + `maybe_show_toast` + `+layout` in_app 判断** 四步同步。
+
+### 2.6 新增通知事件流程模板
+
+1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `lib.rs` 单测。
+2. 若属任务事件：在 `haven_tools` emit，前端 `actionStore` 归一化。
+3. 前端在 `+layout.svelte` 的 `registerListeners` 增加 handler；需要用户开关则接 `notifyCfg`。
+4. 需要设置项时扩展 `NotificationConfig` + Settings 网格。
+5. 更新本文 §4 映射表。
 
 ---
 
@@ -153,63 +226,110 @@ addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
 
 ### 3.1 Rust 后端
 
-**分层原则**：
+- **crate 内部**：`thiserror` 领域错误，或 `anyhow::Result`。
+- **Tauri 命令层**：统一 `Result<T, String>`；失败经 `log_err(ctx, e)` 记 ERROR 后再把 `e.to_string()` 返回前端。
+- **结构化错误**：需携带结构（如 `requires_confirmation`）时用 JSON 字符串，仍走 `Result<T, String>`。
+- **降级**：可恢复的初始化失败走降级启动（`degraded_app_state`），`tracing::error!` 后返回降级实例，绝不静默。
 
-- **crate 内部**：用 `thiserror` 定义领域错误枚举（先例：`haven_llm`、`haven_tools`）；库代码返回 `anyhow::Result` 或领域错误。
-- **Tauri 命令层**（`commands.rs`）：统一返回 `Result<T, String>`，所有失败经 `log_err(ctx, e)` 记录（自动 ERROR 日志）并转为前端可读字符串。
-- **结构化错误载荷**：需要携带结构化信息（如确认请求 `requires_confirmation`）时用 `serde_json::to_string` 构造 JSON 字符串返回，仍走 `Result<T, String>`。
-- **降级策略**：可恢复的初始化失败走降级启动（先例：`degraded_app_state`），记录 `tracing::error!` 后返回降级实例，绝不静默。
+禁止：
 
-**禁止事项**：
-
-- 命令 `Err` 分支不带日志直接 `e.to_string()`；
-- 把完整错误细节（如 API key、内部路径）原样返回给前端——日志记全量，前端拿用户可读摘要；
-- 用 `panic!`/`unwrap()` 处理预期内失败（`expect` 仅限初始化等不可恢复场景）。
+- 命令 `Err` 不经 `log_err` 直接 `e.to_string()`；
+- 把 API key、内部路径等细节原样返回前端（日志记全量，前端拿摘要）；
+- 用 `panic!` / `unwrap()` 处理预期内失败（`expect` 仅限初始化等不可恢复场景）。
 
 ### 3.2 前端
 
-**invoke 调用统一模式**：
-
-```js
+```ts
 try {
-    const result = await invoke('xxx', args);
+	const result = await invoke('xxx', args);
 } catch (e) {
-    addNotification(e?.message || '操作失败', 'error', 4000);
+	addNotification(e?.message || '操作失败', 'error', 4000);
 }
 ```
 
-- `tauri.js::invoke` 已统一在抛出前记录 `logger.error('invoke', ...)`，页面 catch 中**不需要**再调 logger，只负责用户提示。
-- 失败提示文案：优先取 `e.message`，无则给中文兜底文案（`操作失败`/按场景定制）。
-- 页面级重复逻辑可收敛为局部 helper（先例：settings 页 `notifyFetch(key, msg, type, duration)`，带 per-key 节流去重）。
-- **事件监听注册失败**：统一走 `events.js` 的 `registerListeners`/`registerOne`（内部 `logger.error` 后吞掉，不阻塞 mount），页面不得自行裸 `listen`。
-- **catch 后禁止仅 `console.warn` 而无任何用户提示**；确属无需用户感知的错误，用 `logger.*` 记录即可，不弹 toast。
+- `invoke` 已记日志 → catch 只做用户提示。
+- 失败文案统一 `formatError(e)`（`ui/src/lib/formatError.ts`），拼进 toast：`` `操作失败: ${formatError(e)}` ``；无上下文时用中文兜底（`操作失败`）。
+- 页面级重复逻辑可收敛为局部 helper（先例：settings 的 `notifyFetch`，带 per-key 节流）。
+- 事件监听注册失败：只走 `events.ts`（内部 `logger.error` 后吞掉，不阻塞 mount）；页面不得裸 `listen`。
+- catch 后禁止仅打日志而无用户提示（除非确认无需用户感知，则只用 `logger.*`，不弹 toast）。
+- 禁止 `` `${e}` `` 直接拼 toast（对象会变成 `[object Object]`）。
 
 ---
 
 ## 4. 跨端映射表
 
-| 后端事件 / 错误 | 前端表现 |
+### 4.1 受 `notifyCfg` 控制
+
+| 后端事件 | 前端 toast | 配置键 |
+|---|---|---|
+| `session:created` | info：`新会话: …`（4s） | `session_created.in_app` |
+| `session:completed` | success：`会话已完成: …` | `session_completed.in_app` |
+| `session:error` | error：`会话出错: …`（5s） | `session_error.in_app` |
+| `session:updated` status=`paused` | warning：`会话已暂停: …`（3s） | `session_paused.in_app` |
+| `session:updated` status=`pending`（仅当上一状态为 paused/error） | info：`会话已恢复: …`（3s） | `session_resumed.in_app` |
+
+### 4.2 不受配置控制（操作 / 系统反馈）
+
+| 后端事件 | 前端表现 |
 |---|---|
-| `session:created` | info toast（`新会话: ...`，受 `notifyCfg.session_created.in_app` 控制） |
-| `session:completed` | success toast（`会话已完成: ...`） |
-| `session:error` | error toast（`会话出错: ...`，5s） |
-| `session:updated` status=`paused` / `pending` | warning / info toast（`会话已暂停/恢复`） |
-| `notification:show` | info toast（title 为默认 `Haven` 时只显示 body） |
-| `mcp:status_change` | Connected→success / Disconnected→warning / Offline→error |
-| `hotkey:conflict` | error toast（5s） |
-| `recording:error` | 录音 overlay + error 提示 |
-| 命令 invoke 失败 | error toast（`e.message` 或兜底文案，4s） |
+| `notification:show` | info toast（title 为默认 `Haven` 时只显示 body；5s）+ Windows 桌面通知 |
+| `mcp:status_change` | Connected→success（冷启动跳过）/ Disconnected→warning / Offline→error |
+| `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
+| `agent:balanced_model` | warning toast + 状态芯片（仅当前会话） |
+| `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
+| `action:finished`（后台，非当前会话） | success/error：`后台任务完成/失败: {action_id}`（4s） |
+| 命令 invoke 失败 | error toast（`e.message` 或兜底，4s） |
+
+### 4.3 只更新状态、不弹 toast
+
+| 事件 | 行为 |
+|---|---|
+| `session:updated` completed/error（副发） | 更新 busySessions / modelState；toast 由主通道负责 |
+| `session:deleted` | 清理 busySessions |
+| `action:created` / `action:updated` / `action:output` | 更新 `actionStore` |
+| `agent:stream_stalled` | `updateModelState('stalled')` |
+| `llm:config_changed` | 重新探测 LLM 连通性 |
+| `skills:status_change` | 由工具页刷新，不弹 toast |
 
 ---
 
 ## 5. 新增代码检查清单
 
-- [ ] 日志：前端只用 `logger.*`（禁止 `console.*`）；后端只用 `tracing`（禁止 `println!`），命令错误走 `log_err`。
-- [ ] 通知：事件驱动，前端只经 `addNotification`；新事件按 §2.4 模板走完 channel / payload / toast / 配置四步。
-- [ ] 错误：后端 `Result<T, String>` + 日志 + 用户可读摘要；前端 try/catch + `addNotification`，不重复记日志。
-- [ ] 涉及桌面通知配置时同步扩展 `NotificationConfig` 与设置页。
+- [ ] 日志：前端只用 `logger.*`；后端只用 `tracing`；命令错误走 `log_err`；并发路径带 `session_id`/`action_id` 或落在已有 span 内。
+- [ ] 通知：系统事件进 `+layout`；用户操作可页面直调 `addNotification`；新可配置事件按 §2.6 走完四步。
+- [ ] 错误：后端 `Result<T, String>` + 日志 + 用户可读摘要；前端 try/catch + toast，不重复记日志。
+- [ ] 文案：应用内中文；产品名 `Haven`；专有模型角色名按命名约定。
+- [ ] 桌面通知：走 `maybe_show_toast`，读对应 `*.windows`（`AgentEvent::Notification` 除外）。
+- [ ] 更新本文 §4 映射表。
 
-## 6. 「Haven」/「haven」大小写规范
+---
+
+## 6. 待对齐 / 可优化
+
+### 已完成（v1.2）
+
+| ID | 变更 |
+|---|---|
+| N1 | Windows 桌面通知文案改为中文，与应用内 toast 对齐 |
+| N2 | `session_paused.windows` 已接线（`SessionUpdated`/`paused`） |
+| N3 | 设置页注明：Agent `notify` 通知始终开启（双通道） |
+| N4 | `hotkey:conflict` toast 改为 `热键冲突: …` |
+| N5 | 抽出 `windows_enabled` / `show_windows_toast` / `session_display_title` |
+| L1 | span 重命名为 `scheduled_action_fired`，字段 `action_id` |
+| L3 | 设置页 Logging 注明级别仅作用于后端 tracing |
+| E1 | 新增 `ui/src/lib/formatError.ts`，toast 错误文案统一经 `formatError(e)` |
+
+### 仍待渐进
+
+| ID | 问题 | 建议 | 优先级 |
+|---|---|---|---|
+| L2 | `TauriEmitter::trace_event` 仍多用文本内联 ID | 新增/改动时改为结构化字段 `session_id = %id`，存量渐进 | P3 |
+
+落地时：改代码须同步更新 §2 / §4。
+
+---
+
+## 7. 「Haven」/「haven」大小写规范
 
 产品名统一大写 **Haven**，仅用于**用户可见的展示字符串**；其余**标识 / 路径 / 协议字段一律小写 `haven`**。禁止同一语义在不同地方混用大小写。
 
@@ -217,7 +337,7 @@ try {
 |---|---|---|
 | 窗口标题 / 托盘 tooltip / 系统通知标题 | `Haven` | `tauri.conf.json` `productName`、`app-binary` 通知与托盘文案 |
 | 通知默认标题（`notify` / `scheduled_action` 工具） | `Haven` | `tool.rs` / `notify.rs` / `scheduled_action.rs` 默认 title |
-| 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `ui/src/routes/+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
+| 前端 UI 文案（欢迎页、气泡标签、设置页） | `Haven` | `+page.svelte`、`ChatBubble.svelte`、`Logo.svelte` |
 | Windows 计划任务名（Action Scheduler 中展示） | `Haven` | `app-binary/src/autostart.rs` `ACTION_NAME` |
 | 数据目录 / 临时工作目录 / 日志文件名 | `haven` | `ConfigLoader::data_dir()`、`default_work_dir()`、`haven.log` |
 | 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |

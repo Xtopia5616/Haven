@@ -28,7 +28,10 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 }
 
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
-pub use builtin::{ScheduleMode, SelfOperation, SelfParams, SelfTool, SelfToolContext};
+pub use builtin::{
+    AgentSpawnRequest, AgentSpawnResult, AgentSpawner, ScheduleMode, SelfOperation, SelfParams,
+    SelfTool, SelfToolContext,
+};
 pub use circuit::ToolCircuitRegistry;
 pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
@@ -132,6 +135,8 @@ pub struct ToolsManager {
     /// the loop re-querying schemas on every step. Shared as `Arc` so
     /// `load_mcp` / `load_skill` can bump after in-tool atomic registration.
     catalog_version: Arc<AtomicU64>,
+    /// Desktop-wired callback for `agent_spawn`. Shared across catalog rebuilds.
+    agent_spawner: builtin::AgentSpawnerSlot,
 }
 
 impl ToolsManager {
@@ -170,7 +175,14 @@ impl ToolsManager {
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
             catalog_version: Arc::new(AtomicU64::new(0)),
+            agent_spawner: builtin::new_agent_spawner_slot(),
         }
+    }
+
+    /// Install the desktop agent-layer callback used by `agent_spawn`.
+    /// Does not rebuild the catalog (the tool already holds this slot).
+    pub async fn set_agent_spawner(&self, spawner: builtin::AgentSpawner) {
+        *self.agent_spawner.write().await = Some(spawner);
     }
 
     /// Monotonic catalog version (see `catalog_version`). Consumers cache
@@ -361,6 +373,7 @@ impl ToolsManager {
             audio_pipeline,
             self.session_registrations.clone(),
             self.catalog_version.clone(),
+            self.agent_spawner.clone(),
         )
         .await;
         *self.self_tool.write().await = self_tool_arc;

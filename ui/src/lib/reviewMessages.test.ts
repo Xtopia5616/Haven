@@ -445,10 +445,10 @@ describe('buildReviewMessages', () => {
 	it('restores ask options and awaiting from a paused session', () => {
 		// A session paused on an ask question must rebuild the card with its
 		// quick-reply options and awaiting state, otherwise the user cannot
-		// answer from the chat view after a switch/reload. The DB stores the
-		// status lowercase ("paused" covers Paused and PausedAwaitingAnswer).
+		// answer from the chat view after a switch/reload. Phase 4 / F2 uses
+		// distinct `paused_awaiting_answer`; plain `paused` still works.
 		const items = buildReviewMessages({
-			session: { ...sampleSession, status: 'paused' },
+			session: { ...sampleSession, status: 'paused_awaiting_answer' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
 			],

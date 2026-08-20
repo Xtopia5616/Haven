@@ -16,7 +16,9 @@
 
 <script>
 	import logger from '$lib/logger.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
+	import { isPausedStatus } from '$lib/sessionStatus.ts';
 	import {
 		accumulateStreamChunk,
 		applyThoughtSnap,
@@ -258,8 +260,11 @@
 	// Menu source: parallel sessions plus paused ones — a paused session is
 	// otherwise invisible in the chat view (its conversation is not shown).
 	const menuSessions = $derived(
-		sessions.filter((t) =>
-			['running', 'pending', 'paused'].includes(t.status),
+		sessions.filter(
+			(t) =>
+				t.status === 'running' ||
+				t.status === 'pending' ||
+				isPausedStatus(t.status),
 		),
 	);
 	const showSessionMenu = $derived(menuSessions.length >= 2);
@@ -339,7 +344,7 @@
 			addNotification(`联网搜索: ${label}`, 'success', 2500);
 		} catch (e) {
 			skipNextDefaultModelRefresh = false;
-			addNotification(`设置联网搜索失败: ${e}`, 'error', 4000);
+			addNotification(`设置联网搜索失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -354,7 +359,7 @@
 			addNotification(`已切换默认模型: ${currentModelName}`, 'success', 3000);
 		} catch (e) {
 			skipNextDefaultModelRefresh = false;
-			addNotification(`切换模型失败: ${e}`, 'error', 4000);
+			addNotification(`切换模型失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -368,7 +373,7 @@
 			addNotification(`思考强度: ${label}`, 'success', 2500);
 		} catch (e) {
 			skipNextDefaultModelRefresh = false;
-			addNotification(`设置思考强度失败: ${e}`, 'error', 4000);
+			addNotification(`设置思考强度失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -579,7 +584,7 @@
 				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
 			}
 		} catch (e) {
-			addNotification(`回退失败: ${e}`, 'error', 5000);
+			addNotification(`回退失败: ${formatError(e)}`, 'error', 5000);
 		}
 		rollbackLoading = false;
 		rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
@@ -609,7 +614,7 @@
 			restoreSessionTokenStats(sessionId, result.usage, result.usage_estimated);
 			restoreSessionLlmUsage(sessionId, result.llm_usage);
 		} catch (e) {
-			addNotification(`同步消息失败: ${e}`, 'error', 3000);
+			addNotification(`同步消息失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -698,7 +703,7 @@
 			const t = sessions.find((x) => x.id === sessionId);
 			addNotification(`已切换到：${t?.title || '会话'}`, 'info', 1500);
 		} catch (e) {
-			addNotification(`切换会话失败: ${e}`, 'error', 4000);
+			addNotification(`切换会话失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -719,7 +724,7 @@
 			// it so the user can retry. Clearing the pointer here would orphan a
 			// session that keeps running (and streaming) with no visible target.
 			newSessionIntentStore.set(false);
-			addNotification(`结束会话失败: ${e}`, 'error', 3000);
+			addNotification(`结束会话失败: ${formatError(e)}`, 'error', 3000);
 			return;
 		}
 		activeSessionId = null;
@@ -798,7 +803,7 @@
 			submitMessage('继续', []);
 			await loadSessions();
 		} catch (e) {
-			addNotification(`继续失败: ${e}`, 'error', 5000);
+			addNotification(`继续失败: ${formatError(e)}`, 'error', 5000);
 			// Keep the banner visible so the user can retry.
 		}
 	}
@@ -1450,7 +1455,11 @@
 					// open a NEW bubble below this card instead of appending above.
 					flushChunksNow();
 					const callId = data.call_id || null;
+					// Skip unkeyed updates when the adapter had no call id —
+					// a null-id card would later collide with the real ws_* id.
+					if (!callId) return;
 					const wsId = webSearchId(tid, data.step_number, data.run_id, callId);
+					const placeholderId = webSearchId(tid, data.step_number, data.run_id, null);
 					const { reasoningId, thoughtId } = blockIdsOf(
 						tid,
 						data.step_number,
@@ -1458,11 +1467,25 @@
 					);
 					const content = webSearchLabel(data.phase, data.action);
 					updateSessionMessages(tid, (m) => {
-						const existing = m.find((x) => x.id === wsId);
+						let next = m;
+						let existing = next.find((x) => x.id === wsId);
+						// Upgrade a legacy null-id placeholder in place when the
+						// real call_id arrives (belt-and-suspenders for older
+						// events that still lacked call_id).
+						if (!existing) {
+							const phIdx = next.findIndex(
+								(x) => x.id === placeholderId && x.toolName === 'web_search',
+							);
+							if (phIdx >= 0) {
+								next = next.map((x, i) =>
+									i === phIdx ? { ...x, id: wsId } : x,
+								);
+								existing = next[phIdx];
+							}
+						}
 						// Finalize only when opening a NEW card — later phase
 						// updates for the same call_id must not re-finalize a
 						// post-search bubble that already started streaming.
-						let next = m;
 						if (!existing) {
 							if (reasoningId) pruneSeq(reasoningId);
 							if (thoughtId) pruneSeq(thoughtId);
@@ -1776,7 +1799,7 @@
 						(t) =>
 							(t.status === 'running' ||
 								t.status === 'pending' ||
-								t.status === 'paused') &&
+								isPausedStatus(t.status)) &&
 							(get(sessionMessagesStore)[t.id] || []).length > 0,
 					);
 					if (firstActive) {
@@ -1790,7 +1813,7 @@
 			// Same for reminders: fired ones are gone from the pending list.
 			refreshActions();
 		})().catch((e) => {
-			addNotification(`加载会话列表失败: ${e}`, 'error', 3000);
+			addNotification(`加载会话列表失败: ${formatError(e)}`, 'error', 3000);
 		});
 		loadSessionsSettled = run;
 		return run;
@@ -1891,7 +1914,7 @@
 			}
 			loadSessions();
 		} catch (e) {
-			addNotification(`发送失败: ${e}`, 'error', 5000);
+			addNotification(`发送失败: ${formatError(e)}`, 'error', 5000);
 		}
 	}
 
@@ -2024,7 +2047,7 @@
 				trustSession: trustSession || false,
 			});
 		} catch (e) {
-			addNotification(`确认失败: ${e}`, 'error', 3000);
+			addNotification(`确认失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 </script>
@@ -2215,7 +2238,7 @@
 									>
 										{t.status === 'running'
 											? '运行中'
-											: t.status === 'paused'
+											: isPausedStatus(t.status)
 												? '已暂停'
 												: '等待中'}
 									</span>

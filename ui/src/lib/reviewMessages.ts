@@ -3,6 +3,7 @@
 // history review flow.
 
 import { formatMessageTime } from '$lib/stores.ts';
+import { isPausedStatus } from '$lib/sessionStatus.ts';
 
 // Sentinel the backend used to persist in `messages.tool_call_id` for
 // assistant messages carrying an `ask` question text. New records no
@@ -253,9 +254,8 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 			// session's ask card is still awaiting a reply. Without this, a
 			// session switch / reload renders the card without quick-reply
 			// buttons and the user cannot answer from the chat view.
-			// (DB status is lowercase: "paused" covers Paused and
-			// PausedAwaitingAnswer.)
-			const sessionPaused = data.session?.status === 'paused';
+			// Phase 4 / F2: `paused_awaiting_answer` is distinct from `paused`.
+			const sessionPaused = isPausedStatus(data.session?.status);
 			// Legacy-only pairing: when the model batches multiple ask calls
 			// into one step, the message joins the questions with "\n\n",
 			// while each step observes only its own question. Also covers

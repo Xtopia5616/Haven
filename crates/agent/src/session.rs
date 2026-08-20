@@ -13,10 +13,10 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-/// A user message queued for injection into the ReAct loop (supplement or
-/// steering). Defined in `haven-common` (the shared types layer); re-exported
-/// here so session code keeps using `crate::session::Supplement`.
-pub use haven_common::types::Supplement;
+/// User-queue payload (steering or follow-up). Defined in `haven-common`;
+/// re-exported so session code keeps using `crate::session::Supplement` /
+/// [`FollowUp`].
+pub use haven_common::types::{FollowUp, Supplement};
 
 /// Runner invoked by the dispatcher for each picked session. The closure must
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.
@@ -44,8 +44,9 @@ pub enum SessionStatus {
     /// Paused because the `ask` tool is awaiting a human answer. Background-action
     /// completions must NOT auto-wake this state: the model is blocked on the
     /// user, not on action results, and resuming would let the agent continue
-    /// (and run tools) without the user's consent. Serialized as "paused" so
-    /// the wire/DB format is unchanged.
+    /// (and run tools) without the user's consent. Persisted distinctly as
+    /// `paused_awaiting_answer` (Phase 4 / F2) so restart restores the ask
+    /// gate without JSON heuristics.
     PausedAwaitingAnswer,
     Completed,
     Error,
@@ -56,7 +57,8 @@ impl SessionStatus {
         match self {
             SessionStatus::Pending => "pending",
             SessionStatus::Running => "running",
-            SessionStatus::Paused | SessionStatus::PausedAwaitingAnswer => "paused",
+            SessionStatus::Paused => "paused",
+            SessionStatus::PausedAwaitingAnswer => "paused_awaiting_answer",
             SessionStatus::Completed => "completed",
             SessionStatus::Error => "error",
         }
@@ -67,6 +69,7 @@ impl SessionStatus {
             "pending" => SessionStatus::Pending,
             "running" => SessionStatus::Running,
             "paused" => SessionStatus::Paused,
+            "paused_awaiting_answer" => SessionStatus::PausedAwaitingAnswer,
             "completed" => SessionStatus::Completed,
             "error" => SessionStatus::Error,
             // Unknown/corrupt DB statuses must not silently map to Pending:
@@ -126,10 +129,13 @@ pub struct SessionInfo {
     pub title: Option<String>,
     pub status: SessionStatus,
     pub steps: Vec<StepInfo>,
-    pub supplement_queue: Vec<Supplement>,
-    /// Steering queue: items that should interrupt the current tool sequence
-    /// and be injected as context immediately (refine 搂1.2).
-    pub steering_queue: Vec<Supplement>,
+    /// Follow-up queue (Phase 4 / D1): post-pause user injects and ask
+    /// answers (`is_answer`). Historical field name was `supplement_queue`.
+    pub follow_up_queue: Vec<FollowUp>,
+    /// Steering queue: mid-run user interjections injected before the next
+    /// LLM call (step boundary; tools already in flight still finish unless
+    /// cancelled — see D3).
+    pub steering_queue: Vec<FollowUp>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -147,7 +153,7 @@ impl SessionInfo {
             title: record.title.clone(),
             status: SessionStatus::from_status_str(&record.status),
             steps: Vec::new(),
-            supplement_queue: Vec::new(),
+            follow_up_queue: Vec::new(),
             steering_queue: Vec::new(),
             created_at: record.created_at.clone(),
             updated_at: record.updated_at.clone(),
@@ -237,12 +243,13 @@ pub struct SessionExecutor {
     /// becomes Pending right after a failed claim still wakes it (no missed
     /// notification, no polling fallback).
     dispatch_tx: watch::Sender<u64>,
-    /// Per-session buffer of completed background-action results, delivered to the
-    /// ReAct loop as context at the next step start. Kept separate from the
-    /// steering queue so action output is never mistaken for a user reply (the
-    /// `ask` pause path keys resume off the steering queue, which now holds
-    /// only genuine user interjections).
+    /// Per-session buffer of completed background-action results (system
+    /// inject / action_results — not a user queue). Delivered to the ReAct
+    /// loop as context at the next step start.
     action_completions: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// Explicit ask-awaiting flag per session (Phase 4 / C5). Mirrored into
+    /// `ReActSnapshot.awaiting_answer` on pause and restored on resume.
+    awaiting_answer: Arc<Mutex<HashMap<String, crate::types::AskPending>>>,
     /// Pending user confirmations for safety-gated tool calls, keyed by the
     /// generated step id reported in the `confirm:requested` event.
     confirm_waits: Arc<Mutex<HashMap<haven_common::types::ConfirmId, ConfirmWait>>>,
@@ -270,6 +277,7 @@ impl SessionExecutor {
             status_tx: Arc::new(Mutex::new(HashMap::new())),
             dispatch_tx: watch::channel(0).0,
             action_completions: Arc::new(Mutex::new(HashMap::new())),
+            awaiting_answer: Arc::new(Mutex::new(HashMap::new())),
             confirm_waits: Arc::new(Mutex::new(HashMap::new())),
             on_confirm_request: OnceHandler::new(),
             on_session_error: OnceHandler::new(),
@@ -545,10 +553,10 @@ impl SessionExecutor {
     ///
     /// Stale queue entries are skipped without re-queuing: a session whose
     /// status moved away from Pending (paused, cancelled, ended) or whose
-    /// handler is still alive (a supplement flipped it Paused → Pending —
-    /// its own loop picks up the supplement via the status watcher, and only
-    /// the dispatcher inserts into `running_sessions`, so a re-claim would be a
-    /// double-dispatch) must not be started again.
+    /// handler is still in `running_sessions` (claim-window race: only the
+    /// dispatcher inserts into that set, and a re-claim would be a
+    /// double-dispatch) must not be started again. Pause is exit-based
+    /// (Phase 2 / C1): the handler does not park on a status watcher.
     ///
     /// The status flip happens under the session's own entry lock (never under
     /// the map lock), so a slow transition of another session cannot block the
@@ -578,12 +586,11 @@ impl SessionExecutor {
                 // re-enqueued it if it became Pending again.
                 continue;
             }
-            // The `running_sessions` check prevents double-dispatch: a session whose
-            // handler is still alive (e.g. blocked in a pause-wait after a
-            // supplement flipped it Paused → Pending) must not be claimed
-            // again — its own loop picks up the supplement via the status
-            // watcher. Only the dispatcher inserts into this set, so the
-            // check-then-insert below cannot race.
+            // The `running_sessions` check prevents double-dispatch during the
+            // claim→spawn window. Pause is exit-based (Phase 2 / C1): a paused
+            // handler returns, `unmark_running` drops the set entry, and only
+            // then can Pending be claimed again. Only the dispatcher inserts
+            // into this set, so the check-then-insert below cannot race.
             if self.running_sessions.lock().await.contains(&session_id) {
                 continue;
             }
@@ -658,16 +665,40 @@ impl SessionExecutor {
         self.running_sessions.lock().await.iter().cloned().collect()
     }
 
-    pub async fn add_supplement(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
-        self.add_supplement_with_attachments(session_id, text, &[], None)
+    /// Queue routing (Phase 4 / D1):
+    /// ```text
+    /// Running            → steering
+    /// Paused             → follow_up
+    /// PausedAwaitingAnswer → follow_up with is_answer (reply_to)
+    /// action completion  → action_completions (system inject)
+    /// ```
+    pub async fn add_follow_up(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        self.add_follow_up_with_attachments(session_id, text, &[], None)
             .await
     }
 
     /// `message_id` is the id of the persisted user message row this
-    /// supplement's words were stored under (persisted at submit time by
+    /// follow-up's words were stored under (persisted at submit time by
     /// `process_input`). The ReAct loop's `push_user_context` creates the
     /// anchoring thought-step row under that same id, so review/rollback
     /// resolve the step by id. `None` when no row was persisted.
+    pub async fn add_follow_up_with_attachments(
+        &self,
+        session_id: &str,
+        text: &str,
+        attachments: &[MessageAttachment],
+        message_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.push_follow_up(session_id, text, attachments, false, message_id)
+            .await
+    }
+
+    /// Alias for [`Self::add_follow_up`] (pre-Phase-4 name).
+    pub async fn add_supplement(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        self.add_follow_up(session_id, text).await
+    }
+
+    /// Alias for [`Self::add_follow_up_with_attachments`] (pre-Phase-4 name).
     pub async fn add_supplement_with_attachments(
         &self,
         session_id: &str,
@@ -675,13 +706,13 @@ impl SessionExecutor {
         attachments: &[MessageAttachment],
         message_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.push_supplement(session_id, text, attachments, false, message_id)
+        self.add_follow_up_with_attachments(session_id, text, attachments, message_id)
             .await
     }
 
-    /// Queue a supplement that is the user's reply to a pending `ask`
-    /// question. Injected as a paired answer on resume so the model no
-    /// longer sees the old question as open.
+    /// Queue a follow-up that is the user's reply to a pending `ask`
+    /// question (`reply_to`). Injected as a paired answer on resume so the
+    /// model no longer sees the old question as open.
     pub async fn add_answer_with_attachments(
         &self,
         session_id: &str,
@@ -689,11 +720,11 @@ impl SessionExecutor {
         attachments: &[MessageAttachment],
         message_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.push_supplement(session_id, text, attachments, true, message_id)
+        self.push_follow_up(session_id, text, attachments, true, message_id)
             .await
     }
 
-    async fn push_supplement(
+    async fn push_follow_up(
         &self,
         session_id: &str,
         text: &str,
@@ -706,28 +737,33 @@ impl SessionExecutor {
             anyhow::bail!("session '{}' not found", session_id)
         };
         let mut session = entry.lock().await;
-        let supplement = if is_answer {
-            Supplement::answer_with_message_id(text, attachments.to_vec(), message_id)
+        let follow_up = if is_answer {
+            FollowUp::answer_with_message_id(text, attachments.to_vec(), message_id)
         } else {
-            Supplement::new_with_message_id(text, attachments.to_vec(), message_id)
+            FollowUp::new_with_message_id(text, attachments.to_vec(), message_id)
         };
-        session.supplement_queue.push(supplement);
+        session.follow_up_queue.push(follow_up);
         tracing::debug!(
             "session {} {} added ({} chars, {} attachments)",
             session_id,
-            if is_answer { "answer" } else { "supplement" },
+            if is_answer { "answer" } else { "follow_up" },
             text.len(),
             attachments.len()
         );
         Ok(())
     }
 
-    pub async fn get_supplements(&self, session_id: &str) -> Vec<Supplement> {
+    pub async fn get_follow_ups(&self, session_id: &str) -> Vec<FollowUp> {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let Some(entry) = entry else {
             return Vec::new();
         };
-        entry.lock().await.supplement_queue.drain(..).collect()
+        entry.lock().await.follow_up_queue.drain(..).collect()
+    }
+
+    /// Alias for [`Self::get_follow_ups`] (pre-Phase-4 name).
+    pub async fn get_supplements(&self, session_id: &str) -> Vec<FollowUp> {
+        self.get_follow_ups(session_id).await
     }
 
     /// Add a steering item: interrupts the current tool sequence and is
@@ -792,22 +828,19 @@ impl SessionExecutor {
             .unwrap_or_default()
     }
 
-    /// Drain all pending user-facing context for a session in one lock pass:
-    /// supplements (paused-session replies / `ask` answers), steering (mid-run
-    /// user interjections) and buffered background-action results. The ReAct loop
-    /// calls this once per step instead of three separate queue drains (three
-    /// global ses-map lock acquisitions per step), so the three batches can
-    /// never drift apart either.
+    /// Drain all pending context for a session in one lock pass: follow-ups
+    /// (paused-session replies / `ask` answers), steering (mid-run user
+    /// interjections) and buffered background-action results (system inject).
     pub async fn drain_pending_context(
         &self,
         session_id: &str,
-    ) -> (Vec<Supplement>, Vec<Supplement>, Vec<String>) {
+    ) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<String>) {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
-        let (supplements, steering) = match entry {
+        let (follow_ups, steering) = match entry {
             Some(entry) => {
                 let mut session = entry.lock().await;
                 (
-                    session.supplement_queue.drain(..).collect(),
+                    session.follow_up_queue.drain(..).collect(),
                     session.steering_queue.drain(..).collect(),
                 )
             }
@@ -819,10 +852,10 @@ impl SessionExecutor {
             .await
             .remove(session_id)
             .unwrap_or_default();
-        (supplements, steering, action_results)
+        (follow_ups, steering, action_results)
     }
 
-    /// Non-draining check for pending user-facing context (supplements or
+    /// Non-draining check for pending user-facing context (follow-ups or
     /// steering). Resume uses it to decide whether post-snapshot inputs must
     /// be recovered from the DB: when the queues still hold the inputs (the
     /// pause → answer flow in the same process), the ReAct loop injects them
@@ -833,10 +866,54 @@ impl SessionExecutor {
         match entry {
             Some(entry) => {
                 let session = entry.lock().await;
-                !session.supplement_queue.is_empty() || !session.steering_queue.is_empty()
+                !session.follow_up_queue.is_empty() || !session.steering_queue.is_empty()
             }
             None => false,
         }
+    }
+
+    /// Mark every queued user inject as an ask answer in place (Phase 4 / C3).
+    /// Mid-run steering that arrived while still Running is injected with the
+    /// Answer prefix on the next run — without transferring between queues.
+    pub async fn mark_user_queues_as_answer(&self, session_id: &str) {
+        let entry = { self.sessions.lock().await.get(session_id).cloned() };
+        let Some(entry) = entry else {
+            return;
+        };
+        let mut session = entry.lock().await;
+        for item in &mut session.follow_up_queue {
+            item.is_answer = true;
+        }
+        for item in &mut session.steering_queue {
+            item.is_answer = true;
+        }
+    }
+
+    pub async fn set_awaiting_answer(
+        &self,
+        session_id: &str,
+        pending: Option<crate::types::AskPending>,
+    ) {
+        let mut map = self.awaiting_answer.lock().await;
+        match pending {
+            Some(p) => {
+                map.insert(session_id.to_string(), p);
+            }
+            None => {
+                map.remove(session_id);
+            }
+        }
+    }
+
+    pub async fn get_awaiting_answer(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::types::AskPending> {
+        self.awaiting_answer.lock().await.get(session_id).cloned()
+    }
+
+    pub async fn clear_awaiting_answer(&self, session_id: &str) {
+        self.awaiting_answer.lock().await.remove(session_id);
     }
 
     /// End a session. Since the user explicitly asked to end it, the session is
@@ -929,6 +1006,7 @@ impl SessionExecutor {
         self.cleanup_session_maps(session_id).await;
         self.status_tx.lock().await.remove(session_id);
         self.action_completions.lock().await.remove(session_id);
+        self.awaiting_answer.lock().await.remove(session_id);
     }
 
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
@@ -962,6 +1040,7 @@ impl SessionExecutor {
         self.session_cancellations.lock().await.clear();
         self.status_tx.lock().await.clear();
         self.action_completions.lock().await.clear();
+        self.awaiting_answer.lock().await.clear();
     }
 
     /// Subscribe to a session's status changes. Level-triggered: the receiver
@@ -1958,12 +2037,11 @@ mod tests {
         assert!(exec.try_claim_pending().await.is_none());
     }
 
-    /// A Pending session whose handler is still alive (present in the running
-    /// set, e.g. blocked in a pause-wait after Paused → Pending) must not be
-    /// claimed again —otherwise the dispatcher spawns a duplicate ReAct loop.
-    /// The stale queue entry is consumed on the skip: the alive handler picks
-    /// up the supplement via the status watcher itself, and a later transition
-    /// to Pending re-enqueues the session if it ever becomes claimable again.
+    /// A Pending session already present in `running_sessions` (claim→spawn
+    /// window) must not be claimed again — otherwise the dispatcher spawns a
+    /// duplicate ReAct loop. The stale queue entry is consumed on the skip; a
+    /// later Pending transition re-enqueues the session once the handler
+    /// exits and `unmark_running` clears the set (pause is exit-based).
     #[tokio::test]
     async fn try_claim_pending_skips_session_already_in_running_set() {
         let exec = make_executor(2);
@@ -2398,8 +2476,8 @@ mod tests {
         let state = exec.get_session_state(&session.id).await.unwrap();
         assert!(state.is_paused());
         assert!(state.is_awaiting_answer());
-        // The wire/DB form stays "paused".
-        assert_eq!(state.as_str(), "paused");
+        // Phase 4 / F2: awaiting persists as a distinct DB/wire status.
+        assert_eq!(state.as_str(), "paused_awaiting_answer");
 
         // Reactivation (user answered → Pending) exits the awaiting state.
         exec.update_session_status(&session.id, SessionStatus::Pending)
@@ -2536,8 +2614,14 @@ mod tests {
             SessionStatus::from_status_str("paused"),
             SessionStatus::Paused
         );
-        // Both pause flavors serialize to the same wire string.
-        assert_eq!(SessionStatus::PausedAwaitingAnswer.as_str(), "paused");
+        assert_eq!(
+            SessionStatus::from_status_str("paused_awaiting_answer"),
+            SessionStatus::PausedAwaitingAnswer
+        );
+        assert_eq!(
+            SessionStatus::PausedAwaitingAnswer.as_str(),
+            "paused_awaiting_answer"
+        );
     }
 
     #[tokio::test]

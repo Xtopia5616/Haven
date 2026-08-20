@@ -23,6 +23,15 @@ pub mod entity_kind {
     pub const EPISODE: &str = "episode";
 }
 
+/// Max unembedded facts returned per missing-ids scan (recent first).
+pub const FACT_EMBED_BACKLOG_LIMIT: usize = 128;
+
+/// Max unembedded episode entities (compaction summaries preferred, then
+/// recent user messages) returned per missing-ids scan. Prevents a single
+/// maintenance / hot-path embed pass from exploding after enabling or
+/// switching the embedding model on a large history.
+pub const EPISODE_EMBED_BACKLOG_LIMIT: usize = 64;
+
 /// Serialize an f32 vector as a little-endian byte blob for SQLite storage.
 pub fn encode_vector(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
@@ -135,17 +144,42 @@ impl Database {
         Ok(out)
     }
 
-    /// Entity ids of one domain that have no embedding yet.
+    /// Entity ids of one domain that have no embedding yet, capped so a
+    /// single catch-up pass stays bounded. Prefer recent rows; for episodes,
+    /// compaction summaries are taken before raw user messages (higher signal
+    /// per embed). Repeated passes drain the backlog newest→oldest.
     pub fn missing_embedding_ids(&self, entity_type: &str) -> anyhow::Result<Vec<String>> {
+        let limit = match entity_type {
+            entity_kind::FACT => FACT_EMBED_BACKLOG_LIMIT,
+            entity_kind::EPISODE => EPISODE_EMBED_BACKLOG_LIMIT,
+            _ => return Ok(Vec::new()),
+        };
+        self.missing_embedding_ids_limited(entity_type, limit)
+    }
+
+    /// Like [`Self::missing_embedding_ids`] with an explicit cap (tests / tuning).
+    pub fn missing_embedding_ids_limited(
+        &self,
+        entity_type: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let conn = self.conn();
         match entity_type {
             entity_kind::FACT => {
                 let mut stmt = conn.prepare(
                     "SELECT id FROM facts
-                     WHERE id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)",
+                     WHERE id NOT IN (
+                         SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
+                     )
+                     ORDER BY COALESCE(last_seen_at, created_at) DESC
+                     LIMIT ?2",
                 )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
+                let rows = stmt.query_map(rusqlite::params![entity_type, limit as i64], |r| {
+                    r.get::<_, String>(0)
+                })?;
                 let mut out = Vec::new();
                 for row in rows {
                     out.push(row?);
@@ -153,32 +187,42 @@ impl Database {
                 Ok(out)
             }
             entity_kind::EPISODE => {
-                // Episodes are user messages plus persisted compaction
-                // summaries (memory_episodes rows). A message/episode only
-                // becomes an index entry once embedded, so track the
-                // candidates explicitly. Both queries run on the SAME
-                // connection guard (a second `self.conn()` while the guard is
-                // held would deadlock — the mutex is not reentrant).
+                // Summaries first, then recent user messages to fill the rest.
+                // Both queries share this connection guard (non-reentrant mutex).
                 let mut out: Vec<String> = Vec::new();
-                let mut stmt = conn.prepare(
-                    "SELECT id FROM messages
-                     WHERE role = 'user'
-                       AND id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)",
-                )?;
-                let rows =
-                    stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
-                for row in rows {
-                    out.push(row?);
-                }
                 let mut ep_stmt = conn.prepare(
                     "SELECT id FROM memory_episodes
-                     WHERE id NOT IN (SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1)
-                     ORDER BY created_at DESC LIMIT 1000",
+                     WHERE id NOT IN (
+                         SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
+                     )
+                     ORDER BY created_at DESC
+                     LIMIT ?2",
                 )?;
                 let ep_rows =
-                    ep_stmt.query_map(rusqlite::params![entity_type], |r| r.get::<_, String>(0))?;
+                    ep_stmt.query_map(rusqlite::params![entity_type, limit as i64], |r| {
+                        r.get::<_, String>(0)
+                    })?;
                 for row in ep_rows {
                     out.push(row?);
+                }
+                let remaining = limit.saturating_sub(out.len());
+                if remaining > 0 {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM messages
+                         WHERE role = 'user'
+                           AND id NOT IN (
+                               SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
+                           )
+                         ORDER BY created_at DESC
+                         LIMIT ?2",
+                    )?;
+                    let rows =
+                        stmt.query_map(rusqlite::params![entity_type, remaining as i64], |r| {
+                            r.get::<_, String>(0)
+                        })?;
+                    for row in rows {
+                        out.push(row?);
+                    }
                 }
                 Ok(out)
             }
@@ -295,16 +339,6 @@ impl Database {
         scored.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
         scored.truncate(limit);
         Ok(scored.into_iter().map(|(_, t)| t).collect())
-    }
-
-    pub fn delete_embedding(&self, entity_type: &str, entity_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "DELETE FROM memory_embeddings WHERE entity_type = ?1 AND entity_id = ?2",
-            rusqlite::params![entity_type, entity_id],
-        )?;
-        self.cache_invalidate_embeddings(entity_type);
-        Ok(())
     }
 
     /// Distinct embedding model names currently in the vector index.
@@ -472,6 +506,48 @@ mod tests {
     }
 
     #[test]
+    fn missing_embedding_ids_episodes_respects_limit_and_prefers_summaries() {
+        let db = db();
+        let session = db.create_session("t", "").unwrap();
+        for i in 0..5 {
+            db.add_message(
+                &session.id,
+                "user",
+                &format!("msg-{i}"),
+                Some("text"),
+                None,
+            )
+            .unwrap();
+        }
+        let ep_a = db.add_episode(&session.id, "summary-a").unwrap();
+        let ep_b = db.add_episode(&session.id, "summary-b").unwrap();
+
+        let missing = db
+            .missing_embedding_ids_limited(entity_kind::EPISODE, 2)
+            .unwrap();
+        assert_eq!(missing.len(), 2);
+        assert!(
+            missing.contains(&ep_a) && missing.contains(&ep_b),
+            "summaries must fill the cap before raw user messages, got {:?}",
+            missing
+        );
+
+        let missing3 = db
+            .missing_embedding_ids_limited(entity_kind::EPISODE, 3)
+            .unwrap();
+        assert_eq!(missing3.len(), 3);
+        assert!(missing3.contains(&ep_a) && missing3.contains(&ep_b));
+        // Third slot is a recent user message (not another summary).
+        assert_eq!(
+            missing3
+                .iter()
+                .filter(|id| *id != &ep_a && *id != &ep_b)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn episode_text_resolves_message() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
@@ -617,8 +693,8 @@ mod tests {
         let all = db.list_embeddings(entity_kind::FACT).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].entity_id, "f1");
-        // Deletion invalidates again.
-        db.delete_embedding(entity_kind::FACT, "f1").unwrap();
+        // Bulk clear invalidates again.
+        assert_eq!(db.clear_embeddings().unwrap(), 1);
         assert!(db.list_embeddings(entity_kind::FACT).unwrap().is_empty());
     }
 

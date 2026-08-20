@@ -5,12 +5,14 @@
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { registerListeners } from '$lib/events.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.ts';
+	import { isPausedStatus } from '$lib/sessionStatus.ts';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
 	import Logo from '$lib/Logo.svelte';
@@ -87,6 +89,8 @@
 	// paused/completed/error on termination). Tracked per session id so a
 	// parallel session completing does not clear the busy state of another.
 	let busySessions = $state(new Set());
+	/** @type {Map<string, string>} */
+	let lastSessionStatus = new Map();
 	const sessionBusy = $derived(busySessions.size > 0);
 	// Probe state is declared BEFORE the subscribe below: the store's
 	// `subscribe` fires synchronously (SSR/mount) with the current value, and
@@ -225,7 +229,7 @@
 		try {
 			await invoke('cancel_recording');
 		} catch (e) {
-			addNotification(`停止录音失败: ${e}`, 'error', 3000);
+			addNotification(`停止录音失败: ${formatError(e)}`, 'error', 3000);
 		}
 		resetOverlay();
 	}
@@ -288,7 +292,10 @@
 	// Foreground running tasks: active (non-terminal) conversations.
 	const runningSessions = $derived(
 		sessions.filter(
-			(t) => t.status === 'running' || t.status === 'pending' || t.status === 'paused',
+			(t) =>
+				t.status === 'running' ||
+				t.status === 'pending' ||
+				isPausedStatus(t.status),
 		),
 	);
 
@@ -307,7 +314,7 @@
 			actionHistory = actionHistory.filter((h) => h.id !== id);
 			addNotification('已删除历史记录', 'success', 2000);
 		} catch (e) {
-			addNotification(`删除历史记录失败: ${e}`, 'error', 3000);
+			addNotification(`删除历史记录失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -378,7 +385,7 @@
 			}
 		} catch (e) {
 			addNotification(
-				`${kind === 'scheduled' ? '取消定时任务' : '停止后台任务'}失败: ${e}`,
+				`${kind === 'scheduled' ? '取消定时任务' : '停止后台任务'}失败: ${formatError(e)}`,
 				'error',
 				3000,
 			);
@@ -506,7 +513,7 @@
 					// `activeSessionId`, and migrates the message into the session if
 					// the backend created a fresh one.
 					submitVoiceTranscript(text).catch((e) =>
-						addNotification(`语音提交失败: ${e}`, 'error', 5000)
+						addNotification(`语音提交失败: ${formatError(e)}`, 'error', 5000)
 					);
 				} else {
 					// 转写为空：静音或过短的录音没有产出任何内容，必须给用户
@@ -546,7 +553,7 @@
 			'hotkey:conflict': (event) => {
 				const data = event.payload || {};
 				addNotification(
-					`Hotkey conflict: ${data.binding} - ${data.error}`,
+					`热键冲突: ${data.binding} - ${data.error}`,
 					'error',
 					5000,
 				);
@@ -562,6 +569,9 @@
 				const title = data.title || data.session_id;
 				if (notifyCfg?.session_created?.in_app !== false) {
 					addNotification(`新会话: ${title}`, 'info', 4000);
+				}
+				if (data.session_id) {
+					lastSessionStatus.set(data.session_id, data.status || 'pending');
 				}
 				busySessions = new Set(busySessions).add(data.session_id);
 				updateModelState('waiting', { idleTimeoutMs: 5000 });
@@ -604,13 +614,14 @@
 				const data = event.payload;
 				const title = data.title || data.session_id;
 				const tid = data.session_id;
+				const prev = tid ? lastSessionStatus.get(tid) : undefined;
 				if (data.status === 'running' || data.status === 'pending') {
 					// The backend flips Pending -> Running in memory without
 					// re-emitting, so treat both as busy. Any other status
 					// transition below removes the session from the busy set.
 					if (tid) busySessions = new Set(busySessions).add(tid);
 				}
-				if (data.status === 'paused') {
+				if (isPausedStatus(data.status)) {
 					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
 					if (notifyCfg?.session_paused?.in_app !== false) {
 						addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
@@ -619,7 +630,12 @@
 					updateModelState('ready');
 				}
 				if (data.status === 'pending') {
-					if (notifyCfg?.session_resumed?.in_app !== false) {
+					// Only paused/error → pending is a real resume; Running→Pending
+					// (ask answered in-turn) must not toast.
+					if (
+						(isPausedStatus(prev) || prev === 'error') &&
+						notifyCfg?.session_resumed?.in_app !== false
+					) {
 						addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
 					}
 					updateModelState('waiting', { idleTimeoutMs: 5000 });
@@ -633,6 +649,9 @@
 					if (tid) busySessions = new Set([...busySessions].filter((t) => t !== tid));
 					clearModelStateTimer();
 					updateModelState('ready');
+				}
+				if (tid && data.status) {
+					lastSessionStatus.set(tid, data.status);
 				}
 			},
 			'mcp:status_change': (event) => {
@@ -873,7 +892,7 @@
 													class:running={t.status === 'running'}
 													>{t.status === 'running'
 														? '运行中'
-														: t.status === 'paused'
+														: isPausedStatus(t.status)
 															? '已暂停'
 															: '等待中'}</span
 												>

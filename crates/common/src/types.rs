@@ -392,9 +392,17 @@ impl MessageAttachment {
     }
 }
 
-/// A user message queued for injection into the ReAct loop (supplement or
-/// steering). `text` is the plain-text content; `attachments` hold binary
-/// payloads (e.g. images) for multimodal requests.
+/// A user message queued for injection into the ReAct loop.
+///
+/// Phase 4 / D1 queue model (aligned with PI steering vs follow-up):
+/// - **steering** — mid-run interjection, injected before the next LLM call
+/// - **follow-up** — post-pause / turn-end injection; an ask reply is a
+///   follow-up with `is_answer` (typed `reply_to`) set
+/// - **action_results** — system inject, not this type
+///
+/// `Supplement` is the historical name; [`FollowUp`] is the Phase 4 alias.
+/// `text` is the plain-text content; `attachments` hold binary payloads
+/// (e.g. images) for multimodal requests.
 ///
 /// Lives in the shared types layer (not the input crate) so the agent's
 /// session queue and the input/recording paths that produce user messages
@@ -405,14 +413,14 @@ pub struct Supplement {
     #[serde(default)]
     pub attachments: Vec<MessageAttachment>,
     /// True when this message is the user's reply to a pending `ask`
-    /// question. The ReAct loop injects it as a paired answer ("Answer to
-    /// your previous question") instead of generic additional context, so
-    /// the model does not treat the old question as still open and answer
-    /// stale questions again.
+    /// question (follow-up + reply_to). The ReAct loop injects it as a
+    /// paired answer ("Answer to your previous question") instead of
+    /// generic additional context, so the model does not treat the old
+    /// question as still open and answer stale questions again.
     #[serde(default)]
     pub is_answer: bool,
     /// Persisted message row id of a mid-turn user input (steering,
-    /// supplement or ask answer). The row is written at submit time, so the
+    /// follow-up or ask answer). The row is written at submit time, so the
     /// ReAct loop uses the id to anchor the input's thought-step row (same
     /// id, no content matching) and forward-dates the steering row's
     /// `created_at` when it injects — the review rebuild then orders it
@@ -421,6 +429,9 @@ pub struct Supplement {
     #[serde(default)]
     pub message_id: Option<String>,
 }
+
+/// Phase 4 / D1 name for a post-pause user inject (PI `followUp`).
+pub type FollowUp = Supplement;
 
 impl Supplement {
     pub fn new(text: impl Into<String>, attachments: Vec<MessageAttachment>) -> Self {

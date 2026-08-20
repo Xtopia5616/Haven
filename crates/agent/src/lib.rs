@@ -18,7 +18,7 @@ pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
 pub use inference::InferenceEngine;
 pub use prompt::SystemPromptBuilder;
-pub use react::ReActEngine;
+pub use react::{LoopExit, PauseReason, ReActEngine};
 pub use session::{
     RunHandler, SessionExecutor, SessionInfo, SessionStatus, StepInfo, ToolExecution,
 };
@@ -1018,6 +1018,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -1086,6 +1087,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -1157,6 +1159,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: Some(saved_at),
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -1238,6 +1241,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: Some(saved_at),
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -1330,6 +1334,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -1407,6 +1412,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -1699,6 +1705,7 @@ mod tests {
             step_number: 2,
             branch_points: HashMap::new(),
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -3945,6 +3952,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+            awaiting_answer: None,
         };
         agent
             .db
@@ -4053,6 +4061,7 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -4149,6 +4158,7 @@ mod tests {
             step_number: 1,
             branch_points,
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -4243,6 +4253,7 @@ mod tests {
             step_number: 2,
             branch_points,
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -4327,6 +4338,7 @@ mod tests {
             step_number: 2,
             branch_points,
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -4411,6 +4423,7 @@ mod tests {
             step_number: 1,
             branch_points,
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -4581,6 +4594,7 @@ mod tests {
             step_number: 1,
             branch_points,
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db
@@ -4696,6 +4710,7 @@ mod tests {
             step_number: 2,
             branch_points,
             saved_at: None,
+                   awaiting_answer: None,
         };
         agent
             .db

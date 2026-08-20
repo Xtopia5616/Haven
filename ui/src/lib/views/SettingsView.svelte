@@ -11,6 +11,7 @@
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import { addNotification } from '$lib/stores.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import logger from '$lib/logger.ts';
 
@@ -382,7 +383,7 @@
 			await refreshLogs();
 			logView.open = true;
 		} catch (e) {
-			addNotification(e instanceof Error ? e.message : '无法读取日志', 'error', 4000);
+			addNotification(`无法读取日志: ${formatError(e)}`, 'error', 4000);
 		} finally {
 			logView.loading = false;
 		}
@@ -394,7 +395,7 @@
 			logView.path = data.path;
 			logView.content = data.content;
 		} catch (e) {
-			addNotification(e instanceof Error ? e.message : '无法读取日志', 'error', 4000);
+			addNotification(`无法读取日志: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -595,7 +596,7 @@
 				checkShells();
 			}
 		} catch (e) {
-			addNotification(`加载设置失败: ${e}`, 'error', 4000);
+			addNotification(`加载设置失败: ${formatError(e)}`, 'error', 4000);
 		}
 		// Key status must resolve before settingsLoaded flips: ModelSettings
 		// auto-fetches /models on load, and Provider cards must not show
@@ -604,14 +605,14 @@
 			await refreshApiKeyStatus();
 			if (!mounted) return;
 		} catch (e) {
-			addNotification(`获取 API Key 状态失败: ${e}`, 'error', 3000);
+			addNotification(`获取 API Key 状态失败: ${formatError(e)}`, 'error', 3000);
 		}
 		if (mounted) settingsLoaded = true;
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
 			if (!mounted) return;
 		} catch (e) {
-			addNotification(`获取开机自启状态失败: ${e}`, 'error', 3000);
+			addNotification(`获取开机自启状态失败: ${formatError(e)}`, 'error', 3000);
 		}
 	});
 
@@ -621,7 +622,7 @@
 			memoryMaintenance.lastCount = await invoke('run_memory_maintenance');
 			addNotification(`记忆维护完成（清理 ${memoryMaintenance.lastCount} 项）`, 'success', 3000);
 		} catch (e) {
-			addNotification(`记忆维护失败: ${e}`, 'error', 4000);
+			addNotification(`记忆维护失败: ${formatError(e)}`, 'error', 4000);
 		} finally {
 			memoryMaintenance.running = false;
 		}
@@ -731,24 +732,24 @@
 			try {
 				await refreshApiKeyStatus();
 			} catch (e) {
-				addNotification(`获取 API Key 状态失败: ${e}`, 'error', 3000);
+				addNotification(`获取 API Key 状态失败: ${formatError(e)}`, 'error', 3000);
 			}
 			if (autostartEnabled) {
 				try { await invoke('enable_autostart'); } catch (e) {
 					autostartEnabled = false;
-					addNotification(`自动启动：${e}`, 'warning');
+					addNotification(`自动启动：${formatError(e)}`, 'warning');
 				}
 			} else {
 				try { await invoke('disable_autostart'); } catch (e) {
 					autostartEnabled = true;
-					addNotification(`取消自动启动：${e}`, 'warning');
+					addNotification(`取消自动启动：${formatError(e)}`, 'warning');
 				}
 			}
 		} catch (e) {
 			// Save never emitted llm:config_changed — clear the skip so the
 			// next real toolbar/config event is not swallowed.
 			skipNextDefaultModelSync = false;
-			addNotification(`保存设置失败: ${e}`, 'error', 5000);
+			addNotification(`保存设置失败: ${formatError(e)}`, 'error', 5000);
 		}
 	}
 
@@ -1166,6 +1167,7 @@
 				<MaterialSwitch checked={notification[ev.key].windows} onChange={(/** @type {boolean} */ v) => { notification[ev.key].windows = v; }} />
 			</div>
 		{/each}
+		<p class="model-hint">Agent 通过 notify 工具发出的通知始终开启（应用内 + Windows），不受上表开关控制。</p>
 	</div>
 
 	<div class="section log-section">
@@ -1187,6 +1189,7 @@
 				{ value: 'error', label: 'Error' },
 			]} onChange={(/** @type {string} */ v) => { log.level = v; }} />
 		</div>
+		<p class="model-hint">日志级别与文件输出仅作用于后端（tracing）；前端开发日志仍按 DEV/PROD 门控。</p>
 	</div>
 
 	<div class="section autostart-section">

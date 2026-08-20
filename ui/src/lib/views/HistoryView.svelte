@@ -17,6 +17,7 @@
 	let loading = $state(false);
 	let hasMore = $state(true);
 	let loadHistorySeq = 0;
+	let loadFactsSeq = 0;
 	const PAGE_SIZE = 50;
 
 	let statusFilter = $state('');
@@ -49,8 +50,16 @@
 	/** @type {any[]} */
 	let facts = $state([]);
 	let factsLoaded = $state(false);
+	/** @type {'' | 'user' | 'inferred'} */
+	let factSourceFilter = $state('');
 	let newFact = $state({ predicate: '', object: '', tags: '' });
 	let addingFact = $state(false);
+
+	const factSourceOptions = [
+		{ value: '', label: '全部来源' },
+		{ value: 'user', label: 'user' },
+		{ value: 'inferred', label: 'inferred' },
+	];
 
 	const todayISO = $derived.by(() => {
 		const n = new Date();
@@ -58,6 +67,7 @@
 	});
 
 	import logger from '$lib/logger.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
 	import { formatMessageTime } from '$lib/stores.ts';
 	import { statusVariant } from '$lib/sessionStatus.ts';
@@ -119,12 +129,12 @@
 	});
 
 	// Defer the facts table load until the 事实 tab is first opened, so a
-	// sessions-only visit never pays the full list_facts scan. `factsLoaded`
-	// guards the load to once.
+	// sessions-only visit never pays the full list_facts scan. Reload when
+	// the source filter changes after the first visit.
 	$effect(() => {
-		if (activeTab === 'facts' && !factsLoaded) {
-			loadFacts();
-		}
+		if (activeTab !== 'facts') return;
+		factSourceFilter;
+		loadFacts();
 	});
 
 	/**
@@ -244,7 +254,7 @@
 			reviewTargetStore.set({ sessionId: session.id, summary: session.input_text, title: session.title, wasError: session.status === 'error' || session.status === 'failed' });
 			await goto('/');
 		} catch (e) {
-			addNotification(`加载会话详情失败: ${e}`, 'error', 4000);
+			addNotification(`加载会话详情失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -265,7 +275,7 @@
 			}
 			addNotification('会话已删除', 'success', 2000);
 		} catch (e) {
-			addNotification(`删除失败: ${e}`, 'error', 4000);
+			addNotification(`删除失败: ${formatError(e)}`, 'error', 4000);
 		}
 		deleteTarget = null;
 	}
@@ -360,7 +370,7 @@
 			const t = sessions.find(t => t.id === sessionId);
 			if (t) t.title = value;
 		} catch (e) {
-			addNotification(`重命名失败: ${e}`, 'error', 3000);
+			addNotification(`重命名失败: ${formatError(e)}`, 'error', 3000);
 		}
 		cancelEdit();
 	}
@@ -442,19 +452,31 @@
 			a.click();
 			URL.revokeObjectURL(url);
 		} catch (e) {
-			addNotification(`导出失败: ${e}`, 'error', 4000);
+			addNotification(`导出失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
 	async function loadFacts() {
+		const seq = ++loadFactsSeq;
+		const source = factSourceFilter || null;
 		try {
-			facts = (await invoke('list_facts')) || [];
+			const rows = (await invoke('list_facts', { source })) || [];
+			if (seq !== loadFactsSeq) return;
+			facts = rows;
 			factsLoaded = true;
 		} catch {
+			if (seq !== loadFactsSeq) return;
 			facts = [];
 			factsLoaded = true;
 			logger.warn('history', 'load facts error');
 		}
+	}
+
+	/**
+	 * @param {string} v
+	 */
+	function handleFactSourceFilterChange(v) {
+		factSourceFilter = /** @type {'' | 'user' | 'inferred'} */ (v);
 	}
 
 	async function addFact() {
@@ -470,17 +492,17 @@
 				.split(',')
 				.map((t) => t.trim())
 				.filter(Boolean);
-			const created = await invoke('add_fact', {
+			await invoke('add_fact', {
 				subject: 'user',
 				predicate,
 				object,
 				tags: tags.length ? tags : null,
 			});
-			facts = [created, ...facts];
 			newFact = { predicate: '', object: '', tags: '' };
+			await loadFacts();
 			addNotification('事实已保存', 'success', 2500);
 		} catch (e) {
-			addNotification(`添加事实失败: ${e}`, 'error', 3000);
+			addNotification(`添加事实失败: ${formatError(e)}`, 'error', 3000);
 		} finally {
 			addingFact = false;
 		}
@@ -494,7 +516,7 @@
 			await invoke('delete_fact', { factId });
 			facts = facts.filter((f) => f.id !== factId);
 		} catch (e) {
-			addNotification(`删除事实失败: ${e}`, 'error', 3000);
+			addNotification(`删除事实失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -510,7 +532,7 @@
 			})) || [];
 		} catch (e) {
 			memoryRecall.results = [];
-			addNotification(`记忆检索失败: ${e}`, 'error', 4000);
+			addNotification(`记忆检索失败: ${formatError(e)}`, 'error', 4000);
 		} finally {
 			memoryRecall.loading = false;
 		}
@@ -728,7 +750,16 @@
 		</div>
 	{:else}
 		<div class="section">
-			<h2>事实</h2>
+			<div class="toolbar">
+				<h2>事实</h2>
+				<div class="toolbar-actions">
+					<MaterialSelect
+						value={factSourceFilter}
+						options={factSourceOptions}
+						onChange={handleFactSourceFilterChange}
+					/>
+				</div>
+			</div>
 			<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 facts 工具的 remember / forget 操作更新这里。</p>
 			<input
 				type="text"
@@ -1150,6 +1181,25 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-md);
+	}
+	.toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		min-height: var(--md-comp-button-small-height);
+	}
+	.toolbar h2 {
+		margin: 0;
+		line-height: var(--md-comp-button-small-height);
+	}
+	.toolbar-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+	}
+	.toolbar-actions :global(.md-select-container) {
+		width: 140px;
 	}
 	.section h2 {
 		font-size: 18px;

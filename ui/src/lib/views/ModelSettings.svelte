@@ -2,6 +2,7 @@
 	import logger from '$lib/logger.ts';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/stores.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
@@ -172,7 +173,7 @@
 				}
 			}
 		} catch (e) {
-			const msg = typeof e === 'string' ? e : (e instanceof Error ? e.message : String(e));
+			const msg = formatError(e);
 			addNotification(`刷新模型列表失败: ${msg}`, 'error', 4000);
 		} finally {
 			refreshingAll = false;
@@ -196,7 +197,7 @@
 			});
 			modelsByProvider = { ...modelsByProvider, [providerName]: list || [] };
 		} catch (e) {
-			const msg = typeof e === 'string' ? e : (e instanceof Error ? e.message : String(e));
+			const msg = formatError(e);
 			logger.warn('ModelSettings', `discover_models ${providerName} error`, msg);
 			modelsByProvider = { ...modelsByProvider, [providerName]: [] };
 		} finally {
@@ -338,7 +339,7 @@
 			sttModels = list || [];
 		} catch (e) {
 			sttModels = [];
-			const msg = typeof e === 'string' ? e : (e instanceof Error ? e.message : String(e));
+			const msg = formatError(e);
 			addNotification(`获取 STT 模型失败: ${msg}`, 'error', 4000);
 		} finally {
 			sttFetching = false;

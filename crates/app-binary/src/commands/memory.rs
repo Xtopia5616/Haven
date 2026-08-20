@@ -3,23 +3,13 @@ use crate::commands::log_err;
 use std::sync::Arc;
 use tauri::State;
 
-/// Run the memory maintenance pass (fact dedup, sensitive purge, stale-fact
-/// flush, embedding pruning). The agent already runs it after each inference;
-/// this exposes the same pass for periodic app-level scheduling.
+/// Run the full memory maintenance pass (fact dedup, sensitive purge,
+/// stale-fact flush, embedding pruning, bounded embed catch-up). Hot-path
+/// infer no longer runs this; the app scheduler owns it, and this command
+/// exposes the same path for manual / admin use. Returns rows cleaned.
 #[tauri::command]
 pub async fn run_memory_maintenance(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
-    let db = state.db.clone();
-    let result = db
-        .run_blocking(move |db| {
-            let deduped = db.dedup_facts()?;
-            let purged = db.delete_sensitive_facts()?;
-            let flushed = db.flush_low_confidence(0.3)?;
-            let pruned = db.prune_orphaned_embeddings()?;
-            Ok::<u64, anyhow::Error>(deduped + purged + flushed + pruned)
-        })
-        .await
-        .map_err(|e| log_err("run_memory_maintenance", e))?;
-    Ok(result)
+    Ok(state.agent.run_memory_maintenance().await)
 }
 
 /// Recall memory items (facts or episodes) most relevant to a query. Uses
@@ -40,8 +30,15 @@ pub async fn recall_memory(
 #[tauri::command]
 pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
+    source: Option<String>,
 ) -> Result<Vec<haven_memory::repositories::facts::Fact>, String> {
-    state.db.list_facts().map_err(|e| log_err("list_facts", e))
+    match source.as_deref().filter(|s| !s.is_empty()) {
+        Some(src) => state
+            .db
+            .list_facts_by_source(src)
+            .map_err(|e| log_err("list_facts", e)),
+        None => state.db.list_facts().map_err(|e| log_err("list_facts", e)),
+    }
 }
 
 #[tauri::command]

@@ -498,6 +498,31 @@ describe('applyThoughtSnap with websearch segments', () => {
 		expect(out[0]).toMatchObject({ content: '我先查一下', streaming: false });
 		expect(out[2]).toMatchObject({ content: '今天20度', streaming: false });
 	});
+
+	it('drops straggler deltas after a websearch-split snap', () => {
+		let m = chunk([], '我先查一下');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = chunk(m, '今天20度');
+		m = snap(m, '我先查一下今天20度');
+		const before = m;
+		const out = chunk(m, '残留');
+		expect(out).toBe(before);
+		expect(out.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+		]);
+	});
 });
 
 describe('finalizeStreamBlocks', () => {

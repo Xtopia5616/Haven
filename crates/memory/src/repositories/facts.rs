@@ -706,42 +706,11 @@ impl Database {
         Ok(facts)
     }
 
-    /// Whether an exact (subject, predicate, object) triple is already
-    /// stored. Used to distinguish a re-confirmation of an existing fact
-    /// (which must reinforce it regardless of the incoming confidence) from a
-    /// brand-new fact (which is subject to the persist confidence floor).
-    pub fn fact_triple_exists(&self, subject: &str, predicate: &str, object: &str) -> bool {
-        let conn = self.conn();
-        conn.query_row(
-            "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3 LIMIT 1",
-            rusqlite::params![subject, predicate, object],
-            |_| Ok(()),
-        )
-        .is_ok()
-    }
-
-    /// Whether any fact is already stored for a (subject, predicate) pair,
-    /// regardless of the object value. Used to recognize a single-valued
-    /// UPDATE: the user changed the value, so the new triple does not match
-    /// [`Self::fact_triple_exists`], but a stored value for the predicate
-    /// means the extraction is a correction that must replace it rather than
-    /// being subject to the new-fact confidence floor.
-    pub fn fact_predicate_exists(&self, subject: &str, predicate: &str) -> bool {
-        let conn = self.conn();
-        conn.query_row(
-            "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 LIMIT 1",
-            rusqlite::params![subject, predicate],
-            |_| Ok(()),
-        )
-        .is_ok()
-    }
-
     /// Batch existence check for fact inference: one query returns (a) the
     /// exact (subject, predicate, object) triples already stored for the
-    /// given subjects and (b) the (subject, predicate) pairs present — the
-    /// inputs of [`Self::fact_triple_exists`] / [`Self::fact_predicate_exists`]
-    /// for an entire batch. Lets `persist_fact_batch` resolve new-fact vs
-    /// single-valued-update in one round trip instead of two per fact.
+    /// given subjects and (b) the (subject, predicate) pairs present.
+    /// Lets `persist_fact_batch` resolve new-fact vs single-valued-update in
+    /// one round trip instead of two per fact.
     pub fn facts_exist_batch(&self, subjects: &[&str]) -> anyhow::Result<FactPresence> {
         if subjects.is_empty() {
             return Ok((HashSet::new(), HashSet::new()));
@@ -847,10 +816,11 @@ impl Database {
                     }
                 }
             }
-            // A valid FTS query may still return zero rows: FTS5's default
-            // tokenizer does not split CJK runs or do substring matching, so
-            // fall through to the LIKE scan on empty results to preserve the
-            // old substring behavior.
+            // A valid FTS query may still return zero rows (short queries miss
+            // the trigram index; MATCH edge cases). Fall through to the LIKE
+            // scan on empty results to preserve substring behavior for 1–2
+            // char terms. Longer true-miss queries also hit LIKE today — a
+            // known cost; see docs/memory-architecture.md P2-14.
             if valid && !facts.is_empty() {
                 return Ok(facts);
             }

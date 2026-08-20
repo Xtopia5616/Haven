@@ -246,16 +246,23 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
 		// incremental delta opens a NEW bubble after the tool card.
 		if (messages[idx].streaming === false) {
 			// Mid-stream tool / websearch boundary: a card sits after this
-			// bubble, so further deltas belong in a NEW bubble below it.
-			// Checked before the full-text reconcile so a long authoritative
-			// delta cannot smash the pre-boundary bubble with post-search
-			// text. Snap-finalized bubbles at the tail still reject
-			// stragglers (and accept full-text reconcile below).
-			const hasBoundaryAfter = messages
-				.slice(idx + 1)
-				.some((x) => x.type === 'tool' || x.type === 'ask');
-			if (hasBoundaryAfter) {
-				return appendAfterFinalized(messages, opts);
+			// bubble, so further deltas belong in a NEW bubble below it —
+			// but only while that boundary is still live. After snap, every
+			// post-tool thought segment is finalized; stragglers must drop
+			// (not open messageId-N+1).
+			let lastToolIdx = -1;
+			for (let i = idx + 1; i < messages.length; i++) {
+				if (messages[i].type === 'tool' || messages[i].type === 'ask') lastToolIdx = i;
+			}
+			if (lastToolIdx >= 0) {
+				const postToolThoughts = messages
+					.slice(lastToolIdx + 1)
+					.filter((x) => x.id === messageId || x.id.startsWith(segPrefix));
+				const livePost = postToolThoughts.some((x) => x.streaming === true);
+				if (livePost || postToolThoughts.length === 0) {
+					return appendAfterFinalized(messages, opts);
+				}
+				return messages;
 			}
 			if (delta.length > curr.length && delta !== curr) {
 				const next = [...messages];

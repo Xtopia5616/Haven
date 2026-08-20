@@ -198,6 +198,14 @@ pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListRespon
     Ok(ToolListResponse { tools })
 }
 
+/// Clear every per-tool circuit breaker so previously open tools become
+/// callable again without waiting for the cooldown window.
+#[tauri::command]
+pub async fn reset_tool_circuits(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.tools.tool_circuits().reset_all();
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 pub struct ToolListResponse {
     pub tools: Vec<serde_json::Value>,

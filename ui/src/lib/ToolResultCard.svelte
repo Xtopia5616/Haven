@@ -28,9 +28,12 @@
 		load_skill: '加载技能',
 		web_search: '联网搜索',
 		agents_list: 'Agent 列表',
+		agent_profile: 'Agent 档案',
+		agent_spawn: '创建 Agent',
 		message_send: '发送消息',
 		message_inbox: '消息收件箱',
 		message_reply: '回复消息',
+		message_request: '请求并等待',
 	};
 
 	/** @param {unknown} v */

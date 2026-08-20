@@ -9,7 +9,9 @@ use crate::adapters::adapter_for;
 use crate::client::{LlmClient, with_retry};
 use haven_common::types::{CanonicalMessage, ContentPart};
 
-use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
+use crate::stream_rules::{
+    StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules,
+};
 use crate::types::{
     Embedding, FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk,
     ToolDefinition, Usage,
@@ -347,7 +349,7 @@ impl LlmRouter {
         let audio_model = Arc::from(adapter_for(&config.audio_model));
         let embedding_model = Arc::from(adapter_for(&config.embedding_model));
         let request_limit = Self::request_limit(&config);
-        let (health, stream_rules, semaphores, rate_limited) = Self::runtime_state(request_limit);
+        let (health, _, semaphores, rate_limited) = Self::runtime_state(request_limit);
         Self {
             config: Arc::new(RwLock::new(config)),
             small_model,
@@ -358,9 +360,24 @@ impl LlmRouter {
             embedding_model,
             balanced_model_active: AtomicBool::new(false),
             health,
-            stream_rules,
+            // Production routers start with the default no-code-block guard.
+            // Test constructors keep an empty rule list via `runtime_state`.
+            stream_rules: RwLock::new(Self::default_stream_rules()),
             semaphores,
             rate_limited,
+        }
+    }
+
+    /// Default stream-output guards applied to every production router.
+    /// Currently aborts when the model starts a fenced code block (it should
+    /// call tools instead of dumping code into the chat).
+    fn default_stream_rules() -> Vec<StreamRule> {
+        match StreamRule::code_block_abort() {
+            Ok(rule) => vec![rule],
+            Err(e) => {
+                tracing::error!("failed to compile default stream rule: {e}");
+                Vec::new()
+            }
         }
     }
 
@@ -1221,6 +1238,9 @@ impl LlmRouter {
         // data-gap budget proportional to the request size so a slow-but-alive
         // stream is not aborted mid-answer (see `scale_stream_idle`).
         let idle_timeout = scale_stream_idle(idle_timeout, &messages);
+        // Code-fence abort only applies when the model has tools available —
+        // without tools, dumping a code sample is legitimate assistant output.
+        let enforce_stream_rules = !tools.is_empty();
         let mut stream = client.chat_stream_with_tools(messages, tools).await?;
         tracing::debug!("aggregate_stream_cancellable start");
 
@@ -1252,128 +1272,140 @@ impl LlmRouter {
         let mut web_search_calls = Vec::new();
         let mut thinking_blocks = Vec::new();
 
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    return Err(LlmError::Cancelled);
-                }
-                item = tokio::time::timeout(
-                    if received_any { idle_timeout } else { first_chunk_timeout },
-                    stream.next(),
-                ) => {
-                    let stream_item = match item {
-                        Ok(v) => v,
-                        Err(_) => {
-                            // No chunk arrived within the window: the server
-                            // accepted the request but the body is stalled (half-open
-                            // connection, provider-side hang). Abort as a retryable
-                            // timeout instead of blocking until the overall
-                            // `max_total_duration_secs` deadline — a hung stream
-                            // must surface within the idle window, not minutes later.
-                            if received_any {
+        // Unified exit so every path drops `chunk_tx` and awaits the consumer
+        // (avoids dual-consumer races when abort/retry reuses `on_chunk`).
+        let outcome: Result<LlmResponse, LlmError> = async {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return Err(LlmError::Cancelled);
+                    }
+                    item = tokio::time::timeout(
+                        if received_any { idle_timeout } else { first_chunk_timeout },
+                        stream.next(),
+                    ) => {
+                        let stream_item = match item {
+                            Ok(v) => v,
+                            Err(_) => {
+                                // No chunk arrived within the window: the server
+                                // accepted the request but the body is stalled (half-open
+                                // connection, provider-side hang). Abort as a retryable
+                                // timeout instead of blocking until the overall
+                                // `max_total_duration_secs` deadline — a hung stream
+                                // must surface within the idle window, not minutes later.
+                                if received_any {
+                                    tracing::warn!(
+                                        "stream idle timeout after {}s with no chunk; aborting stream",
+                                        idle_timeout.as_secs()
+                                    );
+                                    return Err(LlmError::Timeout(format!(
+                                        "stream idle timeout after {}s with no data",
+                                        idle_timeout.as_secs()
+                                    )));
+                                }
                                 tracing::warn!(
-                                    "stream idle timeout after {}s with no chunk; aborting stream",
-                                    idle_timeout.as_secs()
+                                    "stream first chunk timeout after {}s with no chunk; aborting stream",
+                                    first_chunk_timeout.as_secs()
                                 );
                                 return Err(LlmError::Timeout(format!(
-                                    "stream idle timeout after {}s with no data",
-                                    idle_timeout.as_secs()
+                                    "stream first chunk timeout after {}s with no data",
+                                    first_chunk_timeout.as_secs()
                                 )));
                             }
-                            tracing::warn!(
-                                "stream first chunk timeout after {}s with no chunk; aborting stream",
-                                first_chunk_timeout.as_secs()
-                            );
-                            return Err(LlmError::Timeout(format!(
-                                "stream first chunk timeout after {}s with no data",
-                                first_chunk_timeout.as_secs()
-                            )));
-                        }
-                    };
-                    match stream_item {
-                        Some(Ok(chunk)) => {
-                            received_any = true;
-                            if let Some(ref delta) = chunk.text {
-                                text.push_str(delta);
-                            }
-                            if let Some(ref r) = chunk.reasoning {
-                                reasoning.push_str(r);
-                            }
-                            if !chunk.tool_calls.is_empty() {
-                                tool_calls.extend(chunk.tool_calls.clone());
-                            }
-                            if !chunk.web_search_calls.is_empty() {
-                                web_search_calls.extend(chunk.web_search_calls.clone());
-                            }
-                            if !chunk.thinking_blocks.is_empty() {
-                                thinking_blocks.extend(chunk.thinking_blocks.clone());
-                            }
-                            if chunk.finish_reason.is_some() {
-                                finish_reason = chunk.finish_reason;
-                            }
-                            if chunk.usage.is_some() {
-                                usage = chunk.usage.clone();
-                            }
-                            if chunk.model.is_some() {
-                                model = chunk.model.clone();
-                            }
-                            // Non-blocking: consumer session calls on_chunk asynchronously
-                            if let Err(e) = chunk_tx.try_send(chunk) {
-                                tracing::warn!("chunk consumer channel full, dropping chunk: {}", e);
-                            }
+                        };
+                        match stream_item {
+                            Some(Ok(chunk)) => {
+                                received_any = true;
+                                if let Some(ref delta) = chunk.text {
+                                    text.push_str(delta);
+                                }
+                                if let Some(ref r) = chunk.reasoning {
+                                    reasoning.push_str(r);
+                                }
+                                if !chunk.tool_calls.is_empty() {
+                                    tool_calls.extend(chunk.tool_calls.clone());
+                                }
+                                if !chunk.web_search_calls.is_empty() {
+                                    web_search_calls.extend(chunk.web_search_calls.clone());
+                                }
+                                if !chunk.thinking_blocks.is_empty() {
+                                    thinking_blocks.extend(chunk.thinking_blocks.clone());
+                                }
+                                if chunk.finish_reason.is_some() {
+                                    finish_reason = chunk.finish_reason;
+                                }
+                                if chunk.usage.is_some() {
+                                    usage = chunk.usage.clone();
+                                }
+                                if chunk.model.is_some() {
+                                    model = chunk.model.clone();
+                                }
 
-                            // Check stream rules against accumulated output
-                            if !text.is_empty() {
-                                let rules = stream_rules.read().await;
-                                if let Some(match_result) = check_stream_rules(&rules, &text) {
-                                    drop(rules);
-                                    match match_result.mode {
-                                        StreamRuleMode::Warn => {
-                                            tracing::warn!(
-                                                "stream rule '{}' triggered (warn): matched '{}'",
-                                                match_result.rule_name, match_result.matched_text
-                                            );
-                                        }
-                                        StreamRuleMode::Abort => {
-                                            tracing::warn!(
-                                                "stream rule '{}' triggered (abort): matched '{}'",
-                                                match_result.rule_name, match_result.matched_text
-                                            );
-                                            return Err(LlmError::StreamAborted(
-                                                match_result.rule_name,
-                                                match_result.inject,
-                                            ));
+                                // Evaluate rules BEFORE forwarding so an aborting
+                                // fence chunk never reaches the UI / partial_thought
+                                // (retry reuses the same on_chunk).
+                                if enforce_stream_rules && !text.is_empty() {
+                                    let rules = stream_rules.read().await;
+                                    if let Some(match_result) = check_stream_rules(&rules, &text) {
+                                        drop(rules);
+                                        match match_result.mode {
+                                            StreamRuleMode::Warn => {
+                                                tracing::warn!(
+                                                    "stream rule '{}' triggered (warn): matched '{}'",
+                                                    match_result.rule_name, match_result.matched_text
+                                                );
+                                            }
+                                            StreamRuleMode::Abort => {
+                                                tracing::warn!(
+                                                    "stream rule '{}' triggered (abort): matched '{}'",
+                                                    match_result.rule_name, match_result.matched_text
+                                                );
+                                                return Err(LlmError::StreamAborted(
+                                                    match_result.rule_name,
+                                                    match_result.inject,
+                                                ));
+                                            }
                                         }
                                     }
                                 }
+
+                                // Non-blocking: consumer session calls on_chunk asynchronously
+                                if let Err(e) = chunk_tx.try_send(chunk) {
+                                    tracing::warn!(
+                                        "chunk consumer channel full, dropping chunk: {}",
+                                        e
+                                    );
+                                }
                             }
+                            Some(Err(e)) => return Err(e),
+                            None => break,
                         }
-                        Some(Err(e)) => return Err(e),
-                        None => break,
                     }
                 }
             }
+
+            Ok(LlmResponse {
+                text,
+                tool_calls,
+                finish_reason,
+                usage: usage.unwrap_or_default(),
+                model,
+                reasoning: if reasoning.is_empty() {
+                    None
+                } else {
+                    Some(reasoning)
+                },
+                web_search_calls,
+                thinking_blocks,
+            })
         }
+        .await;
 
         drop(chunk_tx);
         if let Err(e) = consumer.await {
             tracing::warn!("stream chunk consumer action panicked: {}", e);
         }
-
-        Ok(LlmResponse {
-            text,
-            tool_calls,
-            finish_reason,
-            usage: usage.unwrap_or_default(),
-            model,
-            reasoning: if reasoning.is_empty() {
-                None
-            } else {
-                Some(reasoning)
-            },
-            web_search_calls,
-            thinking_blocks,
-        })
+        outcome
     }
 
     /// §3.7: Set the active stream rules.
@@ -2382,6 +2414,34 @@ mod tests {
         let cfg = RouterConfig::default();
         let router = LlmRouter::new(cfg);
         assert!(!router.balanced_model_active());
+    }
+
+    #[tokio::test]
+    async fn production_router_seeds_code_block_abort_rule() {
+        let router = LlmRouter::new(RouterConfig::default());
+        let matched = router
+            .check_stream_output("here:\n```rust\nfn main() {}\n```")
+            .await;
+        assert!(matched.is_some());
+        assert_eq!(matched.unwrap().mode, StreamRuleMode::Abort);
+        // Test constructors keep an empty rule list.
+        let client = Arc::new(MockStreamClient {
+            chunks: vec![],
+            fail_chat: false,
+        }) as Arc<dyn LlmClient>;
+        let test_router = LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
+        assert!(
+            test_router
+                .check_stream_output("here:\n```rust\nfn main() {}\n```")
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]

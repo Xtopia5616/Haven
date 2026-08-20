@@ -96,11 +96,11 @@ npm run check
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`），内嵌的实体 ID 必须是规范格式。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。
-- 数据库 schema 由 `haven_memory::schema::init_schema` 幂等创建，**无迁移层**；旧版本库（缺必需列）启动时报错，删除 haven.db 重建。
+- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：`SCHEMA_SQL` 幂等建表 + `PRAGMA user_version` / `MIGRATIONS` 版本化迁移（当前见 `SCHEMA_VERSION`）。缺 `REQUIRED_COLUMNS` 的远古库启动时报错，删除 haven.db 重建；`user_version` 高于本二进制支持版本时拒绝打开。演进必须新增 migration 并 bump 版本，详见 `docs/memory-architecture.md`。
 
 ## 通知 / 日志 / 错误处理规范
 
-统一规范见 `docs/conventions.md`（前端 `logger.*` 禁止裸 `console.*`；后端 `tracing` + 命令错误走 `log_err(ctx, e)`；通知事件驱动，前端只经 `addNotification(msg, type, duration)`；Tauri 命令统一 `Result<T, String>`）。
+统一规范见 `docs/conventions.md`（v1.3）：前端 `logger.*` 禁止裸 `console.*`；后端 `tracing` + 命令错误走 `log_err(ctx, e)`；通知双通道（应用内 toast / Windows），系统事件集中在 `+layout` 经 `addNotification`，用户操作可页面直调；Tauri 命令统一 `Result<T, String>`。已知漂移与优化项见该文档 §6。
 
 ## 命名规范
 

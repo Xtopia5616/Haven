@@ -14,6 +14,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/stores.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import logger from '$lib/logger.ts';
 	import { registerOne } from '$lib/events.ts';
 	import SkillCard from '$lib/SkillCard.svelte';
@@ -55,7 +56,7 @@
 			}
 		} catch (e) {
 			builtinTools = [];
-			addNotification(`加载工具列表失败: ${e}`, 'error', 3000);
+			addNotification(`加载工具列表失败: ${formatError(e)}`, 'error', 3000);
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
@@ -82,6 +83,15 @@
 			mcpServers = [];
 			logger.warn('tools', 'list_mcp_tools error', e);
 			return false;
+		}
+	}
+
+	async function resetToolCircuits() {
+		try {
+			await invoke('reset_tool_circuits');
+			addNotification('工具熔断已重置', 'success', 2500);
+		} catch (e) {
+			addNotification(`重置工具熔断失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -113,7 +123,7 @@
 				);
 			}
 		} catch (e) {
-			addNotification(`刷新 MCP 服务器失败: ${e}`, 'error', 3000);
+			addNotification(`刷新 MCP 服务器失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -152,7 +162,7 @@
 			if (refresh) await refresh();
 		} catch (e) {
 			setList(prev);
-			addNotification(`切换 ${name} 失败: ${e}`, 'error', 3000);
+			addNotification(`切换 ${name} 失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -170,7 +180,7 @@
 			await refreshSkillList();
 			addNotification('技能已刷新', 'success', 2000);
 		} catch (e) {
-			addNotification(`刷新技能失败: ${e}`, 'error', 3000);
+			addNotification(`刷新技能失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -179,7 +189,7 @@
 			const path = await invoke('open_skills_dir');
 			addNotification(`已打开: ${path}`, 'info', 3000);
 		} catch (e) {
-			addNotification(`打开技能文件夹失败: ${e}`, 'error', 3000);
+			addNotification(`打开技能文件夹失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -216,7 +226,7 @@
 			closeDialog();
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`操作失败: ${e}`, 'error', 4000);
+			addNotification(`操作失败: ${formatError(e)}`, 'error', 4000);
 		}
 	}
 
@@ -229,7 +239,7 @@
 			addNotification(`已移除 ${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`移除失败: ${e}`, 'error', 3000);
+			addNotification(`移除失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -243,7 +253,7 @@
 			addNotification(`刷新成功：${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
-			addNotification(`刷新失败: ${e}`, 'error', 3000);
+			addNotification(`刷新失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -305,6 +315,11 @@
 		<div class="section">
 			<div class="toolbar">
 				<h2>Built-in Tools</h2>
+				<div class="toolbar-actions">
+					<button class="md-btn md-btn--outlined" onclick={resetToolCircuits}>
+						重置熔断
+					</button>
+				</div>
 			</div>
 			{#if builtinTools.length === 0}
 				<div class="empty-state">

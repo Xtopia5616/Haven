@@ -220,6 +220,12 @@ pub struct AgentEntry {
     /// Optional human-readable session title (shown by agents_list/UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Optional role label for discovery (e.g. `researcher`, `coder`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Optional parent session id when this agent was spawned by another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
 }
@@ -240,6 +246,8 @@ pub struct AgentInfo {
     pub started_at: String,
     pub status: AgentStatus,
     pub title: Option<String>,
+    pub role: Option<String>,
+    pub parent: Option<String>,
     pub capabilities: Vec<String>,
 }
 
@@ -310,8 +318,11 @@ impl InboxBus {
     /// Register (or re-register) the given agent: upsert its registry entry
     /// (heartbeat = "now") and make sure its mailbox file exists. Every tool
     /// call starts with this, so no separate heartbeat mechanism is needed.
+    ///
+    /// An empty `capabilities` slice on a re-register **preserves** the
+    /// stored list (heartbeats must not wipe a previously announced profile).
     pub fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()> {
-        self.register_with_title(name, capabilities, None)
+        self.register_with_profile(name, capabilities, None, None, None)
     }
 
     /// Like [`InboxBus::register`], but with an optional human-readable
@@ -323,7 +334,26 @@ impl InboxBus {
         capabilities: &[String],
         title: Option<&str>,
     ) -> anyhow::Result<()> {
+        self.register_with_profile(name, capabilities, title, None, None)
+    }
+
+    /// Full profile upsert used by spawn / announce / heartbeat.
+    ///
+    /// On re-register:
+    /// - `title` / `role` / `parent`: only overwritten when `Some`
+    /// - `capabilities`: only overwritten when non-empty (empty = preserve)
+    pub fn register_with_profile(
+        &self,
+        name: &str,
+        capabilities: &[String],
+        title: Option<&str>,
+        role: Option<&str>,
+        parent: Option<&str>,
+    ) -> anyhow::Result<()> {
         validate_agent_name(name)?;
+        if let Some(p) = parent {
+            validate_agent_name(p)?;
+        }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
         let now = now_rfc3339();
@@ -331,10 +361,22 @@ impl InboxBus {
         match reg.get_mut(name) {
             Some(e) => {
                 e.last_seen = now.clone();
-                if title.is_some() {
-                    e.title = title.map(String::from);
+                if let Some(t) = title {
+                    e.title = Some(t.to_string());
                 }
-                e.capabilities = capabilities.to_vec();
+                if let Some(r) = role {
+                    e.role = if r.is_empty() {
+                        None
+                    } else {
+                        Some(r.to_string())
+                    };
+                }
+                if let Some(p) = parent {
+                    e.parent = Some(p.to_string());
+                }
+                if !capabilities.is_empty() {
+                    e.capabilities = capabilities.to_vec();
+                }
             }
             None => {
                 reg.insert(
@@ -344,6 +386,10 @@ impl InboxBus {
                         last_seen: now.clone(),
                         started_at: now,
                         title: title.map(String::from),
+                        role: role
+                            .filter(|r| !r.is_empty())
+                            .map(String::from),
+                        parent: parent.map(String::from),
                         capabilities: capabilities.to_vec(),
                     },
                 );
@@ -392,6 +438,8 @@ impl InboxBus {
                 last_seen: e.last_seen,
                 started_at: e.started_at,
                 title: e.title,
+                role: e.role,
+                parent: e.parent,
                 capabilities: e.capabilities,
             })
             .collect();
@@ -549,6 +597,85 @@ impl InboxBus {
         Ok(None)
     }
 
+    /// Selectively drain mailbox envelopes that reply to `in_reply_to` from
+    /// `expected_from`, leaving unrelated messages in place. Used by
+    /// `message_request` wait so a blocked RPC does not steal peer mail meant
+    /// for the ReAct auto-inject path, and so a third agent cannot satisfy the
+    /// wait by forging `in_reply_to`.
+    ///
+    /// Matching rule: `in_reply_to` equals the request id, `from` equals the
+    /// original recipient, and type is `reply` or `message` (not `receipt`).
+    /// Expired matches are archived but not returned.
+    pub fn take_matching_replies(
+        &self,
+        name: &str,
+        in_reply_to: &str,
+        expected_from: &str,
+    ) -> anyhow::Result<Vec<Envelope>> {
+        validate_agent_name(name)?;
+        validate_agent_name(expected_from)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        let mailbox = self.mailbox(name);
+        let content = match std::fs::read_to_string(&mailbox) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+
+        // Single pass: classify matches vs keepers. Miss path still parses
+        // once but never rewrites; hit path avoids a second full parse.
+        let mut matching: Vec<Envelope> = Vec::new();
+        let mut archived_only: Vec<Envelope> = Vec::new();
+        let mut rest: Vec<String> = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Envelope>(trimmed) {
+                Ok(env) if is_reply_to_request(&env, in_reply_to, expected_from) => {
+                    if is_expired(&env) {
+                        archived_only.push(env);
+                    } else {
+                        matching.push(env);
+                    }
+                }
+                Ok(_) | Err(_) => rest.push(trimmed.to_string()),
+            }
+        }
+
+        if matching.is_empty() && archived_only.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Rewrite mailbox without the taken replies (preserve other lines).
+        let mut rewritten = rest.join("\n");
+        if !rewritten.is_empty() {
+            rewritten.push('\n');
+        }
+        std::fs::write(&mailbox, rewritten)?;
+
+        let to_archive: Vec<&Envelope> = matching
+            .iter()
+            .chain(archived_only.iter())
+            .collect();
+        if !to_archive.is_empty() {
+            let archive_ids = self.read_archive_tail_ids(name)?;
+            let mut af = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.archive(name))?;
+            for env in to_archive {
+                if !archive_ids.contains(&env.id) {
+                    writeln!(af, "{}", serde_json::to_string(env)?)?;
+                }
+            }
+            af.flush()?;
+        }
+        Ok(matching)
+    }
+
     /// Auto-ack every freshly read message with a lightweight `receipt`
     /// envelope back to its reply target, so the sender learns the message
     /// was actually read. Receipts are never acked themselves, and messages
@@ -647,6 +774,14 @@ fn is_online(last_seen: &str, now: DateTime<Local>) -> bool {
                 <= chrono::Duration::from_std(OFFLINE_AFTER).unwrap_or_default()
         })
         .unwrap_or(false)
+}
+
+/// Whether `env` is a substantive reply to the given request id from the
+/// expected peer (excludes auto receipts, which also set `in_reply_to`).
+fn is_reply_to_request(env: &Envelope, in_reply_to: &str, expected_from: &str) -> bool {
+    env.in_reply_to.as_deref() == Some(in_reply_to)
+        && env.from == expected_from
+        && matches!(env.r#type, MessageType::Reply | MessageType::Message)
 }
 
 /// Expired when `expires_at` is set, parses, and is in the past. Unparseable
@@ -782,6 +917,8 @@ mod tests {
             last_seen: last_seen.into(),
             started_at: "2026-01-01T00:00:00+08:00".into(),
             title: None,
+            role: None,
+            parent: None,
             capabilities: vec![],
         }
     }
@@ -1256,6 +1393,85 @@ mod tests {
         // New registrations without a title stay untitled.
         bus.register("ses-b", &[]).unwrap();
         assert!(bus.list_agents().unwrap()[1].title.is_none());
+    }
+
+    #[test]
+    fn register_preserves_capabilities_role_parent_on_empty_heartbeat() {
+        let (_dir, bus) = test_bus();
+        bus.register_with_profile(
+            "ses-a",
+            &["code".into(), "review".into()],
+            Some("worker"),
+            Some("coder"),
+            Some("ses-parent"),
+        )
+        .unwrap();
+        // Heartbeat with empty capabilities must not wipe the profile.
+        bus.register_with_title("ses-a", &[], Some("worker")).unwrap();
+        let info = bus.list_agents().unwrap().into_iter().next().unwrap();
+        assert_eq!(info.capabilities, vec!["code", "review"]);
+        assert_eq!(info.role.as_deref(), Some("coder"));
+        assert_eq!(info.parent.as_deref(), Some("ses-parent"));
+        assert_eq!(info.title.as_deref(), Some("worker"));
+        // Non-empty capabilities replace.
+        bus.register("ses-a", &["search".into()]).unwrap();
+        let info = bus.list_agents().unwrap().into_iter().next().unwrap();
+        assert_eq!(info.capabilities, vec!["search"]);
+        assert_eq!(info.role.as_deref(), Some("coder"));
+    }
+
+    #[test]
+    fn take_matching_replies_extracts_only_target_and_leaves_others() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let mut request = env_from("ses-a", "ses-b", "please do X");
+        request.r#type = MessageType::Request;
+        bus.deliver("ses-b", &request).unwrap();
+        let unrelated = env_from("ses-c", "ses-a", "noise");
+        bus.deliver("ses-a", &unrelated).unwrap();
+        let mut reply = env_from("ses-b", "ses-a", "done X");
+        reply.r#type = MessageType::Reply;
+        reply.in_reply_to = Some(request.id.clone());
+        bus.deliver("ses-a", &reply).unwrap();
+        let mut receipt = Envelope::new("ses-b", "ses-a", "已读");
+        receipt.r#type = MessageType::Receipt;
+        receipt.in_reply_to = Some(request.id.clone());
+        bus.deliver("ses-a", &receipt).unwrap();
+
+        let got = bus
+            .take_matching_replies("ses-a", &request.id, "ses-b")
+            .unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, reply.id);
+        assert_eq!(got[0].text, "done X");
+
+        // Unrelated message + receipt remain for the normal inbox drain.
+        let left = bus.read_and_archive("ses-a").unwrap();
+        assert_eq!(left.len(), 2);
+        assert!(left.iter().any(|e| e.id == unrelated.id));
+        assert!(left.iter().any(|e| e.r#type == MessageType::Receipt));
+    }
+
+    #[test]
+    fn take_matching_replies_rejects_forged_sender() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        bus.register("ses-evil", &[]).unwrap();
+        let mut request = env_from("ses-a", "ses-b", "please do X");
+        request.r#type = MessageType::Request;
+        let mut forged = env_from("ses-evil", "ses-a", "I am B");
+        forged.r#type = MessageType::Reply;
+        forged.in_reply_to = Some(request.id.clone());
+        bus.deliver("ses-a", &forged).unwrap();
+        assert!(
+            bus.take_matching_replies("ses-a", &request.id, "ses-b")
+                .unwrap()
+                .is_empty(),
+            "forged sender must not satisfy the wait"
+        );
+        assert_eq!(bus.read_and_archive("ses-a").unwrap().len(), 1);
     }
 
     #[tokio::test]

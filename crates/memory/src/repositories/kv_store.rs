@@ -29,15 +29,6 @@ impl Database {
         }
     }
 
-    pub fn delete_kv(&self, key: &str) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "DELETE FROM kv_store WHERE key = ?1",
-            rusqlite::params![key],
-        )?;
-        Ok(())
-    }
-
     /// Remove fact-extraction cursors whose session no longer exists (session rows
     /// are deleted without going through `delete_session`, e.g. history purge or
     /// older deletions before cursor cleanup was added). Also purges the
@@ -90,12 +81,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_kv() {
-        let db = test_db();
-        db.set_kv("key1", "val1").unwrap();
-        db.delete_kv("key1").unwrap();
-        assert_eq!(db.get_kv("key1").unwrap(), None);
-    }
 
     #[test]
     fn cleanup_orphan_extraction_cursors_removes_stale_keys() {

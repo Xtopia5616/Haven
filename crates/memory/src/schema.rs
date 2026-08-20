@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -35,10 +35,18 @@ struct Migration {
 ///   introduced by `normalize_predicate` (workspace → project_path, etc.) and
 ///   collapse the resulting duplicates, so single-valued constraints and the
 ///   "forget this fact" path work against rows written by older binaries.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 2,
-    apply: migrate_v2_backfill_predicate_aliases,
-}];
+/// - v3: allow `paused_awaiting_answer` on `sessions.status` (Phase 4 / F2)
+///   so ask-gate survives process restart without JSON heuristics.
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 2,
+        apply: migrate_v2_backfill_predicate_aliases,
+    },
+    Migration {
+        version: 3,
+        apply: migrate_v3_paused_awaiting_answer_status,
+    },
+];
 
 /// Rewrite pre-normalization predicate spellings to the canonical alias (the
 /// same map as `haven_memory::repositories::facts::normalize_predicate`),
@@ -79,6 +87,38 @@ fn migrate_v2_backfill_predicate_aliases(conn: &rusqlite::Connection) -> anyhow:
     Ok(())
 }
 
+/// Expand `sessions.status` CHECK to include `paused_awaiting_answer`.
+/// SQLite cannot ALTER a CHECK constraint in place, so rebuild the table.
+fn migrate_v3_paused_awaiting_answer_status(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "sessions")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys=OFF;
+        CREATE TABLE sessions_v3 (
+            id TEXT PRIMARY KEY,
+            input_text TEXT NOT NULL DEFAULT '',
+            title TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            transcript TEXT NOT NULL DEFAULT '',
+            react_state TEXT
+        );
+        INSERT INTO sessions_v3
+            (id, input_text, title, status, created_at, updated_at, transcript, react_state)
+        SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
+          FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_v3 RENAME TO sessions;
+        PRAGMA foreign_keys=ON;
+        "#,
+    )?;
+    Ok(())
+}
+
 fn user_version(conn: &rusqlite::Connection) -> anyhow::Result<i32> {
     Ok(conn
         .prepare("PRAGMA user_version")?
@@ -112,7 +152,7 @@ const SCHEMA_SQL: &[&str] = &[
         input_text TEXT NOT NULL DEFAULT '',
         title TEXT,
         status TEXT NOT NULL DEFAULT 'pending'
-            CHECK(status IN ('pending','running','paused','completed','failed','error')),
+            CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         transcript TEXT NOT NULL DEFAULT '',
@@ -684,6 +724,53 @@ mod tests {
             ],
             "legacy aliases must be rewritten and the duplicate collapsed"
         );
+    }
+
+    #[test]
+    fn v3_migration_allows_paused_awaiting_answer_status() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        // Simulate a v2 DB whose CHECK still rejects the new status.
+        set_user_version(&conn, 2).unwrap();
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE sessions_v2 (
+                id TEXT PRIMARY KEY,
+                input_text TEXT NOT NULL DEFAULT '',
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','running','paused','completed','failed','error')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                transcript TEXT NOT NULL DEFAULT '',
+                react_state TEXT
+            );
+            INSERT INTO sessions_v2
+                (id, input_text, title, status, created_at, updated_at, transcript, react_state)
+            SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
+              FROM sessions;
+            DROP TABLE sessions;
+            ALTER TABLE sessions_v2 RENAME TO sessions;
+            PRAGMA foreign_keys=ON;
+            "#,
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO sessions (id, status) VALUES ('ses-ask', 'paused_awaiting_answer')",
+                [],
+            )
+            .is_err(),
+            "v2 CHECK must reject paused_awaiting_answer"
+        );
+        init_schema(&conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.execute(
+            "INSERT INTO sessions (id, status) VALUES ('ses-ask', 'paused_awaiting_answer')",
+            [],
+        )
+        .expect("v3 CHECK must accept paused_awaiting_answer");
     }
 
     #[test]

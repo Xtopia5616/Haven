@@ -3,6 +3,7 @@
 	import { browser } from '$app/environment';
 	import { invoke } from '$lib/tauri.ts';
 	import { addNotification, recordingOverlay, imageDataUrl } from '$lib/stores.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 
 	let {
@@ -98,7 +99,7 @@
 				}
 			}
 		} catch (e) {
-			addNotification(`录音失败: ${e}`, 'error', 3000);
+			addNotification(`录音失败: ${formatError(e)}`, 'error', 3000);
 		}
 	}
 
@@ -212,8 +213,7 @@
 			try {
 				pendingImages = [...pendingImages, await fileToAttachment(f)];
 			} catch (e) {
-				const em = e instanceof Error ? e.message : '';
-				addNotification(em || '图片读取失败', 'error', 3000);
+				addNotification(formatError(e) || '图片读取失败', 'error', 3000);
 			}
 		}
 	}
@@ -275,8 +275,7 @@
 					{ media_type, data, filename: f.name, size: f.size },
 				];
 			} catch (e) {
-				const em = e instanceof Error ? e.message : '';
-				addNotification(em || '文件读取失败', 'error', 3000);
+				addNotification(formatError(e) || '文件读取失败', 'error', 3000);
 			}
 		}
 	}

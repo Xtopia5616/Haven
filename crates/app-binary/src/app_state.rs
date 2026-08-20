@@ -110,21 +110,33 @@ impl AppState {
             context_limits,
         ));
 
+        // Plan A multi-agent: `agent_spawn` creates real peer sessions through
+        // the agent layer (tools crate cannot depend on haven-agent).
+        {
+            let agent_for_spawn = agent.clone();
+            tools
+                .set_agent_spawner(std::sync::Arc::new(move |req| {
+                    let agent = agent_for_spawn.clone();
+                    Box::pin(async move { agent.spawn_peer_session(req).await })
+                }))
+                .await;
+        }
+
         let pipeline = Arc::new(InputPipeline::new());
         pipeline.set_limits(&context_limits_clone);
 
         // Periodic memory maintenance: fact decay, dedup, sensitive purge and
-        // embedding pruning run on a timer so stale memory is flushed even
-        // when no inference has happened recently. The first tick fires
-        // immediately (startup cleanup), then every 6 hours.
+        // embedding pruning. Hot-path infer only extracts + bounded-embeds, so
+        // this scheduler owns the full sweep — run once at startup, then every
+        // 6 hours. (`interval` yields immediately on the first `tick`; we use
+        // that as the startup pass instead of discarding it.)
         {
             let agent = agent.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
-                ticker.tick().await;
                 loop {
                     ticker.tick().await;
-                    agent.run_memory_maintenance().await;
+                    let _ = agent.run_memory_maintenance().await;
                 }
             });
         }

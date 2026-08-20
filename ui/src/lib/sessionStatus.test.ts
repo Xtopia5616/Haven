@@ -1,9 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { ACTION_STATUSES, statusColor, statusVariant } from './sessionStatus.ts';
+import {
+	ACTION_STATUSES,
+	isPausedStatus,
+	statusColor,
+	statusVariant,
+} from './sessionStatus.ts';
 
 describe('ACTION_STATUSES', () => {
 	it('covers the canonical backend statuses', () => {
-		expect(ACTION_STATUSES).toEqual(['pending', 'running', 'paused', 'completed', 'failed', 'error']);
+		expect(ACTION_STATUSES).toEqual([
+			'pending',
+			'running',
+			'paused',
+			'paused_awaiting_answer',
+			'completed',
+			'failed',
+			'error',
+		]);
+	});
+});
+
+describe('isPausedStatus', () => {
+	it('treats both pause flavors as paused', () => {
+		expect(isPausedStatus('paused')).toBe(true);
+		expect(isPausedStatus('paused_awaiting_answer')).toBe(true);
+		expect(isPausedStatus('pending')).toBe(false);
+		expect(isPausedStatus(undefined)).toBe(false);
 	});
 });
 
@@ -12,6 +34,7 @@ describe('statusColor', () => {
 		expect(statusColor('pending')).toBe('#666');
 		expect(statusColor('running')).toBe('var(--md-sys-color-success)');
 		expect(statusColor('paused')).toBe('#ccaa44');
+		expect(statusColor('paused_awaiting_answer')).toBe('#ccaa44');
 		expect(statusColor('completed')).toBe('#4488ff');
 		expect(statusColor('failed')).toBe('#ff4444');
 		expect(statusColor('error')).toBe('#ff4444');
@@ -29,6 +52,7 @@ describe('statusVariant', () => {
 		expect(statusVariant('pending')).toBe('default');
 		expect(statusVariant('running')).toBe('primary');
 		expect(statusVariant('paused')).toBe('warning');
+		expect(statusVariant('paused_awaiting_answer')).toBe('warning');
 		expect(statusVariant('completed')).toBe('success');
 		expect(statusVariant('failed')).toBe('error');
 		expect(statusVariant('error')).toBe('error');

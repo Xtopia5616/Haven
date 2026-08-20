@@ -79,7 +79,7 @@
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——
   附件 → 模态/意图判定 → 专用 provider + 置信度门槛 + 主模型兜底；TTS 生图等 generate 请求。
-- `registry.rs` / `auth.rs` / `stream_rules.rs`：模型注册表、鉴权、流式规则。
+- `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
 
 **判定标准**：一切「与模型 / 云端 provider 打交道的实现」都在这里；其它 crate 只通过
 `LlmRouter` / `*Client` trait 消费，不实现。
@@ -97,7 +97,7 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.4 `haven-agent` —— ReAct 编排与会话执行
 
-- `react.rs`：ReAct 循环（thought → action → observation），流式响应、快照/分支、压缩。
+- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `inject` / `snapshot_io` / `retries`），流式响应、快照/分支、压缩。
 - `session.rs`：`SessionExecutor`（会话队列、并发信号量、状态机、supplement/steering 队列）。
 - `layer.rs`：`AgentLayer`（对外入口：process_input / run_session / 事件发射）。
 - `inference.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `title.rs` / `event.rs` / `partial.rs`。
@@ -161,7 +161,8 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 - `docs/conventions.md` —— 日志 / 错误 / 通知 / 命令返回规范
 - `docs/naming.md` —— 各层命名与跨层 camelCase 边界
-- `docs/memory-architecture.md` —— 记忆持久化
+- `docs/memory-architecture.md` —— 记忆 / Facts 现状、引擎 backlog、与对话历史协作计划（短期/长期）
+- `docs/react-architecture-improvements.md` —— ReAct 对照 PI Agent Core 的改进清单与分期
 - `docs/architecture-refactor.md` —— 历史重构图谱（命令拆分 / 配置收敛 / 运行阻塞）
 
 ---
@@ -171,3 +172,6 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 日期 | 内容 |
 |---|---|
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
+| 2026-08-20 | `memory-architecture.md` 改为现状 + backlog 描述 |
+| 2026-08-20 | 相关文档增加 `react-architecture-improvements.md` |
+| 2026-08-20 | `memory-architecture.md` 增加 Facts/Episodes/对话历史协作计划 |

@@ -53,18 +53,8 @@ pub struct SessionListResponse {
     pub sessions: Vec<haven_agent::SessionInfo>,
 }
 
-/// Convert any displayable error into a frontend-facing string while logging
-/// it at ERROR level. Replaces the repetitive `.map_err(log_err)`
-/// pattern so command failures are never silently swallowed.
-///
-/// `ctx` identifies the originating Tauri command and is logged as a
-/// separate line so the original `command error: <e>` line is preserved
-/// verbatim for log scrapers / dashboards.
-pub(crate) fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
-    tracing::error!("command `{}` failed", ctx);
-    tracing::error!("command error: {}", e);
-    e.to_string()
-}
+/// Re-export: command error logging lives in `crate::logging` (conventions §1).
+pub(crate) use crate::logging::log_err;
 
 /// Run one `self` tool operation through its native entry (entry ① of the
 /// builtin two-entry contract). Settings-modifying Tauri commands route

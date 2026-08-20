@@ -34,6 +34,9 @@ use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
 pub use facts::FactsTool;
+pub use messaging::{
+    AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot, new_agent_spawner_slot,
+};
 pub use scheduled_action::{
     ScheduleMode, ScheduledActionCenter, ScheduledActionFired, ScheduledActionTool,
 };
@@ -77,6 +80,7 @@ pub async fn register_builtin_tools(
         RwLock<HashMap<String, HashMap<String, ToolBox>>>,
     >,
     catalog_version: Arc<std::sync::atomic::AtomicU64>,
+    agent_spawner: messaging::AgentSpawnerSlot,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
@@ -140,9 +144,9 @@ pub async fn register_builtin_tools(
     }));
     tools.push(Arc::new(notify::NotifyTool));
     tools.push(Arc::new(power::PowerTool));
-    // Cross-session messaging: one shared file bus, four tools. Registered
-    // unconditionally (no DB/app wiring needed); agents lazily register
-    // themselves on their first messaging call.
+    // Cross-session messaging / peer collab: shared file bus + spawn hook.
+    // Agents lazily register on first messaging call; `agent_spawn` needs the
+    // desktop-wired spawner slot (None in headless → tool errors clearly).
     let messaging_bus = Arc::new(crate::inbox::InboxBus::default_root());
     tools.push(Arc::new(messaging::AgentsListTool::new(
         messaging_bus.clone(),
@@ -153,7 +157,19 @@ pub async fn register_builtin_tools(
     tools.push(Arc::new(messaging::MessageInboxTool::new(
         messaging_bus.clone(),
     )));
-    tools.push(Arc::new(messaging::MessageReplyTool::new(messaging_bus)));
+    tools.push(Arc::new(messaging::MessageReplyTool::new(
+        messaging_bus.clone(),
+    )));
+    tools.push(Arc::new(messaging::AgentProfileTool::new(
+        messaging_bus.clone(),
+    )));
+    tools.push(Arc::new(messaging::MessageRequestTool::new(
+        messaging_bus.clone(),
+    )));
+    tools.push(Arc::new(messaging::AgentSpawnTool::new(
+        messaging_bus,
+        agent_spawner,
+    )));
     let max_tools = limits.max_tools_per_request.max(1);
     tools.push(Arc::new(load_skill::LoadSkillTool {
         skills_engine: skills_engine.clone(),

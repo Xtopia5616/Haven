@@ -17,8 +17,17 @@ pub struct BranchPoint {
     pub last_msg_at: Option<String>,
 }
 
+/// Pending `ask` tool state persisted in the snapshot (Phase 4 / C5).
+/// Replaces JSON-substring scanning of tool results after compaction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AskPending {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub step_ids: Vec<String>,
+}
+
 /// Serializable snapshot of the ReAct loop state for pause/resume (§1.3).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReActSnapshot {
     pub canonical: Vec<CanonicalMessage>,
     pub history: Vec<ReActStep>,
@@ -27,13 +36,20 @@ pub struct ReActSnapshot {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub branch_points: HashMap<u32, BranchPoint>,
     /// Wall-clock time the snapshot was written. Resume uses it to recover
-    /// messages submitted AFTER the snapshot (supplements/steering/answers
+    /// messages submitted AFTER the snapshot (follow-ups/steering/answers
     /// persisted to the DB while paused or after a crash) by TIMESTAMP —
     /// anything newer than this cannot be in the canonical, so no content
     /// comparison is needed. Missing on legacy snapshots: the canonical is
     /// trusted as complete and nothing is re-seeded.
     #[serde(default)]
     pub saved_at: Option<String>,
+    /// Explicit ask-awaiting flag (Phase 4 / C5). Set when the `ask` tool
+    /// pauses the run; cleared when a typed follow-up answer is injected.
+    /// Survives compaction (unlike JSON substring heuristics) and is the
+    /// authority for resume auto-wake gating together with DB status
+    /// `paused_awaiting_answer` (F2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_answer: Option<AskPending>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +194,7 @@ mod tests {
             step_number: 7,
             branch_points: HashMap::new(),
             saved_at: None,
+            awaiting_answer: None,
         };
         snapshot.branch_points.insert(
             4,
@@ -204,12 +221,35 @@ mod tests {
             step_number: 1,
             branch_points: HashMap::new(),
             saved_at: None,
+            awaiting_answer: None,
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("branch_points"));
+        assert!(!json.contains("awaiting_answer"));
         // Deserializing without the field works thanks to #[serde(default)].
         let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
         assert!(back.branch_points.is_empty());
+        assert!(back.awaiting_answer.is_none());
+    }
+
+    #[test]
+    fn snapshot_awaiting_answer_roundtrip() {
+        let snapshot = ReActSnapshot {
+            canonical: vec![],
+            history: vec![],
+            step_number: 2,
+            branch_points: HashMap::new(),
+            saved_at: None,
+            awaiting_answer: Some(AskPending {
+                question: "which file?".into(),
+                step_ids: vec!["step-abc".into()],
+            }),
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
+        let pending = back.awaiting_answer.expect("flag restored");
+        assert_eq!(pending.question, "which file?");
+        assert_eq!(pending.step_ids, vec!["step-abc".to_string()]);
     }
 
     #[test]

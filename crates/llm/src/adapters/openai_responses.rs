@@ -860,8 +860,8 @@ impl OpenAiResponsesAdapter {
                                 "web_search_call" => {
                                     let call_id = item.id.clone();
                                     let action = web_search_action_of(&item);
-                                    if call_id.is_some() {
-                                        state.active_web_search_id = call_id.clone();
+                                    if let Some(id) = call_id.clone() {
+                                        state.active_web_search_id = Some(id);
                                     }
                                     upsert_web_search_call(
                                         &mut state.web_search_calls,
@@ -871,13 +871,14 @@ impl OpenAiResponsesAdapter {
                                     );
                                     let mut chunk = empty_chunk();
                                     chunk.model = state.last_model.clone();
-                                    // Announce the new call immediately so the
-                                    // UI can open a dedicated card before the
-                                    // status events (which may omit item_id).
-                                    chunk.web_search = Some(
-                                        WebSearchUpdate::new(WebSearchPhase::InProgress)
-                                            .with_meta(call_id, action),
-                                    );
+                                    // Announce only when keyed: a null-id card
+                                    // would later collide with the real ws_* id.
+                                    if call_id.is_some() {
+                                        chunk.web_search = Some(
+                                            WebSearchUpdate::new(WebSearchPhase::InProgress)
+                                                .with_meta(call_id, action),
+                                        );
+                                    }
                                     return Some((Ok(chunk), state));
                                 }
                                 _ => {}
@@ -904,8 +905,14 @@ impl OpenAiResponsesAdapter {
                                         serde_json::to_value(&item).unwrap_or_default(),
                                     ),
                                 );
-                                if state.active_web_search_id.as_ref() == call_id.as_ref() {
-                                    state.active_web_search_id = None;
+                                // Keep `active_web_search_id` until the next
+                                // `output_item.added` overwrites it: a late
+                                // status event that omits `item_id` must still
+                                // resolve to this call instead of emitting a
+                                // null-id UI update (which would open a second
+                                // card).
+                                if call_id.is_some() {
+                                    state.active_web_search_id = call_id.clone();
                                 }
                                 let mut chunk = empty_chunk();
                                 chunk.model = state.last_model.clone();
@@ -925,28 +932,30 @@ impl OpenAiResponsesAdapter {
                     }
                     Ok(ResponsesStreamEvent::WebSearchInProgress { item_id }) => {
                         let call_id = item_id.or_else(|| state.active_web_search_id.clone());
-                        let action = call_id
-                            .as_deref()
-                            .and_then(|id| web_search_action_by_id(&state.web_search_calls, id));
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        chunk.web_search = Some(
-                            WebSearchUpdate::new(WebSearchPhase::InProgress)
-                                .with_meta(call_id, action),
-                        );
+                        // Skip unkeyed updates: a null call_id would create a
+                        // placeholder card that later collides with the real id.
+                        if let Some(call_id) = call_id {
+                            let action = web_search_action_by_id(&state.web_search_calls, &call_id);
+                            chunk.web_search = Some(
+                                WebSearchUpdate::new(WebSearchPhase::InProgress)
+                                    .with_meta(Some(call_id), action),
+                            );
+                        }
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::WebSearchSearching { item_id }) => {
                         let call_id = item_id.or_else(|| state.active_web_search_id.clone());
-                        let action = call_id
-                            .as_deref()
-                            .and_then(|id| web_search_action_by_id(&state.web_search_calls, id));
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        chunk.web_search = Some(
-                            WebSearchUpdate::new(WebSearchPhase::Searching)
-                                .with_meta(call_id, action),
-                        );
+                        if let Some(call_id) = call_id {
+                            let action = web_search_action_by_id(&state.web_search_calls, &call_id);
+                            chunk.web_search = Some(
+                                WebSearchUpdate::new(WebSearchPhase::Searching)
+                                    .with_meta(Some(call_id), action),
+                            );
+                        }
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::WebSearchCompleted { item_id, item }) => {
@@ -974,10 +983,15 @@ impl OpenAiResponsesAdapter {
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        chunk.web_search = Some(
-                            WebSearchUpdate::new(WebSearchPhase::Completed)
-                                .with_meta(call_id, action),
-                        );
+                        if call_id.is_some() {
+                            if let Some(id) = call_id.clone() {
+                                state.active_web_search_id = Some(id);
+                            }
+                            chunk.web_search = Some(
+                                WebSearchUpdate::new(WebSearchPhase::Completed)
+                                    .with_meta(call_id, action),
+                            );
+                        }
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::Completed { response }) => {

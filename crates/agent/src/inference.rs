@@ -265,7 +265,8 @@ impl InferenceEngine {
         if start >= user_messages.len() {
             tracing::debug!("fact inference: no new messages since cursor");
             // Nothing new to extract; indexing catch-up happens in the
-            // maintenance pass that `infer_all` / the scheduler runs.
+            // bounded hot-path embed after `infer_session`, or the full
+            // maintenance pass the app scheduler runs.
             return;
         }
         let new_messages = &user_messages[start..];
@@ -516,27 +517,38 @@ impl InferenceEngine {
     /// duplicate facts, purge sensitive facts, flush stale low-confidence
     /// facts, and prune embeddings whose source rows were deleted, then catch
     /// up on vector indexing (facts + episodes, incl. compaction summaries).
-    /// Run after each extraction (via `infer_all`) AND periodically via the
-    /// app-level scheduler so decay never depends on inference having
-    /// happened.
-    pub async fn run_memory_maintenance(&self) {
+    /// Intended for the app-level scheduler (and explicit admin paths) — not
+    /// the ReAct hot path, which only runs [`Self::infer_session`].
+    ///
+    /// Returns the sum of rows touched by dedup / sensitive / flush / prune
+    /// (cursor cleanup and embed catch-up are best-effort and not counted).
+    pub async fn run_memory_maintenance(&self) -> u64 {
         let db = self.db.clone();
-        let _ = db
+        let cleaned = db
             .run_blocking(move |db| {
-                if let Err(e) = db.dedup_facts() {
-                    tracing::warn!("memory maintenance: dedup_facts failed: {}", e);
+                let mut total = 0u64;
+                match db.dedup_facts() {
+                    Ok(n) => total += n,
+                    Err(e) => tracing::warn!("memory maintenance: dedup_facts failed: {}", e),
                 }
-                if let Err(e) = db.delete_sensitive_facts() {
-                    tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e);
+                match db.delete_sensitive_facts() {
+                    Ok(n) => total += n,
+                    Err(e) => {
+                        tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e)
+                    }
                 }
-                if let Err(e) = db.flush_low_confidence(0.3) {
-                    tracing::warn!("memory maintenance: flush_low_confidence failed: {}", e);
+                match db.flush_low_confidence(0.3) {
+                    Ok(n) => total += n,
+                    Err(e) => {
+                        tracing::warn!("memory maintenance: flush_low_confidence failed: {}", e)
+                    }
                 }
-                if let Err(e) = db.prune_orphaned_embeddings() {
-                    tracing::warn!(
+                match db.prune_orphaned_embeddings() {
+                    Ok(n) => total += n,
+                    Err(e) => tracing::warn!(
                         "memory maintenance: prune_orphaned_embeddings failed: {}",
                         e
-                    );
+                    ),
                 }
                 if let Err(e) = db.cleanup_orphan_extraction_cursors() {
                     tracing::warn!(
@@ -544,12 +556,14 @@ impl InferenceEngine {
                         e
                     );
                 }
-                Ok::<(), anyhow::Error>(())
+                Ok::<u64, anyhow::Error>(total)
             })
-            .await;
+            .await
+            .unwrap_or(0);
         // Catch up on vector indexing too, so memory that accumulated while
         // the embedding model was unconfigured gets indexed once it is set up.
         self.embed_new_memory().await;
+        cleaned
     }
 
     /// Retrieve the memory items most relevant to `query`. Uses the
@@ -601,13 +615,14 @@ impl InferenceEngine {
             }
         }
 
-        // Keyword fallback.
+        // Keyword fallback (CJK-aware terms for episodes; full query for FTS facts).
         let db = self.db.clone();
         let query_owned = query.to_string();
         db.run_blocking(move |db| {
             let hits: Vec<serde_json::Value> = if entity == entity_kind::EPISODE {
-                let terms: Vec<&str> = query_owned.split_whitespace().collect();
-                db.search_episodes_by_keywords(&terms, limit)
+                let terms = haven_common::text::memory_recall_terms(&query_owned);
+                let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
+                db.search_episodes_by_keywords(&term_refs, limit)
                     .unwrap_or_default()
                     .into_iter()
                     .map(|text| serde_json::json!({ "entity_id": "", "text": text, "score": 0.0, "model": "" }))
@@ -665,9 +680,9 @@ impl InferenceEngine {
     /// filter, degenerate rejection, confidence floor for brand-new facts,
     /// field sanitization / predicate normalization / tag whitelist.
     /// Maintenance (dedup, sensitive purge, low-confidence flush) is NOT
-    /// inlined here — it runs once per session via `infer_all` →
-    /// `run_memory_maintenance` (and on the app scheduler), so the same facts
-    /// are never swept twice.
+    /// inlined here — it runs on the app scheduler via
+    /// `run_memory_maintenance`, so the ReAct hot path never pays for a
+    /// full-table sweep after every extract.
     async fn persist_fact_batch(&self, facts: Vec<FactDraft>) {
         let db = self.db.clone();
         let sanitize_max = self.sanitize_max_chars;
@@ -863,12 +878,13 @@ impl InferenceEngine {
         lines.join("\n")
     }
 
-    /// Run fact inference (the single memory channel — preferences are facts
-    /// tagged `preference`), followed by the maintenance pass so stale facts
-    /// are flushed even when extraction found nothing new.
-    pub async fn infer_all(&self, session_id: &str) {
+    /// Hot-path memory update for a session: extract new facts, then catch up
+    /// a **bounded** embedding batch for newly written rows. Does **not** run
+    /// full-table dedup / sensitive / flush — that stays on the scheduler via
+    /// [`Self::run_memory_maintenance`].
+    pub async fn infer_session(&self, session_id: &str) {
         self.infer_facts(session_id).await;
-        self.run_memory_maintenance().await;
+        self.embed_new_memory().await;
     }
 }
 
