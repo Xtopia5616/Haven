@@ -10,6 +10,7 @@
 	import StatusDot from '$lib/StatusDot.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import { ROLE_KEYS, modelCards } from '$lib/modelRoles.ts';
+	import { inputFormats } from '$lib/inputFormats.ts';
 
 	/**
 	 * LLM model configuration (providers + role slots).
@@ -575,9 +576,109 @@
 	}
 </script>
 
+<div class="section input-section">
+	<h2>输入</h2>
+	<p class="model-hint">每种输入通道的处理方式与限制。保存后对聊天输入框生效，后端校验使用相同配置。</p>
+
+	<div class="card-list">
+		{#each inputFormats as format (format.id)}
+			<div class="settings-card">
+				<div class="card-head">
+					<span class="card-title">{format.label}</span>
+					<p class="card-hint">{format.hint}</p>
+				</div>
+
+				{#if format.id === 'image'}
+					<p class="model-hint">
+						当前压缩：最长边 ≤{contextLimits.max_attachment_image_dim_px}px、质量
+						{Math.round(contextLimits.attachment_image_jpeg_quality * 100)}%。
+					</p>
+					<div class="form-row switch-row">
+						<span class="switch-label">图片理解使用专用视觉模型</span>
+						<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(/** @type {boolean} */ v) => { llmConfig.vision_use_image_model = v; }} />
+					</div>
+					<div class="form-row">
+						<label for="max-attachment-images">单条消息最多图片数</label>
+						<MaterialNumberField
+							id="max-attachment-images"
+							value={contextLimits.max_attachment_images}
+							min={1}
+							max={20}
+							step={1}
+							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_images = v; }}
+						/>
+					</div>
+					<div class="form-row">
+						<label for="max-attachment-image-mb">单张图片大小上限 (MiB)</label>
+						<MaterialNumberField
+							id="max-attachment-image-mb"
+							value={Math.round((contextLimits.max_attachment_image_bytes / 1048576) * 10) / 10}
+							min={1}
+							max={50}
+							step={1}
+							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
+						/>
+					</div>
+					<div class="form-row">
+						<label for="max-attachment-image-dim">压缩最长边 (px)</label>
+						<MaterialNumberField
+							id="max-attachment-image-dim"
+							value={contextLimits.max_attachment_image_dim_px}
+							min={512}
+							max={4096}
+							step={64}
+							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_dim_px = v; }}
+						/>
+					</div>
+					<div class="form-row">
+						<label for="attachment-image-quality">JPEG 压缩质量</label>
+						<MaterialNumberField
+							id="attachment-image-quality"
+							value={contextLimits.attachment_image_jpeg_quality}
+							min={0.1}
+							max={1}
+							step={0.05}
+							onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
+						/>
+					</div>
+				{:else if format.id === 'file'}
+					<div class="form-row">
+						<label for="max-attachment-files">单条消息最多文件数</label>
+						<MaterialNumberField
+							id="max-attachment-files"
+							value={contextLimits.max_attachment_files}
+							min={1}
+							max={20}
+							step={1}
+							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_files = v; }}
+						/>
+					</div>
+					<div class="form-row">
+						<label for="max-attachment-file-mb">单个文件大小上限 (MiB)</label>
+						<MaterialNumberField
+							id="max-attachment-file-mb"
+							value={Math.round((contextLimits.max_attachment_file_bytes / 1048576) * 10) / 10}
+							min={1}
+							max={100}
+							step={1}
+							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
+						/>
+					</div>
+				{:else if format.id === 'voice'}
+					<div class="form-row switch-row">
+						<span class="switch-label">录音转写使用专用音频模型</span>
+						<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
+					</div>
+					<p class="model-hint">STT 提供商与录音参数（VAD、采样率、时长上限）在「常规 → Audio / STT」与下方 Audio 角色卡片中配置。</p>
+				{/if}
+			</div>
+		{/each}
+	</div>
+</div>
+
 <div class="section">
 	<div class="llm-head">
-		<h2>LLM Configuration</h2>
+		<h2>模型配置</h2>
 		<div class="llm-head-actions">
 			<button class="md-btn md-btn--outlined" onclick={() => refreshAllModels()} disabled={refreshingAll}>
 				{refreshingAll ? '刷新中…' : '刷新模型列表'}
@@ -620,7 +721,7 @@
 		</div>
 	{/if}
 
-	<div class="model-list">
+	<div class="card-list model-list">
 		<div class="model-group">Core Models</div>
 		{#each roleCards.filter((c) => c.group === 'core') as card}
 			{@render rolePicker(card)}
@@ -637,7 +738,7 @@
 {#snippet rolePicker(/** @type {any} */ card)}
 	{@const slot = roleFor(card.key)}
 	{#if slot}
-	<div class="model-card">
+	<div class="settings-card">
 		<div class="picker-card">
 			<div class="model-field model-role">
 				<span class="field-label">{card.label}</span>
@@ -829,114 +930,6 @@
 </MaterialDialog>
 {/if}
 
-<div class="section input-format-section">
-	<h2>输入格式</h2>
-	<p class="model-hint">每种输入格式的处理方式与限制。保存后对聊天输入框生效，后端校验使用相同配置。</p>
-
-	<div class="format-card">
-		<h3>文本 Text</h3>
-		<p class="model-hint">文字指令直接发送给 Default Model 处理。语音转写结果也以文本形式进入同一通道，无需额外配置。</p>
-	</div>
-
-	<div class="format-card">
-		<h3>图片 Image</h3>
-		<p class="model-hint">
-			粘贴或选取的图片先压缩为 JPEG（最长边 ≤{contextLimits.max_attachment_image_dim_px}px、质量
-			{Math.round(contextLimits.attachment_image_jpeg_quality * 100)}%），再交由视觉模型理解；关闭专用模型后改由
-			Default Model 处理。
-		</p>
-		<div class="form-row switch-row">
-			<span class="switch-label">图片理解使用专用视觉模型</span>
-			<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(/** @type {boolean} */ v) => { llmConfig.vision_use_image_model = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="max-attachment-images">单条消息最多图片数</label>
-			<MaterialNumberField
-				id="max-attachment-images"
-				value={contextLimits.max_attachment_images}
-				min={1}
-				max={20}
-				step={1}
-				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_images = v; }}
-			/>
-		</div>
-		<div class="form-row">
-			<label for="max-attachment-image-mb">单张图片大小上限 (MiB)</label>
-			<MaterialNumberField
-				id="max-attachment-image-mb"
-				value={Math.round((contextLimits.max_attachment_image_bytes / 1048576) * 10) / 10}
-				min={1}
-				max={50}
-				step={1}
-				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
-			/>
-		</div>
-		<div class="form-row">
-			<label for="max-attachment-image-dim">压缩最长边 (px)</label>
-			<MaterialNumberField
-				id="max-attachment-image-dim"
-				value={contextLimits.max_attachment_image_dim_px}
-				min={512}
-				max={4096}
-				step={64}
-				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_dim_px = v; }}
-			/>
-		</div>
-		<div class="form-row">
-			<label for="attachment-image-quality">JPEG 压缩质量</label>
-			<MaterialNumberField
-				id="attachment-image-quality"
-				value={contextLimits.attachment_image_jpeg_quality}
-				min={0.1}
-				max={1}
-				step={0.05}
-				onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
-			/>
-		</div>
-	</div>
-
-	<div class="format-card">
-		<h3>文件 File</h3>
-		<p class="model-hint">
-			附件以 base64 上传，后端保存到磁盘，agent 通过 file 工具读取路径进行处理，无需额外配置。
-		</p>
-		<div class="form-row">
-			<label for="max-attachment-files">单条消息最多文件数</label>
-			<MaterialNumberField
-				id="max-attachment-files"
-				value={contextLimits.max_attachment_files}
-				min={1}
-				max={20}
-				step={1}
-				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_files = v; }}
-			/>
-		</div>
-		<div class="form-row">
-			<label for="max-attachment-file-mb">单个文件大小上限 (MiB)</label>
-			<MaterialNumberField
-				id="max-attachment-file-mb"
-				value={Math.round((contextLimits.max_attachment_file_bytes / 1048576) * 10) / 10}
-				min={1}
-				max={100}
-				step={1}
-				onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
-			/>
-		</div>
-	</div>
-
-	<div class="format-card">
-		<h3>语音 Voice</h3>
-		<p class="model-hint">
-			按住热键录音，经 STT 转写为文本后作为普通消息发送；转写可走专用音频模型或使用 Default Model。
-		</p>
-		<div class="form-row switch-row">
-			<span class="switch-label">录音转写使用专用音频模型</span>
-			<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
-		</div>
-		<p class="model-hint">STT 提供商与录音参数（VAD、采样率、时长上限）在「常规 → Audio / STT」与上方 Audio 角色卡片中配置。</p>
-	</div>
-</div>
-
 <ApiKeyDialog
 	open={keyDlg.open}
 	label={keyDlg.label}
@@ -956,11 +949,39 @@
 		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase; letter-spacing: 1px; margin-bottom: var(--md-sys-space-lg);
 	}
-	.input-format-section {
+	.input-section {
 		max-width: 640px;
 	}
-	.input-format-section .form-row :global(.md-number-field) {
+	.input-section .form-row :global(.md-number-field) {
 		width: 200px;
+	}
+	.card-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-md);
+	}
+	.settings-card {
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-lowest);
+		padding: var(--md-sys-space-md);
+	}
+	.card-head {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xs);
+		margin-bottom: var(--md-sys-space-sm);
+	}
+	.card-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--md-sys-color-primary);
+	}
+	.card-hint {
+		font-size: 11px;
+		color: var(--md-sys-color-on-surface-variant);
+		margin: 0;
+		line-height: 1.4;
 	}
 	.llm-head {
 		display: flex;
@@ -976,9 +997,6 @@
 		flex-shrink: 0;
 	}
 	.model-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-md);
 		margin-top: var(--md-sys-space-lg);
 	}
 	.model-group {
@@ -1047,12 +1065,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-md);
-	}
-	.model-card {
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-lowest);
-		padding: var(--md-sys-space-md);
 	}
 	.picker-card {
 		display: grid;
@@ -1128,15 +1140,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 13px;
 	}
-	.format-card {
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		padding: var(--md-sys-space-md);
-		margin-bottom: var(--md-sys-space-md);
-	}
-	.format-card h3 { font-size: 14px; font-weight: 600; color: var(--md-sys-color-primary); margin-bottom: var(--md-sys-space-sm); }
-	.format-card .model-hint { margin-top: 0; margin-bottom: var(--md-sys-space-md); }
 	.audio-stt-block {
 		margin-top: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-md);

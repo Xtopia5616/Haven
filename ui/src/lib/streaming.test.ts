@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import type { StreamMessage } from './streaming.ts';
-import { accumulateStreamChunk, applyThoughtSnap, webSearchId, finalizeStreamBlocks, newToolMessage } from './streaming.ts';
+import {
+	accumulateStreamChunk,
+	applyThoughtSnap,
+	webSearchId,
+	webSearchLabel,
+	finalizeStreamBlocks,
+	newToolMessage,
+} from './streaming.ts';
 
 const STEP_ID = 'msg-thought-1';
 const REASONING_ID = 'msg-reasoning-1';
@@ -384,6 +391,112 @@ describe('webSearchId', () => {
 	it('builds the ephemeral web-search card id with a default run of 0', () => {
 		expect(webSearchId('t', 3, 7)).toBe('tool-t-3-7-web_search');
 		expect(webSearchId('t', 3, undefined)).toBe('tool-t-3-0-web_search');
+	});
+
+	it('keys one card per call id so multi-action searches stay separate', () => {
+		expect(webSearchId('t', 3, 7, 'ws_1')).toBe('tool-t-3-7-web_search-ws_1');
+		expect(webSearchId('t', 3, 7, 'ws_2')).toBe('tool-t-3-7-web_search-ws_2');
+	});
+});
+
+describe('webSearchLabel', () => {
+	it('renders phase + action specific copy', () => {
+		expect(webSearchLabel('in_progress', 'search')).toBe('正在联网搜索…');
+		expect(webSearchLabel('searching', 'search')).toBe('正在搜索…');
+		expect(webSearchLabel('completed', 'search')).toBe('已联网搜索');
+		expect(webSearchLabel('in_progress', 'open_page')).toBe('正在打开网页…');
+		expect(webSearchLabel('completed', 'open_page')).toBe('已打开网页');
+		expect(webSearchLabel('searching', 'find_in_page')).toBe('正在页内查找…');
+		expect(webSearchLabel('completed', 'find_in_page')).toBe('已页内查找');
+	});
+});
+
+describe('accumulateStreamChunk after websearch boundary', () => {
+	it('opens a new bubble below the search card instead of appending above it', () => {
+		let m = chunk([], '我先查一下');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '正在联网搜索…',
+				streaming: true,
+			}),
+		];
+		m = chunk(m, '根据搜索结果');
+		m = chunk(m, '，今天20度');
+		expect(m.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+		]);
+		expect(m[0]).toMatchObject({ content: '我先查一下', streaming: false });
+		expect(m[2]).toMatchObject({ content: '根据搜索结果，今天20度', streaming: true });
+	});
+
+	it('opens another segment after a second search call', () => {
+		let m = chunk([], '先搜');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = chunk(m, '再打开页面');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_2'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '正在打开网页…',
+				streaming: true,
+			}),
+		];
+		m = chunk(m, '最终答案');
+		expect(m.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+			'tool-t-1-0-web_search-ws_2',
+			STEP_ID + '-2',
+		]);
+		expect(m[2]).toMatchObject({ content: '再打开页面', streaming: false });
+		expect(m[4]).toMatchObject({ content: '最终答案', streaming: true });
+	});
+});
+
+describe('applyThoughtSnap with websearch segments', () => {
+	it('keeps split bubbles and puts the remainder on the last segment', () => {
+		let m = chunk([], '我先查一下');
+		m = finalizeStreamBlocks(m, null, STEP_ID);
+		m = [
+			...m,
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+		];
+		m = chunk(m, '今天20度');
+		const out = snap(m, '我先查一下今天20度');
+		expect(out.map((x) => x.id)).toEqual([
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+		]);
+		expect(out[0]).toMatchObject({ content: '我先查一下', streaming: false });
+		expect(out[2]).toMatchObject({ content: '今天20度', streaming: false });
 	});
 });
 

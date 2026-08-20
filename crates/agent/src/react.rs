@@ -3995,12 +3995,14 @@ impl StreamForwarder {
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
-            if let Some(phase) = c.web_search {
+            if let Some(ws) = &c.web_search {
                 let _ = ws_tx_c.send(AgentEvent::WebSearch {
                     session_id: session_id_c.to_string(),
-                    phase: phase.as_str().to_string(),
+                    phase: ws.phase.as_str().to_string(),
                     step_number: step_num,
                     run_id,
+                    call_id: ws.call_id.clone(),
+                    action: ws.action.clone(),
                 });
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }

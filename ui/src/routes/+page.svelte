@@ -21,6 +21,7 @@
 		accumulateStreamChunk,
 		applyThoughtSnap,
 		webSearchId,
+		webSearchLabel,
 		finalizeStreamBlocks,
 		newToolMessage,
 	} from '$lib/streaming.ts';
@@ -70,7 +71,7 @@
 	let inputRouterRef = /** @type {any} */ ($state(null));
 
 	// Attachment & compression limits for the input router, loaded from the
-	// persisted [context_limits] config (editable on the settings "输入格式"
+	// persisted [context_limits] config (editable on the settings "输入"
 	// page). Defaults mirror the backend config until settings arrive.
 	let inputLimits = $state({
 		maxImages: 4,
@@ -1444,24 +1445,54 @@
 					const data = event.payload || {};
 					const tid = data.session_id;
 					if (!tid || (activeSessionId && tid !== activeSessionId)) return;
-					const wsId = webSearchId(tid, data.step_number, data.run_id);
+					// Mirror agent:action: flush queued text first, then finalize
+					// the current thought/reasoning bubble so post-search deltas
+					// open a NEW bubble below this card instead of appending above.
+					flushChunksNow();
+					const callId = data.call_id || null;
+					const wsId = webSearchId(tid, data.step_number, data.run_id, callId);
+					const { reasoningId, thoughtId } = blockIdsOf(
+						tid,
+						data.step_number,
+						data.run_id,
+					);
+					const content = webSearchLabel(data.phase, data.action);
 					updateSessionMessages(tid, (m) => {
 						const existing = m.find((x) => x.id === wsId);
+						// Finalize only when opening a NEW card — later phase
+						// updates for the same call_id must not re-finalize a
+						// post-search bubble that already started streaming.
+						let next = m;
+						if (!existing) {
+							if (reasoningId) pruneSeq(reasoningId);
+							if (thoughtId) pruneSeq(thoughtId);
+							next = finalizeStreamBlocks(next, reasoningId, thoughtId);
+						}
 						if (data.phase === 'completed') {
-							if (!existing) return m;
-							return m.map((x) =>
-								x.id === wsId
-									? { ...x, streaming: false, content: '已联网搜索' }
-									: x,
+							if (!existing) {
+								return [
+									...next,
+									newToolMessage({
+										id: wsId,
+										stepNumber: data.step_number,
+										toolName: 'web_search',
+										time: new Date().toLocaleTimeString(),
+										content,
+										streaming: false,
+									}),
+								];
+							}
+							return next.map((x) =>
+								x.id === wsId ? { ...x, streaming: false, content } : x,
 							);
 						}
-						// in_progress / searching: keep the indicator alive.
-						const content = data.phase === 'searching' ? '正在搜索…' : '正在联网搜索…';
 						if (existing) {
-							return m.map((x) => (x.id === wsId ? { ...x, content } : x));
+							return next.map((x) =>
+								x.id === wsId ? { ...x, content, streaming: true } : x,
+							);
 						}
 						return [
-							...m,
+							...next,
 							newToolMessage({
 								id: wsId,
 								stepNumber: data.step_number,

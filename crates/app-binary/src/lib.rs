@@ -1331,6 +1331,8 @@ mod tests {
                     phase: "searching".into(),
                     step_number: 1,
                     run_id: 1,
+                    call_id: Some("ws_1".into()),
+                    action: Some("search".into()),
                 },
                 "agent:web_search",
             ),

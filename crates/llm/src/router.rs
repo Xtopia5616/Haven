@@ -2020,7 +2020,7 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_stream_forwards_web_search_phases_and_collects_calls() {
-        use crate::types::WebSearchPhase;
+        use crate::types::{WebSearchPhase, WebSearchUpdate};
         let chunks: Vec<Result<StreamChunk, LlmError>> = vec![
             Ok(StreamChunk {
                 text: None,
@@ -2029,7 +2029,10 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
-                web_search: Some(WebSearchPhase::InProgress),
+                web_search: Some(
+                    WebSearchUpdate::new(WebSearchPhase::InProgress)
+                        .with_meta(Some("ws_1".into()), Some("search".into())),
+                ),
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
             }),
@@ -2040,7 +2043,10 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
-                web_search: Some(WebSearchPhase::Searching),
+                web_search: Some(
+                    WebSearchUpdate::new(WebSearchPhase::Searching)
+                        .with_meta(Some("ws_1".into()), Some("search".into())),
+                ),
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
             }),
@@ -2051,7 +2057,10 @@ mod tests {
                 usage: None,
                 model: None,
                 reasoning: None,
-                web_search: Some(WebSearchPhase::Completed),
+                web_search: Some(
+                    WebSearchUpdate::new(WebSearchPhase::Completed)
+                        .with_meta(Some("ws_1".into()), Some("search".into())),
+                ),
                 web_search_calls: vec![serde_json::json!({
                     "type": "web_search_call",
                     "id": "ws_1",
@@ -2090,8 +2099,11 @@ mod tests {
         let phases_clone = phases.clone();
         let resp = router
             .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], move |c| {
-                if let Some(p) = c.web_search {
-                    phases_clone.lock().unwrap().push(p.as_str().to_string());
+                if let Some(p) = &c.web_search {
+                    phases_clone
+                        .lock()
+                        .unwrap()
+                        .push(p.phase.as_str().to_string());
                 }
             })
             .await

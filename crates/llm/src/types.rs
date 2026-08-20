@@ -101,6 +101,40 @@ impl WebSearchPhase {
     }
 }
 
+/// One live web-search status update. DeepSeek can emit several
+/// `web_search_call` items in a single turn (`search` → `open_page` →
+/// `find_in_page`); `call_id` / `action` let the UI render each as its own
+/// card instead of collapsing them into one indicator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WebSearchUpdate {
+    pub phase: WebSearchPhase,
+    /// Provider item id (`ws_…` / `web_search_call` id). Optional when the
+    /// SSE status event omitted `item_id` and no prior `output_item.added`
+    /// was seen for this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// DeepSeek `action.type`: `search` / `open_page` / `find_in_page`.
+    /// Often absent until `output_item.done` carries the full payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+}
+
+impl WebSearchUpdate {
+    pub fn new(phase: WebSearchPhase) -> Self {
+        Self {
+            phase,
+            call_id: None,
+            action: None,
+        }
+    }
+
+    pub fn with_meta(mut self, call_id: Option<String>, action: Option<String>) -> Self {
+        self.call_id = call_id;
+        self.action = action;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmResponse {
     pub text: String,
@@ -368,9 +402,9 @@ pub struct StreamChunk {
     /// reasoning_content, Claude's extended thinking).
     pub reasoning: Option<String>,
     /// Live web search status (in_progress → searching → completed). Set on
-    /// the chunk matching the provider's stream event; the UI renders the
-    /// "正在联网搜索…" indicator from it.
-    pub web_search: Option<WebSearchPhase>,
+    /// the chunk matching the provider's stream event; the UI renders one
+    /// card per `call_id` from it.
+    pub web_search: Option<WebSearchUpdate>,
     /// Raw `web_search_call` items accumulated while streaming (see
     /// [`haven_common::types::CanonicalMessage::web_search_calls`]).
     pub web_search_calls: Vec<serde_json::Value>,

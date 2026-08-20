@@ -32,10 +32,31 @@ export interface StreamMessage {
 	_ts?: number;
 }
 
-/** `tool-<sessionId>-<step>-<run>-web_search` (provider built-in search card;
- *  not a persisted entity, so its id never needs to match a DB row). */
-export const webSearchId = (sessionId: string, stepNumber: number, runId: number | null | undefined) =>
-	`tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search`;
+/** `tool-<sessionId>-<step>-<run>-web_search[-<callId>]` (provider built-in
+ *  search card; not a persisted entity, so its id never needs to match a DB
+ *  row). One card per `callId` so DeepSeek's search → open_page → find_in_page
+ *  sequence renders as separate steps. */
+export const webSearchId = (
+	sessionId: string,
+	stepNumber: number,
+	runId: number | null | undefined,
+	callId: string | null | undefined = null,
+) =>
+	`tool-${sessionId}-${stepNumber}-${runId ?? 0}-web_search${callId ? `-${callId}` : ''}`;
+
+/** Live label for a built-in web_search card, keyed by phase + action. */
+export function webSearchLabel(phase: string | null | undefined, action: string | null | undefined): string {
+	const a = action || 'search';
+	if (phase === 'completed') {
+		if (a === 'open_page') return '已打开网页';
+		if (a === 'find_in_page') return '已页内查找';
+		return '已联网搜索';
+	}
+	if (a === 'open_page') return '正在打开网页…';
+	if (a === 'find_in_page') return '正在页内查找…';
+	if (phase === 'searching') return '正在搜索…';
+	return '正在联网搜索…';
+}
 
 /**
  * Finalize every streaming block belonging to a step: the reasoning block
@@ -142,12 +163,73 @@ function newStreamMessage({
  * @param {{ messageId: string, delta: string, msgType: string|undefined, stepNumber: number, runId: number, time: string }} opts
  * @returns {Array<object>}
  */
+/** Next suffix id for a post-tool / post-websearch thought segment
+ *  (`messageId-1`, `messageId-2`, …). Scans existing siblings so repeated
+ *  mid-stream tool boundaries keep opening fresh bubbles. */
+function nextSegmentId(messages: StreamMessage[], messageId: string): string {
+	const prefix = messageId + '-';
+	let max = 0;
+	for (const m of messages) {
+		if (!m.id.startsWith(prefix)) continue;
+		const n = Number(m.id.slice(prefix.length));
+		if (Number.isFinite(n) && n > max) max = n;
+	}
+	return `${messageId}-${max + 1}`;
+}
+
+/** Append `delta` onto an already-streaming segment, or open a new one at the
+ *  tail when every sibling of `messageId` has been finalized (websearch /
+ *  local tool boundary). */
+function appendAfterFinalized(
+	messages: StreamMessage[],
+	opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string },
+): StreamMessage[] {
+	const { messageId, delta, msgType, stepNumber, runId, time } = opts;
+	const prefix = messageId + '-';
+	// Prefer the newest still-streaming sibling so consecutive deltas after a
+	// single boundary stay in one bubble.
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const id = messages[i].id;
+		if ((id === messageId || id.startsWith(prefix)) && messages[i].streaming === true) {
+			const curr = messages[i].content || '';
+			const content = delta.startsWith(curr) ? delta : curr + delta;
+			const next = [...messages];
+			next[i] = { ...next[i], content, streaming: true };
+			return next;
+		}
+	}
+	const newMsg = newStreamMessage({
+		id: nextSegmentId(messages, messageId),
+		content: delta,
+		msgType,
+		stepNumber,
+		runId,
+		time,
+	});
+	return [...messages, newMsg];
+}
+
 export function accumulateStreamChunk(messages: StreamMessage[], opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string }): StreamMessage[] {
 	const { messageId, delta, msgType, stepNumber, runId, time } = opts;
 	if (!delta) return messages;
 
+	// Prefer an already-open post-boundary segment (`messageId-N`) so deltas
+	// after a websearch/tool card keep appending below that card instead of
+	// reopening the pre-boundary bubble.
+	const segPrefix = messageId + '-';
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].id.startsWith(segPrefix) && messages[i].streaming === true) {
+			const curr = messages[i].content || '';
+			const content = delta.startsWith(curr) ? delta : curr + delta;
+			const next = [...messages];
+			next[i] = { ...next[i], content, streaming: true };
+			return next;
+		}
+	}
+
 	// One streaming block per step (reasoning and thought alike): no sentence
-	// splitting, so the bubble never fragments mid-stream.
+	// splitting, so the bubble never fragments mid-stream — until a tool /
+	// websearch finalizes it, after which further deltas open a new segment.
 	const idx = lastIndexById(messages, messageId);
 	if (idx >= 0) {
 		const curr = messages[idx].content || '';
@@ -159,8 +241,22 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
 		// dropped intermediate batch makes `curr` a prefix-mismatched
 		// partial, so a longer full-text delta is accepted even without the
 		// `startsWith` prefix check. A straggler incremental partial (shorter
-		// than the accumulated text) is still rejected.
+		// than the accumulated text) is still rejected — OR, when the block
+		// was finalized by a mid-stream websearch/tool boundary, an
+		// incremental delta opens a NEW bubble after the tool card.
 		if (messages[idx].streaming === false) {
+			// Mid-stream tool / websearch boundary: a card sits after this
+			// bubble, so further deltas belong in a NEW bubble below it.
+			// Checked before the full-text reconcile so a long authoritative
+			// delta cannot smash the pre-boundary bubble with post-search
+			// text. Snap-finalized bubbles at the tail still reject
+			// stragglers (and accept full-text reconcile below).
+			const hasBoundaryAfter = messages
+				.slice(idx + 1)
+				.some((x) => x.type === 'tool' || x.type === 'ask');
+			if (hasBoundaryAfter) {
+				return appendAfterFinalized(messages, opts);
+			}
 			if (delta.length > curr.length && delta !== curr) {
 				const next = [...messages];
 				next[idx] = { ...next[idx], content: delta };
@@ -216,6 +312,42 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
  */
 export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: string; reasoningId?: string; thought: string; stepNumber: number; runId: number; time: string }): StreamMessage[] {
 	const { messageId, reasoningId, thought, stepNumber, runId, time } = opts;
+	const segPrefix = messageId + '-';
+	const segmentIdxs = messages
+		.map((x, i) => (x.id === messageId || x.id.startsWith(segPrefix) ? i : -1))
+		.filter((i) => i >= 0);
+	// Mid-stream websearch / tool boundaries leave several thought segments
+	// for one minted id. Do NOT collapse them back into a single bubble —
+	// that would pull post-search text above the search card again. Finalize
+	// every segment in place; when the authoritative text is a strict
+	// extension of the earlier segments' concatenation, put the remainder
+	// on the last segment (batcher-drop recovery without undoing the split).
+	if (segmentIdxs.length > 1) {
+		const earlier = segmentIdxs
+			.slice(0, -1)
+			.map((i) => messages[i].content || '')
+			.join('');
+		const lastIdx = segmentIdxs[segmentIdxs.length - 1];
+		let lastContent = messages[lastIdx].content || '';
+		if (thought.startsWith(earlier) && thought.length >= earlier.length) {
+			const remainder = thought.slice(earlier.length);
+			if (
+				remainder === lastContent ||
+				remainder.startsWith(lastContent) ||
+				lastContent.startsWith(remainder) ||
+				remainder.length > lastContent.length
+			) {
+				lastContent = remainder;
+			}
+		}
+		return messages.map((x, i) => {
+			if (i === lastIdx) return { ...x, content: lastContent, streaming: false };
+			if (x.id === messageId || x.id.startsWith(segPrefix) || x.id === reasoningId) {
+				return { ...x, streaming: false };
+			}
+			return x;
+		});
+	}
 	const firstSegIdx = messages.findIndex((x) => x.id === messageId);
 	// Reasoning may stream AFTER the thought text started (providers that
 	// emit text and reasoning interleaved). The reasoning block belongs

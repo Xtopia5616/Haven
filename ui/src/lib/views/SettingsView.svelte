@@ -281,13 +281,13 @@
 		return v;
 	}
 
-	// Settings sub-tabs: general sections vs. the per-input-format handling
-	// page. The full `context_limits` object is sent on save so fields the UI
+	// Settings sub-tabs: general vs. 输入 (formats + model config) vs. limits.
+	// The full `context_limits` object is sent on save so fields the UI
 	// does not render are never reset to defaults.
 	let settingsTab = $state('general');
 	const settingsTabs = [
 		{ id: 'general', label: '常规' },
-		{ id: 'input', label: '输入格式' },
+		{ id: 'input', label: '输入' },
 		{ id: 'limits', label: '限制' },
 	];
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });

@@ -80,12 +80,18 @@ pub enum AgentEvent {
     },
     /// Live status of the provider's built-in web search tool. Forwarded from
     /// the stream events (`in_progress` → `searching` → `completed`) so the
-    /// UI can render the "正在联网搜索…" indicator.
+    /// UI can render one card per call. DeepSeek may emit several
+    /// `web_search_call` items (`search` / `open_page` / `find_in_page`) in
+    /// a single turn; `call_id` / `action` distinguish them.
     WebSearch {
         session_id: String,
         phase: String,
         step_number: u32,
         run_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
     },
     /// The provider stream went silent (no chunk for several seconds) while
     /// the step is still in flight. Emitted by a per-call watchdog so the UI

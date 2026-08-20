@@ -18,6 +18,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, Co
 
 use crate::types::{
     FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage, WebSearchPhase,
+    WebSearchUpdate,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -69,6 +70,31 @@ fn resolve_web_search_mode(endpoint: &ModelEndpoint) -> WebSearchMode {
         Some(v) if !v.trim().is_empty() => parse_web_search_mode(Some(v)),
         _ => web_search_mode_from_env(),
     }
+}
+
+/// `action.type` from a `web_search_call` item (`search` / `open_page` /
+/// `find_in_page`). Absent on the `output_item.added` skeleton.
+fn web_search_action_of(item: &ResponsesItem) -> Option<String> {
+    item.extra
+        .get("action")
+        .and_then(|a| a.get("type"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Look up a previously captured call's action by id (used when a status
+/// event carries `item_id` but not the full item payload).
+fn web_search_action_by_id(calls: &[Value], call_id: &str) -> Option<String> {
+    calls.iter().find_map(|c| {
+        if c.get("id").and_then(Value::as_str) == Some(call_id) {
+            c.get("action")
+                .and_then(|a| a.get("type"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        } else {
+            None
+        }
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -179,11 +205,22 @@ enum ResponsesStreamEvent {
     #[serde(rename = "response.output_item.done")]
     OutputItemDone { item: Option<ResponsesItem> },
     #[serde(rename = "response.web_search_call.in_progress")]
-    WebSearchInProgress,
+    WebSearchInProgress {
+        #[serde(default)]
+        item_id: Option<String>,
+    },
     #[serde(rename = "response.web_search_call.searching")]
-    WebSearchSearching,
+    WebSearchSearching {
+        #[serde(default)]
+        item_id: Option<String>,
+    },
     #[serde(rename = "response.web_search_call.completed")]
-    WebSearchCompleted { item: Option<ResponsesItem> },
+    WebSearchCompleted {
+        #[serde(default)]
+        item_id: Option<String>,
+        #[serde(default)]
+        item: Option<ResponsesItem>,
+    },
     #[serde(rename = "response.completed")]
     Completed {
         response: Option<ResponsesStreamResponse>,
@@ -714,6 +751,9 @@ impl OpenAiResponsesAdapter {
             /// Raw `web_search_call` items seen while streaming; flushed in
             /// the final chunk for round-tripping into the next request.
             web_search_calls: Vec<Value>,
+            /// Most recent `web_search_call` id from `output_item.added`,
+            /// used when a status event omits `item_id`.
+            active_web_search_id: Option<String>,
         }
 
         let empty_chunk = empty_chunk;
@@ -729,6 +769,7 @@ impl OpenAiResponsesAdapter {
                 usage: None,
                 saw_completed: false,
                 web_search_calls: Vec::new(),
+                active_web_search_id: None,
             },
             move |mut state| async move {
                 if state.done {
@@ -817,12 +858,27 @@ impl OpenAiResponsesAdapter {
                                     }
                                 }
                                 "web_search_call" => {
+                                    let call_id = item.id.clone();
+                                    let action = web_search_action_of(&item);
+                                    if call_id.is_some() {
+                                        state.active_web_search_id = call_id.clone();
+                                    }
                                     upsert_web_search_call(
                                         &mut state.web_search_calls,
                                         normalize_web_search_call_item(
                                             serde_json::to_value(&item).unwrap_or_default(),
                                         ),
                                     );
+                                    let mut chunk = empty_chunk();
+                                    chunk.model = state.last_model.clone();
+                                    // Announce the new call immediately so the
+                                    // UI can open a dedicated card before the
+                                    // status events (which may omit item_id).
+                                    chunk.web_search = Some(
+                                        WebSearchUpdate::new(WebSearchPhase::InProgress)
+                                            .with_meta(call_id, action),
+                                    );
+                                    return Some((Ok(chunk), state));
                                 }
                                 _ => {}
                             }
@@ -840,34 +896,69 @@ impl OpenAiResponsesAdapter {
                             // skeleton captured from `output_item.added`, or
                             // record the item when no skeleton arrived.
                             if item_type == "web_search_call" {
+                                let call_id = item.id.clone();
+                                let action = web_search_action_of(&item);
                                 upsert_web_search_call(
                                     &mut state.web_search_calls,
                                     normalize_web_search_call_item(
                                         serde_json::to_value(&item).unwrap_or_default(),
                                     ),
                                 );
+                                if state.active_web_search_id.as_ref() == call_id.as_ref() {
+                                    state.active_web_search_id = None;
+                                }
+                                let mut chunk = empty_chunk();
+                                chunk.model = state.last_model.clone();
+                                // Re-emit completed with the action so the UI
+                                // can switch "正在联网搜索…" → "已打开网页"
+                                // once the discriminator arrives.
+                                chunk.web_search = Some(
+                                    WebSearchUpdate::new(WebSearchPhase::Completed)
+                                        .with_meta(call_id, action),
+                                );
+                                return Some((Ok(chunk), state));
                             }
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
                         Some((Ok(chunk), state))
                     }
-                    Ok(ResponsesStreamEvent::WebSearchInProgress) => {
+                    Ok(ResponsesStreamEvent::WebSearchInProgress { item_id }) => {
+                        let call_id = item_id.or_else(|| state.active_web_search_id.clone());
+                        let action = call_id
+                            .as_deref()
+                            .and_then(|id| web_search_action_by_id(&state.web_search_calls, id));
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        chunk.web_search = Some(WebSearchPhase::InProgress);
+                        chunk.web_search = Some(
+                            WebSearchUpdate::new(WebSearchPhase::InProgress)
+                                .with_meta(call_id, action),
+                        );
                         Some((Ok(chunk), state))
                     }
-                    Ok(ResponsesStreamEvent::WebSearchSearching) => {
+                    Ok(ResponsesStreamEvent::WebSearchSearching { item_id }) => {
+                        let call_id = item_id.or_else(|| state.active_web_search_id.clone());
+                        let action = call_id
+                            .as_deref()
+                            .and_then(|id| web_search_action_by_id(&state.web_search_calls, id));
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        chunk.web_search = Some(WebSearchPhase::Searching);
+                        chunk.web_search = Some(
+                            WebSearchUpdate::new(WebSearchPhase::Searching)
+                                .with_meta(call_id, action),
+                        );
                         Some((Ok(chunk), state))
                     }
-                    Ok(ResponsesStreamEvent::WebSearchCompleted { item }) => {
+                    Ok(ResponsesStreamEvent::WebSearchCompleted { item_id, item }) => {
+                        let mut action = None;
+                        let mut call_id = item_id;
                         if let Some(item) = item
                             && item.item_type.as_deref() == Some("web_search_call")
                         {
+                            if call_id.is_none() {
+                                call_id = item.id.clone();
+                            }
+                            action = web_search_action_of(&item);
                             upsert_web_search_call(
                                 &mut state.web_search_calls,
                                 normalize_web_search_call_item(
@@ -875,9 +966,18 @@ impl OpenAiResponsesAdapter {
                                 ),
                             );
                         }
+                        let call_id = call_id.or_else(|| state.active_web_search_id.clone());
+                        if action.is_none()
+                            && let Some(id) = call_id.as_deref()
+                        {
+                            action = web_search_action_by_id(&state.web_search_calls, id);
+                        }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        chunk.web_search = Some(WebSearchPhase::Completed);
+                        chunk.web_search = Some(
+                            WebSearchUpdate::new(WebSearchPhase::Completed)
+                                .with_meta(call_id, action),
+                        );
                         Some((Ok(chunk), state))
                     }
                     Ok(ResponsesStreamEvent::Completed { response }) => {
@@ -1690,25 +1790,34 @@ mod tests {
             r#"{"type":"response.web_search_call.in_progress","item_id":"ws_1"}"#,
         )
         .unwrap();
-        assert!(matches!(
-            in_progress,
-            ResponsesStreamEvent::WebSearchInProgress
-        ));
+        match in_progress {
+            ResponsesStreamEvent::WebSearchInProgress {
+                item_id: Some(id),
+            } => assert_eq!(id, "ws_1"),
+            other => panic!("expected WebSearchInProgress with item_id, got {other:?}"),
+        }
 
         let searching: ResponsesStreamEvent = serde_json::from_str(
             r#"{"type":"response.web_search_call.searching","item_id":"ws_1"}"#,
         )
         .unwrap();
-        assert!(matches!(
-            searching,
-            ResponsesStreamEvent::WebSearchSearching
-        ));
+        match searching {
+            ResponsesStreamEvent::WebSearchSearching {
+                item_id: Some(id),
+            } => assert_eq!(id, "ws_1"),
+            other => panic!("expected WebSearchSearching with item_id, got {other:?}"),
+        }
 
         let completed: ResponsesStreamEvent = serde_json::from_str(
             r#"{"type":"response.web_search_call.completed","item_id":"ws_1","item":{"type":"web_search_call","id":"ws_1","status":"completed"}}"#,
         )
         .unwrap();
-        if let ResponsesStreamEvent::WebSearchCompleted { item: Some(item) } = completed {
+        if let ResponsesStreamEvent::WebSearchCompleted {
+            item_id: Some(item_id),
+            item: Some(item),
+        } = completed
+        {
+            assert_eq!(item_id, "ws_1");
             assert_eq!(item.item_type.as_deref(), Some("web_search_call"));
             assert_eq!(item.id.as_deref(), Some("ws_1"));
             assert_eq!(
@@ -1753,7 +1862,7 @@ mod tests {
 
     fn item_of(event: &ResponsesStreamEvent) -> &ResponsesItem {
         match event {
-            ResponsesStreamEvent::WebSearchCompleted { item } => item.as_ref().unwrap(),
+            ResponsesStreamEvent::WebSearchCompleted { item, .. } => item.as_ref().unwrap(),
             _ => panic!("expected WebSearchCompleted"),
         }
     }
