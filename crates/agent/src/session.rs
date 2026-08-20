@@ -916,6 +916,32 @@ impl SessionExecutor {
         self.awaiting_answer.lock().await.remove(session_id);
     }
 
+    /// Clear the in-memory ask gate and rewrite `react_state` so a crash
+    /// after inject cannot resurrect `awaiting_answer` from a stale snapshot.
+    pub async fn clear_awaiting_answer_persisted(&self, session_id: &str) {
+        self.clear_awaiting_answer(session_id).await;
+        let sid = session_id.to_string();
+        let _ = self
+            .db
+            .run_blocking(move |db| {
+                let Some(json) = db.get_react_state(&sid)? else {
+                    return Ok(());
+                };
+                let Ok(mut snapshot) =
+                    serde_json::from_str::<crate::types::ReActSnapshot>(&json)
+                else {
+                    return Ok(());
+                };
+                if snapshot.awaiting_answer.take().is_none() {
+                    return Ok(());
+                }
+                let rewritten = serde_json::to_string(&snapshot)?;
+                db.save_react_state(&sid, &rewritten)?;
+                Ok(())
+            })
+            .await;
+    }
+
     /// End a session. Since the user explicitly asked to end it, the session is
     /// always marked as Completed —regardless of whether it was still
     /// Running (forced stop) or Paused (naturally finished). Clean up
@@ -980,7 +1006,16 @@ impl SessionExecutor {
             let _ = tx.send(SessionStatus::Completed);
         }
         self.dequeue_pending(session_id).await;
-        self.cleanup_session_maps(session_id).await;
+        // F1 fence: if a handler is still marked running, leave
+        // `running_sessions` + permit + cancel token for that handler's
+        // post-exit `unmark_running`. Clearing them here would let the
+        // dispatcher reclaim the same id while the cancelled handler is
+        // still unwinding, and the late `unmark_running` would then drop
+        // the *new* claim's permit.
+        let still_running = self.running_sessions.lock().await.contains(session_id);
+        if !still_running {
+            self.cleanup_session_maps(session_id).await;
+        }
         self.sessions.lock().await.remove(session_id);
         Self::unregister_from_inbox(session_id);
         // The conversation is over — its trusted risk levels must not outlive
@@ -1500,15 +1535,13 @@ impl SessionExecutor {
         {
             let entry = { self.sessions.lock().await.get(session_id).cloned() };
             if let Some(entry) = entry {
-                let mut session = entry.lock().await;
+                let session = entry.lock().await;
                 let prev = session.status.clone();
-                if prev.is_terminal() {
-                    // Executing a tool on a Completed/Error session is always a
-                    // stale call from a racing loop (end/rollback already
-                    // finished this session). Failing fast here prevents the
-                    // force below from resurrecting a dead session. Complete
-                    // the pending Action-time row so review doesn't keep an
-                    // empty badge for a tool that never ran.
+                // Phase 2 / F1 + E4: never force memory back to Running.
+                // Refusing Paused*/terminal keeps an in-flight pause from
+                // being undone mid-batch. Pending is allowed (tests and
+                // some direct run paths never go through try_claim).
+                if prev.is_paused() || prev.is_terminal() {
                     let err = format!(
                         "execute_step: session {} is {}; refusing to execute tool '{}'",
                         session_id,
@@ -1525,17 +1558,6 @@ impl SessionExecutor {
                     )
                     .await;
                     return Err(anyhow::anyhow!(err));
-                }
-                if prev != SessionStatus::Running {
-                    // The ReAct loop runs with status Pending (the dispatcher
-                    // never flips it to Running), and scheduled scheduled_actions fire
-                    // on Paused sessions; both are legitimate tool-call moments.
-                    session.status = SessionStatus::Running;
-                    tracing::warn!(
-                        "execute_step: session {} was {} before tool call, forcing Running",
-                        session_id,
-                        prev.as_str()
-                    );
                 }
             }
         }
@@ -2454,6 +2476,32 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_step_rejects_paused_without_forcing_running() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = SessionExecutor::new(db, tools, 3);
+        let session = exec.create_session("paused tool").await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Paused)
+            .await
+            .unwrap();
+        let result = exec
+            .execute_step(
+                &session.id,
+                "nonexistent_tool",
+                serde_json::json!({}),
+                1,
+                "step-any",
+            )
+            .await;
+        assert!(result.is_err());
+        // Must not have forced memory back to Running.
+        assert_eq!(
+            exec.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
     }
 
     #[tokio::test]

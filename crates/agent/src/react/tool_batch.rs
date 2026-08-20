@@ -169,7 +169,7 @@ impl ReActEngine {
         step_num: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
         run_id: u64,
         actions: &[Action],
         thought: &Option<String>,
@@ -646,24 +646,25 @@ impl ReActEngine {
             }
             // Phase 4 / C3: no steering→answer queue transfer. Mid-run user
             // input landed in steering while status was still Running; mark
-            // those (and any follow-ups) as answers in place, set the
-            // explicit awaiting flag (C5), and either resume immediately
-            // (Pending) when a reply is already queued or pause as
-            // PausedAwaitingAnswer (F2) until the user answers.
+            // those (and any follow-ups) as answers in place. Only set the
+            // explicit awaiting flag (C5) when no reply is queued yet —
+            // otherwise Pending + is_answer inject clears the gate without
+            // leaving a stale snapshot flag that could resurrect after crash.
             self.executor.mark_user_queues_as_answer(session_id).await;
-            self.executor
-                .set_awaiting_answer(
-                    session_id,
-                    Some(crate::types::AskPending {
-                        question: question.clone(),
-                        step_ids: ask_step_ids.clone(),
-                    }),
-                )
-                .await;
             let has_answer = self.executor.has_pending_context(session_id).await;
             let status = if has_answer {
+                self.executor.clear_awaiting_answer(session_id).await;
                 SessionStatus::Pending
             } else {
+                self.executor
+                    .set_awaiting_answer(
+                        session_id,
+                        Some(crate::types::AskPending {
+                            question: question.clone(),
+                            step_ids: ask_step_ids.clone(),
+                        }),
+                    )
+                    .await;
                 SessionStatus::PausedAwaitingAnswer
             };
             self.pause_turn(
@@ -700,12 +701,42 @@ impl ReActEngine {
                     branch_points,
                 )
                 .await;
+                let ctx = StepCtx {
+                    session_id: session_id.to_string(),
+                    step_num,
+                    run_id: 0,
+                    emitter: emitter.clone(),
+                };
+                self.hooks
+                    .on_pause(self, &ctx, PauseReason::External, infer)
+                    .await;
                 return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
                     reason: PauseReason::External,
                 }));
             }
-            // Session gone (end_session/terminal cleanup) or terminal: exit.
-            None | Some(SessionStatus::Error) | Some(SessionStatus::Completed) => {
+            Some(SessionStatus::Error) => {
+                self.save_exit_snapshot(
+                    session_id,
+                    canonical,
+                    history,
+                    step_num,
+                    branch_points,
+                )
+                .await;
+                return Ok(ToolBatchOutcome::Done(LoopExit::Error(
+                    "session interrupted".into(),
+                )));
+            }
+            // Session gone (end_session/terminal cleanup) or completed: exit.
+            None | Some(SessionStatus::Completed) => {
+                self.save_exit_snapshot(
+                    session_id,
+                    canonical,
+                    history,
+                    step_num,
+                    branch_points,
+                )
+                .await;
                 return Ok(ToolBatchOutcome::Done(LoopExit::Completed));
             }
             _ => {}

@@ -324,7 +324,6 @@ impl ReActEngine {
 
     /// Replace loop hooks (tests: `hooks::NoopHooks` to skip inbox/infer).
     #[cfg(test)]
-    #[allow(dead_code)] // available for thin-loop tests that construct an engine
     pub(crate) fn with_hooks(mut self, hooks: LoopHooksHandle) -> Self {
         self.hooks = hooks;
         self

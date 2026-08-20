@@ -158,7 +158,7 @@ impl ReActEngine {
         status: SessionStatus,
         final_text: &str,
         branch_point_step: Option<u32>,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
         // Pre-minted id of the streamed thought bubble this final text is the
         // authoritative copy of (`None` mints a fresh id).
         persist_message_id: Option<&str>,
@@ -239,7 +239,7 @@ impl ReActEngine {
         snapshot_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
     ) -> anyhow::Result<()> {
         tracing::info!(
             "ReAct step budget exhausted: session={} next_step={}",

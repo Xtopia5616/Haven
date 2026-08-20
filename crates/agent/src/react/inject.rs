@@ -113,7 +113,9 @@ impl ReActEngine {
         }
 
         if cleared_ask {
-            self.executor.clear_awaiting_answer(&ctx.session_id).await;
+            self.executor
+                .clear_awaiting_answer_persisted(&ctx.session_id)
+                .await;
         }
 
         // Deliver completed background-action results as context. These are

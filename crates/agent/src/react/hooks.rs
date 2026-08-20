@@ -19,21 +19,23 @@ use super::{PauseReason, ReActEngine, StepCtx, canonical_has_image};
 #[async_trait]
 pub(crate) trait LoopHooks: Send + Sync {
     /// Prologue side effects after inject, before sanitize.
+    /// `infer(false)` is time-throttled interval extraction.
     async fn before_step(
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
     );
 
     /// Called after status is set to a pause flavor. Default: no-op.
+    /// `infer(true)` bypasses the extraction throttle (fresher transcript).
     async fn on_pause(
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
         _reason: PauseReason,
-        _infer: &(dyn Fn() + Send + Sync),
+        _infer: &(dyn Fn(bool) + Send + Sync),
     ) {
     }
 }
@@ -48,7 +50,7 @@ impl LoopHooks for DefaultHooks {
         engine: &ReActEngine,
         ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
     ) {
         engine
             .maybe_poll_inbox(&ctx.session_id, ctx, canonical)
@@ -59,7 +61,7 @@ impl LoopHooks for DefaultHooks {
             .await;
         let interval = engine.context_limits.fact_infer_interval_steps;
         if ctx.step_num > 0 && interval > 0 && ctx.step_num % interval == 0 {
-            infer();
+            infer(false);
         }
     }
 
@@ -68,9 +70,9 @@ impl LoopHooks for DefaultHooks {
         _engine: &ReActEngine,
         _ctx: &StepCtx,
         _reason: PauseReason,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
     ) {
-        infer();
+        infer(true);
     }
 }
 
@@ -84,7 +86,7 @@ impl LoopHooks for NoopHooks {
         _engine: &ReActEngine,
         _ctx: &StepCtx,
         _canonical: &mut Vec<CanonicalMessage>,
-        _infer: &(dyn Fn() + Send + Sync),
+        _infer: &(dyn Fn(bool) + Send + Sync),
     ) {
     }
 }
@@ -117,12 +119,119 @@ mod tests {
         let _ = (noop, default);
     }
 
-    #[test]
-    fn with_hooks_installs_noop_on_engine() {
-        // Smoke: ReActEngine::with_hooks accepts NoopHooks without requiring
-        // a live run (construction still needs real deps — covered when an
-        // AgentLayer test opts in). Here we only assert the handle type.
-        let hooks: LoopHooksHandle = Arc::new(NoopHooks);
-        assert!(std::sync::Arc::strong_count(&hooks) >= 1);
+    #[tokio::test]
+    async fn with_hooks_noop_skips_infer_on_before_step_and_on_pause() {
+        use crate::event::AgentEventEmitter;
+        use crate::session::SessionExecutor;
+        use async_trait::async_trait;
+        use haven_llm::client::LlmClient;
+        use haven_llm::router::LlmRouter;
+        use haven_llm::types::{LlmError, LlmResponse, StreamChunk, ToolDefinition};
+        use haven_memory::Database;
+        use haven_tools::ToolsManager;
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct SilentLlm;
+        #[async_trait]
+        impl LlmClient for SilentLlm {
+            async fn chat(
+                &self,
+                _: Vec<CanonicalMessage>,
+            ) -> Result<LlmResponse, LlmError> {
+                Err(LlmError::Unknown("silent".into()))
+            }
+            async fn chat_with_tools(
+                &self,
+                _: Vec<CanonicalMessage>,
+                _: Vec<ToolDefinition>,
+            ) -> Result<LlmResponse, LlmError> {
+                Err(LlmError::Unknown("silent".into()))
+            }
+            async fn chat_stream(
+                &self,
+                _: Vec<CanonicalMessage>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                Err(LlmError::Unknown("silent".into()))
+            }
+            async fn chat_stream_with_tools(
+                &self,
+                _: Vec<CanonicalMessage>,
+                _: Vec<ToolDefinition>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                Err(LlmError::Unknown("silent".into()))
+            }
+            async fn health_check(&self) -> Result<(), LlmError> {
+                Ok(())
+            }
+        }
+
+        struct SilentEmitter;
+        #[async_trait]
+        impl AgentEventEmitter for SilentEmitter {
+            async fn emit(&self, _: crate::event::AgentEvent) {}
+        }
+
+        let mut p = std::env::temp_dir();
+        p.push(format!("haven_noop_hooks_{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(Database::open(&p).unwrap());
+        let tools = Arc::new(ToolsManager::new());
+        let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+        let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let limits = haven_common::config::ContextLimitsConfig::default();
+        let engine =
+            ReActEngine::new(router.clone(), executor.clone(), db.clone(), 10, limits.clone())
+                .with_hooks(Arc::new(NoopHooks));
+
+        let calls = AtomicUsize::new(0);
+        let infer = |_: bool| {
+            calls.fetch_add(1, Ordering::SeqCst);
+        };
+        let emitter: Arc<dyn AgentEventEmitter> = Arc::new(SilentEmitter);
+        let ctx = StepCtx {
+            session_id: "ses-test".into(),
+            step_num: 25,
+            run_id: 1,
+            emitter: emitter.clone(),
+        };
+        let mut canonical = Vec::new();
+        engine
+            .hooks
+            .before_step(&engine, &ctx, &mut canonical, &infer)
+            .await;
+        engine
+            .hooks
+            .on_pause(&engine, &ctx, PauseReason::TurnEnd, &infer)
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "NoopHooks must not invoke infer (G1 acceptance)"
+        );
+
+        // DefaultHooks::on_pause must invoke infer(true).
+        let default_engine = ReActEngine::new(router, executor, db, 10, limits);
+        default_engine
+            .hooks
+            .on_pause(&default_engine, &ctx, PauseReason::TurnEnd, &infer)
+            .await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "DefaultHooks::on_pause must invoke infer"
+        );
     }
 }

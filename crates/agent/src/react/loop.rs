@@ -27,7 +27,7 @@ impl ReActEngine {
         start_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: Arc<dyn AgentEventEmitter>,
-        infer: &(dyn Fn() + Send + Sync),
+        infer: &(dyn Fn(bool) + Send + Sync),
         run_id: u64,
     ) -> anyhow::Result<LoopExit> {
         let max_steps = *self.max_steps.lock().unwrap();
@@ -118,6 +118,16 @@ impl ReActEngine {
                         branch_points,
                     )
                     .await;
+                    let ctx = StepCtx {
+                        session_id: session_id.to_string(),
+                        step_num,
+                        run_id,
+                        emitter: emitter.clone(),
+                    };
+                    // G2: pause infer goes through on_pause (including External).
+                    self.hooks
+                        .on_pause(self, &ctx, PauseReason::External, infer)
+                        .await;
                     return Ok(LoopExit::Paused {
                         reason: PauseReason::External,
                     });

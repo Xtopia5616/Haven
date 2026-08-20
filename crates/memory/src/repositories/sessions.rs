@@ -390,8 +390,14 @@ impl Database {
             params.push(Box::new(p));
         }
         if let Some(s) = status {
-            wheres.push("status = ?".into());
-            params.push(Box::new(s.to_owned()));
+            // History "Paused" covers both scheduling pause and ask-awaiting
+            // (Phase 4 / F2 distinct wire status).
+            if s == "paused" {
+                wheres.push("status IN ('paused','paused_awaiting_answer')".into());
+            } else {
+                wheres.push("status = ?".into());
+                params.push(Box::new(s.to_owned()));
+            }
         }
         // The UI filters by local calendar days ("2026-08-01"), but created_at
         // is stored as UTC RFC3339. Convert the local day to its UTC midnight

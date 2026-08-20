@@ -187,13 +187,24 @@ impl InferenceEngine {
     /// messages are still processed by the next allowed run (and by the
     /// maintenance pass regardless).
     pub async fn infer_facts(&self, session_id: &str) {
+        self.infer_facts_inner(session_id, false).await;
+    }
+
+    /// Pause-path extraction: bypasses the time throttle so a same-step
+    /// interval infer cannot starve the post-pause pass that has the
+    /// fresher transcript (Phase 3 / G2).
+    pub async fn infer_facts_on_pause(&self, session_id: &str) {
+        self.infer_facts_inner(session_id, true).await;
+    }
+
+    async fn infer_facts_inner(&self, session_id: &str, bypass_throttle: bool) {
         // Time throttle: at most one LLM extraction per interval per session.
         // kv_store key `fact_extraction_last_run.<session_id>` = RFC3339 of
         // the last run that actually called the model. Note the underscore
         // namespace (NOT `fact_extraction.`): the orphan-cursor cleanup
         // matches `fact_extraction.%` and would wipe this stamp every
         // maintenance pass.
-        if self.fact_extraction_min_interval_secs > 0 {
+        if !bypass_throttle && self.fact_extraction_min_interval_secs > 0 {
             let last_key = format!("fact_extraction_last_run.{}", session_id);
             let last_run = self
                 .db
@@ -884,6 +895,13 @@ impl InferenceEngine {
     /// [`Self::run_memory_maintenance`].
     pub async fn infer_session(&self, session_id: &str) {
         self.infer_facts(session_id).await;
+        self.embed_new_memory().await;
+    }
+
+    /// Pause-path variant: bypasses the extraction time throttle so a
+    /// same-step interval infer cannot starve the fresher post-pause pass.
+    pub async fn infer_session_on_pause(&self, session_id: &str) {
+        self.infer_facts_on_pause(session_id).await;
         self.embed_new_memory().await;
     }
 }

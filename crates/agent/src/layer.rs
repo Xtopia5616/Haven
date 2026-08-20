@@ -169,14 +169,20 @@ impl AgentLayer {
     /// not run full-table memory maintenance — that is the app scheduler's
     /// job via [`Self::run_memory_maintenance`]. Shared by fresh-start and
     /// resume paths.
-    fn spawn_infer(&self, session_id: &str) -> impl Fn() + Send + Sync + '_ {
+    /// `bypass_throttle=true` for pause-path infer (Phase 3: do not let a
+    /// same-step interval extract starve the fresher post-pause pass).
+    fn spawn_infer(&self, session_id: &str) -> impl Fn(bool) + Send + Sync + '_ {
         let inference = self.inference.clone();
         let tid = session_id.to_string();
-        move || {
+        move |bypass_throttle: bool| {
             let inference = inference.clone();
             let tid = tid.clone();
             tokio::spawn(async move {
-                inference.infer_session(&tid).await;
+                if bypass_throttle {
+                    inference.infer_session_on_pause(&tid).await;
+                } else {
+                    inference.infer_session(&tid).await;
+                }
             });
         }
     }
@@ -403,8 +409,11 @@ impl AgentLayer {
                     let state = agent.executor.get_session_state(&tid).await;
                     // Awaiting-answer pauses must not be auto-woken by
                     // background-action completions (the model is blocked on the
-                    // user, not on action results).
-                    let awaiting = matches!(&state, Some(s) if s.is_awaiting_answer());
+                    // user, not on action results). Check both DB/status flavor
+                    // and the C5 in-memory/snapshot flag (resume may restore
+                    // the flag before status is upgraded from legacy "paused").
+                    let awaiting = matches!(&state, Some(s) if s.is_awaiting_answer())
+                        || agent.executor.get_awaiting_answer(&tid).await.is_some();
                     if state == Some(SessionStatus::Paused) && !awaiting {
                         if let Err(e) = agent
                             .executor
@@ -754,24 +763,31 @@ impl AgentLayer {
                     self.restore_per_session_tools(session_id, &snapshot.history)
                         .await;
                     // Phase 4 / C5+F2: restore the explicit ask gate from the
-                    // snapshot (and align in-memory status if DB still has the
-                    // legacy collapsed "paused" string from an older binary).
+                    // snapshot. Upgrade legacy "paused" status BEFORE publishing
+                    // the flag so auto-wake cannot race on plain Paused.
                     if let Some(pending) = snapshot.awaiting_answer.clone() {
-                        self.executor
-                            .set_awaiting_answer(session_id, Some(pending))
-                            .await;
                         if matches!(
                             self.executor.get_session_state(session_id).await,
                             Some(SessionStatus::Paused)
                         ) {
-                            let _ = self
+                            if let Err(e) = self
                                 .executor
                                 .update_session_status(
                                     session_id,
                                     SessionStatus::PausedAwaitingAnswer,
                                 )
-                                .await;
+                                .await
+                            {
+                                tracing::warn!(
+                                    "failed to upgrade session {} to paused_awaiting_answer on resume: {}",
+                                    session_id,
+                                    e
+                                );
+                            }
                         }
+                        self.executor
+                            .set_awaiting_answer(session_id, Some(pending))
+                            .await;
                     }
                     self.run_session_resumed(session_id, snapshot, run_id).await
                 }
@@ -1037,7 +1053,7 @@ impl AgentLayer {
             None => return Ok(history),
         };
         let infer = self.spawn_infer(session_id);
-        let _exit = self
+        let exit = self
             .react_engine
             .run_react_loop(
                 session_id,
@@ -1050,7 +1066,15 @@ impl AgentLayer {
                 run_id,
             )
             .await?;
-        Ok(history)
+        // C2: soft LoopExit::Error must hit the same host failure path as
+        // hard Err so dispatcher cleanup (cancel actions / fail steps /
+        // on_session_error) still runs.
+        match exit {
+            crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
+            crate::react::LoopExit::Paused { .. }
+            | crate::react::LoopExit::Cancelled
+            | crate::react::LoopExit::Completed => Ok(history),
+        }
     }
 
     /// Rebuild canonical tool-call/result pairs from the persisted
@@ -1181,7 +1205,7 @@ impl AgentLayer {
         };
         let infer = self.spawn_infer(session_id);
         let run_id = self.react_engine.next_run_id();
-        let _exit = self
+        let exit = self
             .react_engine
             .run_react_loop(
                 session_id,
@@ -1194,7 +1218,12 @@ impl AgentLayer {
                 run_id,
             )
             .await?;
-        Ok(history)
+        match exit {
+            crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
+            crate::react::LoopExit::Paused { .. }
+            | crate::react::LoopExit::Cancelled
+            | crate::react::LoopExit::Completed => Ok(history),
+        }
     }
 
     pub async fn process_input(
@@ -1376,10 +1405,14 @@ impl AgentLayer {
                 // questions from long ago. The awaiting-answer flavor is
                 // carried by the status itself (`PausedAwaitingAnswer`), so
                 // it is read BEFORE set_session_status(Pending) below clears it.
-                let is_answer = matches!(
-                    &state,
-                    Some(s) if s.is_awaiting_answer()
-                );
+                // Prefer status, but also honor the C5 flag while status has
+                // already flipped to Pending (ask + pre-queued answer).
+                let is_answer = matches!(&state, Some(s) if s.is_awaiting_answer())
+                    || self
+                        .executor
+                        .get_awaiting_answer(&session_id)
+                        .await
+                        .is_some();
                 let was_in_memory = if is_answer {
                     self.executor
                         .add_answer_with_attachments(

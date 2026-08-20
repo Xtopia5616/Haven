@@ -393,6 +393,14 @@ impl AgentLayer {
         // checkpoint can resurrect the row.
         self.executor.partials.discard(session_id).await;
 
+        // Skipping an ask via continue must drop the C5 gate (status alone
+        // flipping to Pending is not enough — the loop still reads the flag).
+        if matches!(state, Some(SessionStatus::PausedAwaitingAnswer)) {
+            self.executor
+                .clear_awaiting_answer_persisted(session_id)
+                .await;
+        }
+
         // Set to Pending for the dispatcher to pick up.
         self.set_session_status(session_id, SessionStatus::Pending)
             .await?;

@@ -89,13 +89,38 @@ fn migrate_v2_backfill_predicate_aliases(conn: &rusqlite::Connection) -> anyhow:
 
 /// Expand `sessions.status` CHECK to include `paused_awaiting_answer`.
 /// SQLite cannot ALTER a CHECK constraint in place, so rebuild the table.
+///
+/// Crash-safe:
+/// - Interrupted prior attempt with only `sessions_v3` left → finish rename.
+/// - Rebuild runs in one transaction so DROP+RENAME either both commit or
+///   both roll back (never leave sessions missing while stamping v3).
 fn migrate_v3_paused_awaiting_answer_status(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    if !table_exists(conn, "sessions")? {
+    let has_sessions = table_exists(conn, "sessions")?;
+    let has_v3 = table_exists(conn, "sessions_v3")?;
+    if !has_sessions && has_v3 {
+        // Prior crash after DROP, before RENAME: finish the rename.
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            ALTER TABLE sessions_v3 RENAME TO sessions;
+            PRAGMA foreign_keys=ON;
+            "#,
+        )?;
         return Ok(());
     }
+    if !has_sessions {
+        // Neither table — SCHEMA_SQL will create an empty sessions table.
+        return Ok(());
+    }
+    if has_v3 {
+        // Leftover from a failed CREATE before DROP; drop and rebuild cleanly.
+        conn.execute_batch("DROP TABLE IF EXISTS sessions_v3")?;
+    }
+    // foreign_keys cannot change inside a transaction; flip it off first.
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
     conn.execute_batch(
         r#"
-        PRAGMA foreign_keys=OFF;
+        BEGIN IMMEDIATE;
         CREATE TABLE sessions_v3 (
             id TEXT PRIMARY KEY,
             input_text TEXT NOT NULL DEFAULT '',
@@ -113,9 +138,10 @@ fn migrate_v3_paused_awaiting_answer_status(conn: &rusqlite::Connection) -> anyh
           FROM sessions;
         DROP TABLE sessions;
         ALTER TABLE sessions_v3 RENAME TO sessions;
-        PRAGMA foreign_keys=ON;
+        COMMIT;
         "#,
     )?;
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
     Ok(())
 }
 
@@ -771,6 +797,56 @@ mod tests {
             [],
         )
         .expect("v3 CHECK must accept paused_awaiting_answer");
+    }
+
+    #[test]
+    fn v3_migration_repairs_orphan_sessions_v3_after_crash() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, input_text, status) VALUES ('ses-keep', 'hello', 'paused')",
+            [],
+        )
+        .unwrap();
+        // Simulate crash after DROP sessions, before RENAME.
+        set_user_version(&conn, 2).unwrap();
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE sessions_v3 (
+                id TEXT PRIMARY KEY,
+                input_text TEXT NOT NULL DEFAULT '',
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','running','paused','paused_awaiting_answer','completed','failed','error')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                transcript TEXT NOT NULL DEFAULT '',
+                react_state TEXT
+            );
+            INSERT INTO sessions_v3
+                (id, input_text, title, status, created_at, updated_at, transcript, react_state)
+            SELECT id, input_text, title, status, created_at, updated_at, transcript, react_state
+              FROM sessions;
+            DROP TABLE sessions;
+            PRAGMA foreign_keys=ON;
+            "#,
+        )
+        .unwrap();
+        assert!(!table_exists(&conn, "sessions").unwrap());
+        assert!(table_exists(&conn, "sessions_v3").unwrap());
+        init_schema(&conn).unwrap();
+        assert!(table_exists(&conn, "sessions").unwrap());
+        assert!(!table_exists(&conn, "sessions_v3").unwrap());
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'ses-keep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "orphan sessions_v3 must be renamed, not wiped");
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]
