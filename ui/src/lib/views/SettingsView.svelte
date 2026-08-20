@@ -1,6 +1,7 @@
 <script>
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
+	import { registerListeners } from '$lib/events.ts';
 	import { themeStore } from '$lib/themeStore.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -11,6 +12,7 @@
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import ModelSettings from './ModelSettings.svelte';
+	import logger from '$lib/logger.ts';
 
 	let llmConfig = $state({
 		// Named LLM providers (connection-level endpoints). Roles reference
@@ -139,6 +141,7 @@
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 64,
+		max_tools_per_request: 350,
 	});
 
 	// Data-driven limit editor. `danger: true` fields get a warning badge and
@@ -154,6 +157,7 @@
 				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
 				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
 				{ key: 'max_observation_chars', label: '工具观察字符上限', unit: 'chars', danger: true, hint: '工具结果进入对话的最大字符数，也是 shell/file/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。' },
+				{ key: 'max_tools_per_request', label: '单次请求工具数上限', unit: 'count', danger: true, hint: '发给模型的 tools 数组最大长度。多数提供方硬顶约 350；超限会 400。内置工具优先保留，超出部分截断会话级 MCP/Skill；load_mcp 在会超限时直接拒绝。' },
 				{ key: 'max_transcript_chars', label: '记忆提取转录上限', unit: 'chars', danger: true, hint: '事实提取时发送给模型的转录长度。' },
 				{ key: 'notification_summary_chars', label: '通知摘要字符上限', unit: 'chars', danger: false },
 				{ key: 'partial_checkpoint_min_chars', label: '流式检查点最小增量', unit: 'chars', danger: false, hint: '部分回复累计新增多少字符后落盘一次（崩溃恢复粒度）。' },
@@ -417,13 +421,117 @@
 	// L12: guards against onDestroy running while onMount's async settings
 	// load is still in flight.
 	let mounted = true;
+	/** @type {{ ready: Promise<void>, dispose: () => void } | null} */
+	let eventRegistrations = null;
+	// Monotonic generation so overlapping syncs never apply an older snapshot
+	// after a newer toolbar switch. Self-echo after Save is skipped once.
+	let defaultModelSyncGen = 0;
+	let skipNextDefaultModelSync = false;
+	/** @type {{ model: string, reasoning_effort: string, web_search: string }} */
+	let lastSyncedDefaultModel = { model: '', reasoning_effort: '', web_search: 'off' };
+
+	/** @param {any} remote */
+	function rememberSyncedDefaultModel(remote) {
+		lastSyncedDefaultModel = {
+			model: remote?.model || '',
+			reasoning_effort: remote?.reasoning_effort || '',
+			web_search: remote?.web_search || 'off',
+		};
+	}
+
+	/** @param {any} remote */
+	function applyRemoteDefaultModelFields(remote) {
+		if (!remote) return;
+		/** @type {any} */
+		const local = (Array.isArray(llmConfig.roles) ? llmConfig.roles : []).find(
+			(/** @type {any} */ r) => r.role === 'default_model',
+		);
+		if (local) {
+			// Mutate in place (Svelte 5 $state proxy) so other unsaved
+			// role/provider edits on this form are preserved.
+			local.provider = remote.provider;
+			local.model = remote.model;
+			local.reasoning_effort = remote.reasoning_effort;
+			local.web_search = remote.web_search;
+		} else if (Array.isArray(llmConfig.roles)) {
+			/** @type {any[]} */ (llmConfig.roles).push(remote);
+		}
+		rememberSyncedDefaultModel(remote);
+	}
+
+	/**
+	 * Keep the default_model role row in sync when the chat toolbar switches
+	 * model / effort / web search. Only those fields are overwritten so
+	 * unsaved edits on other roles/providers survive the event. Keep-alive
+	 * leaves this view mounted across tab switches, so mount-time load alone
+	 * is not enough.
+	 */
+	async function syncDefaultModelRoleFromBackend() {
+		const gen = ++defaultModelSyncGen;
+		try {
+			const settings = await invoke('get_settings');
+			if (!mounted || gen !== defaultModelSyncGen || !settings?.llm) return;
+			const remoteRoles = Array.isArray(settings.llm.roles) ? settings.llm.roles : [];
+			const remote = remoteRoles.find((/** @type {any} */ r) => r.role === 'default_model');
+			if (!remote) return;
+			applyRemoteDefaultModelFields(remote);
+		} catch (e) {
+			logger.warn('SettingsView', 'sync default_model role error', e);
+		}
+	}
+
+	/**
+	 * Before Save, adopt backend default_model fields the user did not edit
+	 * on this form — so a toolbar switch cannot be clobbered by a stale row.
+	 * Fields the user changed since last sync keep the form values.
+	 */
+	async function reconcileDefaultModelBeforeSave() {
+		try {
+			const settings = await invoke('get_settings');
+			if (!mounted || !settings?.llm) return;
+			const remote = (Array.isArray(settings.llm.roles) ? settings.llm.roles : []).find(
+				(/** @type {any} */ r) => r.role === 'default_model',
+			);
+			/** @type {any} */
+			const local = (Array.isArray(llmConfig.roles) ? llmConfig.roles : []).find(
+				(/** @type {any} */ r) => r.role === 'default_model',
+			);
+			if (!remote || !local) return;
+			if ((local.model || '') === lastSyncedDefaultModel.model) {
+				local.model = remote.model;
+			}
+			if ((local.reasoning_effort || '') === lastSyncedDefaultModel.reasoning_effort) {
+				local.reasoning_effort = remote.reasoning_effort;
+			}
+			if ((local.web_search || 'off') === lastSyncedDefaultModel.web_search) {
+				local.web_search = remote.web_search;
+			}
+			rememberSyncedDefaultModel(local);
+		} catch (e) {
+			logger.warn('SettingsView', 'reconcile default_model before save failed', e);
+		}
+	}
 
 	onDestroy(() => {
 		mounted = false;
 		unsubTheme();
+		eventRegistrations?.dispose();
+		eventRegistrations = null;
 	});
 
 	onMount(async () => {
+		eventRegistrations = registerListeners(
+			{
+				'llm:config_changed': () => {
+					if (skipNextDefaultModelSync) {
+						skipNextDefaultModelSync = false;
+						return;
+					}
+					syncDefaultModelRoleFromBackend();
+				},
+			},
+			{ tag: 'SettingsView' },
+		);
 		try {
 			const settings = await invoke('get_settings');
 			if (!mounted) return;
@@ -433,6 +541,9 @@
 				// the arrays exist so downstream UI code can always iterate.
 				llmConfig.providers = Array.isArray(llmConfig.providers) ? llmConfig.providers : [];
 				llmConfig.roles = Array.isArray(llmConfig.roles) ? llmConfig.roles : [];
+				rememberSyncedDefaultModel(
+					llmConfig.roles.find((/** @type {any} */ r) => r.role === 'default_model'),
+				);
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
 				audio = settings.audio || audio;
@@ -478,23 +589,24 @@
 				};
 				// MCP server names for the Audio Model card's MCP STT mode.
 				mcpServerNames = (settings.mcp_servers || []).map((/** @type {any} */ s) => s.name || '').filter(Boolean);
-			settingsLoaded = true;
-			notification = settings.notification || notification;
-			log = settings.log || log;
-			defaultShell = settings.default_shell || 'powershell';
-			checkShells();
+				notification = settings.notification || notification;
+				log = settings.log || log;
+				defaultShell = settings.default_shell || 'powershell';
+				checkShells();
 			}
 		} catch (e) {
 			addNotification(`加载设置失败: ${e}`, 'error', 4000);
 		}
+		// Key status must resolve before settingsLoaded flips: ModelSettings
+		// auto-fetches /models on load, and Provider cards must not show
+		// 「未配置」while waiting on a large model list.
 		try {
-			const ks = await invoke('get_api_key_status');
-			keyConfigured = ks;
-			keyConfiguredProviders = ks?.providers || {};
+			await refreshApiKeyStatus();
 			if (!mounted) return;
 		} catch (e) {
 			addNotification(`获取 API Key 状态失败: ${e}`, 'error', 3000);
 		}
+		if (mounted) settingsLoaded = true;
 		try {
 			autostartEnabled = await invoke('is_autostart_enabled');
 			if (!mounted) return;
@@ -515,8 +627,29 @@
 		}
 	}
 
+	async function refreshApiKeyStatus() {
+		const ks = await invoke('get_api_key_status');
+		const providers = ks?.providers;
+		// Keep role/media flags as a flat boolean map; never assign the raw
+		// payload (it nests `providers`) into keyConfigured.
+		/** @type {Record<string, boolean>} */
+		const nextKeys = {};
+		if (ks && typeof ks === 'object') {
+			for (const [k, v] of Object.entries(ks)) {
+				if (k === 'providers') continue;
+				if (typeof v === 'boolean') nextKeys[k] = v;
+			}
+		}
+		keyConfigured = { ...keyConfigured, ...nextKeys };
+		keyConfiguredProviders = (providers && typeof providers === 'object' && !Array.isArray(providers))
+			? { ...providers }
+			: {};
+	}
+
 	async function saveSettings() {
 		try {
+			await reconcileDefaultModelBeforeSave();
+			skipNextDefaultModelSync = true;
 			await invoke('update_settings', {
 				settings: {
 					default_shell: defaultShell,
@@ -595,6 +728,11 @@
 				},
 			});
 		addNotification('设置已保存', 'success');
+			try {
+				await refreshApiKeyStatus();
+			} catch (e) {
+				addNotification(`获取 API Key 状态失败: ${e}`, 'error', 3000);
+			}
 			if (autostartEnabled) {
 				try { await invoke('enable_autostart'); } catch (e) {
 					autostartEnabled = false;
@@ -1058,6 +1196,7 @@
 	{/if}
 
 	{#if settingsTab === 'input'}
+	{#if settingsLoaded}
 	<ModelSettings
 		{llmConfig}
 		{stt}
@@ -1065,8 +1204,11 @@
 		{keyConfigured}
 		{keyConfiguredProviders}
 		{mcpServerNames}
-		loaded={settingsLoaded}
+		loaded={true}
 	/>
+	{:else}
+	<p class="model-hint">正在加载模型与 API Key 状态…</p>
+	{/if}
 {/if}
 
 	{#snippet limitRow(/** @type {any} */ f, boxed = false)}

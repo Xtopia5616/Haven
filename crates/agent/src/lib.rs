@@ -866,6 +866,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
+        let (agent, executor) = make_test_agent();
+        agent.set_emitter(make_recording_emitter());
+        let session = executor.create_session("input text").await.unwrap();
+        // The session input (first user message) is seeded into the canonical
+        // directly and never carries a step anchor.
+        agent
+            .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+            .await
+            .unwrap();
+        // A steering input that WAS delivered carries a step anchor under its
+        // own id (created by `push_user_context`).
+        let delivered = agent
+            .persist_message_parts(
+                &session.id,
+                "user",
+                "steering delivered",
+                Some("text"),
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        agent
+            .db
+            .create_thought_step(&session.id, 2, &delivered.id)
+            .unwrap();
+        // A steering input lost before injection has no anchor.
+        agent
+            .persist_message_parts(
+                &session.id,
+                "user",
+                "steering lost",
+                Some("text"),
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        // Terminal state: the session leaves the working set (an error/cancel
+        // dropped the in-memory queues along with the lost steering).
+        executor
+            .update_session_status(&session.id, SessionStatus::Completed)
+            .await
+            .unwrap();
+        assert_eq!(executor.get_session_state(&session.id).await, None);
+
+        agent.reopen_session(&session.id).await.unwrap();
+
+        // Re-queued for a later Continue / follow-up, but review stays Paused
+        // so opening history never auto-runs ReAct on old chats.
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        let supps = executor.get_supplements(&session.id).await;
+        assert_eq!(supps.len(), 1, "only the never-injected input is re-queued");
+        assert_eq!(supps[0].text, "steering lost");
+    }
+
+    #[tokio::test]
+    async fn reopen_session_without_pending_inputs_stays_paused() {
+        let (agent, executor) = make_test_agent();
+        let session = executor.create_session("input text").await.unwrap();
+        agent
+            .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+            .await
+            .unwrap();
+        executor
+            .update_session_status(&session.id, SessionStatus::Completed)
+            .await
+            .unwrap();
+
+        agent.reopen_session(&session.id).await.unwrap();
+
+        // No lost inputs: the session reopens as Paused (review-only),
+        // matching the historical behavior.
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert!(executor.get_supplements(&session.id).await.is_empty());
+    }
+
+    #[tokio::test]
     async fn process_input_paused_without_ask_is_plain_supplement() {
         let (agent, executor) = make_test_agent();
         let session = executor.create_session("original").await.unwrap();
@@ -3610,6 +3695,27 @@ mod tests {
             pending.is_empty(),
             "snapshot canonical must not end with unanswered tool_calls (got {:?})",
             pending
+        );
+        // Pending step rows created at Action emit must be completed with the
+        // Interrupted observation so review/resume rebuilds the tool cards
+        // from session_steps (not live-only UI state).
+        let db_steps = agent.db.get_session_steps(&session.id).unwrap();
+        let interrupted_db = db_steps
+            .iter()
+            .filter(|s| {
+                s.action_tool.is_some()
+                    && s.observation
+                        .as_deref()
+                        .is_some_and(|o| o.contains("Interrupted"))
+            })
+            .count();
+        assert_eq!(
+            interrupted_db, 2,
+            "interrupted tools must be persisted in session_steps for UI rebuild (got {:?})",
+            db_steps
+                .iter()
+                .map(|s| (s.action_tool.clone(), s.status.clone(), s.observation.clone()))
+                .collect::<Vec<_>>()
         );
     }
 

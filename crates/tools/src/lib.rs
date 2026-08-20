@@ -94,7 +94,9 @@ pub struct ToolsManager {
     /// re-enable disabled tools even though they are excluded from the
     /// registry snapshot used by the agent.
     all_builtin_tools: RwLock<Vec<ToolBox>>,
-    session_registrations: RwLock<HashMap<String, HashMap<String, ToolBox>>>,
+    /// Per-session skill/MCP overlays. Shared as `Arc` so `load_mcp` can
+    /// budget-check against the live map before declaring success.
+    session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
     tool_circuits: ToolCircuitRegistry,
     /// Shared LlmRouter. Tools that need a model (currently the file `summary`
     /// and image-understanding operations) call `router.chat(...)` — text
@@ -127,8 +129,9 @@ pub struct ToolsManager {
     /// Monotonic catalog version, bumped whenever the global registry or any
     /// per-session registration changes. The ReAct loop caches per-session tool
     /// definitions keyed by this version, so a bump forces a rebuild without
-    /// the loop re-querying schemas on every step.
-    catalog_version: AtomicU64,
+    /// the loop re-querying schemas on every step. Shared as `Arc` so
+    /// `load_mcp` / `load_skill` can bump after in-tool atomic registration.
+    catalog_version: Arc<AtomicU64>,
 }
 
 impl ToolsManager {
@@ -157,7 +160,7 @@ impl ToolsManager {
             context_limits: RwLock::new(ContextLimitsConfig::default()),
             default_shell: RwLock::new(ShellChoice::default()),
             all_builtin_tools: RwLock::new(Vec::new()),
-            session_registrations: RwLock::new(HashMap::new()),
+            session_registrations: Arc::new(RwLock::new(HashMap::new())),
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
             background_actions,
@@ -166,7 +169,7 @@ impl ToolsManager {
             self_tool: RwLock::new(None),
             clipboard_history: Arc::new(builtin::clipboard::ClipboardHistory::new(50)),
             audio_pipeline: RwLock::new(None),
-            catalog_version: AtomicU64::new(0),
+            catalog_version: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -177,10 +180,60 @@ impl ToolsManager {
         self.catalog_version.load(Ordering::Relaxed)
     }
 
+    /// Whether adding `net_new` unique session tools would exceed the
+    /// per-request provider ceiling. Shared by `load_mcp` / `load_skill`
+    /// refuse paths and resume registration.
+    pub fn tool_budget_would_exceed(
+        max: usize,
+        global_count: usize,
+        session_count: usize,
+        net_new: usize,
+    ) -> bool {
+        if net_new == 0 {
+            return false;
+        }
+        global_count
+            .saturating_add(session_count)
+            .saturating_add(net_new)
+            > max.max(1)
+    }
+
     /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
     /// `file summary`) pick up the new endpoint config.
     pub async fn set_router(&self, router: Arc<LlmRouter>) {
         *self.router.write().await = Some(router);
+        self.rebuild_catalog().await;
+    }
+
+    /// Apply cold-start wiring in one pass and rebuild the catalog once.
+    /// Avoids the N sequential rebuilds that used to block window creation
+    /// (`set_tool_settings` + `set_default_shell` + `set_context_limits` +
+    /// `set_router` + `set_audio_pipeline` + `set_self_context`).
+    pub async fn wire_startup(
+        &self,
+        tool_settings: HashMap<String, ToolConfig>,
+        default_shell: ShellChoice,
+        context_limits: ContextLimitsConfig,
+        min_risk_level: RiskLevel,
+        router: Arc<LlmRouter>,
+        audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+        self_ctx: builtin::SelfToolContext,
+    ) {
+        *self.tool_settings.write().await = tool_settings;
+        *self.default_shell.write().await = default_shell;
+        self.mcp_manager.set_limits(&context_limits).await;
+        self.skills_engine.set_limits(&context_limits).await;
+        self.background_actions.set_limits(&context_limits).await;
+        self.scheduled_actions.set_limits(&context_limits).await;
+        *self.context_limits.write().await = context_limits;
+        self.safety_gateway
+            .set_min_risk_level(min_risk_level)
+            .await;
+        *self.router.write().await = Some(router);
+        *self.audio_pipeline.write().await = audio_pipeline;
+        self.scheduled_actions.set_db(self_ctx.db.clone()).await;
+        self.background_actions.set_db(self_ctx.db.clone()).await;
+        *self.self_context.write().await = Some(self_ctx);
         self.rebuild_catalog().await;
     }
 
@@ -314,6 +367,8 @@ impl ToolsManager {
             &limits,
             *self.default_shell.read().await,
             audio_pipeline,
+            self.session_registrations.clone(),
+            self.catalog_version.clone(),
         )
         .await;
         *self.self_tool.write().await = self_tool_arc;
@@ -351,23 +406,6 @@ impl ToolsManager {
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Register a skill as a per-session tool adapter. Looks up the skill by
-    /// name, checks `enabled`, and registers `SkillToolAdapter` for the session.
-    /// Returns `true` if the skill was found and enabled.
-    pub async fn register_skill_for_session(&self, session_id: &str, skill_name: &str) -> bool {
-        let Some(skill) = self.skills_engine.get_skill(skill_name).await else {
-            return false;
-        };
-        if !skill.enabled() {
-            return false;
-        }
-        let runner = self.skill_runner.read().await.clone();
-        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        self.register_for_session(session_id, Arc::new(adapter))
-            .await;
-        true
-    }
-
     /// Register all tools from an MCP server as per-session tool adapters.
     /// Looks up the client by server name and registers `McpToolAdapter`
     /// for each cached tool. Returns `true` if the client was found.
@@ -378,16 +416,89 @@ impl ToolsManager {
     /// handshake + tools/list to complete so a fast resume does not register
     /// zero tools and silently lose the session's MCP access. A server that is
     /// definitively offline gives up early instead of stalling the resume.
+    ///
+    /// Defense in depth for resume: all-or-nothing per server under the
+    /// session write lock (same contract as live `load_mcp`). If the server's
+    /// *net-new* tools would exceed the budget, none are registered.
     pub async fn register_mcp_for_session(&self, session_id: &str, server_name: &str) -> bool {
         let Some(client) = self.mcp_manager.get_client(server_name).await else {
             return false;
         };
         let tools = client.wait_for_tools(Duration::from_secs(3)).await;
+        let max = self
+            .context_limits
+            .read()
+            .await
+            .max_tools_per_request
+            .max(1);
+        let global_count = self.registry.list().await.len();
+        let mut reg = self.session_registrations.write().await;
+        let entry = reg.entry(session_id.to_string()).or_default();
+        let session_count = entry.len();
+        let net_new = tools
+            .iter()
+            .filter(|info| {
+                let name = McpToolAdapter::qualified_name_of(server_name, &info.name);
+                !entry.contains_key(&name)
+            })
+            .count();
+        if Self::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+            tracing::warn!(
+                session_id,
+                server_name,
+                net_new,
+                max,
+                global_count,
+                session_count,
+                "register_mcp_for_session: refusing server over max_tools_per_request"
+            );
+            return true;
+        }
         for info in tools {
             let adapter = McpToolAdapter::new(client.clone(), server_name, info);
-            self.register_for_session(session_id, Arc::new(adapter))
-                .await;
+            entry.insert(adapter.name(), Arc::new(adapter));
         }
+        drop(reg);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Resume / executor path for skills: refuse when a *new* skill tool
+    /// would exceed the per-request ceiling (reload of an already-registered
+    /// skill name is always allowed).
+    pub async fn register_skill_for_session(&self, session_id: &str, skill_name: &str) -> bool {
+        let Some(skill) = self.skills_engine.get_skill(skill_name).await else {
+            return false;
+        };
+        if !skill.enabled() {
+            return false;
+        }
+        let runner = self.skill_runner.read().await.clone();
+        let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
+        let name = adapter.name();
+        let max = self
+            .context_limits
+            .read()
+            .await
+            .max_tools_per_request
+            .max(1);
+        let global_count = self.registry.list().await.len();
+        let mut reg = self.session_registrations.write().await;
+        let entry = reg.entry(session_id.to_string()).or_default();
+        let already = entry.contains_key(&name);
+        let net_new = if already { 0 } else { 1 };
+        if Self::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
+            tracing::warn!(
+                session_id,
+                skill_name,
+                max,
+                "register_skill_for_session: refusing skill over max_tools_per_request"
+            );
+            return false;
+        }
+        entry.insert(name, Arc::new(adapter));
+        drop(reg);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
         true
     }
 
@@ -480,13 +591,36 @@ impl ToolsManager {
     /// with per-session registered skill/MCP adapters. This is the canonical
     /// surface the ReAct loop turns into provider tool definitions and the
     /// schema listing is derived from — no loose JSON assembly in consumers.
+    ///
+    /// Capped at `context_limits.max_tools_per_request`: builtins are kept
+    /// first; session overlays are sorted by name and truncated to fit so a
+    /// runaway `load_mcp` history cannot 400 the provider.
     pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
+        let max = self
+            .context_limits
+            .read()
+            .await
+            .max_tools_per_request
+            .max(1);
         let mut defs = self.registry.list_defs().await;
+        let global_len = defs.len();
         let reg = self.session_registrations.read().await;
         if let Some(tools) = reg.get(session_id) {
-            for tool in tools.values() {
-                defs.push(tool.tool_def());
-            }
+            let mut session_defs: Vec<ToolDef> = tools.values().map(|t| t.tool_def()).collect();
+            session_defs.sort_by(|a, b| a.name.cmp(&b.name));
+            defs.extend(session_defs);
+        }
+        if defs.len() > max {
+            tracing::warn!(
+                session_id,
+                total = defs.len(),
+                max,
+                global = global_len,
+                "list_defs_for_session: truncating tools to max_tools_per_request (builtins kept first)"
+            );
+            // Prefer builtins: if they alone exceed max, truncate them; else
+            // drop the overflow from the (already sorted) session tail.
+            defs.truncate(max);
         }
         defs
     }
@@ -1080,5 +1214,58 @@ mod tests {
                 .any(|s| { s["name"].as_str().unwrap_or("").starts_with("mcp__") }),
             "MCP tools must not be pre-registered globally"
         );
+    }
+
+    #[tokio::test]
+    async fn test_list_defs_for_session_caps_at_max_tools() {
+        use haven_common::config::ContextLimitsConfig;
+
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let global = mgr.registry.list_defs().await.len();
+        assert!(global > 0, "catalog should have builtins");
+
+        // Leave room for only 2 session overlays. Write the limit directly so
+        // we do not rebuild the catalog (and shift `global`) mid-test.
+        let mut limits = ContextLimitsConfig::default();
+        limits.max_tools_per_request = global + 2;
+        *mgr.context_limits.write().await = limits;
+
+        struct NamedStub(&'static str);
+        #[async_trait::async_trait]
+        impl Tool for NamedStub {
+            fn name(&self) -> String {
+                self.0.into()
+            }
+            fn description(&self) -> String {
+                "stub".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(
+                &self,
+                _: Value,
+                _: CancellationToken,
+            ) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult::ok(json!({})))
+            }
+        }
+        for name in ["s_a", "s_b", "s_c", "s_d", "s_e"] {
+            mgr.register_for_session("ses-cap", Arc::new(NamedStub(name)))
+                .await;
+        }
+
+        let defs = mgr.list_defs_for_session("ses-cap").await;
+        assert_eq!(defs.len(), global + 2, "must truncate session overlays");
+        let session_kept: Vec<_> = defs
+            .iter()
+            .filter(|d| d.name.starts_with("s_"))
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(session_kept, vec!["s_a", "s_b"]);
     }
 }

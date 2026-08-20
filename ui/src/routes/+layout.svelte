@@ -18,7 +18,6 @@
 	import NotificationToast from '$lib/NotificationToast.svelte';
 	import ToolsView from '$lib/views/ToolsView.svelte';
 	import HistoryView from '$lib/views/HistoryView.svelte';
-	import AgentMessagingView from '$lib/views/AgentMessagingView.svelte';
 	import SettingsView from '$lib/views/SettingsView.svelte';
 
 	let { children } = $props();
@@ -28,7 +27,7 @@
 	// instant and rapid tab clicks never tear down a view that is being
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState), which
 	// also makes direct deep links (/tools etc.) restore the right tab.
-	const TAB_IDS = ['chat', 'tools', 'history', 'agents', 'settings'];
+	const TAB_IDS = ['chat', 'tools', 'history', 'settings'];
 	function initialTabFromUrl() {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
@@ -37,7 +36,6 @@
 		const path = url.pathname;
 		if (path === '/tools') return 'tools';
 		if (path === '/history') return 'history';
-		if (path === '/agents') return 'agents';
 		if (path === '/settings') return 'settings';
 		return 'chat';
 	}
@@ -50,7 +48,6 @@
 		chat: true,
 		tools: initialTab === 'tools',
 		history: initialTab === 'history',
-		agents: initialTab === 'agents',
 		settings: initialTab === 'settings',
 	});
 
@@ -77,6 +74,10 @@
 	let durationTimer = /** @type {ReturnType<typeof setInterval> | null} */ (null);
 	let processingTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 	let modelState = $state('ready'); // synced from modelStateStore on mount
+	// Cold-start gate: false until MCP/skills/audio prewarm finish (or the
+	// get_bootstrap_status probe says ready). Keeps the chip on 加载中 so the
+	// UI can paint before deferred backend work completes.
+	let bootstrapReady = $state(false);
 	// Whether ANY session is busy (pending/running). The model-state events only
 	// fire while chunks flow; a session whose LLM call is stuck (idle timeout,
 	// empty-response retries, provider hang) emits nothing, and the 5s idle
@@ -177,7 +178,6 @@
 		const t =
 			path === '/tools' ? 'tools' :
 			path === '/history' ? 'history' :
-			path === '/agents' ? 'agents' :
 			path === '/settings' ? 'settings' : 'chat';
 		goto('/?tab=' + t, { replaceState: true });
 			return;
@@ -331,7 +331,7 @@
 	function actionStatusColor(status) {
 		switch (status) {
 			case 'running':
-				return '#44cc44';
+				return 'var(--md-sys-color-success)';
 			case 'completed':
 				return '#4488ff';
 			case 'failed':
@@ -423,6 +423,13 @@
 	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (null);
 
 	onMount(async () => {
+		// Drop the static app.html boot shell now that the real layout is live.
+		try {
+			document.getElementById('haven-boot')?.remove();
+		} catch {
+			/* ignore */
+		}
+
 		// Load notify config + hotkey binding in background — don't block
 		// listener registration.
 		invoke('get_settings').then((settings) => {
@@ -437,6 +444,15 @@
 		});
 
 		const registrations = registerListeners({
+			'app:bootstrap': (event) => {
+				const status = event?.payload?.status;
+				if (status === 'ready') {
+					bootstrapReady = true;
+					probeLlmConnection();
+				} else if (status === 'loading') {
+					bootstrapReady = false;
+				}
+			},
 			'recording:started': (event) => {
 				const data = event.payload || {};
 				setOverlay({
@@ -562,7 +578,7 @@
 				// delete_session / clear_history remove sessions without any terminal
 				// `session:updated` (the session no longer exists), so release their
 				// ids from the busy set here — otherwise the chip would stay on
-				// "等待输出" for a session that is gone. `session_id: null` means all
+				// "等待响应" for a session that is gone. `session_id: null` means all
 				// sessions were removed (clear_history).
 				const data = event.payload || {};
 				if (data.session_id) {
@@ -623,15 +639,17 @@
 				const data = event.payload;
 				const name = data.name || '';
 				const status = data.status;
+				// Skip Connecting toasts — cold start connects every server and
+				// the status chip already shows 加载中. ToolsView still refreshes.
 				if (status === 'Connected') {
-					addNotification(`MCP 已连接: ${name}`, 'success', 3000);
+					if (bootstrapReady) {
+						addNotification(`MCP 已连接: ${name}`, 'success', 3000);
+					}
 				} else if (status === 'Disconnected') {
 					addNotification(`MCP 已断开: ${name}`, 'warning', 4000);
 				} else if (status && status.Offline) {
 					const err = status.Offline.error || '';
 					addNotification(`MCP 离线: ${name}${err ? ` - ${err}` : ''}`, 'error', 5000);
-				} else if (status === 'Connecting') {
-					addNotification(`MCP 连接中: ${name}`, 'info', 2000);
 				}
 			},
 			'skills:status_change': () => {
@@ -645,10 +663,10 @@
 				addNotification(`Balanced Model: ${data.reason}`, 'warning');
 			},
 			'agent:stream_stalled': (event) => {
-				// The provider stream went silent (mid-step stall, retry wait,
-				// slow first chunk). Surface "still generating" feedback so the
-				// conversation never looks frozen; the next chunk (streaming)
-				// or a terminal session event (ready/error) clears it.
+				// Provider stream went silent while the step is still in flight
+				// (first-chunk wait or mid-step gap). Show the factual waiting
+				// state — not a guessed "slow" label. Cleared by the next chunk
+				// (streaming) or a terminal session event (ready/error).
 				const data = event.payload || {};
 				const activeId = get(activeSessionIdStore);
 				if (data.session_id && activeId && data.session_id !== activeId) return;
@@ -718,7 +736,21 @@
 			},
 		}, { tag: '+layout' });
 		eventRegistrations = registrations;
+		// Attach listeners BEFORE probing bootstrap status so a ready event
+		// that fires in the gap cannot be missed (probe-then-listen TOCTOU).
 		await registrations.ready;
+
+		try {
+			const status = await invoke('get_bootstrap_status');
+			if (status === 'ready') {
+				bootstrapReady = true;
+				probeLlmConnection();
+			}
+		} catch (e) {
+			logger.warn('+layout', 'get_bootstrap_status error', e);
+			// Fail open so a missing command never leaves the chip stuck.
+			bootstrapReady = true;
+		}
 
 		// Hydrate the action registry for actions started before this mount
 		// (events only cover actions spawned after the listeners above;
@@ -747,7 +779,6 @@
 		{ id: 'chat', label: '对话' },
 		{ id: 'tools', label: '工具' },
 		{ id: 'history', label: '历史' },
-		{ id: 'agents', label: '消息' },
 		{ id: 'settings', label: '设置' },
 	];
 </script>
@@ -778,21 +809,26 @@
 						<span class="status-text">转写中</span>
 					{:else if modelState === 'streaming'}
 						<StatusDot color="primary" animate={true} />
-						<span class="status-text">输出中</span>
-					{:else if modelState === 'stalled'}
-						<StatusDot color="warning" animate={true} />
-						<span class="status-text">生成较慢</span>
+						<span class="status-text">生成中</span>
 					{:else if modelState === 'tool'}
 						<StatusDot color="tertiary" animate={true} />
 						<span class="status-text">工具调用</span>
 					{:else if modelState === 'balanced_model'}
 						<StatusDot color="error" animate={true} />
 						<span class="status-text">备用模型</span>
-					{:else if modelState === 'waiting' || sessionBusy}
+					{:else if modelState === 'stalled' || modelState === 'waiting' || sessionBusy}
 						<StatusDot color="warning" animate={true} />
 						<span class="status-text"
-							>{sessionBusy ? `${busySessions.size} 个会话运行中` : '等待输出'}</span
+							>{modelState === 'stalled' || modelState === 'waiting'
+								? '等待响应'
+								: `${busySessions.size} 个会话运行中`}</span
 						>
+					{:else if runningActionCount > 0}
+						<StatusDot color="success" animate={true} />
+						<span class="status-text">后台任务</span>
+					{:else if !bootstrapReady}
+						<StatusDot color="outline" animate={true} />
+						<span class="status-text">加载中</span>
 					{:else if llmConnected === 'unconfigured'}
 						<StatusDot color="outline" />
 						<span class="status-text">未配置</span>
@@ -807,7 +843,11 @@
 						<span class="status-text">检测中</span>
 					{/if}
 					{#if runningActionCount > 0 || pendingScheduledActions.length > 0}
-						<span class="status-badge">{runningActionCount + pendingScheduledActions.length}</span>
+						<span
+							class="status-badge"
+							class:status-badge-running={runningActionCount > 0}
+							>{runningActionCount + pendingScheduledActions.length}</span
+						>
 					{/if}
 				</button>
 				{#if actionMenuOpen}
@@ -822,7 +862,7 @@
 									<div class="action-item" class:action-item-running={t.status === 'running'}>
 										<span
 											class="action-dot"
-											style="color: {t.status === 'running' ? '#44cc44' : '#e0a020'}"
+											style="color: {t.status === 'running' ? 'var(--md-sys-color-success)' : '#e0a020'}"
 											>&#9679;</span
 										>
 										<div class="action-item-main">
@@ -1011,10 +1051,6 @@
 						<div class="page-shell">
 							<HistoryView />
 						</div>
-					{:else if tab.id === 'agents'}
-						<div class="page-shell">
-							<AgentMessagingView />
-						</div>
 					{:else if tab.id === 'settings'}
 						<div class="page-shell">
 							<SettingsView />
@@ -1106,6 +1142,10 @@
 		text-align: center;
 		font-variant-numeric: tabular-nums;
 	}
+	.status-badge-running {
+		background: var(--md-sys-color-success-container);
+		color: var(--md-sys-color-on-success-container);
+	}
 	.recording-text {
 		color: var(--md-sys-color-error);
 	}
@@ -1183,7 +1223,7 @@
 		margin-left: auto;
 	}
 	.action-item-status.running {
-		color: #44cc44;
+		color: var(--md-sys-color-success);
 	}
 	.action-item-sub {
 		display: flex;

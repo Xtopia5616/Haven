@@ -7,4 +7,4 @@
 .env
 .VSCodeCounter
 
-/.playwright-mcp/
+**/.playwright-mcp/

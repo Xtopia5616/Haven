@@ -18,6 +18,15 @@ pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config:
     Ok(settings)
 }
 
+/// Cold-start progress for the titlebar status chip (`loading` | `ready`).
+/// The frontend also listens for `app:bootstrap`; this command covers the
+/// race where the UI mounts after the ready event already fired.
+#[tauri::command]
+pub async fn get_bootstrap_status(app: tauri::AppHandle) -> Result<String, String> {
+    let state = app.state::<Arc<AppState>>();
+    Ok(state.bootstrap_status().as_str().to_string())
+}
+
 #[tauri::command]
 pub async fn update_settings(
     settings: haven_common::config::Settings,

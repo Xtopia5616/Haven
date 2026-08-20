@@ -526,3 +526,57 @@ describe('ChatBubble markdown code fences', () => {
 		expect(container.querySelector('.md-content code')!.textContent).toBe('code');
 	});
 });
+
+describe('ChatBubble markdown links and paths', () => {
+	let clipboardMock: any;
+	beforeEach(() => {
+		clipboardMock = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', {
+			value: { writeText: clipboardMock },
+			configurable: true,
+		});
+	});
+
+	it('renders URLs as ext-ref with Ctrl-open tooltip', async () => {
+		const { container } = render(ChatBubble, {
+			role: 'assistant',
+			content: 'see https://example.com/docs please',
+			type: null,
+			time: null,
+		});
+		await waitFor(() => expect(container.querySelector('a.ext-ref')).toBeTruthy());
+		const a = container.querySelector('a.ext-ref') as HTMLAnchorElement;
+		expect(a.classList.contains('ext-ref-url')).toBe(true);
+		expect(a.title).toContain('Ctrl');
+		expect(a.getAttribute('data-target')).toContain('https://example.com/docs');
+		// Live href is neutralized so middle-click cannot invoke OS handlers.
+		expect(a.getAttribute('href')).toBe('#');
+	});
+
+	it('renders Windows paths as ext-ref-path', async () => {
+		const { container } = render(ChatBubble, {
+			role: 'assistant',
+			content: 'open D:\\Workspace\\Haven\\README.md now',
+			type: null,
+			time: null,
+		});
+		await waitFor(() => expect(container.querySelector('a.ext-ref-path')).toBeTruthy());
+		const a = container.querySelector('a.ext-ref-path') as HTMLAnchorElement;
+		expect(a.getAttribute('data-target')).toBe('D:\\Workspace\\Haven\\README.md');
+		expect(a.getAttribute('href')).toBe('#');
+		expect(a.title).toContain('Ctrl');
+	});
+
+	it('copies the link target on plain click', async () => {
+		const { container } = render(ChatBubble, {
+			role: 'assistant',
+			content: 'https://example.com/x',
+			type: null,
+			time: null,
+		});
+		await waitFor(() => expect(container.querySelector('a.ext-ref')).toBeTruthy());
+		await fireEvent.click(container.querySelector('a.ext-ref')!);
+		await waitFor(() => expect(clipboardMock).toHaveBeenCalled());
+		expect(clipboardMock.mock.calls[0][0]).toContain('https://example.com/x');
+	});
+});

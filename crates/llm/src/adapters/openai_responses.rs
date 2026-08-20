@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use crate::adapters::{
     LineMode, build_client, build_headers, empty_chunk, health_check_request,
-    normalize_web_search_call_item, reasoning_text_from_thinking_blocks, requires_reasoning_echo,
-    send_request, spawn_line_reader, upsert_web_search_call,
+    normalize_web_search_call_item, reasoning_tail, reasoning_text_from_thinking_blocks,
+    requires_reasoning_echo, send_request, spawn_line_reader, stream_header_timeout,
+    upsert_web_search_call,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -325,12 +326,6 @@ impl OpenAiResponsesAdapter {
                 }
                 CanonicalRole::Assistant => {
                     let text = Self::text_content(&m.content);
-                    if !text.is_empty() {
-                        items.push(json!({
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": text}]
-                        }));
-                    }
                     // DeepSeek's thinking-mode Responses compat layer REQUIRES
                     // the reasoning_text of previous assistant turns to be
                     // passed back whenever the input carries tool-call history;
@@ -361,39 +356,55 @@ impl OpenAiResponsesAdapter {
                     // Keeping the TAIL of each turn's reasoning preserves the
                     // conclusions while bounding the request; the provider
                     // validates presence, not length.
-                    if let Some(r) = reasoning.as_deref() {
-                        let text: String = if r.len() > max_reasoning_echo_chars {
-                            // Last `max_reasoning_echo_chars` chars: the tail
-                            // carries the turn's conclusions, which the next
-                            // inference round depends on.
-                            r.chars()
-                                .rev()
-                                .take(max_reasoning_echo_chars)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .collect()
-                        } else {
-                            r.to_string()
-                        };
+                    //
+                    // The reasoning item comes FIRST in the turn, before the
+                    // assistant message, matching the order DeepSeek's own
+                    // response output emits a turn (reasoning → message →
+                    // function_call). The text goes into an OpenAI-style
+                    // content-part array (`[{"type":"reasoning_text","text":…}]`):
+                    // DeepSeek's compat layer deserializes the `content` of a
+                    // `reasoning` input item as a SEQUENCE of parts — a plain
+                    // string 400s with "invalid type: string, expected a
+                    // sequence" (verified against the live API).
+                    //
+                    // The echo is emitted only for endpoints that demand it
+                    // (DeepSeek/Kimi/MiMo): the array form is
+                    // compat-layer-specific, and other providers (official
+                    // OpenAI Responses) neither require a reasoning input item
+                    // nor accept this shape.
+                    if requires_reasoning_echo {
+                        if let Some(r) = reasoning {
+                            items.push(json!({
+                                "type": "reasoning",
+                                "content": [{
+                                    "type": "reasoning_text",
+                                    "text": reasoning_tail(r, max_reasoning_echo_chars)
+                                }]
+                            }));
+                        } else if m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
+                            || !m.web_search_calls.is_empty()
+                        {
+                            // Best-effort presence echo for a tool-call /
+                            // web-search turn on which the model produced no
+                            // reasoning_text (it may skip thinking for a turn).
+                            // NOTE (live-API verified): an empty reasoning item
+                            // does NOT satisfy DeepSeek — it still 400s with
+                            // "The `reasoning_text` in the thinking mode must be
+                            // passed back" — so this injection only avoids a
+                            // missing-item shape; a truly reasoning-less tool
+                            // turn cannot be round-tripped and is the provider's
+                            // constraint, not ours. Shape stays the array form
+                            // (`reasoning_text` parts), never a plain string.
+                            items.push(json!({
+                                "type": "reasoning",
+                                "content": [{"type": "reasoning_text", "text": ""}]
+                            }));
+                        }
+                    }
+                    if !text.is_empty() {
                         items.push(json!({
-                            "type": "reasoning",
-                            "content": [{"type": "reasoning_text", "text": text}]
-                        }));
-                    } else if requires_reasoning_echo
-                        && (m.tool_calls.as_ref().is_some_and(|c| !c.is_empty())
-                            || !m.web_search_calls.is_empty())
-                    {
-                        // DeepSeek checks PRESENCE of the reasoning item, not
-                        // its content: a tool-call / web-search turn on which
-                        // the model produced no reasoning_text (it may skip
-                        // thinking for a turn) still must echo the item or the
-                        // next request 400s. Inject an empty one — the same
-                        // shape the provider itself emits, so the round-trip
-                        // stays canonical.
-                        items.push(json!({
-                            "type": "reasoning",
-                            "content": [{"type": "reasoning_text", "text": ""}]
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}]
                         }));
                     }
                     // `web_search_call` items are passed back verbatim: the
@@ -437,11 +448,14 @@ impl OpenAiResponsesAdapter {
         tools
             .into_iter()
             .map(|t| {
+                // Defense in depth: `ToolDefinition::from` already sanitizes,
+                // but direct constructors / cache hits may still carry Null.
+                let parameters = crate::types::sanitize_tool_parameters(t.function.parameters);
                 serde_json::to_value(ResponsesTool {
                     tool_type: t.tool_type,
                     name: Some(t.function.name),
                     description: Some(t.function.description),
-                    parameters: Some(t.function.parameters),
+                    parameters: Some(parameters),
                 })
                 .unwrap_or_default()
             })
@@ -624,7 +638,7 @@ impl OpenAiResponsesAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req).await?;
+        let resp = send_request(req, None).await?;
 
         let txt = resp
             .text()
@@ -666,10 +680,19 @@ impl OpenAiResponsesAdapter {
             .headers(self.build_headers())
             .json(&body);
         // For streaming, only apply an HTTP-level timeout when explicitly configured.
+        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
+        // response-header wait (a provider that accepts the connection but never
+        // responds would otherwise stall silently until the router-level
+        // max_total_duration_secs) while leaving the body stream to the router's
+        // per-chunk idle timeouts.
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
             req = req.timeout(Duration::from_secs(timeout));
         }
-        let resp = send_request(req).await?;
+        let resp = send_request(
+            req,
+            stream_header_timeout(self.endpoint.timeout_streaming_secs),
+        )
+        .await?;
 
         use tokio::sync::mpsc;
 
@@ -1110,7 +1133,8 @@ mod tests {
         // DeepSeek's thinking-mode compat layer rejects tool-call history
         // without the assistant's reasoning_text passed back (400). The
         // reasoning item must be emitted before the function_call item, in
-        // the same position the provider produced it.
+        // the same position the provider produced it (reasoning → message →
+        // function_call).
         let msgs = vec![
             CanonicalMessage {
                 role: CanonicalRole::Assistant,
@@ -1136,20 +1160,38 @@ mod tests {
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
+            msgs.clone(),
+            OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
+            true,
+        );
+        assert_eq!(items.len(), 4);
+        // The reasoning item leads the turn, carrying an OpenAI-style
+        // content-part array (DeepSeek's compat layer deserializes the
+        // `content` of a `reasoning` input item as a SEQUENCE of parts; a
+        // plain string 400s with "invalid type: string, expected a sequence"),
+        // then the message, then the tool call.
+        assert_eq!(items[0]["type"], "reasoning");
+        assert_eq!(items[0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(
+            items[0]["content"][0]["text"],
+            "I should read the file first."
+        );
+        assert_eq!(items[1]["role"], "assistant");
+        assert_eq!(items[1]["content"][0]["type"], "output_text");
+        assert_eq!(items[2]["type"], "function_call");
+        assert_eq!(items[3]["type"], "function_call_output");
+        // Providers without the echo requirement get NO reasoning item: the
+        // plain-text form is DeepSeek-compat-specific, and other APIs neither
+        // require nor accept it.
+        let (no_echo, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
             false,
         );
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0]["role"], "assistant");
-        assert_eq!(items[0]["content"][0]["type"], "output_text");
-        assert_eq!(items[1]["type"], "reasoning");
-        assert_eq!(
-            items[1]["content"][0]["text"],
-            "I should read the file first."
-        );
-        assert_eq!(items[2]["type"], "function_call");
-        assert_eq!(items[3]["type"], "function_call_output");
+        assert_eq!(no_echo.len(), 3);
+        assert_eq!(no_echo[0]["role"], "assistant");
+        assert_eq!(no_echo[1]["type"], "function_call");
+        assert_eq!(no_echo[2]["type"], "function_call_output");
     }
 
     #[test]
@@ -1188,9 +1230,10 @@ mod tests {
             true,
         );
         assert_eq!(with_echo.len(), 4);
-        assert_eq!(with_echo[1]["type"], "reasoning");
-        assert_eq!(with_echo[1]["content"][0]["type"], "reasoning_text");
-        assert_eq!(with_echo[1]["content"][0]["text"], "");
+        assert_eq!(with_echo[0]["type"], "reasoning");
+        assert_eq!(with_echo[0]["content"][0]["type"], "reasoning_text");
+        assert_eq!(with_echo[0]["content"][0]["text"], "");
+        assert_eq!(with_echo[1]["role"], "assistant");
         assert_eq!(with_echo[2]["type"], "function_call");
         assert_eq!(with_echo[3]["type"], "function_call_output");
         // Without the echo requirement the reasoning item must not appear.
@@ -1200,6 +1243,7 @@ mod tests {
             false,
         );
         assert_eq!(no_echo.len(), 3);
+        assert_eq!(no_echo[0]["role"], "assistant");
         assert_eq!(no_echo[1]["type"], "function_call");
     }
 
@@ -1224,10 +1268,10 @@ mod tests {
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS,
-            false,
+            true,
         );
         assert_eq!(items.len(), 2);
-        let echoed = items[1]["content"][0]["text"].as_str().unwrap();
+        let echoed = items[0]["content"][0]["text"].as_str().unwrap();
         assert_eq!(
             echoed.len(),
             OpenAiResponsesAdapter::MAX_REASONING_ECHO_CHARS

@@ -599,8 +599,9 @@ pub fn run() {
         prev_hook(panic_info);
     }));
 
-    let app_state = init_app_state(filter_handles, log_config, config_loader);
-
+    // Build the window first, then finish AppState inside setup. That lets the
+    // WebView start navigating while (or right as) backend init runs, instead
+    // of serializing: AppState → then first window paint.
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -620,9 +621,18 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .manage(Arc::new(app_state))
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
+
+            // Window from tauri.conf already exists here. Init backend now so
+            // cold-start work no longer runs with zero visible window.
+            let t_setup = std::time::Instant::now();
+            let app_state = init_app_state(filter_handles, log_config, config_loader);
+            app.manage(Arc::new(app_state));
+            tracing::info!(
+                "setup AppState ready in {}ms",
+                t_setup.elapsed().as_millis()
+            );
 
             // 由任务计划程序（--autostart）启动时默认隐藏主窗口，驻留
             // 系统托盘；使用录音快捷键即可唤起窗口并开始录音。
@@ -634,6 +644,36 @@ pub fn run() {
 
             let state = app.state::<Arc<AppState>>();
             let shell = &state.shell;
+
+            // Deferred cold-start work (MCP connect, skills scan, audio
+            // prewarm) runs after the window exists so the UI can paint a
+            // 加载中 chip instead of sitting on a black webview.
+            {
+                let emit_handle = handle.clone();
+                state.spawn_background_init(move |event, payload| {
+                    let _ = emit_handle.emit(event, payload);
+                });
+            }
+
+            // Forward MCP status broadcasts to the webview. Startup connects
+            // and health-monitor reconnects previously only updated the
+            // internal channel — ToolsView / toasts never saw them until a
+            // manual refresh.
+            {
+                let emit_handle = handle.clone();
+                let mut rx = state.tools.mcp_manager.subscribe();
+                tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(ev) => {
+                                let _ = emit_handle.emit("mcp:status_change", &ev);
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+            }
 
             // Auto-refresh skills when the skills folder changes on disk
             // (and once at startup, so a UI that opened before the initial
@@ -950,6 +990,7 @@ pub fn run() {
             commands::session::clear_history,
             commands::model::get_api_key_status,
             commands::model::check_llm_connection,
+            commands::settings::get_bootstrap_status,
             commands::model::list_models,
             commands::model::discover_models,
             commands::model::discover_all_models,
@@ -971,6 +1012,7 @@ pub fn run() {
             commands::skills::set_skill_enabled,
             commands::skills::set_tool_enabled,
             commands::skills::open_skills_dir,
+            commands::external::open_external,
             commands::skills::execute_skill,
             commands::memory::list_facts,
             commands::memory::add_fact,
@@ -988,8 +1030,6 @@ pub fn run() {
             commands::session::update_session_title,
             commands::log::get_log_info,
             commands::log::read_log_tail,
-            commands::messaging::list_messaging_agents,
-            commands::messaging::get_messaging_history,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Haven app")

@@ -1,17 +1,23 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::skill_runner::SkillRunner;
-use crate::{SkillToolAdapter, Tool, ToolResult};
+use crate::{SkillToolAdapter, Tool, ToolBox, ToolRegistry, ToolResult, ToolsManager};
 use haven_skills::SkillsEngine;
 
 pub struct LoadSkillTool {
     pub skills_engine: SkillsEngine,
     pub skill_runner: Arc<RwLock<SkillRunner>>,
+    pub registry: ToolRegistry,
+    pub session_registrations: Arc<RwLock<HashMap<String, HashMap<String, ToolBox>>>>,
+    pub catalog_version: Arc<AtomicU64>,
+    pub max_tools_per_request: usize,
 }
 
 /// Typed parameters for `LoadSkillTool`. Entry ① (native `run`) and entry ②
@@ -20,6 +26,9 @@ pub struct LoadSkillTool {
 pub struct LoadSkillParams {
     /// The name of the skill to load.
     pub skill_name: String,
+    /// Injected privately by ToolsManager when `requires_session_id` is set.
+    #[serde(default, rename = "_session_id")]
+    pub session_id: Option<String>,
 }
 
 impl LoadSkillTool {
@@ -37,6 +46,9 @@ impl LoadSkillTool {
         if skill_name.is_empty() {
             anyhow::bail!("skill_name is required");
         }
+        let session_id = params.session_id.filter(|s| !s.is_empty()).ok_or_else(|| {
+            anyhow::anyhow!("session context required to load skill '{}'", skill_name)
+        })?;
         let skill = self
             .skills_engine
             .get_skill(&skill_name)
@@ -54,7 +66,9 @@ impl LoadSkillTool {
         let skill_display_name = skill.name().to_string();
         let runner = self.skill_runner.read().await.clone();
         let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        let skill_def = adapter.tool_def().json();
+        let skill_def = self
+            .activate_skill(&session_id, adapter)
+            .await?;
 
         Ok(ToolResult::ok(serde_json::json!({
             "skill": skill_def,
@@ -62,6 +76,35 @@ impl LoadSkillTool {
             "status": "loaded",
             "skill_name": skill_display_name,
         })))
+    }
+
+    /// Atomically budget-check + register under the session write lock.
+    async fn activate_skill(
+        &self,
+        session_id: &str,
+        adapter: SkillToolAdapter,
+    ) -> anyhow::Result<Value> {
+        let max = self.max_tools_per_request.max(1);
+        let global_count = self.registry.list().await.len();
+        let name = adapter.name();
+        let skill_def = adapter.tool_def().json();
+        let mut map = self.session_registrations.write().await;
+        let entry = map.entry(session_id.to_string()).or_default();
+        let net_new = if entry.contains_key(&name) { 0 } else { 1 };
+        if ToolsManager::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
+            anyhow::bail!(
+                "Cannot load skill '{}': adding 1 tool would exceed the per-request limit of {} (currently {} tools: {} builtin + {} session). Prefer unloading unused MCP servers, start a new session, or raise context_limits.max_tools_per_request.",
+                name,
+                max,
+                global_count.saturating_add(entry.len()),
+                global_count,
+                entry.len()
+            );
+        }
+        entry.insert(name, Arc::new(adapter));
+        drop(map);
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
+        Ok(skill_def)
     }
 }
 
@@ -88,6 +131,10 @@ impl Tool for LoadSkillTool {
         })
     }
 
+    fn requires_session_id(&self) -> bool {
+        true
+    }
+
     /// Entry ②: LLM JSON entry — convert/validate into `LoadSkillParams`,
     /// then land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -95,15 +142,10 @@ impl Tool for LoadSkillTool {
         self.run(params, cancel).await
     }
 
-    /// Declare the per-session skill adapter registration so the executor
-    /// registers it without name-matching "load_skill".
-    fn registrations(&self, output: &Value) -> Vec<crate::tool::ToolRegistration> {
-        output
-            .get("skill_name")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|name| vec![crate::tool::ToolRegistration::Skill(name.to_string())])
-            .unwrap_or_default()
+    /// Registration is performed atomically inside `run` before success is
+    /// returned. Resume restores from history via `register_skill_for_session`.
+    fn registrations(&self, _output: &Value) -> Vec<crate::tool::ToolRegistration> {
+        Vec::new()
     }
 }
 
@@ -151,6 +193,21 @@ mod tests {
         (engine, skill_runner, dir)
     }
 
+    fn wrap(
+        engine: SkillsEngine,
+        runner: Arc<RwLock<SkillRunner>>,
+        max_tools: usize,
+    ) -> LoadSkillTool {
+        LoadSkillTool {
+            skills_engine: engine,
+            skill_runner: runner,
+            registry: ToolRegistry::new(),
+            session_registrations: Arc::new(RwLock::new(HashMap::new())),
+            catalog_version: Arc::new(AtomicU64::new(0)),
+            max_tools_per_request: max_tools,
+        }
+    }
+
     #[test]
     fn test_load_skill_name() {
         let skills_engine = SkillsEngine::new();
@@ -166,22 +223,19 @@ mod tests {
         let venv_mgr = VenvManager::new(temp_dir.path().to_path_buf());
         let skill_runner = Arc::new(RwLock::new(SkillRunner::new(venv_mgr, exec_config)));
 
-        let tool = LoadSkillTool {
-            skills_engine,
-            skill_runner,
-        };
+        let tool = wrap(skills_engine, skill_runner, 350);
         assert_eq!(tool.name(), "load_skill");
     }
 
     #[tokio::test]
     async fn test_load_skill_rejects_disabled() {
         let (engine, runner, _dir) = make_engine_with_skill(false).await;
-        let tool = LoadSkillTool {
-            skills_engine: engine,
-            skill_runner: runner,
-        };
+        let tool = wrap(engine, runner, 350);
         let result = tool
-            .execute(json!({"skill_name": "echo"}), CancellationToken::new())
+            .execute(
+                json!({"skill_name": "echo", "_session_id": "ses-x"}),
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err(), "disabled skill should be rejected");
         assert!(result.unwrap_err().to_string().contains("disabled"));
@@ -190,16 +244,18 @@ mod tests {
     #[tokio::test]
     async fn test_load_skill_loads_enabled() {
         let (engine, runner, _dir) = make_engine_with_skill(true).await;
-        let tool = LoadSkillTool {
-            skills_engine: engine,
-            skill_runner: runner,
-        };
+        let tool = wrap(engine, runner, 350);
         let result = tool
-            .execute(json!({"skill_name": "echo"}), CancellationToken::new())
+            .execute(
+                json!({"skill_name": "echo", "_session_id": "ses-x"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(result.success);
         assert_eq!(result.output["skill"]["name"], "skill__echo");
+        let regs = tool.session_registrations.read().await;
+        assert!(regs.get("ses-x").unwrap().contains_key("skill__echo"));
     }
 
     #[tokio::test]
@@ -211,12 +267,12 @@ mod tests {
         // a separate field instead of a second schema implementation.
         let (engine, runner, _dir) = make_engine_with_skill(true).await;
         let engine_ref = engine.clone();
-        let tool = LoadSkillTool {
-            skills_engine: engine,
-            skill_runner: runner.clone(),
-        };
+        let tool = wrap(engine, runner.clone(), 350);
         let result = tool
-            .execute(json!({"skill_name": "echo"}), CancellationToken::new())
+            .execute(
+                json!({"skill_name": "echo", "_session_id": "ses-x"}),
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         let skill = engine_ref.get_skill("echo").await.unwrap();
@@ -228,12 +284,12 @@ mod tests {
     #[tokio::test]
     async fn test_load_skill_rejects_unknown() {
         let (engine, runner, _dir) = make_engine_with_skill(true).await;
-        let tool = LoadSkillTool {
-            skills_engine: engine,
-            skill_runner: runner,
-        };
+        let tool = wrap(engine, runner, 350);
         let result = tool
-            .execute(json!({"skill_name": "nope"}), CancellationToken::new())
+            .execute(
+                json!({"skill_name": "nope", "_session_id": "ses-x"}),
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err(), "unknown skill should be rejected");
     }
@@ -241,19 +297,42 @@ mod tests {
     #[tokio::test]
     async fn test_load_skill_native_entry_lands_in_run() {
         let (engine, runner, _dir) = make_engine_with_skill(true).await;
-        let tool = LoadSkillTool {
-            skills_engine: engine,
-            skill_runner: runner,
-        };
+        let tool = wrap(engine, runner, 350);
         let result = tool
             .run(
                 LoadSkillParams {
                     skill_name: "echo".into(),
+                    session_id: Some("ses-x".into()),
                 },
                 CancellationToken::new(),
             )
             .await
             .unwrap();
         assert_eq!(result.output["skill"]["name"], "skill__echo");
+    }
+
+    #[tokio::test]
+    async fn test_load_skill_refuses_over_budget() {
+        let (engine, runner, _dir) = make_engine_with_skill(true).await;
+        let tool = wrap(engine, runner, 1);
+        // Fill session to capacity first (max=1).
+        {
+            let mut map = tool.session_registrations.write().await;
+            map.entry("ses-x".into()).or_default().insert(
+                "pad".into(),
+                Arc::new(crate::builtin::notify::NotifyTool) as ToolBox,
+            );
+        }
+        let result = tool
+            .execute(
+                json!({"skill_name": "echo", "_session_id": "ses-x"}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("per-request limit"),
+            "should refuse over budget"
+        );
     }
 }

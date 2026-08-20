@@ -77,8 +77,10 @@ interface ReviewData {
  * - live only, finalized: assistant message bubbles are kept — they may be
  *   snap-finalized but not yet written to the DB, and dropping them would
  *   make seen text vanish; the next merge converges once the row lands.
- *   Cards (tool/ask) and user bubbles have no unpersisted equivalent, so
- *   they drop with the DB rebuild.
+ *   Persisted tool/ask cards (`step-*` ids) are kept the same way: Continue
+ *   resync can race the retry's Action/Observation and briefly miss the
+ *   pending row, and dropping them made post-resume tool calls vanish.
+ *   Transient cards (e.g. `web_search`) and user bubbles still drop.
  *
  * @param {Array<object>} dbMessages   buildReviewMessages() result
  * @param {Array<object>} existing     current sessionMessages entry
@@ -98,27 +100,65 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 		existing.filter((m) => m.type === 'tool' && m.streaming).map((m) => [m.id, m]),
 	);
 	const out: ReviewMessage[] = [];
+	const existingIdxOf = new Map(existing.map((m, i) => [m.id, i]));
+	// For each emitted DB row that also exists in the live list: its position
+	// in `existing` (to order finalized live-only leftovers) and its position
+	// in `out` (the insertion point).
+	const dbOutIdx: Array<{ existingIdx: number; outIdx: number }> = [];
 	const emitted = new Set<string>();
 	for (const m of dbMessages) {
 		const live = liveAskById.get(m.id) ?? liveStreamingToolById.get(m.id);
 		if (live) {
 			out.push(live);
 			emitted.add(live.id);
-			continue;
-		}
-		out.push(m);
-		emitted.add(m.id);
-	}
-	for (const m of existing) {
-		if (emitted.has(m.id)) continue;
-		if (m.streaming) {
+		} else {
 			out.push(m);
-			continue;
+			emitted.add(m.id);
 		}
-		if (m.type === 'tool' || m.type === 'ask') continue;
-		if (m.role !== 'assistant') continue;
-		out.push(m);
+		const existingIdx = existingIdxOf.get(m.id);
+		if (existingIdx != null) dbOutIdx.push({ existingIdx, outIdx: out.length - 1 });
 	}
+	// Live-only leftovers. STILL-STREAMING blocks always go last (the current
+	// step's tail). Finalized assistant bubbles (snap-finalized reasoning /
+	// thought whose DB write hasn't landed yet) and finalized `step-*`
+	// tool/ask cards are inserted at the position of the next DB row that
+	// follows them in the live list — otherwise a merge could reorder them
+	// after a later message, e.g. [user, thinking, user] collapsing to
+	// [user, user, thinking] for one frame.
+	const streamingTail: ReviewMessage[] = [];
+	const finalized: Array<{ item: ReviewMessage; existingIdx: number }> = [];
+	existing.forEach((m, i) => {
+		if (emitted.has(m.id)) return;
+		if (m.streaming) {
+			streamingTail.push(m);
+			return;
+		}
+		const isPersistedCard =
+			(m.type === 'tool' || m.type === 'ask') && String(m.id || '').startsWith('step-');
+		if (m.type === 'tool' || m.type === 'ask') {
+			if (!isPersistedCard) return;
+		} else if (m.role !== 'assistant') {
+			return;
+		}
+		finalized.push({ item: m, existingIdx: i });
+	});
+	for (const f of finalized) {
+		let nextDb: { existingIdx: number; outIdx: number } | null = null;
+		for (const d of dbOutIdx) {
+			if (d.existingIdx > f.existingIdx && (!nextDb || d.existingIdx < nextDb.existingIdx)) {
+				nextDb = d;
+			}
+		}
+		if (nextDb) {
+			out.splice(nextDb.outIdx, 0, f.item);
+			for (const d of dbOutIdx) {
+				if (d.outIdx >= nextDb.outIdx) d.outIdx++;
+			}
+		} else {
+			out.push(f.item);
+		}
+	}
+	out.push(...streamingTail);
 	return out;
 }
 

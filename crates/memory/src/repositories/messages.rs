@@ -9,6 +9,16 @@ pub(crate) fn now_rfc3339_millis() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// Lower bound for undelivered-input recovery scans. Older unanchored rows are
+/// treated as historical noise (legacy id formats / failed thought-step writes)
+/// and must not re-enter the ReAct loop on history review or crash resume.
+pub const UNDELIVERED_RECOVERY_MAX_AGE: chrono::Duration = chrono::Duration::days(2);
+
+/// RFC3339 timestamp `now - UNDELIVERED_RECOVERY_MAX_AGE` for recovery scans.
+pub fn undelivered_recovery_since() -> String {
+    (Utc::now() - UNDELIVERED_RECOVERY_MAX_AGE).to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 /// Map a `messages` row (9 columns: id, session_id, role, content, message_type,
 /// created_at, tool_call_id, attachments, voice) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
@@ -236,6 +246,62 @@ impl Database {
         Ok(msgs)
     }
 
+    /// Return every user message that was persisted but never injected into the
+    /// agent's context. A submitted input is "delivered" when the ReAct loop
+    /// injects it via `push_user_context`, which anchors it with a
+    /// `session_steps` row under the message's own id (see
+    /// `create_thought_step`). A `msg-*` user row without that anchor was
+    /// queued as steering/supplement and then lost — the session errored,
+    /// completed, or was cancelled mid-batch before the loop drained the queue.
+    /// Reopen/resume re-delivers these so history review never leaves a user
+    /// message stranded in a "pending / not delivered" state.
+    ///
+    /// The session's FIRST user message is the session input seeded into the
+    /// canonical directly (it never carries an anchor), so it is excluded here.
+    pub fn get_undelivered_user_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
+        self.get_undelivered_user_messages_since(session_id, None)
+    }
+
+    /// Like [`Self::get_undelivered_user_messages`], but when `since_created_at`
+    /// is set only rows with `created_at > since` are returned. Callers use this
+    /// to bound crash/review recovery (e.g. last 2 days) so ancient false
+    /// positives from missing anchors never re-enter the ReAct loop.
+    pub fn get_undelivered_user_messages_since(
+        &self,
+        session_id: &str,
+        since_created_at: Option<&str>,
+    ) -> anyhow::Result<Vec<Message>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
+                    m.tool_call_id, m.attachments, m.voice
+             FROM messages m
+             WHERE m.session_id = ?1
+               AND m.role = 'user'
+               AND m.id LIKE 'msg-%'
+               AND (?2 IS NULL OR m.created_at > ?2)
+               AND m.id <> (
+                   SELECT id FROM messages
+                   WHERE session_id = ?1 AND role = 'user'
+                   ORDER BY created_at ASC, rowid ASC LIMIT 1
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM session_steps st
+                   WHERE st.session_id = m.session_id AND st.id = m.id
+               )
+             ORDER BY m.created_at ASC, m.rowid ASC",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![session_id, since_created_at],
+            map_message_row,
+        )?;
+        let mut msgs = Vec::new();
+        for row in rows {
+            msgs.push(row?);
+        }
+        Ok(msgs)
+    }
+
     pub fn delete_session_messages(&self, session_id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
@@ -428,6 +494,70 @@ mod tests {
         assert_eq!(since.len(), 1, "only rows after the cutoff");
         assert_eq!(since[0].id, second.id);
         assert_ne!(since[0].id, first.id, "the earlier row must be excluded");
+    }
+
+    #[test]
+    fn get_undelivered_user_messages_excludes_first_and_anchored() {
+        let db = test_db();
+        let tid = test_session(&db);
+        // The session input (first user message) is seeded into the canonical
+        // directly and never carries a step anchor — must be excluded.
+        let first = db.add_message(&tid, "user", "开场", None, None).unwrap();
+        // A steering input delivered via push_user_context gets a step anchor.
+        let delivered = db.add_message(&tid, "user", "继续", None, None).unwrap();
+        db.create_thought_step(&tid, 2, &delivered.id).unwrap();
+        // A queued steering lost before injection has no anchor.
+        let lost = db
+            .add_message(&tid, "user", "C:\\照片目录", None, None)
+            .unwrap();
+
+        let undelivered = db.get_undelivered_user_messages(&tid).unwrap();
+        assert_eq!(
+            undelivered.len(),
+            1,
+            "only the never-injected input is pending"
+        );
+        assert_eq!(undelivered[0].id, lost.id);
+        assert_ne!(undelivered[0].id, first.id);
+        assert_ne!(undelivered[0].id, delivered.id);
+        // Attachment payloads survive the scan (images travel with the input).
+        assert!(undelivered[0].attachments.is_empty());
+    }
+
+    #[test]
+    fn get_undelivered_user_messages_skips_legacy_and_empty_sessions() {
+        let db = test_db();
+        let tid = test_session(&db);
+        // No messages at all: nothing to recover.
+        assert!(db.get_undelivered_user_messages(&tid).unwrap().is_empty());
+        // Assistant rows are never user inputs.
+        db.add_message(&tid, "assistant", "hi", Some("text"), None)
+            .unwrap();
+        assert!(db.get_undelivered_user_messages(&tid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_undelivered_user_messages_since_filters_by_created_at() {
+        let db = test_db();
+        let tid = test_session(&db);
+        let _first = db.add_message(&tid, "user", "开场", None, None).unwrap();
+        let lost = db.add_message(&tid, "user", "丢失输入", None, None).unwrap();
+        // A cutoff newer than the lost row excludes it.
+        let after = (Utc::now() + chrono::Duration::seconds(1))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        assert!(
+            db.get_undelivered_user_messages_since(&tid, Some(after.as_str()))
+                .unwrap()
+                .is_empty()
+        );
+        // A cutoff older than the lost row still returns it.
+        let before = (Utc::now() - chrono::Duration::days(1))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let undelivered = db
+            .get_undelivered_user_messages_since(&tid, Some(before.as_str()))
+            .unwrap();
+        assert_eq!(undelivered.len(), 1);
+        assert_eq!(undelivered[0].id, lost.id);
     }
 
     #[test]

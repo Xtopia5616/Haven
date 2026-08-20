@@ -65,7 +65,7 @@
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.ts';
-	import { sessionMessagesStore, updateSessionMessages, clearSessionMessages, reviewTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
+	import { updateSessionMessages, clearSessionMessages, clearAllSessionMessages, reviewTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
 	import { registerOne } from '$lib/events.ts';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -78,24 +78,44 @@
 		{ value: 'completed', label: 'Completed' },
 		{ value: 'paused', label: 'Paused' },
 		{ value: 'error', label: 'Error' },
-		{ value: 'failed', label: 'Failed' },
 	];
 
 	/** @type {{ dispose: () => void } | null} */
 	let unlistenTitleUpdate = null;
+	/** @type {Array<{ dispose: () => void }>} */
+	let unlistenLifecycle = [];
+	/** @type {ReturnType<typeof setTimeout> | null} */
+	let reloadTimer = null;
 
 	onMount(async () => {
 		await loadHistory();
-		const reg = await registerOne('session:title-updated', (event) => {
+		unlistenTitleUpdate = await registerOne('session:title-updated', (event) => {
 			const { session_id, title } = event.payload;
 			sessions = sessions.map(t => t.id === session_id ? { ...t, title } : t);
 		}, { tag: 'history' });
-		unlistenTitleUpdate = reg;
+		// The history view is keep-alive mounted: it never remounts when the
+		// user switches back to this tab, so new conversations (and session
+		// lifecycle changes) must refresh the list via events, not onMount.
+		// Debounced: a chat turn can fire several session:updated in a row
+		// (pending → running → paused) — one reload suffices.
+		const scheduleReload = () => {
+			if (reloadTimer) clearTimeout(reloadTimer);
+			reloadTimer = setTimeout(loadHistory, 300);
+		};
+		unlistenLifecycle = await Promise.all([
+			registerOne('session:created', scheduleReload, { tag: 'history' }),
+			registerOne('session:updated', scheduleReload, { tag: 'history' }),
+			registerOne('session:completed', scheduleReload, { tag: 'history' }),
+			registerOne('session:error', scheduleReload, { tag: 'history' }),
+		]);
 	});
 
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
+		if (reloadTimer) clearTimeout(reloadTimer);
 		if (unlistenTitleUpdate) unlistenTitleUpdate.dispose();
+		unlistenLifecycle.forEach((r) => r.dispose());
+		unlistenLifecycle = [];
 	});
 
 	// Defer the facts table load until the 事实 tab is first opened, so a
@@ -257,7 +277,10 @@
 			totalCount = 0;
 			hasMore = false;
 			activeSessionIdStore.set(null);
-			sessionMessagesStore.set({});
+			// Wipe only per-session message lists: the un-sent draft (typed or
+			// transcribed text that was never submitted) belongs to no session
+			// and must survive a history wipe.
+			clearAllSessionMessages();
 			addNotification(`已清空 ${count} 条历史记录`, 'success', 3000);
 		} catch {
 			addNotification('清空历史记录失败', 'error', 4000);

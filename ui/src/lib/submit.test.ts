@@ -197,6 +197,128 @@ describe('submitTranscript', () => {
 		expect(list).toHaveLength(1); // a concurrent duplicate must not add a second bubble
 	});
 
+	it('does not join the same text when the session pin differs', async () => {
+		let resolveFirst!: (v: unknown) => void;
+		invokeMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({});
+		activeSessionIdStore.set('session-a');
+		const first = submitTranscript('继续', { voice: false });
+		activeSessionIdStore.set('session-b');
+		const second = submitTranscript('继续', { voice: false });
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+		resolveFirst!({});
+		await Promise.all([first, second]);
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[1][1].activeSessionId).toBe(
+			'session-b',
+		);
+	});
+
+	it('adopts the newly created session for a queued draft follow-up', async () => {
+		let resolveFirst!: (v: unknown) => void;
+		invokeMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({});
+		activeSessionIdStore.set(null);
+		const first = submitTranscript('第一条', { voice: false });
+		const second = submitTranscript('第二条', { voice: true });
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+		resolveFirst!({ SessionCreated: 'session-new' });
+		await Promise.all([first, second]);
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[1][1].activeSessionId).toBe(
+			'session-new',
+		);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-new']);
+		expect(list.map((x) => x.content)).toEqual(['第一条', '第二条']);
+	});
+
+	it('adopts after a fresh-start create even when both were queued with intent', async () => {
+		const { newSessionIntentStore } = await import('./stores.ts');
+		let resolveFirst!: (v: unknown) => void;
+		invokeMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({});
+		activeSessionIdStore.set(null);
+		newSessionIntentStore.set(true);
+		const first = submitTranscript('新对话第一条', { voice: false });
+		const second = submitTranscript('新对话第二条', { voice: true });
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+		resolveFirst!({ SessionCreated: 'session-fresh' });
+		await Promise.all([first, second]);
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[1][1].activeSessionId).toBe(
+			'session-fresh',
+		);
+		newSessionIntentStore.set(false);
+	});
+
+	it('queues a DIFFERENT concurrent submission instead of dropping it', async () => {
+		let resolveFirst!: (v: unknown) => void;
+		invokeMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				})
+			)
+			.mockResolvedValueOnce({});
+		activeSessionIdStore.set('session-a');
+
+		const first = submitTranscript('第一条', { voice: false });
+		const second = submitTranscript('第二条', { voice: false });
+		// Only the first dispatched so far; the second is queued, not dropped.
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+
+		resolveFirst!({});
+		const results = await Promise.all([first, second]);
+
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+		expect(results[1]).toEqual({});
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		expect(list.map((x) => x.content)).toEqual(['第一条', '第二条']);
+	});
+
+	it('keeps the enqueue-time session for a queued submission after a switch', async () => {
+		let resolveFirst!: (v: unknown) => void;
+		invokeMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				})
+			)
+			.mockResolvedValueOnce({});
+		activeSessionIdStore.set('session-a');
+
+		const first = submitTranscript('给 A', { voice: false });
+		const second = submitTranscript('也给 A', { voice: false });
+		// Switch away while the second is still queued.
+		activeSessionIdStore.set('session-b');
+		resolveFirst!({});
+		await Promise.all([first, second]);
+
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[1][1].activeSessionId).toBe(
+			'session-a',
+		);
+		const listA = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		const listB = /** @type {any[]} */ (get(sessionMessagesStore)['session-b']);
+		expect(listA.map((x) => x.content)).toEqual(['给 A', '也给 A']);
+		expect(listB || []).toEqual([]);
+	});
+
 	it('releases the lock after a failed submission so a retry can submit again', async () => {
 		invokeMock.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({});
 		activeSessionIdStore.set('session-a');

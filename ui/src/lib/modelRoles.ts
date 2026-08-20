@@ -20,7 +20,7 @@ export const modelCards = [
 	{ key: 'balanced_model', label: 'Balanced Model', hint: 'Used when Default Model is unavailable', prefix: 'bm', basePlaceholder: 'http://localhost:11434', group: 'core' },
 	{ key: 'small_model', label: 'Small Model', hint: 'Title generation & lightweight reasoning', prefix: 'sm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },
 	{ key: 'image_model', label: 'Image Model', hint: 'Image understanding (vision-capable)', prefix: 'im', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
-	{ key: 'audio_model', label: 'Audio Model', hint: 'Audio transcription (speech-to-text)', prefix: 'au', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
+	{ key: 'audio_model', label: 'Audio Model', hint: 'Speech-to-text (Whisper / Gemini / Deepgram / AssemblyAI, or multimodal chat fallback)', prefix: 'au', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 	{ key: 'embedding_model', label: 'Embedding Model', hint: 'Semantic memory: vectors for facts & past conversations. Local (Ollama / LM Studio) or cloud', prefix: 'em', basePlaceholder: 'https://api.openai.com/v1', group: 'specialized' },
 ];
 

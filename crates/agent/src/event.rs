@@ -89,9 +89,9 @@ pub enum AgentEvent {
     },
     /// The provider stream went silent (no chunk for several seconds) while
     /// the step is still in flight. Emitted by a per-call watchdog so the UI
-    /// can surface "still generating, be patient" feedback instead of looking
-    /// frozen; the stream itself is only aborted at the router's idle
-    /// timeout. Re-emitted when the stream resumes and stalls again.
+    /// can show a factual waiting state instead of looking frozen; the stream
+    /// itself is only aborted at the router's idle timeout. Re-emitted when
+    /// the stream resumes and stalls again.
     StreamStalled {
         session_id: String,
     },

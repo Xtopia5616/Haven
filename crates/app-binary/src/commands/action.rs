@@ -7,7 +7,7 @@ use tauri::State;
 /// Board view of every action (background actions + pending scheduled_actions), for
 /// the UI's action panel. Mirrors the `action:created` / `action:updated`
 /// / `action:finished` / `action:output` events so the panel can hydrate
-/// on mount / navigation. Action rows carry `kind: "action"` (plus `action_id`),
+/// on mount / navigation. Action rows carry `kind: "background"` (plus `action_id`),
 /// scheduled-action rows `kind: "scheduled"` (plus `id`).
 ///
 /// Live actions come from the in-memory board (with output preview); terminal

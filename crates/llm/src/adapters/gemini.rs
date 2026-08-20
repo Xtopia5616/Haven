@@ -9,13 +9,17 @@ use std::time::Duration;
 
 use crate::adapters::{
     LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
-    spawn_line_reader,
+    spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
-use crate::types::{FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage};
+use crate::types::{
+    FinishReason, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition, Usage,
+};
+use base64::Engine;
 use haven_common::config::ModelEndpoint;
+use haven_common::prompts::STT_SYSTEM_PROMPT;
 
 // ---------------------------------------------------------------------------
 // Gemini generateContent request / response types
@@ -511,7 +515,7 @@ impl GeminiAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req).await?;
+        let resp = send_request(req, None).await?;
 
         let txt = resp
             .text()
@@ -553,10 +557,19 @@ impl GeminiAdapter {
             .headers(self.build_headers())
             .json(&body);
         // For streaming, only apply an HTTP-level timeout when explicitly configured.
+        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
+        // response-header wait (a provider that accepts the connection but never
+        // responds would otherwise stall silently until the router-level
+        // max_total_duration_secs) while leaving the body stream to the router's
+        // per-chunk idle timeouts.
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
             req = req.timeout(Duration::from_secs(timeout));
         }
-        let resp = send_request(req).await?;
+        let resp = send_request(
+            req,
+            stream_header_timeout(self.endpoint.timeout_streaming_secs),
+        )
+        .await?;
 
         use tokio::sync::mpsc;
 
@@ -768,6 +781,49 @@ impl LlmClient for GeminiAdapter {
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
+    }
+
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult, LlmError> {
+        let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
+        let body = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    { "text": STT_SYSTEM_PROMPT },
+                    {
+                        "inline_data": {
+                            "mime_type": "audio/wav",
+                            "data": data
+                        }
+                    }
+                ]
+            }]
+        });
+        let url = self.generate_url();
+        tracing::debug!("POST {} (stt model: {})", url, self.endpoint.model_name);
+        let mut req = self
+            .client
+            .post(&url)
+            .headers(self.build_headers())
+            .json(&body);
+        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        let resp = send_request(req, None).await?;
+        let txt = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let json: Value =
+            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let text = json["candidates"][0]["content"]["parts"]
+            .as_array()
+            .and_then(|parts| parts.iter().find_map(|p| p["text"].as_str()))
+            .ok_or_else(|| LlmError::InvalidResponse("Gemini STT response missing text".into()))?
+            .trim()
+            .to_string();
+        Ok(SttResult {
+            text,
+            confidence: None,
+        })
     }
 
     async fn health_check(&self) -> Result<(), LlmError> {

@@ -1,4 +1,6 @@
 pub mod anthropic;
+pub mod assemblyai;
+pub mod deepgram;
 pub mod gemini;
 pub mod openai;
 pub mod openai_responses;
@@ -28,6 +30,8 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &str {
         "anthropic" => "anthropic",
         "google" | "gemini" => "gemini",
         "llama" | "llama.cpp" | "llamacpp" => "llama.cpp",
+        "deepgram" => "deepgram",
+        "assemblyai" => "assemblyai",
         _ => "openai-chat",
     }
 }
@@ -37,10 +41,12 @@ pub fn api_style_for(endpoint: &ModelEndpoint) -> &str {
 /// Dispatch happens on the resolved `api_style` (see `api_style_for`):
 /// - `openai-chat` / `llama.cpp`: OpenAI-compatible `/chat/completions`
 ///   (OpenAI, Ollama, vLLM, DeepSeek, llama.cpp server, and most third-party
-///   gateways)
+///   gateways). Whisper-family models also implement `transcribe` via
+///   `/audio/transcriptions`.
 /// - `openai-responses`: OpenAI Responses API
 /// - `anthropic`: Anthropic Messages API
-/// - `gemini`: Google Gemini API
+/// - `gemini`: Google Gemini API (chat + STT via `generateContent`)
+/// - `deepgram` / `assemblyai`: speech-to-text only
 pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
     match api_style_for(endpoint) {
         "anthropic" => Box::new(anthropic::AnthropicAdapter::new(endpoint.clone())),
@@ -48,6 +54,8 @@ pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
         "openai-responses" => Box::new(openai_responses::OpenAiResponsesAdapter::new(
             endpoint.clone(),
         )),
+        "deepgram" => Box::new(deepgram::DeepgramAdapter::new(endpoint.clone())),
+        "assemblyai" => Box::new(assemblyai::AssemblyAiAdapter::new(endpoint.clone())),
         _ => Box::new(openai::OpenAiAdapter::new(endpoint.clone())),
     }
 }
@@ -105,7 +113,13 @@ pub(crate) fn build_headers(
     let customized =
         endpoint.auth_header_name != "Authorization" || endpoint.auth_header_prefix != "Bearer";
     if customized {
-        let auth = format!("{} {}", endpoint.auth_header_prefix, endpoint.api_key);
+        // Match `auth_value` in discover_models: empty prefix means the raw
+        // key (Anthropic / Gemini / AssemblyAI), not `" <key>"`.
+        let auth = if endpoint.auth_header_prefix.is_empty() {
+            endpoint.api_key.clone()
+        } else {
+            format!("{} {}", endpoint.auth_header_prefix, endpoint.api_key)
+        };
         if let Ok(v) = HeaderValue::from_str(&auth) {
             let name = endpoint
                 .auth_header_name
@@ -128,13 +142,53 @@ pub(crate) fn build_headers(
     headers
 }
 
+/// Default budget for the streaming response-HEADER wait when the endpoint
+/// configures no `timeout_streaming_secs`. The `req.send()` phase (connect,
+/// request upload, and the wait for response headers) otherwise has no
+/// HTTP-level bound: a provider that accepts the connection but never returns
+/// headers stalls silently until the router's total-duration timeout
+/// (minutes), looking like a frozen session with no log output. Bounds ONLY
+/// the header wait — once the response resolves, the body stream is governed
+/// by the router's per-chunk idle timeouts, so a legitimately long generation
+/// is never cut off by this cap (matching the router's first-chunk grace).
+const STREAM_HEADER_TIMEOUT_SECS: u64 = 60;
+
+/// Streaming header-wait budget for adapters: when the endpoint configured
+/// `timeout_streaming_secs`, the request already carries a total-duration
+/// `.timeout()` (covering the header wait), so no separate bound is needed;
+/// otherwise `Some(...)` bounds the header wait via
+/// [`STREAM_HEADER_TIMEOUT_SECS`].
+pub(crate) fn stream_header_timeout(timeout_streaming_secs: Option<u64>) -> Option<Duration> {
+    timeout_streaming_secs
+        .is_none()
+        .then_some(Duration::from_secs(STREAM_HEADER_TIMEOUT_SECS))
+}
+
 /// Send a prepared request and turn non-success statuses into a structured
 /// `LlmError`, extracting `Retry-After` (§2.3) before consuming the body.
 /// Returns the response for the caller to parse on success.
+///
+/// `header_timeout`, when `Some`, additionally bounds `req.send()` (waiting
+/// for the response headers) so a provider that accepts the connection but
+/// never responds cannot stall the caller indefinitely. It deliberately does
+/// NOT bound the body stream — that is the router's per-chunk idle timeout's
+/// job, and a total-duration cap would truncate legitimately long streams.
 pub(crate) async fn send_request(
     req: reqwest::RequestBuilder,
+    header_timeout: Option<Duration>,
 ) -> Result<reqwest::Response, LlmError> {
-    let resp = req.send().await.map_err(LlmError::from)?;
+    let resp = match header_timeout {
+        Some(d) => tokio::time::timeout(d, req.send())
+            .await
+            .map_err(|_| {
+                LlmError::Timeout(format!(
+                    "timed out waiting for the stream response headers after {}s",
+                    d.as_secs()
+                ))
+            })?
+            .map_err(LlmError::from)?,
+        None => req.send().await.map_err(LlmError::from)?,
+    };
     if resp.status().is_success() {
         return Ok(resp);
     }
@@ -242,6 +296,28 @@ pub(crate) fn reasoning_text_from_thinking_blocks(blocks: &[serde_json::Value]) 
         }
     }
     out
+}
+
+/// Keep the TAIL of `text` bounded to `cap` characters. Full reasoning
+/// (10k+ chars per turn) balloons request bodies and providers stall or
+/// truncate mid-inference; the tail preserves the turn's conclusions.
+/// Returns the input unchanged (no allocation) when it already fits, and
+/// the cap counts CHARS (not bytes) so multi-byte text is never cut mid-codepoint.
+/// Shared by the chat-completions (`reasoning_content`) and Responses
+/// (`reasoning` item) adapters so the two echoes cannot drift apart.
+pub(crate) fn reasoning_tail(text: String, cap: usize) -> String {
+    let chars = text.chars().count();
+    if chars <= cap {
+        text
+    } else {
+        let skip = chars - cap;
+        let start = text
+            .char_indices()
+            .nth(skip)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        text[start..].to_string()
+    }
 }
 
 /// Insert a captured `web_search_call` item into `calls`, replacing any
@@ -395,6 +471,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_header_timeout_bounds_only_unconfigured_endpoints() {
+        // Endpoint configured with a streaming timeout: the request carries
+        // its own total-duration `.timeout()`, so no separate header bound.
+        assert_eq!(stream_header_timeout(Some(120)), None);
+        // Unconfigured: the fallback header-wait budget applies so a silent
+        // provider stall surfaces instead of hanging the caller.
+        assert_eq!(
+            stream_header_timeout(None),
+            Some(Duration::from_secs(STREAM_HEADER_TIMEOUT_SECS))
+        );
+    }
+
+    #[test]
     fn requires_reasoning_echo_covers_reasoning_echo_providers() {
         // DeepSeek (both native and proxied).
         let deepseek = ModelEndpoint {
@@ -528,6 +617,16 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(api_style_for(&llamacpp), "llama.cpp");
+        let deepgram = ModelEndpoint {
+            provider: "deepgram".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&deepgram), "deepgram");
+        let assemblyai = ModelEndpoint {
+            provider: "assemblyai".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&assemblyai), "assemblyai");
     }
 
     #[test]
@@ -556,6 +655,16 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(adapter_for(&llama).style(), "openai-chat");
+        let deepgram = ModelEndpoint {
+            provider: "deepgram".into(),
+            ..Default::default()
+        };
+        assert_eq!(adapter_for(&deepgram).style(), "deepgram");
+        let assemblyai = ModelEndpoint {
+            provider: "assemblyai".into(),
+            ..Default::default()
+        };
+        assert_eq!(adapter_for(&assemblyai).style(), "assemblyai");
     }
 
     #[test]

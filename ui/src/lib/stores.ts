@@ -25,26 +25,58 @@ function actionKey(payload: { id?: string; action_id?: string }) {
 	return payload?.id || payload?.action_id || null;
 }
 
+/** Live board rows that must never be evicted to make room for history. */
+function isLiveActionRow(entry: Record<string, unknown>) {
+	if (entry.kind === 'scheduled') return true;
+	return entry.status === 'running';
+}
+
+function trimActionStore(entries: Record<string, Record<string, unknown>>) {
+	const ids = Object.keys(entries);
+	if (ids.length <= ACTION_STORE_MAX) return entries;
+	const excess = ids.length - ACTION_STORE_MAX;
+	// Prefer dropping terminal background rows; never drop running background
+	// or pending scheduled rows (those back the titlebar badge/chip).
+	const victims = ids.filter((id) => !isLiveActionRow(entries[id]));
+	let removed = 0;
+	for (const id of victims) {
+		if (removed >= excess) break;
+		delete entries[id];
+		removed++;
+	}
+	return entries;
+}
+
 export function upsertAction(payload: Record<string, unknown>) {
 	const key = actionKey(payload as { id?: string; action_id?: string });
 	if (!key) return;
 	actionStore.update((m) => {
+		const hadPrev = Object.prototype.hasOwnProperty.call(m, key);
 		const prev = (m as Record<string, Record<string, unknown>>)[key] || {};
+		const kind =
+			payload.kind || prev.kind || (payload.action_id ? 'background' : 'scheduled');
+		// Default `running` only on a create-like first insert (has started_at).
+		// Status-less updates (`action:updated` = session bind) must not invent
+		// running after an eviction wiped `prev`.
+		let status = (payload.status ?? prev.status) as string | undefined;
+		if (
+			status === undefined &&
+			!hadPrev &&
+			(kind === 'background' || !!payload.action_id) &&
+			payload.started_at != null
+		) {
+			status = 'running';
+		}
 		const next = {
 			...prev,
 			...payload,
 			id: key,
-			kind: payload.kind || prev.kind || (payload.action_id ? 'background' : 'scheduled'),
+			kind,
+			...(status !== undefined ? { status } : {}),
 		};
 		// Terminal entries keep their full payload (output/error) so the
 		// panel can show the result; only the store size is bounded below.
-		const entries = { ...m, [key]: next };
-		const ids = Object.keys(entries);
-		if (ids.length > ACTION_STORE_MAX) {
-			const excess = ids.length - ACTION_STORE_MAX;
-			for (const id of ids.slice(0, excess)) delete entries[id];
-		}
-		return entries;
+		return trimActionStore({ ...m, [key]: next });
 	});
 }
 
@@ -71,9 +103,21 @@ export async function refreshActions() {
 			const next: Record<string, Record<string, unknown>> = {};
 			for (const row of rows) {
 				const key = actionKey(row as { id?: string; action_id?: string });
-				if (key) next[key] = { ...((m[key] as Record<string, unknown>) || {}), ...(row as Record<string, unknown>), id: key };
+				if (!key) continue;
+				const merged = {
+					...((m[key] as Record<string, unknown>) || {}),
+					...(row as Record<string, unknown>),
+					id: key,
+				};
+				// Terminal background history is loaded on demand via
+				// `refreshActionHistory`; keeping it here bloated the store and
+				// let ACTION_STORE_MAX eviction delete live running rows.
+				if (merged.kind === 'background' && merged.status && merged.status !== 'running') {
+					continue;
+				}
+				next[key] = merged;
 			}
-			return next;
+			return trimActionStore(next);
 		});
 	} catch (e) {
 		logger.warn('stores', 'refreshActions failed', e);
@@ -164,10 +208,16 @@ export function updateSessionMessages(sessionId: string, fn: (list: any[]) => an
 }
 
 // Track per-step streaming sequence numbers to detect and reject duplicates
-// from Tauri event replay after page navigation.
+// from Tauri event replay after page navigation. Each entry also records the
+// session the message belongs to so `clearSeqMap` can prune a whole session's
+// bookkeeping (streaming message ids carry no session prefix, so a plain
+// `includes` check could never match).
 const seqMap = new Map();
-export function seqLastSeen(stepId: string, seq: number) {
+const seqSessionOf = new Map();
+/** @param {string} stepId @param {number|null|undefined} seq @param {string|null} [sessionId] */
+export function seqLastSeen(stepId: string, seq: number | null | undefined, sessionId: string | null = null) {
 	if (seq == null) return false;
+	if (sessionId) seqSessionOf.set(stepId, sessionId);
 	const last = seqMap.get(stepId) ?? -1;
 	if (seq <= last) return true;
 	seqMap.set(stepId, seq);
@@ -177,11 +227,17 @@ export function seqLastSeen(stepId: string, seq: number) {
 /** Remove seq tracking for a completed step to keep the map bounded. */
 export function pruneSeq(stepId: string) {
 	seqMap.delete(stepId);
+	seqSessionOf.delete(stepId);
 }
 
+/** Drop seq tracking for every streamed message of one session. */
 export function clearSeqMap(sessionId: string) {
-	for (const key of seqMap.keys()) {
-		if (key.includes(sessionId)) seqMap.delete(key);
+	if (!sessionId) return;
+	for (const [stepId, sid] of seqSessionOf) {
+		if (sid === sessionId) {
+			seqMap.delete(stepId);
+			seqSessionOf.delete(stepId);
+		}
 	}
 }
 
@@ -191,6 +247,21 @@ export function clearSessionMessages(sessionId: string) {
 	sessionMessagesStore.update((m) => {
 		const next = { ...m };
 		delete next[sessionId];
+		return next;
+	});
+}
+
+/**
+ * Clear every per-session message list while keeping the un-sent `_draft`
+ * (transcribed/typed input that was never submitted). Used after clearing
+ * history: the draft belongs to no session and must survive the wipe.
+ */
+export function clearAllSessionMessages() {
+	sessionMessagesStore.update((m) => {
+		const next: Record<string, any[]> = {};
+		if (Array.isArray(m[DRAFT_KEY]) && m[DRAFT_KEY].length > 0) {
+			next[DRAFT_KEY] = m[DRAFT_KEY];
+		}
 		return next;
 	});
 }

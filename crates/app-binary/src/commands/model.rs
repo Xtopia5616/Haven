@@ -31,10 +31,65 @@ fn stt_default_base_url(provider: &str) -> &'static str {
     match provider {
         "groq" => "https://api.groq.com/openai/v1",
         "gemini" => "https://generativelanguage.googleapis.com/v1beta",
-        "deepgram" => "https://api.deepgram.com/v1",
+        // Deepgram listen lives at `{base}/v1/listen`; keep the host root so
+        // the adapter and STT discovery share one canonical base URL.
+        "deepgram" => "https://api.deepgram.com",
         "assemblyai" => "https://api.assemblyai.com",
         _ => "https://api.openai.com/v1",
     }
+}
+
+/// Infer an STT-only catalog from a base URL host (used when the provider is
+/// not yet persisted in config.toml, e.g. right after the settings dialog).
+fn stt_only_catalog_for_url(base_url: &str) -> Option<Vec<ModelInfo>> {
+    let host = base_url.to_ascii_lowercase();
+    if host.contains("deepgram") {
+        stt_only_catalog(Some("deepgram"), "")
+    } else if host.contains("assemblyai") {
+        stt_only_catalog(Some("assemblyai"), "")
+    } else {
+        None
+    }
+}
+
+/// Static model catalog for STT-only providers that have no `/models` list.
+fn stt_only_catalog(api_style: Option<&str>, provider_hint: &str) -> Option<Vec<ModelInfo>> {
+    let style = api_style.unwrap_or(provider_hint);
+    let (provider, models): (&str, &[&str]) = match style {
+        "deepgram" => (
+            "deepgram",
+            &[
+                "nova-3",
+                "nova-2",
+                "whisper-large-v3",
+                "whisper-large-v3-turbo",
+            ],
+        ),
+        "assemblyai" => (
+            "assemblyai",
+            &[
+                "assemblyai_default",
+                "universal",
+                "universal-2",
+                "universal-3-pro",
+            ],
+        ),
+        _ => return None,
+    };
+    Some(
+        models
+            .iter()
+            .map(|id| ModelInfo {
+                id: (*id).into(),
+                provider: provider.into(),
+                name: (*id).into(),
+                context_window: 0,
+                supports_streaming: false,
+                supports_tools: false,
+                supports_vision: false,
+            })
+            .collect(),
+    )
 }
 
 /// The auth scheme a provider uses for model discovery and chat: an explicit
@@ -102,11 +157,18 @@ fn resolve_discovery_auth(
     None
 }
 
-#[tauri::command]
-pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
-    let loader =
-        haven_common::config::ConfigLoader::load().map_err(|e| log_err("get_api_key_status", e))?;
-    let cfg = loader.config();
+/// True when the settings UI should treat a provider as configured.
+/// A stored API key always counts; llama.cpp is commonly local and keyless.
+fn provider_is_configured(p: &ProviderConfig) -> bool {
+    !p.api_key.is_empty()
+        || matches!(p.api_style.as_deref(), Some("llama.cpp"))
+        || p.provider == "llama.cpp"
+}
+
+/// Build the `{role: bool, providers: {name: bool}, stt/ocr/...}` payload the
+/// settings page uses for StatusDot / Set vs Change. Reads the live config
+/// (same snapshot as model discovery), not a fresh disk reload.
+fn api_key_status(cfg: &AppConfig) -> serde_json::Value {
     let mut status = serde_json::Map::new();
     // Per-role status: "usable" = references a configured provider + model.
     for role in EndpointRole::ALL {
@@ -118,7 +180,7 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
     // Per-provider key status (the settings UI shows a StatusDot per provider).
     let mut providers_status = serde_json::Map::new();
     for p in &cfg.llm.providers {
-        providers_status.insert(p.name.clone(), serde_json::json!(!p.api_key.is_empty()));
+        providers_status.insert(p.name.clone(), serde_json::json!(provider_is_configured(p)));
     }
     status.insert(
         "providers".to_string(),
@@ -140,7 +202,20 @@ pub async fn get_api_key_status() -> Result<serde_json::Value, String> {
         "image_gen".to_string(),
         serde_json::json!(!cfg.media.image_gen.api_key.is_empty()),
     );
-    Ok(serde_json::Value::Object(status))
+    serde_json::Value::Object(status)
+}
+
+#[tauri::command]
+pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let state = app.state::<Arc<AppState>>();
+    let cfg = {
+        let guard = state
+            .config_loader
+            .lock()
+            .map_err(|e| log_err("get_api_key_status", e))?;
+        guard.config().clone()
+    };
+    Ok(api_key_status(&cfg))
 }
 
 /// Probe the configured default-model endpoint for live connectivity.
@@ -214,6 +289,25 @@ pub async fn discover_models(
         guard.config().clone()
     };
 
+    // STT-only providers (Deepgram / AssemblyAI) have no `/models` endpoint;
+    // return the static catalog so the role picker can still assign a model.
+    // Resolve by media.stt provider, named llm provider, or base URL host so
+    // unsaved UI providers (not yet in config.toml) still get a catalog.
+    if role.as_deref() == Some("stt")
+        && let Some(list) = stt_only_catalog(None, cfg.media.stt.provider.as_str())
+    {
+        return Ok(list);
+    }
+    if let Some(name) = provider.as_deref()
+        && let Some(p) = cfg.llm.provider(name)
+        && let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str())
+    {
+        return Ok(list);
+    }
+    if let Some(list) = stt_only_catalog_for_url(&base_url) {
+        return Ok(list);
+    }
+
     let key_and_auth = if role.as_deref() == Some("stt") {
         // STT discovery: the key comes from `media.stt` (or the explicit one),
         // guarded by the STT provider's effective base URL.
@@ -274,21 +368,28 @@ pub async fn discover_all_models(app: tauri::AppHandle) -> Result<serde_json::Va
     };
     let providers = cfg.llm.providers.clone();
     let mut handles = Vec::new();
+    let mut results = std::collections::HashMap::new();
     for p in &providers {
-        if p.api_key.is_empty() || p.base_url.is_empty() {
+        if p.base_url.is_empty() || !provider_is_configured(p) {
+            continue;
+        }
+        if let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str()) {
+            results.insert(p.name.clone(), list);
             continue;
         }
         let (header, prefix) = provider_auth_scheme(p);
         let name = p.name.clone();
         let base_url = p.base_url.clone();
         let api_key = p.api_key.clone();
-        let value = auth_value(&prefix, &api_key);
+        let auth_header = if api_key.is_empty() {
+            None
+        } else {
+            Some((header, auth_value(&prefix, &api_key)))
+        };
         handles.push(tokio::spawn(async move {
             let mut reg = ModelRegistry::new();
-            match reg
-                .discover_from(&base_url, &api_key, Some((header.as_str(), value.as_str())))
-                .await
-            {
+            let auth_ref = auth_header.as_ref().map(|(h, v)| (h.as_str(), v.as_str()));
+            match reg.discover_from(&base_url, &api_key, auth_ref).await {
                 Ok(list) => (name.clone(), list),
                 Err(e) => {
                     tracing::warn!("discover_all_models failed for {}: {}", name, e);
@@ -297,7 +398,6 @@ pub async fn discover_all_models(app: tauri::AppHandle) -> Result<serde_json::Va
             }
         }));
     }
-    let mut results = std::collections::HashMap::new();
     for handle in handles {
         // A task panic yields an empty list for that provider.
         let (name, list) = match handle.await {
@@ -408,4 +508,62 @@ pub async fn set_web_search(
     .await?;
     crate::commands::emit_llm_config_changed(&app);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use haven_common::config::{AppConfig, ProviderConfig};
+
+    fn provider(name: &str, key: &str, style: Option<&str>) -> ProviderConfig {
+        ProviderConfig {
+            name: name.into(),
+            api_key: key.into(),
+            api_style: style.map(|s| s.into()),
+            provider: style
+                .filter(|s| *s == "llama.cpp")
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn cfg_with_providers(providers: Vec<ProviderConfig>) -> AppConfig {
+        let mut cfg = AppConfig::default();
+        cfg.llm.providers = providers;
+        cfg
+    }
+
+    #[test]
+    fn api_key_status_reports_live_provider_configuration() {
+        let cfg = cfg_with_providers(vec![
+            provider("cloud", "sk-test", Some("openai-chat")),
+            provider("empty", "", Some("openai-chat")),
+            provider("local", "", Some("llama.cpp")),
+        ]);
+        let status = api_key_status(&cfg);
+        assert_eq!(status["providers"]["cloud"], serde_json::json!(true));
+        assert_eq!(status["providers"]["empty"], serde_json::json!(false));
+        assert_eq!(status["providers"]["local"], serde_json::json!(true));
+        assert_eq!(status["default_model"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn provider_is_configured_accepts_key_or_llama_cpp() {
+        assert!(provider_is_configured(&provider(
+            "cloud",
+            "sk",
+            Some("openai-chat")
+        )));
+        assert!(!provider_is_configured(&provider(
+            "cloud",
+            "",
+            Some("openai-chat")
+        )));
+        assert!(provider_is_configured(&provider(
+            "local",
+            "",
+            Some("llama.cpp")
+        )));
+    }
 }

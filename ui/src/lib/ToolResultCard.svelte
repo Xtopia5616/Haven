@@ -183,6 +183,7 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import ExternalRef from '$lib/ExternalRef.svelte';
 
 	let {
 		type = 'tool',
@@ -637,7 +638,7 @@
 					<div class="tool-card-list">
 						{#each data.results as r (r.path + (r.line ?? ''))}
 							<div class="search-row">
-								<span class="search-path">{r.path}</span>
+								<ExternalRef class="search-path" target={r.path} />
 								{#if r.line != null}
 									<span class="search-line">L{r.line}</span>
 									<span class="search-snippet">{r.snippet ?? ''}</span>
@@ -890,34 +891,29 @@
 			{:else if toolName === 'file'}
 				{#if data.written}
 					<div class="file-row">
-						<span class="file-op">已写入</span><span class="file-path">{data.path}</span
-						>
+						<span class="file-op">已写入</span><ExternalRef class="file-path" target={data.path} />
 					</div>
 				{:else if data.edited}
 					<div class="file-row">
-						<span class="file-op">已编辑</span><span class="file-path">{data.path}</span
-						>{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
+						<span class="file-op">已编辑</span><ExternalRef class="file-path" target={data.path} />{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
 					</div>
 				{:else if data.copied}
 					<div class="file-row">
-						<span class="file-op">已复制</span><span class="file-path">{data.from}</span
-						>
+						<span class="file-op">已复制</span><ExternalRef class="file-path" target={data.from} />
 					</div>
 					<div class="file-row">
-						<span class="file-op-to">→</span><span class="file-path">{data.to}</span>
+						<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to} />
 					</div>
 				{:else if data.moved}
 					<div class="file-row">
-						<span class="file-op">已移动</span><span class="file-path">{data.from}</span
-						>
+						<span class="file-op">已移动</span><ExternalRef class="file-path" target={data.from} />
 					</div>
 					<div class="file-row">
-						<span class="file-op-to">→</span><span class="file-path">{data.to}</span>
+						<span class="file-op-to">→</span><ExternalRef class="file-path" target={data.to} />
 					</div>
 				{:else if data.deleted}
 					<div class="file-row">
-						<span class="file-op">已删除</span><span class="file-path">{data.path}</span
-						>
+						<span class="file-op">已删除</span><ExternalRef class="file-path" target={data.path} />
 					</div>
 				{:else if Array.isArray(data.entries)}
 					<div class="tool-card-count">{data.count ?? data.entries.length} 项</div>
@@ -1211,7 +1207,13 @@
 	.search-path {
 		flex: 1;
 		min-width: 0;
-		color: var(--md-sys-color-on-surface);
+		color: var(--md-sys-color-primary);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		cursor: pointer;
+	}
+	.search-path:hover {
+		color: color-mix(in srgb, var(--md-sys-color-primary) 80%, var(--md-sys-color-on-surface));
 	}
 	.search-line {
 		flex: none;
@@ -1267,7 +1269,13 @@
 	.file-path {
 		flex: 1;
 		min-width: 0;
-		color: var(--md-sys-color-on-surface);
+		color: var(--md-sys-color-primary);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		cursor: pointer;
+	}
+	.file-path:hover {
+		color: color-mix(in srgb, var(--md-sys-color-primary) 80%, var(--md-sys-color-on-surface));
 	}
 	.file-line {
 		flex: none;

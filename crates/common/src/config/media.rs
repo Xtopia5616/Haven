@@ -27,7 +27,10 @@ impl Default for AudioConfig {
     }
 }
 /// Speech-to-text configuration. Lives under `[media.stt]` (previously the
-/// top-level `[stt]` section).
+/// top-level `[stt]` section). Cloud providers are materialized into a
+/// [`super::ModelEndpoint`] and dispatched through the same `adapter_for` /
+/// `LlmClient::transcribe` path as chat roles; `llm` uses the router's
+/// `audio_model` (or default) slot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SttConfig {

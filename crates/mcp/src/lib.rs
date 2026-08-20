@@ -252,8 +252,14 @@ fn extract_mcp_content(content: &[Value], max_binary_payload: usize) -> (Value, 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpToolInfo {
     pub name: String,
-    pub description: String,
+    /// MCP marks description optional; missing → empty string.
     #[serde(default)]
+    pub description: String,
+    /// MCP wire key is camelCase `inputSchema`; Haven/UI keep snake_case on
+    /// serialize. Without the alias, serde ignores `inputSchema` and
+    /// `#[serde(default)]` yields `Null`, which OpenAI Responses rejects
+    /// (`null is not of types "boolean", "object"` at schema root).
+    #[serde(default, alias = "inputSchema")]
     pub input_schema: Value,
 }
 
@@ -1633,6 +1639,15 @@ impl McpManager {
                 tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
             });
 
+            // Set authoritative client status AND broadcast before the connect
+            // task so ToolsView's list_mcp_tools snapshot shows Connecting
+            // (reconnect already does both; emit-only left status Disconnected).
+            *client.status.lock().await = McpClientStatus::Connecting;
+            let _ = self.status_tx.send(McpStatusChangeEvent {
+                name: name.clone(),
+                status: McpClientStatus::Connecting,
+            });
+
             let status_tx = self.status_tx.clone();
             pending.spawn(async move {
                 let result = client.connect().await;
@@ -1911,9 +1926,41 @@ mod tests {
             input_schema: json!({"type": "object", "properties": {"text": {"type": "string"}}}),
         };
         let json = serde_json::to_value(&info).unwrap();
+        // UI / Tauri snapshots keep snake_case on the wire out of Haven.
+        assert!(json.get("input_schema").is_some());
+        assert!(json.get("inputSchema").is_none());
         let deserialized: McpToolInfo = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.name, "echo");
         assert_eq!(deserialized.description, "Echo input back");
+        assert_eq!(deserialized.input_schema["type"], "object");
+    }
+
+    #[test]
+    fn mcp_tool_info_deserializes_wire_input_schema() {
+        let wire = json!({
+            "name": "echo",
+            "description": "Echo input back",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"]
+            }
+        });
+        let info: McpToolInfo = serde_json::from_value(wire).unwrap();
+        assert_eq!(info.name, "echo");
+        assert_eq!(info.input_schema["type"], "object");
+        assert_eq!(info.input_schema["properties"]["text"]["type"], "string");
+    }
+
+    #[test]
+    fn mcp_tool_info_missing_description_defaults_empty() {
+        let wire = json!({
+            "name": "bare",
+            "inputSchema": {"type": "object"}
+        });
+        let info: McpToolInfo = serde_json::from_value(wire).unwrap();
+        assert_eq!(info.description, "");
+        assert_eq!(info.input_schema["type"], "object");
     }
 
     #[test]

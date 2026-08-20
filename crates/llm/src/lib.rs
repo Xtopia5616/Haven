@@ -18,9 +18,9 @@ pub use image_gen::{GeneratedImage, ImageGenClient, build_image_gen_client};
 pub use ocr::{OcrClient, OcrResult, build_ocr_client};
 pub use registry::{ModelInfo, ModelRegistry, context_window_for};
 pub use router::{EndpointRole, LlmRouter};
-pub use stt::{McpToolCaller, McpToolOutcome, SttClient, SttResult, build_stt_client};
+pub use stt::{McpToolCaller, McpToolOutcome, SttClient, build_stt_client};
 pub use tts::{TtsClient, build_tts_client};
 pub use types::{
-    FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, ToolDefinition,
-    ToolFunction, Usage,
+    FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, SttResult,
+    ToolDefinition, ToolFunction, Usage,
 };

@@ -616,6 +616,30 @@ impl LlmRouter {
         }
     }
 
+    /// Transcribe WAV audio through the STT role (`audio_model` / default).
+    /// Tries native [`LlmClient::transcribe`] first; when the adapter reports
+    /// [`LlmError::UnsupportedCapability`], falls back to multimodal chat
+    /// with an `input_audio` content part (gpt-4o-audio-preview etc.).
+    pub async fn transcribe_audio(&self, wav_data: &[u8]) -> Result<crate::types::SttResult, LlmError> {
+        let role = match self.stt_role().await {
+            Some(role) => role,
+            None => {
+                return Err(LlmError::RequestFailed(
+                    "audio_model endpoint is not configured; configure it in Settings -> LLM to use LLM-based transcription"
+                        .into(),
+                ));
+            }
+        };
+        let client = self.select_endpoint(role);
+        match client.transcribe(wav_data).await {
+            Ok(result) => Ok(result),
+            Err(e) if e.is_unsupported() => {
+                crate::stt::transcribe_via_chat(self, role, wav_data).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Resolve the endpoint role for image understanding in chat: the
     /// dedicated image_model when `vision_use_image_model` is enabled and the
     /// endpoint is configured, otherwise the default model.

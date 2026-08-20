@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::adapters::{
     LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
-    spawn_line_reader,
+    spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -647,7 +647,7 @@ impl AnthropicAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req).await?;
+        let resp = send_request(req, None).await?;
 
         let txt = resp
             .text()
@@ -689,10 +689,19 @@ impl AnthropicAdapter {
             .headers(self.build_headers())
             .json(&body);
         // For streaming, only apply an HTTP-level timeout when explicitly configured.
+        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
+        // response-header wait (a provider that accepts the connection but never
+        // responds would otherwise stall silently until the router-level
+        // max_total_duration_secs) while leaving the body stream to the router's
+        // per-chunk idle timeouts.
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
             req = req.timeout(Duration::from_secs(timeout));
         }
-        let resp = send_request(req).await?;
+        let resp = send_request(
+            req,
+            stream_header_timeout(self.endpoint.timeout_streaming_secs),
+        )
+        .await?;
 
         use tokio::sync::mpsc;
 

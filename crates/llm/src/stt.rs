@@ -1,21 +1,19 @@
 //! Speech-to-text (STT) capability, unified with the chat/vision adapters.
 //!
-//! Every transcription implementation lives here next to the `LlmClient`
-//! adapters, and [`build_stt_client`] is the single dispatch entry point
-//! (the STT counterpart of `adapters::adapter_for`). Providers:
+//! Transcription implementations live on [`LlmClient::transcribe`] (OpenAI
+//! Whisper, Gemini, Deepgram, AssemblyAI). [`build_stt_client`] is the
+//! consumer-facing factory (the STT counterpart of `adapters::adapter_for`):
 //! - `none`: no client
 //! - `mcp`: route through an MCP server exposing `stt.transcribe`
-//! - `llm`: transcribe via the `audio_model` LLM endpoint (see
-//!   [`LlmSttAdapter`])
-//! - `openai` / `groq`: OpenAI-Whisper-compatible `/audio/transcriptions`
-//! - `gemini`: Google Gemini `generateContent` audio transcription
-//! - `deepgram`: Deepgram REST `/v1/listen`
-//! - `assemblyai`: AssemblyAI `/v2/transcript` job polling
+//! - `llm`: transcribe via the `audio_model` / default LLM endpoint (native
+//!   `transcribe` first, multimodal chat fallback)
+//! - `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: synthesize a
+//!   [`ModelEndpoint`] from [`SttConfig`] and dispatch through `adapter_for`
 
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
-use haven_common::config::SttConfig;
+use haven_common::config::{ModelEndpoint, SttConfig};
 use haven_common::prompts::STT_SYSTEM_PROMPT;
 use serde_json::Value;
 use std::sync::Arc;
@@ -23,17 +21,10 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::LlmRouter;
+use crate::adapters::adapter_for;
+use crate::client::LlmClient;
+use crate::types::{LlmError, SttResult};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-
-/// Outcome of a speech-to-text call: the transcript plus an optional
-/// confidence (0.0-1.0) reported by the provider. `None` confidence means
-/// the provider does not report one; the gateway's confidence gate treats
-/// that as "no signal" and falls back on error / empty text instead.
-#[derive(Debug, Clone, Default)]
-pub struct SttResult {
-    pub text: String,
-    pub confidence: Option<f32>,
-}
 
 /// Trait for speech-to-text conversion.
 /// Implementations receive WAV bytes and return the transcript.
@@ -67,13 +58,13 @@ pub trait McpToolCaller: Send + Sync {
 /// Build the STT client for a given config. Returns `None` when the configured
 /// provider does not need a client (e.g. `none`), and returns an error for an
 /// unknown provider id. `mcp` is the MCP caller injected by the app layer
-/// (required only for the `mcp` provider).
+/// (required only for the `mcp` provider). Dedicated cloud providers are
+/// dispatched through the same [`adapter_for`] path as chat endpoints.
 pub fn build_stt_client(
     router: Arc<LlmRouter>,
     mcp: Option<Arc<dyn McpToolCaller>>,
     cfg: &SttConfig,
 ) -> Result<Option<Box<dyn SttClient>>> {
-    let timeout = Duration::from_secs(cfg.timeout_secs);
     let client: Box<dyn SttClient> = match cfg.provider.as_str() {
         "none" => return Ok(None),
         "mcp" => {
@@ -86,18 +77,80 @@ pub fn build_stt_client(
             Box::new(McpSttClient::new(caller, &server, cfg.timeout_secs))
         }
         "llm" => Box::new(LlmSttAdapter::new(router)),
-        "openai" => Box::new(OpenAiWhisperClient::new(cfg, cfg.base_url.clone(), timeout)),
-        "groq" => Box::new(OpenAiWhisperClient::new(
-            cfg,
-            "https://api.groq.com/openai/v1".into(),
-            timeout,
-        )),
-        "gemini" => Box::new(GeminiSttClient::new(cfg, timeout)),
-        "deepgram" => Box::new(DeepgramSttClient::new(cfg, timeout)),
-        "assemblyai" => Box::new(AssemblyAiSttClient::new(cfg, timeout)),
+        "openai" | "groq" | "gemini" | "deepgram" | "assemblyai" => {
+            let endpoint = endpoint_from_stt_config(cfg);
+            Box::new(LlmClientSttBridge {
+                client: adapter_for(&endpoint),
+            })
+        }
         other => anyhow::bail!("unknown STT provider: {}", other),
     };
     Ok(Some(client))
+}
+
+/// Map `[media.stt]` into a [`ModelEndpoint`] so dedicated STT providers share
+/// the same adapter dispatch as chat/vision roles.
+pub fn endpoint_from_stt_config(cfg: &SttConfig) -> ModelEndpoint {
+    let (provider, api_style, default_base, default_model) = match cfg.provider.as_str() {
+        "groq" => (
+            "groq",
+            Some("openai-chat".into()),
+            "https://api.groq.com/openai/v1",
+            "whisper-large-v3-turbo",
+        ),
+        "gemini" => (
+            "gemini",
+            Some("gemini".into()),
+            "https://generativelanguage.googleapis.com/v1beta",
+            "gemini-2.5-flash",
+        ),
+        "deepgram" => ("deepgram", Some("deepgram".into()), "https://api.deepgram.com", "nova-3"),
+        "assemblyai" => (
+            "assemblyai",
+            Some("assemblyai".into()),
+            "https://api.assemblyai.com",
+            "assemblyai_default",
+        ),
+        // openai + anything else Whisper-compatible
+        _ => (
+            "openai",
+            Some("openai-chat".into()),
+            "https://api.openai.com/v1",
+            "whisper-1",
+        ),
+    };
+    let base_url = if cfg.base_url.trim().is_empty() {
+        default_base.to_string()
+    } else {
+        cfg.base_url.trim_end_matches('/').to_string()
+    };
+    let model_name = if cfg.model.trim().is_empty() {
+        default_model.to_string()
+    } else {
+        cfg.model.clone()
+    };
+    ModelEndpoint {
+        provider: provider.into(),
+        api_style,
+        base_url,
+        api_key: cfg.api_key.clone(),
+        model_name,
+        timeout_secs: cfg.timeout_secs,
+        ..Default::default()
+    }
+}
+
+/// Thin bridge: dedicated STT providers built via [`adapter_for`] still expose
+/// the consumer-facing [`SttClient`] trait used by input / MediaGateway.
+struct LlmClientSttBridge {
+    client: Box<dyn LlmClient>,
+}
+
+#[async_trait]
+impl SttClient for LlmClientSttBridge {
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
+        Ok(self.client.transcribe(wav_data).await?)
+    }
 }
 
 /// STT client that routes transcription through an MCP server.
@@ -146,15 +199,15 @@ impl SttClient for McpSttClient {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("STT response missing 'text' field"))?
             .to_string();
-        // Optional confidence passthrough (MCP servers exposing it).
         let confidence = result.output["confidence"].as_f64().map(|c| c as f32);
         Ok(SttResult { text, confidence })
     }
 }
 
-/// Fallback STT adapter that transcribes audio through the `audio_model` LLM
-/// endpoint. Sends base64 WAV audio as an `input_audio` content part; the
-/// model's text reply is returned verbatim as the transcription.
+/// STT adapter that transcribes audio through the router's STT role
+/// (`audio_model` / default). Prefers native [`LlmClient::transcribe`]; falls
+/// back to multimodal chat with an `input_audio` content part when the
+/// endpoint adapter does not implement STT (e.g. gpt-4o-audio-preview).
 pub struct LlmSttAdapter {
     router: Arc<LlmRouter>,
 }
@@ -168,469 +221,59 @@ impl LlmSttAdapter {
 #[async_trait]
 impl SttClient for LlmSttAdapter {
     async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
-        let role = match self.router.stt_role().await {
-            Some(role) => role,
-            None => {
-                return Err(anyhow::anyhow!(
-                    "audio_model endpoint is not configured; configure it in Settings -> LLM to use LLM-based transcription"
-                ));
+        Ok(self.router.transcribe_audio(wav_data).await?)
+    }
+}
+
+/// Chat + `input_audio` fallback used when the selected role's adapter does
+/// not implement native STT. Shared by [`LlmRouter::transcribe_audio`].
+pub(crate) async fn transcribe_via_chat(
+    router: &LlmRouter,
+    role: crate::EndpointRole,
+    wav_data: &[u8],
+) -> Result<SttResult, LlmError> {
+    let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
+    let messages = vec![
+        CanonicalMessage::system(vec![ContentPart::text(STT_SYSTEM_PROMPT)]),
+        CanonicalMessage {
+            role: CanonicalRole::User,
+            content: vec![ContentPart::Audio {
+                content_type: "input_audio".into(),
+                media_type: "audio/wav".into(),
+                data,
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        },
+    ];
+
+    let resp = match router
+        .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("input_audio")
+                || msg.contains("Only text and image_url are supported")
+            {
+                return Err(LlmError::RequestFailed(format!(
+                    "audio_model endpoint does not support audio input ({msg}). \
+                     Configure audio_model to a model that accepts audio \
+                     (e.g. openai/gpt-4o-audio-preview), or set STT Provider \
+                     to an MCP server that exposes `stt.transcribe`."
+                )));
             }
-        };
-        let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
-        let messages = vec![
-            CanonicalMessage::system(vec![ContentPart::text(STT_SYSTEM_PROMPT)]),
-            CanonicalMessage {
-                role: CanonicalRole::User,
-                content: vec![ContentPart::Audio {
-                    content_type: "input_audio".into(),
-                    media_type: "audio/wav".into(),
-                    data,
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-                thinking_blocks: Vec::new(),
-            },
-        ];
-
-        // Streaming aggregated path: avoids the endpoint's non-streaming
-        // `timeout_secs` (default 7s), which is too short for transcription of
-        // longer recordings. The router-level `max_total_duration_secs` still
-        // applies as an overall deadline.
-        let resp = match self
-            .router
-            .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                // The `input_audio` content part is OpenAI-specific. Many
-                // third-party OpenAI-compatible providers (or non-audio
-                // OpenAI models) reject it with a 400 like
-                // "Only text and image_url are supported." Surface a setup
-                // hint instead of the raw upstream error so the user knows
-                // to either pick an audio-capable model or switch STT
-                // provider.
-                let msg = e.to_string();
-                if msg.contains("input_audio")
-                    || msg.contains("Only text and image_url are supported")
-                {
-                    return Err(anyhow::anyhow!(
-                        "audio_model endpoint does not support audio input ({msg}). \
-                         Configure audio_model to a model that accepts audio \
-                         (e.g. openai/gpt-4o-audio-preview), or set STT Provider \
-                         to an MCP server that exposes `stt.transcribe`."
-                    ));
-                }
-                return Err(anyhow::Error::from(e));
-            }
-        };
-        let text = resp.text.trim().to_string();
-        // Empty transcription (silence / too-short clip) is not an error:
-        // the caller treats it as "no speech" and skips the message.
-        Ok(SttResult {
-            text,
-            confidence: None,
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HTTP STT / ASR adapters
-// ---------------------------------------------------------------------------
-
-/// Build an HTTP client with a transport timeout for cloud STT providers.
-fn stt_http_client(timeout: Duration) -> reqwest::Client {
-    crate::client::http_client_builder()
-        .timeout(timeout)
-        .build()
-        .unwrap_or_default()
-}
-
-/// Error text extraction for STT HTTP responses, so upstream error bodies
-/// surface as helpful messages instead of raw HTTP status numbers.
-fn stt_error_body(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        anyhow::anyhow!("STT request failed: HTTP {}", status)
-    } else {
-        let snippet = if trimmed.len() > 300 {
-            &trimmed[..300]
-        } else {
-            trimmed
-        };
-        anyhow::anyhow!("STT request failed (HTTP {}): {}", status, snippet)
-    }
-}
-
-/// Transcribe via an OpenAI-Whisper-compatible `/audio/transcriptions`
-/// multipart endpoint. This is the wire format spoken by OpenAI, Groq,
-/// Together, Deepgram's OpenAI-compatible endpoint, and local Whisper-style
-/// servers (whisper.cpp via WhisperServer, LM Studio, etc.).
-pub struct OpenAiWhisperClient {
-    client: reqwest::Client,
-    base_url: String,
-    api_key: String,
-    model: String,
-}
-
-impl OpenAiWhisperClient {
-    pub fn new(cfg: &SttConfig, base_url: String, timeout: Duration) -> Self {
-        let client = stt_http_client(timeout);
-        let base_url = if base_url.trim().is_empty() {
-            "https://api.openai.com/v1".to_string()
-        } else {
-            base_url.trim_end_matches('/').to_string()
-        };
-        Self {
-            client,
-            base_url,
-            api_key: cfg.api_key.clone(),
-            model: if cfg.model.is_empty() {
-                "whisper-1".into()
-            } else {
-                cfg.model.clone()
-            },
+            return Err(e);
         }
-    }
-}
-
-#[async_trait]
-impl SttClient for OpenAiWhisperClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
-        let form = reqwest::multipart::Form::new()
-            .part(
-                "file",
-                reqwest::multipart::Part::bytes(wav_data.to_vec())
-                    .file_name("audio.wav")
-                    .mime_str("audio/wav")?,
-            )
-            .text("model", self.model.clone())
-            .text("response_format", "json");
-
-        let url = format!("{}/audio/transcriptions", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Whisper STT request failed: {}", e))?;
-
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default().replace('\n', " ");
-        if !status.is_success() {
-            return Err(stt_error_body(status, &body));
-        }
-
-        // Whisper returns `{ "text": "..." }`. An empty transcription
-        // (silence / too-short clip) is not an error — the caller treats it
-        // as "no speech" and skips the message.
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| anyhow::anyhow!("Whisper STT returned invalid JSON: {}", e))?;
-        let text = json["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Whisper STT response missing 'text' field"))?
-            .trim()
-            .to_string();
-        Ok(SttResult {
-            text,
-            // Whisper does not report confidence.
-            confidence: None,
-        })
-    }
-}
-
-/// Transcribe via Deepgram REST (`POST /v1/listen`). Sends raw audio bytes
-/// with the configured model (default `nova-2`).
-pub struct DeepgramSttClient {
-    client: reqwest::Client,
-    api_key: String,
-    model: String,
-}
-
-impl DeepgramSttClient {
-    pub fn new(cfg: &SttConfig, timeout: Duration) -> Self {
-        let client = stt_http_client(timeout);
-        let api_key = cfg
-            .api_key
-            .strip_prefix("Deepgram ")
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                if cfg.api_key.is_empty() {
-                    String::new()
-                } else {
-                    format!("Token {}", cfg.api_key)
-                }
-            });
-        Self {
-            client,
-            api_key,
-            model: if cfg.model.is_empty() {
-                "nova-3".into()
-            } else {
-                cfg.model.clone()
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl SttClient for DeepgramSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
-        let url = format!(
-            "https://api.deepgram.com/v1/listen?model={}&smart_format=true",
-            self.model
-        );
-        let resp = self
-            .client
-            .post(&url)
-            .header(
-                reqwest::header::AUTHORIZATION,
-                format!("Token {}", self.api_key),
-            )
-            .header(reqwest::header::CONTENT_TYPE, "audio/wav")
-            .body(wav_data.to_vec())
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Deepgram STT request failed: {}", e))?;
-
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default().replace('\n', " ");
-        if !status.is_success() {
-            return Err(stt_error_body(status, &body));
-        }
-
-        // Deepgram nests text under `results.channels[0].alternatives[0].transcript`
-        // and the alternative's overall confidence under `.confidence`.
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| anyhow::anyhow!("Deepgram STT returned invalid JSON: {}", e))?;
-        let alternative = &json["results"]["channels"][0]["alternatives"][0];
-        let text = alternative["transcript"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Deepgram STT response missing transcript"))?
-            .trim()
-            .to_string();
-        let confidence = alternative["confidence"].as_f64().map(|c| c as f32);
-        Ok(SttResult { text, confidence })
-    }
-}
-
-/// Transcribe via AssemblyAI: upload raw audio to `/v2/upload`, create a job
-/// at `/v2/transcript`, then poll `GET /v2/transcript/{id}` until the status
-/// reaches `completed`. AssemblyAI authenticates with the raw API key in the
-/// `authorization` header (no `Bearer` prefix).
-pub struct AssemblyAiSttClient {
-    client: reqwest::Client,
-    api_key: String,
-    base_url: String,
-    model: String,
-    poll_interval: Duration,
-}
-
-impl AssemblyAiSttClient {
-    pub fn new(cfg: &SttConfig, timeout: Duration) -> Self {
-        let client = stt_http_client(timeout);
-        let base_url = if cfg.base_url.is_empty() {
-            "https://api.assemblyai.com".to_string()
-        } else {
-            cfg.base_url.trim_end_matches('/').to_string()
-        };
-        Self {
-            client,
-            api_key: cfg.api_key.clone(),
-            base_url,
-            model: cfg.model.clone(),
-            poll_interval: Duration::from_secs(3),
-        }
-    }
-
-    fn auth(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-        if !self.api_key.is_empty()
-            && let Ok(v) = reqwest::header::HeaderValue::from_str(&self.api_key)
-        {
-            headers.insert("authorization", v);
-        }
-        headers
-    }
-}
-
-#[async_trait]
-impl SttClient for AssemblyAiSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
-        let upload_url = self
-            .client
-            .post(format!("{}/v2/upload", self.base_url))
-            .headers(self.auth())
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(wav_data.to_vec())
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("AssemblyAI upload failed: {}", e))?;
-        let upload_status = upload_url.status();
-        let upload_body = upload_url
-            .text()
-            .await
-            .unwrap_or_default()
-            .replace('\n', " ");
-        if !upload_status.is_success() {
-            return Err(stt_error_body(upload_status, &upload_body));
-        }
-        let upload_json: serde_json::Value = serde_json::from_str(&upload_body)?;
-        let audio_url = upload_json["upload_url"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("AssemblyAI upload missing 'upload_url'"))?;
-
-        // Submit the transcription job (speech_model mirrors the model picked
-        // in the settings UI; empty means the provider default).
-        let mut create_json = serde_json::json!({ "audio_url": audio_url });
-        if !self.model.is_empty() && self.model != "assemblyai_default" {
-            create_json["speech_model"] = serde_json::json!(self.model);
-        }
-        let create_resp = self
-            .client
-            .post(format!("{}/v2/transcript", self.base_url))
-            .headers(self.auth())
-            .json(&create_json)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("AssemblyAI job creation failed: {}", e))?;
-        let create_status = create_resp.status();
-        let create_body = create_resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .replace('\n', " ");
-        if !create_status.is_success() {
-            return Err(stt_error_body(create_status, &create_body));
-        }
-        let create: serde_json::Value = serde_json::from_str(&create_body)?;
-        let job_id = create["id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("AssemblyAI response missing transcript id"))?;
-
-        // Poll until completed (or errored).
-        let job_url = format!("{}/v2/transcript/{}", self.base_url, job_id);
-        loop {
-            let poll_resp = self
-                .client
-                .get(&job_url)
-                .headers(self.auth())
-                .send()
-                .await
-                .map_err(|e| anyhow::anyhow!("AssemblyAI polling failed: {}", e))?;
-            let poll_status = poll_resp.status();
-            let poll_body = poll_resp
-                .text()
-                .await
-                .unwrap_or_default()
-                .replace('\n', " ");
-            if !poll_status.is_success() {
-                return Err(stt_error_body(poll_status, &poll_body));
-            }
-            let job: serde_json::Value = serde_json::from_str(&poll_body)?;
-            let status = job["status"].as_str().unwrap_or("");
-            match status {
-                "completed" => {
-                    let text = job["text"].as_str().unwrap_or("").trim().to_string();
-                    let confidence = job["confidence"].as_f64().map(|c| c as f32);
-                    return Ok(SttResult { text, confidence });
-                }
-                "error" => {
-                    let err = job["error"].as_str().unwrap_or("unknown error");
-                    anyhow::bail!("AssemblyAI transcription error: {}", err);
-                }
-                _ => tokio::time::sleep(self.poll_interval).await,
-            }
-        }
-    }
-}
-
-/// Transcribe via the Google Gemini API (`generateContent` with inline
-/// audio). Sends base64 WAV audio as an `inline_data` part and asks the model
-/// to return a verbatim transcript.
-pub struct GeminiSttClient {
-    client: reqwest::Client,
-    base_url: String,
-    api_key: String,
-    model: String,
-}
-
-impl GeminiSttClient {
-    pub fn new(cfg: &SttConfig, timeout: Duration) -> Self {
-        let client = stt_http_client(timeout);
-        let base_url = if cfg.base_url.is_empty() {
-            "https://generativelanguage.googleapis.com/v1beta".to_string()
-        } else {
-            cfg.base_url.trim_end_matches('/').to_string()
-        };
-        Self {
-            client,
-            base_url,
-            api_key: cfg.api_key.clone(),
-            model: if cfg.model.is_empty() {
-                "gemini-2.5-flash".into()
-            } else {
-                cfg.model.clone()
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl SttClient for GeminiSttClient {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
-        let data = base64::engine::general_purpose::STANDARD.encode(wav_data);
-        let body = serde_json::json!({
-            "contents": [{
-                "parts": [
-                    {
-                        "text": STT_SYSTEM_PROMPT
-                    },
-                    {
-                        "inline_data": {
-                            "mime_type": "audio/wav",
-                            "data": data
-                        }
-                    }
-                ]
-            }]
-        });
-
-        let url = format!("{}/models/{}:generateContent", self.base_url, self.model);
-        let resp = self
-            .client
-            .post(&url)
-            .header("x-goog-api-key", &self.api_key)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Gemini STT request failed: {}", e))?;
-
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default().replace('\n', " ");
-        if !status.is_success() {
-            return Err(stt_error_body(status, &body));
-        }
-
-        let json: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|e| anyhow::anyhow!("Gemini STT returned invalid JSON: {}", e))?;
-        let text = json["candidates"][0]["content"]["parts"]
-            .as_array()
-            .and_then(|parts| parts.iter().find_map(|p| p["text"].as_str()))
-            .ok_or_else(|| anyhow::anyhow!("Gemini STT response missing text part"))?
-            .trim()
-            .to_string();
-        // Empty transcription (silence / too-short clip) is not an error.
-        Ok(SttResult {
-            text,
-            confidence: None,
-        })
-    }
+    };
+    Ok(SttResult {
+        text: resp.text.trim().to_string(),
+        confidence: None,
+    })
 }
 
 #[cfg(test)]
@@ -667,7 +310,7 @@ mod tests {
             response: "hello world".into(),
             call_count: AtomicU64::new(0),
         };
-        let wav = vec![0u8; 44]; // minimal WAV header
+        let wav = vec![0u8; 44];
         let result = client.transcribe(&wav).await.unwrap();
         assert_eq!(result.text, "hello world");
         assert!(result.confidence.is_none());
@@ -683,7 +326,6 @@ mod tests {
     impl LlmClient for MockLlm {
         async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            // The audio payload must be carried in an Audio content part.
             let has_audio = messages.iter().any(|m| {
                 m.content
                     .iter()
@@ -739,7 +381,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_llm_stt_adapter_unconfigured_errors() {
-        // Default (empty-key) config: audio_model not configured.
         let router = mock_router("ignored");
         let adapter = LlmSttAdapter::new(router);
         let err = adapter.transcribe(&[0u8; 44]).await.unwrap_err();
@@ -748,8 +389,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_llm_stt_adapter_uses_default_model_when_routing_disabled() {
-        // `stt_use_audio_model = false`: transcription goes to the default
-        // model, and the missing audio_model endpoint is not an error.
         let router = mock_router("走默认模型的转写");
         router.force_routing_flags(false, true).await;
         let adapter = LlmSttAdapter::new(router);
@@ -780,9 +419,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_llm_stt_adapter_rewrites_unsupported_audio_input_error() {
-        // Simulate a third-party provider that rejects `input_audio` with the
-        // canonical OpenAI 400 error body. The adapter must rewrite it into a
-        // setup hint instead of leaking the raw upstream message verbatim.
         let err_body = "400 Bad Request: Only text and image_url are supported.";
         let client: Arc<dyn LlmClient> = Arc::new(MockLlmErr {
             err: LlmError::RequestFailed(err_body.into()),
@@ -813,8 +449,6 @@ mod tests {
         );
     }
 
-    /// No-op MCP caller for dispatch tests (only the `mcp` provider's
-    /// missing-server error path is exercised, so the caller never fires).
     struct NoopMcpCaller;
 
     #[async_trait]
@@ -844,8 +478,6 @@ mod tests {
 
     #[tokio::test]
     async fn build_stt_client_dispaches_by_provider() {
-        // `none` yields no client; `mcp` without a server errors; cloud
-        // providers yield a client.
         let cfg = SttConfig {
             provider: "none".into(),
             ..Default::default()
@@ -891,111 +523,55 @@ mod tests {
     }
 
     #[test]
-    fn openai_whisper_hosts_and_model_defaults() {
-        // OpenAI provider defaults model to whisper-1; base_url override wins.
+    fn endpoint_from_stt_config_defaults() {
         let cfg = SttConfig {
             provider: "openai".into(),
             base_url: "https://gateway.example/v1".into(),
             api_key: "k".into(),
             ..Default::default()
         };
-        let c = OpenAiWhisperClient::new(&cfg, cfg.base_url.clone(), Duration::from_secs(30));
-        assert_eq!(c.base_url, "https://gateway.example/v1");
-        assert_eq!(c.model, "whisper-1");
+        let ep = endpoint_from_stt_config(&cfg);
+        assert_eq!(ep.base_url, "https://gateway.example/v1");
+        assert_eq!(ep.model_name, "whisper-1");
+        assert_eq!(ep.api_style.as_deref(), Some("openai-chat"));
 
-        let cfg_no_model = SttConfig {
+        let groq = endpoint_from_stt_config(&SttConfig {
             provider: "groq".into(),
             api_key: "k".into(),
             ..Default::default()
-        };
-        let c = OpenAiWhisperClient::new(
-            &cfg_no_model,
-            "https://api.groq.com/openai/v1".into(),
-            Duration::from_secs(30),
-        );
-        assert_eq!(c.model, "whisper-1");
+        });
+        assert_eq!(groq.base_url, "https://api.groq.com/openai/v1");
+        assert!(groq.model_name.contains("whisper"));
 
-        // An empty base URL falls back to the OpenAI host.
-        let c_empty =
-            OpenAiWhisperClient::new(&cfg_no_model, String::new(), Duration::from_secs(30));
-        assert_eq!(c_empty.base_url, "https://api.openai.com/v1");
-        assert_eq!(c_empty.model, "whisper-1");
-    }
-
-    #[test]
-    fn deepgram_api_key_normalization() {
-        // A bare key gains the `Token ` scheme prefix.
-        let cfg = SttConfig {
-            provider: "deepgram".into(),
-            api_key: "dg-key".into(),
-            ..Default::default()
-        };
-        let c = DeepgramSttClient::new(&cfg, Duration::from_secs(30));
-        assert_eq!(c.api_key, "Token dg-key");
-
-        // An already-prefixed key is passed through unchanged.
-        let cfg_full = SttConfig {
-            provider: "deepgram".into(),
-            api_key: "Deepgram dg-key".into(),
-            ..Default::default()
-        };
-        let c = DeepgramSttClient::new(&cfg_full, Duration::from_secs(30));
-        assert_eq!(c.api_key, "dg-key");
-        assert_eq!(c.model, "nova-3");
-    }
-
-    #[test]
-    fn gemini_defaults_and_base_url() {
-        // Default model + host; base_url override wins.
-        let cfg = SttConfig {
+        let gemini = endpoint_from_stt_config(&SttConfig {
             provider: "gemini".into(),
             api_key: "k".into(),
             ..Default::default()
-        };
-        let c = GeminiSttClient::new(&cfg, Duration::from_secs(30));
+        });
         assert_eq!(
-            c.base_url,
+            gemini.base_url,
             "https://generativelanguage.googleapis.com/v1beta"
         );
-        assert_eq!(c.model, "gemini-2.5-flash");
+        assert_eq!(gemini.model_name, "gemini-2.5-flash");
+        assert_eq!(gemini.api_style.as_deref(), Some("gemini"));
 
-        let cfg_override = SttConfig {
-            provider: "gemini".into(),
-            api_key: "k".into(),
-            base_url: "https://gateway.example/v1beta".into(),
-            model: "gemini-3.6-flash".into(),
+        let deepgram = endpoint_from_stt_config(&SttConfig {
+            provider: "deepgram".into(),
+            api_key: "dg".into(),
             ..Default::default()
-        };
-        let c = GeminiSttClient::new(&cfg_override, Duration::from_secs(30));
-        assert_eq!(c.base_url, "https://gateway.example/v1beta");
-        assert_eq!(c.model, "gemini-3.6-flash");
-    }
+        });
+        assert_eq!(deepgram.api_style.as_deref(), Some("deepgram"));
+        assert_eq!(deepgram.model_name, "nova-3");
 
-    #[test]
-    fn assemblyai_base_url_defaults_and_auth() {
-        let cfg = SttConfig {
+        let assembly = endpoint_from_stt_config(&SttConfig {
             provider: "assemblyai".into(),
-            api_key: "aa-key".into(),
+            api_key: "aa".into(),
             model: "universal-2".into(),
-            ..Default::default()
-        };
-        let c = AssemblyAiSttClient::new(&cfg, Duration::from_secs(30));
-        assert_eq!(c.base_url, "https://api.assemblyai.com");
-        assert_eq!(c.model, "universal-2");
-        let headers = c.auth();
-        assert_eq!(
-            headers.get("authorization").unwrap().to_str().unwrap(),
-            "aa-key",
-            "AssemblyAI uses the raw key with no Bearer prefix"
-        );
-
-        let cfg_eu = SttConfig {
-            provider: "assemblyai".into(),
-            api_key: "k".into(),
             base_url: "https://api.eu.assemblyai.com".into(),
             ..Default::default()
-        };
-        let c = AssemblyAiSttClient::new(&cfg_eu, Duration::from_secs(30));
-        assert_eq!(c.base_url, "https://api.eu.assemblyai.com");
+        });
+        assert_eq!(assembly.base_url, "https://api.eu.assemblyai.com");
+        assert_eq!(assembly.model_name, "universal-2");
+        assert_eq!(assembly.api_style.as_deref(), Some("assemblyai"));
     }
 }

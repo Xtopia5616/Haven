@@ -8,9 +8,29 @@ use haven_llm::stt::build_stt_client;
 use haven_memory::Database;
 use haven_tools::ToolsManager;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
+
+/// Cold-start progress exposed to the UI status chip.
+/// `loading` while MCP/skills/audio prewarm finish in the background;
+/// `ready` once that deferred work completes (or immediately when there is
+/// nothing deferred).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapStatus {
+    Loading,
+    Ready,
+}
+
+impl BootstrapStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Loading => "loading",
+            Self::Ready => "ready",
+        }
+    }
+}
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -24,9 +44,13 @@ pub struct AppState {
     /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
     /// recording starts (button or hotkey), consumed by
     /// `finalize_transcription`, and shared by every event of the same
-    /// recording (`recording:started` / `transcription:result` /
-    /// `transcription:error`) so the frontend can correlate them by id.
+    /// recording (`recording:started` / `transcription:*` events) so the
+    /// frontend can correlate them by id.
     pub recording_session: Arc<std::sync::Mutex<Option<haven_common::types::SessionId>>>,
+    /// True once deferred startup (MCP discover + skills scan + audio
+    /// prewarm) has finished. The UI polls / listens so the status chip can
+    /// show 加载中 → 就绪 without blocking window creation.
+    bootstrap_ready: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -71,25 +95,6 @@ impl AppState {
 
         let tools = Arc::new(ToolsManager::new());
 
-        // Load per-tool settings (timeouts, disabled tools) into the manager
-        // so `rebuild_catalog` can apply them from the first rebuild.
-        let tool_settings = cfg.tool_settings.clone();
-        tools.set_tool_settings(tool_settings).await;
-        // Default shell for the `shell` tool (cmd / powershell / pwsh) so the
-        // catalog picks it up from the first rebuild.
-        tools.set_default_shell(cfg.default_shell).await;
-        // Unified context limits (compaction threshold, tool output cap, ...)
-        // feed the catalog rebuild so tools pick up the global output cap.
-        tools.set_context_limits(context_limits.clone()).await;
-        // Apply the configured security threshold to the safety gateway NOW
-        // (not only when settings are saved later), so a hand-edited
-        // config.toml takes effect on startup. The gateway is what gates
-        // every tool execution in the agent loop.
-        tools
-            .safety_gateway
-            .set_min_risk_level(cfg.security.min_risk_level)
-            .await;
-
         let executor = Arc::new(SessionExecutor::new(
             db.clone(),
             tools.clone(),
@@ -123,15 +128,6 @@ impl AppState {
                 }
             });
         }
-
-        // Start the long-lived audio capture thread now so the microphone
-        // stream is already playing when the user first records — the first
-        // words after a click are never lost to device-init latency.
-        pipeline.prewarm().await;
-        tracing::debug!(
-            "AppState::new phase=prewarm elapsed={}ms",
-            t0.elapsed().as_millis()
-        );
 
         let stt_config = &cfg.media.stt;
 
@@ -194,35 +190,6 @@ impl AppState {
         };
         agent.set_gateway(Some(gateway)).await;
 
-        // Load MCP servers from config + start health monitors.
-        let mcp_servers = cfg.mcp_servers.clone();
-        let mcp_discovery = cfg.mcp_discovery.clone();
-        let skills_cfg_root = cfg.skills.root.clone();
-        let skills_cfg_enabled = cfg.skills.enabled.clone();
-        let tools_skills = tools.clone();
-        // Wire the router into the ToolsManager so the file `summary` and
-        // image-understanding operations can route through it (image_model
-        // for vision, small_model for summarization, with balanced-model
-        // fallback). Also rebuilds the catalog.
-        tools.set_router(router.clone()).await;
-        // Wire the shared input pipeline into the ToolsManager so the `audio`
-        // tool's `record` operation captures + transcribes through the same
-        // engine/STT as user voice input.
-        tools.set_audio_pipeline(Some(pipeline.clone())).await;
-        tokio::spawn(async move {
-            tools_skills
-                .discover_all(&mcp_servers, &mcp_discovery)
-                .await;
-            if let Err(e) = tools_skills
-                .skills_engine
-                .set_config(skills_cfg_root, skills_cfg_enabled)
-                .await
-            {
-                tracing::warn!("skills engine initial scan failed: {e}");
-            }
-            tools_skills.rebuild_catalog().await;
-        });
-
         let shell = Arc::new(DesktopShell::new());
 
         // Retention-based cleanup: deferred to background (non-critical).
@@ -255,28 +222,18 @@ impl AppState {
             }
         });
 
-        // Pre-warm LLM HTTP connection pools for all configured endpoints so
-        // the first user message doesn't pay TCP+TLS handshake latency
-        // (~50-200ms) on whichever model slot it hits, then start the session
-        // dispatcher. Starting the dispatcher only after prewarm finishes means
-        // a resumed session's first chat request reuses a warm connection instead
-        // of racing the prewarm; dispatch is never blocked on the model slot
-        // cold start the prewarm cannot warm (the provider's model load still
-        // happens on the first real request). AppState::new returns immediately;
-        // both prewarm and dispatch run in the background.
+        // Pre-warm LLM HTTP pools in the background so the first chat request
+        // does not pay TCP+TLS. The session dispatcher is started later from
+        // `spawn_background_init` only after MCP/skills are loaded — otherwise
+        // pending-session resume can race an empty MCP catalog.
         let router_warm = router.clone();
-        let agent_start = agent.clone();
         tokio::spawn(async move {
-            // Bound the prewarm gate: a slow/unreachable endpoint's health
-            // check (up to 7s per attempt, retried once) must not hold up session
-            // dispatch for seconds. In the common case prewarm finishes in
-            // ~200ms and the pool is warm before the first request; on timeout
-            // the dispatcher still starts, leaving that endpoint to fail fast
-            // (and retry) on its own.
+            // Bound the prewarm: a slow/unreachable endpoint's health check
+            // must not hold the runtime. On timeout the endpoint fails fast
+            // on its first real request instead.
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(2), router_warm.prewarm_all())
                     .await;
-            agent_start.start();
         });
         tracing::debug!(
             "AppState::new phase=agent elapsed={}ms",
@@ -312,7 +269,21 @@ impl AppState {
             // change through the running ToolsManager after persisting config.
             tools_weak: Some(Arc::downgrade(&tools)),
         };
-        tools.set_self_context(self_ctx).await;
+
+        // Single catalog rebuild for all startup wiring (settings / shell /
+        // limits / router / audio pipeline / self tool). Previously each
+        // setter rebuilt the catalog and delayed window creation.
+        tools
+            .wire_startup(
+                cfg.tool_settings.clone(),
+                cfg.default_shell,
+                context_limits_clone,
+                cfg.security.min_risk_level,
+                router.clone(),
+                Some(pipeline.clone()),
+                self_ctx,
+            )
+            .await;
 
         tracing::debug!(
             "AppState::new phase=done elapsed={}ms",
@@ -329,7 +300,67 @@ impl AppState {
             log_filter_handles: filter_handles,
             config_loader: config_loader_arc,
             recording_session: Arc::new(std::sync::Mutex::new(None)),
+            bootstrap_ready: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    pub fn bootstrap_status(&self) -> BootstrapStatus {
+        if self.bootstrap_ready.load(Ordering::Acquire) {
+            BootstrapStatus::Ready
+        } else {
+            BootstrapStatus::Loading
+        }
+    }
+
+    /// Run MCP discover + skills scan + audio prewarm off the critical path
+    /// that blocks window creation, then start the session dispatcher.
+    /// Emits `app:bootstrap` (`loading` / `ready`) through `emit` so the
+    /// status chip can track progress even when the frontend mounts mid-flight.
+    pub fn spawn_background_init<F>(&self, emit: F)
+    where
+        F: Fn(&str, serde_json::Value) + Send + Sync + 'static,
+    {
+        let tools = self.tools.clone();
+        let pipeline = self.pipeline.clone();
+        let agent = self.agent.clone();
+        let bootstrap_ready = self.bootstrap_ready.clone();
+        let cfg = self.config_loader.lock().unwrap().config().clone();
+        let mcp_servers = cfg.mcp_servers.clone();
+        let mcp_discovery = cfg.mcp_discovery.clone();
+        let skills_cfg_root = cfg.skills.root.clone();
+        let skills_cfg_enabled = cfg.skills.enabled.clone();
+
+        emit(
+            "app:bootstrap",
+            serde_json::json!({ "status": BootstrapStatus::Loading.as_str() }),
+        );
+
+        tokio::spawn(async move {
+            // Audio engine + VAD worker: first recording must not pay spawn
+            // latency, but window creation should not wait for it either.
+            pipeline.prewarm().await;
+
+            tools.discover_all(&mcp_servers, &mcp_discovery).await;
+            if let Err(e) = tools
+                .skills_engine
+                .set_config(skills_cfg_root, skills_cfg_enabled)
+                .await
+            {
+                tracing::warn!("skills engine initial scan failed: {e}");
+            }
+            tools.rebuild_catalog().await;
+
+            // Resume pending sessions only after MCP/skills are loaded so
+            // restore_per_task_tools / load_mcp see a live catalog.
+            agent.start();
+
+            bootstrap_ready.store(true, Ordering::Release);
+            emit(
+                "app:bootstrap",
+                serde_json::json!({ "status": BootstrapStatus::Ready.as_str() }),
+            );
+            tracing::info!("app bootstrap ready (MCP/skills/audio prewarm finished)");
+        });
     }
 }
 
@@ -356,6 +387,7 @@ mod tests {
         let cfg = state.config_loader.lock().unwrap().config().clone();
         assert!(cfg.session.max_steps > 0);
         assert_eq!(cfg.media.stt.provider, "mcp");
+        assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
     }
 
     #[tokio::test]

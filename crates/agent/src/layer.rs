@@ -180,9 +180,17 @@ impl AgentLayer {
     }
 
     /// Reopen a terminal session to Paused state.
-    /// Used by the history review flow ??shows the session as active on the chat
-    /// page.  The dispatcher won't pick it up until the user sends a
-    /// follow-up message (which calls supplement_session ??Paused→Pending).
+    /// Used by the history review flow — shows the session as active on the chat
+    /// page. The dispatcher won't pick it up until the user sends a
+    /// follow-up message (which calls supplement_session Paused→Pending).
+    ///
+    /// If the session carries user inputs that were persisted but NEVER
+    /// injected into the agent (queued as steering/supplement and then lost
+    /// when the session errored, completed, or was cancelled mid-batch), they
+    /// are re-queued as supplements so a later Continue / follow-up can
+    /// deliver them. History review itself stays Paused — auto-resuming here
+    /// would re-run ReAct on old chats and undo the memory-only
+    /// Completed→Paused guard.
     pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
         // Terminal sessions (Error/Completed) are removed from the in-memory
         // list by unmark_running, so ensure_session_loaded is needed to bring
@@ -190,9 +198,62 @@ impl AgentLayer {
         self.executor.ensure_session_loaded(session_id).await?;
         let state = self.executor.get_session_state(session_id).await;
         if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
-            self.set_session_status(session_id, SessionStatus::Paused)
+            // Memory-only: viewing a finished conversation in history must not
+            // resurrect it in the DB (auto-restore on restart, session-menu
+            // persistence). The in-memory Paused status still lets follow-up
+            // messages continue it for the current run; the first real
+            // transition afterwards persists normally.
+            self.executor
+                .update_session_status_memory_only(session_id, SessionStatus::Paused)
                 .await?;
         }
+        // Only a session whose in-memory queues are empty needs the DB scan:
+        // a Running/Paused session still holding its pending inputs in the
+        // supplement/steering queues injects them itself on the next step, and
+        // re-queueing from the DB there would double-inject. The scan only
+        // fires after a terminal cleanup or a restart reloaded the session
+        // with empty queues (the lost-input case).
+        if self.executor.has_pending_context(session_id).await {
+            return Ok(());
+        }
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        let since = haven_memory::repositories::messages::undelivered_recovery_since();
+        let undelivered = db
+            .run_blocking(move |db| {
+                db.get_undelivered_user_messages_since(&sid, Some(since.as_str()))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to scan pending inputs: {e}"))?;
+        if undelivered.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(
+            "reopen_session: re-queueing {} recent undelivered user input(s) for session {} (staying Paused until Continue)",
+            undelivered.len(),
+            session_id
+        );
+        for m in &undelivered {
+            if let Err(e) = self
+                .executor
+                .add_supplement_with_attachments(
+                    session_id,
+                    &m.content,
+                    &m.attachments,
+                    Some(m.id.clone()),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "reopen_session: failed to re-queue input {} for session {}: {}",
+                    m.id,
+                    session_id,
+                    e
+                );
+            }
+        }
+        // Stay Paused: review must not auto-dispatch. Continue / a new user
+        // message transitions to Pending and drains these supplements.
         Ok(())
     }
 
@@ -871,6 +932,14 @@ impl AgentLayer {
         // persisted before a crash and lost from the in-memory queues. The
         // canonical snapshot is the single authority for everything older.
         //
+        // This alone misses inputs that PREDATE the snapshot yet were never
+        // injected into the agent: a steering/supplement queued after the
+        // loop's last per-step drain is not in the canonical, but the
+        // error/exit snapshot written afterwards carries a `saved_at` NEWER
+        // than the input's persisted row. Those rows carry no step anchor
+        // (see `push_user_context`), so they are recovered by the
+        // anchor-based scan below regardless of timestamp.
+        //
         // When the in-memory queues still hold the inputs (the pause → answer
         // flow in the same process), they are injected by the ReAct loop and
         // the DB copy must NOT be re-queued — that would double-inject.
@@ -881,13 +950,25 @@ impl AgentLayer {
                 .db
                 .get_session_messages_since(session_id, saved_at)
                 .unwrap_or_default();
+            // Bound the anchor-less scan to the recovery window so ancient
+            // false positives (legacy missing anchors) are never re-injected
+            // on first post-upgrade resume. Rows newer than `saved_at` are
+            // already covered by `pending` above.
+            let since = haven_memory::repositories::messages::undelivered_recovery_since();
+            let undelivered = self
+                .db
+                .get_undelivered_user_messages_since(session_id, Some(since.as_str()))
+                .unwrap_or_default();
             let mut restored = 0usize;
-            for msg in pending {
+            // Id union: a row newer than `saved_at` AND anchor-less appears in
+            // both scans — only one re-queue per id.
+            let mut seen = std::collections::HashSet::new();
+            for msg in pending.iter().chain(undelivered.iter()) {
                 // Only user inputs are re-queued: assistant rows newer
                 // than the snapshot only exist mid-stream (persisted
                 // before their canonical push) and are recovered by the
                 // partial-message path instead.
-                if msg.role != "user" {
+                if msg.role != "user" || !seen.insert(msg.id.as_str()) {
                     continue;
                 }
                 if self

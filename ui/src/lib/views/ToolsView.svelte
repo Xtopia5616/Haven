@@ -25,6 +25,18 @@
 	let unlistenSkills;
 	/** @type {{ dispose: () => void }} */
 	let unlistenMcp;
+	/** @type {ReturnType<typeof setTimeout> | null} */
+	let mcpRefreshTimer = null;
+
+	function scheduleMcpRefresh() {
+		// Cold start emits Connecting+Connected per server; coalesce into one
+		// list_mcp_tools round-trip instead of 2N full snapshots.
+		if (mcpRefreshTimer) clearTimeout(mcpRefreshTimer);
+		mcpRefreshTimer = setTimeout(() => {
+			mcpRefreshTimer = null;
+			refreshMcpServers();
+		}, 120);
+	}
 
 	onMount(async () => {
 		try {
@@ -50,12 +62,13 @@
 		unlistenSkills = await registerOne('skills:status_change', async () => {
 			await refreshSkillList();
 		}, { tag: 'tools' });
-		unlistenMcp = await registerOne('mcp:status_change', async () => {
-			await refreshMcpServers();
+		unlistenMcp = await registerOne('mcp:status_change', () => {
+			scheduleMcpRefresh();
 		}, { tag: 'tools' });
 	});
 
 	onDestroy(() => {
+		if (mcpRefreshTimer) clearTimeout(mcpRefreshTimer);
 		unlistenSkills?.dispose();
 		unlistenMcp?.dispose();
 	});

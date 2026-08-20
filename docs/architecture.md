@@ -127,11 +127,14 @@ provider（STT 客户端来自 `haven-llm`）。
 
 | | `haven-input` | `haven-llm` |
 |---|---|---|
-| 角色 | **消费方**：录音 → VAD → WAV → 调 `SttClient` | **实现方**：`build_stt_client` 分发、各 provider 实现 |
+| 角色 | **消费方**：录音 → VAD → WAV → 调 `SttClient` | **实现方**：`LlmClient::transcribe` + `build_stt_client` / `adapter_for` |
 | 复用点 | `InputPipeline::transcribe`（用户麦克风录音） | `MediaGateway::process_attachment`（agent 的 `audio` 工具附件） |
 
 同一个 `SttClient` 被两处复用是**有意的共享**，不是职责重复：input 走「用户录音」路径，
-llm 的 `media/` 走「agent 附件」路径，实现都在 llm。
+llm 的 `media/` 走「agent 附件」路径。云端 STT（Whisper / Groq / Gemini / Deepgram /
+AssemblyAI）与 chat 共用 `adapter_for` 分发；`provider = "llm"` 走
+`LlmRouter::transcribe_audio`（原生 `transcribe`，否则 multimodal chat 回退）。
+MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 ### 3.2 媒体网关的历史归属
 

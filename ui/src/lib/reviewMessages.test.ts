@@ -590,6 +590,24 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.map((m) => m.id)).toContain('msg-8');
 	});
 
+	it('keeps a finalized live-only assistant message before the DB row that follows it', () => {
+		// The snap-finalized reasoning (msg-8) has no DB row yet, but the DB
+		// already holds the user's later message (m2). The merge must not push
+		// the reasoning AFTER m2 (the old append-at-end behavior reordered
+		// [user, thinking, user] to [user, user, thinking] for one frame).
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm2', role: 'user', content: 'second' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-8', role: 'assistant', content: '思考片段', streaming: false },
+			{ id: 'm2', role: 'user', content: 'second' },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
+	});
+
 	it('keeps the interrupted partial reasoning after a continue resync', () => {
 		// After continue_session truncates the errored step's partial output
 		// from the DB, the resync must NOT clear the already-streamed
@@ -605,16 +623,21 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.find((m) => m.id === 'msg-9')!.content).toBe('先想想一部分');
 	});
 
-	it('drops finalized live tool cards with no DB row (interrupted/transient)', () => {
-		// An interrupted tool card has no step row; a web_search indicator is
-		// never persisted. Both are transient — the DB rebuild drops them.
+	it('keeps finalized step-* tool cards and drops transient web_search', () => {
+		// Continue resync can race the retry's Action/Observation and miss the
+		// pending step row for one frame; dropping step-* cards made post-resume
+		// tool calls vanish. web_search indicators are never persisted — drop.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
 			{ id: 'step-cut', type: 'tool', toolName: 'shell', content: 'Interrupted', streaming: false },
 			{ id: 'tool-t-1-0-web_search', type: 'tool', toolName: 'web_search', content: '已联网搜索', streaming: false },
 		];
 		const merged = mergeLiveStreaming(db, existing);
-		expect(merged.map((m) => m.id)).toEqual(['m1']);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-cut']);
+		expect(merged.find((m) => m.id === 'step-cut')).toMatchObject({
+			type: 'tool',
+			content: 'Interrupted',
+		});
 	});
 
 	it('drops finalized live user bubbles not in the DB (placeholder copies)', () => {

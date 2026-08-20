@@ -5,11 +5,12 @@
 	// duplicate discover_models request against the same default endpoint.
 	// Cache the result per base URL and share in-flight requests so reloads
 	// reuse the list instead of re-hitting the provider's /models endpoint.
-	/** @type {{ baseUrl: string | null, list: any[] | null, inflight: Promise<any> | null }} */
+	/** @type {{ baseUrl: string | null, list: any[] | null, inflight: Promise<any> | null, inflightUrl: string | null }} */
 	const defaultModelsCache = {
 		baseUrl: null,
 		list: null,
 		inflight: null,
+		inflightUrl: null,
 	};
 </script>
 
@@ -330,11 +331,13 @@
 	/** @param {string} value */
 	async function handleWebSearchSelect(value) {
 		const label = webSearchOptions.find((o) => o.value === value)?.label || '关闭';
+		skipNextDefaultModelRefresh = true;
 		try {
 			await invoke('set_web_search', { role: 'default_model', mode: value });
 			currentWebSearch = value;
 			addNotification(`联网搜索: ${label}`, 'success', 2500);
 		} catch (e) {
+			skipNextDefaultModelRefresh = false;
 			addNotification(`设置联网搜索失败: ${e}`, 'error', 4000);
 		}
 	}
@@ -342,12 +345,14 @@
 	/** @param {any} m */
 	async function handleModelSelect(m) {
 		modelMenuOpen = false;
+		skipNextDefaultModelRefresh = true;
 		try {
 			await invoke('switch_model', { role: 'default_model', modelId: m.id });
 			currentModelId = m.id;
 			currentModelName = m.name || m.id;
 			addNotification(`已切换默认模型: ${currentModelName}`, 'success', 3000);
 		} catch (e) {
+			skipNextDefaultModelRefresh = false;
 			addNotification(`切换模型失败: ${e}`, 'error', 4000);
 		}
 	}
@@ -355,11 +360,13 @@
 	/** @param {string} value */
 	async function handleEffortSelect(value) {
 		const label = effortOptions.find((o) => o.value === value)?.label || '默认';
+		skipNextDefaultModelRefresh = true;
 		try {
 			await invoke('set_reasoning_effort', { role: 'default_model', effort: value || null });
 			currentEffort = value || '';
 			addNotification(`思考强度: ${label}`, 'success', 2500);
 		} catch (e) {
+			skipNextDefaultModelRefresh = false;
 			addNotification(`设置思考强度失败: ${e}`, 'error', 4000);
 		}
 	}
@@ -487,6 +494,48 @@
 
 	// Merged into existing onMount/onDestroy below
 
+	// Resolve a live-view user message id to its persisted DB id. During a
+	// running session the optimistic user bubble keeps the locally-minted id
+	// (`Date.now()-random` from newMessage) until the message list is rebuilt
+	// from the DB; the backend requires a DB-resolvable targetMessageId (no
+	// content-based guessing), so map the clicked message to its DB row by
+	// content first (legacy fallback). The local id embeds the bubble's
+	// creation timestamp, so when several rows share the same content the one
+	// created closest to the clicked bubble wins (the backend persists the
+	// user message within milliseconds of the optimistic bubble). Returns the
+	// original id unchanged when it is already a DB id or cannot be resolved
+	// (the backend then reports the unresolvable id and deletes nothing).
+	/** @param {string} sessionId @param {string} localMsgId @param {string} clickedContent */
+	async function resolveUserMessageDbId(sessionId, localMsgId, clickedContent) {
+		if (!localMsgId || /^(msg|step)-/.test(localMsgId)) return localMsgId;
+		const localTs = Number.parseInt(String(localMsgId).split('-')[0], 10);
+		try {
+			const result = await invoke('get_session_for_review', { sessionId });
+			const dbMessages = buildReviewMessages(result);
+			const candidates = dbMessages.filter(
+				(m) => m.role === 'user' && m.content === clickedContent && /^msg-/.test(m.id),
+			);
+			if (candidates.length === 0) return localMsgId;
+			// Nearest `_ts` to the optimistic bubble's creation time; fall back
+			// to the newest match when the local timestamp is unparsable.
+			let best = candidates[candidates.length - 1];
+			if (Number.isFinite(localTs)) {
+				let bestDiff = Number.POSITIVE_INFINITY;
+				for (const m of candidates) {
+					const diff = Math.abs((m._ts || 0) - localTs);
+					if (diff < bestDiff) {
+						bestDiff = diff;
+						best = m;
+					}
+				}
+			}
+			return best.id;
+		} catch (e) {
+			logger.warn('+page', 'resolveUserMessageDbId failed', e);
+			return localMsgId;
+		}
+	}
+
 	async function confirmRollbackAction() {
 		const { stepNumber, role, content, msgId } = rollbackDialog;
 		rollbackLoading = true;
@@ -497,11 +546,16 @@
 				// The backend resolves targetMessageId against persisted session
 				// messages and errors when the id does not match (no more
 				// content-based guessing).
+				const dbMsgId = await resolveUserMessageDbId(
+					/** @type {string} */ (activeSessionId),
+					msgId,
+					content,
+				);
 				await invoke('rollback_session', {
 					sessionId: activeSessionId,
 					targetStep: stepNumber,
 					pause: true,
-					targetMessageId: msgId,
+					targetMessageId: dbMsgId,
 				});
 				clearSeqMap(/** @type {string} */ (activeSessionId));
 				clearStepBlockIds(activeSessionId);
@@ -601,15 +655,10 @@
 		sessionMenuOpen = false;
 		// The previously active session is about to be deactivated: if it is
 		// already terminal (completed/error — it never evicted while it was
-		// being watched), reclaim its memory now; switchToSession below reloads
-		// from the DB when it is re-opened.
+		// being watched), reclaim its memory after the switch (evicting BEFORE
+		// it would be skipped by evictTerminalSessionMemory's active guard);
+		// switchToSession reloads from the DB when it is re-opened.
 		const prevActive = activeSessionId;
-		if (prevActive && prevActive !== sessionId) {
-			const prevSession = sessions.find((x) => x.id === prevActive);
-			if (prevSession && (prevSession.status === 'completed' || prevSession.status === 'error')) {
-				evictTerminalSessionMemory(prevActive);
-			}
-		}
 		try {
 			const result = await invoke('get_session_for_review', { sessionId });
 			const dbMessages = buildReviewMessages(result);
@@ -629,6 +678,22 @@
 			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			activeSessionId = sessionId;
 			activeSessionIdStore.set(sessionId);
+			// Reclaim the deactivated session's memory when it is terminal.
+			// `get_sessions` lists only the executor's in-memory working set
+			// and terminal sessions are REMOVED from it, so a completed/errored
+			// session is never found by the status check — evict on the
+			// "missing from the list" branch too.
+			if (prevActive && prevActive !== sessionId) {
+				const prevSession = sessions.find((x) => x.id === prevActive);
+				if (
+					!prevSession ||
+					prevSession.status === 'completed' ||
+					prevSession.status === 'error' ||
+					prevSession.status === 'failed'
+				) {
+					evictTerminalSessionMemory(prevActive);
+				}
+			}
 			const t = sessions.find((x) => x.id === sessionId);
 			addNotification(`已切换到：${t?.title || '会话'}`, 'info', 1500);
 		} catch (e) {
@@ -649,7 +714,12 @@
 			clearSeqMap(endedId);
 			clearStepBlockIds(endedId);
 		} catch (e) {
+			// The session is still alive server-side: keep the view attached to
+			// it so the user can retry. Clearing the pointer here would orphan a
+			// session that keeps running (and streaming) with no visible target.
+			newSessionIntentStore.set(false);
 			addNotification(`结束会话失败: ${e}`, 'error', 3000);
+			return;
 		}
 		activeSessionId = null;
 		activeSessionIdStore.set(null);
@@ -813,7 +883,16 @@
 	// fulfills the intent clears it before writing the store).
 	$effect(() =>
 		syncStore(activeSessionIdStore, (id) => {
-			if (id && !activeSessionId && !get(newSessionIntentStore)) activeSessionId = id;
+			if (id) {
+				if (!activeSessionId && !get(newSessionIntentStore)) activeSessionId = id;
+			} else if (activeSessionId) {
+				// An external writer nulled the store — the only path is the
+				// history page deleting/clearing the session that was active.
+				// Follow it so the chat never keeps pointing at a session that
+				// no longer exists (the +page's own writers always set the
+				// local state first, so this can never clobber a live view).
+				activeSessionId = null;
+			}
 		}),
 	);
 
@@ -1010,7 +1089,7 @@
 			if (activeSessionId === tid) {
 				updateModelState('streaming');
 			}
-			if (seqLastSeen(sid, seq)) return;
+			if (seqLastSeen(sid, seq, tid)) return;
 			// Remember this block's minted id so the thought snap and the
 			// action handler can find the sibling reasoning/thought bubble.
 			registerBlockId(tid, data.step_number, data.run_id, isThought ? 'thought' : 'reasoning', sid);
@@ -1054,39 +1133,98 @@
 			modelOptions = defaultModelsCache.list;
 			return;
 		}
-		if (defaultModelsCache.inflight) {
+		// Settings can swap the default provider while this view stays mounted
+		// (keep-alive). Drop the previous endpoint's list; an in-flight fetch
+		// for a different URL is abandoned (its .then is stamped and no-ops).
+		if (defaultModelsCache.baseUrl !== baseUrl) {
+			defaultModelsCache.list = null;
+			defaultModelsCache.baseUrl = baseUrl;
+		}
+		if (defaultModelsCache.inflight && defaultModelsCache.inflightUrl === baseUrl) {
 			defaultModelsCache.inflight
 				.then((list) => {
-					if (!dead) modelOptions = list;
+					if (!dead && defaultModelsCache.baseUrl === baseUrl) modelOptions = list;
 				})
 				.catch(() => {
-					if (!dead) modelOptions = [];
+					if (!dead && defaultModelsCache.baseUrl === baseUrl) modelOptions = [];
 				});
 			return;
 		}
-		defaultModelsCache.baseUrl = baseUrl;
+		const requestedUrl = baseUrl;
+		defaultModelsCache.baseUrl = requestedUrl;
+		defaultModelsCache.inflightUrl = requestedUrl;
 		defaultModelsCache.inflight = invoke('discover_models', {
-			baseUrl,
+			baseUrl: requestedUrl,
 			apiKey: '',
 			provider: providerName || '',
 		})
 			.then((list) => {
 				const next = list || [];
+				// Stale response after a provider swap: ignore.
+				if (defaultModelsCache.baseUrl !== requestedUrl) return next;
 				defaultModelsCache.list = next;
 				if (!dead) modelOptions = next;
 				return next;
 			})
 			.catch((e) => {
 				logger.warn('+page', 'discover_models error', e);
-				if (!dead) modelOptions = [];
+				if (!dead && defaultModelsCache.baseUrl === requestedUrl) modelOptions = [];
 				throw e;
 			})
 			.finally(() => {
-				defaultModelsCache.inflight = null;
+				// Only clear the coalescing slot when we still own it.
+				if (defaultModelsCache.inflightUrl === requestedUrl) {
+					defaultModelsCache.inflight = null;
+					defaultModelsCache.inflightUrl = null;
+				}
 			});
 		// Swallow the rethrown rejection for the shared in-flight promise;
 		// the branch above already surfaces the failure to the UI.
 		defaultModelsCache.inflight.catch(() => {});
+	}
+
+	/**
+	 * Apply the default_model role from a get_settings payload onto the
+	 * toolbar switcher. Used on mount and whenever `llm:config_changed`
+	 * fires (settings save / toolbar switch) so keep-alive doesn't leave
+	 * the chat toolbar stuck on a stale model.
+	 * @param {any} s
+	 */
+	function applyDefaultModelFromSettings(s) {
+		const dmRole = (s?.llm?.roles || []).find((/** @type {any} */ r) => r.role === 'default_model');
+		const dmProvider = dmRole?.provider
+			? (s?.llm?.providers || []).find((/** @type {any} */ p) => p.name === dmRole.provider)
+			: null;
+		const dmModel = dmRole?.model || '';
+		currentModelId = dmModel;
+		currentModelName = dmModel;
+		currentEffort = dmRole?.reasoning_effort || '';
+		currentWebSearch = dmRole?.web_search || 'off';
+		if (dmProvider?.base_url) {
+			ensureDefaultModelOptions(dmProvider.base_url, dmProvider.name);
+		} else {
+			modelOptions = [];
+		}
+	}
+
+	// Monotonic generation so overlapping get_settings refreshes never apply
+	// an older snapshot after a newer toolbar switch / settings save.
+	let defaultModelSyncGen = 0;
+	// Toolbar already wrote local state before emitting llm:config_changed —
+	// skip the redundant self-echo refresh once.
+	let skipNextDefaultModelRefresh = false;
+
+	/** Re-fetch settings and refresh the toolbar default-model controls. */
+	function refreshDefaultModelFromBackend() {
+		const gen = ++defaultModelSyncGen;
+		invoke('get_settings')
+			.then((s) => {
+				if (dead || gen !== defaultModelSyncGen) return;
+				applyDefaultModelFromSettings(s);
+			})
+			.catch((e) => {
+				logger.warn('+page', 'refresh default model error', e);
+			});
 	}
 
 	// Open a reviewed conversation (from the history page). The chat view
@@ -1099,8 +1237,27 @@
 			// intent (the user chose this conversation explicitly).
 			newSessionIntentStore.set(false);
 			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
+			const prevActive = activeSessionId;
 			activeSessionId = reviewTarget.sessionId;
 			activeSessionIdStore.set(activeSessionId);
+			// The session being left: if it is terminal (or has dropped out of
+			// the executor's working set, which only happens for terminal
+			// sessions), reclaim its in-memory messages/token stats — they are
+			// reloaded from the DB if the user returns. Runs AFTER the switch
+			// because evictTerminalSessionMemory skips the active session.
+			// Same rule as switchToSession; without it every reviewed session
+			// would keep its full message list in memory for the whole app run.
+			if (prevActive && prevActive !== reviewTarget.sessionId) {
+				const prevSession = sessions.find((x) => x.id === prevActive);
+				if (
+					!prevSession ||
+					prevSession.status === 'completed' ||
+					prevSession.status === 'error' ||
+					prevSession.status === 'failed'
+				) {
+					evictTerminalSessionMemory(prevActive);
+				}
+			}
 			// If this session was errored when reviewed, show the continue button.
 			// reopen_session already set it to Paused, but we still want the user
 			// to see the option to retry the failed step.
@@ -1114,11 +1271,12 @@
 	}
 
 	// The review target set by the history page's "open session" flow must be
-	// handled while the chat view is already mounted. The effect starts with
-	// the current (usually null) value and fires on every store change.
-	$effect(() => {
-		processReviewTarget(get(reviewTargetStore));
-	});
+	// handled while the chat view is already mounted. `$effect` does NOT track
+	// `get(store)` (svelte/store wraps the read in `untrack`), so a plain
+	// `get(reviewTargetStore)` here would only see the initial value and never
+	// react to later history clicks. Subscribing via syncStore runs the callback
+	// on every store change (and synchronously once with the current value).
+	$effect(() => syncStore(reviewTargetStore, (v) => processReviewTarget(v)));
 
 	onMount(async () => {
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
@@ -1237,6 +1395,16 @@
 					if (data.new_binding) {
 						hotkeyBinding = data.new_binding;
 					}
+				},
+				// Settings save / model switch rebuilds the router. Keep-alive
+				// leaves this page mounted, so re-pull the default_model role
+				// instead of leaving the toolbar on a stale selection.
+				'llm:config_changed': () => {
+					if (skipNextDefaultModelRefresh) {
+						skipNextDefaultModelRefresh = false;
+						return;
+					}
+					refreshDefaultModelFromBackend();
 				},
 				'agent:thought': (event) => {
 					const data = event.payload;
@@ -1488,15 +1656,7 @@
 				// The default_model role references a provider + a model id on
 				// that provider (the "model library" is the provider's fetched
 				// model list). Resolve both for the toolbar switcher.
-				const dmRole = (s?.llm?.roles || []).find((/** @type {any} */ r) => r.role === 'default_model');
-				const dmProvider = dmRole?.provider
-					? (s?.llm?.providers || []).find((/** @type {any} */ p) => p.name === dmRole.provider)
-					: null;
-				const dmModel = dmRole?.model || '';
-				currentModelId = dmModel;
-				currentModelName = dmModel;
-				currentEffort = dmRole?.reasoning_effort || '';
-				currentWebSearch = dmRole?.web_search || 'off';
+				applyDefaultModelFromSettings(s);
 				if (s?.hotkey?.key_binding) {
 					hotkeyBinding = s.hotkey.key_binding;
 				}
@@ -1510,9 +1670,6 @@
 						maxFiles: cl.max_attachment_files ?? 5,
 						maxFileBytes: cl.max_attachment_file_bytes ?? 20 * 1024 * 1024,
 					};
-				}
-				if (dmProvider?.base_url) {
-					ensureDefaultModelOptions(dmProvider.base_url, dmProvider.name);
 				}
 			})
 			.catch((e) => {
@@ -1577,11 +1734,19 @@
 					activeSessionIdStore.set(null);
 				}
 				if (!activeSessionId && !get(newSessionIntentStore)) {
+					// Only auto-assign a session whose messages are actually in
+					// memory. A session that has no loaded messages here (e.g.
+					// its list was cleared by an earlier 新对话) must NOT be
+					// silently activated: the chat would render the blank
+					// welcome screen while activeSessionId still points at it,
+					// so the next typed message would be appended to that
+					// hidden session and the end button would target it.
 					const firstActive = sessions.find(
 						(t) =>
-							t.status === 'running' ||
-							t.status === 'pending' ||
-							t.status === 'paused',
+							(t.status === 'running' ||
+								t.status === 'pending' ||
+								t.status === 'paused') &&
+							(get(sessionMessagesStore)[t.id] || []).length > 0,
 					);
 					if (firstActive) {
 						activeSessionId = firstActive.id;
@@ -1723,14 +1888,18 @@
 	/** @param {string} msgId @param {any} resolved */
 	function resolveAsk(msgId, resolved) {
 		if (!activeSessionId || !msgId) return;
+		const ids = resolvedAskIds.get(activeSessionId) || new Set();
+		// Re-entry guard: a double-click / queued click on the same card (the
+		// DOM may not have re-rendered yet) must not compose and submit the
+		// same answer twice.
+		if (ids.has(msgId)) return;
 		updateSessionMessages(activeSessionId, (m) =>
 			m.map((x) =>
-				x.id === msgId && x.type === 'ask' && x.awaiting
+				x.id === msgId && x.type === 'ask' && !x.resolved
 					? { ...x, awaiting: false, resolved }
 					: x,
 			),
 		);
-		const ids = resolvedAskIds.get(activeSessionId) || new Set();
 		ids.add(msgId);
 		resolvedAskIds.set(activeSessionId, ids);
 		const remainingMessages = (get(sessionMessagesStore)[activeSessionId] || []).filter(
@@ -1739,7 +1908,7 @@
 		if (remainingMessages.length === 0) {
 			const submitted = resolvedAskIds.get(activeSessionId);
 			resolvedAskIds.delete(activeSessionId);
-			submiactionAnswers(activeSessionId, submitted);
+			submitActionAnswers(activeSessionId, submitted);
 		}
 	}
 
@@ -1749,7 +1918,7 @@
 	// model can map answers back to its questions. Ignored questions are
 	// marked as 忽略.
 	/** @param {string} sessionId @param {any} resolvedIds */
-	function submiactionAnswers(sessionId, resolvedIds) {
+	function submitActionAnswers(sessionId, resolvedIds) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
 		const asks = (get(sessionMessagesStore)[sessionId] || []).filter(
 			(x) => x.type === 'ask' && x.resolved && resolvedIds.has(x.id),
@@ -2048,7 +2217,7 @@
 						</div>
 					{/if}
 				</div>
-				{#if activeSessionId}
+				{#if activeSessionId && messages.length > 0}
 					<button
 						class="md-btn md-btn--outlined end-session-btn"
 						onclick={endSession}

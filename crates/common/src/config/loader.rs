@@ -327,6 +327,7 @@ mod tests {
         assert_eq!(cfg.context_limits.event_chunk_batch_max_bytes, 8 * 1024);
         assert_eq!(cfg.context_limits.input_ring_buffer_secs, 20);
         assert_eq!(cfg.context_limits.embedding_chunk_size, 64);
+        assert_eq!(cfg.context_limits.max_tools_per_request, 350);
         assert_eq!(cfg.context_limits.partial_checkpoint_interval_secs, 2);
         assert_eq!(cfg.context_limits.fact_infer_interval_steps, 25);
         assert_eq!(cfg.memory.history_retention_days, 90);

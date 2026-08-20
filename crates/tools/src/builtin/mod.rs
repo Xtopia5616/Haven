@@ -73,6 +73,10 @@ pub async fn register_builtin_tools(
     limits: &haven_common::config::ContextLimitsConfig,
     default_shell: haven_common::types::ShellChoice,
     audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    session_registrations: Arc<
+        RwLock<HashMap<String, HashMap<String, ToolBox>>>,
+    >,
+    catalog_version: Arc<std::sync::atomic::AtomicU64>,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
@@ -150,13 +154,22 @@ pub async fn register_builtin_tools(
         messaging_bus.clone(),
     )));
     tools.push(Arc::new(messaging::MessageReplyTool::new(messaging_bus)));
+    let max_tools = limits.max_tools_per_request.max(1);
     tools.push(Arc::new(load_skill::LoadSkillTool {
         skills_engine: skills_engine.clone(),
         skill_runner: skill_runner.clone(),
+        registry: registry.clone(),
+        session_registrations: session_registrations.clone(),
+        catalog_version: catalog_version.clone(),
+        max_tools_per_request: max_tools,
     }));
     tools.push(Arc::new(load_mcp::LoadMcpTool {
         mcp_manager: mcp_manager.clone(),
         server_configs: server_configs.clone(),
+        registry: registry.clone(),
+        session_registrations,
+        catalog_version,
+        max_tools_per_request: max_tools,
     }));
     if let Some(ctx) = self_context {
         // Facts memory needs the DB; like SelfTool it only registers once the

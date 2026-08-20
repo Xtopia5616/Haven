@@ -125,6 +125,51 @@ impl Database {
         })
     }
 
+    /// Ensure a pending action step row exists under the pre-minted `step-*`
+    /// id. The ReAct loop calls this at Action-emit time so an interrupted /
+    /// mid-flight tool always has a DB row the review rebuild can hydrate;
+    /// `execute_step` calls it again as a fallback when tests invoke it
+    /// without going through Action emit. Idempotent: a second call with the
+    /// same id is a no-op (optionally refreshing `confirmed` while still
+    /// pending).
+    #[allow(clippy::too_many_arguments)]
+    pub fn ensure_action_step(
+        &self,
+        session_id: &str,
+        step_number: i32,
+        tool_name: &str,
+        tool_input: &str,
+        is_high_risk: bool,
+        silent: bool,
+        confirmed: Option<bool>,
+        id: &str,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?4, ?5, 'pending', ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                id,
+                session_id,
+                step_number,
+                tool_name,
+                tool_input,
+                is_high_risk as i32,
+                now,
+                silent as i32,
+                confirmed.map(|c| c as i32)
+            ],
+        )?;
+        if confirmed.is_some() {
+            conn.execute(
+                "UPDATE session_steps SET confirmed = ?1 WHERE id = ?2 AND status = 'pending'",
+                rusqlite::params![confirmed.map(|c| c as i32), id],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Complete an action step by recording its observation.
     pub fn complete_action_step(
         &self,
@@ -268,6 +313,39 @@ mod tests {
         let steps = db.get_session_steps("ses-1").unwrap();
         assert_eq!(steps[0].observation.as_deref(), Some("file content here"));
         assert_eq!(steps[0].status, "completed");
+    }
+
+    #[test]
+    fn ensure_action_step_is_idempotent_and_updates_confirmed() {
+        let db = test_db();
+        seed_session(&db, "ses-1");
+        db.ensure_action_step(
+            "ses-1",
+            0,
+            "shell",
+            "{}",
+            false,
+            false,
+            None,
+            "step-ensure-1",
+        )
+        .unwrap();
+        db.ensure_action_step(
+            "ses-1",
+            0,
+            "shell",
+            "{}",
+            false,
+            false,
+            Some(true),
+            "step-ensure-1",
+        )
+        .unwrap();
+        let steps = db.get_session_steps("ses-1").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, "step-ensure-1");
+        assert_eq!(steps[0].status, "pending");
+        assert_eq!(steps[0].confirmed, Some(true));
     }
 
     #[test]

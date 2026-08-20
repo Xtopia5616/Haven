@@ -159,10 +159,100 @@ impl From<haven_common::tools::ToolDef> for ToolDefinition {
             function: ToolFunction {
                 name: def.name,
                 description: def.description,
-                parameters: def.input_schema,
+                parameters: sanitize_tool_parameters(def.input_schema),
             },
         }
     }
+}
+
+/// Ensure tool `parameters` is a JSON Schema object acceptable to strict
+/// providers (OpenAI Responses meta-schema: schema = boolean | object).
+///
+/// - Null / non-object roots become `{"type":"object","properties":{}}`.
+/// - Keywords that must be boolean|object (`additionalProperties`,
+///   `additionalItems`, `items`, `not`, `if`/`then`/`else`, …) drop `null`
+///   (or coerce `additionalProperties`/`additionalItems` null → `false`).
+pub fn sanitize_tool_parameters(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut map) => {
+            sanitize_schema_object(&mut map);
+            Value::Object(map)
+        }
+        _ => serde_json::json!({"type": "object", "properties": {}}),
+    }
+}
+
+fn sanitize_schema_value(value: &mut Value) {
+    match value {
+        Value::Object(map) => sanitize_schema_object(map),
+        Value::Array(items) => {
+            for item in items {
+                sanitize_schema_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_schema_object(map: &mut serde_json::Map<String, Value>) {
+    for key in ["additionalProperties", "additionalItems"] {
+        if matches!(map.get(key), Some(Value::Null)) {
+            map.insert(key.to_string(), Value::Bool(false));
+        }
+    }
+    for key in [
+        "items",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "propertyNames",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    ] {
+        match map.get(key) {
+            Some(Value::Null) => {
+                map.remove(key);
+            }
+            Some(_) => {
+                if let Some(v) = map.get_mut(key) {
+                    sanitize_schema_value(v);
+                }
+            }
+            None => {}
+        }
+    }
+    for key in [
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "$defs",
+        "definitions",
+    ] {
+        if let Some(Value::Object(nested)) = map.get_mut(key) {
+            for prop in nested.values_mut() {
+                sanitize_schema_value(prop);
+            }
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(items)) = map.get_mut(key) {
+            for item in items {
+                sanitize_schema_value(item);
+            }
+        }
+    }
+}
+
+/// Outcome of a speech-to-text call: the transcript plus an optional
+/// confidence (0.0-1.0) reported by the provider. `None` confidence means
+/// the provider does not report one; the gateway's confidence gate treats
+/// that as "no signal" and falls back on error / empty text instead.
+#[derive(Debug, Clone, Default)]
+pub struct SttResult {
+    pub text: String,
+    pub confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone, Error)]
@@ -202,6 +292,11 @@ pub enum LlmError {
     #[error("billing issue: {0}")]
     Billing(String),
 
+    /// Adapter does not implement the requested capability (e.g. STT /
+    /// embeddings). Callers may fall back to an alternate path.
+    #[error("unsupported capability: {0}")]
+    UnsupportedCapability(String),
+
     #[error("unknown error: {0}")]
     Unknown(String),
 
@@ -231,6 +326,12 @@ impl LlmError {
                 | LlmError::RateLimit { .. }
                 | LlmError::StreamTruncated
         )
+    }
+
+    /// True when the adapter lacks the requested capability (STT, embeddings,
+    /// …). Distinct from a hard request failure so callers can fall back.
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, LlmError::UnsupportedCapability(_))
     }
 }
 
@@ -517,5 +618,44 @@ mod tests {
             td.function.parameters,
             serde_json::json!({"type": "object"})
         );
+    }
+
+    #[test]
+    fn sanitize_tool_parameters_replaces_null_root() {
+        let cleaned = sanitize_tool_parameters(Value::Null);
+        assert_eq!(cleaned["type"], "object");
+        assert!(cleaned["properties"].is_object());
+    }
+
+    #[test]
+    fn sanitize_tool_parameters_coerces_additional_properties_null() {
+        let cleaned = sanitize_tool_parameters(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "cwd": {
+                    "type": "string",
+                    "additionalProperties": null
+                }
+            },
+            "additionalProperties": null
+        }));
+        assert_eq!(cleaned["additionalProperties"], false);
+        assert_eq!(
+            cleaned["properties"]["cwd"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn tool_definition_from_null_schema_is_object() {
+        let def = haven_common::tools::ToolDef::new(
+            "mcp_broken",
+            "schema was null",
+            Value::Null,
+            haven_common::types::RiskLevel::High,
+        );
+        let td = ToolDefinition::from(def);
+        assert!(td.function.parameters.is_object());
+        assert!(!td.function.parameters.is_null());
     }
 }

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use haven_common::types::CanonicalMessage;
 
-use crate::types::{Embedding, LlmError, LlmResponse, StreamChunk, ToolDefinition};
+use crate::types::{Embedding, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition};
 
 /// User-Agent sent on every provider HTTP request so Haven's traffic is
 /// identifiable server-side: DeepSeek, OpenAI, Anthropic, Gemini and most
@@ -96,8 +96,19 @@ pub trait LlmClient: Send + Sync {
     /// the default reports an unsupported error so chat-only endpoints
     /// (anthropic, gemini) degrade gracefully when routed to this slot.
     async fn embed(&self, _input: Vec<String>) -> Result<Embedding, LlmError> {
-        Err(LlmError::RequestFailed(
+        Err(LlmError::UnsupportedCapability(
             "embeddings not supported by this adapter".into(),
+        ))
+    }
+
+    /// Transcribe WAV audio bytes. Whisper-compatible OpenAI endpoints,
+    /// Gemini, Deepgram, and AssemblyAI implement this; chat-only adapters
+    /// leave the default so the router can fall back to multimodal chat
+    /// (`input_audio` / inline audio parts) when STT is routed through an
+    /// `audio_model` chat slot.
+    async fn transcribe(&self, _wav_data: &[u8]) -> Result<SttResult, LlmError> {
+        Err(LlmError::UnsupportedCapability(
+            "speech-to-text not supported by this adapter".into(),
         ))
     }
 

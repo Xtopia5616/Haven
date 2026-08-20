@@ -514,6 +514,8 @@ fn wire_provider_hint(provider_hint: &str, api_style: &Option<String>) -> String
         Some("anthropic") => "anthropic".into(),
         Some("gemini") => "gemini".into(),
         Some("llama.cpp") => "llama.cpp".into(),
+        Some("deepgram") => "deepgram".into(),
+        Some("assemblyai") => "assemblyai".into(),
         Some(_) => "openai".into(),
         None if provider_hint.is_empty() => "openai".into(),
         None => provider_hint.to_string(),

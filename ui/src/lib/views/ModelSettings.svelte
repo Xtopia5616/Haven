@@ -115,10 +115,10 @@
 	}
 
 	/**
-	 * @param {string} name
+	 * @param {any} p
 	 */
-	function isProviderKeyConfigured(name) {
-		return !!keyConfiguredProviders[name];
+	function isLocalProvider(p) {
+		return p?.api_style === 'llama.cpp' || p?.provider === 'llama.cpp';
 	}
 
 	// ---------------------------------------------------------------------
@@ -135,6 +135,19 @@
 	let refreshingAll = $state(false);
 	/** Timestamp of the last global refresh notice, to avoid spam. */
 	let lastRefreshNotify = $state(0);
+
+	/**
+	 * Key status is authoritative from `get_api_key_status` (plus an unsaved
+	 * key typed in the edit dialog). Do NOT infer from `modelsByProvider`:
+	 * large `/models` responses delay that map and would flash 「未配置」.
+	 * @param {any} p
+	 */
+	function isProviderKeyConfigured(p) {
+		if (!p) return false;
+		if (p.api_key) return true;
+		if (keyConfiguredProviders[p.name]) return true;
+		return isLocalProvider(p);
+	}
 
 	async function refreshAllModels(silent = false) {
 		const providers = (llmConfig.providers || []).filter((/** @type {any} */ p) => p.base_url.trim());
@@ -383,19 +396,20 @@
 			return;
 		}
 		const prevKey = idx !== null ? llmConfig.providers[idx]?.api_key || '' : '';
+		const preset = API_STYLE_PRESETS[form.api_style] || API_STYLE_PRESETS['openai-chat'];
 		const provider = {
 			name,
-			provider: '',
+			provider: preset.provider,
 			api_style: form.api_style,
 			base_url: form.base_url.trim(),
 			api_key: form.api_key || prevKey,
-			auth_header_name: 'Authorization',
-			auth_header_prefix: 'Bearer',
+			auth_header_name: preset.auth_header_name,
+			auth_header_prefix: preset.auth_header_prefix,
 			proxy_url: null,
 			no_proxy: null,
 			default_max_tokens: null,
 			default_temperature: null,
-			default_timeout_secs: null,
+			default_timeout_secs: isSttOnlyStyle(form.api_style) ? 30 : null,
 			default_timeout_streaming_secs: null,
 			default_web_search: null,
 		};
@@ -409,7 +423,14 @@
 				for (const r of llmConfig.roles) {
 					if (r.provider === oldName) r.provider = name;
 				}
+				if (keyConfiguredProviders[oldName]) {
+					delete keyConfiguredProviders[oldName];
+					keyConfiguredProviders[name] = true;
+				}
 			}
+		}
+		if (provider.api_key || isLocalProvider(provider)) {
+			keyConfiguredProviders[name] = true;
 		}
 		providerDialog = { idx: null, form: null };
 		addNotification(provider.name ? `Provider 已保存` : 'Provider 已保存', 'success', 2000);
@@ -440,7 +461,73 @@
 		{ value: 'openai-responses', label: 'OpenAI Responses API' },
 		{ value: 'anthropic', label: 'Anthropic (Claude)' },
 		{ value: 'gemini', label: 'Google Gemini' },
+		{ value: 'deepgram', label: 'Deepgram (STT only)' },
+		{ value: 'assemblyai', label: 'AssemblyAI (STT only)' },
 	];
+
+	/** @type {Record<string, { base_url: string, provider: string, auth_header_name: string, auth_header_prefix: string }>} */
+	const API_STYLE_PRESETS = {
+		'openai-chat': {
+			base_url: 'https://api.openai.com/v1',
+			provider: 'openai',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+		},
+		'llama.cpp': {
+			base_url: 'http://127.0.0.1:8080/v1',
+			provider: 'llama.cpp',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+		},
+		'openai-responses': {
+			base_url: 'https://api.openai.com/v1',
+			provider: 'openai',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Bearer',
+		},
+		anthropic: {
+			base_url: 'https://api.anthropic.com',
+			provider: 'anthropic',
+			auth_header_name: 'x-api-key',
+			auth_header_prefix: '',
+		},
+		gemini: {
+			base_url: 'https://generativelanguage.googleapis.com/v1beta',
+			provider: 'gemini',
+			auth_header_name: 'x-goog-api-key',
+			auth_header_prefix: '',
+		},
+		deepgram: {
+			base_url: 'https://api.deepgram.com',
+			provider: 'deepgram',
+			auth_header_name: 'Authorization',
+			auth_header_prefix: 'Token',
+		},
+		assemblyai: {
+			base_url: 'https://api.assemblyai.com',
+			provider: 'assemblyai',
+			auth_header_name: 'authorization',
+			auth_header_prefix: '',
+		},
+	};
+
+	/**
+	 * @param {string} style
+	 */
+	function isSttOnlyStyle(style) {
+		return style === 'deepgram' || style === 'assemblyai';
+	}
+
+	/**
+	 * @param {string} style
+	 */
+	function applyApiStylePreset(style) {
+		if (!providerDialog?.form) return;
+		const preset = API_STYLE_PRESETS[style];
+		if (!preset) return;
+		providerDialog.form.api_style = style;
+		providerDialog.form.base_url = preset.base_url;
+	}
 
 	// ---------------------------------------------------------------------
 	// STT / provider API-key dialog
@@ -512,8 +599,8 @@
 						{apiStyleLabel(p.api_style)} · {p.base_url}
 					</span>
 					<span class="lib-key">
-						<StatusDot color={isProviderKeyConfigured(p.name) ? 'success' : 'outline'} />
-						{isProviderKeyConfigured(p.name) ? '已配置' : '未配置'}
+						<StatusDot color={isProviderKeyConfigured(p) ? 'success' : 'outline'} />
+						{isProviderKeyConfigured(p) ? '已配置' : '未配置'}
 					</span>
 					{#if modelsByProvider[p.name]?.length}
 						<span class="provider-models">{modelsByProvider[p.name].length} 个模型</span>
@@ -630,7 +717,7 @@
 		{#if card.key === 'audio_model'}
 			<div class="audio-stt-block">
 				<h4>语音转写（STT）</h4>
-				<p class="model-hint">录音经 STT 转写后作为普通消息发送。STT 走「音频模型」角色时需开启下方输入格式章节中的「录音转写使用专用音频模型」开关。</p>
+				<p class="model-hint">推荐：上方 Audio Model 选 Whisper / Gemini / Deepgram / AssemblyAI Provider，STT Provider 选「音频模型」。也可在此直接配置独立云端 STT（与 Provider 库并行，旧配置仍可用）。</p>
 				<div class="stt-grid">
 					<div class="model-field">
 						<span class="field-label">STT Provider</span>
@@ -711,9 +798,12 @@
 					id="prov-api-style"
 					value={pdForm.api_style}
 					options={API_STYLE_OPTIONS}
-					onChange={(/** @type {string} */ v) => { pdForm.api_style = v; }}
+					onChange={(/** @type {string} */ v) => applyApiStylePreset(v)}
 				/>
 			</div>
+			{#if isSttOnlyStyle(pdForm.api_style)}
+				<p class="model-hint">该协议仅支持语音转写。请将其分配给 Audio Model，并把录音 STT Provider 设为「音频模型」。</p>
+			{/if}
 			<div class="model-field">
 				<span class="field-label">Base URL</span>
 				<input type="text" class="md-input" bind:value={pdForm.base_url} placeholder="https://api.openai.com/v1" autocomplete="off" />

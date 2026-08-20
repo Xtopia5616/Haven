@@ -116,9 +116,9 @@ const STALL_WATCHDOG_POLL: std::time::Duration = std::time::Duration::from_secs(
 
 /// A provider stream that delivers no chunk for this long is announced to the
 /// UI as `StreamStalled` — long before the router's idle timeout aborts the
-/// stream, so the user sees "still generating" feedback instead of a frozen
-/// conversation. Covers the first-chunk wait too (the anchor starts at the
-/// call's creation). Configurable via `context_limits.stream_stall_warn_delay_ms`
+/// stream, so the status chip can show a factual waiting state instead of a
+/// frozen conversation. Covers the first-chunk wait too (the anchor starts at
+/// the call's creation). Configurable via `context_limits.stream_stall_warn_delay_ms`
 /// (was a `STALL_WARN_DELAY_MS` constant before it was unified into settings).
 ///
 /// Current wall-clock time in milliseconds since the Unix epoch. Used by the
@@ -1777,6 +1777,19 @@ impl ReActEngine {
                 .collect();
             for (idx, action) in non_final.iter().enumerate() {
                 let step_id = &action_step_ids[idx];
+                // Persist the pending step row BEFORE the live card so an
+                // interrupt / Continue resync / app restart can rebuild it
+                // from session_steps (the card used to be live-only and
+                // vanished on every DB rebuild).
+                self.executor
+                    .begin_action_step(
+                        session_id,
+                        &action.tool_name,
+                        &action.tool_input,
+                        step_num,
+                        step_id,
+                    )
+                    .await;
                 emitter
                     .emit(crate::event::AgentEvent::Action {
                         session_id: session_id.into(),
@@ -2002,11 +2015,20 @@ impl ReActEngine {
                                 &action.tool_name,
                                 &action.tool_input,
                             );
-                            // The card keeps the step id minted at Action time
-                            // (the tool never ran, so no step row exists — the
-                            // card is live-only and drops on DB rebuild, as
-                            // before).
+                            // Complete the pending step row minted at Action
+                            // time so review/resume rebuilds the Interrupted
+                            // card from session_steps (not live-only).
                             let step_id = action_step_ids[idx].clone();
+                            self.executor
+                                .finish_interrupted_step(
+                                    session_id,
+                                    &action.tool_name,
+                                    &action.tool_input,
+                                    step_num,
+                                    &step_id,
+                                    &interrupted_text,
+                                )
+                                .await;
                             emitter
                                 .emit(crate::event::AgentEvent::Observation {
                                     session_id: session_id.into(),

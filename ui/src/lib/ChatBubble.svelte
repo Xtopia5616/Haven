@@ -4,6 +4,7 @@
 	import { cubicOut } from 'svelte/easing';
 	import { imageDataUrl, formatTokenCount } from '$lib/stores.ts';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
+	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 
 	let {
@@ -106,12 +107,14 @@
 		}
 	}
 
-	// Copy buttons inside rendered markdown code fences (md-code-copy). Click
+	// Copy buttons inside rendered markdown code fences (md-code-copy), plus
+	// `.ext-ref` URL/path links (click = copy, Ctrl+click = open). Click
 	// delegation survives re-renders of {@html} content and works during
 	// streaming. The whole text of the code block is copied, matching what is
 	// highlighted, without any trailing newline.
 	/** @param {any} e */
 	function handleMdContentClick(e) {
+		if (handleExtRefEvent(e)) return;
 		const btn = e.target.closest?.('.md-code-copy');
 		if (!btn) return;
 		const wrap = btn.closest('.md-code-wrap');
@@ -132,6 +135,11 @@
 				}, 1500);
 			})
 			.catch(() => {});
+	}
+
+	/** @param {any} e */
+	function handleMdContentContextMenu(e) {
+		handleExtRefEvent(e);
 	}
 
 	// `use:mdContent` attaches the delegation listeners to the rendered
@@ -199,6 +207,7 @@
 			});
 		}
 		node.addEventListener('click', handleMdContentClick);
+		node.addEventListener('contextmenu', handleMdContentContextMenu);
 		node.addEventListener('wheel', handleMdWheel, { passive: false });
 		node.addEventListener('scroll', handleMdScrollCapture, true);
 		const mo = new MutationObserver(scheduleRefresh);
@@ -209,6 +218,7 @@
 		return {
 			destroy() {
 				node.removeEventListener('click', handleMdContentClick);
+				node.removeEventListener('contextmenu', handleMdContentContextMenu);
 				node.removeEventListener('wheel', handleMdWheel);
 				node.removeEventListener('scroll', handleMdScrollCapture, true);
 				mo.disconnect();
@@ -824,9 +834,20 @@
 	.md-content :global(strong) {
 		font-weight: 700;
 	}
-	.md-content :global(a) {
+	.md-content :global(a),
+	.md-content :global(.ext-ref) {
 		color: var(--md-sys-color-primary);
 		text-decoration: underline;
+		text-underline-offset: 2px;
+		cursor: pointer;
+		word-break: break-all;
+	}
+	.md-content :global(.ext-ref:hover) {
+		color: color-mix(in srgb, var(--md-sys-color-primary) 80%, var(--md-sys-color-on-surface));
+	}
+	.md-content :global(.ext-ref-path) {
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 0.95em;
 	}
 	.md-content :global(h1),
 	.md-content :global(h2),

@@ -1000,6 +1000,30 @@ impl SessionExecutor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
+        self.update_session_status_inner(session_id, status, true).await
+    }
+
+    /// Transition a session's status in MEMORY ONLY, without persisting it to
+    /// the DB. Used by the history-review reopen flow: a merely VIEWED
+    /// completed/errored session must be made resumable for the current run
+    /// (Paused) without resurrecting it in the DB — otherwise the ended
+    /// conversation would be auto-restored on every app start and shown as an
+    /// active conversation everywhere. Once the user actually continues it,
+    /// the normal transitions persist again.
+    pub async fn update_session_status_memory_only(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> anyhow::Result<()> {
+        self.update_session_status_inner(session_id, status, false).await
+    }
+
+    async fn update_session_status_inner(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        persist: bool,
+    ) -> anyhow::Result<()> {
         let entry = { self.sessions.lock().await.get(session_id).cloned() };
         let Some(entry) = entry else {
             // Session not in memory (e.g. already removed): no-op, matching the
@@ -1027,7 +1051,9 @@ impl SessionExecutor {
             );
             return Ok(());
         }
-        if let Err(e) = Self::persist_status(&self.db, session_id, status.as_str()).await {
+        if persist
+            && let Err(e) = Self::persist_status(&self.db, session_id, status.as_str()).await
+        {
             tracing::error!(
                 "update_session_status: DB persist failed for session {}; transition {:?} -> {:?} aborted: {}",
                 session_id,
@@ -1258,9 +1284,102 @@ impl SessionExecutor {
             .await;
     }
 
+    /// Persist a pending `session_steps` row under the pre-minted `step-*` id
+    /// at Action-emit time — before the tool runs. Interrupted / cancelled
+    /// tools never reach `execute_step`'s post-completion write, so without
+    /// this the live card is the only copy and drops on every DB rebuild
+    /// (Continue resync, session switch, app restart).
+    pub async fn begin_action_step(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        step_id: &str,
+    ) {
+        let risk_level = self
+            .tools
+            .get_risk_level(Some(session_id), tool_name, input)
+            .await;
+        let silent = is_silent_action(tool_name, input);
+        let step_number = step_num as i32;
+        let session_id = session_id.to_string();
+        let tool_name = tool_name.to_string();
+        let tool_input = input.to_string();
+        let step_id_owned = step_id.to_string();
+        if let Err(e) = self
+            .db
+            .run_blocking(move |db| {
+                db.ensure_action_step(
+                    &session_id,
+                    step_number,
+                    &tool_name,
+                    &tool_input,
+                    risk_level != RiskLevel::Safe,
+                    silent,
+                    None,
+                    &step_id_owned,
+                )
+            })
+            .await
+        {
+            tracing::warn!("begin_action_step failed for step {}: {}", step_id, e);
+        }
+    }
+
+    /// Persist an Interrupted observation onto the pending step row (creating
+    /// it if Action-time begin failed). Keeps the review badge aligned with
+    /// the live Interrupted card across resume/resync.
+    pub async fn finish_interrupted_step(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        step_id: &str,
+        observation: &str,
+    ) {
+        let risk_level = self
+            .tools
+            .get_risk_level(Some(session_id), tool_name, input)
+            .await;
+        let silent = is_silent_action(tool_name, input);
+        let step_number = step_num as i32;
+        let session_id = session_id.to_string();
+        let tool_name = tool_name.to_string();
+        let tool_input = input.to_string();
+        let step_id_owned = step_id.to_string();
+        let observation = observation.to_string();
+        if let Err(e) = self
+            .db
+            .run_blocking(move |db| {
+                db.ensure_action_step(
+                    &session_id,
+                    step_number,
+                    &tool_name,
+                    &tool_input,
+                    risk_level != RiskLevel::Safe,
+                    silent,
+                    None,
+                    &step_id_owned,
+                )?;
+                db.complete_action_step(&step_id_owned, &observation, false)
+            })
+            .await
+        {
+            tracing::warn!(
+                "finish_interrupted_step failed for step {}: {}",
+                step_id,
+                e
+            );
+        }
+    }
+
     /// Execute a tool step. `step_id` is the pre-minted `step-*` id the frontend's
     /// live tool card already uses; the persisted step row reuses it so the live
-    /// card and the review badge are one entity.
+    /// card and the review badge are one entity. The pending row is normally
+    /// created by [`Self::begin_action_step`] at Action emit; this method
+    /// ensures + completes it after the tool finishes.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_step(
         &self,
@@ -1285,13 +1404,25 @@ impl SessionExecutor {
                     // Executing a tool on a Completed/Error session is always a
                     // stale call from a racing loop (end/rollback already
                     // finished this session). Failing fast here prevents the
-                    // force below from resurrecting a dead session.
-                    return Err(anyhow::anyhow!(
+                    // force below from resurrecting a dead session. Complete
+                    // the pending Action-time row so review doesn't keep an
+                    // empty badge for a tool that never ran.
+                    let err = format!(
                         "execute_step: session {} is {}; refusing to execute tool '{}'",
                         session_id,
                         prev.as_str(),
                         tool_name
-                    ));
+                    );
+                    self.finish_interrupted_step(
+                        session_id,
+                        tool_name,
+                        &input,
+                        step_num,
+                        step_id,
+                        &err,
+                    )
+                    .await;
+                    return Err(anyhow::anyhow!(err));
                 }
                 if prev != SessionStatus::Running {
                     // The ReAct loop runs with status Pending (the dispatcher
@@ -1308,9 +1439,26 @@ impl SessionExecutor {
         }
 
         let cancel = self.cancellation_token(session_id).await;
-        let gated = self
+        let gated = match self
             .execute_gated(Some(session_id), tool_name, input.clone(), cancel)
-            .await?;
+            .await
+        {
+            Ok(gated) => gated,
+            Err(e) => {
+                // Pending row was created at Action emit; record the failure
+                // so resume/resync does not rebuild an empty tool badge.
+                self.finish_interrupted_step(
+                    session_id,
+                    tool_name,
+                    &input,
+                    step_num,
+                    step_id,
+                    &e.to_string(),
+                )
+                .await;
+                return Err(e);
+            }
+        };
         let ToolExecution {
             result,
             risk_level,
@@ -1378,39 +1526,18 @@ impl SessionExecutor {
                     .await;
             }
         }
-        let step_record = self
-            .db
-            .run_blocking({
-                let session_id = session_id.to_string();
-                let tool_name = tool_name.to_string();
-                let tool_input = input.to_string();
-                let step_id = step_id.to_string();
-                let silent = is_silent_action(&tool_name, &input);
-                move |db| {
-                    db.create_action_step(
-                        &session_id,
-                        step_number,
-                        &tool_name,
-                        &tool_input,
-                        risk_level != RiskLevel::Safe,
-                        silent,
-                        confirmed,
-                        Some(&step_id),
-                    )
-                }
-            })
-            .await?;
         let obs = result.summary_text();
-        let step_id = step_record.id.clone();
         let success = result.success;
+        let persist_step_id = step_id.to_string();
+        let tool_name_owned = tool_name.to_string();
         // The in-memory StepInfo reuses the persisted step row's id so the
         // live session state and the review history reference the same step.
         if let Some(entry) = self.sessions.lock().await.get(session_id).cloned() {
             let mut session = entry.lock().await;
             session.steps.push(StepInfo {
-                id: step_id.clone(),
+                id: persist_step_id.clone(),
                 step_number,
-                tool_name: tool_name.into(),
+                tool_name: tool_name_owned.clone(),
                 input: input.clone(),
                 output: Some(result.output.clone()),
                 status: if success {
@@ -1423,8 +1550,25 @@ impl SessionExecutor {
             });
             session.updated_at = chrono::Utc::now().to_rfc3339();
         }
+        // Row was normally created at Action emit; ensure + complete covers
+        // direct execute_step callers (tests) and races where begin failed.
+        let session_id_owned = session_id.to_string();
+        let tool_input = input.to_string();
+        let silent = is_silent_action(tool_name, &input);
         self.db
-            .run_blocking(move |db| db.complete_action_step(&step_id, &obs, success))
+            .run_blocking(move |db| {
+                db.ensure_action_step(
+                    &session_id_owned,
+                    step_number,
+                    &tool_name_owned,
+                    &tool_input,
+                    risk_level != RiskLevel::Safe,
+                    silent,
+                    confirmed,
+                    &persist_step_id,
+                )?;
+                db.complete_action_step(&persist_step_id, &obs, success)
+            })
             .await?;
         Ok(result)
     }
@@ -1583,10 +1727,10 @@ impl SessionExecutor {
     /// Resolve a pending safety-gateway confirmation and return the risk level
     /// and the owning session id, so the caller can trust the level for the
     /// right conversation. The approval/denial itself is persisted on the real
-    /// `session_steps` row when `create_action_step` records the step (via the
-    /// `confirmed` returned by `execute_gated`); this method only unblocks the
-    /// ReAct loop waiting on the oneshot. Every step id handed here comes from
-    /// a `confirm:requested` payload, which is only emitted by
+    /// `session_steps` row when `execute_step` completes the pending step (via
+    /// the `confirmed` returned by `execute_gated`); this method only unblocks
+    /// the ReAct loop waiting on the oneshot. Every step id handed here comes
+    /// from a `confirm:requested` payload, which is only emitted by
     /// `await_confirmation` — so an id not present in `confirm_waits` is stale
     /// (already resolved or cancelled); there is no legacy path.
     pub async fn resolve_confirmation(

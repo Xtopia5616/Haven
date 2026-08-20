@@ -31,11 +31,101 @@
 				}
 				document.documentElement.setAttribute('data-accent', accent || 'blue');
 				document.documentElement.style.setProperty('--md-accent-hex', hex);
+				// Match tauri.conf backgroundColor so the boot shell and the
+				// pre-HTML webview rectangle share one surface color.
+				document.documentElement.style.background =
+					theme === 'light' ? '#f7f6fa' : '#121318';
 			})();
 		</script>
+		<style>
+			/* First-paint boot shell: no external CSS, paints before Svelte hydrates. */
+			html, body {
+				margin: 0;
+				height: 100%;
+				background: #121318;
+				color: #e3e2e6;
+			}
+			html[data-theme="light"], html[data-theme="light"] body {
+				background: #f7f6fa;
+				color: #1b1b1f;
+			}
+			#haven-boot {
+				position: fixed;
+				inset: 0;
+				z-index: 9999;
+				display: flex;
+				flex-direction: column;
+				background: inherit;
+				color: inherit;
+				font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+				-webkit-font-smoothing: antialiased;
+			}
+			#haven-boot .boot-bar {
+				height: 48px;
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 0 14px;
+				border-bottom: 1px solid rgba(127, 127, 127, 0.28);
+				-webkit-app-region: drag;
+				flex-shrink: 0;
+			}
+			#haven-boot .boot-brand {
+				font-weight: 600;
+				letter-spacing: 0.02em;
+				font-size: 15px;
+			}
+			#haven-boot .boot-chip {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				font-size: 12px;
+				opacity: 0.75;
+				-webkit-app-region: no-drag;
+			}
+			#haven-boot .boot-main {
+				flex: 1;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				gap: 14px;
+				padding: 24px;
+			}
+			#haven-boot .boot-spinner {
+				width: 28px;
+				height: 28px;
+				border-radius: 50%;
+				border: 2.5px solid rgba(127, 127, 127, 0.28);
+				border-top-color: var(--md-accent-hex, #2C5090);
+				animation: haven-boot-spin 0.75s linear infinite;
+			}
+			#haven-boot .boot-msg {
+				font-size: 13px;
+				opacity: 0.7;
+			}
+			@keyframes haven-boot-spin {
+				to { transform: rotate(360deg); }
+			}
+		</style>
 		%sveltekit.head%
 	</head>
 	<body>
+		<!-- Instant shell: visible as soon as HTML parses, before JS hydrates.
+		     Removed by +layout.svelte onMount once the real chrome is live. -->
+		<div id="haven-boot" role="status" aria-live="polite" aria-busy="true">
+			<div class="boot-bar">
+				<span class="boot-brand">Haven</span>
+				<span class="boot-chip">
+					<span class="boot-spinner" style="width:12px;height:12px;border-width:2px;" aria-hidden="true"></span>
+					加载中
+				</span>
+			</div>
+			<div class="boot-main">
+				<div class="boot-spinner" aria-hidden="true"></div>
+				<div class="boot-msg">正在启动…</div>
+			</div>
+		</div>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

@@ -24,7 +24,61 @@ import {
 	restoreSessionTokenStats,
 	formatTokenCount,
 	formatCostUsd,
+	actionStore,
+	upsertAction,
+	removeAction,
 } from './stores.ts';
+
+describe('upsertAction', () => {
+	beforeEach(() => {
+		actionStore.set({});
+	});
+
+	it('defaults background action:created payload to status running', () => {
+		upsertAction({ action_id: 'act-1', started_at: '2026-01-01T00:00:00Z' });
+		const row = get(actionStore)['act-1'] as Record<string, unknown>;
+		expect(row.status).toBe('running');
+		expect(row.kind).toBe('background');
+		expect(row.id).toBe('act-1');
+	});
+
+	it('does not invent running on a status-less update after the row was removed', () => {
+		upsertAction({ action_id: 'act-ghost', status: 'completed' });
+		removeAction('act-ghost');
+		upsertAction({ action_id: 'act-ghost', session_id: 'ses-1' });
+		const row = get(actionStore)['act-ghost'] as Record<string, unknown>;
+		expect(row.status).toBeUndefined();
+		expect(row.session_id).toBe('ses-1');
+	});
+
+	it('keeps an explicit terminal status from action:finished', () => {
+		upsertAction({ action_id: 'act-2', status: 'running' });
+		upsertAction({ action_id: 'act-2', status: 'completed', output: 'done' });
+		const row = get(actionStore)['act-2'] as Record<string, unknown>;
+		expect(row.status).toBe('completed');
+		expect(row.output).toBe('done');
+	});
+
+	it('evicts terminal rows before live running rows when over capacity', () => {
+		for (let i = 0; i < 70; i++) {
+			upsertAction({
+				action_id: `act-done-${i}`,
+				kind: 'background',
+				status: 'completed',
+			});
+		}
+		upsertAction({ action_id: 'act-live', kind: 'background', status: 'running' });
+		const store = get(actionStore) as Record<string, Record<string, unknown>>;
+		expect(store['act-live']?.status).toBe('running');
+		expect(Object.keys(store).length).toBeLessThanOrEqual(64);
+	});
+
+	it('removeAction drops the row', () => {
+		upsertAction({ action_id: 'act-3', status: 'running' });
+		removeAction('act-3');
+		expect(get(actionStore)['act-3']).toBeUndefined();
+	});
+});
 
 describe('addNotification', () => {
 	beforeEach(() => {
@@ -136,7 +190,7 @@ describe('session message store', () => {
 
 	it('clearSessionMessages removes the session and its seq tracking', () => {
 		setSessionMessages('t1', [{ id: '1' }]);
-		seqLastSeen('t1-s1', 1);
+		seqLastSeen('t1-s1', 1, 't1');
 		clearSessionMessages('t1');
 		expect(storeMap().t1).toBeUndefined();
 		expect(seqLastSeen('t1-s1', 1)).toBe(false);
@@ -271,10 +325,10 @@ describe('seqLastSeen / pruneSeq / clearSeqMap', () => {
 	});
 
 	it('accepts a first sequence and rejects replays', () => {
-		expect(seqLastSeen('t-s1', 1)).toBe(false);
-		expect(seqLastSeen('t-s1', 1)).toBe(true);
-		expect(seqLastSeen('t-s1', 2)).toBe(false);
-		expect(seqLastSeen('t-s1', 2)).toBe(true);
+		expect(seqLastSeen('t-s1', 1, 't')).toBe(false);
+		expect(seqLastSeen('t-s1', 1, 't')).toBe(true);
+		expect(seqLastSeen('t-s1', 2, 't')).toBe(false);
+		expect(seqLastSeen('t-s1', 2, 't')).toBe(true);
 	});
 
 	it('treats a null sequence as not a replay', () => {
@@ -282,15 +336,15 @@ describe('seqLastSeen / pruneSeq / clearSeqMap', () => {
 	});
 
 	it('pruneSeq forgets the step', () => {
-		seqLastSeen('t-s1', 3);
-		expect(seqLastSeen('t-s1', 3)).toBe(true);
+		seqLastSeen('t-s1', 3, 't');
+		expect(seqLastSeen('t-s1', 3, 't')).toBe(true);
 		pruneSeq('t-s1');
-		expect(seqLastSeen('t-s1', 3)).toBe(false);
+		expect(seqLastSeen('t-s1', 3, 't')).toBe(false);
 	});
 
-	it('clearSeqMap only removes keys containing the session id', () => {
-		seqLastSeen('t-s1', 1);
-		seqLastSeen('aaa-s1', 1);
+	it('clearSeqMap removes only the target session sequences', () => {
+		seqLastSeen('t-s1', 1, 't');
+		seqLastSeen('aaa-s1', 1, 'aaa');
 		clearSeqMap('t');
 		expect(seqLastSeen('t-s1', 1)).toBe(false);
 		expect(seqLastSeen('aaa-s1', 1)).toBe(true);
@@ -378,9 +432,9 @@ describe('updateModelState', () => {
 	});
 
 	it('stalled persists until a later state supersedes it', () => {
-		// The stall indicator must NOT auto-revert: the provider may stay
-		// silent for the whole idle-timeout window, and only the next chunk
-		// (streaming) or a terminal session event (ready/error) clears it.
+		// Stall is a factual waiting state and must NOT auto-revert: the
+		// provider may stay silent for the whole idle-timeout window; only
+		// the next chunk (streaming) or a terminal session event clears it.
 		updateModelState('stalled');
 		vi.advanceTimersByTime(60000);
 		expect(get(modelStateStore)).toBe('stalled');

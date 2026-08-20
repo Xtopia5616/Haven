@@ -10,7 +10,7 @@ describe('ACTION_STATUSES', () => {
 describe('statusColor', () => {
 	it('maps every status to its hex color', () => {
 		expect(statusColor('pending')).toBe('#666');
-		expect(statusColor('running')).toBe('#44cc44');
+		expect(statusColor('running')).toBe('var(--md-sys-color-success)');
 		expect(statusColor('paused')).toBe('#ccaa44');
 		expect(statusColor('completed')).toBe('#4488ff');
 		expect(statusColor('failed')).toBe('#ff4444');

@@ -234,10 +234,11 @@ pub struct BackgroundActionCompletion {
 
 /// Optional sink for background lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
-/// - `action:created`  — a action was spawned `{ action_id, started_at }`
+/// - `action:created`  — a action was spawned
+///   `{ action_id, status: "running", kind: "background", started_at }`
 /// - `action:updated`  — the action was bound to a session `{ action_id, session_id }`
 /// - `action:output`   — live output preview while the action runs
-///   `{ action_id, output }` (bounded tail, emitted periodically)
+///   `{ action_id, status: "running", output }` (bounded tail, emitted periodically)
 /// - `action:finished` — the action reached a terminal state (full status
 ///   JSON, which already carries `action_id`, `status`, and the output/error
 ///   payload)
@@ -677,6 +678,8 @@ impl BackgroundActions {
             "action:created",
             json!({
                 "action_id": action_id,
+                "kind": "background",
+                "status": "running",
                 "started_at": started_at,
             }),
         );
@@ -765,7 +768,11 @@ impl BackgroundActions {
                     drop(t);
                     emit_me.emit(
                         "action:output",
-                        json!({ "action_id": emit_action_id, "output": output }),
+                        json!({
+                            "action_id": emit_action_id,
+                            "status": "running",
+                            "output": output,
+                        }),
                     );
                 }
             }
@@ -2125,6 +2132,13 @@ mod tests {
         assert!(names.contains(&"action:created"), "got: {names:?}");
         assert!(names.contains(&"action:updated"), "got: {names:?}");
         assert!(names.contains(&"action:finished"), "got: {names:?}");
+        let created = evs
+            .iter()
+            .find(|(n, _)| n == "action:created")
+            .expect("created event");
+        assert_eq!(created.1["action_id"], id);
+        assert_eq!(created.1["status"], "running");
+        assert_eq!(created.1["kind"], "background");
         let term = evs
             .iter()
             .find(|(n, _)| n == "action:finished")

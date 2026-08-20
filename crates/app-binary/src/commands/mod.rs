@@ -9,11 +9,11 @@
 //! to its definition module.
 
 pub mod action;
+pub mod external;
 pub mod history;
 pub mod log;
 pub mod mcp;
 pub mod memory;
-pub mod messaging;
 pub mod model;
 pub mod recording;
 pub mod session;

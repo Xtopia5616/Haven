@@ -8,7 +8,7 @@ export const ACTION_STATUSES = ['pending', 'running', 'paused', 'completed', 'fa
 
 const COLOR_MAP: Record<string, string> = {
 	pending: '#666',
-	running: '#44cc44',
+	running: 'var(--md-sys-color-success)',
 	paused: '#ccaa44',
 	completed: '#4488ff',
 	failed: '#ff4444',

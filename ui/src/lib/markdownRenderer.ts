@@ -1,4 +1,6 @@
 import logger from '$lib/logger.ts';
+import { EXT_REF_CLASS, EXT_REF_TITLE } from '$lib/externalRef.ts';
+import { pathifyPlugin } from '$lib/pathify.ts';
 import type MarkdownIt from 'markdown-it';
 
 // Module-level lazy singleton for the MarkdownIt renderer. Chat bubbles used
@@ -94,6 +96,33 @@ export function getMarkdownRenderer(): Promise<MarkdownIt> {
 			'<div class="md-table-wrap"><table>';
 		instance.renderer.rules.table_close = () => '</table></div>';
 
+		// Bare filesystem paths → `.ext-ref` anchors (same interaction as URLs).
+		pathifyPlugin(instance);
+
+		// All links (markdown, linkify, pathify) share copy / Ctrl+open behavior.
+		const defaultLinkOpen =
+			instance.renderer.rules.link_open ||
+			((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
+		instance.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+			const token = tokens[idx];
+			const href = token.attrGet('href') || '';
+			const isPath = token.attrGet('data-ext') === 'path';
+			if (!token.attrGet('data-target')) {
+				token.attrSet('data-target', href);
+			}
+			// Neutralize the live href so middle-click / auxclick / other
+			// browser activations cannot invoke OS URI handlers (ms-msdt:,
+			// search-ms:, …) and bypass open_external allowlisting. Copy /
+			// Ctrl+open read data-target instead.
+			token.attrSet('href', '#');
+			token.attrJoin('class', isPath ? `${EXT_REF_CLASS} ext-ref-path` : `${EXT_REF_CLASS} ext-ref-url`);
+			token.attrSet('title', EXT_REF_TITLE);
+			if (!isPath) {
+				token.attrSet('rel', 'noopener noreferrer');
+			}
+			return defaultLinkOpen(tokens, idx, options, env, self);
+		};
+
 		md = instance;
 		return instance;
 	})();
@@ -114,7 +143,9 @@ export function renderMarkdown(text: string, isStreaming = false) {
 	if (!md) return '';
 	streaming = isStreaming;
 	try {
-		return md.render(text);
+		// `havenStreaming` gates pathify (and keeps fence deferral in sync) so
+		// live previews skip path scanning; the final render linkifies paths.
+		return md.render(text, { havenStreaming: isStreaming });
 	} finally {
 		streaming = false;
 	}

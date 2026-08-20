@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use crate::adapters::{
     build_client, build_headers, health_check_request, normalize_web_search_call_item,
-    reasoning_text_from_thinking_blocks, requires_reasoning_echo, send_request,
+    reasoning_tail, reasoning_text_from_thinking_blocks, requires_reasoning_echo, send_request,
+    stream_header_timeout,
 };
-use crate::client::{LlmClient, http_status_to_error};
+use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -197,6 +198,16 @@ struct OpenAiStreamResponse {
     model: Option<String>,
 }
 
+/// True when `model` is a dedicated ASR id that speaks
+/// `/audio/transcriptions` (OpenAI `whisper-1` / `gpt-4o-transcribe*`, Groq
+/// `whisper-large-v3*`, local whisper.cpp aliases, …). Multimodal chat-audio
+/// models (e.g. `gpt-4o-audio-preview`) return false so the router can fall
+/// back to chat + `input_audio`.
+pub(crate) fn is_whisper_model(model: &str) -> bool {
+    let n = model.to_ascii_lowercase();
+    n.contains("whisper") || n.contains("transcribe")
+}
+
 /// OpenAI-compatible chat adapter: the common wire format spoken by OpenAI,
 /// Ollama, vLLM, DeepSeek, and most third-party gateways.
 pub struct OpenAiAdapter {
@@ -226,9 +237,20 @@ impl OpenAiAdapter {
     /// carries tool-call history (DeepSeek: `reasoning_content`). DeepSeek
     /// validates presence, not content, so a tool-call turn on which the
     /// model skipped thinking needs an empty `reasoning_content` injected.
+    ///
+    /// Cap for the per-turn reasoning echo. Full reasoning (10k+ chars per
+    /// turn is routine) balloons request bodies and providers stall or
+    /// truncate mid-inference (same failure mode documented in the Responses
+    /// adapter); keeping the TAIL of each turn's reasoning preserves the
+    /// conclusions. The live value comes from
+    /// `context_limits.reasoning_echo_max_chars` (the endpoint's
+    /// `reasoning_echo_max_chars` override wins when set).
+    const MAX_REASONING_ECHO_CHARS: usize = 3000;
+
     fn convert_messages(
         msgs: Vec<CanonicalMessage>,
         requires_reasoning_echo: bool,
+        reasoning_echo_max_chars: usize,
     ) -> Vec<OpenAiMessage> {
         msgs.into_iter()
             .map(|m| {
@@ -294,6 +316,12 @@ impl OpenAiAdapter {
                     let t = reasoning_text_from_thinking_blocks(&m.thinking_blocks);
                     (!t.is_empty()).then_some(t)
                 });
+                // Cap the echo to its tail (the conclusions), mirroring the
+                // Responses adapter: unbounded reasoning (10k+ chars per turn)
+                // balloons the request body and stalls/truncates the provider's
+                // stream mid-inference. The provider validates presence, not
+                // length, so the trimmed tail round-trips fine.
+                let reasoning = reasoning.map(|r| reasoning_tail(r, reasoning_echo_max_chars));
                 // DeepSeek thinking mode validates PRESENCE of
                 // `reasoning_content`, not its content: a tool-call / web-search
                 // turn on which the model skipped thinking must still carry the
@@ -391,7 +419,13 @@ impl OpenAiAdapter {
         let has_tools = !tools.is_empty();
         OpenAiRequest {
             model: self.endpoint.model_name.clone(),
-            messages: Self::convert_messages(messages, self.requires_reasoning_echo()),
+            messages: Self::convert_messages(
+                messages,
+                self.requires_reasoning_echo(),
+                self.endpoint
+                    .reasoning_echo_max_chars
+                    .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+            ),
             max_tokens: Some(self.endpoint.max_tokens),
             // Reasoning models (o1/o3-family, reasoning_effort configured)
             // reject a non-default temperature; the Responses adapter skips
@@ -523,7 +557,7 @@ impl OpenAiAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req).await?;
+        let resp = send_request(req, None).await?;
 
         let txt = resp
             .text()
@@ -570,28 +604,25 @@ impl OpenAiAdapter {
             .headers(self.build_headers())
             .json(&body);
         // For streaming, only apply an HTTP-level timeout when explicitly configured.
-        // When timeout_streaming_secs is None, no HTTP timeout is set — the router-level
-        // max_total_duration_secs provides overall protection.
+        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
+        // response-header wait (a provider that accepts the connection but never
+        // responds would otherwise stall silently until the router-level
+        // max_total_duration_secs) while leaving the body stream to the router's
+        // per-chunk idle timeouts.
         if let Some(timeout) = self.endpoint.timeout_streaming_secs {
             tracing::trace!("chat_stream_inner: {}s streaming timeout", timeout);
             req = req.timeout(Duration::from_secs(timeout));
         }
-        let resp = req.send().await.map_err(|e| {
+        let resp = send_request(
+            req,
+            stream_header_timeout(self.endpoint.timeout_streaming_secs),
+        )
+        .await
+        .map_err(|e| {
             tracing::debug!("chat_stream_inner: send() error: {:?}", e);
-            LlmError::from(e)
+            e
         })?;
         tracing::debug!("chat_stream_inner response status: {}", resp.status());
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // §2.3: extract Retry-After header before consuming body
-            let retry_after = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok().map(Duration::from_secs));
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(http_status_to_error(status, &txt, retry_after));
-        }
 
         use tokio::sync::mpsc;
 
@@ -889,6 +920,56 @@ impl LlmClient for OpenAiAdapter {
         self.chat_stream_inner(messages, tools).await
     }
 
+    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult, LlmError> {
+        // Native `/audio/transcriptions` only for Whisper-family models.
+        // Multimodal chat models (e.g. gpt-4o-audio-preview) return
+        // Unsupported so the router can fall back to chat + `input_audio`.
+        if !is_whisper_model(&self.endpoint.model_name) {
+            return Err(LlmError::UnsupportedCapability(format!(
+                "model '{}' is not a Whisper transcription model",
+                self.endpoint.model_name
+            )));
+        }
+        let form = reqwest::multipart::Form::new()
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(wav_data.to_vec())
+                    .file_name("audio.wav")
+                    .mime_str("audio/wav")
+                    .map_err(|e| LlmError::RequestFailed(e.to_string()))?,
+            )
+            .text("model", self.endpoint.model_name.clone())
+            .text("response_format", "json");
+
+        let url = format!(
+            "{}/audio/transcriptions",
+            self.endpoint.base_url.trim_end_matches('/')
+        );
+        tracing::debug!("POST {} (model: {})", url, self.endpoint.model_name);
+        let mut req = self
+            .client
+            .post(&url)
+            .headers(self.build_headers())
+            .multipart(form);
+        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        let resp = send_request(req, None).await?;
+        let txt = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let text = json["text"]
+            .as_str()
+            .ok_or_else(|| LlmError::InvalidResponse("Whisper response missing 'text'".into()))?
+            .trim()
+            .to_string();
+        Ok(SttResult {
+            text,
+            confidence: None,
+        })
+    }
+
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
         if input.is_empty() {
             return Ok(Embedding {
@@ -918,7 +999,7 @@ impl LlmClient for OpenAiAdapter {
             .json(&body);
         // §2.9: per-request timeout for non-streaming
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req).await?;
+        let resp = send_request(req, None).await?;
 
         let txt = resp
             .text()
@@ -1147,6 +1228,65 @@ mod tests {
     }
 
     #[test]
+    fn convert_messages_truncates_oversized_reasoning_to_tail() {
+        // Unbounded reasoning echo (10k+ chars per turn) balloons the request
+        // body and stalls/truncates the provider's stream mid-inference (the
+        // same failure mode the Responses adapter documents). The echo must
+        // keep the TAIL of the reasoning (the conclusions), bounded by the
+        // cap — and the cap must come from the endpoint's
+        // `reasoning_echo_max_chars` override.
+        let long = format!(
+            "{}END-MARKER",
+            "thinking step. ".repeat(OpenAiAdapter::MAX_REASONING_ECHO_CHARS + 500)
+        );
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("ok")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: Some(long.clone()),
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }];
+        let ep = ModelEndpoint::default();
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(msgs, Vec::new(), false);
+        let echoed = body.messages[0].reasoning_content.as_deref().unwrap();
+        assert_eq!(
+            echoed.chars().count(),
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS
+        );
+        assert!(
+            echoed.ends_with("END-MARKER"),
+            "the tail (conclusions) must be preserved, got: ...{}",
+            &echoed[echoed.len().saturating_sub(40)..]
+        );
+        assert!(
+            !echoed.starts_with("thinking step. "),
+            "the head must be trimmed"
+        );
+        // A custom per-endpoint cap wins over the default.
+        let msgs = vec![CanonicalMessage {
+            role: CanonicalRole::Assistant,
+            content: vec![ContentPart::text("ok")],
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning: Some(long),
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }];
+        let ep = ModelEndpoint {
+            reasoning_echo_max_chars: Some(64),
+            ..Default::default()
+        };
+        let client = OpenAiAdapter::new(ep);
+        let body = client.build_request_body(msgs, Vec::new(), false);
+        let echoed = body.messages[0].reasoning_content.as_deref().unwrap();
+        assert_eq!(echoed.chars().count(), 64);
+        assert!(echoed.ends_with("END-MARKER"));
+    }
+
+    #[test]
     fn convert_messages_supplies_missing_web_search_call_action() {
         // The in-progress skeleton captured from the stream lacks `action`;
         // echoing it back as-is 400s on DeepSeek, so the field is filled.
@@ -1188,6 +1328,17 @@ mod tests {
         let client = OpenAiAdapter::new(ep);
         let headers = client.build_headers();
         assert!(headers.contains_key("x-api-key"));
+        // Empty prefix must send the raw key — never `" sk-test"`.
+        assert_eq!(headers.get("x-api-key").unwrap().to_str().unwrap(), "sk-test");
+    }
+
+    #[test]
+    fn is_whisper_model_covers_transcribe_ids() {
+        assert!(is_whisper_model("whisper-1"));
+        assert!(is_whisper_model("gpt-4o-transcribe"));
+        assert!(is_whisper_model("gpt-4o-mini-transcribe"));
+        assert!(!is_whisper_model("gpt-4o-audio-preview"));
+        assert!(!is_whisper_model("gpt-4o"));
     }
 
     #[test]
@@ -1378,7 +1529,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(openai_msgs.len(), 1);
         let content = openai_msgs[0].content.as_ref().unwrap();
         assert!(content.is_array());
@@ -1402,7 +1557,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(openai_msgs.len(), 1);
         assert!(openai_msgs[0].content.is_none());
     }
@@ -1418,7 +1577,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(openai_msgs[0].role, "system");
     }
 
@@ -1433,7 +1596,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(openai_msgs[0].role, "assistant");
     }
 
@@ -1448,7 +1615,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         assert_eq!(openai_msgs[0].role, "tool");
         assert_eq!(openai_msgs[0].tool_call_id.as_deref(), Some("call_1"));
     }
@@ -1464,7 +1635,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         let content = openai_msgs[0].content.as_ref().unwrap();
         assert!(content.is_string());
         assert_eq!(content.as_str().unwrap(), "hello");
@@ -1485,7 +1660,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         let content = openai_msgs[0].content.as_ref().unwrap();
         let arr = content.as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -1509,7 +1688,11 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
         };
-        let openai_msgs = OpenAiAdapter::convert_messages(vec![msg], false);
+        let openai_msgs = OpenAiAdapter::convert_messages(
+            vec![msg],
+            false,
+            OpenAiAdapter::MAX_REASONING_ECHO_CHARS,
+        );
         let content = openai_msgs[0].content.as_ref().unwrap();
         let arr = content.as_array().unwrap();
         assert_eq!(arr.len(), 1);
