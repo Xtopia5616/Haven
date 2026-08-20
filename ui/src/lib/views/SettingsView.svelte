@@ -745,6 +745,9 @@
 				}
 			}
 		} catch (e) {
+			// Save never emitted llm:config_changed — clear the skip so the
+			// next real toolbar/config event is not swallowed.
+			skipNextDefaultModelSync = false;
 			addNotification(`保存设置失败: ${e}`, 'error', 5000);
 		}
 	}

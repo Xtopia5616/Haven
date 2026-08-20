@@ -340,19 +340,46 @@ impl AppState {
             // latency, but window creation should not wait for it either.
             pipeline.prewarm().await;
 
-            tools.discover_all(&mcp_servers, &mcp_discovery).await;
-            if let Err(e) = tools
-                .skills_engine
-                .set_config(skills_cfg_root, skills_cfg_enabled)
-                .await
-            {
-                tracing::warn!("skills engine initial scan failed: {e}");
-            }
-            tools.rebuild_catalog().await;
+            // MCP discover + skills scan run in a task so a hung server cannot
+            // block session resume forever. `load_mcp` / restore already wait
+            // briefly for tools when the catalog is still warming.
+            let tools_bg = tools.clone();
+            let mut catalog = tokio::spawn(async move {
+                tools_bg.discover_all(&mcp_servers, &mcp_discovery).await;
+                if let Err(e) = tools_bg
+                    .skills_engine
+                    .set_config(skills_cfg_root, skills_cfg_enabled)
+                    .await
+                {
+                    tracing::warn!("skills engine initial scan failed: {e}");
+                }
+                tools_bg.rebuild_catalog().await;
+            });
 
-            // Resume pending sessions only after MCP/skills are loaded so
-            // restore_per_task_tools / load_mcp see a live catalog.
+            // Head-start window: prefer a live catalog for restore, then start
+            // the dispatcher regardless so pending sessions are not stuck idle.
+            let catalog_finished = tokio::select! {
+                r = &mut catalog => {
+                    if let Err(e) = r {
+                        tracing::warn!("bootstrap catalog task panicked: {e}");
+                    }
+                    true
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                    tracing::warn!(
+                        "MCP/skills bootstrap timed out after 10s; starting session dispatcher anyway"
+                    );
+                    false
+                }
+            };
+
             agent.start();
+
+            if !catalog_finished
+                && let Err(e) = catalog.await
+            {
+                tracing::warn!("bootstrap catalog task panicked: {e}");
+            }
 
             bootstrap_ready.store(true, Ordering::Release);
             emit(

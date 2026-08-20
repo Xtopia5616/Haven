@@ -277,7 +277,11 @@
 	 * @param {string} provider
 	 */
 	function sttBasePlaceholder(provider) {
-		return isGeminiStt(provider) ? 'https://generativelanguage.googleapis.com/v1beta' : 'https://api.openai.com/v1';
+		if (provider === 'deepgram') return 'https://api.deepgram.com';
+		if (provider === 'assemblyai') return 'https://api.assemblyai.com';
+		if (provider === 'groq') return 'https://api.groq.com/openai/v1';
+		if (isGeminiStt(provider)) return 'https://generativelanguage.googleapis.com/v1beta';
+		return 'https://api.openai.com/v1';
 	}
 
 	/**
@@ -285,9 +289,7 @@
 	 */
 	function sttFetchBaseUrl(provider) {
 		if (stt.base_url.trim()) return stt.base_url.trim();
-		if (provider === 'groq') return 'https://api.groq.com/openai/v1';
-		if (provider === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta';
-		return 'https://api.openai.com/v1';
+		return sttBasePlaceholder(provider);
 	}
 
 	/** @type {any[]} */

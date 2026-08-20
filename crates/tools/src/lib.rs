@@ -208,7 +208,7 @@ impl ToolsManager {
     /// Apply cold-start wiring in one pass and rebuild the catalog once.
     /// Avoids the N sequential rebuilds that used to block window creation
     /// (`set_tool_settings` + `set_default_shell` + `set_context_limits` +
-    /// `set_router` + `set_audio_pipeline` + `set_self_context`).
+    /// `set_router` + audio_pipeline + `set_self_context`).
     pub async fn wire_startup(
         &self,
         tool_settings: HashMap<String, ToolConfig>,
@@ -292,14 +292,6 @@ impl ToolsManager {
     /// so the running agent picks up the new value on its next step.
     pub async fn set_default_shell(&self, shell: ShellChoice) {
         *self.default_shell.write().await = shell;
-        self.rebuild_catalog().await;
-    }
-
-    /// Wire the shared input pipeline into the `audio` tool so its `record`
-    /// operation captures + transcribes through the same engine/STT as user
-    /// voice input. `None` (headless) makes recording unavailable.
-    pub async fn set_audio_pipeline(&self, pipeline: Option<Arc<haven_input::InputPipeline>>) {
-        *self.audio_pipeline.write().await = pipeline;
         self.rebuild_catalog().await;
     }
 

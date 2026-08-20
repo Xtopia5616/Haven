@@ -35,6 +35,21 @@ impl DeepgramAdapter {
         }
     }
 
+    /// Percent-encode a query component (RFC 3986 unreserved). Avoids raw
+    /// interpolation that would let `&` / `=` inject extra query params.
+    fn encode_query_component(value: &str) -> String {
+        let mut out = String::with_capacity(value.len());
+        for b in value.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+
     fn auth_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         let key = self.endpoint.api_key.trim();
@@ -90,7 +105,8 @@ impl LlmClient for DeepgramAdapter {
         } else {
             self.endpoint.base_url.trim_end_matches('/').to_string()
         };
-        let url = format!("{base}/v1/listen?model={}&smart_format=true", self.model());
+        let model = Self::encode_query_component(self.model());
+        let url = format!("{base}/v1/listen?model={model}&smart_format=true");
         tracing::debug!("POST {url}");
         let mut req = self
             .client
@@ -154,6 +170,16 @@ mod tests {
             headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
             "Token xyz"
         );
+    }
+
+    #[test]
+    fn encode_query_component_neutralizes_param_injection() {
+        let encoded = DeepgramAdapter::encode_query_component("nova-3&callback=https://evil.test");
+        assert!(!encoded.contains('&'));
+        assert!(!encoded.contains('='));
+        assert!(encoded.contains("%26"));
+        assert!(encoded.contains("%3D"));
+        assert_eq!(DeepgramAdapter::encode_query_component("nova-3"), "nova-3");
     }
 
     #[test]

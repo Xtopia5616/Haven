@@ -515,6 +515,15 @@ impl SessionExecutor {
                         // The ReAct loop errored out: kill any background actions
                         // the session spawned so their children cannot leak.
                         exec_inner.cancel_session_actions(&session_id).await;
+                        // Panic/abort can leave Action-emit `pending` step rows
+                        // with no observation — fail them out so review does
+                        // not rebuild blank tool badges.
+                        exec_inner
+                            .fail_pending_action_steps(
+                                &session_id,
+                                &format!("Session ended before tool finished: {reason}"),
+                            )
+                            .await;
                         // The ReAct loop never emitted a terminal event for
                         // this failure (panic bypasses its error path), so
                         // surface it through the wired callback — otherwise
@@ -1282,6 +1291,20 @@ impl SessionExecutor {
             .scheduled_actions
             .cancel_for_session(session_id)
             .await;
+    }
+
+    /// Fail every still-`pending` action step for a session (handler panic /
+    /// abort after [`Self::begin_action_step`]).
+    pub async fn fail_pending_action_steps(&self, session_id: &str, observation: &str) {
+        let session_id = session_id.to_string();
+        let observation = observation.to_string();
+        if let Err(e) = self
+            .db
+            .run_blocking(move |db| db.fail_pending_action_steps(&session_id, &observation))
+            .await
+        {
+            tracing::warn!("fail_pending_action_steps failed: {e}");
+        }
     }
 
     /// Persist a pending `session_steps` row under the pre-minted `step-*` id

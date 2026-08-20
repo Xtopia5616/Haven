@@ -187,6 +187,24 @@ impl Database {
         Ok(())
     }
 
+    /// Fail every still-`pending` action step for a session (handler panic /
+    /// abort after `begin_action_step`). Without this, review rebuilds show
+    /// blank tool badges that never completed.
+    pub fn fail_pending_action_steps(
+        &self,
+        session_id: &str,
+        observation: &str,
+    ) -> anyhow::Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        let n = conn.execute(
+            "UPDATE session_steps SET status = 'failed', observation = ?1, completed_at = ?2 \
+             WHERE session_id = ?3 AND status = 'pending'",
+            rusqlite::params![observation, now, session_id],
+        )?;
+        Ok(n)
+    }
+
     pub fn get_session_steps(&self, session_id: &str) -> anyhow::Result<Vec<SessionStep>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -346,6 +364,32 @@ mod tests {
         assert_eq!(steps[0].id, "step-ensure-1");
         assert_eq!(steps[0].status, "pending");
         assert_eq!(steps[0].confirmed, Some(true));
+    }
+
+    #[test]
+    fn fail_pending_action_steps_only_touches_pending() {
+        let db = test_db();
+        seed_session(&db, "ses-1");
+        db.ensure_action_step("ses-1", 0, "shell", "{}", false, false, None, "step-p1")
+            .unwrap();
+        let done = db
+            .create_action_step("ses-1", 1, "shell", "{}", false, false, None, None)
+            .unwrap();
+        db.complete_action_step(&done.id, "ok", true).unwrap();
+        let n = db
+            .fail_pending_action_steps("ses-1", "Session ended before tool finished")
+            .unwrap();
+        assert_eq!(n, 1);
+        let steps = db.get_session_steps("ses-1").unwrap();
+        let pending = steps.iter().find(|s| s.id == "step-p1").unwrap();
+        assert_eq!(pending.status, "failed");
+        assert_eq!(
+            pending.observation.as_deref(),
+            Some("Session ended before tool finished")
+        );
+        let completed = steps.iter().find(|s| s.id == done.id).unwrap();
+        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.observation.as_deref(), Some("ok"));
     }
 
     #[test]

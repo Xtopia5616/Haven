@@ -31,23 +31,45 @@
 				}
 				document.documentElement.setAttribute('data-accent', accent || 'blue');
 				document.documentElement.style.setProperty('--md-accent-hex', hex);
-				// Match tauri.conf backgroundColor so the boot shell and the
-				// pre-HTML webview rectangle share one surface color.
+				// Match app.css surface tokens so the boot shell and hydrated
+				// chrome share one background (also matches tauri.conf dark).
 				document.documentElement.style.background =
-					theme === 'light' ? '#f7f6fa' : '#121318';
+					theme === 'light' ? '#faf8ff' : '#121318';
 			})();
 		</script>
 		<style>
-			/* First-paint boot shell: no external CSS, paints before Svelte hydrates. */
+			/*
+			 * First-paint boot shell — mirrors +layout titlebar tokens from
+			 * app.css / Logo.svelte / StatusDot so the swap on mount is quiet.
+			 * No external CSS; must paint before Svelte hydrates.
+			 */
+			:root, [data-theme='light'] {
+				--boot-bg: #faf8ff;
+				--boot-on: #1a1b22;
+				--boot-on-variant: #46464f;
+				--boot-titlebar: #eeecf3;
+				--boot-chip: #e8e7ee;
+				--boot-primary: var(--md-accent-hex, #2C5090);
+				--boot-primary-container: color-mix(in srgb, var(--md-accent-hex, #2C5090) 20%, #ffffff);
+				--boot-on-primary-container: color-mix(in srgb, var(--md-accent-hex, #2C5090) 80%, #000000);
+				--boot-outline-dot: #777680;
+			}
+			[data-theme='dark'] {
+				--boot-bg: #121318;
+				--boot-on: #e3e2e9;
+				--boot-on-variant: #c7c5d0;
+				--boot-titlebar: #1e1f26;
+				--boot-chip: #292a31;
+				--boot-primary: color-mix(in srgb, var(--md-accent-hex, #2C5090) 55%, #ffffff);
+				--boot-primary-container: color-mix(in srgb, var(--md-accent-hex, #2C5090) 22%, #1e1f26);
+				--boot-on-primary-container: color-mix(in srgb, var(--md-accent-hex, #2C5090) 55%, #ffffff);
+				--boot-outline-dot: #90909a;
+			}
 			html, body {
 				margin: 0;
 				height: 100%;
-				background: #121318;
-				color: #e3e2e6;
-			}
-			html[data-theme="light"], html[data-theme="light"] body {
-				background: #f7f6fa;
-				color: #1b1b1f;
+				background: var(--boot-bg);
+				color: var(--boot-on);
 			}
 			#haven-boot {
 				position: fixed;
@@ -55,76 +77,102 @@
 				z-index: 9999;
 				display: flex;
 				flex-direction: column;
-				background: inherit;
-				color: inherit;
-				font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+				background: var(--boot-bg);
+				color: var(--boot-on);
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+					'Segoe UI Variable', 'Microsoft YaHei UI', 'Microsoft YaHei',
+					Roboto, 'Helvetica Neue', Arial, sans-serif;
 				-webkit-font-smoothing: antialiased;
 			}
 			#haven-boot .boot-bar {
-				height: 48px;
+				height: 52px;
 				display: flex;
 				align-items: center;
 				justify-content: space-between;
-				padding: 0 14px;
-				border-bottom: 1px solid rgba(127, 127, 127, 0.28);
-				-webkit-app-region: drag;
+				padding: 0 16px;
+				background: var(--boot-titlebar);
 				flex-shrink: 0;
+				-webkit-app-region: drag;
 			}
 			#haven-boot .boot-brand {
-				font-weight: 600;
-				letter-spacing: 0.02em;
-				font-size: 15px;
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+				line-height: 1;
+			}
+			#haven-boot .boot-glyph {
+				display: inline-flex;
+				width: 22px;
+				height: 22px;
+			}
+			#haven-boot .boot-wordmark {
+				font-family: 'Segoe UI Display', -apple-system, BlinkMacSystemFont, sans-serif;
+				font-size: 16px;
+				font-weight: 700;
+				letter-spacing: 0.4px;
+				color: var(--boot-primary);
 			}
 			#haven-boot .boot-chip {
 				display: inline-flex;
 				align-items: center;
-				gap: 6px;
+				gap: 8px;
+				height: 32px;
+				padding: 0 12px;
+				border-radius: 8px;
+				background: var(--boot-chip);
+				color: var(--boot-on-variant);
 				font-size: 12px;
-				opacity: 0.75;
+				font-weight: 600;
+				border: none;
 				-webkit-app-region: no-drag;
+			}
+			#haven-boot .boot-dot {
+				display: inline-block;
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				background: var(--boot-outline-dot);
+				flex-shrink: 0;
+				animation: haven-boot-pulse 1.2s cubic-bezier(0.2, 0, 0, 1) infinite;
 			}
 			#haven-boot .boot-main {
 				flex: 1;
-				display: flex;
-				flex-direction: column;
-				align-items: center;
-				justify-content: center;
-				gap: 14px;
-				padding: 24px;
+				background: var(--boot-bg);
 			}
-			#haven-boot .boot-spinner {
-				width: 28px;
-				height: 28px;
-				border-radius: 50%;
-				border: 2.5px solid rgba(127, 127, 127, 0.28);
-				border-top-color: var(--md-accent-hex, #2C5090);
-				animation: haven-boot-spin 0.75s linear infinite;
-			}
-			#haven-boot .boot-msg {
-				font-size: 13px;
-				opacity: 0.7;
-			}
-			@keyframes haven-boot-spin {
-				to { transform: rotate(360deg); }
+			@keyframes haven-boot-pulse {
+				0%, 100% { opacity: 1; transform: scale(1); }
+				50% { opacity: 0.35; transform: scale(0.85); }
 			}
 		</style>
 		%sveltekit.head%
 	</head>
 	<body>
-		<!-- Instant shell: visible as soon as HTML parses, before JS hydrates.
-		     Removed by +layout.svelte onMount once the real chrome is live. -->
+		<!-- Instant chrome: mirrors the real titlebar so hydration swap is quiet.
+		     Removed by +layout.svelte onMount once the live layout mounts. -->
 		<div id="haven-boot" role="status" aria-live="polite" aria-busy="true">
 			<div class="boot-bar">
-				<span class="boot-brand">Haven</span>
+				<span class="boot-brand">
+					<span class="boot-glyph" aria-hidden="true">
+						<svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+							<path
+								d="M4 6.5C4 5.12 5.12 4 6.5 4h11C18.88 4 20 5.12 20 6.5v7c0 1.38-1.12 2.5-2.5 2.5H11l-4 3.5V16H6.5C5.12 16 4 14.88 4 13.5v-7Z"
+								fill="var(--boot-primary-container)"
+							/>
+							<g stroke="var(--boot-on-primary-container)" stroke-width="2" stroke-linecap="round">
+								<line x1="9" y1="10" x2="9" y2="11" />
+								<line x1="12" y1="9" x2="12" y2="12" />
+								<line x1="15" y1="10" x2="15" y2="11" />
+							</g>
+						</svg>
+					</span>
+					<span class="boot-wordmark">Haven</span>
+				</span>
 				<span class="boot-chip">
-					<span class="boot-spinner" style="width:12px;height:12px;border-width:2px;" aria-hidden="true"></span>
+					<span class="boot-dot" aria-hidden="true"></span>
 					加载中
 				</span>
 			</div>
-			<div class="boot-main">
-				<div class="boot-spinner" aria-hidden="true"></div>
-				<div class="boot-msg">正在启动…</div>
-			</div>
+			<div class="boot-main"></div>
 		</div>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
