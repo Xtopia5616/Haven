@@ -449,6 +449,24 @@ impl Database {
         }
     }
 
+    /// Bump every facts cache entry (subject views + `_facts_all`). Used by
+    /// bulk maintenance that may touch arbitrary subjects (P1-6).
+    pub fn cache_invalidate_all_facts(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            let keys: Vec<String> = cache
+                .keys()
+                .filter(|k| k.starts_with("_facts_"))
+                .cloned()
+                .collect();
+            for key in keys {
+                if let Some(qc) = cache.get_mut(&key) {
+                    qc.facts = None;
+                    qc.generation = qc.generation.wrapping_add(1);
+                }
+            }
+        }
+    }
+
     /// Cached copy of one memory domain's embedding list (`list_embeddings`).
     /// Keyed by entity_type so vector recall skips the full-table read + blob
     /// decode on every query; invalidated on any embedding write.

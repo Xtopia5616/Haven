@@ -356,7 +356,9 @@ impl OpenAiResponsesAdapter {
                     }
                 }
                 CanonicalRole::User => {
-                    let content = Self::content_to_parts(&m.content);
+                    let content = Self::content_to_parts(
+                        &crate::adapters::apply_wire_inject_prefix(m.source, m.content),
+                    );
                     if !content.is_empty() {
                         items.push(json!({"role": "user", "content": content}));
                     }
@@ -1178,6 +1180,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1188,6 +1191,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (items, instructions) = OpenAiResponsesAdapter::convert_input(
@@ -1218,6 +1222,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1228,6 +1233,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
@@ -1267,6 +1273,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1277,6 +1284,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
@@ -1334,6 +1342,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1344,6 +1353,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (with_echo, _) = OpenAiResponsesAdapter::convert_input(
@@ -1387,6 +1397,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1421,6 +1432,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1453,6 +1465,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1489,6 +1502,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             }],
             Vec::new(),
             true,
@@ -1610,6 +1624,7 @@ mod tests {
             })],
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1649,6 +1664,7 @@ mod tests {
             web_search_calls: vec![ws.clone()],
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,

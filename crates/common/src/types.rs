@@ -235,9 +235,11 @@ impl std::fmt::Display for CanonicalRole {
 }
 
 /// Origin of a user-role inject into the canonical transcript (Phase 6 / B3).
-/// Runtime queues already carry structured flags (`is_answer`, etc.); this
-/// enum is the single source of truth for the LLM-visible prefix string.
-/// Adapters ignore it — only content reaches the provider wire format.
+/// Runtime queues already carry structured flags (`is_answer`, etc.).
+/// Canonical content stores **raw** text + `source`; LLM adapters prepend
+/// `"{prefix}: "` at the wire boundary via [`Self::render_prefix`] (Phase 8
+/// wire-only). `ActionResult` is producer-labelled and must not get a second
+/// adapter prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InjectSource {
@@ -249,9 +251,7 @@ pub enum InjectSource {
 }
 
 impl InjectSource {
-    /// Prefix baked into canonical user text for the LLM (behavior freeze:
-    /// same strings as pre-B3). Wire-only rendering (prefix at adapter
-    /// boundary) is a follow-up; resume/dedup stay on `message_id`/`saved_at`.
+    /// Wire prefix rendered by LLM adapters. Same strings as pre-B3.
     pub fn render_prefix(self) -> &'static str {
         match self {
             Self::Steering => "Steering",
@@ -262,7 +262,7 @@ impl InjectSource {
         }
     }
 
-    /// Inject sources that bake `{prefix}: ` into canonical user text.
+    /// Inject sources that receive an adapter wire prefix.
     /// ActionResult is excluded: its body is producer-labelled
     /// (`[Background action result]…`) without the colon prefix.
     pub fn prefixed() -> &'static [InjectSource] {
@@ -274,8 +274,13 @@ impl InjectSource {
         ]
     }
 
-    /// Prefixes used when matching a raw DB user message against a prefixed
-    /// canonical user turn (rollback). Derived from [`Self::render_prefix`]
+    /// Whether adapters should prepend [`Self::render_prefix`].
+    pub fn needs_wire_prefix(self) -> bool {
+        Self::prefixed().contains(&self)
+    }
+
+    /// Prefixes used when matching a raw DB user message against a historically
+    /// prefixed display string (rollback). Derived from [`Self::render_prefix`]
     /// so the two cannot drift.
     pub fn match_prefixes() -> Vec<String> {
         Self::prefixed()
@@ -319,6 +324,11 @@ pub struct CanonicalMessage {
     /// adapters; optional so legacy snapshots deserialize cleanly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<InjectSource>,
+    /// Stable `msg-*` identity shared with `memory_episodes` for compaction
+    /// summary bubbles (L1). Adapters ignore this; optional for legacy
+    /// snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 impl CanonicalMessage {
@@ -332,6 +342,7 @@ impl CanonicalMessage {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 
@@ -345,6 +356,7 @@ impl CanonicalMessage {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 
@@ -376,6 +388,7 @@ impl CanonicalMessage {
             web_search_calls,
             thinking_blocks,
             source: None,
+            id: None,
         }
     }
 
@@ -389,6 +402,7 @@ impl CanonicalMessage {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 }
@@ -675,6 +689,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::System);
@@ -694,6 +709,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -713,6 +729,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
 
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -729,6 +746,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::Tool);
@@ -917,6 +935,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -940,6 +959,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

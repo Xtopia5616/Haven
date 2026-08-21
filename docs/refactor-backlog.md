@@ -1,0 +1,360 @@
+# Haven 重构 Backlog（Memory + ReAct）
+
+> 状态：`[待办]` / `[可选]` / `[完成归档]`  
+> 原则：**可大改、不向下兼容**（记忆与 ReAct 两边可一起重构；旧 dual-array snapshot / 远古 schema 可删库重建）。  
+> 更新日期：2026-08-21  
+> 取代：`docs/memory-architecture.md`、`docs/react-architecture-improvements.md`（已删除，内容并入本文）。
+
+---
+
+## 0. 范围与读法
+
+本文是 **剩余重构清单 + 必要现状锚点**，不是历史变更日记。
+
+| 段 | 内容 |
+|---|---|
+| §1 | 当前实现锚点（删旧文档后仍能定位代码） |
+| §2 | 已完成归档（不再当待办推进） |
+| §3 | **全部剩余项**（含原「明确不做」） |
+| §4 | 建议分期 |
+| §5 | 验证基线 |
+
+编号前缀：
+
+- `M-*` — 记忆 / Facts / Episodes / 协作
+- `R-*` — ReAct / session / transcript / hooks
+- `X-*` — 跨切面（原「不做」里跨两边的大爆炸项）
+
+---
+
+## 1. 当前实现锚点
+
+### 1.1 记忆通道（`haven.db`）
+
+| 通道 | 表 | 要点 |
+|---|---|---|
+| 长期事实 | `facts` | SPO 三元组；confidence / durability / tags / source / `source_ref` |
+| 情景 | `memory_episodes` | compaction 摘要 + `topics`/`entities`；与压缩气泡共享 `msg-*` |
+| 向量 | `memory_embeddings` | `fact`/`episode`；查询 **必** `WHERE model=?` |
+| 全文 | `facts_fts` / `episodes_fts` | FTS5 `trigram`；仅短 term（&lt;3）LIKE 回退 |
+| 游标 | `kv_store` | `fact_extraction.*` 等 |
+
+Schema：`haven_memory::schema::init_schema`，`PRAGMA user_version` + `MIGRATIONS`（以代码 `SCHEMA_VERSION` 为准）。缺必需列的远古库拒绝打开（删库重建）。
+
+**读写契约（已落地）**
+
+- **canonical** = 本会话 LLM 真源（含压缩摘要气泡）
+- **facts / episodes** = **跨会话**检索；同会话不进 Past excerpts（`exclude_session_id`）
+- **DB messages** = 持久化 + 抽取源；Additional context 不与首条 user 重复
+- 记忆注入：开场写入 `canonical[0]` 的 `--- MEMORY ---` fence；**resume 入环前** `patch_canonical_memory`；步间 `infer_session` **不**改 system
+- 抽取：ReAct 只 `enqueue_infer(session_id)` → outbox worker；维护走调度器（启动 + ~6h）
+- Prompt：`build_memory_sections` + 字符预算；`get_facts_limited` / `search_facts_any`
+
+入口：`crates/memory/`、`crates/agent/src/{inference,prompt,layer,compactor}.rs`、`crates/tools/src/builtin/facts.rs`
+
+### 1.2 ReAct（对照 PI：薄循环 + 厚 hook；产品能力留宿主）
+
+```
+User/STT → AgentLayer (ingress/resume)
+        → SessionExecutor (dispatcher/queues/status/tool_runner)
+        → ReActEngine::run_react_loop (react/: loop/stream/tools/inject/hooks/…)
+        → AgentEvent → UI
+```
+
+**已定权威（Phase 8）**
+
+- Snapshot 唯一权威：`ReActSnapshot.events: Vec<TranscriptRecord>`
+- Runtime `canonical` = 投影缓存；`BranchPoint` 只存 `event_cursor`
+- 队列：steering + follow_up（answer = follow_up + `reply_to`）；action_results 独立
+- Pause = 写 snapshot 后 **退出 run**；仅 dispatcher 再 claim
+- Ask / Confirm：显式 `awaiting_answer` / `PausedAwaitingConfirm`（DB 区分状态）
+- 工具 schema 权威 = 每步 API `tools[]`；prompt 短索引开场冻结
+- 步数：`max_steps` = per-run；可选 `session_max_steps` 截断绝对步号
+
+入口：`crates/agent/src/react/`、`session/`、`ingress.rs`、`resume.rs`、`canonical.rs`、`event.rs`  
+规范：`AGENTS.md`（ID / resume `saved_at` / schema）
+
+**保留、不塞回薄循环**：SQLite resume、confirm、多 session、ask、语音 pause、`PartialStore` fencing、`sanitize_canonical`、`saved_at` resume（禁止内容去重）。
+
+---
+
+## 2. 已完成归档（摘要）
+
+以下均已落地，**不要再当 backlog 开单**。细节以代码与 git 历史为准。
+
+### 2.1 Memory — 完成
+
+| 批次 | 项 |
+|---|---|
+| 早期六步 | 向量召回融合、迁移层、trigram、谓词规范化、抽取调度、移除规则兜底 |
+| P0 | CJK `memory_recall_terms`；抽取/维护解耦；embed backlog 有界 |
+| P1 | 域限定向量检索 + scan cap；FTS OR+LIMIT；维护 SQL 下沉；抽取 outbox；记忆段字符预算 |
+| P2 | `source_ref` 清孤儿 + `source_snippet`；episodes 结构化+FTS；谓词别名；facts 多 subject；embedding 按 model 过滤；FTS→LIKE 收紧 |
+| 协作 S1–S4 | 权威契约、同会话去重、resume MEMORY patch、与 G2 衔接 |
+| 协作 L1–L4 / L6 | 压缩共享 `msg-*`；source_ref 消费；outbox；预算/查询形态；episodes FTS |
+
+### 2.2 ReAct — 完成（Phase 0–8）
+
+| 期 | 主题 |
+|---|---|
+| 1 | `react/` 机械拆分；`execute_tool_batch` |
+| 2 | 暂停外置；`LoopExit`；单调度 |
+| 3 | `LoopHooks`；compact/infer/inbox 出 prologue |
+| 4 | steering+follow_up；ask 无转队列；`awaiting_answer`；DB `paused_awaiting_answer` |
+| 5 | `ResponsePolicy`；`StreamSession`；confirm→pause |
+| 6 / 6.1 | `TranscriptEvent`/`apply`；`InjectSource`；`IdentityMap`；CompactSummary / Action·Observation 入 apply |
+| 7 | `session/` 拆分；ingress/resume；统一 projector；exit/turn_end；队列契约；SnapshotStore；spans；sanitize 计数；G4–G7 等 |
+| 8 | events 权威；`ReActRound`；wire-only inject 前缀；BP cursor；BufferedEmitter 测试；`session_max_steps`；集成测迁出 `lib.rs`；sidecars |
+
+基线曾绿：`cargo test -p haven-agent --lib`（Phase 8：268）。
+
+---
+
+## 3. 全部剩余项
+
+> 含原文档「明确不做 / 延后 / 按需」。兼容性不再作为否决理由；产品与安全边界仍标注。
+
+### 3.1 Memory — 显式与残留
+
+#### M1. 抽取窗口含「用户确认」轮次 `[待办]` · 原 L5
+
+- **问题**：仅 user 消息时，「好的 / 就要这个」抽不到偏好。
+- **方向**：成对纳入「上一 assistant 问句 + 当前 user」；默认仍不全量 transcript。
+- **位置**：`inference.rs` 抽取窗口组装
+- **风险**：中（噪声 / 把 agent 话当事实）
+
+#### M2. 步间 / worker 回调刷新 MEMORY fence `[待办]` · 原 §3.2-1 残留
+
+- **问题**：步间 `infer_session` 不改 system；新 fact 须 pause→resume 才可见。
+- **方向**：outbox 写入成功后节流触发 `patch_canonical_memory`（或下一 `before_step`）；**禁止**无节流全量重建 tools/skills。
+- **位置**：`inference` worker 回调 / `hooks` / `prompt.rs`
+- **风险**：中（provider 对改写 system 敏感；与 snapshot 体积）
+
+#### M3. Compaction 摘要轻量抽 facts `[待办]` · 原 L1 未做支线
+
+- **问题**：压缩只写 episode，不从摘要抽事实。
+- **方向**：对 CompactSummary 跑受节流约束的轻量抽取；遵守现有游标。
+- **位置**：`compactor` / `inference`
+- **风险**：中
+
+#### M4. 抽取视野对齐 canonical（适度） `[待办]` · 原 §3.2-6
+
+- **问题**：抽取读 DB user，与模型当前视野解耦，缺 assistant/tool 轮次。
+- **方向**：在 M1 之上评估是否纳入少量 tool/assistant 上下文；仍避免整段 transcript。
+- **依赖**：M1
+- **风险**：中–高
+
+#### M5. 万级向量索引 `[可选]` · 原 P1-4 尾巴
+
+- **问题**：暴力 cosine + scan cap；上千×高维拖慢 prompt / recall。
+- **方向**：事实量达万级评估 `sqlite-vec` / HNSW；换模仍 fail-closed 按 model 过滤。
+- **位置**：`embeddings.rs`
+- **风险**：中（依赖 / 重建索引）
+
+#### M6. 谓词冲突 LLM 辅助合并 `[可选]` · 原 P2-11 方向支线
+
+- **问题**：别名已扩；自由谓词仍易分裂行。
+- **方向**：维护期可选 LLM 合并；保留 demote / 极性冲突。
+- **风险**：中（误合并）
+
+---
+
+### 3.2 ReAct — 残留与产品未决
+
+#### R1. `CancelToolsOnSteer` `[可选]` · 原 D3 产品支线
+
+- **问题**：steering 仅 step 边界注入；工具批默认跑完。
+- **方向**：可选策略：steer 时 cancel 在途工具；默认保持现状并文档诚实。
+- **位置**：`tool_batch` / `queues` / hooks
+- **风险**：中（UX / cancel 语义）
+
+#### R2. 清除调度路径遗留 `await_confirmation` `[待办]` · Phase 5 尾巴
+
+- **问题**：E3 主路径已 NeedConfirm→pause；调度路径仍可能 bounded 阻塞等待。
+- **方向**：全部走 pause/continue；删除工具 future 内长等待。
+- **位置**：`session/tool_runner.rs` 等
+- **风险**：中（并行批 + 对话框 UX）
+
+#### R3. Skill/MCP 加载后刷新 prompt 工具短索引 `[可选]` · 原 G7 反向选择
+
+- **问题**：API `tools[]` 已权威；prompt 短索引开场冻结，可能与热更新不一致。
+- **方向**：`load_skill` / `load_mcp` 经 hook **只** patch tools 短索引 section（不动 MEMORY）；或明确永久冻结并在 prompt 声明「以 API 为准」。
+- **风险**：低–中（token）
+
+#### R4. `run_budget` 写入 snapshot（可观测） `[可选]` · 原 J1 未落地字段
+
+- **问题**：`session_max_steps` 已有；per-run 再预算语义靠代码/文档，snapshot 无显式 `RunBudget` 字段。
+- **方向**：snapshot 记录本 run 的 `effective_max` / 起点，便于调试与 UI。
+- **风险**：低
+
+#### R5. 薄循环黄金单测加厚 `[可选]` · 原 I1 深化
+
+- **问题**：模块启发式单测已有；全栈集成仍重。
+- **方向**：`run_turn` + mock Stream/Tools/Hooks 覆盖 pause/ask/steer/cancel；集成只留少数黄金路径。
+- **风险**：低
+
+---
+
+### 3.3 原「明确不做」——现全部入册
+
+> 下列原为否决项。现允许大改时记为 **可选史诗**；实施前仍要过产品/安全门，但**不再以兼容性否决**。
+
+#### X1. 记忆大表 / 知识图谱 `[可选·史诗]` · 原 memory §3.5
+
+- 把 `facts` + `memory_episodes` + `messages` 合成统一记忆存储或图谱。
+- **代价**：schema、召回、UI、迁移全面重做。
+
+#### X2. Resume 全量重建 system prompt `[可选]` · 原 memory §3.5
+
+- 每次 resume 整份重建（含 tools/skills），替代 MEMORY fence patch。
+- **代价**：token / 延迟；与「tools 开场冻结」策略冲突，需一并重定 G7。
+
+#### X3. 恢复「按内容比对」resume 去重 `[可选·不推荐]` · 原 memory §3.5 / AGENTS.md
+
+- 用字符串内容代替 `saved_at` + `message_id`。
+- **说明**：与现行 ID/resume 规范直接冲突；仅当推翻 `AGENTS.md` 契约时考虑。**默认保持禁止。**
+
+#### X4. 压缩出窗 DB 历史灌回 canonical `[可选·不推荐]` · 原 memory §3.5
+
+- 「保险」把已压出窗口的整段 DB 历史再注入模型。
+- **说明**：应用 facts/episodes + 压缩摘要；灌回会撑爆上下文。
+
+#### X5. `source_ref` 矛盾引擎 `[可选]` · 原 memory §3.5 / L2
+
+- 在 snippet 展示与 upsert demote 之上，做自动矛盾检测/仲裁。
+- **依赖**：先有稳定引用与展示（已有）。
+
+#### X6. 记忆独立 UI Tab `[可选·产品]` · 原 memory §3.5 / 项目约束
+
+- 召回现为 prompt / 工具结果形态；独立 Tab 需改产品约束 `ui.agent_tool_display` 相关约定。
+
+#### X7. 并行启用「Steps so far」与 canonical `[可选·不推荐]` · 原 memory §3.2-3 / §3.5
+
+- 生产现 `history=&[]`；双通道会再次分裂权威。
+- **更优**：删死代码路径，或把 Steps 只做调试投影。
+
+#### X8. 重写为 TypeScript / 依赖 pi-agent-core `[可选·不推荐]` · 原 react §五
+
+- 技术栈与产品边界不同（Tauri/Rust、SQLite、语音）。对照价值已吸收进 Phase 1–8。
+
+#### X9. 去掉 SQLite snapshot / branch rollback `[可选·不推荐]` · 原 react §五
+
+- 桌面崩溃恢复刚需；去掉需另有等价持久化。
+
+#### X10. 去掉 confirm / 风险门闩 `[可选·不推荐]` · 原 react §五
+
+- 安全产品要求；可改交互（R2），不宜删除门闩本身。
+
+#### X11. 删除 empty / cut-off 重试 `[可选·不推荐]` · 原 react §五
+
+- 中文模型截断实测有用；已外置 `ResponsePolicy`。可调参，不宜为行数删除。
+
+#### X12. DB messages 与 events 一次大合并 `[可选·史诗]` · 原 react §五尾巴
+
+- Phase 8：snapshot = events；DB `messages`/`session_steps` 仍独立投影。
+- **方向**：单一 append-only 日志同时服务 LLM / UI / 抽取；或 DB 只存 events blob + 物化视图。
+- **风险**：高；与 ID 规范、前端气泡、抽取源强耦合。
+
+#### X13. BranchPoint 外置 blob / 完整 transcript 索引 `[可选]` · 原 F4 延后支线
+
+- Phase 8 已用 `event_cursor`（无 Vec 拷贝）。若 events 极大，可再外置冷存储 / 分页加载。
+
+---
+
+### 3.4 清单速查
+
+| ID | 状态 | 域 | 一句话 |
+|---|---|---|---|
+| M1 | 待办 | Memory | 抽取含确认轮次 |
+| M2 | 待办 | Memory | 步间/worker 刷新 MEMORY |
+| M3 | 待办 | Memory | 摘要抽 facts |
+| M4 | 待办 | Memory | 抽取视野对齐 canonical |
+| M5 | 可选 | Memory | 万级 sqlite-vec/HNSW |
+| M6 | 可选 | Memory | 维护期 LLM 谓词合并 |
+| R1 | 可选 | ReAct | CancelToolsOnSteer |
+| R2 | 待办 | ReAct | 去掉遗留 await_confirmation |
+| R3 | 可选 | ReAct | skill/mcp 后 patch 工具短索引 |
+| R4 | 可选 | ReAct | snapshot 显式 RunBudget |
+| R5 | 可选 | ReAct | 薄循环单测加厚 |
+| X1 | 可选·史诗 | 跨切 | 记忆大表/图谱 |
+| X2 | 可选 | Memory | resume 全量重建 system |
+| X3 | 不推荐 | Resume | 内容比对去重 |
+| X4 | 不推荐 | Context | 出窗历史灌回 canonical |
+| X5 | 可选 | Memory | source_ref 矛盾引擎 |
+| X6 | 可选·产品 | UI | 记忆独立 Tab |
+| X7 | 不推荐 | Prompt | Steps so far 双通道 |
+| X8 | 不推荐 | 栈 | TS / pi-agent-core |
+| X9 | 不推荐 | 持久化 | 去掉 snapshot/rollback |
+| X10 | 不推荐 | 安全 | 去掉 confirm |
+| X11 | 不推荐 | 策略 | 删除截断重试 |
+| X12 | 可选·史诗 | 跨切 | DB↔events 统一日志 |
+| X13 | 可选 | ReAct | BP/events 冷存储 |
+
+**计数**：待办 **5**（M1–M4、R2）· 可选 **11** · 不推荐 **7** · 史诗计入可选。
+
+---
+
+## 4. 建议分期（不顾兼容）
+
+```
+P0  契约清理
+    R2  清除 await_confirmation 遗留
+    X7  删除或调试-only「Steps so far」死路径（选更优，不做双通道）
+
+P1  记忆协作加深
+    M1  确认轮次抽取
+    M2  步间/worker MEMORY patch（节流）
+    M3  摘要 → facts
+
+P2  抽取与检索增强
+    M4  抽取视野（依赖 M1）
+    M5  万级向量（数据量触发）
+    M6  谓词 LLM 合并（误合并可接受时）
+
+P3  ReAct 产品旋钮
+    R1  CancelToolsOnSteer（产品拍板后）
+    R3  prompt 工具索引策略二选一落地
+    R4  RunBudget 入 snapshot
+    R5  薄循环单测加厚
+
+P4  史诗（单独立项）
+    X12 DB↔events 统一
+    X1  记忆图谱/大表
+    X5  矛盾引擎
+    X6  记忆 UI Tab
+    X13 events 冷存储
+    X2  仅当放弃 fence 策略时
+
+明确保持禁止（除非推翻 AGENTS.md / 安全模型）
+    X3 内容比对去重 · X4 出窗灌回 · X8 TS 重写
+    X9 去 snapshot · X10 去 confirm · X11 删截断重试
+```
+
+每期结束：`cargo test -p haven-memory -p haven-agent -p haven-tools -p haven-common`；涉及 schema 必 bump migration；UI 相关加 `/test-ui --run`。手测：ask / steering / resume / rollback / confirm / 中英记忆召回。
+
+---
+
+## 5. 验证基线
+
+- Rust：`cargo test -p haven-memory -p haven-agent -p haven-tools -p haven-common`
+- 静态：`cargo clippy -- -D warnings`；UI：`cd ui && npm run check`
+- 协作回归：同会话不进 Past excerpts；resume/pause 后记忆段可更新；中英会话各一条
+- ReAct 回归：pause 无残留 Running；ask/confirm 重启门闩仍在；并行工具无假 step 膨胀
+- 大改后：旧 `haven.db` / 旧 react_state **允许删库**；不必保留 dual-array / 无 fence 快照兼容，除非刻意留 `from_json` 只读迁移
+
+---
+
+## 6. 相关文档
+
+- `docs/architecture.md` — crate 职责与依赖
+- `AGENTS.md` — ID / resume / schema（改 X3/X12 前必须同步改本文与 AGENTS）
+- `docs/conventions.md` / `docs/naming.md`
+- 上游对照（只读）：https://github.com/earendil-works/pi/tree/main/packages/agent
+
+---
+
+## 变更记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-08-21 | 初版：合并并取代 `memory-architecture.md` 与 `react-architecture-improvements.md`；完成项归档；剩余项含原「明确不做」；原则改为可大改、不向下兼容 |

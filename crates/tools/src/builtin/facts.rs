@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
-use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
+use haven_memory::repositories::facts::{
+    is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -17,18 +19,21 @@ use crate::{Tool, ToolResult};
 /// Operations:
 /// - `search` (default) — full-text query over subject, predicate, object and
 ///   tags; use it when the summary may not contain the detail you need.
-/// - `list` — return the top stored facts.
+/// - `list` — return the top stored facts (optional `subject`; omit for recent
+///   facts across all subjects).
 /// - `remember` — store a fact the user explicitly asked Haven to remember
 ///   (`source="user"`, confidence 1.0, never decays, replaces the previous
 ///   value of single-valued attributes). Credential-like values are rejected.
+///   Optional `subject` (default `"user"`).
 /// - `forget` — delete a fact the user explicitly asked to remove. With only
 ///   `predicate` all values of that attribute are removed; with `object` only
-///   the matching one.
+///   the matching one. Optional `subject` (default `"user"`).
 ///
 /// Results are returned as a JSON object: `facts` is an array of
 /// `{ subject, predicate, object, confidence (0-1, recency-decayed), source
-///   ("user" | "inferred"), tags }`; `remember` returns `stored`, `forget`
-///   returns `deleted`.
+///   ("user" | "inferred"), tags, source_snippet? }`; `remember` returns
+///   `stored`, `forget` returns `deleted`. `source_snippet` is the short
+///   excerpt from extraction when available (L2 — “why we remember”).
 pub struct FactsTool {
     db: Option<Arc<Database>>,
 }
@@ -67,6 +72,10 @@ pub struct FactsParams {
     /// Optional for remember: identity, preference, workspace, project.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Fact subject. Defaults to `"user"` for remember/forget. For list,
+    /// omit to return recent facts across all subjects (P2-12).
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 impl FactsTool {
@@ -79,6 +88,17 @@ impl FactsTool {
             .limit
             .map(|l| l.clamp(1, 50) as usize)
             .unwrap_or(default)
+    }
+
+    /// Resolve subject for write ops; empty/whitespace → `"user"`.
+    fn write_subject(params: &FactsParams) -> String {
+        params
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("user")
+            .to_string()
     }
 
     /// Drop secrets before anything is shown to the model (defense in depth:
@@ -97,14 +117,23 @@ impl FactsTool {
         let rows: Vec<Value> = facts
             .iter()
             .map(|f| {
-                json!({
+                let mut row = json!({
                     "subject": f.subject,
                     "predicate": f.predicate,
                     "object": f.object,
                     "confidence": (haven_memory::repositories::facts::fact_effective_confidence(f) * 100.0).round() / 100.0,
                     "source": f.source,
                     "tags": f.tags,
-                })
+                });
+                if let Some(snippet) = f
+                    .source_ref
+                    .as_ref()
+                    .map(|r| r.snippet.trim())
+                    .filter(|s| !s.is_empty() && !is_sensitive_text(s))
+                {
+                    row["source_snippet"] = json!(snippet);
+                }
+                row
             })
             .collect();
         json!({ "facts": rows })
@@ -125,7 +154,16 @@ impl FactsTool {
 
     fn execute_list(&self, params: &FactsParams, db: &Database) -> anyhow::Result<ToolResult> {
         let limit = Self::parse_limit(params, 20);
-        let mut facts = self.visible_facts(db.get_facts("user")?);
+        let subject = params
+            .subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let mut facts = self.visible_facts(match subject {
+            Some(s) => db.get_facts(s)?,
+            // Cross-subject recent N (already effective-confidence ordered).
+            None => db.list_facts()?,
+        });
         facts.truncate(limit);
         Ok(ToolResult::ok(self.to_output_rows(&facts)))
     }
@@ -153,7 +191,8 @@ impl FactsTool {
             .map(|t| t.trim())
             .filter(|s| !s.is_empty())
             .collect();
-        let fact = db.set_user_fact("user", predicate, object, &tags)?;
+        let subject = Self::write_subject(params);
+        let fact = db.set_user_fact(&subject, predicate, object, &tags)?;
         Ok(ToolResult::ok(json!({
             "stored": {
                 "subject": fact.subject,
@@ -178,7 +217,8 @@ impl FactsTool {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let deleted = db.delete_facts_by_triple("user", predicate, object)?;
+        let subject = Self::write_subject(params);
+        let deleted = db.delete_facts_by_triple(&subject, predicate, object)?;
         Ok(ToolResult::ok(json!({ "deleted": deleted })))
     }
 
@@ -213,9 +253,10 @@ impl Tool for FactsTool {
     fn description(&self) -> String {
         "Read and write the facts Haven remembers about the user (preferences, identity, \
          workspace paths, ...) from previous conversations. operation=search (default) with \
-         a free-text query returns matching facts; operation=list returns the top stored facts; \
-         operation=remember stores a fact the user explicitly asked to remember; operation=forget \
-         deletes a fact the user explicitly asked to remove."
+         a free-text query returns matching facts; operation=list returns the top stored facts \
+         (optional subject; omit for cross-subject); operation=remember stores a fact the user \
+         explicitly asked to remember; operation=forget deletes a fact the user explicitly asked \
+         to remove. remember/forget default subject is \"user\"."
             .into()
     }
 
@@ -258,6 +299,10 @@ impl Tool for FactsTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional for remember: identity, preference, workspace, project"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Fact subject. remember/forget default to \"user\". For list, omit to return recent facts across all subjects"
                 }
             },
             "required": ["operation"]
@@ -413,6 +458,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_source_snippet_skips_sensitive_text() {
+        let (tool, db, _dir) = test_tool();
+        let source = haven_memory::repositories::facts::FactSourceRef {
+            message_id: "msg-1".into(),
+            snippet: "sk-abc123secret".into(),
+        };
+        db.insert_fact_with_source_ref(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.9,
+            &["preference"],
+            Some(&source),
+            1.0,
+        )
+        .unwrap();
+        let result = tool
+            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        let facts = result.output["facts"].as_array().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0].get("source_snippet").is_none());
+    }
+
+    #[tokio::test]
     async fn test_list_returns_top_facts() {
         let (tool, _db, _dir) = db_with_facts();
         let result = tool
@@ -428,6 +500,67 @@ mod tests {
             .collect();
         assert!(objs.contains(&"Rust"));
         assert!(objs.contains(&"/home/alice/app"));
+    }
+
+    #[tokio::test]
+    async fn test_list_and_remember_optional_subject() {
+        let (tool, db, _dir) = test_tool();
+        db.insert_fact("alice", "likes", "Tea", "inferred", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "Coffee", "inferred", 0.8, &[])
+            .unwrap();
+        // Cross-subject list (no subject).
+        let all = tool
+            .execute(json!({"operation": "list", "limit": 10}), CancellationToken::new())
+            .await
+            .unwrap();
+        let subjects: Vec<&str> = all.output["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["subject"].as_str().unwrap())
+            .collect();
+        assert!(subjects.contains(&"alice") && subjects.contains(&"user"));
+        // Subject-filtered list.
+        let alice = tool
+            .execute(
+                json!({"operation": "list", "subject": "alice"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let facts = alice.output["facts"].as_array().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["object"], "Tea");
+        // remember with non-user subject.
+        tool.execute(
+            json!({
+                "operation": "remember",
+                "subject": "bob",
+                "predicate": "role",
+                "object": "admin"
+            }),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let bob = db.get_facts("bob").unwrap();
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0].object, "admin");
+        // forget scoped to subject.
+        let deleted = tool
+            .execute(
+                json!({
+                    "operation": "forget",
+                    "subject": "bob",
+                    "predicate": "role"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.output["deleted"], 1);
+        assert!(db.get_facts("bob").unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -585,6 +718,7 @@ mod tests {
                     predicate: None,
                     object: None,
                     tags: None,
+                    subject: None,
                 },
                 CancellationToken::new(),
             )

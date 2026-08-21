@@ -7,7 +7,7 @@ use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
 use super::*;
-use crate::types::{BranchPoint, ReActStep};
+use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,21 +27,22 @@ impl ReActEngine {
         &self,
         session_id: &str,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
+        events: &mut Vec<TranscriptRecord>,
         start_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> anyhow::Result<LoopExit> {
         let max_steps = *self.max_steps.lock().unwrap();
-        // Phase 7 / J1: per-run budget. When resuming past the configured cap
-        // (e.g. a session that used all `max_steps` then paused for the user's
-        // next turn), give the loop another full budget so resume does not
-        // immediately hit budget exhaustion. A session can therefore run
-        // `max_steps` **per run**, not once per session lifetime. See
-        // `docs/react-architecture-improvements.md` J1 — optional session-
-        // lifetime `RunBudget` in the snapshot is a product decision.
-        let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
+        let session_cap = *self.session_max_steps.lock().unwrap();
+        // Phase 7/8 / J1: per-run budget. Resume grants another full
+        // `max_steps` so pause/ask/confirm does not immediately exhaust.
+        // Optional `session_max_steps` caps absolute step_number across runs.
+        let per_run_cap = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
+        let effective_max = match session_cap {
+            Some(cap) => per_run_cap.min(cap),
+            None => per_run_cap,
+        };
         let mut last_step = start_step.saturating_sub(1);
         // One run = one loop invocation: minted streaming-message ids from a
         // previous run of this session are dropped so a fresh run's blocks
@@ -98,7 +99,7 @@ impl ReActEngine {
                 .finish_confirm_batch(
                     session_id,
                     canonical,
-                    history,
+                    events,
                     branch_points,
                     &emitter,
                     run_id,
@@ -122,13 +123,9 @@ impl ReActEngine {
             // written so the DB row is never left stale for the rollback
             // that just cancelled us.
             if cancel.is_cancelled() {
-                return Ok(self.exit_cancelled(
-                    session_id,
-                    canonical,
-                    history,
-                    step_num,
-                    branch_points,
-                ).await);
+                return Ok(self
+                    .exit_cancelled(session_id, events, step_num, branch_points)
+                    .await);
             }
             let state = self.executor.get_session_state(session_id).await;
             match state {
@@ -138,8 +135,7 @@ impl ReActEngine {
                     return Ok(self
                         .exit_with_snapshot(
                             session_id,
-                            canonical,
-                            history,
+                            events,
                             step_num,
                             branch_points,
                             LoopExit::Completed,
@@ -155,8 +151,7 @@ impl ReActEngine {
                     return Ok(self
                         .exit_with_snapshot(
                             session_id,
-                            canonical,
-                            history,
+                            events,
                             step_num,
                             branch_points,
                             LoopExit::Error("session interrupted".into()),
@@ -169,8 +164,7 @@ impl ReActEngine {
                     return Ok(self
                         .exit_external_pause(
                             session_id,
-                            canonical,
-                            history,
+                            events,
                             step_num,
                             branch_points,
                             &emitter,
@@ -194,7 +188,7 @@ impl ReActEngine {
             // background-action results as context at the top of each step so
             // they land in the gap between tool calls and the next LLM call.
             // Span must not be `.entered()` across `.await` (EnteredSpan is !Send).
-            self.inject_pending_context(&ctx, canonical)
+            self.inject_pending_context(&ctx, events, canonical)
                 .instrument(tracing::info_span!("inject", session_id, step_num))
                 .await;
 
@@ -203,10 +197,23 @@ impl ReActEngine {
             //         → sanitize → tools → LLM
             // The thin loop must not call maybe_poll_inbox / maybe_compact /
             // interval infer directly — those live in DefaultHooks.
+            let events_before_hooks = events.len();
             self.hooks
-                .before_step(self, &ctx, canonical)
+                .before_step(self, &ctx, events, canonical)
                 .instrument(tracing::info_span!("before_step", session_id, step_num))
                 .await;
+            // CompactSummary replace clears the event log to a single root;
+            // drop branch points that pointed into the discarded prefix.
+            if events.len() < events_before_hooks
+                || (events.len() == 1
+                    && matches!(
+                        events.first(),
+                        Some(crate::types::TranscriptRecord::CompactSummary { .. })
+                    )
+                    && events_before_hooks > 1)
+            {
+                branch_points.clear();
+            }
 
             // Image flag for endpoint routing: re-scan after hooks (compaction
             // may have summarized away the last image).
@@ -282,12 +289,7 @@ impl ReActEngine {
                 &partial_reasoning,
             );
             let mut response = match stream
-                .run(
-                    &mut llm_messages,
-                    canonical,
-                    history,
-                    branch_points,
-                )
+                .run(&mut llm_messages, canonical, events, branch_points)
                 .instrument(tracing::info_span!("llm", session_id, step_num))
                 .await
             {
@@ -298,13 +300,7 @@ impl ReActEngine {
                     // response was never parsed, so the saved state is the
                     // clean pre-step state).
                     return Ok(self
-                        .exit_cancelled(
-                            session_id,
-                            canonical,
-                            history,
-                            step_num,
-                            branch_points,
-                        )
+                        .exit_cancelled(session_id, events, step_num, branch_points)
                         .await);
                 }
                 StepCallOutcome::Fatal(msg) => return Err(anyhow::anyhow!("{}", msg)),
@@ -321,7 +317,9 @@ impl ReActEngine {
                     step_num,
                     session_id
                 );
-                return Ok(self.exit_cancelled(session_id, canonical, history, step_num, branch_points).await);
+                return Ok(self
+                    .exit_cancelled(session_id, events, step_num, branch_points)
+                    .await);
             }
 
             tracing::debug!(
@@ -403,36 +401,22 @@ impl ReActEngine {
                         empty_retries_remaining =
                             empty_retries_remaining.saturating_sub(1);
                         if cancel_res.is_cancelled() {
-                            return Ok(self.exit_cancelled(
-                                session_id,
-                                canonical,
-                                history,
-                                step_num,
-                                branch_points,
-                            ).await);
+                            return Ok(self
+                                .exit_cancelled(session_id, events, step_num, branch_points)
+                                .await);
                         }
                         tokio::select! {
                             _ = cancel_res.cancelled() => {
                                 return Ok(self
-                                    .exit_cancelled(
-                                        session_id,
-                                        canonical,
-                                        history,
-                                        step_num,
-                                        branch_points,
-                                    )
+                                    .exit_cancelled(session_id, events, step_num, branch_points)
                                     .await);
                             }
                             _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
                         }
                         if cancel_res.is_cancelled() {
-                            return Ok(self.exit_cancelled(
-                                session_id,
-                                canonical,
-                                history,
-                                step_num,
-                                branch_points,
-                            ).await);
+                            return Ok(self
+                                .exit_cancelled(session_id, events, step_num, branch_points)
+                                .await);
                         }
                         tracing::warn!(
                             "ReAct step {} session {} model returned an empty response; retrying ({} left)",
@@ -456,13 +440,9 @@ impl ReActEngine {
                                 }
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
-                                return Ok(self.exit_cancelled(
-                                    session_id,
-                                    canonical,
-                                    history,
-                                    step_num,
-                                    branch_points,
-                                ).await);
+                                return Ok(self
+                                    .exit_cancelled(session_id, events, step_num, branch_points)
+                                    .await);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -476,13 +456,9 @@ impl ReActEngine {
                     AfterLlmAction::RetryCutOff { nudge } => {
                         cut_off_retries += 1;
                         if cancel_res.is_cancelled() {
-                            return Ok(self.exit_cancelled(
-                                session_id,
-                                canonical,
-                                history,
-                                step_num,
-                                branch_points,
-                            ).await);
+                            return Ok(self
+                                .exit_cancelled(session_id, events, step_num, branch_points)
+                                .await);
                         }
                         tracing::warn!(
                             "ReAct step {} session {} response looks cut off (finish={:?}); retrying (attempt {}/{})",
@@ -502,6 +478,7 @@ impl ReActEngine {
                             web_search_calls: Vec::new(),
                             thinking_blocks: Vec::new(),
                             source: None,
+                            id: None,
                         });
                         match stream.retry(&retry_messages).await {
                             Ok(retry_resp) => {
@@ -520,13 +497,9 @@ impl ReActEngine {
                                 }
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
-                                return Ok(self.exit_cancelled(
-                                    session_id,
-                                    canonical,
-                                    history,
-                                    step_num,
-                                    branch_points,
-                                ).await);
+                                return Ok(self
+                                    .exit_cancelled(session_id, events, step_num, branch_points)
+                                    .await);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -595,8 +568,8 @@ impl ReActEngine {
                         text: t.clone(),
                         message_id,
                     },
+                    events,
                     canonical,
-                    history,
                 )
                 .await;
             }
@@ -610,7 +583,7 @@ impl ReActEngine {
                     &thought,
                     &actions,
                     canonical,
-                    history,
+                    events,
                     branch_points,
                 )
                 .await
@@ -646,8 +619,7 @@ impl ReActEngine {
                     }
                     self.pause_turn(
                         session_id,
-                        canonical,
-                        history,
+                        events,
                         step_num + 1,
                         branch_points,
                         &emitter,
@@ -687,40 +659,12 @@ impl ReActEngine {
                     return Err(anyhow::anyhow!("{}", err_msg));
                 }
                 let msg = thought.unwrap_or_else(|| "No action decided.".into());
-                // Guard against clobbering: when the response carried no text
-                // (thought is None after failed retries), `history.last()`
-                // points at a PREVIOUS step; only attach the synthesized final
-                // to this step's own entry, otherwise the previous step's
-                // action/observation is silently overwritten.
-                if let Some(last) = history.last_mut().filter(|s| s.step_number == step_num) {
-                    last.action = Some(Action {
-                        tool_name: "final_answer".into(),
-                        tool_input: serde_json::Value::Null,
-                        is_final: true,
-                        tool_call_id: None,
-                    });
-                    if last.observation.is_none() {
-                        last.observation = Some(msg.clone());
-                    }
-                } else {
-                    history.push(ReActStep {
-                        step_number: step_num,
-                        thought: Some(msg.clone()),
-                        action: Some(Action {
-                            tool_name: "final_answer".into(),
-                            tool_input: serde_json::Value::Null,
-                            is_final: true,
-                            tool_call_id: None,
-                        }),
-                        observation: Some(msg.clone()),
-                    });
-                }
                 // Phase 7 / C6: shared turn-end (empty actions → TurnEnd).
                 match self
                     .finish_turn_end(
                         &ctx,
+                        events,
                         canonical,
-                        history,
                         branch_points,
                         &msg,
                         response.reasoning.clone(),
@@ -739,24 +683,15 @@ impl ReActEngine {
             // must run the tool batch first — otherwise non-final calls are
             // dropped and never reach execute_tool_batch.
             let has_non_final = actions.iter().any(|a| !a.is_final);
-            if !has_non_final
-                && let Some(final_action) = actions.iter().find(|a| a.is_final)
-            {
+            if !has_non_final && actions.iter().any(|a| a.is_final) {
                 let final_text = thought.unwrap_or_else(|| "Session completed.".into());
-                // Same clobber guard as the empty-actions branch above.
-                if let Some(s) = history.last_mut().filter(|s| s.step_number == step_num) {
-                    s.action = Some(final_action.clone());
-                    if s.observation.is_none() {
-                        s.observation = Some(final_text.clone());
-                    }
-                }
                 // Search context may already be in the canonical
                 // (`prepare_search_context`) — do not duplicate the assistant.
                 match self
                     .finish_turn_end(
                         &ctx,
+                        events,
                         canonical,
-                        history,
                         branch_points,
                         &final_text,
                         response.reasoning.clone(),
@@ -790,7 +725,7 @@ impl ReActEngine {
                 .execute_tool_batch(
                     session_id,
                     canonical,
-                    history,
+                    events,
                     step_num,
                     branch_points,
                     &emitter,
@@ -811,8 +746,7 @@ impl ReActEngine {
 
         self.pause_turn_budget(
             session_id,
-            canonical,
-            history,
+            events,
             last_step + 1,
             branch_points,
             &emitter,
@@ -822,5 +756,4 @@ impl ReActEngine {
             reason: PauseReason::Budget,
         })
     }
-
 }

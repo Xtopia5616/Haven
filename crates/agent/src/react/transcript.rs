@@ -1,14 +1,12 @@
 //! Append-only transcript events and a unified `apply` (Phase 6 / B1-2 + H1;
-//! Phase 6.1 wires CompactSummary + Action/Observation cards through apply).
-//!
-//! **Authority (B1-1):** `canonical` is the sole LLM transcript. `history`
-//! (`Vec<ReActStep>`) is a derived debug / tool-restore projection updated
-//! alongside `canonical` — business logic must not key LLM context off it.
+//! Phase 8 / B1-3: events are the snapshot authority; canonical is a
+//! projection cache updated here).
 //!
 //! `apply` order is always: persist (row before card) → emit UI event →
-//! project into `canonical` (+ derived `history` when applicable).
+//! append [`TranscriptRecord`] → project into `canonical`.
 
 use super::*;
+use crate::types::{Action, TranscriptRecord};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use serde_json::Value;
@@ -33,17 +31,14 @@ pub(super) struct ObservationCard {
     pub ask_options: Vec<String>,
 }
 
-/// Append-only transcript event projected to canonical + UI.
+/// Runtime transcript event (UI cards + serializable payload).
+/// Converted to [`TranscriptRecord`] when appended to the event log.
 #[derive(Debug, Clone)]
 pub(super) enum TranscriptEvent {
-    /// Assistant thought text for a step (content authority in `messages`).
     Thought {
         text: String,
         message_id: String,
     },
-    /// Assistant message carrying tool calls (and optional thought text).
-    /// When `action_cards` is non-empty, also persists pending step rows and
-    /// emits Action cards (row before card) before projecting canonical.
     ToolCall {
         text: String,
         tool_calls: Vec<CanonicalToolCall>,
@@ -52,44 +47,103 @@ pub(super) enum TranscriptEvent {
         thinking_blocks: Vec<serde_json::Value>,
         action_cards: Vec<ActionCard>,
     },
-    /// Tool observation / result for one call — projects canonical + history.
-    /// When `observation_card` is set, emits the Observation UI card first.
     ToolResult {
-        /// Text stored on the canonical tool message (raw step result).
         canonical_observation: String,
-        /// Text recorded on the derived history step (may be display-shaped).
         history_observation: String,
         tool_call_id: Option<String>,
         action: Action,
         observation_card: Option<ObservationCard>,
     },
-    /// User inject (steering / follow-up / answer / cross-session).
     UserInject {
         source: InjectSource,
         text: String,
         attachments: Vec<MessageAttachment>,
         message_id: Option<String>,
     },
-    /// Compaction: replace `canonical` with the compacted list, emit the
-    /// Compaction UI event, and persist the summary episode. Does not touch
-    /// derived `history` (existing behavior).
     CompactSummary {
         compacted: Vec<CanonicalMessage>,
         summary: String,
         tokens_before: u32,
         tokens_after: u32,
+        episode_id: String,
     },
 }
 
+impl TranscriptEvent {
+    fn to_record(&self, step_number: u32) -> TranscriptRecord {
+        match self {
+            Self::Thought { text, message_id } => TranscriptRecord::Thought {
+                step_number,
+                text: text.clone(),
+                message_id: message_id.clone(),
+            },
+            Self::ToolCall {
+                text,
+                tool_calls,
+                reasoning,
+                web_search_calls,
+                thinking_blocks,
+                ..
+            } => TranscriptRecord::ToolCall {
+                step_number,
+                text: text.clone(),
+                tool_calls: tool_calls.clone(),
+                reasoning: reasoning.clone(),
+                web_search_calls: web_search_calls.clone(),
+                thinking_blocks: thinking_blocks.clone(),
+            },
+            Self::ToolResult {
+                canonical_observation,
+                history_observation,
+                tool_call_id,
+                action,
+                ..
+            } => TranscriptRecord::ToolResult {
+                step_number,
+                canonical_observation: canonical_observation.clone(),
+                history_observation: history_observation.clone(),
+                tool_call_id: tool_call_id.clone(),
+                action: action.clone(),
+            },
+            Self::UserInject {
+                source,
+                text,
+                attachments,
+                message_id,
+            } => TranscriptRecord::UserInject {
+                step_number,
+                source: *source,
+                text: text.clone(),
+                attachments: attachments.clone(),
+                message_id: message_id.clone(),
+            },
+            Self::CompactSummary {
+                compacted,
+                summary,
+                tokens_before,
+                tokens_after,
+                episode_id,
+            } => TranscriptRecord::CompactSummary {
+                compacted: compacted.clone(),
+                summary: summary.clone(),
+                tokens_before: *tokens_before,
+                tokens_after: *tokens_after,
+                episode_id: episode_id.clone(),
+            },
+        }
+    }
+}
+
 impl ReActEngine {
-    /// Persist → emit → project. New transcript mutations go through here.
+    /// Persist → emit → append record → project into canonical cache.
     pub(super) async fn apply_transcript(
         &self,
         ctx: &StepCtx,
         event: TranscriptEvent,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
     ) {
+        let record = event.to_record(ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
                 EventDispatcher::emit_thought_from(
@@ -102,12 +156,7 @@ impl ReActEngine {
                     &self.db,
                 )
                 .await;
-                history.push(ReActStep {
-                    step_number: ctx.step_num,
-                    thought: Some(text),
-                    action: None,
-                    observation: None,
-                });
+                events.push(record);
             }
             TranscriptEvent::ToolCall {
                 text,
@@ -139,6 +188,7 @@ impl ReActEngine {
                         })
                         .await;
                 }
+                events.push(record);
                 canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(text)],
                     if tool_calls.is_empty() {
@@ -173,24 +223,14 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                if let Some(last) = history
-                    .last_mut()
-                    .filter(|s| s.step_number == ctx.step_num && s.action.is_none())
-                {
-                    last.action = Some(action.clone());
-                    last.observation = Some(history_observation);
-                } else {
-                    history.push(ReActStep {
-                        step_number: ctx.step_num,
-                        thought: None,
-                        action: Some(action),
-                        observation: Some(history_observation),
-                    });
+                events.push(record);
+                let is_final = action.is_final || action.tool_name == "final_answer";
+                if !is_final {
+                    canonical.push(CanonicalMessage::tool(
+                        vec![ContentPart::text(canonical_observation)],
+                        tool_call_id,
+                    ));
                 }
-                canonical.push(CanonicalMessage::tool(
-                    vec![ContentPart::text(canonical_observation)],
-                    tool_call_id,
-                ));
             }
             TranscriptEvent::UserInject {
                 source,
@@ -198,9 +238,6 @@ impl ReActEngine {
                 attachments,
                 message_id,
             } => {
-                // ActionResult is runtime context only: keep InjectSource on
-                // canonical, but do not emit Supplement UI or mint thought
-                // steps (those are for user/steering/answer/cross-session).
                 if source != InjectSource::ActionResult {
                     ctx.emitter
                         .emit(crate::event::AgentEvent::Supplement {
@@ -235,15 +272,8 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                // Action-result payloads are already self-labelled by the
-                // producer (`[Background action result]…`); do not bake a
-                // second prefix. Other injects keep `{prefix}: {text}`.
-                let body = if source == InjectSource::ActionResult {
-                    text
-                } else {
-                    format!("{}: {text}", source.render_prefix())
-                };
-                let mut content = vec![ContentPart::text(body)];
+                events.push(record);
+                let mut content = vec![ContentPart::text(text)];
                 content.extend(attachments.iter().map(attachment_to_content_part));
                 canonical.push(CanonicalMessage::user_with_source(content, source));
             }
@@ -252,7 +282,13 @@ impl ReActEngine {
                 summary,
                 tokens_before,
                 tokens_after,
+                episode_id,
             } => {
+                // Replace the log with the CompactSummary root so pre-compaction
+                // events (and embedded prior CompactSummaries) do not grow forever.
+                // Callers must drop stale branch_points (loop after before_step;
+                // stream_step after ContextLengthExceeded compact).
+                *events = vec![record];
                 *canonical = compacted;
                 EventDispatcher::emit_compaction_from(
                     &ctx.emitter,
@@ -260,9 +296,10 @@ impl ReActEngine {
                     &summary,
                     tokens_before,
                     tokens_after,
+                    &episode_id,
                 )
                 .await;
-                self.persist_compaction_summary(&ctx.session_id, &summary)
+                self.persist_compaction_summary(&ctx.session_id, &summary, &episode_id)
                     .await;
             }
         }
@@ -273,6 +310,7 @@ impl ReActEngine {
 mod tests {
     use super::*;
     use crate::event::AgentEventEmitter;
+    use crate::types::project_transcript;
     use async_trait::async_trait;
     use haven_memory::Database;
     use std::sync::Arc;
@@ -321,7 +359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_user_inject_sets_source_and_prefix() {
+    async fn apply_user_inject_sets_source_raw_text() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_inject_{}.db",
             uuid::Uuid::new_v4()
@@ -331,7 +369,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut canonical = Vec::new();
-        let mut history = Vec::new();
+        let mut events = Vec::new();
         engine
             .apply_transcript(
                 &ctx,
@@ -341,8 +379,8 @@ mod tests {
                     attachments: vec![],
                     message_id: None,
                 },
+                &mut events,
                 &mut canonical,
-                &mut history,
             )
             .await;
         assert_eq!(canonical.len(), 1);
@@ -351,8 +389,8 @@ mod tests {
             ContentPart::Text(t) => t.as_str(),
             _ => panic!("expected text"),
         };
-        assert_eq!(text, "Steering: be brief");
-        assert!(history.is_empty());
+        assert_eq!(text, "be brief");
+        assert_eq!(events.len(), 1);
     }
 
     #[tokio::test]
@@ -366,7 +404,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut canonical = Vec::new();
-        let mut history = Vec::new();
+        let mut events = Vec::new();
         let body = "[Background action result]\naction_id=act-1\nok";
         engine
             .apply_transcript(
@@ -377,8 +415,8 @@ mod tests {
                     attachments: vec![],
                     message_id: None,
                 },
+                &mut events,
                 &mut canonical,
-                &mut history,
             )
             .await;
         assert_eq!(canonical[0].source, Some(InjectSource::ActionResult));
@@ -391,7 +429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_thought_appends_derived_history() {
+    async fn apply_thought_appends_event_not_canonical() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_thought_{}.db",
             uuid::Uuid::new_v4()
@@ -401,7 +439,7 @@ mod tests {
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut canonical = Vec::new();
-        let mut history = Vec::new();
+        let mut events = Vec::new();
         engine
             .apply_transcript(
                 &ctx,
@@ -409,31 +447,33 @@ mod tests {
                     text: "thinking".into(),
                     message_id: haven_common::types::new_id("step"),
                 },
+                &mut events,
                 &mut canonical,
-                &mut history,
             )
             .await;
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].thought.as_deref(), Some("thinking"));
+        assert_eq!(events.len(), 1);
+        let (_, rounds) = project_transcript(&events);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].thought.as_deref(), Some("thinking"));
         assert!(canonical.is_empty());
     }
 
     #[tokio::test]
-    async fn apply_compact_summary_replaces_canonical_and_emits() {
+    async fn apply_compact_summary_replaces_canonical() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_compact_{}.db",
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t", "hi").unwrap();
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
             session_id: session.id.clone(),
             step_num: 2,
             run_id: 1,
             emitter: Arc::new(RecordingEmitter {
-                events: events.clone(),
+                events: ui_events.clone(),
             }),
         };
         let mut canonical = vec![
@@ -446,11 +486,10 @@ mod tests {
                 Vec::new(),
             ),
         ];
-        let mut history = vec![ReActStep {
+        let mut events = vec![TranscriptRecord::Thought {
             step_number: 1,
-            thought: Some("keep".into()),
-            action: None,
-            observation: None,
+            text: "keep".into(),
+            message_id: "step-keep".into(),
         }];
         let compacted = vec![
             CanonicalMessage::assistant(
@@ -470,15 +509,22 @@ mod tests {
                     summary: "prior turns".into(),
                     tokens_before: 100,
                     tokens_after: 40,
+                    episode_id: haven_common::types::new_id("msg"),
                 },
+                &mut events,
                 &mut canonical,
-                &mut history,
             )
             .await;
         assert_eq!(canonical.len(), 2);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].thought.as_deref(), Some("keep"));
-        let ev = events.lock().unwrap();
+        // CompactSummary replaces the event log (no pre-compaction growth).
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            TranscriptRecord::CompactSummary { .. }
+        ));
+        let (_, rounds) = project_transcript(&events);
+        assert!(rounds.is_empty());
+        let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
                 e,
@@ -500,19 +546,19 @@ mod tests {
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t", "hi").unwrap();
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
             session_id: session.id.clone(),
             step_num: 3,
             run_id: 7,
             emitter: Arc::new(RecordingEmitter {
-                events: events.clone(),
+                events: ui_events.clone(),
             }),
         };
         let step_id = haven_common::types::new_id("step");
         let mut canonical = Vec::new();
-        let mut history = Vec::new();
+        let mut events = Vec::new();
         engine
             .apply_transcript(
                 &ctx,
@@ -533,13 +579,13 @@ mod tests {
                         step_id: step_id.clone(),
                     }],
                 },
+                &mut events,
                 &mut canonical,
-                &mut history,
             )
             .await;
         assert_eq!(canonical.len(), 1);
-        assert!(history.is_empty());
-        let ev = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
                 e,
@@ -561,19 +607,19 @@ mod tests {
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t", "hi").unwrap();
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
             session_id: session.id.clone(),
             step_num: 4,
             run_id: 2,
             emitter: Arc::new(RecordingEmitter {
-                events: events.clone(),
+                events: ui_events.clone(),
             }),
         };
         let step_id = haven_common::types::new_id("step");
         let mut canonical = Vec::new();
-        let mut history = Vec::new();
+        let mut events = Vec::new();
         let action = Action {
             tool_name: "echo".into(),
             tool_input: serde_json::json!({}),
@@ -596,14 +642,15 @@ mod tests {
                         ask_options: vec![],
                     }),
                 },
+                &mut events,
                 &mut canonical,
-                &mut history,
             )
             .await;
         assert_eq!(canonical.len(), 1);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].observation.as_deref(), Some("ok"));
-        let ev = events.lock().unwrap();
+        let (_, rounds) = project_transcript(&events);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
+        let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
                 e,
@@ -615,5 +662,55 @@ mod tests {
             )),
             "expected Observation card, got {ev:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn apply_parallel_tool_results_one_round() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_transcript_parallel_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let session = db.create_session("t", "hi").unwrap();
+        let engine = test_engine(db);
+        let ctx = step_ctx(&session.id);
+        let mut canonical = Vec::new();
+        let mut events = Vec::new();
+        engine
+            .apply_transcript(
+                &ctx,
+                TranscriptEvent::Thought {
+                    text: "both".into(),
+                    message_id: haven_common::types::new_id("step"),
+                },
+                &mut events,
+                &mut canonical,
+            )
+            .await;
+        for (id, name) in [("c1", "a"), ("c2", "b")] {
+            engine
+                .apply_transcript(
+                    &ctx,
+                    TranscriptEvent::ToolResult {
+                        canonical_observation: format!("r{name}"),
+                        history_observation: format!("r{name}"),
+                        tool_call_id: Some(id.into()),
+                        action: Action {
+                            tool_name: name.into(),
+                            tool_input: serde_json::json!({}),
+                            is_final: false,
+                            tool_call_id: Some(id.into()),
+                        },
+                        observation_card: None,
+                    },
+                    &mut events,
+                    &mut canonical,
+                )
+                .await;
+        }
+        let (_, rounds) = project_transcript(&events);
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(rounds[0].tools.len(), 2);
+        assert_eq!(canonical.len(), 2);
     }
 }

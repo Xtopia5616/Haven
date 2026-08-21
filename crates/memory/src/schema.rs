@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -39,6 +39,8 @@ struct Migration {
 ///   so ask-gate survives process restart without JSON heuristics.
 /// - v4: allow `paused_awaiting_confirm` on `sessions.status` (Phase 5 / E3)
 ///   so safety-confirm pause survives process restart.
+/// - v5: episode `topics`/`entities` JSON columns (P2-10 / L6); backfill
+///   bare `company` → `works_at` predicate alias (P2-11).
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -51,6 +53,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 4,
         apply: migrate_v4_paused_awaiting_confirm_status,
+    },
+    Migration {
+        version: 5,
+        apply: migrate_v5_episodes_structured_and_company_alias,
     },
 ];
 
@@ -69,7 +75,7 @@ fn migrate_v2_backfill_predicate_aliases(conn: &rusqlite::Connection) -> anyhow:
         UPDATE facts SET predicate = 'project_path'
          WHERE predicate IN ('workspace','workspace_path','project_location','working_directory','working_dir');
         UPDATE facts SET predicate = 'works_at'
-         WHERE predicate IN ('employer','company_name');
+         WHERE predicate IN ('employer','company_name','company');
         UPDATE facts SET predicate = 'language'
          WHERE predicate IN ('favorite_language','preferred_language');
         UPDATE facts SET predicate = 'verbosity'
@@ -200,6 +206,47 @@ fn migrate_v4_paused_awaiting_confirm_status(conn: &rusqlite::Connection) -> any
     Ok(())
 }
 
+/// P2-10 / L6: optional structured fields on episodes; P2-11: bare `company`
+/// → `works_at` for rows written before the alias was added.
+fn migrate_v5_episodes_structured_and_company_alias(
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<()> {
+    if table_exists(conn, "memory_episodes")? {
+        if !column_exists(conn, "memory_episodes", "topics")? {
+            conn.execute(
+                "ALTER TABLE memory_episodes ADD COLUMN topics TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+        if !column_exists(conn, "memory_episodes", "entities")? {
+            conn.execute(
+                "ALTER TABLE memory_episodes ADD COLUMN entities TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+    }
+    if table_exists(conn, "facts")? {
+        // Collapse only the company→works_at alias collision; general dedup
+        // stays in `dedup_facts`.
+        conn.execute_batch(
+            r#"
+            UPDATE facts SET predicate = 'works_at' WHERE predicate = 'company';
+            DELETE FROM facts
+             WHERE predicate = 'works_at'
+               AND id NOT IN (
+                 SELECT id FROM (
+                   SELECT id, ROW_NUMBER() OVER (
+                     PARTITION BY subject, predicate, object
+                     ORDER BY confidence DESC, created_at DESC
+                   ) AS rn FROM facts WHERE predicate = 'works_at'
+                 ) WHERE rn = 1
+               );
+            "#,
+        )?;
+    }
+    Ok(())
+}
+
 fn user_version(conn: &rusqlite::Connection) -> anyhow::Result<i32> {
     Ok(conn
         .prepare("PRAGMA user_version")?
@@ -284,6 +331,8 @@ const SCHEMA_SQL: &[&str] = &[
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         summary TEXT NOT NULL,
+        topics TEXT NOT NULL DEFAULT '[]',
+        entities TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
     "CREATE TABLE IF NOT EXISTS facts (
@@ -414,23 +463,31 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
 /// (table created but triggers missing) is repaired on the next startup.
 ///
 /// Tokenizer: `trigram` (SQLite ≥ 3.34) instead of the default unicode61.
-/// unicode61 does not split CJK runs, so Chinese facts were only findable via
-/// the LIKE fallback (a full scan). trigram indexes every 3-char window and
-/// matches substrings, which works for Chinese and keeps the BM25 ranking.
-/// Short queries (1-2 chars) still miss the trigram index and fall through to
-/// the LIKE path in `search_facts`, as before. The applied tokenizer is
-/// recorded in `kv_store` (`facts_fts_tokenizer`) so a tokenizer change
-/// rebuilds the index exactly once instead of on every startup.
+/// unicode61 does not split CJK runs, so Chinese text was only findable via
+/// LIKE (a full scan). trigram indexes every 3-char window and matches
+/// substrings, which works for Chinese and keeps BM25 ranking. Short queries
+/// (1–2 chars / CJK digrams) still miss the trigram index — callers LIKE only
+/// those short terms (P2-14), not every empty-FTS long query. The applied
+/// tokenizer is recorded in `kv_store` so a tokenizer change rebuilds once.
 const FTS_TOKENIZER: &str = "trigram";
-const FTS_TOKENIZER_KV_KEY: &str = "facts_fts_tokenizer";
+const FACTS_FTS_TOKENIZER_KV_KEY: &str = "facts_fts_tokenizer";
+const EPISODES_FTS_TOKENIZER_KV_KEY: &str = "episodes_fts_tokenizer";
 
-fn applied_fts_tokenizer(conn: &rusqlite::Connection) -> Option<String> {
+fn applied_fts_tokenizer(conn: &rusqlite::Connection, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM kv_store WHERE key = ?1",
-        rusqlite::params![FTS_TOKENIZER_KV_KEY],
+        rusqlite::params![key],
         |r| r.get(0),
     )
     .ok()
+}
+
+fn record_fts_tokenizer(conn: &rusqlite::Connection, key: &str) {
+    let _ = conn.execute(
+        "INSERT INTO kv_store (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+        rusqlite::params![key, FTS_TOKENIZER],
+    );
 }
 
 fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -445,7 +502,8 @@ fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             .map(|c| c == 0)
             .unwrap_or(true)
     });
-    let tokenizer_stale = applied_fts_tokenizer(conn).as_deref() != Some(FTS_TOKENIZER);
+    let tokenizer_stale =
+        applied_fts_tokenizer(conn, FACTS_FTS_TOKENIZER_KV_KEY).as_deref() != Some(FTS_TOKENIZER);
     if !has_fts || triggers_missing || tokenizer_stale {
         // DROP first so a partially-applied previous attempt (table present
         // but triggers missing) is rebuilt cleanly; external-content tables
@@ -485,13 +543,74 @@ fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             // open — roll it back so the connection is left in a clean state.
             let _ = conn.execute_batch("ROLLBACK");
         } else {
-            // Record the tokenizer only after a successful rebuild so a
-            // failed attempt retries on the next startup.
-            let _ = conn.execute(
-                "INSERT INTO kv_store (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
-                rusqlite::params![FTS_TOKENIZER_KV_KEY, FTS_TOKENIZER],
+            record_fts_tokenizer(conn, FACTS_FTS_TOKENIZER_KV_KEY);
+        }
+    }
+    Ok(())
+}
+
+/// P2-10 / L6: FTS5 over episode summary + optional topics/entities JSON.
+/// Same trigram tokenizer as facts; short queries LIKE-fallback in embeddings.
+fn ensure_episodes_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "memory_episodes")? {
+        return Ok(());
+    }
+    // Columns land via SCHEMA_SQL (fresh) or migrate_v5 (upgrade); skip until
+    // both exist so a mid-migration open does not build a broken FTS.
+    if !column_exists(conn, "memory_episodes", "topics")?
+        || !column_exists(conn, "memory_episodes", "entities")?
+    {
+        return Ok(());
+    }
+    let has_fts: bool = conn
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='episodes_fts'")?
+        .query_row([], |r| r.get::<_, i32>(0))
+        .map(|c| c > 0)
+        .unwrap_or(false);
+    let triggers_missing = ["episodes_ai", "episodes_ad", "episodes_au"]
+        .iter()
+        .any(|name| {
+            conn.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
+                .and_then(|mut stmt| stmt.query_row(rusqlite::params![name], |r| r.get::<_, i32>(0)))
+                .map(|c| c == 0)
+                .unwrap_or(true)
+        });
+    let tokenizer_stale = applied_fts_tokenizer(conn, EPISODES_FTS_TOKENIZER_KV_KEY).as_deref()
+        != Some(FTS_TOKENIZER);
+    if !has_fts || triggers_missing || tokenizer_stale {
+        let fts_sql = format!(
+            "BEGIN;
+            DROP TABLE IF EXISTS episodes_fts;
+            DROP TRIGGER IF EXISTS episodes_ai;
+            DROP TRIGGER IF EXISTS episodes_ad;
+            DROP TRIGGER IF EXISTS episodes_au;
+            CREATE VIRTUAL TABLE episodes_fts USING fts5(
+                summary, topics, entities,
+                content='memory_episodes', content_rowid='rowid',
+                tokenize='{FTS_TOKENIZER}'
             );
+            CREATE TRIGGER episodes_ai AFTER INSERT ON memory_episodes BEGIN
+                INSERT INTO episodes_fts(rowid, summary, topics, entities)
+                VALUES (new.rowid, new.summary, new.topics, new.entities);
+            END;
+            CREATE TRIGGER episodes_ad AFTER DELETE ON memory_episodes BEGIN
+                INSERT INTO episodes_fts(episodes_fts, rowid, summary, topics, entities)
+                VALUES ('delete', old.rowid, old.summary, old.topics, old.entities);
+            END;
+            CREATE TRIGGER episodes_au AFTER UPDATE ON memory_episodes BEGIN
+                INSERT INTO episodes_fts(episodes_fts, rowid, summary, topics, entities)
+                VALUES ('delete', old.rowid, old.summary, old.topics, old.entities);
+                INSERT INTO episodes_fts(rowid, summary, topics, entities)
+                VALUES (new.rowid, new.summary, new.topics, new.entities);
+            END;
+            INSERT INTO episodes_fts(episodes_fts) VALUES ('rebuild');
+            COMMIT;"
+        );
+        if let Err(e) = conn.execute_batch(&fts_sql) {
+            tracing::warn!("FTS5 unavailable, episode search falls back to LIKE: {}", e);
+            let _ = conn.execute_batch("ROLLBACK");
+        } else {
+            record_fts_tokenizer(conn, EPISODES_FTS_TOKENIZER_KV_KEY);
         }
     }
     Ok(())
@@ -579,6 +698,7 @@ pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     }
     conn.execute_batch(MEMORY_EMBEDDINGS_SCHEMA)?;
     ensure_facts_fts(conn)?;
+    ensure_episodes_fts(conn)?;
     ensure_fact_embedding_triggers(conn)?;
     if user_version(conn)? < SCHEMA_VERSION {
         set_user_version(conn, SCHEMA_VERSION)?;
@@ -645,14 +765,18 @@ mod tests {
                 tables
             );
         }
-        // FTS5 external-content index (plus its shadow tables) is expected.
+        // FTS5 external-content indexes (plus shadow tables) are expected.
         assert!(
             tables.iter().any(|n| n == "facts_fts"),
             "facts_fts table should exist"
         );
+        assert!(
+            tables.iter().any(|n| n == "episodes_fts"),
+            "episodes_fts table should exist"
+        );
         let core: Vec<_> = tables
             .iter()
-            .filter(|t| !t.starts_with("facts_fts"))
+            .filter(|t| !t.starts_with("facts_fts") && !t.starts_with("episodes_fts"))
             .collect();
         assert_eq!(core.len(), expected.len());
     }
@@ -685,7 +809,7 @@ mod tests {
         }
         let core: Vec<_> = indexes
             .iter()
-            .filter(|n| !n.starts_with("facts_fts"))
+            .filter(|n| !n.starts_with("facts_fts") && !n.starts_with("episodes_fts"))
             .collect();
         assert_eq!(core.len(), expected.len());
     }
@@ -949,6 +1073,75 @@ mod tests {
             [],
         )
         .expect("v4 CHECK must accept paused_awaiting_confirm");
+    }
+
+    #[test]
+    fn v5_migration_adds_episode_columns_and_company_alias() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        // Simulate a v4 DB without topics/entities and with bare `company`.
+        set_user_version(&conn, 4).unwrap();
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS episodes_fts;
+            CREATE TABLE memory_episodes_v4 (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO memory_episodes_v4 (id, session_id, summary, created_at)
+            SELECT id, session_id, summary, created_at FROM memory_episodes;
+            DROP TABLE memory_episodes;
+            ALTER TABLE memory_episodes_v4 RENAME TO memory_episodes;
+            INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
+            VALUES
+              ('c1', 'user', 'company', 'Acme', 'inferred', 0.9, '2026-01-01'),
+              ('c2', 'user', 'company', 'Acme', 'inferred', 0.5, '2026-01-02'),
+              ('d1', 'user', 'likes', 'Tea', 'inferred', 0.8, '2026-01-01'),
+              ('d2', 'user', 'likes', 'Tea', 'inferred', 0.7, '2026-01-02');
+            "#,
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "memory_episodes", "topics").unwrap());
+        assert!(column_exists(&conn, "memory_episodes", "entities").unwrap());
+        let pred: String = conn
+            .query_row(
+                "SELECT predicate FROM facts WHERE id = 'c1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pred, "works_at");
+        // works_at collision collapsed to the higher-confidence row.
+        let works_at: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE predicate = 'works_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(works_at, 1);
+        // Unrelated duplicate predicates are left for `dedup_facts`.
+        let likes: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM facts WHERE predicate = 'likes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(likes, 2);
+        let has_fts: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='episodes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_fts, 1);
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

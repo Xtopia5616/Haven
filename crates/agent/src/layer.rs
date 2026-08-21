@@ -48,21 +48,12 @@ impl AgentLayer {
             context_limits.sanitize_field_max_chars,
             context_limits.fact_extraction_min_interval_secs,
         ));
-        // Phase 7 / G6: infer lives on DefaultHooks, not threaded through the
-        // thin loop. Callback takes session_id so concurrent sessions share
-        // one hooks instance safely.
+        // L3 / P1-7: ReAct only enqueues session_id; a single outbox worker
+        // (started lazily on first enqueue) runs infer_session.
         let infer_cb: crate::react::InferCallback = {
             let inference = inference.clone();
             Arc::new(move |session_id: &str, bypass_throttle: bool| {
-                let inference = inference.clone();
-                let tid = session_id.to_string();
-                tokio::spawn(async move {
-                    if bypass_throttle {
-                        inference.infer_session_on_pause(&tid).await;
-                    } else {
-                        inference.infer_session(&tid).await;
-                    }
-                });
+                inference.enqueue_infer(session_id, bypass_throttle);
             })
         };
         let react_engine = Arc::new(
@@ -275,6 +266,10 @@ impl AgentLayer {
 
     pub fn set_max_steps(&self, max_steps: u32) {
         self.react_engine.set_max_steps(max_steps);
+    }
+
+    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) {
+        self.react_engine.set_session_max_steps(session_max_steps);
     }
 
     /// Live three-way connectivity probe to the default-model endpoint. Used
@@ -621,28 +616,31 @@ impl AgentLayer {
     /// adapters. Only steps present in the (possibly truncated) history are
     /// replayed, so rolling back to step N correctly drops tools loaded after
     /// step N.
-    pub(crate) async fn restore_per_session_tools(&self, session_id: &str, history: &[ReActStep]) {
+    pub(crate) async fn restore_per_session_tools(
+        &self,
+        session_id: &str,
+        rounds: &[crate::types::ReActRound],
+    ) {
         let tools = self.executor.get_tools();
         // Clear stale registrations first (e.g. tools loaded after a rollback
         // point, or leftover from a previous run before restart).
         tools.unregister_session(session_id).await;
 
-        for step in history {
-            let Some(ref action) = step.action else {
-                continue;
-            };
-            match action.tool_name.as_str() {
-                "load_skill" => {
-                    if let Some(name) = action.tool_input["skill_name"].as_str() {
-                        tools.register_skill_for_session(session_id, name).await;
+        for round in rounds {
+            for tool in &round.tools {
+                match tool.action.tool_name.as_str() {
+                    "load_skill" => {
+                        if let Some(name) = tool.action.tool_input["skill_name"].as_str() {
+                            tools.register_skill_for_session(session_id, name).await;
+                        }
                     }
-                }
-                "load_mcp" => {
-                    if let Some(name) = action.tool_input["server_name"].as_str() {
-                        tools.register_mcp_for_session(session_id, name).await;
+                    "load_mcp" => {
+                        if let Some(name) = tool.action.tool_input["server_name"].as_str() {
+                            tools.register_mcp_for_session(session_id, name).await;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }

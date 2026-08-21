@@ -105,10 +105,11 @@ provider（STT 客户端来自 `haven-llm`）。
 - 调用 `LlmRouter` 与 `MediaGateway`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 
-**Per-run 步数预算（Phase 7 / J1）**：`max_steps` 是**单次 run**上限。pause / ask / confirm 后再次 resume 会按
-`effective_max = max(max_steps, start_step - 1 + max_steps)` 再给满额，因此长会话可跨多次 run
-累计超过配置值。会话生命周期总步数上限尚未落地（产品选项）。详见
-`docs/react-architecture-improvements.md` J1。
+**步数预算（Phase 7/8 / J1）**：`session.max_steps` 是**单次 run**上限。pause / ask / confirm 后再次
+resume 会按 `per_run_cap = max(max_steps, start_step - 1 + max_steps)` 再给满额。可选
+`session.session_max_steps: Option<u32>`（默认 `None` = 不限）在绝对 `step_number` 上截断：
+`effective_max = min(per_run_cap, session_max_steps)`。详见
+`docs/refactor-backlog.md` §1.2 / R4。
 
 **判定标准**：会话的业务编排中心，不知道也不关心 provider 细节 / 录音硬件细节。
 
@@ -167,9 +168,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 - `docs/conventions.md` —— 日志 / 错误 / 通知 / 命令返回规范
 - `docs/naming.md` —— 各层命名与跨层 camelCase 边界
-- `docs/memory-architecture.md` —— 记忆 / Facts 现状、引擎 backlog、与对话历史协作计划（短期/长期）
-- `docs/react-architecture-improvements.md` —— ReAct 对照 PI Agent Core 的改进清单与分期
-- `docs/architecture-refactor.md` —— 历史重构图谱（命令拆分 / 配置收敛 / 运行阻塞）
+- `docs/refactor-backlog.md` —— Memory + ReAct 剩余重构清单（含原「明确不做」；可大改、不向下兼容）
 
 ---
 
@@ -178,6 +177,5 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 | 日期 | 内容 |
 |---|---|
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
-| 2026-08-20 | `memory-architecture.md` 改为现状 + backlog 描述 |
-| 2026-08-20 | 相关文档增加 `react-architecture-improvements.md` |
-| 2026-08-20 | `memory-architecture.md` 增加 Facts/Episodes/对话历史协作计划 |
+| 2026-08-20 | 曾增加 memory / react 改进文档（已并于 2026-08-21 合并为 `refactor-backlog.md`） |
+| 2026-08-21 | 相关文档改为 `refactor-backlog.md`；删除 `memory-architecture.md` / `react-architecture-improvements.md` |

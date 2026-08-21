@@ -204,7 +204,7 @@ impl GeminiAdapter {
         // Consecutive tool results buffered until the next non-tool message
         // (or end of input), then flushed in declaration order.
         let mut pending_tool_results: Vec<(String, String)> = Vec::new();
-        for m in msgs {
+        for mut m in msgs {
             match m.role {
                 CanonicalRole::System => {
                     for p in &m.content {
@@ -227,6 +227,10 @@ impl GeminiAdapter {
                             &declared_order,
                             &call_id_to_name,
                         );
+                        if m.role == CanonicalRole::User {
+                            m.content =
+                                crate::adapters::apply_wire_inject_prefix(m.source, m.content);
+                        }
                         let parts = Self::content_to_parts(&m.content);
                         if parts.is_empty() {
                             continue;
@@ -924,6 +928,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -934,6 +939,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (contents, system) = GeminiAdapter::convert_contents(msgs);
@@ -957,6 +963,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         assert_eq!(contents.len(), 1);
@@ -986,6 +993,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -996,6 +1004,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
@@ -1035,6 +1044,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1045,6 +1055,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1055,6 +1066,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
@@ -1091,6 +1103,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1101,6 +1114,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1111,6 +1125,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             },
         ];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
@@ -1135,6 +1150,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         assert_eq!(contents.len(), 1);
@@ -1166,6 +1182,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let (contents, _) = GeminiAdapter::convert_contents(msgs);
         let inline = contents[0].parts[0].inline_data.as_ref().unwrap();

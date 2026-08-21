@@ -85,7 +85,8 @@ pub async fn update_settings(
     let (
         mcp_servers,
         mcp_discovery,
-        session_max_steps,
+        per_run_max_steps,
+        session_lifetime_max_steps,
         session_max_concurrent,
         llm_config,
         max_response_tokens,
@@ -101,6 +102,7 @@ pub async fn update_settings(
             config.mcp_servers.clone(),
             config.mcp_discovery.clone(),
             config.session.max_steps,
+            config.session.session_max_steps,
             config.session.max_concurrent,
             config.llm.clone(),
             config.context_limits.max_response_tokens,
@@ -119,7 +121,8 @@ pub async fn update_settings(
     hot_swap_router(&state, new_router).await?;
     tick("hot_swap_router");
     crate::commands::emit_llm_config_changed(&app);
-    state.agent.set_max_steps(session_max_steps);
+    state.agent.set_max_steps(per_run_max_steps);
+    state.agent.set_session_max_steps(session_lifetime_max_steps);
     state.executor.set_max_concurrent(session_max_concurrent);
     state
         .tools

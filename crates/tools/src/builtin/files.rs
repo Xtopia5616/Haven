@@ -125,6 +125,7 @@ async fn understand_image(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -139,6 +140,7 @@ async fn understand_image(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         },
     ];
 
@@ -975,6 +977,7 @@ async fn summarize(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         },
         CanonicalMessage {
             role: CanonicalRole::User,
@@ -985,6 +988,7 @@ async fn summarize(
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         },
     ];
 

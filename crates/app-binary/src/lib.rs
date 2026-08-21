@@ -1189,6 +1189,7 @@ mod tests {
                     summary: "s".into(),
                     tokens_before: 1,
                     tokens_after: 2,
+                    episode_id: None,
                 },
                 "agent:compaction",
             ),

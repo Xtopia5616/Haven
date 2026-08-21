@@ -49,7 +49,7 @@ impl<'a> StreamSession<'a> {
         &self,
         llm_messages: &mut Vec<CanonicalMessage>,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
+        events: &mut Vec<TranscriptRecord>,
         branch_points: &mut HashMap<u32, BranchPoint>,
     ) -> StepCallOutcome {
         match self
@@ -62,7 +62,7 @@ impl<'a> StreamSession<'a> {
                 self.tools,
                 self.cancel.clone(),
                 canonical,
-                history,
+                events,
                 branch_points,
                 self.partial_thought,
                 self.partial_reasoning,
@@ -453,7 +453,7 @@ impl ReActEngine {
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
+        events: &mut Vec<TranscriptRecord>,
         branch_points: &mut HashMap<u32, BranchPoint>,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
@@ -514,11 +514,15 @@ impl ReActEngine {
                             summary: result.summary,
                             tokens_before: result.tokens_before,
                             tokens_after: result.tokens_after,
+                            episode_id: result.episode_id,
                         },
+                        events,
                         canonical,
-                        history,
                     )
                     .await;
+                    // CompactSummary replaces the event log; drop BPs that
+                    // pointed into the discarded prefix (same contract as loop).
+                    branch_points.clear();
                     // The retry must convert the *compacted* canonical
                     // (the old messages are stale), and the role must be
                     // re-resolved: summarizing away the last image-bearing
@@ -570,8 +574,7 @@ impl ReActEngine {
                             );
                             self.persist_partial_on_error(
                                 ctx,
-                                canonical,
-                                history,
+                                events,
                                 branch_points,
                                 partial_thought,
                                 partial_reasoning,
@@ -593,8 +596,7 @@ impl ReActEngine {
                     );
                     self.persist_partial_on_error(
                         ctx,
-                        canonical,
-                        history,
+                        events,
                         branch_points,
                         partial_thought,
                         partial_reasoning,
@@ -621,8 +623,7 @@ impl ReActEngine {
                 );
                 self.persist_partial_on_error(
                     ctx,
-                    canonical,
-                    history,
+                    events,
                     branch_points,
                     partial_thought,
                     partial_reasoning,
@@ -667,7 +668,7 @@ impl ReActEngine {
         thought: &Option<String>,
         actions: &[Action],
         canonical: &mut Vec<CanonicalMessage>,
-        history: &[ReActStep],
+        events: &mut Vec<TranscriptRecord>,
         branch_points: &mut HashMap<u32, BranchPoint>,
     ) -> SearchContextOutcome {
         if response.web_search_calls.is_empty() {
@@ -689,14 +690,23 @@ impl ReActEngine {
         // Text must match what `persist_session_message` stores (trimmed
         // thought) or resume dedup fails on leading whitespace.
         let push_text = thought.as_deref().unwrap_or(&response.text);
+        let reasoning = if response.thinking_blocks.is_empty() {
+            response.reasoning.clone()
+        } else {
+            None
+        };
+        events.push(TranscriptRecord::ToolCall {
+            step_number: ctx.step_num,
+            text: push_text.to_string(),
+            tool_calls: Vec::new(),
+            reasoning: reasoning.clone(),
+            web_search_calls: response.web_search_calls.clone(),
+            thinking_blocks: response.thinking_blocks.clone(),
+        });
         canonical.push(CanonicalMessage::assistant(
             vec![ContentPart::text(push_text.to_string())],
             None,
-            if response.thinking_blocks.is_empty() {
-                response.reasoning.clone()
-            } else {
-                None
-            },
+            reasoning,
             response.web_search_calls.clone(),
             response.thinking_blocks.clone(),
         ));
@@ -719,8 +729,7 @@ impl ReActEngine {
             }
             self.save_branch_point(
                 &ctx.session_id,
-                canonical,
-                history,
+                events,
                 ctx.step_num,
                 branch_points,
                 false,

@@ -26,7 +26,14 @@ impl Default for HotkeyConfig {
 #[serde(default)]
 pub struct SessionConfig {
     pub max_concurrent: usize,
+    /// Per-run ReAct step budget. Each `run` (including pause→resume) grants a
+    /// fresh budget via `effective_max` (see `docs/architecture.md` §2.4).
     pub max_steps: u32,
+    /// Optional session-lifetime step cap across pause/resume cycles (Phase 8 /
+    /// J1). `None` = unlimited (preserve current UX). When set, the loop uses
+    /// `min(per_run_cap, session_max_steps.saturating_sub(steps_used))`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_max_steps: Option<u32>,
 }
 
 impl Default for SessionConfig {
@@ -36,8 +43,10 @@ impl Default for SessionConfig {
             // Per-run ReAct step budget (raised 30 → 200 so long multi-tool
             // sessions don't hit the cap mid-run; see refactor-dedup.md A9
             // review note). Resumes grant a fresh budget, so a session can run
-            // well past this total across pause/resume cycles.
+            // well past this total across pause/resume cycles unless
+            // `session_max_steps` is set.
             max_steps: 500,
+            session_max_steps: None,
         }
     }
 }

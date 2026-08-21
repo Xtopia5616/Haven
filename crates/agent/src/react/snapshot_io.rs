@@ -2,11 +2,10 @@
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
 
-use std::sync::Arc;
-
 use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
+use crate::types::TranscriptRecord;
 
 /// Mid-run DB snapshot throttle policy (Phase 7 / F3).
 ///
@@ -57,13 +56,12 @@ impl SnapshotStore {
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
-/// canonical/history/branch_points (which accumulate to O(n²) over a long
-/// session). Field names/shape match `ReActSnapshot` exactly so the persisted
-/// JSON stays wire-compatible.
+/// events/branch_points (which accumulate to O(n²) over a long session).
+/// Field names/shape match `ReActSnapshot` exactly so the persisted JSON
+/// stays wire-compatible. `events` is the sole transcript authority (Phase 8).
 #[derive(serde::Serialize)]
 struct SnapshotView<'a> {
-    canonical: &'a [CanonicalMessage],
-    history: &'a [ReActStep],
+    events: &'a [TranscriptRecord],
     step_number: u32,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     branch_points: &'a HashMap<u32, BranchPoint>,
@@ -158,7 +156,12 @@ impl ReActEngine {
     /// (`memory_episodes`) so context that compaction summarized away stays
     /// retrievable across sessions (embedding + keyword recall). Fire-and-forget:
     /// a dropped write only loses the summary episode, never the session itself.
-    pub(super) async fn persist_compaction_summary(&self, session_id: &str, summary: &str) {
+    pub(super) async fn persist_compaction_summary(
+        &self,
+        session_id: &str,
+        summary: &str,
+        episode_id: &str,
+    ) {
         let summary = summary.trim();
         if summary.is_empty() {
             return;
@@ -166,10 +169,11 @@ impl ReActEngine {
         let db = self.db.clone();
         let session_id = session_id.to_string();
         let summary = summary.to_string();
+        let episode_id = episode_id.to_string();
         let session_id_owned = session_id.clone();
         if let Err(e) = db
             .run_blocking(move |db| {
-                db.add_episode(&session_id_owned, &summary)?;
+                db.add_episode_with_id(&session_id_owned, &summary, &episode_id)?;
                 Ok::<(), anyhow::Error>(())
             })
             .await
@@ -197,8 +201,7 @@ impl ReActEngine {
     pub(super) async fn pause_turn(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         snapshot_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
@@ -241,17 +244,11 @@ impl ReActEngine {
                 .await;
             }
             if let Some(step) = branch_point_step {
-                self.save_branch_point(session_id, canonical, history, step, branch_points, false)
+                self.save_branch_point(session_id, events, step, branch_points, false)
                     .await;
             }
-            self.save_snapshot_with_branches(
-                session_id,
-                canonical,
-                history,
-                snapshot_step,
-                branch_points,
-            )
-            .await;
+            self.save_snapshot_with_branches(session_id, events, snapshot_step, branch_points)
+                .await;
             // The status itself carries the awaiting-answer flavor
             // (`PausedAwaitingAnswer`), so the transition is atomic: a
             // background-action completion landing concurrently reads the final
@@ -293,8 +290,7 @@ impl ReActEngine {
     pub(super) async fn pause_turn_budget(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         snapshot_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
@@ -306,14 +302,8 @@ impl ReActEngine {
                 session_id,
                 snapshot_step
             );
-            self.save_snapshot_with_branches(
-                session_id,
-                canonical,
-                history,
-                snapshot_step,
-                branch_points,
-            )
-            .await;
+            self.save_snapshot_with_branches(session_id, events, snapshot_step, branch_points)
+                .await;
             set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
             emitter
                 .emit(crate::event::AgentEvent::Notification {
@@ -351,19 +341,12 @@ impl ReActEngine {
     pub(super) async fn save_exit_snapshot(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
     ) {
-        self.save_snapshot_with_branches(
-            session_id,
-            canonical,
-            history,
-            step_number,
-            branch_points,
-        )
-        .await;
+        self.save_snapshot_with_branches(session_id, events, step_number, branch_points)
+            .await;
     }
 
     /// Phase 7 / C4: single cancel-exit path — write the exit snapshot then
@@ -372,15 +355,13 @@ impl ReActEngine {
     pub(super) async fn exit_cancelled(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
     ) -> LoopExit {
         self.exit_with_snapshot(
             session_id,
-            canonical,
-            history,
+            events,
             step_number,
             branch_points,
             LoopExit::Cancelled,
@@ -394,13 +375,12 @@ impl ReActEngine {
     pub(super) async fn exit_with_snapshot(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
         exit: LoopExit,
     ) -> LoopExit {
-        self.save_exit_snapshot(session_id, canonical, history, step_number, branch_points)
+        self.save_exit_snapshot(session_id, events, step_number, branch_points)
             .await;
         exit
     }
@@ -410,21 +390,14 @@ impl ReActEngine {
     pub(super) async fn exit_external_pause(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> LoopExit {
-        self.save_snapshot_with_branches(
-            session_id,
-            canonical,
-            history,
-            step_number,
-            branch_points,
-        )
-        .await;
+        self.save_snapshot_with_branches(session_id, events, step_number, branch_points)
+            .await;
         let ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num: step_number,
@@ -442,22 +415,20 @@ impl ReActEngine {
     /// Save snapshot including branch points for tree-structured rollback (§2).
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
-    /// of canonical/history/branch_points —those clones were O(n²) over a
-    /// long session) into a reusable buffer, then writes to SQLite on the
-    /// blocking thread pool so the WAL fsync never stalls the async runtime.
+    /// of events/branch_points — those clones were O(n²) over a long session)
+    /// into a reusable buffer, then writes to SQLite on the blocking thread
+    /// pool so the WAL fsync never stalls the async runtime.
     pub(super) async fn save_snapshot_with_branches(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
     ) {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
         let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
         let view = SnapshotView {
-            canonical,
-            history,
+            events,
             step_number,
             branch_points,
             saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
@@ -468,7 +439,7 @@ impl ReActEngine {
         // mutex guard is dropped before the await below (the guard is not
         // Send, so it must not be live across the spawn_blocking boundary).
         let bytes = {
-            let mut bufs = self.snapshot_bufs.lock().unwrap();
+            let mut bufs = self.snapshot_bufs.lock();
             let buf = bufs.entry(session_id.to_string()).or_default();
             buf.clear();
             if serde_json::to_writer(&mut *buf, &view).is_err() {
@@ -490,7 +461,7 @@ impl ReActEngine {
             })
             .await
             .unwrap_or_default();
-        if let Ok(mut bufs) = self.snapshot_bufs.lock() {
+        if let Ok(mut bufs) = self.snapshot_bufs.try_lock() {
             *bufs.entry(session_id.to_string()).or_default() = back.into_bytes();
         }
     }
@@ -501,31 +472,22 @@ impl ReActEngine {
     pub(super) async fn persist_partial_on_error(
         &self,
         ctx: &StepCtx,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         branch_points: &mut HashMap<u32, BranchPoint>,
-        partial_thought: &Arc<std::sync::Mutex<String>>,
-        partial_reasoning: &Arc<std::sync::Mutex<String>>,
+        partial_thought: &std::sync::Arc<std::sync::Mutex<String>>,
+        partial_reasoning: &std::sync::Arc<std::sync::Mutex<String>>,
     ) {
         // Save a branch point BEFORE persisting the partial output, so
         // last_msg_at captures the timestamp of the last message BEFORE the
         // partial. This lets continue_session / rollback_session precisely delete
         // only the partial output via delete_messages_after(last_msg_at).
-        // The canonical/history here represent the state BEFORE the failed
-        // LLM call (the response was never pushed to canonical), so resuming
-        // will retry the step cleanly.
+        // The events here represent the state BEFORE the failed LLM call
+        // (the response was never appended), so resuming will retry cleanly.
         // FORCED write: continue_session / rollback_session locate this branch
         // point in the DB snapshot; a throttled (stale) row would silently
         // skip their message truncation.
-        self.save_branch_point(
-            &ctx.session_id,
-            canonical,
-            history,
-            ctx.step_num,
-            branch_points,
-            true,
-        )
-        .await;
+        self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, true)
+            .await;
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
@@ -586,8 +548,7 @@ impl ReActEngine {
     pub(super) async fn save_branch_point(
         &self,
         session_id: &str,
-        canonical: &[CanonicalMessage],
-        history: &[ReActStep],
+        events: &[TranscriptRecord],
         step_number: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         force: bool,
@@ -601,37 +562,15 @@ impl ReActEngine {
             .await
             .ok()
             .flatten();
-        // Phase 7 / F4: Arc-wrap so subsequent BranchPoint clones share.
-        // When a prior entry has the same transcript lengths (no growth —
-        // re-save / empty progress), reuse its Arc. Length match is the
-        // heuristic: CanonicalMessage/ReActStep lack PartialEq, and branch
-        // points almost only grow between saves.
-        let (canonical_arc, history_arc) = {
-            let reusable = branch_points
-                .get(&step_number)
-                .into_iter()
-                .chain(
-                    branch_points
-                        .iter()
-                        .filter(|(k, _)| **k != step_number)
-                        .max_by_key(|(k, _)| *k)
-                        .map(|(_, bp)| bp),
-                )
-                .find(|bp| {
-                    bp.canonical.len() == canonical.len() && bp.history.len() == history.len()
-                });
-            match reusable {
-                Some(bp) => (Arc::clone(&bp.canonical), Arc::clone(&bp.history)),
-                None => (Arc::new(canonical.to_vec()), Arc::new(history.to_vec())),
-            }
-        };
+        // Phase 8 / F4: store only an index into the parent events vec — no
+        // Arc copies of transcript state.
         branch_points.insert(
             step_number,
             BranchPoint {
-                canonical: canonical_arc,
-                history: history_arc,
+                event_cursor: events.len(),
                 step_number,
                 last_msg_at,
+                legacy_canonical: None,
             },
         );
         // The throttle marker guard is confined to this block so it is always
@@ -641,14 +580,8 @@ impl ReActEngine {
             store.on_step_boundary(session_id, step_number, force)
         };
         if due {
-            self.save_snapshot_with_branches(
-                session_id,
-                canonical,
-                history,
-                step_number,
-                branch_points,
-            )
-            .await;
+            self.save_snapshot_with_branches(session_id, events, step_number, branch_points)
+                .await;
         }
     }
 }

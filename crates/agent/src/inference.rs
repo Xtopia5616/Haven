@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use haven_common::prompts::FACT_EXTRACTION_SYSTEM_PROMPT;
 use haven_llm::{EndpointRole, LlmRouter};
@@ -8,7 +10,7 @@ use haven_memory::repositories::facts::{
     FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
 };
 use serde::Deserialize;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 /// Maximum known facts listed in the extraction prompt as context, so the
 /// model can re-confirm or update existing facts instead of re-extracting
@@ -137,6 +139,14 @@ pub struct InferenceEngine {
     /// the BalancedModel endpoint when multiple sessions complete in rapid
     /// succession.
     inference_semaphore: Arc<Semaphore>,
+    /// Pending extraction jobs keyed by session_id. Value is
+    /// `bypass_throttle`; coalesce with OR so pause-path never loses to an
+    /// earlier interval enqueue (L3 / P1-7).
+    outbox: Mutex<HashMap<String, bool>>,
+    outbox_notify: Notify,
+    /// Lazy worker start so `AgentLayer::new` stays usable outside a Tokio
+    /// runtime (unit tests that only construct the layer).
+    outbox_worker_started: AtomicBool,
 }
 
 impl InferenceEngine {
@@ -158,7 +168,65 @@ impl InferenceEngine {
             sanitize_max_chars,
             fact_extraction_min_interval_secs,
             inference_semaphore: Arc::new(Semaphore::new(1)),
+            outbox: Mutex::new(HashMap::new()),
+            outbox_notify: Notify::new(),
+            outbox_worker_started: AtomicBool::new(false),
         }
+    }
+
+    /// Enqueue a session for extraction. ReAct only enqueues; a single worker
+    /// drains the outbox (L3 / P1-7). Duplicate session ids coalesce; any
+    /// `bypass_throttle=true` wins.
+    pub fn enqueue_infer(self: &Arc<Self>, session_id: &str, bypass_throttle: bool) {
+        if session_id.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.outbox.lock() {
+            let entry = pending.entry(session_id.to_string()).or_insert(false);
+            *entry = *entry || bypass_throttle;
+        }
+        self.ensure_outbox_worker();
+        self.outbox_notify.notify_one();
+    }
+
+    fn ensure_outbox_worker(self: &Arc<Self>) {
+        if self.outbox_worker_started.load(Ordering::Acquire) {
+            return;
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        if self
+            .outbox_worker_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let batch: Vec<(String, bool)> = {
+                    let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
+                    if pending.is_empty() {
+                        Vec::new()
+                    } else {
+                        pending.drain().collect()
+                    }
+                };
+                if batch.is_empty() {
+                    engine.outbox_notify.notified().await;
+                    continue;
+                }
+                for (session_id, bypass) in batch {
+                    if bypass {
+                        engine.infer_session_on_pause(&session_id).await;
+                    } else {
+                        engine.infer_session(&session_id).await;
+                    }
+                }
+            }
+        });
     }
 
     /// Extract facts from the specified session's user messages.
@@ -396,11 +464,22 @@ impl InferenceEngine {
                 tracing::info!("embedding model changed: cleared vector index for rebuild");
             }
         }
+        let fallback_model = self
+            .router
+            .config()
+            .await
+            .embedding_model
+            .model_name
+            .clone();
+        if fallback_model.is_empty() {
+            return;
+        }
         let db = self.db.clone();
+        let model_for_missing = fallback_model.clone();
         let pending_raw = db
             .run_blocking(move |db| {
                 let mut out: Vec<(String, String, String)> = Vec::new();
-                match db.missing_embedding_ids(entity_kind::FACT) {
+                match db.missing_embedding_ids(entity_kind::FACT, &model_for_missing) {
                     Ok(ids) => {
                         for id in ids {
                             match db.fact_text_by_id(&id) {
@@ -425,7 +504,7 @@ impl InferenceEngine {
                         );
                     }
                 }
-                match db.missing_embedding_ids(entity_kind::EPISODE) {
+                match db.missing_embedding_ids(entity_kind::EPISODE, &model_for_missing) {
                     Ok(ids) => {
                         for id in ids {
                             match db.episode_text(&id) {
@@ -466,13 +545,6 @@ impl InferenceEngine {
         if pending.is_empty() {
             return;
         }
-        let fallback_model = self
-            .router
-            .config()
-            .await
-            .embedding_model
-            .model_name
-            .clone();
         tracing::info!("embedding {} memory items", pending.len());
         for chunk in pending.chunks(self.embed_chunk_size) {
             let texts: Vec<String> = chunk.iter().map(|(_, _, t)| t.clone()).collect();
@@ -567,6 +639,13 @@ impl InferenceEngine {
                         e
                     );
                 }
+                match db.cleanup_orphan_source_refs() {
+                    Ok(n) => total += n,
+                    Err(e) => tracing::warn!(
+                        "memory maintenance: cleanup_orphan_source_refs failed: {}",
+                        e
+                    ),
+                }
                 Ok::<u64, anyhow::Error>(total)
             })
             .await
@@ -606,10 +685,19 @@ impl InferenceEngine {
             && let Ok(vec) = self.router.embed_text(query).await
             && !vec.is_empty()
         {
+            let model = self
+                .router
+                .config()
+                .await
+                .embedding_model
+                .model_name
+                .clone();
             let db = self.db.clone();
             let entity_owned = entity.to_string();
             if let Ok(hits) = db
-                .run_blocking(move |db| db.search_embeddings(&entity_owned, &vec, limit))
+                .run_blocking(move |db| {
+                    db.search_embeddings(&entity_owned, &vec, limit, &model)
+                })
                 .await
             {
                 return hits
@@ -1215,6 +1303,9 @@ mod tests {
             // 0 disables the time throttle; interval tests opt in explicitly.
             fact_extraction_min_interval_secs: 0,
             inference_semaphore: Arc::new(Semaphore::new(1)),
+            outbox: Mutex::new(HashMap::new()),
+            outbox_notify: Notify::new(),
+            outbox_worker_started: AtomicBool::new(false),
         }
     }
 
@@ -1289,6 +1380,9 @@ mod tests {
             sanitize_max_chars: 256,
             fact_extraction_min_interval_secs: 3_600,
             inference_semaphore: Arc::new(Semaphore::new(1)),
+            outbox: Mutex::new(HashMap::new()),
+            outbox_notify: Notify::new(),
+            outbox_worker_started: AtomicBool::new(false),
         };
         engine.infer_facts(&session.id).await;
         let cursor: Option<String> = db
@@ -1348,6 +1442,9 @@ mod tests {
             sanitize_max_chars: 256,
             fact_extraction_min_interval_secs: 0,
             inference_semaphore: Arc::new(Semaphore::new(1)),
+            outbox: Mutex::new(HashMap::new()),
+            outbox_notify: Notify::new(),
+            outbox_worker_started: AtomicBool::new(false),
         };
         engine.infer_facts(&session.id).await;
         let facts = db.get_facts("user").unwrap();
@@ -1359,5 +1456,18 @@ mod tests {
             .get_kv(&format!("fact_extraction.{}", session.id))
             .unwrap();
         assert_eq!(cursor.as_deref(), Some(m1.id.as_str()));
+    }
+
+    #[test]
+    fn enqueue_infer_coalesces_bypass_flag() {
+        let db = temp_db();
+        let engine = Arc::new(make_engine(db));
+        engine.enqueue_infer("ses-a", false);
+        engine.enqueue_infer("ses-a", true);
+        engine.enqueue_infer("ses-b", false);
+        let pending = engine.outbox.lock().unwrap();
+        assert_eq!(pending.get("ses-a"), Some(&true));
+        assert_eq!(pending.get("ses-b"), Some(&false));
+        assert_eq!(pending.len(), 2);
     }
 }

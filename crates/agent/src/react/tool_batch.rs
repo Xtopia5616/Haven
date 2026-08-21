@@ -4,7 +4,7 @@
 
 use super::hooks::BeforeToolAction;
 use super::*;
-use crate::types::{Action, BranchPoint, ConfirmPending, ConfirmPendingTool, ReActStep};
+use crate::types::{Action, BranchPoint, ConfirmPending, ConfirmPendingTool, TranscriptRecord};
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_tools::is_silent_action;
 use std::collections::{HashMap, HashSet};
@@ -204,7 +204,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
+        events: &mut Vec<TranscriptRecord>,
         step_num: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
@@ -303,16 +303,15 @@ impl ReActEngine {
                     thinking_blocks: response.thinking_blocks.clone(),
                     action_cards,
                 },
+                events,
                 canonical,
-                history,
             )
             .await;
         }
 
         self.save_branch_point(
             session_id,
-            canonical,
-            history,
+            events,
             step_num,
             branch_points,
             false,
@@ -398,8 +397,8 @@ impl ReActEngine {
                                 ask_options: Vec::new(),
                             }),
                         },
+                        events,
                         canonical,
-                        history,
                     )
                     .await;
                     completed_tool_keys.insert(tool_key(action));
@@ -601,8 +600,8 @@ impl ReActEngine {
                                     ask_options: Vec::new(),
                                 }),
                             },
+                            events,
                             canonical,
-                            history,
                         )
                         .await;
                     }
@@ -612,8 +611,7 @@ impl ReActEngine {
                     return Ok(ToolBatchOutcome::Done(
                         self.exit_cancelled(
                             session_id,
-                            canonical,
-                            history,
+                            events,
                             step_num,
                             branch_points,
                         )
@@ -710,8 +708,8 @@ impl ReActEngine {
                                 ask_options: ask_options.clone(),
                             }),
                         },
+                        events,
                         canonical,
-                        history,
                     )
                     .await;
                     completed_tool_keys.insert(tool_key(&action));
@@ -778,8 +776,7 @@ impl ReActEngine {
                 .await;
             self.pause_turn(
                 session_id,
-                canonical,
-                history,
+                events,
                 step_num + 1,
                 branch_points,
                 emitter,
@@ -849,8 +846,7 @@ impl ReActEngine {
             };
             self.pause_turn(
                 session_id,
-                canonical,
-                history,
+                events,
                 step_num + 1,
                 branch_points,
                 &emitter,
@@ -875,8 +871,7 @@ impl ReActEngine {
                 return Ok(ToolBatchOutcome::Done(
                     self.exit_external_pause(
                         session_id,
-                        canonical,
-                        history,
+                        events,
                         step_num,
                         branch_points,
                         emitter,
@@ -889,8 +884,7 @@ impl ReActEngine {
                 return Ok(ToolBatchOutcome::Done(
                     self.exit_with_snapshot(
                         session_id,
-                        canonical,
-                        history,
+                        events,
                         step_num,
                         branch_points,
                         LoopExit::Error("session interrupted".into()),
@@ -903,8 +897,7 @@ impl ReActEngine {
                 return Ok(ToolBatchOutcome::Done(
                     self.exit_with_snapshot(
                         session_id,
-                        canonical,
-                        history,
+                        events,
                         step_num,
                         branch_points,
                         LoopExit::Completed,
@@ -926,7 +919,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
+        events: &mut Vec<TranscriptRecord>,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
@@ -1031,8 +1024,8 @@ impl ReActEngine {
                             ask_options,
                         }),
                     },
+                    events,
                     canonical,
-                    history,
                 )
                 .await;
             } else {
@@ -1072,8 +1065,8 @@ impl ReActEngine {
                             ask_options: Vec::new(),
                         }),
                     },
+                    events,
                     canonical,
-                    history,
                 )
                 .await;
             }
@@ -1095,8 +1088,7 @@ impl ReActEngine {
             };
             self.pause_turn(
                 session_id,
-                canonical,
-                history,
+                events,
                 step_num + 1,
                 branch_points,
                 emitter,

@@ -32,6 +32,11 @@ pub const FACT_EMBED_BACKLOG_LIMIT: usize = 128;
 /// switching the embedding model on a large history.
 pub const EPISODE_EMBED_BACKLOG_LIMIT: usize = 64;
 
+/// Cap on embeddings scored per brute-force search when no tighter domain
+/// filter applies (P1-4). Prefer newest rows; sqlite-vec is deferred until
+/// fact volume reaches ~10k.
+pub const EMBEDDING_SEARCH_SCAN_CAP: usize = 256;
+
 /// Serialize an f32 vector as a little-endian byte blob for SQLite storage.
 pub fn encode_vector(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
@@ -110,7 +115,29 @@ impl Database {
         entity_type: &str,
         entity_id: &str,
     ) -> anyhow::Result<Option<EmbeddedText>> {
+        self.get_embedding_for_model(entity_type, entity_id, None)
+    }
+
+    /// Like [`Self::get_embedding`], optionally restricted to one model
+    /// (P2-13). Pass `Some(model)` so mixed-model rows cannot be returned.
+    pub fn get_embedding_for_model(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+        model: Option<&str>,
+    ) -> anyhow::Result<Option<EmbeddedText>> {
         let conn = self.conn();
+        if let Some(model) = model.filter(|m| !m.is_empty()) {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {EMBED_COLS} FROM memory_embeddings
+                 WHERE entity_type = ?1 AND entity_id = ?2 AND model = ?3"
+            ))?;
+            let mut rows = stmt.query(rusqlite::params![entity_type, entity_id, model])?;
+            return match rows.next()? {
+                Some(row) => Ok(Some(row_to_embedded(row)?)),
+                None => Ok(None),
+            };
+        }
         let mut stmt = conn.prepare(&format!(
             "SELECT {EMBED_COLS} FROM memory_embeddings WHERE entity_type = ?1 AND entity_id = ?2"
         ))?;
@@ -148,41 +175,72 @@ impl Database {
     /// single catch-up pass stays bounded. Prefer recent rows; for episodes,
     /// compaction summaries are taken before raw user messages (higher signal
     /// per embed). Repeated passes drain the backlog newest→oldest.
-    pub fn missing_embedding_ids(&self, entity_type: &str) -> anyhow::Result<Vec<String>> {
+    ///
+    /// When `model` is non-empty, only embeddings for that model count
+    /// (P2-13) — so a failed `clear_embeddings` after a model switch still
+    /// re-embeds under the new model.
+    pub fn missing_embedding_ids(
+        &self,
+        entity_type: &str,
+        model: &str,
+    ) -> anyhow::Result<Vec<String>> {
         let limit = match entity_type {
             entity_kind::FACT => FACT_EMBED_BACKLOG_LIMIT,
             entity_kind::EPISODE => EPISODE_EMBED_BACKLOG_LIMIT,
             _ => return Ok(Vec::new()),
         };
-        self.missing_embedding_ids_limited(entity_type, limit)
+        self.missing_embedding_ids_limited(entity_type, model, limit)
     }
 
     /// Like [`Self::missing_embedding_ids`] with an explicit cap (tests / tuning).
+    /// Empty `model` treats any stored embedding as covering the entity
+    /// (legacy test helper); production callers pass the current model name.
     pub fn missing_embedding_ids_limited(
         &self,
         entity_type: &str,
+        model: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<String>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let conn = self.conn();
+        let model_filter = !model.is_empty();
         match entity_type {
             entity_kind::FACT => {
-                let mut stmt = conn.prepare(
-                    "SELECT id FROM facts
-                     WHERE id NOT IN (
-                         SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
-                     )
-                     ORDER BY COALESCE(last_seen_at, created_at) DESC
-                     LIMIT ?2",
-                )?;
-                let rows = stmt.query_map(rusqlite::params![entity_type, limit as i64], |r| {
-                    r.get::<_, String>(0)
-                })?;
                 let mut out = Vec::new();
-                for row in rows {
-                    out.push(row?);
+                if model_filter {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM facts
+                         WHERE id NOT IN (
+                             SELECT entity_id FROM memory_embeddings
+                             WHERE entity_type = ?1 AND model = ?2
+                         )
+                         ORDER BY COALESCE(last_seen_at, created_at) DESC
+                         LIMIT ?3",
+                    )?;
+                    for row in stmt.query_map(
+                        rusqlite::params![entity_type, model, limit as i64],
+                        |r| r.get::<_, String>(0),
+                    )? {
+                        out.push(row?);
+                    }
+                } else {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM facts
+                         WHERE id NOT IN (
+                             SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
+                         )
+                         ORDER BY COALESCE(last_seen_at, created_at) DESC
+                         LIMIT ?2",
+                    )?;
+                    for row in stmt
+                        .query_map(rusqlite::params![entity_type, limit as i64], |r| {
+                            r.get::<_, String>(0)
+                        })?
+                    {
+                        out.push(row?);
+                    }
                 }
                 Ok(out)
             }
@@ -190,38 +248,74 @@ impl Database {
                 // Summaries first, then recent user messages to fill the rest.
                 // Both queries share this connection guard (non-reentrant mutex).
                 let mut out: Vec<String> = Vec::new();
-                let mut ep_stmt = conn.prepare(
-                    "SELECT id FROM memory_episodes
-                     WHERE id NOT IN (
-                         SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
-                     )
-                     ORDER BY created_at DESC
-                     LIMIT ?2",
-                )?;
-                let ep_rows =
-                    ep_stmt.query_map(rusqlite::params![entity_type, limit as i64], |r| {
-                        r.get::<_, String>(0)
-                    })?;
-                for row in ep_rows {
-                    out.push(row?);
-                }
-                let remaining = limit.saturating_sub(out.len());
-                if remaining > 0 {
-                    let mut stmt = conn.prepare(
-                        "SELECT id FROM messages
-                         WHERE role = 'user'
-                           AND id NOT IN (
-                               SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
-                           )
+                if model_filter {
+                    let mut ep_stmt = conn.prepare(
+                        "SELECT id FROM memory_episodes
+                         WHERE id NOT IN (
+                             SELECT entity_id FROM memory_embeddings
+                             WHERE entity_type = ?1 AND model = ?2
+                         )
+                         ORDER BY created_at DESC
+                         LIMIT ?3",
+                    )?;
+                    for row in ep_stmt.query_map(
+                        rusqlite::params![entity_type, model, limit as i64],
+                        |r| r.get::<_, String>(0),
+                    )? {
+                        out.push(row?);
+                    }
+                } else {
+                    let mut ep_stmt = conn.prepare(
+                        "SELECT id FROM memory_episodes
+                         WHERE id NOT IN (
+                             SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
+                         )
                          ORDER BY created_at DESC
                          LIMIT ?2",
                     )?;
-                    let rows =
-                        stmt.query_map(rusqlite::params![entity_type, remaining as i64], |r| {
+                    for row in ep_stmt
+                        .query_map(rusqlite::params![entity_type, limit as i64], |r| {
                             r.get::<_, String>(0)
-                        })?;
-                    for row in rows {
+                        })?
+                    {
                         out.push(row?);
+                    }
+                }
+                let remaining = limit.saturating_sub(out.len());
+                if remaining > 0 {
+                    if model_filter {
+                        let mut stmt = conn.prepare(
+                            "SELECT id FROM messages
+                             WHERE role = 'user'
+                               AND id NOT IN (
+                                   SELECT entity_id FROM memory_embeddings
+                                   WHERE entity_type = ?1 AND model = ?2
+                               )
+                             ORDER BY created_at DESC
+                             LIMIT ?3",
+                        )?;
+                        for row in stmt.query_map(
+                            rusqlite::params![entity_type, model, remaining as i64],
+                            |r| r.get::<_, String>(0),
+                        )? {
+                            out.push(row?);
+                        }
+                    } else {
+                        let mut stmt = conn.prepare(
+                            "SELECT id FROM messages
+                             WHERE role = 'user'
+                               AND id NOT IN (
+                                   SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
+                               )
+                             ORDER BY created_at DESC
+                             LIMIT ?2",
+                        )?;
+                        for row in stmt.query_map(
+                            rusqlite::params![entity_type, remaining as i64],
+                            |r| r.get::<_, String>(0),
+                        )? {
+                            out.push(row?);
+                        }
                     }
                 }
                 Ok(out)
@@ -273,75 +367,50 @@ impl Database {
         Ok(summary)
     }
 
-    /// Batch owning-session lookup for episode entity ids (message or
-    /// compaction summary). Used to exclude the current session from
-    /// cross-session recall (S2) without per-hit point lookups.
-    pub fn episode_session_ids(
-        &self,
-        entity_ids: &[&str],
-    ) -> anyhow::Result<std::collections::HashMap<String, Option<String>>> {
-        use std::collections::HashMap;
-        let mut out: HashMap<String, Option<String>> = HashMap::new();
-        if entity_ids.is_empty() {
-            return Ok(out);
-        }
-        for id in entity_ids {
-            out.insert((*id).to_string(), None);
-        }
-        let conn = self.conn();
-        let placeholders = vec!["?"; entity_ids.len()].join(",");
-        let msg_sql = format!("SELECT id, session_id FROM messages WHERE id IN ({placeholders})");
-        {
-            let mut stmt = conn.prepare(&msg_sql)?;
-            let params: Vec<&dyn rusqlite::types::ToSql> = entity_ids
-                .iter()
-                .map(|id| id as &dyn rusqlite::types::ToSql)
-                .collect();
-            let rows = stmt.query_map(params.as_slice(), |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            for row in rows {
-                let (id, sid) = row?;
-                out.insert(id, Some(sid));
-            }
-        }
-        let unresolved: Vec<&str> = out
-            .iter()
-            .filter_map(|(id, sid)| if sid.is_none() { Some(id.as_str()) } else { None })
-            .collect();
-        if unresolved.is_empty() {
-            return Ok(out);
-        }
-        let placeholders = vec!["?"; unresolved.len()].join(",");
-        let ep_sql =
-            format!("SELECT id, session_id FROM memory_episodes WHERE id IN ({placeholders})");
-        let mut stmt = conn.prepare(&ep_sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> = unresolved
-            .iter()
-            .map(|id| id as &dyn rusqlite::types::ToSql)
-            .collect();
-        let rows = stmt.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for row in rows {
-            let (id, sid) = row?;
-            out.insert(id, Some(sid));
-        }
-        Ok(out)
-    }
-
-    /// Brute-force cosine search over one memory domain. Data volumes here are
-    /// small (hundreds of facts/episodes), so a linear scan is fast and avoids
-    /// a native ANN dependency. Returns up to `limit` hits ordered by
-    /// descending similarity.
+    /// Brute-force cosine search over one memory domain. Prefer
+    /// [`Self::search_embeddings_filtered`] when a subject or session scope
+    /// is known (P1-4). Always filters by `model` (P2-13); empty model is
+    /// fail-closed (no hits). Unfiltered calls score at most
+    /// [`EMBEDDING_SEARCH_SCAN_CAP`] newest rows of that model.
     pub fn search_embeddings(
         &self,
         entity_type: &str,
         query_vec: &[f32],
         limit: usize,
+        model: &str,
     ) -> anyhow::Result<Vec<(EmbeddedText, f64)>> {
-        let mut hits: Vec<(EmbeddedText, f64)> = self
-            .list_embeddings(entity_type)?
+        self.search_embeddings_filtered(entity_type, query_vec, limit, model, None, None)
+    }
+
+    /// Cosine search with optional domain narrowing (P1-4) and required model
+    /// filter (P2-13):
+    /// - `model`: only embeddings from this model; empty → no hits
+    /// - `fact_subject`: only embeddings whose fact row has this subject
+    /// - `exclude_session_id`: drop episode entities owned by this session
+    ///
+    /// Candidate set is bounded by `max(limit * 4, EMBEDDING_SEARCH_SCAN_CAP)`
+    /// newest matching rows so prompt build stays cheap before sqlite-vec.
+    pub fn search_embeddings_filtered(
+        &self,
+        entity_type: &str,
+        query_vec: &[f32],
+        limit: usize,
+        model: &str,
+        fact_subject: Option<&str>,
+        exclude_session_id: Option<&str>,
+    ) -> anyhow::Result<Vec<(EmbeddedText, f64)>> {
+        if limit == 0 || model.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scan_cap = (limit.saturating_mul(4)).max(EMBEDDING_SEARCH_SCAN_CAP);
+        let candidates = self.list_embeddings_for_search(
+            entity_type,
+            model,
+            scan_cap,
+            fact_subject,
+            exclude_session_id,
+        )?;
+        let mut hits: Vec<(EmbeddedText, f64)> = candidates
             .into_iter()
             .map(|e| {
                 let score = cosine_similarity(query_vec, &e.vector);
@@ -353,11 +422,102 @@ impl Database {
         Ok(hits)
     }
 
+    /// Newest embeddings for one domain + model, optionally narrowed by fact
+    /// subject or episode owning-session exclusion. Used by vector search so
+    /// cosine never scans an unbounded or mixed-model table (P2-13).
+    fn list_embeddings_for_search(
+        &self,
+        entity_type: &str,
+        model: &str,
+        scan_cap: usize,
+        fact_subject: Option<&str>,
+        exclude_session_id: Option<&str>,
+    ) -> anyhow::Result<Vec<EmbeddedText>> {
+        // Fast path: cached full list filtered by model when no SQL domain
+        // filter is needed and the cache is smaller than the scan cap.
+        if fact_subject.is_none()
+            && exclude_session_id.is_none()
+            && let Some(cached) = self.cache_get_embeddings(entity_type)
+        {
+            let filtered: Vec<_> = cached.into_iter().filter(|e| e.model == model).collect();
+            if filtered.len() <= scan_cap {
+                return Ok(filtered);
+            }
+            return Ok(filtered.into_iter().take(scan_cap).collect());
+        }
+
+        let conn = self.conn();
+        match (entity_type, fact_subject, exclude_session_id) {
+            (entity_kind::FACT, Some(subject), _) => {
+                let mut stmt = conn.prepare(
+                    "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
+                            e.created_at, e.updated_at
+                     FROM memory_embeddings e
+                     INNER JOIN facts f ON f.id = e.entity_id
+                     WHERE e.entity_type = ?1 AND e.model = ?2 AND f.subject = ?3
+                     ORDER BY e.updated_at DESC
+                     LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    rusqlite::params![entity_type, model, subject, scan_cap as i64],
+                    row_to_embedded,
+                )?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(out)
+            }
+            (entity_kind::EPISODE, _, Some(sid)) => {
+                let mut stmt = conn.prepare(
+                    "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
+                            e.created_at, e.updated_at
+                     FROM memory_embeddings e
+                     WHERE e.entity_type = ?1 AND e.model = ?2
+                       AND e.entity_id NOT IN (
+                           SELECT id FROM messages WHERE session_id = ?3
+                           UNION ALL
+                           SELECT id FROM memory_episodes WHERE session_id = ?3
+                       )
+                     ORDER BY e.updated_at DESC
+                     LIMIT ?4",
+                )?;
+                let rows = stmt.query_map(
+                    rusqlite::params![entity_type, model, sid, scan_cap as i64],
+                    row_to_embedded,
+                )?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(out)
+            }
+            _ => {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT {EMBED_COLS} FROM memory_embeddings
+                     WHERE entity_type = ?1 AND model = ?2
+                     ORDER BY updated_at DESC
+                     LIMIT ?3"
+                ))?;
+                let rows = stmt.query_map(
+                    rusqlite::params![entity_type, model, scan_cap as i64],
+                    row_to_embedded,
+                )?;
+                let mut out = Vec::new();
+                for row in rows {
+                    out.push(row?);
+                }
+                Ok(out)
+            }
+        }
+    }
+
     /// Keyword search over the event-stream memory (user messages plus
     /// persisted compaction summaries), independent of the vector index — so
     /// cross-session recall works even when no `embedding_model` is configured.
-    /// Terms are matched as case-insensitive substrings; results are ranked by
-    /// the number of distinct terms matched, then recency.
+    /// Compaction summaries use `episodes_fts` (trigram) when available
+    /// (P2-10 / L6); user messages still use a bounded LIKE/substring scan.
+    /// Results are ranked by distinct term hits, then recency.
     ///
     /// When `exclude_session_id` is set (Phase 6 / S2), rows from that session
     /// are omitted so the current conversation is not recalled as "past".
@@ -377,58 +537,252 @@ impl Database {
         exclude_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<String>> {
         let terms: Vec<&str> = terms.iter().filter(|t| !t.is_empty()).copied().collect();
-        if terms.is_empty() {
+        if terms.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let conn = self.conn();
-        // Candidate pool is bounded to the most recent episodes (the newest
-        // 1000 user messages by creation time, plus every stored compaction
-        // summary), matching how the vector index behaves. Same-session rows
-        // are filtered when `exclude_session_id` is provided (S2).
-        let candidates: Vec<(String, String)> = if let Some(sid) = exclude_session_id {
-            let mut stmt = conn.prepare(
-                "SELECT content, created_at FROM (
-                     SELECT content, created_at FROM messages
-                     WHERE role = 'user' AND session_id != ?1
-                     UNION ALL
-                     SELECT summary, created_at FROM memory_episodes
-                     WHERE session_id != ?1
-                 )
-                 ORDER BY created_at DESC LIMIT 1000",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![sid], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        } else {
-            let mut stmt = conn.prepare(
-                "SELECT content, created_at FROM (
-                     SELECT content, created_at FROM messages WHERE role = 'user'
-                     UNION ALL
-                     SELECT summary, created_at FROM memory_episodes
-                 )
-                 ORDER BY created_at DESC LIMIT 1000",
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
         let lower_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
-        let mut scored: Vec<(usize, String)> = Vec::new();
-        for (content, _created) in candidates {
-            let tl = content.to_lowercase();
-            let hits = lower_terms
-                .iter()
-                .filter(|term| tl.contains(term.as_str()))
-                .count();
-            if hits > 0 {
-                scored.push((hits, content));
+        let mut scored: Vec<(usize, String, String)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // P2-10: prefer FTS for compaction summaries (+ topics/entities).
+        if let Ok(Some(fts_hits)) =
+            self.search_episode_summaries_fts(&terms, exclude_session_id, limit.saturating_mul(4))
+        {
+            for (display, haystack, created) in fts_hits {
+                Self::score_episode_candidate_haystack(
+                    &display,
+                    &haystack,
+                    &created,
+                    &lower_terms,
+                    &mut scored,
+                    &mut seen,
+                );
+            }
+        } else {
+            // FTS unavailable: score recent summaries (incl. topics/entities).
+            for (display, haystack, created) in
+                self.list_recent_episode_rows(exclude_session_id, 1000)?
+            {
+                Self::score_episode_candidate_haystack(
+                    &display,
+                    &haystack,
+                    &created,
+                    &lower_terms,
+                    &mut scored,
+                    &mut seen,
+                );
             }
         }
-        scored.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+
+        // Short terms miss trigram — union recent summaries for digrams only.
+        let short: Vec<&str> = terms
+            .iter()
+            .copied()
+            .filter(|t| {
+                let n = t.chars().count();
+                n > 0 && n < 3
+            })
+            .collect();
+        if !short.is_empty() {
+            let short_lower: Vec<String> = short.iter().map(|t| t.to_lowercase()).collect();
+            for (display, haystack, created) in
+                self.list_recent_episode_rows(exclude_session_id, 1000)?
+            {
+                let hay = haystack.to_lowercase();
+                if short_lower.iter().any(|p| hay.contains(p)) {
+                    Self::score_episode_candidate_haystack(
+                        &display,
+                        &haystack,
+                        &created,
+                        &lower_terms,
+                        &mut scored,
+                        &mut seen,
+                    );
+                }
+            }
+        }
+
+        // User messages remain a bounded substring scan (not in episodes_fts).
+        for (content, created) in self.list_recent_user_messages(exclude_session_id, 1000)? {
+            Self::score_episode_candidate(
+                &content,
+                &created,
+                &lower_terms,
+                &mut scored,
+                &mut seen,
+            );
+        }
+
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.2.cmp(&a.2)) // newer created_at first
+        });
         scored.truncate(limit);
-        Ok(scored.into_iter().map(|(_, t)| t).collect())
+        Ok(scored.into_iter().map(|(_, t, _)| t).collect())
+    }
+
+    fn score_episode_candidate(
+        content: &str,
+        created: &str,
+        lower_terms: &[String],
+        scored: &mut Vec<(usize, String, String)>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        Self::score_episode_candidate_haystack(
+            content, content, created, lower_terms, scored, seen,
+        );
+    }
+
+    fn score_episode_candidate_haystack(
+        display: &str,
+        haystack: &str,
+        created: &str,
+        lower_terms: &[String],
+        scored: &mut Vec<(usize, String, String)>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        if !seen.insert(display.to_string()) {
+            return;
+        }
+        let tl = haystack.to_lowercase();
+        let hits = lower_terms
+            .iter()
+            .filter(|term| tl.contains(term.as_str()))
+            .count();
+        if hits > 0 {
+            scored.push((hits, display.to_string(), created.to_string()));
+        }
+    }
+
+    fn build_episode_fts_query(terms: &[&str]) -> String {
+        terms
+            .iter()
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    }
+
+    /// `Ok(None)` = FTS missing/failed; `Ok(Some(_))` = successful MATCH.
+    /// Rows are `(display_summary, search_haystack, created_at)`.
+    fn search_episode_summaries_fts(
+        &self,
+        terms: &[&str],
+        exclude_session_id: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<(String, String, String)>>> {
+        if limit == 0 || terms.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let match_expr = Self::build_episode_fts_query(terms);
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String)> {
+            let summary: String = r.get(0)?;
+            let topics: String = r.get(1)?;
+            let entities: String = r.get(2)?;
+            let created: String = r.get(3)?;
+            let haystack = format!("{summary} {topics} {entities}");
+            Ok((summary, haystack, created))
+        };
+        let conn = self.conn();
+        let result = if let Some(sid) = exclude_session_id {
+            let mut stmt = conn.prepare(
+                "SELECT e.summary, e.topics, e.entities, e.created_at
+                 FROM episodes_fts
+                 JOIN memory_episodes e ON e.rowid = episodes_fts.rowid
+                 WHERE episodes_fts MATCH ?1 AND e.session_id != ?2
+                 ORDER BY bm25(episodes_fts), e.created_at DESC
+                 LIMIT ?3",
+            );
+            match stmt {
+                Ok(ref mut s) => s
+                    .query_map(rusqlite::params![match_expr, sid, limit as i64], map_row)
+                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()),
+                Err(e) => Err(e),
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT e.summary, e.topics, e.entities, e.created_at
+                 FROM episodes_fts
+                 JOIN memory_episodes e ON e.rowid = episodes_fts.rowid
+                 WHERE episodes_fts MATCH ?1
+                 ORDER BY bm25(episodes_fts), e.created_at DESC
+                 LIMIT ?2",
+            );
+            match stmt {
+                Ok(ref mut s) => s
+                    .query_map(rusqlite::params![match_expr, limit as i64], map_row)
+                    .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()),
+                Err(e) => Err(e),
+            }
+        };
+        match result {
+            Ok(rows) => Ok(Some(rows)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// `(display_summary, search_haystack, created_at)` — haystack includes
+    /// topics/entities JSON so structured tags are keyword-visible (P2-10).
+    fn list_recent_episode_rows(
+        &self,
+        exclude_session_id: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(String, String, String)>> {
+        let conn = self.conn();
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String)> {
+            let summary: String = r.get(0)?;
+            let topics: String = r.get(1)?;
+            let entities: String = r.get(2)?;
+            let created: String = r.get(3)?;
+            let haystack = format!("{summary} {topics} {entities}");
+            Ok((summary, haystack, created))
+        };
+        if let Some(sid) = exclude_session_id {
+            let mut stmt = conn.prepare(
+                "SELECT summary, topics, entities, created_at FROM memory_episodes
+                 WHERE session_id != ?1
+                 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let rows =
+                stmt.query_map(rusqlite::params![sid, limit as i64], map_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT summary, topics, entities, created_at FROM memory_episodes
+                 ORDER BY created_at DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![limit as i64], map_row)?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }
+    }
+
+    fn list_recent_user_messages(
+        &self,
+        exclude_session_id: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let conn = self.conn();
+        if let Some(sid) = exclude_session_id {
+            let mut stmt = conn.prepare(
+                "SELECT content, created_at FROM messages
+                 WHERE role = 'user' AND session_id != ?1
+                 ORDER BY created_at DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![sid, limit as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT content, created_at FROM messages
+                 WHERE role = 'user'
+                 ORDER BY created_at DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }
     }
 
     /// Distinct embedding model names currently in the vector index.
@@ -544,7 +898,7 @@ mod tests {
         db.save_embedding(entity_kind::FACT, "f2", "m", &[0.0, 1.0], "b")
             .unwrap();
         let hits = db
-            .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10)
+            .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "m")
             .unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0.entity_id, "f1");
@@ -559,10 +913,82 @@ mod tests {
         db.save_embedding(entity_kind::EPISODE, "e1", "m", &[1.0, 0.0], "b")
             .unwrap();
         let hits = db
-            .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 1)
+            .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 1, "m")
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0.entity_id, "f1");
+    }
+
+    #[test]
+    fn search_embeddings_filtered_by_fact_subject() {
+        let db = db();
+        let user = db
+            .insert_fact("user", "likes", "Rust", "user", 0.9, &[])
+            .unwrap();
+        let other = db
+            .insert_fact("alice", "likes", "Go", "user", 0.9, &[])
+            .unwrap();
+        db.save_embedding(entity_kind::FACT, &user.id, "m", &[1.0, 0.0], "user rust")
+            .unwrap();
+        db.save_embedding(entity_kind::FACT, &other.id, "m", &[1.0, 0.0], "alice go")
+            .unwrap();
+        let hits = db
+            .search_embeddings_filtered(
+                entity_kind::FACT,
+                &[1.0, 0.0],
+                10,
+                "m",
+                Some("user"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.entity_id, user.id);
+    }
+
+    #[test]
+    fn search_embeddings_filtered_excludes_session_episodes() {
+        let db = db();
+        let current = db.create_session("cur", "").unwrap();
+        let other = db.create_session("oth", "").unwrap();
+        let cur_ep = db.add_episode(&current.id, "current summary").unwrap();
+        let oth_ep = db.add_episode(&other.id, "other summary").unwrap();
+        db.save_embedding(entity_kind::EPISODE, &cur_ep, "m", &[1.0, 0.0], "current")
+            .unwrap();
+        db.save_embedding(entity_kind::EPISODE, &oth_ep, "m", &[1.0, 0.0], "other")
+            .unwrap();
+        let hits = db
+            .search_embeddings_filtered(
+                entity_kind::EPISODE,
+                &[1.0, 0.0],
+                10,
+                "m",
+                None,
+                Some(&current.id),
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.entity_id, oth_ep);
+    }
+
+    #[test]
+    fn search_embeddings_filters_by_model() {
+        let db = db();
+        db.save_embedding(entity_kind::FACT, "f1", "old-m", &[1.0, 0.0], "a")
+            .unwrap();
+        db.save_embedding(entity_kind::FACT, "f2", "new-m", &[1.0, 0.0], "b")
+            .unwrap();
+        let hits = db
+            .search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "new-m")
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.entity_id, "f2");
+        assert!(
+            db.search_embeddings(entity_kind::FACT, &[1.0, 0.0], 10, "")
+                .unwrap()
+                .is_empty(),
+            "empty model must fail-closed"
+        );
     }
 
     #[test]
@@ -575,8 +1001,11 @@ mod tests {
             .unwrap();
         db.save_embedding(entity_kind::FACT, &f.id, "m", &[1.0], "x")
             .unwrap();
-        let missing = db.missing_embedding_ids(entity_kind::FACT).unwrap();
+        let missing = db.missing_embedding_ids(entity_kind::FACT, "m").unwrap();
         assert_eq!(missing.len(), 1);
+        // Covered under old model still missing for the new one (P2-13).
+        let missing_new = db.missing_embedding_ids(entity_kind::FACT, "other").unwrap();
+        assert_eq!(missing_new.len(), 2);
     }
 
     #[test]
@@ -586,12 +1015,12 @@ mod tests {
         let msg = db
             .add_message(&session.id, "user", "hello world", Some("text"), None)
             .unwrap();
-        let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
+        let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 1);
         assert!(missing.contains(&msg.id));
         db.save_embedding(entity_kind::EPISODE, &msg.id, "m", &[1.0], "hello world")
             .unwrap();
-        let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
+        let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 0);
     }
 
@@ -613,7 +1042,7 @@ mod tests {
         let ep_b = db.add_episode(&session.id, "summary-b").unwrap();
 
         let missing = db
-            .missing_embedding_ids_limited(entity_kind::EPISODE, 2)
+            .missing_embedding_ids_limited(entity_kind::EPISODE, "m", 2)
             .unwrap();
         assert_eq!(missing.len(), 2);
         assert!(
@@ -623,7 +1052,7 @@ mod tests {
         );
 
         let missing3 = db
-            .missing_embedding_ids_limited(entity_kind::EPISODE, 3)
+            .missing_embedding_ids_limited(entity_kind::EPISODE, "m", 3)
             .unwrap();
         assert_eq!(missing3.len(), 3);
         assert!(missing3.contains(&ep_a) && missing3.contains(&ep_b));
@@ -777,7 +1206,7 @@ mod tests {
             .unwrap();
 
         // Summaries are missing-index candidates and resolve their text.
-        let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
+        let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert!(missing.contains(&ep));
         assert!(missing.iter().any(|m| m != &ep));
         assert_eq!(
@@ -795,9 +1224,31 @@ mod tests {
         // does not treat it as orphaned.
         db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0, 0.0], "x")
             .unwrap();
-        let missing = db.missing_embedding_ids(entity_kind::EPISODE).unwrap();
+        let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert!(!missing.contains(&ep));
         assert_eq!(db.prune_orphaned_embeddings().unwrap(), 0);
+    }
+
+    #[test]
+    fn search_episodes_by_topics_via_fts() {
+        let db = db();
+        let session = db.create_session("t", "").unwrap();
+        let id = haven_common::types::new_id("msg");
+        db.add_episode_structured(
+            &session.id,
+            "talked about monitors",
+            &id,
+            &["hardware"],
+            &["Dell"],
+        )
+        .unwrap();
+        let hits = db
+            .search_episodes_by_keywords(&["hardware"], 5)
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| h.contains("monitors")),
+            "topic tag must be FTS-visible; got {hits:?}"
+        );
     }
 
     #[test]

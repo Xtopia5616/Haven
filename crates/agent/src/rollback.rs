@@ -6,11 +6,11 @@
 //! readable; these methods operate on the same private fields (`db`,
 //! `executor`) via `impl AgentLayer` blocks in this module.
 
+use haven_common::types::{CanonicalRole, ContentPart};
+
 use crate::AgentLayer;
-use crate::sanitize_canonical;
 use crate::session::SessionStatus;
-use crate::types::{BranchPoint, ReActSnapshot, ReActStep};
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
 
 impl AgentLayer {
     /// Roll back a session to a specific branch point. The session is rewound
@@ -30,8 +30,8 @@ impl AgentLayer {
         target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
         // If the session is currently Running, cancel it first so the ReAct loop
-        // exits cleanly. Otherwise the loop's in-memory canonical/history would
-        // diverge from the restored snapshot and overwrite it on the next save.
+        // exits cleanly. Otherwise the loop's in-memory events would diverge
+        // from the restored snapshot and overwrite it on the next save.
         // The loop observes the token at every wait point (step top, LLM call,
         // tool batch drain) and exits without touching status, so no Error
         // marking is needed — setting Error here would only emit a spurious
@@ -55,7 +55,7 @@ impl AgentLayer {
                 // No saved state at all — this happens when a session errored
                 // before any snapshot was saved (e.g. first LLM call failed
                 // in an older version without Fix 1). We can't restore
-                // canonical, but we can still truncate session messages so
+                // events, but we can still truncate session messages so
                 // the user can edit and re-send their input.
                 tracing::warn!(
                     "rollback_session {}: no react_state — falling back to message-only truncation",
@@ -102,12 +102,12 @@ impl AgentLayer {
                 return Ok(());
             }
         };
-        let mut snapshot: ReActSnapshot = serde_json::from_str(&state_json)?;
+        let mut snapshot = ReActSnapshot::from_json(&state_json)?;
 
         // If no branch_point exists at the target step, the step likely
         // failed before save_branch_point was called (e.g. LLM error
-        // mid-stream). In that case the snapshot's current canonical/history
-        // IS the pre-step state — use it directly.
+        // mid-stream). In that case the snapshot's current events ARE the
+        // pre-step state — use them directly.
         let bp = if let Some(bp) = snapshot.branch_points.get(&target_step).cloned() {
             bp
         } else {
@@ -123,26 +123,29 @@ impl AgentLayer {
             // it).
             let cutoff_ts = self.db.last_user_message_ts(session_id);
             BranchPoint {
-                canonical: std::sync::Arc::new(snapshot.canonical.clone()),
-                history: std::sync::Arc::new(snapshot.history.clone()),
+                event_cursor: snapshot.events.len(),
                 step_number: target_step,
                 last_msg_at: cutoff_ts,
+                legacy_canonical: None,
             }
         };
 
-        // Restore the canonical/history/step from the branch point.
-        // Arc::unwrap_or_clone avoids a deep copy when we hold the sole ref.
-        snapshot.canonical = std::sync::Arc::unwrap_or_clone(bp.canonical);
-        snapshot.history = std::sync::Arc::unwrap_or_clone(bp.history);
+        // Restore events/step from the branch point. Legacy Phase-7 upgrades
+        // stash the BP's canonical seed so truncate(1) is not a no-op.
+        if let Some(seed) = bp.legacy_canonical.clone() {
+            snapshot.events = crate::types::seed_events_from_canonical(seed);
+        } else {
+            snapshot.events.truncate(bp.event_cursor);
+        }
         snapshot.step_number = bp.step_number;
 
-        // If the branch point was saved right after an assistant tool_call
-        // message but before the tool results were appended, the canonical
-        // array ends with an assistant message carrying `tool_calls` but no
-        // matching tool-result messages. Sending this to the LLM triggers a
-        // 400 error (dangling tool_call). Trim such a trailing assistant
-        // message so the loop re-requests the tool call cleanly.
-        Self::trim_dangling_tool_call(&mut snapshot.canonical, &mut snapshot.history);
+        // If the branch point was saved right after a ToolCall event but
+        // before ToolResult(s) were appended, the projected canonical ends
+        // with an assistant message carrying `tool_calls` but no matching
+        // tool-result messages. Sending this to the LLM triggers a 400.
+        // Trim the dangling ToolCall (and its Thought) so the loop
+        // re-requests the tool call cleanly.
+        Self::trim_dangling_tool_call(&mut snapshot.events);
 
         // Newest branch-point cutoff (computed BEFORE pruning): used below to
         // detect a user message persisted after every branch point.
@@ -152,10 +155,12 @@ impl AgentLayer {
             .filter_map(|b| b.last_msg_at.clone())
             .max();
 
-        // Prune branch points that were created after the target step so the
-        // session tree does not accumulate stale entries from the discarded
-        // timeline.
-        snapshot.branch_points.retain(|&k, _| k <= target_step);
+        // Prune branch points created after the target step, and any whose
+        // cursor now sits past the truncated events.
+        let event_len = snapshot.events.len();
+        snapshot
+            .branch_points
+            .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
 
         // Truncate session messages persisted after the branch point so the
         // conversation context matches the restored snapshot.
@@ -164,7 +169,7 @@ impl AgentLayer {
         // an interjection sent while the session was erroring (its supplement
         // was dropped as the session was terminal) or before the app closed
         // mid-generation (the steering queue is in-memory only and is lost).
-        // Such a message was never added to the ReAct canonical, so rolling
+        // Such a message was never added to the ReAct events, so rolling
         // back to it must discard ONLY that message — deleting from the
         // branch point's cutoff would wipe valid earlier history.
         let session_msgs = self.db.get_session_messages(session_id)?;
@@ -229,60 +234,90 @@ impl AgentLayer {
         self.executor.partials.discard(session_id).await;
 
         // For user-message rollback, also remove the user message from the
-        // restored canonical so the LLM doesn't see it when the session resumes.
+        // restored events so the LLM doesn't see it when the session resumes.
         // Skipped for orphan rollback: the orphaned message was never in the
-        // canonical, so the last User entry there is a legitimately processed
-        // message that must stay in the restored context.
+        // events, so truncating would drop a legitimately processed inject.
         //
-        // The target user message is NOT necessarily the last User entry:
-        // steering/supplement inputs pushed after it also carry role User
-        // (with their "Steering: — / "Additional context from user: —
-        // prefixes). Trimming at the last User would leave the rolled-back
-        // message in the canonical. Match the target by content instead
-        // (canonical stores the prefixed form, the DB the raw text). If the
-        // target cannot be located even with the known prefixes, that is a
-        // genuine inconsistency — error instead of guessing the last User
-        // entry (which could truncate a different message).
+        // Match `UserInject.text` (raw; adapters add wire prefixes) or a User
+        // row inside a CompactSummary seed. Also accept historically prefixed
+        // text via `InjectSource::match_prefixes`.
         if pause
             && !is_orphan_rollback
             && let Some(target) = target_msg
         {
+            let target_content = target.content.as_str();
             let prefixes = haven_common::types::InjectSource::match_prefixes();
             let matches_target = |t: &str| {
-                t == target.content
+                t == target_content
                     || prefixes.iter().any(|p| {
                         t.strip_prefix(p.as_str())
-                            .is_some_and(|rest| rest == target.content)
+                            .is_some_and(|rest| rest == target_content)
                     })
             };
-            let pos = snapshot
-                .canonical
-                .iter()
-                .rposition(|m| {
-                    m.role == CanonicalRole::User
-                        && m.content
-                            .iter()
-                            .any(|p| matches!(p, ContentPart::Text(t) if matches_target(t)))
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "rollback_session {}: target user message not found in the restored canonical",
-                        session_id
-                    )
-                })?;
-            // Keep everything before the target user message. Drop the
-            // message and any assistant messages that followed it.
-            snapshot.canonical.truncate(pos);
+            let mut found = false;
+            if let Some(pos) = snapshot.events.iter().rposition(|ev| {
+                matches!(
+                    ev,
+                    TranscriptRecord::UserInject { text, .. } if matches_target(text)
+                )
+            }) {
+                // Keep everything before the target inject. Drop it and any
+                // events that followed it.
+                snapshot.events.truncate(pos);
+                let event_len = snapshot.events.len();
+                for bp in snapshot.branch_points.values_mut() {
+                    if bp.event_cursor > event_len {
+                        bp.event_cursor = event_len;
+                    }
+                }
+                snapshot
+                    .branch_points
+                    .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
+                found = true;
+            } else {
+                // CompactSummary seed (test helpers / legacy snapshots): trim
+                // the compacted user row in place, then drop every event after
+                // that CompactSummary so post-summary transcript cannot linger.
+                for idx in (0..snapshot.events.len()).rev() {
+                    if let TranscriptRecord::CompactSummary { compacted, .. } =
+                        &mut snapshot.events[idx]
+                        && let Some(pos) = compacted.iter().rposition(|m| {
+                            m.role == CanonicalRole::User
+                                && m.content.iter().any(|p| {
+                                    matches!(p, ContentPart::Text(t) if matches_target(t))
+                                })
+                        })
+                    {
+                        compacted.truncate(pos);
+                        snapshot.events.truncate(idx + 1);
+                        let event_len = snapshot.events.len();
+                        for bp in snapshot.branch_points.values_mut() {
+                            if bp.event_cursor > event_len {
+                                bp.event_cursor = event_len;
+                            }
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                return Err(anyhow::anyhow!(
+                    "rollback_session {}: target user message not found in the restored events",
+                    session_id
+                ));
+            }
         }
 
         let json = serde_json::to_string(&snapshot)?;
         self.db.save_react_state(session_id, &json)?;
 
-        // Rebuild per-session tool registrations from the restored history so
+        // Rebuild per-session tool registrations from the restored rounds so
         // that tools loaded after the rollback point are dropped, and tools
         // loaded before it remain available.
-        self.restore_per_session_tools(session_id, &snapshot.history)
-            .await;
+        // Cursor-aware project (equivalent to project() after truncate).
+        let (_, rounds) = snapshot.project_at(snapshot.events.len());
+        self.restore_per_session_tools(session_id, &rounds).await;
 
         // Reload the session into executor memory (it may have been removed if we
         // marked a Running session as Error above, or was never loaded after restart).
@@ -343,7 +378,7 @@ impl AgentLayer {
         // last_msg_at — the timestamp of the last message BEFORE the partial
         // output. We delete everything after it so the retry starts clean.
         if let Ok(Some(state_json)) = self.db.get_react_state(session_id)
-            && let Ok(snapshot) = serde_json::from_str::<ReActSnapshot>(&state_json)
+            && let Ok(snapshot) = ReActSnapshot::from_json(&state_json)
         {
             // The snapshot's step_number is the step that failed. Try to
             // find a branch_point at that step; if none (the error
@@ -394,28 +429,38 @@ impl AgentLayer {
         Ok(())
     }
 
-    /// If the canonical array ends with an assistant message carrying
-    /// `tool_calls` but no matching tool-result messages, sending it to the
-    /// LLM triggers a 400 error ("assistant message with tool calls must be
-    /// followed by tool messages responding to each tool call"). This happens
-    /// when a snapshot/branch point was saved right after the assistant
-    /// message but before the tool results were appended (save_branch_point
-    /// runs before tool execution; the app may die or be cancelled mid-batch).
-    /// Trim such a trailing assistant message and the matching half-built
-    /// history step so the loop re-requests the tool call cleanly.
-    pub(crate) fn trim_dangling_tool_call(
-        canonical: &mut Vec<CanonicalMessage>,
-        history: &mut Vec<ReActStep>,
-    ) {
-        sanitize_canonical(canonical);
-        // A snapshot can also end with a half-built step: the assistant
-        // message declared tool calls but the app died before the results
-        // were appended (sanitize_canonical now repairs the dangling call
-        // with an Interrupted result instead of popping it). Drop its
-        // half-built history step (thought set, action=None) so the loop
-        // re-requests the tool call cleanly on top of the repaired canonical.
-        if history.last().is_some_and(|s| s.action.is_none()) {
-            history.pop();
+    /// If the event log ends with a [`TranscriptRecord::ToolCall`] that has
+    /// non-empty `tool_calls` and no following [`TranscriptRecord::ToolResult`],
+    /// the projected canonical ends with an assistant message carrying
+    /// `tool_calls` but no matching tool results — providers reject that with
+    /// a 400. This happens when a snapshot/branch point was saved right after
+    /// the assistant message but before tool results were appended
+    /// (`save_branch_point` runs before tool execution; the app may die or be
+    /// cancelled mid-batch).
+    ///
+    /// Empty-`tool_calls` ToolCalls are final-answer / search assistant turns
+    /// and must be kept.
+    ///
+    /// Pop the dangling `ToolCall` and, when present, the preceding
+    /// same-step `Thought` so the loop re-requests the tool call cleanly.
+    pub(crate) fn trim_dangling_tool_call(events: &mut Vec<TranscriptRecord>) {
+        let Some(TranscriptRecord::ToolCall {
+            step_number,
+            tool_calls,
+            ..
+        }) = events.last()
+        else {
+            return;
+        };
+        if tool_calls.is_empty() {
+            return;
+        }
+        let step = *step_number;
+        events.pop();
+        if let Some(TranscriptRecord::Thought { step_number, .. }) = events.last()
+            && *step_number == step
+        {
+            events.pop();
         }
     }
 }

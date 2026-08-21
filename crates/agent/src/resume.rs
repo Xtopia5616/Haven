@@ -4,10 +4,11 @@
 //! Split out of `layer.rs` so the facade stays focused on wiring; these
 //! methods operate on the same private fields via `impl AgentLayer` blocks.
 //!
-//! ## Resume authority (Phase 7 / B4 + D2)
+//! ## Resume authority (Phase 7 / B4 + D2; Phase 8 / B1)
 //!
 //! - **Snapshot present and valid** → single authority. [`run_session_resumed`]
-//!   restores canonical + history; RAM queues are a cache only.
+//!   restores `events` (canonical + rounds are projected); RAM queues are a
+//!   cache only.
 //! - **Snapshot missing (`react_state` row absent)** → best-effort fresh run
 //!   that projects tool-call/result pairs via
 //!   [`project_tool_chain_from_steps`] (same projector shape as would appear
@@ -27,7 +28,10 @@
 use crate::AgentLayer;
 use crate::prompt::SystemPromptBuilder;
 use crate::session::SessionStatus;
-use crate::types::{BranchPoint, ReActSnapshot, ReActStep};
+use crate::types::{
+    BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript,
+    seed_events_from_canonical,
+};
 use haven_common::types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart,
 };
@@ -50,7 +54,7 @@ impl AgentLayer {
     /// Load the most recent conversation messages for a session as (role,
     /// content) pairs, for the FRESH-run system-prompt path
     /// (`prompt_builder.build`). Resume does not consume this: the restored
-    /// canonical snapshot is the single authority, and post-snapshot inputs
+    /// events snapshot is the single authority, and post-snapshot inputs
     /// are recovered by timestamp in `run_session_resumed`.
     fn load_conversation_history(&self, session_id: &str) -> Vec<ConversationMessage> {
         self.db
@@ -68,7 +72,7 @@ impl AgentLayer {
     /// Dispatcher entrypoint. Looks up the session by id, fills in the
     /// description and original transcript (context),
     /// loads conversation history, then runs the ReAct loop.
-    pub async fn run_session_from_id(&self, session_id: &str) -> anyhow::Result<Vec<ReActStep>> {
+    pub async fn run_session_from_id(&self, session_id: &str) -> anyhow::Result<Vec<ReActRound>> {
         tracing::debug!("run_session_from_id: session_id={}", session_id);
         let session =
             self.executor.get_session(session_id).await.ok_or_else(|| {
@@ -113,17 +117,22 @@ impl AgentLayer {
         };
 
         let result = match self.db.get_react_state(session_id) {
-            Ok(Some(state_json)) => match serde_json::from_str::<ReActSnapshot>(&state_json) {
+            Ok(Some(state_json)) => match ReActSnapshot::from_json(&state_json) {
                 Ok(mut snapshot) => {
                     tracing::info!(
-                        "restoring ReAct state for session {} ({} steps)",
+                        "restoring ReAct state for session {} ({} events)",
                         session_id,
-                        snapshot.history.len()
+                        snapshot.events.len()
                     );
-                    // Re-register per-session tools (skills/MCP) from saved history,
-                    // since in-memory registrations are lost on app restart.
-                    self.restore_per_session_tools(session_id, &snapshot.history)
-                        .await;
+                    // Re-register per-session tools (skills/MCP) from projected
+                    // rounds, since in-memory registrations are lost on restart.
+                    // Legacy Phase-7 upgrades may stash load_skill/load_mcp
+                    // rounds separately (CompactSummary alone yields empty rounds).
+                    let (_, mut rounds) = snapshot.project();
+                    if rounds.is_empty() && !snapshot.upgrade_tool_rounds.is_empty() {
+                        rounds = std::mem::take(&mut snapshot.upgrade_tool_rounds);
+                    }
+                    self.restore_per_session_tools(session_id, &rounds).await;
                     // Phase 4 / C5+F2: restore the explicit ask gate from the
                     // snapshot. Upgrade legacy "paused" status BEFORE publishing
                     // the flag so auto-wake cannot race on plain Paused.
@@ -209,10 +218,13 @@ impl AgentLayer {
                         .await
                         .is_some();
                     if !has_confirm {
-                        Self::trim_dangling_tool_call(
-                            &mut snapshot.canonical,
-                            &mut snapshot.history,
-                        );
+                        Self::trim_dangling_tool_call(&mut snapshot.events);
+                        let event_len = snapshot.events.len();
+                        for bp in snapshot.branch_points.values_mut() {
+                            if bp.event_cursor > event_len {
+                                bp.event_cursor = event_len;
+                            }
+                        }
                     }
                     self.run_session_resumed(session_id, snapshot, run_id, &description)
                         .await
@@ -322,21 +334,29 @@ impl AgentLayer {
         snapshot: ReActSnapshot,
         run_id: u64,
         description: &str,
-    ) -> anyhow::Result<Vec<ReActStep>> {
-        let mut history = snapshot.history;
-        let mut canonical = snapshot.canonical;
+    ) -> anyhow::Result<Vec<ReActRound>> {
+        let mut events = snapshot.events;
+        let (mut canonical, _) = project_transcript(&events);
         let start_step = snapshot.step_number;
         let mut branch_points = snapshot.branch_points;
 
         // Legacy cleanup: snapshots saved by older resume implementations may
         // carry `[conversation]`-wrapped lines from a previous re-seed. New
-        // snapshots never produce them, so strip defensively.
-        canonical.retain(|m| {
-            !(m.role == CanonicalRole::User
+        // snapshots never produce them, so strip defensively from both the
+        // projected LLM cache and the events authority (CompactSummary seeds
+        // would otherwise resurrect them on the next persist/project).
+        let is_stale_conversation = |m: &CanonicalMessage| {
+            m.role == CanonicalRole::User
                 && m.content
                     .iter()
-                    .any(|p| matches!(p, ContentPart::Text(t) if t.starts_with("[conversation] "))))
-        });
+                    .any(|p| matches!(p, ContentPart::Text(t) if t.starts_with("[conversation] ")))
+        };
+        canonical.retain(|m| !is_stale_conversation(m));
+        for ev in &mut events {
+            if let TranscriptRecord::CompactSummary { compacted, .. } = ev {
+                compacted.retain(|m| !is_stale_conversation(m));
+            }
+        }
 
         // S3: refresh cross-session facts/episodes in canonical[0] without
         // rebuilding tools/skills/MCP (or Additional context). Pause-path
@@ -352,15 +372,15 @@ impl AgentLayer {
         // (`push_follow_up` / steering skip duplicates).
         //
         // By TIMESTAMP instead of content matching: any message persisted
-        // after `saved_at` cannot be in the restored canonical, so it is
+        // after `saved_at` cannot be in the restored events, so it is
         // unambiguously new — supplements, steering and `ask` answers that
         // arrived while paused, or were persisted before a crash and lost
-        // from the in-memory queues. The canonical snapshot is the single
+        // from the in-memory queues. The events snapshot is the single
         // authority for everything older.
         //
         // This alone misses inputs that PREDATE the snapshot yet were never
         // injected: a steering/supplement queued after the loop's last
-        // per-step drain is not in the canonical, but the error/exit
+        // per-step drain is not in the events, but the error/exit
         // snapshot written afterwards carries a `saved_at` NEWER than the
         // input's persisted row. Those rows carry no step anchor (see
         // `push_user_context`), so they are recovered by the undelivered
@@ -437,14 +457,14 @@ impl AgentLayer {
 
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
-            None => return Ok(history),
+            None => return Ok(project_transcript(&events).1),
         };
         let exit = self
             .react_engine
             .run_react_loop(
                 session_id,
                 &mut canonical,
-                &mut history,
+                &mut events,
                 start_step,
                 &mut branch_points,
                 emitter_arc,
@@ -458,7 +478,7 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(history),
+            | crate::react::LoopExit::Completed => Ok(project_transcript(&events).1),
         }
     }
 
@@ -571,14 +591,13 @@ impl AgentLayer {
         context: &str,
         conversation_history: &[ConversationMessage],
         initial_attachments: &[haven_common::types::MessageAttachment],
-    ) -> anyhow::Result<Vec<ReActStep>> {
+    ) -> anyhow::Result<Vec<ReActRound>> {
         tracing::debug!(
             "run_session start: session_id={:?} context={:?} attachments={}",
             session_id,
             context,
             initial_attachments.len()
         );
-        let mut history: Vec<ReActStep> = Vec::new();
         // S1: do not restate the *first* user turn (already canonical[1])
         // inside system Additional context. Later turns that happen to equal
         // `context` (user repeating the same text) must stay — snapshot-less
@@ -620,10 +639,13 @@ impl AgentLayer {
         // reach here.
         self.project_tool_chain_from_steps(session_id, &mut canonical);
 
+        // Seed events so pause/resume snapshots carry system+user (+ any
+        // projected tool chain) as a CompactSummary; later applies append.
+        let mut events: Vec<TranscriptRecord> = seed_events_from_canonical(canonical.clone());
         let mut branch_points: HashMap<u32, BranchPoint> = HashMap::new();
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
-            None => return Ok(history),
+            None => return Ok(project_transcript(&events).1),
         };
         let run_id = self.react_engine.next_run_id();
         let exit = self
@@ -631,7 +653,7 @@ impl AgentLayer {
             .run_react_loop(
                 session_id,
                 &mut canonical,
-                &mut history,
+                &mut events,
                 1,
                 &mut branch_points,
                 emitter_arc,
@@ -642,7 +664,7 @@ impl AgentLayer {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
-            | crate::react::LoopExit::Completed => Ok(history),
+            | crate::react::LoopExit::Completed => Ok(project_transcript(&events).1),
         }
     }
 }

@@ -11,12 +11,41 @@ pub use openai::OpenAiAdapter;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
 use haven_common::config::ModelEndpoint;
+use haven_common::types::{ContentPart, InjectSource};
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::client::{LlmClient, http_status_to_error};
 use crate::types::{LlmError, StreamChunk};
+
+/// Phase 8 / B3: apply wire-only inject prefix to user content parts.
+///
+/// When `source.needs_wire_prefix()`, prepends `"{prefix}: "` to the first
+/// text part (or inserts a text part when content is image/audio-only).
+/// Skips when already prefixed (defensive) or when `ActionResult`.
+pub(crate) fn apply_wire_inject_prefix(
+    source: Option<InjectSource>,
+    mut content: Vec<ContentPart>,
+) -> Vec<ContentPart> {
+    let Some(src) = source.filter(|s| s.needs_wire_prefix()) else {
+        return content;
+    };
+    let rendered = format!("{}: ", src.render_prefix());
+    if let Some(part) = content
+        .iter_mut()
+        .find(|p| matches!(p, ContentPart::Text(_)))
+    {
+        if let ContentPart::Text(text) = part
+            && !text.starts_with(&rendered)
+        {
+            text.insert_str(0, &rendered);
+        }
+    } else if !content.is_empty() {
+        content.insert(0, ContentPart::Text(rendered));
+    }
+    content
+}
 
 /// Resolve the wire protocol style for an endpoint. An explicit `api_style`
 /// wins; otherwise the style is derived from `provider`.

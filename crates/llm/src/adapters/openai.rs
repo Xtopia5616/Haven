@@ -253,7 +253,10 @@ impl OpenAiAdapter {
         reasoning_echo_max_chars: usize,
     ) -> Vec<OpenAiMessage> {
         msgs.into_iter()
-            .map(|m| {
+            .map(|mut m| {
+                if m.role == CanonicalRole::User {
+                    m.content = crate::adapters::apply_wire_inject_prefix(m.source, m.content);
+                }
                 // When the assistant message carries tool_calls, the content
                 // should be null (OpenAI API requirement).
                 let has_tool_calls = m.tool_calls.is_some();
@@ -1081,6 +1084,7 @@ mod tests {
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
                 source: None,
+                id: None,
             }])
             .await
             .unwrap_err();
@@ -1187,6 +1191,7 @@ mod tests {
             web_search_calls: vec![ws.clone()],
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
@@ -1217,6 +1222,7 @@ mod tests {
                 serde_json::json!({"type": "redacted_thinking", "data": "redacted"}),
             ],
             source: None,
+            id: None,
         }];
         let ep = ModelEndpoint {
             provider: "deepseek".into(),
@@ -1251,6 +1257,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
@@ -1279,6 +1286,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let ep = ModelEndpoint {
             reasoning_echo_max_chars: Some(64),
@@ -1309,6 +1317,7 @@ mod tests {
             web_search_calls: vec![ws.clone()],
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }];
         let ep = ModelEndpoint::default();
         let client = OpenAiAdapter::new(ep);
@@ -1535,6 +1544,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1564,6 +1574,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1585,6 +1596,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1605,6 +1617,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1625,6 +1638,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1646,6 +1660,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1672,6 +1687,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],
@@ -1701,6 +1717,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         };
         let openai_msgs = OpenAiAdapter::convert_messages(
             vec![msg],

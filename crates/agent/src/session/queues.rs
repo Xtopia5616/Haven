@@ -317,9 +317,7 @@ impl SessionExecutor {
                 let Some(json) = db.get_react_state(&sid)? else {
                     return Ok(());
                 };
-                let Ok(mut snapshot) =
-                    serde_json::from_str::<crate::types::ReActSnapshot>(&json)
-                else {
+                let Ok(mut snapshot) = crate::types::ReActSnapshot::from_json(&json) else {
                     return Ok(());
                 };
                 if snapshot.awaiting_answer.take().is_none() {
@@ -371,9 +369,7 @@ impl SessionExecutor {
                 let Some(json) = db.get_react_state(&sid)? else {
                     return Ok(());
                 };
-                let Ok(mut snapshot) =
-                    serde_json::from_str::<crate::types::ReActSnapshot>(&json)
-                else {
+                let Ok(mut snapshot) = crate::types::ReActSnapshot::from_json(&json) else {
                     return Ok(());
                 };
                 if snapshot.awaiting_confirm.take().is_none() {
@@ -454,9 +450,7 @@ impl SessionExecutor {
                 let Some(json) = db.get_react_state(&sid)? else {
                     return Ok(());
                 };
-                let Ok(mut snapshot) =
-                    serde_json::from_str::<crate::types::ReActSnapshot>(&json)
-                else {
+                let Ok(mut snapshot) = crate::types::ReActSnapshot::from_json(&json) else {
                     return Ok(());
                 };
                 snapshot.awaiting_confirm = Some(pending);

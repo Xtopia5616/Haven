@@ -23,6 +23,7 @@ use haven_tools::ConfirmationResult;
 
 use super::retries::{AfterLlmAction, ResponsePolicy, ResponsePolicyState};
 use super::{Action, PauseReason, ReActEngine, StepCtx, canonical_has_image};
+use crate::types::TranscriptRecord;
 
 /// Fact-inference callback: `(session_id, bypass_throttle)`.
 /// `bypass_throttle=true` for pause-path infer so interval extract cannot starve
@@ -51,6 +52,7 @@ pub(crate) trait LoopHooks: Send + Sync {
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
     );
 
@@ -111,15 +113,16 @@ impl LoopHooks for DefaultHooks {
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
     ) {
         engine
-            .maybe_poll_inbox(&ctx.session_id, ctx, canonical)
+            .maybe_poll_inbox(&ctx.session_id, ctx, events, canonical)
             .await;
         let has_image = canonical_has_image(canonical);
         // Phase 7 / I2: compact is a nested phase under before_step.
         let _ = engine
-            .maybe_compact(ctx, canonical, has_image)
+            .maybe_compact(ctx, events, canonical, has_image)
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,
@@ -206,6 +209,7 @@ impl LoopHooks for NoopHooks {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
+        _events: &mut Vec<TranscriptRecord>,
         _canonical: &mut Vec<CanonicalMessage>,
     ) {
     }
@@ -332,10 +336,11 @@ mod tests {
             run_id: 1,
             emitter: emitter.clone(),
         };
+        let mut events = Vec::new();
         let mut canonical = Vec::new();
         engine
             .hooks
-            .before_step(&engine, &ctx, &mut canonical)
+            .before_step(&engine, &ctx, &mut events, &mut canonical)
             .await;
         engine
             .hooks

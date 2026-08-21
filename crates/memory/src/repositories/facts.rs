@@ -137,23 +137,32 @@ pub fn normalize_predicate(predicate: &str) -> String {
     let p = predicate.trim().to_ascii_lowercase();
     match p.as_str() {
         "workspace" | "workspace_path" | "project_location" | "working_directory"
-        | "working_dir" => "project_path".into(),
-        "employer" | "company_name" => "works_at".into(),
-        "favorite_language" | "preferred_language" => "language".into(),
+        | "working_dir" | "cwd" | "work_dir" => "project_path".into(),
+        // P2-11: bare `company` (and common job/employer spellings) → works_at.
+        "employer" | "company_name" | "company" | "workplace" | "job" | "employer_name" => {
+            "works_at".into()
+        }
+        "favorite_language" | "preferred_language" | "lang" | "prog_language" => "language".into(),
         "preferred_verbosity" | "verbosity_level" => "verbosity".into(),
         "preferred_shell" | "shell_choice" => "shell".into(),
-        "os_name" | "operating_system" => "os".into(),
+        "os_name" | "operating_system" | "platform" => "os".into(),
+        "full_name" | "user_name" | "username" => "name".into(),
+        "home_city" | "lives_in" => "city".into(),
+        "home_country" | "lives_in_country" => "country".into(),
+        "tz" | "time_zone" => "timezone".into(),
+        "job_title" | "job_role" | "title" => "role".into(),
         _ => p,
     }
 }
 
 /// Predicates that change over time (paths, employers, tooling): these decay
 /// fastest so stale values drop out of the prompt once they are no longer
-/// confirmed.
+/// confirmed. Entries are **canonical** names only — aliases are rewritten by
+/// [`normalize_predicate`] before these checks run (P2-11).
 pub fn is_volatile_predicate(predicate: &str) -> bool {
     matches!(
         predicate.to_ascii_lowercase().as_str(),
-        "project_path" | "works_at" | "uses" | "workspace"
+        "project_path" | "works_at" | "uses"
     )
 }
 
@@ -161,15 +170,13 @@ pub fn is_volatile_predicate(predicate: &str) -> bool {
 /// a new fact with the same predicate but a different object is extracted, the
 /// old inferred values are demoted instead of coexisting (a new project path
 /// supersedes the old one; a user can like both Rust and Go and use several
-/// tools at once though).
+/// tools at once though). Canonical names only (P2-11).
 pub fn is_single_valued_predicate(predicate: &str) -> bool {
     is_identity_predicate(predicate)
         || matches!(
             predicate.to_ascii_lowercase().as_str(),
             "project_path"
                 | "works_at"
-                | "workspace"
-                | "company"
                 | "action"
                 | "role"
                 | "shell"
@@ -285,6 +292,31 @@ pub fn is_sensitive_object(object: &str) -> bool {
         || o.starts_with("bearer ")
         || o.contains("api_key=")
         || o.contains("apikey=")
+}
+
+/// Free-text provenance / snippets: treat as sensitive when they look like
+/// credential *objects* **or** contain credential *keywords* (e.g.
+/// "password is …", "token=…") that `is_sensitive_object` alone would miss.
+pub fn is_sensitive_text(text: &str) -> bool {
+    if is_sensitive_object(text) {
+        return true;
+    }
+    let t = text.to_ascii_lowercase();
+    const SENSITIVE_KEYWORDS: &[&str] = &[
+        "api_key",
+        "apikey",
+        "api-key",
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "credential",
+        "passphrase",
+        "access_key",
+        "private_key",
+        "authorization",
+    ];
+    SENSITIVE_KEYWORDS.iter().any(|k| t.contains(k))
 }
 
 /// Batch existence result for fact inference: the exact
@@ -706,6 +738,30 @@ impl Database {
         Ok(facts)
     }
 
+    /// Seed set for prompt recall: top-`limit` facts for a subject by raw
+    /// `confidence` in SQL (then resorted by effective confidence in Rust).
+    /// Avoids the full-subject pull that `get_facts` uses for tools/UI.
+    /// Not cached — prompt builds are infrequent relative to tool list, and a
+    /// separate limited cache would drift from the full subject cache.
+    pub fn get_facts_limited(&self, subject: &str, limit: usize) -> anyhow::Result<Vec<Fact>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM facts WHERE subject = ?1
+             ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
+             LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![subject, limit as i64], fact_from_row)?;
+        let mut facts = Vec::new();
+        for row in rows {
+            facts.push(row?);
+        }
+        sort_facts_effective(&mut facts);
+        Ok(facts)
+    }
+
     /// Batch existence check for fact inference: one query returns (a) the
     /// exact (subject, predicate, object) triples already stored for the
     /// given subjects and (b) the (subject, predicate) pairs present.
@@ -775,60 +831,202 @@ impl Database {
     /// whitespace-separated term is quoted (quotes doubled) and AND-combined,
     /// so arbitrary user input cannot smuggle FTS operators into the query.
     fn build_fts_query(terms: &[&str]) -> String {
+        Self::build_fts_query_joined(terms, " AND ")
+    }
+
+    /// Same quoting as [`Self::build_fts_query`], but OR-combined so a fact
+    /// matching any one session keyword can surface in prompt recall.
+    fn build_fts_query_or(terms: &[&str]) -> String {
+        Self::build_fts_query_joined(terms, " OR ")
+    }
+
+    fn build_fts_query_joined(terms: &[&str], sep: &str) -> String {
         terms
             .iter()
             .filter(|t| !t.is_empty())
             .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
             .collect::<Vec<_>>()
-            .join(" AND ")
+            .join(sep)
+    }
+
+    /// Escape `%`, `_`, and `\` so LIKE patterns match literally.
+    fn escape_like_term(term: &str) -> String {
+        let mut out = String::with_capacity(term.len());
+        for c in term.chars() {
+            match c {
+                '\\' | '%' | '_' => {
+                    out.push('\\');
+                    out.push(c);
+                }
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    /// Terms shorter than a trigram may miss FTS and need LIKE.
+    fn short_like_terms<'a>(terms: &[&'a str]) -> Vec<&'a str> {
+        terms
+            .iter()
+            .copied()
+            .filter(|t| {
+                let n = t.chars().count();
+                n > 0 && n < 3
+            })
+            .collect()
+    }
+
+    /// Run FTS MATCH; `Ok(None)` means prepare/MATCH failed (caller may LIKE).
+    /// `Ok(Some(rows))` is a successful query (possibly empty).
+    fn search_facts_fts(
+        &self,
+        match_expr: &str,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Option<Vec<Fact>>> {
+        let conn = self.conn();
+        let (fts_sql, bind_limit) = if let Some(lim) = limit {
+            (
+                format!(
+                    "SELECT {FACT_COLS_ALIASED}
+                     FROM facts f
+                     JOIN facts_fts ON f.rowid = facts_fts.rowid
+                     WHERE facts_fts MATCH ?1
+                     ORDER BY bm25(facts_fts)
+                     LIMIT ?2"
+                ),
+                Some(lim as i64),
+            )
+        } else {
+            (
+                format!(
+                    "SELECT {FACT_COLS_ALIASED}
+                     FROM facts f
+                     JOIN facts_fts ON f.rowid = facts_fts.rowid
+                     WHERE facts_fts MATCH ?1
+                     ORDER BY bm25(facts_fts)"
+                ),
+                None,
+            )
+        };
+        let Ok(mut stmt) = conn.prepare(&fts_sql) else {
+            return Ok(None);
+        };
+        let rows = if let Some(lim) = bind_limit {
+            stmt.query_map(rusqlite::params![match_expr, lim], fact_from_row)
+        } else {
+            stmt.query_map(rusqlite::params![match_expr], fact_from_row)
+        };
+        let Ok(rows) = rows else {
+            return Ok(None);
+        };
+        let mut facts = Vec::new();
+        for row in rows {
+            match row {
+                Ok(f) => facts.push(f),
+                Err(_) => return Ok(None),
+            }
+        }
+        Ok(Some(facts))
+    }
+
+    /// OR of escaped LIKE patterns across subject/predicate/object/tags.
+    fn search_facts_like_any(&self, terms: &[&str], limit: usize) -> anyhow::Result<Vec<Fact>> {
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn();
+        let mut clauses = Vec::with_capacity(terms.len());
+        let mut patterns: Vec<String> = Vec::with_capacity(terms.len());
+        for (i, term) in terms.iter().enumerate() {
+            let p = i + 1;
+            clauses.push(format!(
+                "(subject LIKE ?{p} ESCAPE '\\' OR predicate LIKE ?{p} ESCAPE '\\' \
+                 OR object LIKE ?{p} ESCAPE '\\' OR tags LIKE ?{p} ESCAPE '\\')"
+            ));
+            patterns.push(format!("%{}%", Self::escape_like_term(term)));
+        }
+        let limit_param = terms.len() + 1;
+        let sql = format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE {}
+             ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
+             LIMIT ?{limit_param}",
+            clauses.join(" OR ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<rusqlite::types::Value> = patterns
+            .into_iter()
+            .map(rusqlite::types::Value::Text)
+            .collect();
+        params.push(rusqlite::types::Value::Integer(limit as i64));
+        let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+        let mut facts = Vec::new();
+        while let Some(row) = rows.next()? {
+            facts.push(fact_from_row(row)?);
+        }
+        sort_facts_effective(&mut facts);
+        Ok(facts)
+    }
+
+    fn merge_facts_limited(primary: Vec<Fact>, extra: Vec<Fact>, limit: usize) -> Vec<Fact> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::with_capacity(limit.min(primary.len() + extra.len()));
+        for f in primary.into_iter().chain(extra) {
+            if seen.insert(f.id.clone()) {
+                out.push(f);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        sort_facts_effective(&mut out);
+        out
     }
 
     /// Full-text search across subject, predicate, object, and tags. Uses the
-    /// FTS5 index (BM25 relevance ranking) when available; falls back to the
-    /// old LIKE substring scan when the index is missing or the query fails.
+    /// FTS5 trigram index (BM25) when available. Empty FTS on a long query is
+    /// treated as a true miss (P2-14); LIKE is reserved for short terms
+    /// (&lt; 3 chars / CJK digrams) that trigram cannot index, or when FTS is
+    /// unavailable entirely.
     pub fn search_facts(&self, query: &str) -> anyhow::Result<Vec<Fact>> {
         let terms: Vec<&str> = query.split_whitespace().collect();
         if terms.is_empty() {
             return Ok(Vec::new());
         }
         let match_expr = Self::build_fts_query(&terms);
-        let conn = self.conn();
-        let fts_sql = format!(
-            "SELECT {FACT_COLS_ALIASED}
-                               FROM facts f
-                               JOIN facts_fts ON f.rowid = facts_fts.rowid
-                               WHERE facts_fts MATCH ?1
-                               ORDER BY bm25(facts_fts)"
-        );
-        if let Ok(mut stmt) = conn.prepare(&fts_sql)
-            && let Ok(rows) = stmt.query_map(rusqlite::params![match_expr], fact_from_row)
-        {
-            let mut facts = Vec::new();
-            let mut valid = true;
-            for row in rows {
-                match row {
-                    Ok(f) => facts.push(f),
-                    Err(_) => {
-                        // Invalid MATCH expression (e.g. stray quote) — fall
-                        // back to substring search below.
-                        valid = false;
-                        break;
-                    }
-                }
-            }
-            // A valid FTS query may still return zero rows (short queries miss
-            // the trigram index; MATCH edge cases). Fall through to the LIKE
-            // scan on empty results to preserve substring behavior for 1–2
-            // char terms. Longer true-miss queries also hit LIKE today — a
-            // known cost; see docs/memory-architecture.md P2-14.
-            if valid && !facts.is_empty() {
+        let short = Self::short_like_terms(&terms);
+        match self.search_facts_fts(&match_expr, None)? {
+            Some(facts) if short.is_empty() => {
+                // Long-only query: empty FTS = true miss under trigram (P2-14).
                 return Ok(facts);
             }
+            Some(facts) => {
+                // Digrams miss trigram MATCH — LIKE short terms and merge.
+                let like = self.search_facts_like_any(&short, 50)?;
+                return Ok(Self::merge_facts_limited(facts, like, 50));
+            }
+            None if short.is_empty() => {
+                // FTS unavailable: whole-query LIKE (escaped).
+            }
+            None => {
+                // Prefer short LIKE; only then long-term LIKE if still empty.
+                let like_short = self.search_facts_like_any(&short, 50)?;
+                if !like_short.is_empty() {
+                    return Ok(like_short);
+                }
+            }
         }
-        let pattern = format!("%{}%", query);
+        // FTS unavailable (or short LIKE empty with no FTS): escaped LIKE on
+        // the full query string.
+        let pattern = format!("%{}%", Self::escape_like_term(query));
+        let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {FACT_COLS} FROM facts
-             WHERE subject LIKE ?1 OR predicate LIKE ?1 OR object LIKE ?1 OR tags LIKE ?1"
+             WHERE subject LIKE ?1 ESCAPE '\\' OR predicate LIKE ?1 ESCAPE '\\'
+                OR object LIKE ?1 ESCAPE '\\' OR tags LIKE ?1 ESCAPE '\\'"
         ))?;
         let rows = stmt.query_map(rusqlite::params![pattern], fact_from_row)?;
         let mut facts = Vec::new();
@@ -837,6 +1035,55 @@ impl Database {
         }
         sort_facts_effective(&mut facts);
         Ok(facts)
+    }
+
+    /// Multi-term prompt recall: one FTS `OR` query with SQL `LIMIT`, so a fact
+    /// matching any session keyword surfaces without N separate searches or an
+    /// unbounded result set (refactor-backlog §2.1 / former P1-5).
+    ///
+    /// When any term is shorter than a trigram, LIKE those short terms and
+    /// **union** with FTS hits (deduped) so a longer sibling hit cannot hide
+    /// digram-only facts. LIKE uses escaped patterns (`ESCAPE '\\'`).
+    pub fn search_facts_any(&self, terms: &[&str], limit: usize) -> anyhow::Result<Vec<Fact>> {
+        let terms: Vec<&str> = terms.iter().copied().filter(|t| !t.is_empty()).collect();
+        if terms.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let match_expr = Self::build_fts_query_or(&terms);
+        let short = Self::short_like_terms(&terms);
+        let fts = self.search_facts_fts(&match_expr, Some(limit))?;
+
+        match fts {
+            Some(facts) if short.is_empty() => Ok(facts),
+            Some(facts) => {
+                // FTS may already cover short terms, but digrams often miss
+                // trigram MATCH — always LIKE short terms and merge.
+                let like = self.search_facts_like_any(&short, limit)?;
+                Ok(Self::merge_facts_limited(facts, like, limit))
+            }
+            None if short.is_empty() => {
+                // FTS unavailable: full OR LIKE for all terms.
+                self.search_facts_like_any(&terms, limit)
+            }
+            None => {
+                // Prefer short-term LIKE first, then remaining long terms if
+                // still under the cap.
+                let like_short = self.search_facts_like_any(&short, limit)?;
+                if like_short.len() >= limit {
+                    return Ok(like_short);
+                }
+                let long: Vec<&str> = terms
+                    .iter()
+                    .copied()
+                    .filter(|t| t.chars().count() >= 3)
+                    .collect();
+                if long.is_empty() {
+                    return Ok(like_short);
+                }
+                let like_long = self.search_facts_like_any(&long, limit)?;
+                Ok(Self::merge_facts_limited(like_short, like_long, limit))
+            }
+        }
     }
 
     /// Return all facts that carry the given tag.
@@ -879,12 +1126,18 @@ impl Database {
     }
 
     pub fn dedup_facts(&self) -> anyhow::Result<u64> {
-        // Group by (subject, predicate, object) regardless of tags: the same
-        // triple is the same fact even when older rows carry a different (or
-        // empty) tag set. The previous tag-sensitive grouping let repeated
-        // re-extraction pile up duplicates — e.g. 379 rows of `name=Xtopia`.
+        // P1-6: only load rows that participate in duplicate groups (not the
+        // full table), merge tags onto the keeper, then collapse with the same
+        // window DELETE used by migrate_v2.
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE (subject, predicate, object) IN (
+                 SELECT subject, predicate, object FROM facts
+                 GROUP BY subject, predicate, object
+                 HAVING COUNT(*) > 1
+             )"
+        ))?;
         let rows = stmt.query_map([], fact_from_row)?;
         let mut groups: HashMap<(String, String, String), Vec<Fact>> = HashMap::new();
         for row in rows {
@@ -899,12 +1152,8 @@ impl Database {
                 .push(fact);
         }
 
-        // Tag merge: collect tag updates for keepers whose duplicates carried
-        // extra tags, and the ids of every duplicate row to delete. The keeper
-        // rule lives in ONE place (the Rust sort below) so the merge target is
-        // always the same row the delete keeps.
         let mut keeper_updates: Vec<(Vec<String>, String)> = Vec::new();
-        let mut duplicate_ids: Vec<String> = Vec::new();
+        let had_duplicate_groups = !groups.is_empty();
         for mut group in groups.into_values() {
             if group.len() <= 1 {
                 continue;
@@ -918,7 +1167,6 @@ impl Database {
             let keeper = group.remove(0);
             let mut tags = keeper.tags.clone();
             for fact in group.iter() {
-                duplicate_ids.push(fact.id.clone());
                 for t in &fact.tags {
                     if !tags.contains(t) {
                         tags.push(t.clone());
@@ -929,26 +1177,34 @@ impl Database {
                 keeper_updates.push((tags, keeper.id));
             }
         }
-
-        // Bulk delete the collected duplicate ids in one statement.
-        let deleted = if duplicate_ids.is_empty() {
-            0
-        } else {
-            let placeholders = vec!["?"; duplicate_ids.len()].join(",");
-            conn.execute(
-                &format!("DELETE FROM facts WHERE id IN ({placeholders})"),
-                rusqlite::params_from_iter(duplicate_ids.iter().map(|s| s.as_str())),
-            )? as u64
-        };
-        for (tags, id) in keeper_updates {
+        for (tags, id) in &keeper_updates {
             let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
             conn.execute(
                 "UPDATE facts SET tags = ?1 WHERE id = ?2",
                 rusqlite::params![serialize_tags(&tag_refs), id],
             )?;
         }
-        self.cache_invalidate_facts("user");
-        self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+
+        let deleted = if had_duplicate_groups {
+            conn.execute(
+                "DELETE FROM facts
+                 WHERE id NOT IN (
+                     SELECT id FROM (
+                         SELECT id, ROW_NUMBER() OVER (
+                             PARTITION BY subject, predicate, object
+                             ORDER BY confidence DESC, created_at DESC
+                         ) AS rn FROM facts
+                     ) WHERE rn = 1
+                 )",
+                [],
+            )? as u64
+        } else {
+            0
+        };
+        if deleted > 0 || !keeper_updates.is_empty() {
+            self.cache_invalidate_all_facts();
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+        }
         Ok(deleted)
     }
 
@@ -956,20 +1212,36 @@ impl Database {
     /// during fact maintenance so secrets accidentally extracted in the past
     /// are purged from the database rather than merely hidden from prompts.
     pub fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
-        let facts = self.list_facts()?;
-        let mut deleted: u64 = 0;
-        for fact in &facts {
-            if is_sensitive_predicate(&fact.predicate) || is_sensitive_object(&fact.object) {
-                let conn = self.conn();
-                conn.execute(
-                    "DELETE FROM facts WHERE id = ?1",
-                    rusqlite::params![fact.id],
-                )?;
-                deleted += 1;
-            }
-        }
+        // P1-6: single bulk DELETE mirroring is_sensitive_predicate / object.
+        let conn = self.conn();
+        let deleted = conn.execute(
+            "DELETE FROM facts WHERE
+                instr(lower(predicate), 'api_key') > 0
+             OR instr(lower(predicate), 'apikey') > 0
+             OR instr(lower(predicate), 'api-key') > 0
+             OR instr(lower(predicate), 'secret') > 0
+             OR instr(lower(predicate), 'token') > 0
+             OR instr(lower(predicate), 'password') > 0
+             OR instr(lower(predicate), 'passwd') > 0
+             OR instr(lower(predicate), 'credential') > 0
+             OR instr(lower(predicate), 'passphrase') > 0
+             OR instr(lower(predicate), 'access_key') > 0
+             OR instr(lower(predicate), 'private_key') > 0
+             OR instr(lower(predicate), 'authorization') > 0
+             OR lower(trim(object)) LIKE 'sk-%'
+             OR lower(trim(object)) LIKE 'tvly-%'
+             OR lower(trim(object)) LIKE 'ghp_%'
+             OR lower(trim(object)) LIKE 'gho_%'
+             OR lower(trim(object)) LIKE 'xoxb-%'
+             OR lower(trim(object)) LIKE 'aiza%'
+             OR lower(trim(object)) LIKE 'bearer %'
+             OR instr(lower(object), 'api_key=') > 0
+             OR instr(lower(object), 'apikey=') > 0",
+            [],
+        )? as u64;
         if deleted > 0 {
-            self.cache_invalidate_facts("user");
+            self.cache_invalidate_all_facts();
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
         Ok(deleted)
     }
@@ -987,34 +1259,81 @@ impl Database {
     /// gives every persisted fact at least one full recall cycle; decay and
     /// durability still prune it from the second day on.
     pub fn flush_low_confidence(&self, threshold: f64) -> anyhow::Result<u64> {
-        let facts = self.list_facts()?;
+        // P1-6: SQL prefilter by grace-period cutoff (RFC3339 strings sort
+        // lexicographically), then exact `fact_effective_confidence` on that
+        // candidate set — avoids pulling fresh rows that cannot flush yet.
+        let cutoff = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {FACT_COLS} FROM facts
+             WHERE COALESCE(last_seen_at, created_at) <= ?1"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![cutoff], fact_from_row)?;
         let mut stale_ids: Vec<String> = Vec::new();
-        for fact in &facts {
-            if fact_effective_confidence(fact) < threshold && fact_age_days(fact) >= 1.0 {
-                stale_ids.push(fact.id.clone());
+        for row in rows {
+            let fact = row?;
+            if fact_effective_confidence(&fact) < threshold && fact_age_days(&fact) >= 1.0 {
+                stale_ids.push(fact.id);
             }
         }
         if stale_ids.is_empty() {
             return Ok(0);
         }
-        // Batch the deletion in a single statement instead of one DELETE per
-        // stale row (each row delete re-acquired the connection and fired the
-        // FTS trigger).
         let placeholders = vec!["?"; stale_ids.len()].join(",");
-        let conn = self.conn();
         let count = conn.execute(
             &format!("DELETE FROM facts WHERE id IN ({placeholders})"),
             rusqlite::params_from_iter(stale_ids.iter().map(|s| s.as_str())),
         )? as u64;
-        self.cache_invalidate_facts("user");
+        self.cache_invalidate_all_facts();
         self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         Ok(count)
+    }
+
+    /// Clear `source_ref.message_id` when the referenced message no longer
+    /// exists; keep the snippet so “why we remember” still works (L2 / P2-9).
+    pub fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, source_ref FROM facts
+             WHERE source_ref IS NOT NULL
+               AND json_extract(source_ref, '$.message_id') IS NOT NULL
+               AND json_extract(source_ref, '$.message_id') != ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM messages
+                   WHERE id = json_extract(facts.source_ref, '$.message_id')
+               )",
+        )?;
+        let orphans: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if orphans.is_empty() {
+            return Ok(0);
+        }
+        let mut updated = 0u64;
+        for (id, raw) in orphans {
+            let Some(mut refer) = parse_source_ref(Some(raw)) else {
+                continue;
+            };
+            refer.message_id.clear();
+            conn.execute(
+                "UPDATE facts SET source_ref = ?1 WHERE id = ?2",
+                rusqlite::params![serialize_source_ref(Some(&refer)), id],
+            )?;
+            updated += 1;
+        }
+        if updated > 0 {
+            self.cache_invalidate_all_facts();
+        }
+        Ok(updated)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FactSourceRef, UpsertOutcome, fact_effective_confidence};
+    use super::{
+        FactSourceRef, UpsertOutcome, fact_effective_confidence, is_single_valued_predicate,
+        is_volatile_predicate,
+    };
     use crate::Database;
 
     fn create_db() -> Database {
@@ -1419,6 +1738,46 @@ mod tests {
             .unwrap();
         let facts = db.get_facts("user").unwrap();
         assert_eq!(facts[0].predicate, "works_at");
+        // P2-11: bare `company` collapses onto works_at (single-valued).
+        db.set_user_fact("user", "company", "Globex", &["identity"])
+            .unwrap();
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].predicate, "works_at");
+        assert_eq!(facts[0].object, "Globex");
+        assert!(is_single_valued_predicate("works_at"));
+        assert!(!is_single_valued_predicate("company")); // dead alias removed
+        assert!(!is_volatile_predicate("workspace")); // dead alias removed
+        assert!(is_volatile_predicate("project_path"));
+    }
+
+    #[test]
+    fn test_search_facts_long_empty_fts_skips_like() {
+        let db = create_db();
+        // Plant a row that would match a naive whole-query LIKE on a long
+        // substring that FTS (AND of whitespace tokens) will not hit.
+        db.insert_fact(
+            "user",
+            "notes",
+            "zzzzlongtokennevermatched",
+            "inferred",
+            0.9,
+            &[],
+        )
+        .unwrap();
+        // Multi-word long query: empty FTS must not fall back to LIKE (P2-14).
+        let results = db
+            .search_facts("zzzzlongtokennevermatched totallyunrelated")
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "long empty-FTS must not LIKE-scan; got {results:?}"
+        );
+        // Short digram still may LIKE.
+        db.insert_fact("user", "likes", "Go", "inferred", 0.8, &[])
+            .unwrap();
+        let short = db.search_facts("Go").unwrap();
+        assert!(short.iter().any(|f| f.object == "Go"));
     }
 
     #[test]
@@ -1890,6 +2249,50 @@ mod tests {
     }
 
     #[test]
+    fn test_cleanup_orphan_source_refs_clears_message_id_keeps_snippet() {
+        let db = create_db();
+        let session = db.create_session("t", "").unwrap();
+        let msg = db
+            .add_message(&session.id, "user", "I like Rust a lot", Some("text"), None)
+            .unwrap();
+        let live = FactSourceRef::from_message(&msg.id, "I like Rust a lot");
+        let orphan = FactSourceRef {
+            message_id: "msg-deadbeefdeadbeefdeadbeefdeadbeef".into(),
+            snippet: "orphan snippet".into(),
+        };
+        db.upsert_fact(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.9,
+            &["preference"],
+            Some(&live),
+        )
+        .unwrap();
+        db.upsert_fact(
+            "user",
+            "likes",
+            "Go",
+            "inferred",
+            0.8,
+            &["preference"],
+            Some(&orphan),
+        )
+        .unwrap();
+
+        let cleared = db.cleanup_orphan_source_refs().unwrap();
+        assert_eq!(cleared, 1);
+        let facts = db.get_facts("user").unwrap();
+        let rust = facts.iter().find(|f| f.object == "Rust").unwrap();
+        assert_eq!(rust.source_ref.as_ref().unwrap().message_id, msg.id);
+        let go = facts.iter().find(|f| f.object == "Go").unwrap();
+        let go_ref = go.source_ref.as_ref().unwrap();
+        assert!(go_ref.message_id.is_empty());
+        assert_eq!(go_ref.snippet, "orphan snippet");
+    }
+
+    #[test]
     fn test_upsert_fact_reinforcement_merges_tags() {
         let db = create_db();
         db.upsert_fact(
@@ -2048,6 +2451,108 @@ mod tests {
         assert_eq!(results[0].object, "VSCode");
         let results = db.search_facts("VSCode Coffee").unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_get_facts_limited_orders_by_confidence() {
+        let db = create_db();
+        db.insert_fact("user", "likes", "Low", "inferred", 0.4, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "likes", "High", "inferred", 0.95, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "likes", "Mid", "inferred", 0.7, &["preference"])
+            .unwrap();
+        db.insert_fact("other", "likes", "Other", "inferred", 1.0, &["preference"])
+            .unwrap();
+
+        let top = db.get_facts_limited("user", 2).unwrap();
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].object, "High");
+        assert_eq!(top[1].object, "Mid");
+        assert!(db.get_facts_limited("user", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_search_facts_any_or_with_limit() {
+        let db = create_db();
+        db.insert_fact("user", "uses", "VSCode", "user", 0.9, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "uses", "IntelliJ", "user", 0.7, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "likes", "Coffee", "user", 0.8, &["preference"])
+            .unwrap();
+        db.insert_fact(
+            "haven",
+            "project_path",
+            "D:/Workspace/Haven",
+            "inferred",
+            0.85,
+            &["workspace"],
+        )
+        .unwrap();
+
+        // OR: either term is enough (unlike search_facts AND).
+        let results = db.search_facts_any(&["VSCode", "Coffee"], 10).unwrap();
+        let objects: Vec<&str> = results.iter().map(|f| f.object.as_str()).collect();
+        assert!(objects.contains(&"VSCode"));
+        assert!(objects.contains(&"Coffee"));
+        assert!(!objects.contains(&"IntelliJ"));
+
+        // Cross-subject + LIMIT.
+        let limited = db
+            .search_facts_any(&["VSCode", "Haven", "Coffee"], 2)
+            .unwrap();
+        assert_eq!(limited.len(), 2);
+
+        assert!(db.search_facts_any(&[], 5).unwrap().is_empty());
+        assert!(db.search_facts_any(&["VSCode"], 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_search_facts_any_unions_short_term_like_with_fts_hits() {
+        let db = create_db();
+        // Longer term hits FTS; digram-only fact must still surface via LIKE union.
+        db.insert_fact(
+            "user",
+            "uses",
+            "VSCode editor",
+            "inferred",
+            0.9,
+            &["preference"],
+        )
+        .unwrap();
+        db.insert_fact("habit", "likes", "咖啡", "inferred", 0.7, &["preference"])
+            .unwrap();
+
+        let results = db.search_facts_any(&["VSCode", "咖啡"], 10).unwrap();
+        let objects: Vec<&str> = results.iter().map(|f| f.object.as_str()).collect();
+        assert!(
+            objects.contains(&"VSCode editor"),
+            "FTS hit must remain; got {objects:?}"
+        );
+        assert!(
+            objects.contains(&"咖啡"),
+            "2-char CJK digram must LIKE-union even when FTS already hit; got {objects:?}"
+        );
+    }
+
+    #[test]
+    fn test_search_facts_like_escapes_underscore_metachar() {
+        let db = create_db();
+        db.insert_fact("user", "likes", "xaZy", "inferred", 0.9, &["preference"])
+            .unwrap();
+        db.insert_fact("user", "likes", "xa_y", "inferred", 0.8, &["preference"])
+            .unwrap();
+
+        // 2-char term forces LIKE path. Without ESCAPE, `%a_%` matches `xaZy`.
+        let results = db.search_facts_any(&["a_"], 10).unwrap();
+        assert_eq!(results.len(), 1, "got {:?}", results);
+        assert_eq!(results[0].object, "xa_y");
+
+        // Tool search_facts also escapes the whole-query LIKE fallback.
+        let via_tool = db.search_facts("xa_y").unwrap();
+        assert!(via_tool.iter().any(|f| f.object == "xa_y"));
+        assert!(!via_tool.iter().any(|f| f.object == "xaZy"));
     }
 
     #[test]

@@ -18,6 +18,7 @@
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
+	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
 	import { isPausedStatus } from '$lib/sessionStatus.ts';
 	import {
 		accumulateStreamChunk,
@@ -742,6 +743,9 @@
 		// before this function resumes and append NEW assistant messages
 		// (different run_id in their ids) that must NOT be dropped.
 		const currentMessages = get(sessionMessagesStore)[tid] || [];
+		// Strategy must be picked before truncate: mid-generation partials are
+		// what distinguish "send 继续" from "pass the original user message".
+		const strategy = pickContinueStrategy(currentMessages);
 		let trailingIdx = currentMessages.length;
 		while (trailingIdx > 0 && currentMessages[trailingIdx - 1].role === 'assistant') {
 			trailingIdx--;
@@ -762,7 +766,7 @@
 		);
 		try {
 			// First unblock the errored session: continue_session truncates the
-			// partial output and sets the session to Pending so the "继续" user
+			// partial output and sets the session to Pending so a follow-up user
 			// message below is accepted instead of being dropped as a
 			// terminal-state supplement.
 			await invoke('continue_session', { sessionId: tid });
@@ -796,11 +800,20 @@
 			}
 			clearSeqMap(tid);
 			clearStepBlockIds(tid);
-			// Continue by sending a real user message, so "继续" appears in
-			// the conversation and is delivered to the agent as an
-			// interjection, just like a typed or quick-reply message.
+			// Two strategies:
+			// - LLM mid-generation interrupt → send "继续" as a real user turn.
+			// - User message sent but agent never generated → pass the original
+			//   text (resubmit only when it did not survive as a persisted
+			//   trailing user turn; otherwise Pending resume alone retries).
 			autoFollow = true;
-			submitMessage('继续', []);
+			if (strategy.mode === 'continue') {
+				submitMessage(strategy.text, []);
+			} else {
+				const synced = get(sessionMessagesStore)[tid] || [];
+				if (shouldResubmitOriginalUser(synced, strategy.text)) {
+					submitMessage(strategy.text, []);
+				}
+			}
 			await loadSessions();
 		} catch (e) {
 			addNotification(`继续失败: ${formatError(e)}`, 'error', 5000);

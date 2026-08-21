@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -12,9 +11,9 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::Database;
 
-use crate::compactor::{ContextCompactor, estimate_message_tokens};
+use crate::compactor::ContextCompactor;
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
-use crate::types::{Action, BranchPoint, ReActStep};
+use crate::types::{Action, BranchPoint, TranscriptRecord};
 use chrono::Utc;
 
 mod hooks;
@@ -22,6 +21,7 @@ mod identity;
 mod inject;
 mod r#loop;
 mod retries;
+mod sidecars;
 mod snapshot_io;
 pub(crate) mod stream_step;
 mod tool_batch;
@@ -30,8 +30,10 @@ mod transcript;
 use hooks::{LoopHooksHandle, default_hooks};
 pub(crate) use hooks::{InferCallback, default_hooks_with_infer};
 use identity::IdentityMap;
-
-use inject::MessagingState;
+use sidecars::{
+    BalancedModelNotifier, ContextWindowCache, CumulativeUsage, MessagingPoller, SnapshotBufs,
+    TokenEstimateCache, ToolDefCache, UsageTracker,
+};
 use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
 pub(crate) use snapshot_io::set_status_and_emit;
@@ -160,71 +162,31 @@ pub struct ReActEngine {
     executor: Arc<SessionExecutor>,
     db: Arc<Database>,
     max_steps: Mutex<u32>,
+    /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
+    session_max_steps: Mutex<Option<u32>>,
     context_limits: ContextLimitsConfig,
-    balanced_model_notified: Mutex<HashSet<String>>,
     run_counter: AtomicU64,
-    /// Per-session cumulative token usage. Keyed by `session_id` so multiple
-    /// parallel sessions each track their own counters. Reset on session
-    /// completion to avoid leaking finished-session entries.
-    cumulative_usage: Mutex<HashMap<String, CumulativeUsage>>,
-    /// Cross-session messaging integration: heartbeat + automatic inbox
-    /// polling driven by in-process delivery notifications (see
-    /// `maybe_poll_inbox`).
-    messaging: Mutex<MessagingState>,
-    /// Reusable per-session serialization buffers for ReAct snapshots (see
-    /// `save_snapshot_with_branches`): avoids a fresh allocation for every
-    /// per-step snapshot write. Keyed by `session_id` so parallel sessions never
-    /// contend on one shared buffer (a long session's canonical+history can be
-    /// sizable).
-    snapshot_bufs: Mutex<HashMap<String, Vec<u8>>>,
-    /// Per-session incremental token-estimate cache (see
-    /// `estimate_canonical_tokens`): avoids re-tokenizing the whole canonical
-    /// on every step.
-    token_estimate_cache: Mutex<HashMap<String, TokenEstimate>>,
-    /// Per-role context-window cache keyed by the router instance pointer,
-    /// so per-step compactor construction and usage display do not clone the
-    /// full LlmConfig on every step (the router only changes via
-    /// `replace_router`).
-    context_window_cache: Mutex<(usize, HashMap<EndpointRole, u32>)>,
-    /// Mid-run DB snapshot throttle (Phase 7 / F3): see
-    /// [`snapshot_io::SnapshotStore`]. Pause/error/final and cancellation
-    /// exit paths always write unconditionally.
+    /// Cross-session messaging: heartbeat + automatic inbox polling.
+    messaging: MessagingPoller,
+    /// Per-session cumulative token usage.
+    usage: UsageTracker,
+    /// Per-session tool-definition cache (catalog version keyed).
+    tool_defs: ToolDefCache,
+    /// Per-session incremental token-estimate cache.
+    token_estimates: TokenEstimateCache,
+    /// Snapshot serialization buffers.
+    snapshot_bufs: SnapshotBufs,
+    /// Mid-run DB snapshot throttle (Phase 7 / F3).
     snapshot_store: Mutex<snapshot_io::SnapshotStore>,
-    /// Per-session tool-definition cache keyed by the ToolsManager catalog
-    /// version (see `build_tool_definitions_for_session`): the definitions are
-    /// rebuilt only when a skill/MCP per-session registration or a catalog
-    /// rebuild bumps the version, instead of re-querying the registry on
-    /// every step.
-    tool_def_cache: Mutex<HashMap<String, (u64, Vec<ToolDefinition>)>>,
-    /// Minted streaming-message ids (Phase 6 / I3): thought/reasoning blocks
-    /// share one identity across chunk events, the snap, and persistence.
-    /// Cleared per session at `run_react_loop` entry.
+    /// Per-role context-window cache keyed by router instance pointer.
+    context_windows: ContextWindowCache,
+    /// Per-session dedup for balanced-model-activated notifications.
+    balanced_model: BalancedModelNotifier,
+    /// Minted streaming-message ids (Phase 6 / I3).
     identity: IdentityMap,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(super) struct CumulativeUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-    cost_usd: f64,
-    has_cost: bool,
-}
-
-/// Incremental token estimate for a session's canonical message list (see
-/// `ReActEngine::estimate_canonical_tokens`). `tokens` is the estimate at the
-/// last full tokenization pass, when the canonical had `msgs_len` messages.
-#[derive(Debug, Clone, Default)]
-pub(super) struct TokenEstimate {
-    /// canonical length at the last full tokenization pass
-    msgs_len: usize,
-    /// estimated tokens at that pass
-    tokens: u32,
-    /// number of estimation calls so far (drives the periodic full pass)
-    passes: u32,
 }
 
 /// Per-step context shared by the ReAct-loop helpers (context injection,
@@ -278,18 +240,6 @@ pub enum LoopExit {
     Error(String),
 }
 
-impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
-    fn from(u: haven_memory::repositories::usage::SessionUsage) -> Self {
-        Self {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-            cost_usd: u.cost_usd,
-            has_cost: u.has_cost,
-        }
-    }
-}
-
 impl ReActEngine {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -304,16 +254,17 @@ impl ReActEngine {
             executor,
             db,
             max_steps: Mutex::new(max_steps),
+            session_max_steps: Mutex::new(None),
             context_limits,
-            balanced_model_notified: Mutex::new(HashSet::new()),
             run_counter: AtomicU64::new(0),
-            cumulative_usage: Mutex::new(HashMap::new()),
-            messaging: Mutex::new(MessagingState::new()),
-            snapshot_bufs: Mutex::new(HashMap::new()),
-            token_estimate_cache: Mutex::new(HashMap::new()),
-            context_window_cache: Mutex::new((0, HashMap::new())),
+            messaging: MessagingPoller::new(),
+            usage: UsageTracker::new(),
+            tool_defs: ToolDefCache::new(),
+            token_estimates: TokenEstimateCache::new(),
+            snapshot_bufs: SnapshotBufs::new(),
             snapshot_store: Mutex::new(snapshot_io::SnapshotStore::default()),
-            tool_def_cache: Mutex::new(HashMap::new()),
+            context_windows: ContextWindowCache::new(),
+            balanced_model: BalancedModelNotifier::new(),
             identity: IdentityMap::new(),
             hooks: default_hooks(),
         }
@@ -362,6 +313,11 @@ impl ReActEngine {
         *self.max_steps.lock().unwrap() = max_steps;
     }
 
+    /// Set optional session-lifetime step cap (`None` = unlimited).
+    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) {
+        *self.session_max_steps.lock().unwrap() = session_max_steps;
+    }
+
     pub fn next_run_id(&self) -> u64 {
         self.run_counter.fetch_add(1, Ordering::SeqCst)
     }
@@ -399,10 +355,8 @@ impl ReActEngine {
     /// rebuilds schema JSON on every step otherwise).
     pub(super) async fn build_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDefinition> {
         let version = self.executor.get_tools().catalog_version();
-        if let Some(cached) = self.tool_def_cache.lock().unwrap().get(session_id).cloned()
-            && cached.0 == version
-        {
-            return cached.1;
+        if let Some(cached) = self.tool_defs.get_if_version(session_id, version) {
+            return cached;
         }
         // Structured defs from the manager; the LLM-boundary conversion is a
         // pure `From<ToolDef>` so nothing here re-parses loose schema JSON.
@@ -414,10 +368,7 @@ impl ReActEngine {
             .into_iter()
             .map(Into::into)
             .collect();
-        self.tool_def_cache
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), (version, defs.clone()));
+        self.tool_defs.insert(session_id, version, defs.clone());
         defs
     }
 
@@ -625,9 +576,13 @@ impl ReActEngine {
         // avoids cloning the full LlmConfig on every step.
         let context_window = Some(self.cached_context_window(role).await);
 
-        let (cum_prompt, cum_completion, cum_total, cum_cost_opt, has_cost) = {
-            let mut map = self.cumulative_usage.lock().unwrap();
-            let entry = map.entry(session_id.to_string()).or_insert_with(|| {
+        let totals = self.usage.record_with_seed(
+            session_id,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+            step_cost,
+            || {
                 // Seed from persisted counters when this session was resumed or
                 // reopened: the in-memory map is cleared on session completion
                 // (and lost on restart), but the DB row keeps the running
@@ -638,29 +593,13 @@ impl ReActEngine {
                     .flatten()
                     .map(CumulativeUsage::from)
                     .unwrap_or_default()
-            });
-            entry.prompt_tokens = entry.prompt_tokens.saturating_add(usage.prompt_tokens);
-            entry.completion_tokens = entry
-                .completion_tokens
-                .saturating_add(usage.completion_tokens);
-            entry.total_tokens = entry.total_tokens.saturating_add(usage.total_tokens);
-            if let Some(c) = step_cost {
-                entry.cost_usd += c;
-                entry.has_cost = true;
-            }
-            let cum_cost = if entry.has_cost {
-                Some(entry.cost_usd)
-            } else {
-                None
-            };
-            (
-                entry.prompt_tokens,
-                entry.completion_tokens,
-                entry.total_tokens,
-                cum_cost,
-                entry.has_cost,
-            )
-        };
+            },
+        );
+        let cum_prompt = totals.prompt_tokens;
+        let cum_completion = totals.completion_tokens;
+        let cum_total = totals.total_tokens;
+        let cum_cost_opt = totals.cost_usd;
+        let has_cost = totals.has_cost;
 
         let model = response.model.clone().or_else(|| usage.model_name.clone());
 
@@ -744,13 +683,12 @@ impl ReActEngine {
     /// a finished session so all per-session maps stay bounded across long-running
     /// sessions.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
-        let mut map = self.cumulative_usage.lock().unwrap();
-        map.remove(session_id);
-        drop(map);
+        self.usage.reset(session_id);
         self.reset_token_estimate(session_id);
         self.snapshot_store.lock().unwrap().clear_session(session_id);
-        self.tool_def_cache.lock().unwrap().remove(session_id);
-        self.snapshot_bufs.lock().unwrap().remove(session_id);
+        self.tool_defs.remove(session_id);
+        self.snapshot_bufs.remove(session_id);
+        self.messaging.clear_session(session_id);
     }
 
     /// Resolve the model's true context window for the endpoint used by
@@ -776,14 +714,7 @@ impl ReActEngine {
         // Fast path: read the cached window without awaiting the router
         // config. The cache guard is scoped so it never crosses an await
         // (the std Mutex guard is not Send).
-        if let Some(window) = {
-            let cache = self.context_window_cache.lock().unwrap();
-            if cache.0 == ptr {
-                cache.1.get(&role).copied()
-            } else {
-                None
-            }
-        } {
+        if let Some(window) = self.context_windows.get(ptr, role) {
             return window;
         }
         // Slow path: resolve from the live router config. A concurrent
@@ -793,12 +724,7 @@ impl ReActEngine {
         let cfg = router.config().await;
         let window = Self::context_window_for_role(&cfg, role)
             .unwrap_or(self.context_limits.default_context_window);
-        let mut cache = self.context_window_cache.lock().unwrap();
-        if cache.0 != ptr {
-            cache.0 = ptr;
-            cache.1.clear();
-        }
-        cache.1.insert(role, window);
+        self.context_windows.insert(ptr, role, window);
         window
     }
 
@@ -829,28 +755,18 @@ impl ReActEngine {
     /// coincidentally matches the cache. Under-counting by one message's
     /// worth of tokens is acceptable: the forced-compaction 400 retry remains
     /// the safety net for genuine overflow.
-    pub(super) fn estimate_canonical_tokens(&self, session_id: &str, canonical: &[CanonicalMessage]) -> u32 {
-        const FULL_ESTIMATE_PASS_INTERVAL: u32 = 8;
-        let mut cache = self.token_estimate_cache.lock().unwrap();
-        let entry = cache.entry(session_id.to_string()).or_default();
-        let full_pass = entry.tokens == 0
-            || entry.msgs_len > canonical.len()
-            || entry.passes.is_multiple_of(FULL_ESTIMATE_PASS_INTERVAL);
-        if full_pass {
-            entry.msgs_len = canonical.len();
-            entry.tokens = estimate_message_tokens(canonical);
-        } else if entry.msgs_len < canonical.len() {
-            entry.tokens += estimate_message_tokens(&canonical[entry.msgs_len..]);
-            entry.msgs_len = canonical.len();
-        }
-        entry.passes = entry.passes.saturating_add(1);
-        entry.tokens
+    pub(super) fn estimate_canonical_tokens(
+        &self,
+        session_id: &str,
+        canonical: &[CanonicalMessage],
+    ) -> u32 {
+        self.token_estimates.estimate(session_id, canonical)
     }
 
     /// Drop the per-session token-estimate cache entry (called alongside
     /// `reset_cumulative_usage` on session completion/error).
     pub fn reset_token_estimate(&self, session_id: &str) {
-        self.token_estimate_cache.lock().unwrap().remove(session_id);
+        self.token_estimates.remove(session_id);
     }
 
     /// Check if context compaction is needed before the next LLM call.
@@ -862,6 +778,7 @@ impl ReActEngine {
     pub(crate) async fn maybe_compact(
         &self,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
         has_image: bool,
     ) -> bool {
@@ -896,8 +813,6 @@ impl ReActEngine {
             // Compaction replaced the list wholesale: the incremental
             // estimate is stale, drop it so the next step does a full pass.
             self.reset_token_estimate(&ctx.session_id);
-            // CompactSummary does not touch derived history.
-            let mut history_unused = Vec::new();
             self.apply_transcript(
                 ctx,
                 TranscriptEvent::CompactSummary {
@@ -905,9 +820,10 @@ impl ReActEngine {
                     summary: result.summary,
                     tokens_before: result.tokens_before,
                     tokens_after: result.tokens_after,
+                    episode_id: result.episode_id,
                 },
+                events,
                 canonical,
-                &mut history_unused,
             )
             .await;
             true
@@ -923,11 +839,7 @@ impl ReActEngine {
         session_id: &str,
         reason: &str,
     ) {
-        let should_emit = {
-            let mut notified = self.balanced_model_notified.lock().unwrap();
-            notified.insert(session_id.to_string())
-        };
-        if should_emit {
+        if self.balanced_model.try_mark(session_id) {
             EventDispatcher::emit_balanced_model_activated_from(emitter, session_id, reason).await;
         }
     }
@@ -940,10 +852,7 @@ impl ReActEngine {
         error: &str,
     ) {
         tracing::error!("ReAct session {} error: {}", session_id, error);
-        {
-            let mut notified = self.balanced_model_notified.lock().unwrap();
-            notified.remove(session_id);
-        }
+        self.balanced_model.clear(session_id);
         EventDispatcher::emit_session_error_from(emitter, session_id, error).await;
         self.reset_cumulative_usage(session_id);
     }
@@ -1175,6 +1084,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 
@@ -1192,6 +1102,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 

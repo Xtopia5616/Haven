@@ -89,6 +89,7 @@ impl AppState {
         );
         let router = Arc::new(LlmRouter::new(llm_config));
         let max_steps = cfg.session.max_steps;
+        let session_max_steps = cfg.session.session_max_steps;
         let conversation_window_size = cfg.memory.session_window_size;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
@@ -109,6 +110,7 @@ impl AppState {
             conversation_window_size,
             context_limits,
         ));
+        agent.set_session_max_steps(session_max_steps);
 
         // Plan A multi-agent: `agent_spawn` creates real peer sessions through
         // the agent layer (tools crate cannot depend on haven-agent).

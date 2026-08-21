@@ -8,37 +8,7 @@
 
 use super::*;
 use haven_common::types::InjectSource;
-use haven_tools::inbox::{InboxBus, MessageType};
-use tokio::sync::watch;
-
-/// State for the automatic cross-session inbox check, one per engine (shared
-/// across sessions — each session's mailbox is keyed by its own id).
-pub(super) struct MessagingState {
-    /// Shared file bus (default root, process-wide notifier).
-    bus: InboxBus,
-    /// Delivery notifications: `changed()` fires when any mailbox got a
-    /// message, so sessions react immediately instead of only polling.
-    rx: watch::Receiver<u64>,
-    /// Steps since the last actual inbox drain (fallback cadence for
-    /// missed notifications, e.g. a different process wrote the mailbox).
-    steps_since_poll: u32,
-    /// Session title cache for the registry heartbeat (read once from the
-    /// DB; titles change rarely).
-    title_cache: HashMap<String, Option<String>>,
-}
-
-impl MessagingState {
-    pub(super) fn new() -> Self {
-        let bus = InboxBus::default_root();
-        let rx = bus.subscribe();
-        Self {
-            bus,
-            rx,
-            steps_since_poll: 0,
-            title_cache: HashMap::new(),
-        }
-    }
-}
+use haven_tools::inbox::MessageType;
 
 /// Fallback interval (in ReAct steps) for the automatic cross-session inbox
 /// check. Delivery notifications drive the check in-process (immediate), and
@@ -64,6 +34,7 @@ impl ReActEngine {
     pub(super) async fn inject_pending_context(
         &self,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
     ) -> bool {
         let mut injected = false;
@@ -85,6 +56,7 @@ impl ReActEngine {
             };
             self.push_user_context(
                 ctx,
+                events,
                 canonical,
                 source,
                 &follow_up.text,
@@ -106,6 +78,7 @@ impl ReActEngine {
             };
             self.push_user_context(
                 ctx,
+                events,
                 canonical,
                 source,
                 &s.text,
@@ -128,8 +101,16 @@ impl ReActEngine {
         // InjectSource is set for structured origin without Supplement/DB
         // side effects (see UserInject ActionResult arm).
         for s in &action_results {
-            self.push_user_context(ctx, canonical, InjectSource::ActionResult, s, &[], None)
-                .await;
+            self.push_user_context(
+                ctx,
+                events,
+                canonical,
+                InjectSource::ActionResult,
+                s,
+                &[],
+                None,
+            )
+            .await;
             injected = true;
         }
 
@@ -153,12 +134,13 @@ impl ReActEngine {
         &self,
         session_id: &str,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
     ) {
         // Session title for the registry (read once from the DB, then cached
         // per session; never hold the engine mutex across an await).
         let cached_title = {
-            let st = self.messaging.lock().unwrap();
+            let st = self.messaging.lock();
             st.title_cache.get(session_id).cloned()
         };
         let title = match cached_title {
@@ -177,7 +159,6 @@ impl ReActEngine {
                     .unwrap_or(None);
                 self.messaging
                     .lock()
-                    .unwrap()
                     .title_cache
                     .insert(session_id.to_string(), t.clone());
                 t
@@ -185,7 +166,7 @@ impl ReActEngine {
         };
 
         let (bus, due) = {
-            let mut st = self.messaging.lock().unwrap();
+            let mut st = self.messaging.lock();
             let bus = st.bus.clone();
             st.steps_since_poll += 1;
             let notified = st.rx.has_changed().unwrap_or(false);
@@ -257,6 +238,7 @@ impl ReActEngine {
         }
         self.push_user_context(
             ctx,
+            events,
             canonical,
             InjectSource::CrossSession,
             text.trim_end(),
@@ -272,14 +254,13 @@ impl ReActEngine {
     pub(super) async fn push_user_context(
         &self,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
         source: InjectSource,
         text: &str,
         attachments: &[MessageAttachment],
         message_id: Option<&str>,
     ) {
-        // history is unused for UserInject; pass a scratch vec.
-        let mut history = Vec::new();
         self.apply_transcript(
             ctx,
             TranscriptEvent::UserInject {
@@ -288,8 +269,8 @@ impl ReActEngine {
                 attachments: attachments.to_vec(),
                 message_id: message_id.map(str::to_string),
             },
+            events,
             canonical,
-            &mut history,
         )
         .await;
     }
@@ -306,8 +287,9 @@ impl ReActEngine {
         ctx: &StepCtx,
         final_text: &str,
         reasoning: Option<String>,
+        thinking_blocks: Vec<serde_json::Value>,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &[ReActStep],
         branch_points: &mut HashMap<u32, BranchPoint>,
         before_inject_len: usize,
         already_pushed: bool,
@@ -323,6 +305,29 @@ impl ReActEngine {
         )
         .await;
         if !already_pushed {
+            // Same rule as finish_turn_end: prefer thinking_blocks over a
+            // plain reasoning string when both are present.
+            let reasoning = if thinking_blocks.is_empty() {
+                reasoning
+            } else {
+                None
+            };
+            // Inject appended UserInjects at the end of `events`; insert the
+            // final-answer ToolCall before them so projection order matches
+            // the canonical insert below.
+            let n_injected = canonical.len().saturating_sub(before_inject_len);
+            let insert_at = events.len().saturating_sub(n_injected);
+            events.insert(
+                insert_at,
+                TranscriptRecord::ToolCall {
+                    step_number: ctx.step_num,
+                    text: final_text.to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning: reasoning.clone(),
+                    web_search_calls: Vec::new(),
+                    thinking_blocks: thinking_blocks.clone(),
+                },
+            );
             canonical.insert(
                 before_inject_len,
                 CanonicalMessage::assistant(
@@ -330,19 +335,12 @@ impl ReActEngine {
                     None,
                     reasoning,
                     Vec::new(),
-                    Vec::new(),
+                    thinking_blocks,
                 ),
             );
         }
-        self.save_branch_point(
-            &ctx.session_id,
-            canonical,
-            history,
-            ctx.step_num,
-            branch_points,
-            false,
-        )
-        .await;
+        self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
+            .await;
     }
 
     /// Phase 7 / C6: shared turn-end for empty-actions and explicit
@@ -352,8 +350,8 @@ impl ReActEngine {
     pub(super) async fn finish_turn_end(
         &self,
         ctx: &StepCtx,
+        events: &mut Vec<TranscriptRecord>,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &[ReActStep],
         branch_points: &mut HashMap<u32, BranchPoint>,
         final_text: &str,
         reasoning: Option<String>,
@@ -361,13 +359,14 @@ impl ReActEngine {
         already_pushed: bool,
     ) -> anyhow::Result<TurnEndOutcome> {
         let before_inject_len = canonical.len();
-        if self.inject_pending_context(ctx, canonical).await {
+        if self.inject_pending_context(ctx, events, canonical).await {
             self.deliver_final_with_pending_context(
                 ctx,
                 final_text,
                 reasoning,
+                thinking_blocks,
+                events,
                 canonical,
-                history,
                 branch_points,
                 before_inject_len,
                 already_pushed,
@@ -375,17 +374,26 @@ impl ReActEngine {
             .await;
             return Ok(TurnEndOutcome::Continue);
         }
-        // Mirror the finished answer into the canonical before the pause so
-        // the snapshot carries the complete conversation in order.
+        // Mirror the finished answer into events + canonical before the pause
+        // so the snapshot (events authority) carries the complete conversation.
         if !already_pushed {
+            let reasoning = if thinking_blocks.is_empty() {
+                reasoning
+            } else {
+                None
+            };
+            events.push(TranscriptRecord::ToolCall {
+                step_number: ctx.step_num,
+                text: final_text.to_string(),
+                tool_calls: Vec::new(),
+                reasoning: reasoning.clone(),
+                web_search_calls: Vec::new(),
+                thinking_blocks: thinking_blocks.clone(),
+            });
             canonical.push(CanonicalMessage::assistant(
                 vec![ContentPart::text(final_text.to_string())],
                 None,
-                if thinking_blocks.is_empty() {
-                    reasoning
-                } else {
-                    None
-                },
+                reasoning,
                 Vec::new(),
                 thinking_blocks,
             ));
@@ -394,8 +402,7 @@ impl ReActEngine {
             self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
         self.pause_turn(
             &ctx.session_id,
-            canonical,
-            history,
+            events,
             ctx.step_num + 1,
             branch_points,
             &ctx.emitter,

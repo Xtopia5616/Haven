@@ -60,6 +60,8 @@ pub struct CompactionResult {
     pub tokens_before: u32,
     /// Token count after compaction
     pub tokens_after: u32,
+    /// Stable `msg-*` shared by the summary bubble and `memory_episodes` (L1).
+    pub episode_id: String,
 }
 
 /// Context window pressure monitor and auto-compactor.
@@ -217,10 +219,11 @@ impl ContextCompactor {
                     return None;
                 }
 
+                let episode_id = haven_common::types::new_id("msg");
                 let mut compacted: Vec<CanonicalMessage> =
                     Vec::with_capacity(system_count + 1 + suffix.len());
                 compacted.extend_from_slice(&messages[..system_count]);
-                compacted.push(CanonicalMessage::assistant(
+                let mut summary_msg = CanonicalMessage::assistant(
                     vec![ContentPart::text(format!(
                         "{} {}",
                         haven_common::prompts::COMPACTED_SUMMARY_PREFIX,
@@ -232,7 +235,9 @@ impl ContextCompactor {
                     // context they carried is intentionally not carried over.
                     Vec::new(),
                     Vec::new(),
-                ));
+                );
+                summary_msg.id = Some(episode_id.clone());
+                compacted.push(summary_msg);
                 compacted.extend_from_slice(suffix);
 
                 let tokens_after = estimate_message_tokens(&compacted);
@@ -243,6 +248,7 @@ impl ContextCompactor {
                     summary,
                     tokens_before,
                     tokens_after,
+                    episode_id,
                 })
             }
             Err(e) => {
@@ -268,6 +274,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 
@@ -391,6 +398,7 @@ mod tests {
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
             source: None,
+            id: None,
         }
     }
 

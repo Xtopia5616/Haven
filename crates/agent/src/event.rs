@@ -116,6 +116,9 @@ pub enum AgentEvent {
         summary: String,
         tokens_before: u32,
         tokens_after: u32,
+        /// Shared `msg-*` with the canonical summary bubble / episode row (L1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        episode_id: Option<String>,
     },
     TitleUpdated {
         session_id: String,
@@ -633,6 +636,7 @@ impl EventDispatcher {
         summary: &str,
         tokens_before: u32,
         tokens_after: u32,
+        episode_id: &str,
     ) {
         emitter
             .emit(AgentEvent::Compaction {
@@ -640,6 +644,7 @@ impl EventDispatcher {
                 summary: summary.into(),
                 tokens_before,
                 tokens_after,
+                episode_id: Some(episode_id.into()),
             })
             .await;
     }
@@ -1086,5 +1091,96 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("authoritative snap or newest chunk was never delivered");
+    }
+
+    /// Phase 8 / H2: mid-stream ThoughtChunks may be dropped under overflow,
+    /// but the final Thought snap still reconciles the UI to full text.
+    #[tokio::test]
+    async fn buffered_emitter_drop_chunks_snap_still_reconciles() {
+        let collector = Arc::new(SlowCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        let slow: Arc<dyn AgentEventEmitter> = collector.clone();
+        let buffered = BufferedEmitter::new(1, slow);
+
+        for i in 0..20u32 {
+            buffered
+                .emit(AgentEvent::ThoughtChunk {
+                    session_id: "t".into(),
+                    message_id: "msg-t-1".into(),
+                    delta: format!("chunk-{i}"),
+                    step_number: 1,
+                    run_id: 1,
+                })
+                .await;
+        }
+        buffered
+            .emit(AgentEvent::Thought {
+                session_id: "t".into(),
+                message_id: "msg-t-1".into(),
+                thought: "full authoritative text after stream".into(),
+                step_number: 1,
+                run_id: 1,
+            })
+            .await;
+
+        for _ in 0..300 {
+            let events = collector.events.lock().unwrap().clone();
+            if let Some(AgentEvent::Thought { thought, .. }) = events
+                .iter()
+                .rev()
+                .find(|e| matches!(e, AgentEvent::Thought { .. }))
+            {
+                assert_eq!(thought, "full authoritative text after stream");
+                // Chunks may have been evicted; snap is the authority.
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("Thought snap never delivered after chunk overflow");
+    }
+
+    /// Same reconcile contract for ReasoningChunk → full-text ReasoningChunk
+    /// (loop emits a final full-text reasoning chunk after stream).
+    #[tokio::test]
+    async fn buffered_emitter_drop_reasoning_chunks_full_text_reconciles() {
+        let collector = Arc::new(SlowCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        let slow: Arc<dyn AgentEventEmitter> = collector.clone();
+        let buffered = BufferedEmitter::new(1, slow);
+
+        for i in 0..15u32 {
+            buffered
+                .emit(AgentEvent::ReasoningChunk {
+                    session_id: "t".into(),
+                    message_id: "msg-r-1".into(),
+                    delta: format!("r-{i}"),
+                    step_number: 1,
+                    run_id: 1,
+                })
+                .await;
+        }
+        buffered
+            .emit(AgentEvent::ReasoningChunk {
+                session_id: "t".into(),
+                message_id: "msg-r-1".into(),
+                delta: "complete reasoning body".into(),
+                step_number: 1,
+                run_id: 1,
+            })
+            .await;
+
+        for _ in 0..300 {
+            let events = collector.events.lock().unwrap().clone();
+            let has_full = events.iter().any(
+                |e| matches!(e, AgentEvent::ReasoningChunk { delta, .. } if delta == "complete reasoning body"),
+            );
+            if has_full {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("full-text ReasoningChunk never delivered after overflow");
     }
 }
