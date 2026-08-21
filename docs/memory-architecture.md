@@ -1,7 +1,7 @@
 # 记忆与 Facts 架构
 
 > 状态标记：`[完成]` = 代码已实现；`[待办]` = 按优先级推进。
-> 更新日期：2026-08-20
+> 更新日期：2026-08-21
 
 本文描述 **当前实现**、引擎侧 backlog，以及 **Facts / Episodes / 对话历史** 的协作改进计划（短期 / 长期）。早期六步计划（向量召回融合 / 迁移层 / trigram / 谓词规范化 / 抽取调度 / 移除规则兜底）与 Memory P0（CJK 分词 / 抽取维护解耦 / embed 有界）均已落地，不再以旧待办清单形式保留正文。
 
@@ -155,11 +155,11 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 | Facts | `facts` (+ FTS / embeddings) | `infer_session`（读 DB 用户消息） | system prompt「USER FACTS」——**主要在新开会话** |
 | Episodes | `memory_episodes` + 用户消息作 episode 实体 | compaction → `add_episode`；用户消息就地索引 | system prompt「Past conversation excerpts」——**主要在新开会话** |
 
-写路径已通（抽取、压缩写 episode、pause/步间 infer）；读/同步弱：resume 冻结 system 记忆块、同会话文本多重注入、`source_ref` 只写不用。
+写路径已通（抽取、压缩写 episode、pause/步间 infer）；读路径：resume 入环前 patch MEMORY fence（S3）；同会话去重（S1/S2）已落地；`source_ref` 仍只写不用。
 
 ### 3.2 协作断点（对照代码）
 
-1. **记忆注入一次、之后冻结**：新开会话 `prompt_builder.build` 写入 `canonical[0]`（`layer.rs`）；resume 整份恢复 snapshot，中途 `infer_session` 更新表但不改 system 记忆段。
+1. **记忆注入一次、之后冻结** `[缓解/S3]`：新开会话 `build_for_session` 写入 `canonical[0]`；resume 入环前 `patch_canonical_memory` 只替换 MEMORY fence（不整份重建）。步间 `infer_session` 仍不改 system（S4）；pause→continue 经 resume 可见已落库事实。
 2. **同会话三重叠**：DB 窗口 →「Additional context」、episode 召回（未排除当前 `session_id`）、首条 user = `session.input`，同一段话可出现多次。
 3. **权威不清晰**：canonical / history / messages / steps + 两张记忆表并存；生产调用 `build(..., history=&[])`，「Steps so far」实际未用。
 4. **`source_ref` 写而不读**：抽取写入消息溯源，无 prompt/矛盾/UI 消费者；消息删除后易孤儿（§二 P2-9）。
@@ -188,18 +188,19 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 - **方向**：
   - `search_episodes_by_keywords` / 向量 episode 召回支持 `exclude_session_id`（默认当前会话）
   - fresh/continue：若即将把同窗口放进 canonical，不再（或大幅缩短）Additional context
-- **落地（2026-08-21）**：`search_episodes_by_keywords_excluding` + `episode_session_id`；`build_for_session(..., exclude_session_id)`；向量 episode 命中按 owning session 过滤；单测 `past_excerpts_exclude_current_session` / `search_episodes_by_keywords_excludes_current_session`。
+- **落地（2026-08-21）**：`search_episodes_by_keywords_excluding` + `episode_session_ids`；`build_for_session(..., exclude_session_id)`；向量 episode 命中按 owning session 过滤；单测 `past_excerpts_exclude_current_session` / `search_episodes_by_keywords_excludes_current_session`。
 - **位置**：`embeddings.rs`、`prompt.rs`、`layer.rs`
 - **风险**：低
 - **验收**：同会话用户句不出现在「Past conversation excerpts」；续跑 prompt 体积不因重复历史膨胀
 
-#### S3. resume / 抽取成功后只 patch 记忆段 `[待办]`
+#### S3. resume / 抽取成功后只 patch 记忆段 `[完成]`
 
 - **问题**：长会话 facts 表已更新，system 里仍是开场那份；resume 也从不刷新记忆。
 - **方向**：
   - 抽出「只渲染 facts + episodes 段」的 builder API（不动 tools/skills 缓存）
   - 在 **resume 进入循环前**、以及 **`infer_session` 成功且有写入之后**（可节流，例如仅 pause 时）替换 `canonical[0]` 中带标记的记忆 fence，或替换独立的 Memory system/user 消息
   - **禁止**每次整份重建 system prompt（tools 索引 + 快照体积）
+- **落地（2026-08-21）**：`MemorySections` + `build_memory_sections` / `render_memory_block` / `patch_system_memory`；facts+episodes 统一进 `--- MEMORY ---` fence（`{facts}`）；`{context}` 仅 Additional context；`layer::run_session_resumed` 入环前 `patch_canonical_memory`。pause 路径仍 fire-and-forget `infer`（S4）；同进程 continue 走 resume 即可见已写入事实。旧快照无 fence 时剥离 legacy USER FACTS / Past excerpts 并插入新 fence。
 - **位置**：`prompt.rs`、`layer.rs`、`inference` / pause 钩子
 - **风险**：中（消息形状、snapshot 体积、provider 对改写 system 的敏感度）
 - **验收**：同会话 pause 后新抽出的 fact 在下一步可见；resume 后跨会话事实不落后于库超过一次维护/抽取周期
@@ -208,11 +209,11 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 
 - **问题**：compact / infer 仍在厚循环内，协作调参困难（见 `docs/react-architecture-improvements.md` G2）。
 - **方向**：短期不拆完钩子，但约定：记忆 patch（S3）挂在 pause / resume，不挂每步 prologue；抽取继续 `infer_session`，全表维护仍只走调度器。
-- **落地**：G2 已将 compact/infer/inbox 迁出 prologue（`before_step` / `on_pause`）；S3 记忆段 patch 仍待办，但调用约定与文档已对齐——步间 infer 不重建 system。
+- **落地**：G2 已将 compact/infer/inbox 迁出 prologue（`before_step` / `on_pause`）；S3 记忆段 patch 挂在 resume 入环前，步间 infer 不重建 system。
 - **风险**：低
 - **验收**：文档与调用点一致；步间 infer 不触发全量 system 重建
 
-**短期建议顺序**：S1 → S2 → S3 → S4（S1/S2 已与 ReAct Phase 6 同批落地；下一步 S3）。
+**短期建议顺序**：S1 → S2 → S3 → S4（S1–S4 均已落地）。
 
 ### 3.4 长期（架构债与增强，按需分期）
 
@@ -281,8 +282,8 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 ```
 §二 P0-1..3                 ← [完成] 2026-08-20
 §三 S1 → S2 → S4            ← [完成] 2026-08-21（随 ReAct Phase 6）
-§三 S3                      ← 下一优先：resume/infer 后只 patch 记忆段
-§二 P1-5 / P1-8 与 §三 L4   ← 可合并：预算 + 查询形态
+§三 S3                      ← [完成] 2026-08-21：resume 入环前只 patch MEMORY fence
+§二 P1-5 / P1-8 与 §三 L4   ← 下一优先：可合并预算 + 查询形态
 §二 P1-4 / P1-6、§三 L1–L3  ← 规模与架构债
 §二 P2-* / §三 L5–L6        ← 按需；schema 相关走 migration bump
 ```
@@ -310,3 +311,4 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 | 2026-08-20 | review 修复：维护启动即跑、CJK 头尾 trigram、中文召回测试加固、episode term cap、去掉 `infer_all` |
 | 2026-08-20 | 新增 §三：Facts / Episodes / 对话历史协作改进计划（短期 S1–S4 / 长期 L1–L6 / 明确不做） |
 | 2026-08-21 | S1/S2/S4 落地（随 ReAct Phase 6）：`exclude_session_id`、Additional context 去首条 user 重复、权威契约注释；S3 仍待办 |
+| 2026-08-21 | S3 落地：`build_memory_sections` / MEMORY fence / `patch_system_memory`；resume 入环前刷新 `canonical[0]` 记忆段；episodes 迁入 `{facts}` fence |

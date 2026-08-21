@@ -2,7 +2,58 @@
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
 
+use std::sync::Arc;
+
+use tracing::Instrument;
+
 use super::{PauseReason, StepCtx, *};
+
+/// Mid-run DB snapshot throttle policy (Phase 7 / F3).
+///
+/// Tracks the last step at which each session wrote a snapshot so
+/// [`ReActEngine::save_branch_point`] can decide whether a write is due
+/// without embedding the interval math in the loop. Unit-testable without
+/// starting the full ReAct loop.
+#[derive(Debug, Default)]
+pub(crate) struct SnapshotStore {
+    last_written: HashMap<String, u32>,
+}
+
+impl SnapshotStore {
+    /// Steps between mid-run DB snapshot writes on the happy path.
+    pub const WRITE_INTERVAL: u32 = 3;
+
+    /// Whether a DB snapshot write should happen at `step`.
+    ///
+    /// `force` always writes. Otherwise write if this session has never
+    /// written, or `step - last >= WRITE_INTERVAL`.
+    pub fn should_write(&self, session_id: &str, step: u32, force: bool) -> bool {
+        force
+            || self
+                .last_written
+                .get(session_id)
+                .is_none_or(|last| step.saturating_sub(*last) >= Self::WRITE_INTERVAL)
+    }
+
+    /// Record that a snapshot was written at `step` for `session_id`.
+    pub fn record_write(&mut self, session_id: &str, step: u32) {
+        self.last_written.insert(session_id.to_string(), step);
+    }
+
+    /// Step-boundary hook: return whether a write is due and, if so, record it.
+    pub fn on_step_boundary(&mut self, session_id: &str, step: u32, force: bool) -> bool {
+        let due = self.should_write(session_id, step, force);
+        if due {
+            self.record_write(session_id, step);
+        }
+        due
+    }
+
+    /// Drop throttle state for a finished session.
+    pub fn clear_session(&mut self, session_id: &str) {
+        self.last_written.remove(session_id);
+    }
+}
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
@@ -62,15 +113,6 @@ const BUDGET_EXHAUSTED_TITLE: &str = "任务步骤上限已用尽";
 
 const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任务已暂停。发一条消息即可继续。";
 
-/// Mid-run React-state snapshot writes are throttled to once per this many
-/// steps (`save_branch_point`). The in-memory canonical/history/branch-point
-/// map is always current (branch points are inserted every step regardless),
-/// and every pause/error/final path plus every cancellation exit writes the
-/// snapshot unconditionally, so the DB row only lags behind by this many
-/// steps in a hard-crash window — the resume then re-runs at most this many
-/// tool batches, which is already the behavior for a crash mid-batch today.
-const SNAPSHOT_WRITE_INTERVAL: u32 = 3;
-
 impl ReActEngine {
     /// Persist an assistant message into the session's message stream.
     /// Delegates to the shared `crate::persist_session_message` so this path
@@ -87,7 +129,8 @@ impl ReActEngine {
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
     ) {
-        if let Err(e) = crate::persist_session_message(
+        // Phase 7 / I2: persist phase span (message row write).
+        let result = crate::persist_session_message(
             &self.executor,
             session_id,
             role,
@@ -98,8 +141,9 @@ impl ReActEngine {
             message_id,
             tool_call_id,
         )
-        .await
-        {
+        .instrument(tracing::info_span!("persist", session_id, role))
+        .await;
+        if let Err(e) = result {
             tracing::warn!(
                 "ReAct: failed to persist {} message for session {} (type={:?}): {}",
                 role,
@@ -161,7 +205,6 @@ impl ReActEngine {
         status: SessionStatus,
         final_text: &str,
         branch_point_step: Option<u32>,
-        infer: &(dyn Fn(bool) + Send + Sync),
         // Pre-minted id of the streamed thought bubble this final text is the
         // authoritative copy of (`None` mints a fresh id).
         persist_message_id: Option<&str>,
@@ -170,62 +213,73 @@ impl ReActEngine {
         // the step ids), so the persist below is skipped.
         is_ask: bool,
     ) -> anyhow::Result<()> {
-        tracing::info!(
-            "ReAct turn finished: session={} step={} status={} final={} chars",
-            session_id,
-            snapshot_step,
-            status.as_str(),
-            final_text.chars().count()
-        );
-        if std::env::var("HAVEN_DEBUG_PAUSE").is_ok() {
-            eprintln!(
-                "DEBUG pause_turn persist ask={} id={:?} final={}",
-                is_ask, persist_message_id, final_text
-            );
-        }
-        if !is_ask {
-            self.persist_session_message(
+        // Phase 7 / I2: pause phase span covers persist → snapshot → status.
+        let status_label = status.as_str();
+        async {
+            tracing::info!(
+                "ReAct turn finished: session={} step={} status={} final={} chars",
                 session_id,
-                "assistant",
-                final_text,
-                Some("text"),
-                None,
-                persist_message_id,
+                snapshot_step,
+                status_label,
+                final_text.chars().count()
+            );
+            if std::env::var("HAVEN_DEBUG_PAUSE").is_ok() {
+                eprintln!(
+                    "DEBUG pause_turn persist ask={} id={:?} final={}",
+                    is_ask, persist_message_id, final_text
+                );
+            }
+            if !is_ask {
+                self.persist_session_message(
+                    session_id,
+                    "assistant",
+                    final_text,
+                    Some("text"),
+                    None,
+                    persist_message_id,
+                )
+                .await;
+            }
+            if let Some(step) = branch_point_step {
+                self.save_branch_point(session_id, canonical, history, step, branch_points, false)
+                    .await;
+            }
+            self.save_snapshot_with_branches(
+                session_id,
+                canonical,
+                history,
+                snapshot_step,
+                branch_points,
             )
             .await;
+            // The status itself carries the awaiting-answer flavor
+            // (`PausedAwaitingAnswer`), so the transition is atomic: a
+            // background-action completion landing concurrently reads the final
+            // state and cannot auto-wake an answer-blocked session.
+            let reason = if status.is_awaiting_answer() {
+                PauseReason::Ask
+            } else if status.is_awaiting_confirm() {
+                PauseReason::Confirm
+            } else {
+                PauseReason::TurnEnd
+            };
+            set_status_and_emit(&self.executor, emitter, session_id, status).await?;
+            let ctx = StepCtx {
+                session_id: session_id.to_string(),
+                step_num: snapshot_step,
+                run_id: 0,
+                emitter: emitter.clone(),
+            };
+            self.hooks.on_pause(self, &ctx, reason).await;
+            Ok(())
         }
-        if let Some(step) = branch_point_step {
-            self.save_branch_point(session_id, canonical, history, step, branch_points, false)
-                .await;
-        }
-        self.save_snapshot_with_branches(
+        .instrument(tracing::info_span!(
+            "pause",
             session_id,
-            canonical,
-            history,
-            snapshot_step,
-            branch_points,
-        )
-        .await;
-        // The status itself carries the awaiting-answer flavor
-        // (`PausedAwaitingAnswer`), so the transition is atomic: a
-        // background-action completion landing concurrently reads the final
-        // state and cannot auto-wake an answer-blocked session.
-        let reason = if status.is_awaiting_answer() {
-            PauseReason::Ask
-        } else if status.is_awaiting_confirm() {
-            PauseReason::Confirm
-        } else {
-            PauseReason::TurnEnd
-        };
-        set_status_and_emit(&self.executor, emitter, session_id, status).await?;
-        let ctx = StepCtx {
-            session_id: session_id.to_string(),
-            step_num: snapshot_step,
-            run_id: 0,
-            emitter: emitter.clone(),
-        };
-        self.hooks.on_pause(self, &ctx, reason, infer).await;
-        Ok(())
+            step = snapshot_step,
+            status = status_label
+        ))
+        .await
     }
 
     /// Pause the session because the run exhausted its step budget. Mirrors
@@ -244,39 +298,48 @@ impl ReActEngine {
         snapshot_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: &Arc<dyn AgentEventEmitter>,
-        infer: &(dyn Fn(bool) + Send + Sync),
     ) -> anyhow::Result<()> {
-        tracing::info!(
-            "ReAct step budget exhausted: session={} next_step={}",
-            session_id,
-            snapshot_step
-        );
-        self.save_snapshot_with_branches(
-            session_id,
-            canonical,
-            history,
-            snapshot_step,
-            branch_points,
-        )
-        .await;
-        set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
-        emitter
-            .emit(crate::event::AgentEvent::Notification {
-                session_id: session_id.into(),
-                title: BUDGET_EXHAUSTED_TITLE.into(),
-                body: BUDGET_EXHAUSTED_BODY.into(),
-            })
+        // Phase 7 / I2: pause span for budget exhaustion (no assistant persist).
+        async {
+            tracing::info!(
+                "ReAct step budget exhausted: session={} next_step={}",
+                session_id,
+                snapshot_step
+            );
+            self.save_snapshot_with_branches(
+                session_id,
+                canonical,
+                history,
+                snapshot_step,
+                branch_points,
+            )
             .await;
-        let ctx = StepCtx {
-            session_id: session_id.to_string(),
-            step_num: snapshot_step,
-            run_id: 0,
-            emitter: emitter.clone(),
-        };
-        self.hooks
-            .on_pause(self, &ctx, PauseReason::Budget, infer)
-            .await;
-        Ok(())
+            set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
+            emitter
+                .emit(crate::event::AgentEvent::Notification {
+                    session_id: session_id.into(),
+                    title: BUDGET_EXHAUSTED_TITLE.into(),
+                    body: BUDGET_EXHAUSTED_BODY.into(),
+                })
+                .await;
+            let ctx = StepCtx {
+                session_id: session_id.to_string(),
+                step_num: snapshot_step,
+                run_id: 0,
+                emitter: emitter.clone(),
+            };
+            self.hooks
+                .on_pause(self, &ctx, PauseReason::Budget)
+                .await;
+            Ok(())
+        }
+        .instrument(tracing::info_span!(
+            "pause",
+            session_id,
+            step = snapshot_step,
+            reason = "budget"
+        ))
+        .await
     }
 
     /// Persist one final snapshot before leaving the loop on a cancellation,
@@ -303,7 +366,80 @@ impl ReActEngine {
         .await;
     }
 
-    /// Save snapshot including branch points for tree-structured rollback (鎼?).
+    /// Phase 7 / C4: single cancel-exit path — write the exit snapshot then
+    /// return [`LoopExit::Cancelled`]. All cancel sites in the thin loop /
+    /// tool batch must go through this helper.
+    pub(super) async fn exit_cancelled(
+        &self,
+        session_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        step_number: u32,
+        branch_points: &HashMap<u32, BranchPoint>,
+    ) -> LoopExit {
+        self.exit_with_snapshot(
+            session_id,
+            canonical,
+            history,
+            step_number,
+            branch_points,
+            LoopExit::Cancelled,
+        )
+        .await
+    }
+
+    /// Write the exit snapshot then return `exit`. Used by Completed / Error /
+    /// Cancelled so step-head and mid-batch paths cannot drift on whether
+    /// `react_state` is flushed (review fix).
+    pub(super) async fn exit_with_snapshot(
+        &self,
+        session_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        step_number: u32,
+        branch_points: &HashMap<u32, BranchPoint>,
+        exit: LoopExit,
+    ) -> LoopExit {
+        self.save_exit_snapshot(session_id, canonical, history, step_number, branch_points)
+            .await;
+        exit
+    }
+
+    /// Shared External-pause exit (step-head and mid-batch): snapshot →
+    /// `on_pause(External)` → `LoopExit::Paused`.
+    pub(super) async fn exit_external_pause(
+        &self,
+        session_id: &str,
+        canonical: &[CanonicalMessage],
+        history: &[ReActStep],
+        step_number: u32,
+        branch_points: &HashMap<u32, BranchPoint>,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        run_id: u64,
+    ) -> LoopExit {
+        self.save_snapshot_with_branches(
+            session_id,
+            canonical,
+            history,
+            step_number,
+            branch_points,
+        )
+        .await;
+        let ctx = StepCtx {
+            session_id: session_id.to_string(),
+            step_num: step_number,
+            run_id,
+            emitter: emitter.clone(),
+        };
+        self.hooks
+            .on_pause(self, &ctx, PauseReason::External)
+            .await;
+        LoopExit::Paused {
+            reason: PauseReason::External,
+        }
+    }
+
+    /// Save snapshot including branch points for tree-structured rollback (§2).
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
     /// of canonical/history/branch_points —those clones were O(n²) over a
@@ -438,15 +574,15 @@ impl ReActEngine {
         self.executor.partials.discard(&ctx.session_id).await;
     }
 
-    /// Save a branch point at the current step before tool execution (—).
+    /// Save a branch point at the current step before tool execution (§2).
     ///
-    /// The DB snapshot write is throttled to every `SNAPSHOT_WRITE_INTERVAL`
-    /// steps on the happy path (`force = false`): the in-memory branch-point
-    /// map is always current, and every pause/error/final path plus every
-    /// cancellation exit writes unconditionally. Error paths MUST pass
-    /// `force = true` (e.g. `persist_partial_on_error`): `continue_session` /
-    /// `rollback_session` locate the failed step's branch point in the DB
-    /// snapshot, and a stale row would silently skip their message truncation.
+    /// The DB snapshot write is throttled via [`SnapshotStore`] on the happy
+    /// path (`force = false`): the in-memory branch-point map is always
+    /// current, and every pause/error/final path plus every cancellation exit
+    /// writes unconditionally. Error paths MUST pass `force = true` (e.g.
+    /// `persist_partial_on_error`): `continue_session` / `rollback_session`
+    /// locate the failed step's branch point in the DB snapshot, and a stale
+    /// row would silently skip their message truncation.
     pub(super) async fn save_branch_point(
         &self,
         session_id: &str,
@@ -465,11 +601,35 @@ impl ReActEngine {
             .await
             .ok()
             .flatten();
+        // Phase 7 / F4: Arc-wrap so subsequent BranchPoint clones share.
+        // When a prior entry has the same transcript lengths (no growth —
+        // re-save / empty progress), reuse its Arc. Length match is the
+        // heuristic: CanonicalMessage/ReActStep lack PartialEq, and branch
+        // points almost only grow between saves.
+        let (canonical_arc, history_arc) = {
+            let reusable = branch_points
+                .get(&step_number)
+                .into_iter()
+                .chain(
+                    branch_points
+                        .iter()
+                        .filter(|(k, _)| **k != step_number)
+                        .max_by_key(|(k, _)| *k)
+                        .map(|(_, bp)| bp),
+                )
+                .find(|bp| {
+                    bp.canonical.len() == canonical.len() && bp.history.len() == history.len()
+                });
+            match reusable {
+                Some(bp) => (Arc::clone(&bp.canonical), Arc::clone(&bp.history)),
+                None => (Arc::new(canonical.to_vec()), Arc::new(history.to_vec())),
+            }
+        };
         branch_points.insert(
             step_number,
             BranchPoint {
-                canonical: canonical.to_vec(),
-                history: history.to_vec(),
+                canonical: canonical_arc,
+                history: history_arc,
                 step_number,
                 last_msg_at,
             },
@@ -477,15 +637,8 @@ impl ReActEngine {
         // The throttle marker guard is confined to this block so it is always
         // dropped before the write's await.
         let due = {
-            let mut last_written = self.last_snapshot_step.lock().unwrap();
-            let due = force
-                || last_written.get(session_id).is_none_or(|last| {
-                    step_number.saturating_sub(*last) >= SNAPSHOT_WRITE_INTERVAL
-                });
-            if due {
-                last_written.insert(session_id.to_string(), step_number);
-            }
-            due
+            let mut store = self.snapshot_store.lock().unwrap();
+            store.on_step_boundary(session_id, step_number, force)
         };
         if due {
             self.save_snapshot_with_branches(
@@ -498,5 +651,58 @@ impl ReActEngine {
             .await;
         }
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::SnapshotStore;
+
+    #[test]
+    fn should_write_first_step_always() {
+        let store = SnapshotStore::default();
+        assert!(store.should_write("s", 1, false));
+        assert!(store.should_write("s", 100, false));
+    }
+
+    #[test]
+    fn throttle_skips_until_interval() {
+        let mut store = SnapshotStore::default();
+        assert!(store.on_step_boundary("s", 1, false));
+        assert!(!store.should_write("s", 2, false));
+        assert!(!store.should_write("s", 3, false));
+        assert!(store.should_write("s", 4, false));
+        assert!(store.on_step_boundary("s", 4, false));
+        assert!(!store.should_write("s", 5, false));
+        assert!(!store.should_write("s", 6, false));
+        assert!(store.should_write("s", 7, false));
+    }
+
+    #[test]
+    fn force_bypasses_throttle() {
+        let mut store = SnapshotStore::default();
+        assert!(store.on_step_boundary("s", 1, false));
+        assert!(!store.should_write("s", 2, false));
+        assert!(store.should_write("s", 2, true));
+        assert!(store.on_step_boundary("s", 2, true));
+        assert_eq!(store.last_written.get("s"), Some(&2));
+    }
+
+    #[test]
+    fn clear_session_resets_throttle() {
+        let mut store = SnapshotStore::default();
+        assert!(store.on_step_boundary("s", 1, false));
+        store.clear_session("s");
+        assert!(store.should_write("s", 2, false));
+    }
+
+    #[test]
+    fn sessions_throttled_independently() {
+        let mut store = SnapshotStore::default();
+        assert!(store.on_step_boundary("a", 1, false));
+        assert!(store.on_step_boundary("b", 1, false));
+        assert!(!store.should_write("a", 2, false));
+        assert!(!store.should_write("b", 2, false));
+        assert!(store.on_step_boundary("a", 4, false));
+        assert!(!store.should_write("b", 3, false));
+    }
 }

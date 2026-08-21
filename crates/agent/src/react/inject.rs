@@ -122,15 +122,14 @@ impl ReActEngine {
                 .await;
         }
 
-        // Deliver completed background-action results as context. These are
-        // kept separate from the user queues so action output is never
-        // mistaken for a user reply. The payload text is self-labelling
-        // (`[Background action result] ... action_id ...`) and is pushed as a
-        // User-role message because a mid-conversation System message is
-        // rejected by some providers and a Tool message would need a
-        // preceding assistant tool_call (see `is_dangling_boundary`).
+        // Deliver completed background-action results as context. Kept
+        // separate from user queues so action output is never mistaken for a
+        // user reply. Payload is self-labelled (`[Background action result]…`);
+        // InjectSource is set for structured origin without Supplement/DB
+        // side effects (see UserInject ActionResult arm).
         for s in &action_results {
-            canonical.push(CanonicalMessage::user_text(s));
+            self.push_user_context(ctx, canonical, InjectSource::ActionResult, s, &[], None)
+                .await;
             injected = true;
         }
 
@@ -346,4 +345,78 @@ impl ReActEngine {
         .await;
     }
 
+    /// Phase 7 / C6: shared turn-end for empty-actions and explicit
+    /// `final_answer`. Both paths enter the same inject / canonical-push /
+    /// `pause_turn` / `PauseReason::TurnEnd` implementation.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn finish_turn_end(
+        &self,
+        ctx: &StepCtx,
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &[ReActStep],
+        branch_points: &mut HashMap<u32, BranchPoint>,
+        final_text: &str,
+        reasoning: Option<String>,
+        thinking_blocks: Vec<serde_json::Value>,
+        already_pushed: bool,
+    ) -> anyhow::Result<TurnEndOutcome> {
+        let before_inject_len = canonical.len();
+        if self.inject_pending_context(ctx, canonical).await {
+            self.deliver_final_with_pending_context(
+                ctx,
+                final_text,
+                reasoning,
+                canonical,
+                history,
+                branch_points,
+                before_inject_len,
+                already_pushed,
+            )
+            .await;
+            return Ok(TurnEndOutcome::Continue);
+        }
+        // Mirror the finished answer into the canonical before the pause so
+        // the snapshot carries the complete conversation in order.
+        if !already_pushed {
+            canonical.push(CanonicalMessage::assistant(
+                vec![ContentPart::text(final_text.to_string())],
+                None,
+                if thinking_blocks.is_empty() {
+                    reasoning
+                } else {
+                    None
+                },
+                Vec::new(),
+                thinking_blocks,
+            ));
+        }
+        let persist_message_id =
+            self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+        self.pause_turn(
+            &ctx.session_id,
+            canonical,
+            history,
+            ctx.step_num + 1,
+            branch_points,
+            &ctx.emitter,
+            SessionStatus::Paused,
+            final_text,
+            Some(ctx.step_num),
+            Some(&persist_message_id),
+            false,
+        )
+        .await?;
+        Ok(TurnEndOutcome::Done(LoopExit::Paused {
+            reason: PauseReason::TurnEnd,
+        }))
+    }
+}
+
+/// Phase 7 / C6: outcome of the shared turn-end helper.
+#[derive(Debug)]
+pub(crate) enum TurnEndOutcome {
+    /// Pending context injected mid-final; loop should continue.
+    Continue,
+    /// Turn paused (`PauseReason::TurnEnd`).
+    Done(LoopExit),
 }

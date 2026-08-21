@@ -28,10 +28,11 @@ mod tool_batch;
 mod transcript;
 
 use hooks::{LoopHooksHandle, default_hooks};
+pub(crate) use hooks::{InferCallback, default_hooks_with_infer};
 use identity::IdentityMap;
 
 use inject::MessagingState;
-use transcript::TranscriptEvent;
+use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
 pub(crate) use snapshot_io::set_status_and_emit;
 #[cfg(test)]
@@ -185,11 +186,10 @@ pub struct ReActEngine {
     /// full LlmConfig on every step (the router only changes via
     /// `replace_router`).
     context_window_cache: Mutex<(usize, HashMap<EndpointRole, u32>)>,
-    /// Per-session step number of the last DB snapshot write (see
-    /// `save_branch_point`): mid-run snapshot writes are throttled to every
-    /// `SNAPSHOT_WRITE_INTERVAL` steps; pause/error/final and cancellation
-    /// exit paths always write.
-    last_snapshot_step: Mutex<HashMap<String, u32>>,
+    /// Mid-run DB snapshot throttle (Phase 7 / F3): see
+    /// [`snapshot_io::SnapshotStore`]. Pause/error/final and cancellation
+    /// exit paths always write unconditionally.
+    snapshot_store: Mutex<snapshot_io::SnapshotStore>,
     /// Per-session tool-definition cache keyed by the ToolsManager catalog
     /// version (see `build_tool_definitions_for_session`): the definitions are
     /// rebuilt only when a skill/MCP per-session registration or a catalog
@@ -312,15 +312,15 @@ impl ReActEngine {
             snapshot_bufs: Mutex::new(HashMap::new()),
             token_estimate_cache: Mutex::new(HashMap::new()),
             context_window_cache: Mutex::new((0, HashMap::new())),
-            last_snapshot_step: Mutex::new(HashMap::new()),
+            snapshot_store: Mutex::new(snapshot_io::SnapshotStore::default()),
             tool_def_cache: Mutex::new(HashMap::new()),
             identity: IdentityMap::new(),
             hooks: default_hooks(),
         }
     }
 
-    /// Replace loop hooks (tests: `hooks::NoopHooks` to skip inbox/infer).
-    #[cfg(test)]
+    /// Replace loop hooks (production: `default_hooks_with_infer`; tests:
+    /// `hooks::NoopHooks` to skip inbox/infer).
     pub(crate) fn with_hooks(mut self, hooks: LoopHooksHandle) -> Self {
         self.hooks = hooks;
         self
@@ -336,18 +336,6 @@ impl ReActEngine {
         kind: &'static str,
     ) -> String {
         self.identity.ensure_msg_id(session_id, step, run, kind)
-    }
-
-    /// Read the minted id for a block without consuming it.
-    #[allow(dead_code)] // kept for I3 IdentityMap facade parity with ensure/block
-    pub(super) fn peek_msg_id(
-        &self,
-        session_id: &str,
-        step: u32,
-        run: u64,
-        kind: &'static str,
-    ) -> Option<String> {
-        self.identity.peek_msg_id(session_id, step, run, kind)
     }
 
     /// The id a streamed block is persisted under (minted or fresh fallback).
@@ -394,6 +382,14 @@ impl ReActEngine {
     /// Build the full tool-definition list for a session: global registry tools
     /// plus per-session skill/MCP adapters registered via `load_skill`/`load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
+    ///
+    /// Phase 7 / G7 — **API `tools[]` is the schema authority.** The system
+    /// prompt only embeds a short built-in / installable-skill / MCP-server
+    /// **index** (names + one-line descriptions), frozen for the run by
+    /// `patch_canonical_memory` / `SystemPromptBuilder` (no full rebuild on
+    /// resume or mid-run `load_skill`). After `load_skill` / `load_mcp`, new
+    /// tool schemas appear here on the next step; they are **not** spliced
+    /// into the prompt index.
     ///
     /// The result is cached per session against the ToolsManager catalog version:
     /// the definitions only change when a per-session registration
@@ -752,7 +748,7 @@ impl ReActEngine {
         map.remove(session_id);
         drop(map);
         self.reset_token_estimate(session_id);
-        self.last_snapshot_step.lock().unwrap().remove(session_id);
+        self.snapshot_store.lock().unwrap().clear_session(session_id);
         self.tool_def_cache.lock().unwrap().remove(session_id);
         self.snapshot_bufs.lock().unwrap().remove(session_id);
     }
@@ -861,13 +857,13 @@ impl ReActEngine {
     ///
     /// Returns `true` when a compaction actually ran (the caller re-checks
     /// the image flag afterwards, since summarizing away the last image
-    /// changes the endpoint routing).
-    pub async fn maybe_compact(
+    /// changes the endpoint routing). Compaction goes through
+    /// [`TranscriptEvent::CompactSummary`] (Phase 6.1).
+    pub(crate) async fn maybe_compact(
         &self,
-        session_id: &str,
+        ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
         has_image: bool,
-        emitter: &Arc<dyn AgentEventEmitter>,
     ) -> bool {
         if canonical.len() < 4 {
             return false;
@@ -885,31 +881,35 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        if self.estimate_canonical_tokens(session_id, canonical) <= compactor.threshold_tokens() {
+        if self.estimate_canonical_tokens(&ctx.session_id, canonical) <= compactor.threshold_tokens()
+        {
             return false;
         }
         if let Some(result) = compactor.compact(canonical, &router).await {
             tracing::info!(
                 "compaction for session {}: {} tokens -> {} tokens ({} msgs summarized)",
-                session_id,
+                ctx.session_id,
                 result.tokens_before,
                 result.tokens_after,
                 result.summarized_count
             );
-            *canonical = result.compacted;
             // Compaction replaced the list wholesale: the incremental
             // estimate is stale, drop it so the next step does a full pass.
-            self.reset_token_estimate(session_id);
-            EventDispatcher::emit_compaction_from(
-                emitter,
-                session_id,
-                &result.summary,
-                result.tokens_before,
-                result.tokens_after,
+            self.reset_token_estimate(&ctx.session_id);
+            // CompactSummary does not touch derived history.
+            let mut history_unused = Vec::new();
+            self.apply_transcript(
+                ctx,
+                TranscriptEvent::CompactSummary {
+                    compacted: result.compacted,
+                    summary: result.summary,
+                    tokens_before: result.tokens_before,
+                    tokens_after: result.tokens_after,
+                },
+                canonical,
+                &mut history_unused,
             )
             .await;
-            self.persist_compaction_summary(session_id, &result.summary)
-                .await;
             true
         } else {
             false
@@ -1038,7 +1038,8 @@ mod tests {
         )
     }
 
-    // ── failure classification & retry nudge ──────────────────────────────
+    // ── failure classification & retry nudge (G5: nudge text only; attach
+    // onto tool observations is covered in tool_batch::tests) ──────────────
 
     #[test]
     fn classify_environmental_command_missing() {

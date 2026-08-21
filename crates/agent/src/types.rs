@@ -1,14 +1,21 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use haven_common::types::CanonicalMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Branch point saved before tool execution, used for rollback (§2).
+///
+/// `canonical` / `history` are `Arc`-wrapped so cloning a [`BranchPoint`]
+/// (HashMap insert, rollback `.cloned()`, snapshot COW) is a cheap refcount
+/// bump rather than a deep copy of the transcript. Successive branch points
+/// still allocate fresh Arcs on save when content grows; sharing kicks in when
+/// the same `BranchPoint` is cloned. Serde still emits plain JSON arrays.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchPoint {
-    pub canonical: Vec<CanonicalMessage>,
-    pub history: Vec<ReActStep>,
+    pub canonical: Arc<Vec<CanonicalMessage>>,
+    pub history: Arc<Vec<ReActStep>>,
     pub step_number: u32,
     /// `created_at` of the most recent session message at the time this branch
     /// point was saved. On rollback, all session messages after this timestamp
@@ -215,13 +222,13 @@ mod tests {
     #[test]
     fn branch_point_roundtrip_with_last_msg_at() {
         let bp = BranchPoint {
-            canonical: vec![canonical_msg(CanonicalRole::User, "hello")],
-            history: vec![ReActStep {
+            canonical: Arc::new(vec![canonical_msg(CanonicalRole::User, "hello")]),
+            history: Arc::new(vec![ReActStep {
                 step_number: 1,
                 thought: None,
                 action: None,
                 observation: None,
-            }],
+            }]),
             step_number: 5,
             last_msg_at: Some("2026-07-31T12:00:00Z".into()),
         };
@@ -231,6 +238,19 @@ mod tests {
         assert_eq!(back.history.len(), 1);
         assert_eq!(back.step_number, 5);
         assert_eq!(back.last_msg_at.as_deref(), Some("2026-07-31T12:00:00Z"));
+    }
+
+    #[test]
+    fn branch_point_clone_shares_arc() {
+        let bp = BranchPoint {
+            canonical: Arc::new(vec![canonical_msg(CanonicalRole::User, "hello")]),
+            history: Arc::new(vec![]),
+            step_number: 1,
+            last_msg_at: None,
+        };
+        let cloned = bp.clone();
+        assert!(Arc::ptr_eq(&bp.canonical, &cloned.canonical));
+        assert!(Arc::ptr_eq(&bp.history, &cloned.history));
     }
 
     #[test]
@@ -247,8 +267,8 @@ mod tests {
         snapshot.branch_points.insert(
             4,
             BranchPoint {
-                canonical: vec![],
-                history: vec![],
+                canonical: Arc::new(vec![]),
+                history: Arc::new(vec![]),
                 step_number: 4,
                 last_msg_at: None,
             },

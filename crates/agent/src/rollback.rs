@@ -40,32 +40,9 @@ impl AgentLayer {
         if state == Some(SessionStatus::Running) {
             let cancel = self.executor.cancellation_token(session_id).await;
             cancel.cancel();
-            // Wait until the loop handler releases the running slot.
-            let mut waited = false;
-            for _ in 0..50 {
-                if !self
-                    .executor
-                    .running_actions_list()
-                    .await
-                    .contains(&session_id.to_string())
-                {
-                    break;
-                }
-                waited = true;
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-            if waited
-                && self
-                    .executor
-                    .running_actions_list()
-                    .await
-                    .contains(&session_id.to_string())
-            {
-                tracing::warn!(
-                    "rollback_session {}: handler did not exit within 5s; proceeding with restore (late step writes are guarded by execute_step)",
-                    session_id
-                );
-            }
+            // Join the dispatcher run: `await_run_finished` resolves when
+            // `unmark_running` releases the slot (oneshot, not a timed poll).
+            self.executor.await_run_finished(session_id).await;
         }
 
         // Background actions spawned before the rollback are stale relative to
@@ -146,16 +123,17 @@ impl AgentLayer {
             // it).
             let cutoff_ts = self.db.last_user_message_ts(session_id);
             BranchPoint {
-                canonical: snapshot.canonical.clone(),
-                history: snapshot.history.clone(),
+                canonical: std::sync::Arc::new(snapshot.canonical.clone()),
+                history: std::sync::Arc::new(snapshot.history.clone()),
                 step_number: target_step,
                 last_msg_at: cutoff_ts,
             }
         };
 
         // Restore the canonical/history/step from the branch point.
-        snapshot.canonical = bp.canonical;
-        snapshot.history = bp.history;
+        // Arc::unwrap_or_clone avoids a deep copy when we hold the sole ref.
+        snapshot.canonical = std::sync::Arc::unwrap_or_clone(bp.canonical);
+        snapshot.history = std::sync::Arc::unwrap_or_clone(bp.history);
         snapshot.step_number = bp.step_number;
 
         // If the branch point was saved right after an assistant tool_call
@@ -272,9 +250,10 @@ impl AgentLayer {
             let prefixes = haven_common::types::InjectSource::match_prefixes();
             let matches_target = |t: &str| {
                 t == target.content
-                    || prefixes
-                        .iter()
-                        .any(|p| t.strip_prefix(p).is_some_and(|rest| rest == target.content))
+                    || prefixes.iter().any(|p| {
+                        t.strip_prefix(p.as_str())
+                            .is_some_and(|rest| rest == target.content)
+                    })
             };
             let pos = snapshot
                 .canonical

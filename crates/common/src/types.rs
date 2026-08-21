@@ -262,15 +262,26 @@ impl InjectSource {
         }
     }
 
-    /// Prefixes used when matching a raw DB user message against a prefixed
-    /// canonical user turn (rollback). Includes the trailing `": "`.
-    pub fn match_prefixes() -> &'static [&'static str] {
+    /// Inject sources that bake `{prefix}: ` into canonical user text.
+    /// ActionResult is excluded: its body is producer-labelled
+    /// (`[Background action result]…`) without the colon prefix.
+    pub fn prefixed() -> &'static [InjectSource] {
         &[
-            "Additional context from user: ",
-            "Answer to your previous question: ",
-            "Steering: ",
-            "Cross-session message: ",
+            Self::Steering,
+            Self::FollowUp,
+            Self::Answer,
+            Self::CrossSession,
         ]
+    }
+
+    /// Prefixes used when matching a raw DB user message against a prefixed
+    /// canonical user turn (rollback). Derived from [`Self::render_prefix`]
+    /// so the two cannot drift.
+    pub fn match_prefixes() -> Vec<String> {
+        Self::prefixed()
+            .iter()
+            .map(|s| format!("{}: ", s.render_prefix()))
+            .collect()
     }
 }
 
@@ -634,6 +645,23 @@ mod tests {
             panic!("expected Text variant");
         };
         assert_eq!(s, "static str");
+    }
+
+    #[test]
+    fn inject_source_match_prefixes_derive_from_render() {
+        let prefixes = InjectSource::match_prefixes();
+        assert_eq!(prefixes.len(), InjectSource::prefixed().len());
+        for source in InjectSource::prefixed() {
+            let expected = format!("{}: ", source.render_prefix());
+            assert!(
+                prefixes.contains(&expected),
+                "missing match prefix for {source:?}: {expected}"
+            );
+        }
+        assert!(
+            !prefixes.iter().any(|p| p.starts_with("Background action result:")),
+            "ActionResult bodies are not colon-prefixed"
+        );
     }
 
     #[test]

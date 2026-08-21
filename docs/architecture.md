@@ -97,12 +97,18 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.4 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `inject` / `snapshot_io` / `retries`），流式响应、快照/分支、压缩。
-- `session.rs`：`SessionExecutor`（会话队列、并发信号量、状态机、supplement/steering 队列）。
-- `layer.rs`：`AgentLayer`（对外入口：process_input / run_session / 事件发射）。
+- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `inject` / `snapshot_io` / `retries` / `hooks`），流式响应、快照/分支、压缩。
+- `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
+- `layer.rs` + `ingress.rs` / `resume.rs`：对外入口与 resume 投影。
+- `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `inference.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `title.rs` / `event.rs` / `partial.rs`。
 - 调用 `LlmRouter` 与 `MediaGateway`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
+
+**Per-run 步数预算（Phase 7 / J1）**：`max_steps` 是**单次 run**上限。pause / ask / confirm 后再次 resume 会按
+`effective_max = max(max_steps, start_step - 1 + max_steps)` 再给满额，因此长会话可跨多次 run
+累计超过配置值。会话生命周期总步数上限尚未落地（产品选项）。详见
+`docs/react-architecture-improvements.md` J1。
 
 **判定标准**：会话的业务编排中心，不知道也不关心 provider 细节 / 录音硬件细节。
 

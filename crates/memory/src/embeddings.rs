@@ -273,31 +273,61 @@ impl Database {
         Ok(summary)
     }
 
-    /// Owning session for an episode entity (message or compaction summary).
-    /// Used to exclude the current session from cross-session recall (S2).
-    pub fn episode_session_id(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
+    /// Batch owning-session lookup for episode entity ids (message or
+    /// compaction summary). Used to exclude the current session from
+    /// cross-session recall (S2) without per-hit point lookups.
+    pub fn episode_session_ids(
+        &self,
+        entity_ids: &[&str],
+    ) -> anyhow::Result<std::collections::HashMap<String, Option<String>>> {
+        use std::collections::HashMap;
+        let mut out: HashMap<String, Option<String>> = HashMap::new();
+        if entity_ids.is_empty() {
+            return Ok(out);
+        }
+        for id in entity_ids {
+            out.insert((*id).to_string(), None);
+        }
         let conn = self.conn();
-        let from_msg = match conn.query_row(
-            "SELECT session_id FROM messages WHERE id = ?1",
-            rusqlite::params![entity_id],
-            |r| r.get::<_, String>(0),
-        ) {
-            Ok(s) => Some(s),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(e) => return Err(e.into()),
-        };
-        if from_msg.is_some() {
-            return Ok(from_msg);
+        let placeholders = vec!["?"; entity_ids.len()].join(",");
+        let msg_sql = format!("SELECT id, session_id FROM messages WHERE id IN ({placeholders})");
+        {
+            let mut stmt = conn.prepare(&msg_sql)?;
+            let params: Vec<&dyn rusqlite::types::ToSql> = entity_ids
+                .iter()
+                .map(|id| id as &dyn rusqlite::types::ToSql)
+                .collect();
+            let rows = stmt.query_map(params.as_slice(), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, sid) = row?;
+                out.insert(id, Some(sid));
+            }
         }
-        match conn.query_row(
-            "SELECT session_id FROM memory_episodes WHERE id = ?1",
-            rusqlite::params![entity_id],
-            |r| r.get::<_, String>(0),
-        ) {
-            Ok(s) => Ok(Some(s)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
+        let unresolved: Vec<&str> = out
+            .iter()
+            .filter_map(|(id, sid)| if sid.is_none() { Some(id.as_str()) } else { None })
+            .collect();
+        if unresolved.is_empty() {
+            return Ok(out);
         }
+        let placeholders = vec!["?"; unresolved.len()].join(",");
+        let ep_sql =
+            format!("SELECT id, session_id FROM memory_episodes WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&ep_sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = unresolved
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, sid) = row?;
+            out.insert(id, Some(sid));
+        }
+        Ok(out)
     }
 
     /// Brute-force cosine search over one memory domain. Data volumes here are

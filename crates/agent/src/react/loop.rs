@@ -2,22 +2,26 @@
 //!
 //! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
 
+use super::inject::TurnEndOutcome;
 use super::retries::{AfterLlmAction, ResponsePolicyState};
+use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
 use super::*;
 use crate::types::{BranchPoint, ReActStep};
 use haven_common::types::CanonicalMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 impl ReActEngine {
     /// Shared ReAct loop body. Runs from `start_step` through `max_steps`.
     /// Called by both `run_session` (fresh) and `run_session_resumed` (resumed from
     /// snapshot).
     ///
-    /// Tool definitions are rebuilt at the top of each step so that tools
-    /// loaded via `load_skill` / `load_mcp` (registered per-session) become
-    /// visible to the LLM on the very next step.
+    /// Tool definitions (API `tools[]`) are rebuilt at the top of each step so
+    /// tools loaded via `load_skill` / `load_mcp` become visible on the next
+    /// step. The system-prompt tools/skills/MCP **index** stays frozen for the
+    /// run (Phase 7 / G7) — schemas come from this API list only.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_react_loop(
         &self,
@@ -27,16 +31,16 @@ impl ReActEngine {
         start_step: u32,
         branch_points: &mut HashMap<u32, BranchPoint>,
         emitter: Arc<dyn AgentEventEmitter>,
-        infer: &(dyn Fn(bool) + Send + Sync),
         run_id: u64,
     ) -> anyhow::Result<LoopExit> {
         let max_steps = *self.max_steps.lock().unwrap();
-        // When resuming past the configured cap (e.g. a session that used all
-        // `max_steps` then paused for the user's next turn), give the loop
-        // another full budget so the resume doesn't degenerate into an
-        // immediate budget-exhaustion pause below. This intentionally
-        // re-budgets on every resume —a session can run `max_steps` per run,
-        // not once per session lifetime (documented in refactor-dedup.md A9).
+        // Phase 7 / J1: per-run budget. When resuming past the configured cap
+        // (e.g. a session that used all `max_steps` then paused for the user's
+        // next turn), give the loop another full budget so resume does not
+        // immediately hit budget exhaustion. A session can therefore run
+        // `max_steps` **per run**, not once per session lifetime. See
+        // `docs/react-architecture-improvements.md` J1 — optional session-
+        // lifetime `RunBudget` in the snapshot is a product decision.
         let effective_max = max_steps.max(start_step.saturating_sub(1).saturating_add(max_steps));
         let mut last_step = start_step.saturating_sub(1);
         // One run = one loop invocation: minted streaming-message ids from a
@@ -58,6 +62,17 @@ impl ReActEngine {
             max_steps,
             effective_max
         );
+        // Phase 7 / E4: tools may only run while status is Running. The
+        // dispatcher already flips Pending→Running via `try_claim_pending`;
+        // direct callers (tests, continue_session) may still be Pending —
+        // promote here so execute_step does not refuse. Never promote from
+        // Paused*/terminal (those exit at step head below).
+        if self.executor.get_session_state(session_id).await == Some(SessionStatus::Pending) {
+            let _ = self
+                .executor
+                .update_session_status(session_id, SessionStatus::Running)
+                .await;
+        }
         // Cut-off retry counter: a text-only response that looks truncated (or
         // is a mid-session narration that stopped without a tool call) is retried
         // up to `context_limits.cut_off_retries` times per run with a continuation nudge (the
@@ -86,7 +101,6 @@ impl ReActEngine {
                     history,
                     branch_points,
                     &emitter,
-                    infer,
                     run_id,
                 )
                 .await?
@@ -108,22 +122,29 @@ impl ReActEngine {
             // written so the DB row is never left stale for the rollback
             // that just cancelled us.
             if cancel.is_cancelled() {
-                self.save_exit_snapshot(
+                return Ok(self.exit_cancelled(
                     session_id,
                     canonical,
                     history,
                     step_num,
                     branch_points,
-                )
-                .await;
-                return Ok(LoopExit::Cancelled);
+                ).await);
             }
             let state = self.executor.get_session_state(session_id).await;
             match state {
                 // Session vanished from the working set (end_session / terminal
-                // cleanup): exit silently.
+                // cleanup): flush snapshot then exit (aligned with mid-batch).
                 None | Some(SessionStatus::Completed) => {
-                    return Ok(LoopExit::Completed);
+                    return Ok(self
+                        .exit_with_snapshot(
+                            session_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                            LoopExit::Completed,
+                        )
+                        .await);
                 }
                 Some(SessionStatus::Error) => {
                     // An external path marked the session Error while the
@@ -131,32 +152,31 @@ impl ReActEngine {
                     // user sees why it stopped.
                     self.emit_error(&emitter, session_id, "session interrupted")
                         .await;
-                    return Ok(LoopExit::Error("session interrupted".into()));
+                    return Ok(self
+                        .exit_with_snapshot(
+                            session_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                            LoopExit::Error("session interrupted".into()),
+                        )
+                        .await);
                 }
                 Some(s) if s.is_paused() => {
                     // External pause (or leftover Paused* after a prior exit
                     // race): snapshot and leave — do not wait for resume here.
-                    self.save_snapshot_with_branches(
-                        session_id,
-                        canonical,
-                        history,
-                        step_num,
-                        branch_points,
-                    )
-                    .await;
-                    let ctx = StepCtx {
-                        session_id: session_id.to_string(),
-                        step_num,
-                        run_id,
-                        emitter: emitter.clone(),
-                    };
-                    // G2: pause infer goes through on_pause (including External).
-                    self.hooks
-                        .on_pause(self, &ctx, PauseReason::External, infer)
-                        .await;
-                    return Ok(LoopExit::Paused {
-                        reason: PauseReason::External,
-                    });
+                    return Ok(self
+                        .exit_external_pause(
+                            session_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                            &emitter,
+                            run_id,
+                        )
+                        .await);
                 }
                 _ => {}
             }
@@ -173,7 +193,10 @@ impl ReActEngine {
             // Deliver user interjections (supplements, steering) and
             // background-action results as context at the top of each step so
             // they land in the gap between tool calls and the next LLM call.
-            self.inject_pending_context(&ctx, canonical).await;
+            // Span must not be `.entered()` across `.await` (EnteredSpan is !Send).
+            self.inject_pending_context(&ctx, canonical)
+                .instrument(tracing::info_span!("inject", session_id, step_num))
+                .await;
 
             // Phase 3 / G2 order contract:
             //   inject → hooks.before_step (inbox / compact / interval infer)
@@ -181,7 +204,8 @@ impl ReActEngine {
             // The thin loop must not call maybe_poll_inbox / maybe_compact /
             // interval infer directly — those live in DefaultHooks.
             self.hooks
-                .before_step(self, &ctx, canonical, infer)
+                .before_step(self, &ctx, canonical)
+                .instrument(tracing::info_span!("before_step", session_id, step_num))
                 .await;
 
             // Image flag for endpoint routing: re-scan after hooks (compaction
@@ -192,7 +216,21 @@ impl ReActEngine {
             // without a preceding assistant tool_calls (providers reject it
             // with a 400). Sanitize as a final gate so compaction or a
             // mid-batch interruption can never poison a request.
-            crate::sanitize_canonical(canonical);
+            // Phase 7 / J2: count repairs; healthy paths should see 0.
+            let repairs = crate::sanitize_canonical(canonical);
+            if repairs > 0 {
+                // Phase 7 / J2: healthy paths should see 0; non-zero means the
+                // gate repaired an upstream interrupt/compaction dangling chain.
+                // Interrupt/cancel recovery legitimately repairs — do not
+                // `debug_assert_eq!(repairs, 0)` here. Unit tests assert the
+                // returned repair count instead.
+                tracing::warn!(
+                    session_id,
+                    step_num,
+                    repairs,
+                    "sanitize_canonical repaired dangling tool calls before LLM"
+                );
+            }
 
             // Rebuild tool definitions each step so that per-session tools
             // registered by `load_skill` / `load_mcp` are visible to the LLM.
@@ -250,6 +288,7 @@ impl ReActEngine {
                     history,
                     branch_points,
                 )
+                .instrument(tracing::info_span!("llm", session_id, step_num))
                 .await
             {
                 StepCallOutcome::Response(resp) => resp,
@@ -258,15 +297,15 @@ impl ReActEngine {
                     // rollback/continue that cancelled the LLM call (the
                     // response was never parsed, so the saved state is the
                     // clean pre-step state).
-                    self.save_exit_snapshot(
-                        session_id,
-                        canonical,
-                        history,
-                        step_num,
-                        branch_points,
-                    )
-                    .await;
-                    return Ok(LoopExit::Cancelled);
+                    return Ok(self
+                        .exit_cancelled(
+                            session_id,
+                            canonical,
+                            history,
+                            step_num,
+                            branch_points,
+                        )
+                        .await);
                 }
                 StepCallOutcome::Fatal(msg) => return Err(anyhow::anyhow!("{}", msg)),
             };
@@ -282,9 +321,7 @@ impl ReActEngine {
                     step_num,
                     session_id
                 );
-                self.save_exit_snapshot(session_id, canonical, history, step_num, branch_points)
-                    .await;
-                return Ok(LoopExit::Cancelled);
+                return Ok(self.exit_cancelled(session_id, canonical, history, step_num, branch_points).await);
             }
 
             tracing::debug!(
@@ -366,34 +403,36 @@ impl ReActEngine {
                         empty_retries_remaining =
                             empty_retries_remaining.saturating_sub(1);
                         if cancel_res.is_cancelled() {
-                            self.save_exit_snapshot(
+                            return Ok(self.exit_cancelled(
                                 session_id,
                                 canonical,
                                 history,
                                 step_num,
                                 branch_points,
-                            )
-                            .await;
-                            return Ok(LoopExit::Cancelled);
+                            ).await);
                         }
                         tokio::select! {
                             _ = cancel_res.cancelled() => {
-                                self.save_exit_snapshot(session_id, canonical, history, step_num, branch_points)
-                                    .await;
-                                return Ok(LoopExit::Cancelled);
+                                return Ok(self
+                                    .exit_cancelled(
+                                        session_id,
+                                        canonical,
+                                        history,
+                                        step_num,
+                                        branch_points,
+                                    )
+                                    .await);
                             }
                             _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
                         }
                         if cancel_res.is_cancelled() {
-                            self.save_exit_snapshot(
+                            return Ok(self.exit_cancelled(
                                 session_id,
                                 canonical,
                                 history,
                                 step_num,
                                 branch_points,
-                            )
-                            .await;
-                            return Ok(LoopExit::Cancelled);
+                            ).await);
                         }
                         tracing::warn!(
                             "ReAct step {} session {} model returned an empty response; retrying ({} left)",
@@ -417,15 +456,13 @@ impl ReActEngine {
                                 }
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
-                                self.save_exit_snapshot(
+                                return Ok(self.exit_cancelled(
                                     session_id,
                                     canonical,
                                     history,
                                     step_num,
                                     branch_points,
-                                )
-                                .await;
-                                return Ok(LoopExit::Cancelled);
+                                ).await);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -439,15 +476,13 @@ impl ReActEngine {
                     AfterLlmAction::RetryCutOff { nudge } => {
                         cut_off_retries += 1;
                         if cancel_res.is_cancelled() {
-                            self.save_exit_snapshot(
+                            return Ok(self.exit_cancelled(
                                 session_id,
                                 canonical,
                                 history,
                                 step_num,
                                 branch_points,
-                            )
-                            .await;
-                            return Ok(LoopExit::Cancelled);
+                            ).await);
                         }
                         tracing::warn!(
                             "ReAct step {} session {} response looks cut off (finish={:?}); retrying (attempt {}/{})",
@@ -485,15 +520,13 @@ impl ReActEngine {
                                 }
                             }
                             Err(haven_llm::LlmError::Cancelled) => {
-                                self.save_exit_snapshot(
+                                return Ok(self.exit_cancelled(
                                     session_id,
                                     canonical,
                                     history,
                                     step_num,
                                     branch_points,
-                                )
-                                .await;
-                                return Ok(LoopExit::Cancelled);
+                                ).await);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -532,25 +565,7 @@ impl ReActEngine {
                 actions.clear();
             }
 
-            // Repair tool-call arguments that are missing required fields
-            // before they reach the provider / tool (common after an
-            // interrupted/continued generation). A missing required field is
-            // filled from the schema default, else a type placeholder, so the
-            // call deserializes instead of triggering a 400. Runs on the
-            // finalized actions so retry-replaced responses are covered too.
-            if !actions.is_empty() {
-                let repaired = self
-                    .supplement_missing_required_fields(session_id, &mut actions)
-                    .await;
-                if repaired > 0 {
-                    tracing::warn!(
-                        "ReAct step {} session {} repaired {} tool call(s) with missing required fields",
-                        step_num,
-                        session_id,
-                        repaired
-                    );
-                }
-            }
+            // Phase 7 / E5: schema repair moved into execute_tool_batch.
 
             tracing::trace!(
                 "ReAct step {} parsed: thought={}, actions={}",
@@ -586,72 +601,25 @@ impl ReActEngine {
                 .await;
             }
 
-            // ── Web search round-trip ─────────────────────────────────────
-            // `web_search_call` output items come from the provider's
-            // server-side search tool (DeepSeek built-in). The search itself
-            // runs on the provider; the items must be passed back verbatim in
-            // the next request's input so the server restores the search
-            // context. Push an assistant message carrying them into the
-            // canonical so every subsequent path round-trips them.
-            let has_web_search = !response.web_search_calls.is_empty();
-            let synthesized_final = !actions.is_empty()
-                && actions
-                    .iter()
-                    .all(|a| a.is_final && a.tool_call_id.is_none());
-            if has_web_search && (actions.is_empty() || synthesized_final) {
-                // The text must match what `persist_session_message` stores
-                // (trimmed thought) or the resume dedup fails on the leading
-                // whitespace and re-seeds the message as a [conversation] line.
-                let push_text = thought.as_deref().unwrap_or(&response.text);
-                canonical.push(CanonicalMessage::assistant(
-                    vec![ContentPart::text(push_text.to_string())],
-                    None,
-                    if response.thinking_blocks.is_empty() {
-                        response.reasoning.clone()
-                    } else {
-                        None
-                    },
-                    response.web_search_calls.clone(),
-                    response.thinking_blocks.clone(),
-                ));
-                if actions.is_empty() {
-                    // Search round: no answer yet, the follow-up request
-                    // carries the search context and produces the answer.
-                    // Keep the turn open and let the loop re-request.
-                    if let Some(ref t) = thought {
-                        let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
-                        self.persist_session_message(
-                            session_id,
-                            "assistant",
-                            t,
-                            Some("text"),
-                            None,
-                            Some(&message_id),
-                        )
-                        .await;
-                    }
-                    self.save_branch_point(
-                        session_id,
-                        canonical,
-                        history,
-                        step_num,
-                        branch_points,
-                        false,
-                    )
-                    .await;
-                    tracing::debug!(
-                        "ReAct step {} session {} server-side web search round ({} item(s)); continuing",
-                        step_num,
-                        session_id,
-                        response.web_search_calls.len()
-                    );
-                    continue;
-                }
-                // synthesized_final: the answer arrived in the same response
-                // as the search call —fall through to the final-answer path,
-                // which ends the turn. The canonical push above keeps the
-                // search context alive for follow-up turns.
-            }
+            // Phase 7 / G4: provider search context prepared outside the thin
+            // loop (`prepare_search_context` → ContinueWithoutTools / Proceed).
+            let search_pushed = match self
+                .prepare_search_context(
+                    &ctx,
+                    &response,
+                    &thought,
+                    &actions,
+                    canonical,
+                    history,
+                    branch_points,
+                )
+                .await
+            {
+                SearchContextOutcome::ContinueWithoutTools => continue,
+                SearchContextOutcome::Proceed {
+                    assistant_already_pushed,
+                } => assistant_already_pushed,
+            };
 
             if actions.is_empty() {
                 // An `ask` is still pending unanswered (the model stopped
@@ -686,7 +654,6 @@ impl ReActEngine {
                         SessionStatus::PausedAwaitingAnswer,
                         &question,
                         None,
-                        infer,
                         // The question is re-persisted as a plain assistant
                         // message (fresh id, `is_ask` false so pause_turn
                         // persists it): the row re-seeds the resume canonical.
@@ -748,66 +715,33 @@ impl ReActEngine {
                         observation: Some(msg.clone()),
                     });
                 }
-                // A user message (or background-action result) arrived while the
-                // model was generating this answer: deliver it in the gap
-                // between the tool calls and the final content instead of
-                // deferring it until after the turn completes. The finished
-                // answer is persisted so the conversation stays consistent,
-                // then the loop re-runs with the new context.
-                let before_inject_len = canonical.len();
-                if self.inject_pending_context(&ctx, canonical).await {
-                    self.deliver_final_with_pending_context(
+                // Phase 7 / C6: shared turn-end (empty actions → TurnEnd).
+                match self
+                    .finish_turn_end(
                         &ctx,
-                        &msg,
-                        response.reasoning.clone(),
                         canonical,
                         history,
                         branch_points,
-                        before_inject_len,
-                        // This branch carries no web search and no tool calls,
-                        // so no assistant message was pushed yet.
-                        false,
+                        &msg,
+                        response.reasoning.clone(),
+                        response.thinking_blocks.clone(),
+                        search_pushed,
                     )
-                    .await;
-                    continue;
+                    .await?
+                {
+                    TurnEndOutcome::Continue => continue,
+                    TurnEndOutcome::Done(exit) => return Ok(exit),
                 }
-                // Mirror the finished answer into the canonical before the
-                // pause: the snapshot then carries the complete conversation
-                // in the right order. Without this, the pause snapshot ends
-                // right after the tool results and the resume re-seed has to
-                // re-insert the answer at the transcript head (sys_end),
-                // placing it BEFORE the tool results that preceded it.
-                canonical.push(CanonicalMessage::assistant(
-                    vec![ContentPart::text(msg.clone())],
-                    None,
-                    if response.thinking_blocks.is_empty() {
-                        response.reasoning.clone()
-                    } else {
-                        None
-                    },
-                    Vec::new(),
-                    response.thinking_blocks.clone(),
-                ));
-                let persist_message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
-                self.pause_turn(
-                    session_id,
-                    canonical,
-                    history,
-                    step_num + 1,
-                    branch_points,
-                    &emitter,
-                    SessionStatus::Paused,
-                    &msg,
-                    Some(step_num),
-                    infer,
-                    Some(&persist_message_id),
-                    false,
-                )
-                .await?;
-                return Ok(LoopExit::Paused { reason: PauseReason::TurnEnd });
             }
 
-            if let Some(final_action) = actions.iter().find(|a| a.is_final) {
+            // Phase 7 / C6: explicit final only ends the turn when there are
+            // no non-final tools. A mixed response (tools + final_answer)
+            // must run the tool batch first — otherwise non-final calls are
+            // dropped and never reach execute_tool_batch.
+            let has_non_final = actions.iter().any(|a| !a.is_final);
+            if !has_non_final
+                && let Some(final_action) = actions.iter().find(|a| a.is_final)
+            {
                 let final_text = thought.unwrap_or_else(|| "Session completed.".into());
                 // Same clobber guard as the empty-actions branch above.
                 if let Some(s) = history.last_mut().filter(|s| s.step_number == step_num) {
@@ -816,63 +750,24 @@ impl ReActEngine {
                         s.observation = Some(final_text.clone());
                     }
                 }
-                // The response may already have pushed its own assistant
-                // message: a web-search round (pushed above with the search
-                // context) or a response mixing real tool calls with the final
-                // action (pushed with tool_calls below). In those cases the
-                // final text is already in the canonical and must not be
-                // duplicated.
-                let already_pushed = has_web_search || actions.iter().any(|a| !a.is_final);
-                // Same mid-turn delivery as the empty-actions branch: a
-                // message that arrived during this final LLM call is injected
-                // before the turn ends so it influences the answer.
-                let before_inject_len = canonical.len();
-                if self.inject_pending_context(&ctx, canonical).await {
-                    self.deliver_final_with_pending_context(
+                // Search context may already be in the canonical
+                // (`prepare_search_context`) — do not duplicate the assistant.
+                match self
+                    .finish_turn_end(
                         &ctx,
-                        &final_text,
-                        response.reasoning.clone(),
                         canonical,
                         history,
                         branch_points,
-                        before_inject_len,
-                        already_pushed,
-                    )
-                    .await;
-                    continue;
-                }
-                // Mirror the finished answer into the canonical before the
-                // pause (same ordering rationale as the empty-actions branch).
-                if !already_pushed {
-                    canonical.push(CanonicalMessage::assistant(
-                        vec![ContentPart::text(final_text.clone())],
-                        None,
-                        if response.thinking_blocks.is_empty() {
-                            response.reasoning.clone()
-                        } else {
-                            None
-                        },
-                        Vec::new(),
+                        &final_text,
+                        response.reasoning.clone(),
                         response.thinking_blocks.clone(),
-                    ));
+                        search_pushed,
+                    )
+                    .await?
+                {
+                    TurnEndOutcome::Continue => continue,
+                    TurnEndOutcome::Done(exit) => return Ok(exit),
                 }
-                let persist_message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
-                self.pause_turn(
-                    session_id,
-                    canonical,
-                    history,
-                    step_num + 1,
-                    branch_points,
-                    &emitter,
-                    SessionStatus::Paused,
-                    &final_text,
-                    Some(step_num),
-                    infer,
-                    Some(&persist_message_id),
-                    false,
-                )
-                .await?;
-                return Ok(LoopExit::Paused { reason: PauseReason::TurnEnd });
             }
 
             if let Some(ref t) = thought {
@@ -899,14 +794,14 @@ impl ReActEngine {
                     step_num,
                     branch_points,
                     &emitter,
-                    infer,
                     run_id,
-                    &actions,
+                    &mut actions,
                     &thought,
                     &response,
                     &cancel_res,
                     max_steps,
                 )
+                .instrument(tracing::info_span!("tools", session_id, step_num))
                 .await?
             {
                 ToolBatchOutcome::Continue => {}
@@ -921,7 +816,6 @@ impl ReActEngine {
             last_step + 1,
             branch_points,
             &emitter,
-            infer,
         )
         .await?;
         Ok(LoopExit::Paused {

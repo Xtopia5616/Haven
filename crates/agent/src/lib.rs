@@ -1,23 +1,26 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use base64::Engine;
-
+mod canonical;
 mod compactor;
 mod event;
 mod inference;
+mod ingress;
 mod partial;
 mod prompt;
 mod react;
+mod resume;
 mod rollback;
 mod session;
 mod title;
 mod types;
 
+pub(crate) use canonical::{interrupted_result_text, is_dangling_boundary, sanitize_canonical};
+
 pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
 pub use inference::InferenceEngine;
-pub use prompt::SystemPromptBuilder;
+pub use prompt::{MemorySections, SystemPromptBuilder};
 pub use react::{LoopExit, PauseReason, ReActEngine};
 pub use session::{
     RunHandler, SessionExecutor, SessionInfo, SessionStatus, StepInfo, ToolExecution,
@@ -26,13 +29,10 @@ pub use types::{Action, BranchPoint, ProcessResult, ReActSnapshot, ReActStep};
 
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;
-use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 use haven_llm::LlmRouter;
-use haven_llm::media::{AttachmentOutcome, GenerateKind, GenerateOutcome, MediaDecision};
 use haven_memory::Database;
 use haven_memory::repositories::messages::Message;
 use haven_tools::ScheduleMode;
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -103,130 +103,6 @@ fn truncate_notification(text: &str, max_chars: usize) -> String {
     )
 }
 
-/// Repair a canonical message array so it is acceptable to tool-calling LLM
-/// APIs: every `tool` message must be the response to a preceding assistant
-/// message that declared `tool_calls`, and a trailing assistant message that
-/// declares `tool_calls` must be followed by its results. Both violations are
-/// rejected with a 400 by providers.
-///
-/// True when a single `CanonicalMessage` is part of a dangling boundary
-/// that must not start a suffix ??either a `Tool` result or an `Assistant`
-/// message that declared `tool_calls`. Providers reject the former when its
-/// declaration is missing above it and the latter when its results are
-/// missing below it, so both forms need to slide past (in
-/// `ContextCompactor::safe_end_idx`) or get dropped (in
-/// `sanitize_canonical`).
-pub(crate) fn is_dangling_boundary(msg: &CanonicalMessage) -> bool {
-    msg.role == CanonicalRole::Tool
-        || (msg.role == CanonicalRole::Assistant && msg.tool_calls.is_some())
-}
-
-/// The ReAct loop only ever builds valid arrays, but snapshots/compaction
-/// output can be corrupted by an interruption: a compaction split between an
-/// assistant tool_call message and its tool results (the assistant is
-/// summarized away while the results survive), an app exit right after the
-/// assistant message was appended, or a tool batch cancelled mid-flight with
-/// only some of its results appended. This drops orphaned `tool` messages
-/// (no preceding assistant tool_calls) and, for every tool_call an assistant
-/// declared without a matching result, inserts a synthetic `Tool` result
-/// marked "Interrupted". Inserting an interrupted result (instead of trimming
-/// the dangling assistant) keeps the array valid for providers that reject a
-/// tool_call with no following result as a 400 — including a partial batch
-/// where one of two declared calls never returned — and lets the loop see that
-/// the tool was cut off and retry it if needed.
-///
-/// Text used for the synthetic interrupted result.
-const INTERRUPTED_RESULT: &str =
-    "Interrupted: the tool call was cut off before it returned a result.";
-
-/// Enrich the interrupted-result text with the tool name and the arguments
-/// that were attempted, so the model can see exactly which call was cut off
-/// and retry it with the same input instead of guessing. Used by both the
-/// live cancel path and the snapshot sanitize/repair path.
-pub(crate) fn interrupted_result_text(tool_name: &str, arguments: &Value) -> String {
-    if tool_name.is_empty() {
-        INTERRUPTED_RESULT.to_string()
-    } else {
-        format!(
-            "{} (tool: {}, arguments: {})",
-            INTERRUPTED_RESULT, tool_name, arguments
-        )
-    }
-}
-
-pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) {
-    let mut out: Vec<CanonicalMessage> = Vec::with_capacity(canonical.len());
-    // Tool_calls declared by the most recent assistant that have not yet been
-    // answered by a tool result. Orphaned tool messages (this is empty) are
-    // dropped; every call left pending when a non-tool message (or the array
-    // end) arrives is repaired with an "Interrupted" result carrying the call's
-    // own fields (id, name, arguments).
-    let mut pending_calls: Vec<CanonicalToolCall> = Vec::new();
-    for m in canonical.drain(..) {
-        match m.role {
-            CanonicalRole::Tool => {
-                if pending_calls.is_empty() {
-                    tracing::warn!(
-                        "dropping orphaned tool message (tool_call_id={:?}) with no preceding assistant tool_calls",
-                        m.tool_call_id
-                    );
-                    continue;
-                }
-                if let Some(cid) = &m.tool_call_id {
-                    if let Some(pos) = pending_calls.iter().position(|c| &c.id == cid) {
-                        pending_calls.remove(pos);
-                    } else {
-                        // The id doesn't match any outstanding call (some
-                        // providers/agents don't echo it): consume the next
-                        // pending call in order to keep the pairing aligned.
-                        pending_calls.pop();
-                    }
-                } else {
-                    pending_calls.pop();
-                }
-                out.push(m);
-            }
-            CanonicalRole::Assistant => {
-                // A new assistant supersedes the previous assistant's
-                // tool_calls: any still-unanswered ones were interrupted.
-                repair_interrupted_tool_calls(&mut out, &mut pending_calls);
-                pending_calls = m.tool_calls.clone().unwrap_or_default();
-                out.push(m);
-            }
-            _ => {
-                // A user/system/other message breaks the tool-call chain.
-                repair_interrupted_tool_calls(&mut out, &mut pending_calls);
-                out.push(m);
-            }
-        }
-    }
-    repair_interrupted_tool_calls(&mut out, &mut pending_calls);
-    *canonical = out;
-}
-
-/// Append a synthetic `Tool` result marked "Interrupted" for every tool_call
-/// still pending (declared by an assistant but never answered). This keeps the
-/// canonical array valid — providers reject an assistant tool_call with no
-/// following result as a 400 — while preserving the fact that the tool was
-/// attempted, so the model can retry it. The result text carries the call's
-/// own name and arguments so the model sees exactly what was attempted.
-fn repair_interrupted_tool_calls(
-    out: &mut Vec<CanonicalMessage>,
-    pending_calls: &mut Vec<CanonicalToolCall>,
-) {
-    while let Some(call) = pending_calls.pop() {
-        tracing::info!(
-            "repairing interrupted tool_call {} with an Interrupted result",
-            call.id
-        );
-        let text = interrupted_result_text(&call.name, &call.arguments);
-        out.push(CanonicalMessage::tool(
-            vec![ContentPart::text(text)],
-            Some(call.id),
-        ));
-    }
-}
-
 mod layer;
 pub use layer::AgentLayer;
 
@@ -235,12 +111,14 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::stream;
-    use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, RiskLevel};
+    use haven_common::types::{
+        CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, RiskLevel,
+    };
     use haven_llm::{
         FinishReason, LlmClient, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
     };
     use haven_tools::{Tool, ToolBox, ToolResult, ToolsManager};
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::pin::Pin;
     use std::time::Instant;
     use tokio_util::sync::CancellationToken;
@@ -1747,11 +1625,11 @@ mod tests {
 
     #[tokio::test]
     async fn run_session_rebuilds_tool_chain_from_steps_without_snapshot() {
-        // When react_state is missing (corrupt or schema-drifted), resume
-        // falls back to a fresh run. The DB message stream holds only text,
-        // so the rebuilt canonical must recover the tool-call/result pairs
-        // from session_steps —otherwise the model forgets every tool it ran
-        // and re-executes them.
+        // Phase 7 / B4: when react_state is *missing*, resume uses the
+        // shared projector (best-effort). Corrupt snapshots hard-fail
+        // instead (see `corrupt_react_state_hard_fails_resume`). The DB
+        // message stream holds only text, so the projected canonical must
+        // recover tool-call/result pairs from session_steps.
         let tools = Arc::new(ToolsManager::new());
         tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
         let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
@@ -1846,6 +1724,130 @@ mod tests {
         }
     }
 
+    /// Phase 7 / B4: corrupt react_state must hard-fail, not silently fork
+    /// into the snapshot-less projector path.
+    #[tokio::test]
+    async fn corrupt_react_state_hard_fails_resume() {
+        let tools = Arc::new(ToolsManager::new());
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("should not run".into()),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector);
+        let session = executor.create_session("corrupt snap").await.unwrap();
+        agent
+            .db
+            .save_react_state(&session.id, "{not-valid-json")
+            .unwrap();
+
+        let err = agent
+            .run_session_from_id(&session.id)
+            .await
+            .expect_err("corrupt snapshot must hard-fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("corrupt") || msg.contains("incompatible"),
+            "error should mention corrupt/incompatible snapshot: {msg}"
+        );
+        assert!(
+            mock.seen.lock().unwrap().is_empty(),
+            "LLM must not be called after corrupt-snapshot hard-fail"
+        );
+    }
+
+    /// Phase 7 / B4: projector prefers a real messages.tool_call_id when the
+    /// Tool-role content matches the step observation.
+    #[tokio::test]
+    async fn project_tool_chain_prefers_real_tool_call_id() {
+        let tools = Arc::new(ToolsManager::new());
+        tools.registry.register(Arc::new(EchoTool) as ToolBox).await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Done.".into()),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector);
+        let session = executor.create_session("real call id").await.unwrap();
+        agent
+            .persist_message_parts(&session.id, "user", "real call id", Some("text"), &[], false)
+            .await
+            .unwrap();
+        agent
+            .db
+            .run_blocking({
+                let session_id = session.id.clone();
+                move |db| {
+                    let step = db.create_action_step(
+                        &session_id,
+                        1,
+                        "echo",
+                        r#"{"text":"hi"}"#,
+                        false,
+                        false,
+                        None,
+                        None,
+                    )?;
+                    db.complete_action_step(&step.id, "hi", true)?;
+                    db.add_message(
+                        &session_id,
+                        "tool",
+                        "hi",
+                        Some("observation"),
+                        Some("call_real_1"),
+                    )?;
+                    Ok::<(), anyhow::Error>(())
+                }
+            })
+            .await
+            .unwrap();
+        assert!(agent.db.get_react_state(&session.id).unwrap().is_none());
+
+        agent.run_session_from_id(&session.id).await.unwrap();
+
+        let seen = mock.seen.lock().unwrap();
+        let first = &seen[0];
+        let used_real = first.iter().any(|m| {
+            matches!(m.role, CanonicalRole::Assistant)
+                && m.tool_calls.as_ref().is_some_and(|c| {
+                    c.iter()
+                        .any(|tc| tc.name == "echo" && tc.id == "call_real_1")
+                })
+        });
+        assert!(
+            used_real,
+            "projector must reuse messages.tool_call_id when observation matches"
+        );
+    }
+
     fn make_canonical(role: CanonicalRole, text: &str) -> CanonicalMessage {
         CanonicalMessage {
             role,
@@ -1898,7 +1900,8 @@ mod tests {
             make_tool_result("call_01_d", "result d"),
             make_assistant_with_calls(&["call_00_e"]),
         ];
-        sanitize_canonical(&mut canonical);
+        let repairs = sanitize_canonical(&mut canonical);
+        assert_eq!(repairs, 1, "one dangling trailing call must be repaired");
 
         let roles: Vec<CanonicalRole> = canonical.iter().map(|m| m.role).collect();
         assert_eq!(
@@ -1937,7 +1940,8 @@ mod tests {
             make_assistant_with_calls(&["call_a", "call_b"]),
             make_tool_result("call_a", "result a"),
         ];
-        sanitize_canonical(&mut canonical);
+        let repairs = sanitize_canonical(&mut canonical);
+        assert_eq!(repairs, 1, "missing call_b result must count as one repair");
 
         let roles: Vec<CanonicalRole> = canonical.iter().map(|m| m.role).collect();
         assert_eq!(
@@ -1969,7 +1973,8 @@ mod tests {
             make_assistant_with_calls(&["call_1"]),
             make_canonical(CanonicalRole::User, "next"),
         ];
-        sanitize_canonical(&mut canonical);
+        let repairs = sanitize_canonical(&mut canonical);
+        assert_eq!(repairs, 1, "dangling call before user must count as one repair");
 
         let roles: Vec<CanonicalRole> = canonical.iter().map(|m| m.role).collect();
         assert_eq!(
@@ -1996,7 +2001,11 @@ mod tests {
             make_canonical(CanonicalRole::User, "b"),
             make_tool_result("call_1", "orphan after user"),
         ];
-        sanitize_canonical(&mut canonical);
+        let repairs = sanitize_canonical(&mut canonical);
+        assert_eq!(
+            repairs, 0,
+            "dropping an orphaned tool is not a repair insert"
+        );
 
         let roles: Vec<CanonicalRole> = canonical.iter().map(|m| m.role).collect();
         assert_eq!(
@@ -2009,6 +2018,25 @@ mod tests {
             ],
             "only the orphaned trailing tool must be removed"
         );
+    }
+
+    #[test]
+    fn sanitize_canonical_healthy_path_returns_zero_repairs() {
+        // Phase 7 / J2: a well-formed tool chain must be a no-op (repair
+        // count 0). This is the counter-test counterpart to the warn metric
+        // on the LLM gate; debug builds do not assert in the hot path because
+        // interrupt/cancel recovery legitimately repairs.
+        let mut canonical = vec![
+            make_canonical(CanonicalRole::User, "hi"),
+            make_assistant_with_calls(&["call_a"]),
+            make_tool_result("call_a", "ok"),
+            make_canonical(CanonicalRole::Assistant, "done"),
+        ];
+        let before_len = canonical.len();
+        let repairs = sanitize_canonical(&mut canonical);
+        assert_eq!(repairs, 0);
+        assert_eq!(canonical.len(), before_len);
+        debug_assert_eq!(repairs, 0);
     }
 
     #[tokio::test]
@@ -4163,8 +4191,8 @@ mod tests {
         branch_points.insert(
             1,
             BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
+                canonical: Arc::new(canonical.clone()),
+                history: Arc::new(vec![]),
                 step_number: 1,
                 last_msg_at: Some(thought_ts),
             },
@@ -4260,8 +4288,8 @@ mod tests {
         branch_points.insert(
             1,
             BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
+                canonical: Arc::new(canonical.clone()),
+                history: Arc::new(vec![]),
                 step_number: 1,
                 last_msg_at: Some(reply1_ts),
             },
@@ -4347,8 +4375,8 @@ mod tests {
         branch_points.insert(
             1,
             BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
+                canonical: Arc::new(canonical.clone()),
+                history: Arc::new(vec![]),
                 step_number: 1,
                 last_msg_at: Some(reply_a_ts),
             },
@@ -4435,8 +4463,8 @@ mod tests {
         branch_points.insert(
             1,
             BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
+                canonical: Arc::new(canonical.clone()),
+                history: Arc::new(vec![]),
                 step_number: 1,
                 last_msg_at: Some(thinking_ts),
             },
@@ -4609,8 +4637,8 @@ mod tests {
         branch_points.insert(
             1,
             BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
+                canonical: Arc::new(canonical.clone()),
+                history: Arc::new(vec![]),
                 step_number: 1,
                 last_msg_at: Some(thinking_ts),
             },
@@ -4729,8 +4757,8 @@ mod tests {
         branch_points.insert(
             2,
             BranchPoint {
-                canonical: canonical.clone(),
-                history: vec![],
+                canonical: Arc::new(canonical.clone()),
+                history: Arc::new(vec![]),
                 step_number: 2,
                 last_msg_at: Some(thinking_ts),
             },

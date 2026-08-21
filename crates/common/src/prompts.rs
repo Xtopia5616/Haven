@@ -47,7 +47,9 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{mcps}` — available MCP servers index, or empty
 /// - `{facts}` — user facts block, or empty
 /// - `{session}` — current session description
-/// - `{context}` — additional conversation context block, or empty
+/// - `{facts}` — cross-session MEMORY fence (USER FACTS + Past excerpts), or empty;
+///   resume patches this fence in place without rebuilding tools/skills
+/// - `{context}` — Additional context only (same-session window); episodes live in `{facts}`
 /// - `{history}` — "Steps so far" block, or empty
 /// - `{failure_diagnosis}` — shared tool-failure guidance
 ///   ([`TOOL_FAILURE_DIAGNOSIS`])

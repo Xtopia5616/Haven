@@ -2,8 +2,8 @@
 
 > 状态标记：`[待办]` / `[进行中]` / `[完成]` / `[不做]`  
 > 对照基线：[@earendil-works/pi-agent-core](https://github.com/earendil-works/pi/tree/main/packages/agent)（`agent.ts` ≈528 行 + `agent-loop.ts` ≈718 行；早期常说的「≈418 行」指 Agent 门面量级）  
-> Haven 现状：`crates/agent` — `react/`（Phase 1 已拆）· `session.rs` ≈2.6k · `layer.rs` ≈1.6k · `event.rs` ≈1.1k  
-> 更新日期：2026-08-20  
+> Haven 现状：`crates/agent` — `react/`（Phase 1 已拆）· `session/`（Phase 7 已拆）· `layer`/`ingress`/`resume` · `event.rs` ≈1.1k  
+> 更新日期：2026-08-21  
 > 原则：**逐步改、行为先冻结再重构**；产品能力（SQLite resume、confirm、多 session、ask、语音 pause）保留在宿主层，不塞回薄循环。
 
 ---
@@ -78,21 +78,21 @@ User / STT
 - **风险**：调用点多；先引入类型再挪字段。
 - **验收**：Engine 字段只剩协作依赖；侧车可单测。
 
-#### A3. 拆分 `SessionExecutor` `[待办]` · P1
+#### A3. 拆分 `SessionExecutor` `[完成]` · P1
 
 - **问题**：`session.rs` ≈2.6k：FIFO dispatcher、状态机、三队列、confirm、partials、DB status、`execute_step` 同文件。
 - **方向**：`SessionDispatcher` / `SessionQueues` / `ToolRunner`（含 confirm）+ 薄 `SessionExecutor` 门面。
 - **风险**：锁序与 permit 释放易破。
 - **验收**：队列与 dispatcher 可独立单测；permit 在 pause/error/cancel 路径仍正确释放。
 
-#### A4. 继续拆 `AgentLayer` `[待办]` · P1
+#### A4. 继续拆 `AgentLayer` `[完成]` · P1
 
 - **问题**：`layer.rs` 同时做 ingress、resume 恢复、title、peer spawn、media。
 - **方向**：仿 `rollback.rs` 已拆模式：`ingress.rs`、`resume.rs`；Layer 只接线。
 - **风险**：`process_input` 分支多。
 - **验收**：`process_input` 路由表可一眼读完。
 
-#### A5. `lib.rs` 瘦身 `[待办]` · P2
+#### A5. `lib.rs` 瘦身 `[完成]` · P2
 
 - **问题**：crate root 混公共 API、`sanitize_canonical`、数千行集成测试。
 - **方向**：`canonical.rs` 承载 sanitize/repair；集成测试迁 `crates/agent/tests/` 或按主题 `#[cfg(test)]` 模块。
@@ -108,7 +108,7 @@ User / STT
 - **问题**：模型上下文 `canonical`、`history: Vec<ReActStep>`、DB `messages`/`session_steps` 四处手写对齐；ID 规范（`msg-*`/`step-*` 共用）加剧复杂度。
 - **方向（分阶段）**：
   1. 短期：规定 **canonical 为 LLM 唯一权威**；history 只作派生/调试，禁止独立业务分支依赖 history 语义。 `[完成]` Phase 6：`ReActSnapshot` / `prompt.rs` 契约注释；生产仍 `history=&[]`。
-  2. 中期：引入 append-only `TranscriptEvent`（Thought / ToolCall / ToolResult / UserInject / CompactSummary），投影到 canonical 与 UI。 `[完成]` Phase 6：`react/transcript.rs`；CompactSummary 预留未接 compact 路径。
+  2. 中期：引入 append-only `TranscriptEvent`（Thought / ToolCall / ToolResult / UserInject / CompactSummary），投影到 canonical 与 UI。 `[完成]` Phase 6：`react/transcript.rs`；Phase 6.1：`CompactSummary` 接入 `maybe_compact` / 强制 compaction。
   3. 长期：snapshot = transcript cursor，而非并行拷贝两份数组。 `[待办]`
 - **风险**：高；受 `AGENTS.md` ID 规范与前端气泡关联约束。禁止一次大改。
 - **验收**：新代码路径不再「改 canonical 又改 history 两套逻辑」；resume 只从一条投影重建。
@@ -128,7 +128,7 @@ User / STT
 - **风险**：provider 可见格式变化需回归。
 - **验收**：resume/去重只按 `message_id`/`saved_at`，从不比字符串内容。
 
-#### B4. 统一 resume 投影路径 `[待办]` · P1
+#### B4. 统一 resume 投影路径 `[完成]` · P1
 
 - **问题**：有 snapshot vs `rebuild_tool_chain_from_steps`（合成 `resumed_{id}`）两套世界（`layer.rs` `run_session_from_id`）。
 - **方向**：缺失 snapshot 时用**同一** projector；或明确硬失败 + 用户可见提示。禁止静默分叉语义。
@@ -171,7 +171,7 @@ enum LoopExit {
 - **风险**：后台任务 auto-wake 与 `PausedAwaitingAnswer` 门闩。
 - **验收**：ask 期间用户输入、带附件、并发 action 完成，行为有单测覆盖且无「转队列」特判。
 
-#### C4. 取消出口去重 `[待办]` · P2
+#### C4. 取消出口去重 `[完成]` · P2
 
 - **问题**：`save_exit_snapshot` + `return` 在循环内重复 ≈10 处。
 - **方向**：`exit_cancelled(...)` 或 cancel guard；与 `StepCallOutcome` 风格统一。
@@ -185,10 +185,11 @@ enum LoopExit {
 - **风险**：resume 必须恢复 flag；DB status 今日把 `PausedAwaitingAnswer` 塌缩为 `"paused"`（见 F2）。
 - **验收**：压缩后仍能正确识别待答；无字符串启发式。
 
-#### C6. `final_answer` 与「无 tool call」双轨收敛 `[待办]` · P2
+#### C6. `final_answer` 与「无 tool call」双轨收敛 `[完成]` · P2
 
 - **问题**：空 actions → `pause_turn`；`is_final` → 另一套 pause；budget 又一套。
 - **方向**：主路径「无 tool calls = turn end」；`final_answer` 可保留为显式 UX/兼容，共用同一 `PauseReason::TurnEnd`。
+- **做法**：`inject::finish_turn_end` + `TurnEndOutcome`；空 actions 与显式 `final_answer` 共用 inject / canonical-push / `pause_turn` / `PauseReason::TurnEnd`（budget 仍走 `pause_turn_budget`）。
 - **风险**：模型习惯依赖 `final_answer` tool。
 - **验收**：两条路径进入同一 pause 实现；无重复 persist/emit 代码。
 
@@ -207,14 +208,15 @@ enum LoopExit {
 - **风险**：resume 恢复、auto-wake、现有测试大量依赖旧名。
 - **验收**：路由表文档化；旧 API 可先 type alias 过渡一版。
 
-#### D2. 队列持久化与 RAM 缓存关系理清 `[待办]` · P1
+#### D2. 队列持久化与 RAM 缓存关系理清 `[完成]` · P1
 
 - **问题**：队列在内存；正确性依赖消息落库 + `saved_at` + undelivered 扫描（`run_session_resumed`）。
 - **方向**：提交时即写入 transcript/消息（已部分如此）；RAM 队列仅缓存；resume 按 `message_id` 幂等重放。
+- **落地（Phase 7）**：不新增独立队列持久化表。契约见 `session/queues.rs` 模块注释；enqueue 按 `message_id` 去重；resume 用 `saved_at` + undelivered 扫描重放。单测：`steering_same_message_id_is_idempotent` / `follow_up_same_message_id_is_idempotent`。
 - **风险**：双注入。
 - **验收**：崩溃后未送达消息只注入一次（按 id）。
 
-#### D3. 诚实命名「steering」能力 `[待办]` · P2
+#### D3. 诚实命名「steering」能力 `[完成]` · P2
 
 - **问题**：注释暗示可打断；实际仅在 step 边界注入，工具批默认跑完（除非 cancel）。
 - **方向**：文档写清；可选策略 `CancelToolsOnSteer`（产品决定后再做）。
@@ -246,14 +248,14 @@ enum LoopExit {
 - **风险**：并行工具与对话框 UX 大改。
 - **验收**：一 gated + 一普通并行时，普通可完成或整体有序 pause；无 120s 隐式挂死。
 
-#### E4. `execute_step` 禁止强制改 Running `[待办]` · P2
+#### E4. `execute_step` 禁止强制改 Running `[完成]` · P2
 
 - **问题**：Pending/Paused 时 warn 并强制 Running，掩盖调度 bug。
 - **方向**：严格：仅 Running 可执行工具；修调用方。
 - **风险**：暴露潜伏 bug。
 - **验收**：非法状态调用返回错误而非改状态。
 
-#### E5. 参数补全/校验移到工具边界 `[待办]` · P2
+#### E5. 参数补全/校验移到工具边界 `[完成]` · P2
 
 - **问题**：`supplement_missing_required_fields` 与 schema fallback 在循环内。
 - **方向**：`ToolRunner` / `before_tool` 校验与补全。
@@ -278,21 +280,22 @@ enum LoopExit {
 - **风险**：前端/旧库兼容（新状态需 migration bump `SCHEMA_VERSION`；缺必需列的远古库仍要求删库重建）。
 - **验收**：杀进程重启后仍阻止 bg auto-wake，直到用户回答。
 
-#### F3. Snapshot 策略事件化 `[待办]` · P1
+#### F3. Snapshot 策略事件化 `[完成]` · P1
 
 - **问题**：节流 mid-run snapshot 与 pause 必写混在 Engine（`last_snapshot_step` 等）。
 - **方向**：`on_step_boundary` / `on_pause` / `on_cancel` 持久化 hook。
 - **风险**：中。
 - **验收**：策略可单测「第 N 步是否写盘」。
 
-#### F4. BranchPoint 降成本 `[待办]` · P2
+#### F4. BranchPoint 降成本 `[完成]` · P2
 
 - **问题**：每个分支克隆完整 canonical/history。
 - **方向**：存 transcript 索引 / 外部 blob；或 COW。
+- **落地（Phase 7）**：`BranchPoint.canonical` / `history` 改为 `Arc<Vec<_>>`（clone 为 refcount bump；serde 仍发普通数组）。完整 transcript 索引 / 外置 blob **延后**——收益需更大的 snapshot 模型改动，Arc COW 已覆盖「多次分支点 clone 不线性翻倍」的主路径。
 - **风险**：rollback 正确性。
 - **验收**：长对话多次工具前分支，内存不线性翻倍（或可配置上限）。
 
-#### F5. Rollback 等待循环退出更可靠 `[待办]` · P1
+#### F5. Rollback 等待循环退出更可靠 `[完成]` · P1
 
 - **问题**：`rollback.rs` 轮询 running actions 最多 ≈5s，晚到工具写可能竞态。
 - **方向**：join run handle 或 generation token（与 PartialStore gen 对齐）。
@@ -338,33 +341,36 @@ trait LoopHooks: Send + Sync {
 - **风险**：行为敏感。
 - **验收**：策略单测不启 loop；循环内无短语字面量。
 
-#### G4. Web-search 特判移出循环 `[待办]` · P2
+#### G4. Web-search 特判移出循环 `[完成]` · P2
 
 - **问题**：provider 服务端搜索续跑写在 ReAct 分支（≈L1477–1542）。
 - **方向**：流式层产出「合成 tool result」或 `ContinueWithoutTools`。
+- **做法**：`stream_step::prepare_search_context` → `SearchContextOutcome::{ContinueWithoutTools, Proceed}`；循环只匹配 outcome，无 `web_search` 分支；混合 tool+search 仍由 `execute_tool_batch` round-trip。
 - **风险**：DeepSeek 等 provider 特异。
 - **验收**：循环无 `web_search` 分支。
 
-#### G5. Failure nudge 勿污染用户 transcript `[待办]` · P2
+#### G5. Failure nudge 勿污染用户 transcript `[完成]` · P2
 
 - **问题**：合成 User 文本注入 canonical（`build_failure_nudge`）。
 - **方向**：ephemeral system/developer，或只附在 tool result；持久化可剥离。
+- **做法**：`attach_failure_nudge` 把 nudge 追加到最近一次失败的 tool observation；不再 `CanonicalMessage::user_text`。
 - **风险**：模型行为变化。
-- **验收**：DB messages 无「失败催促」伪用户句；或标记 `ephemeral`。
+- **验收**：DB messages / canonical 无「失败催促」伪用户句；模型仍从 tool result 看到 nudge。
 
-#### G6. Inference 与循环生命周期解耦 `[待办]` · P2
+#### G6. Inference 与循环生命周期解耦 `[完成]` · P2
 
 - **问题**：循环持 `infer: &dyn Fn`；失败静默；测 loop 易拖进真实抽取。
 - **方向**：仅 hook；专用 worker + 已有 semaphore。
 - **风险**：低。
 - **验收**：loop 单测不构造 `InferenceEngine`。
 
-#### G7. 系统提示与工具列表双路径整理 `[待办]` · P2
+#### G7. 系统提示与工具列表双路径整理 `[完成]` · P2
 
 - **问题**：`SystemPromptBuilder` 嵌入工具索引；API 另发 `ToolDefinition`；skill/MCP 热更新 defs 后 prompt 可能仍是开场快照。
 - **方向**：工具详情以 API schema 为准；prompt 只保留短索引或在 skill load 时经 hook 刷新 section。
+- **落地（Phase 7）**：API `tools[]`（`build_tool_definitions_for_session`，每步重建）为 **schema 权威**；prompt 仅短索引且开场冻结——`load_skill` / `load_mcp` **不**刷新 prompt tools section（只经 `patch_system_memory` 刷新 MEMORY fence）。避免双源刷新与 token 膨胀。
 - **风险**：token / 行为。
-- **验收**：`load_skill` 后下一步 LLM 请求工具列表与 prompt 描述一致。
+- **验收**：`load_skill` 后下一步 LLM 请求的 API 工具列表含新工具；prompt 索引可仍为开场快照（有意冻结）。
 
 ---
 
@@ -374,7 +380,8 @@ trait LoopHooks: Send + Sync {
 
 - **问题**：`emit_thought_from` 等「emit」内写 DB（`event.rs`）；Action 先 `begin_action_step` 再 emit——散落且失败模式不一。
 - **方向**：单一 `apply`：持久化（保持「行先于卡」）→ 再投影事件。禁止各处手写双写。
-- **落地（Phase 6）**：`ReActEngine::apply_transcript`；Thought / UserInject 全路径经 apply；ToolCall/ToolResult 投影经 apply（Action/Observation 卡仍由 tool_batch 先 emit，confirm/ask 交织复杂）；`snapshot_io` 流式 snap 仍直调 `emit_thought_from`（与 persist 同路径）。
+- **落地（Phase 6）**：`ReActEngine::apply_transcript`；Thought / UserInject 全路径经 apply；ToolCall/ToolResult 投影经 apply。
+- **落地（Phase 6.1）**：Action/Observation 卡经 `action_cards` / `observation_card` 并入 apply（`begin_action_step` → emit Action → project；emit Observation → project）；`CompactSummary` 经 apply 替换 canonical + emit Compaction + persist episode。`snapshot_io` 流式 snap 仍直调 `emit_thought_from`（与 persist 同路径）。
 - **风险**：前端时序。
 - **验收**：所有 thought/action/observation 只经 `apply`；部分失败有明确错误路径。
 
@@ -396,10 +403,11 @@ trait LoopHooks: Send + Sync {
 - **风险**：前置依赖 A1/G1。
 - **验收**：核心状态机测试 &lt;1s 且不打开 SQLite（或只用 in-memory 且不经 Layer）。
 
-#### I2. 阶段 span `[待办]` · P2
+#### I2. 阶段 span `[完成]` · P2
 
 - **问题**：tracing 散落，缺与薄循环对齐的 phase。
 - **方向**：`inject` / `compact` / `llm` / `tools` / `persist` / `pause` spans（session 已有外层 span）。
+- **落地（Phase 7）**：`loop`：`inject` / `before_step` / `llm` / `tools`；`hooks`：嵌套 `compact`；`snapshot_io`：`persist`（消息行）/ `pause`（`pause_turn` 与 `pause_turn_budget`）。
 - **风险**：低。
 - **验收**：一次 turn 的 trace 树可辨阶段。
 
@@ -415,17 +423,19 @@ trait LoopHooks: Send + Sync {
 
 ### J. 其它产品语义澄清
 
-#### J1. 文档化 per-run `max_steps` 再预算 `[待办]` · P2
+#### J1. 文档化 per-run `max_steps` 再预算 `[完成]` · P2
 
 - **问题**：`effective_max` 每次 resume 再给满额（≈L855–862），会话可很长。
 - **方向**：写入 `RunBudget` 到 snapshot；产品决定是否加 session 生命周期上限。
+- **落地（Phase 7）**：**未**引入 snapshot `run_budget` 字段。现行语义：每次 `run`（含 pause 后 resume）按 `effective_max = max(max_steps, start_step - 1 + max_steps)` **再给满额**——预算是 **per-run**，非 session 终身。会话级上限留作产品选项。代码注释见 `react/loop.rs`；架构说明见 `docs/architecture.md` §2.4。
 - **风险**：产品决策。
-- **验收**：行为有文档 + 可选配置。
+- **验收**：行为有文档 + 可选配置（配置项未落地，文档已标明）。
 
-#### J2. Debug 断言 `sanitize_canonical` 为 no-op `[待办]` · P2
+#### J2. Debug 断言 `sanitize_canonical` 为 no-op `[完成]` · P2
 
 - **问题**：发送前修理掩盖上游 interrupt/compaction bug。
 - **方向**：保留闸门；`debug_assert` 或 metrics 计数「修理发生次数」。
+- **落地（Phase 7）**：`sanitize_canonical` 返回修理插入计数；LLM 闸门 `repairs > 0` 时 `tracing::warn`。热路径不做 `debug_assert_eq!(0)`（interrupt/cancel 恢复会合法修理）。单测断言返回计数：健康链 `0`，损坏链 `≥1`。
 - **风险**：低。
 - **验收**：正常路径 metrics ≈0；集成测试可注入损坏链验证闸门。
 
@@ -450,8 +460,9 @@ trait LoopHooks: Send + Sync {
 | **3** | Hook 化 | G1, G2, 侧车迁 compact/infer/inbox | P0 |
 | **4** | 队列收敛 | D1, C3, C5, F2 | P0–P1 |
 | **5** | 工具与确认 | E3, E1, G3 | P1 |
-| **6** | Transcript 收敛 | B1 阶段1–2, B3, H1, I3 | P1 · `[完成]` 2026-08-21（B1-3 / CompactSummary 接 compact / Action 卡并入 apply 留 6.1） |
-| **7** | 清理与加固 | A3–A5, B4, F3–F5, G4–G7, C4, C6, D2–D3, E4–E5, J1–J2, I2 | P1–P2 |
+| **6** | Transcript 收敛 | B1 阶段1–2, B3, H1, I3 | P1 · `[完成]` 2026-08-21 |
+| **6.1** | Transcript 收尾 | CompactSummary 接 compact；Action/Observation 卡并入 apply | P1 · `[完成]` 2026-08-21（B1-3 长期仍待办） |
+| **7** | 清理与加固 | A3–A5, B4, F3–F5, G4–G7, C4, C6, D2–D3, E4–E5, J1–J2, I2 | P1–P2 · `[完成]` 2026-08-21 |
 
 每期建议工作流：
 
@@ -496,3 +507,6 @@ trait LoopHooks: Send + Sync {
 | 2026-08-20 | **Phase 4**：D1 队列收敛为 steering + follow_up（`FollowUp` alias、`follow_up_queue`、旧 `add_supplement*` 保留）；C3 去掉 steering→answer 转队列，改为原地 `mark_user_queues_as_answer`；C5 snapshot/`SessionExecutor` 显式 `awaiting_answer: AskPending`；F2 DB/wire `paused_awaiting_answer`（SCHEMA_VERSION=3）+ UI `isPausedStatus`。 |
 | 2026-08-20 | **Phase 5**：G3 `ResponsePolicy` + `LoopHooks::after_llm`（empty/cut-off 短语迁出循环）；E1 `StreamSession`/`StepResponse`（循环只消费结果，重试复用 msg-id）；E3 `before_tool`→`NeedConfirm` 预检，普通工具先跑完再 `PausedAwaitingConfirm` pause，`resolve_confirmation` 写 decision 后 `finish_confirm_batch` 再执行；SCHEMA_VERSION=4 + UI `paused_awaiting_confirm`。调度路径仍保留 bounded `await_confirmation`。 |
 | 2026-08-21 | **Phase 6**：B1-1/2 + B3 + H1 + I3。`TranscriptEvent`/`apply_transcript`；`InjectSource` + `CanonicalMessage.source`；`IdentityMap`；对齐 memory S1/S2（`exclude_session_id`、Additional context 不去重首条 user）。`cargo test -p haven-agent --lib` 233 全绿。 |
+| 2026-08-21 | **Phase 6.1**：`CompactSummary` 接入 `maybe_compact` / `call_step_llm` 强制 compaction；`ActionCard`/`ObservationCard` 并入 `apply_transcript`（tool_batch 不再直发 Action/Observation）。B1-3（snapshot=transcript cursor）仍长期待办。 |
+| 2026-08-21 | **Phase 7**：清理与加固。A3 `session/`（dispatcher/queues/status/tool_runner）；A4 `ingress.rs`/`resume.rs`；A5 `canonical.rs`（集成测试仍留 lib.rs）；B4 统一 projector + 损坏 snapshot 硬失败；C4 `exit_cancelled`；C6 `finish_turn_end`；D2/D3 队列契约与 steering 命名；E4 仅 Running 可执行（loop 头 Pending→Running）；E5 schema 修补进 tool_batch；F3 `SnapshotStore`；F4 BranchPoint `Arc` COW（完整 transcript 索引/外置 blob 延后）；F5 `await_run_finished`；G4 `prepare_search_context`；G5 failure nudge 挂 tool observation；G6 infer 进 DefaultHooks；G7 API `tools[]` 权威 + prompt 短索引冻结；I2 inject/before_step/compact/llm/tools/persist/pause spans；J1 文档化 per-run `effective_max` 再预算（无 snapshot `run_budget` 字段；会话终身上限延后）；J2 sanitize 返回修理计数 + warn + 单测断言。 |
+| 2026-08-21 | **Phase 7 收尾核对**：核实代码与文档对齐；补 I2 `persist`/`pause`/`compact` spans；J1 写入 `architecture.md`；J2 修理计数单测（含 healthy-path `0`）；修正分期表 `[完成]` 转义；changelog 去掉不存在的 `run_budget` 字段表述。 |

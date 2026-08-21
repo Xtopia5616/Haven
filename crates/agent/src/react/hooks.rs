@@ -1,4 +1,5 @@
-//! Loop extension hooks (Phase 3 / G1–G2; Phase 5 / G3 after_llm + E3 before_tool).
+//! Loop extension hooks (Phase 3 / G1–G2; Phase 5 / G3 after_llm + E3 before_tool;
+//! Phase 7 / G6 infer owned by hooks).
 //!
 //! Order contract (documented at the call site in `loop.rs`):
 //! `inject_pending_context` → `hooks.before_step` → `sanitize_canonical` → LLM
@@ -15,12 +16,19 @@ use async_trait::async_trait;
 use haven_common::types::CanonicalMessage;
 use haven_llm::LlmResponse;
 use serde_json::Value;
+use tracing::Instrument;
 
 use haven_common::types::RiskLevel;
 use haven_tools::ConfirmationResult;
 
 use super::retries::{AfterLlmAction, ResponsePolicy, ResponsePolicyState};
 use super::{Action, PauseReason, ReActEngine, StepCtx, canonical_has_image};
+
+/// Fact-inference callback: `(session_id, bypass_throttle)`.
+/// `bypass_throttle=true` for pause-path infer so interval extract cannot starve
+/// the fresher post-pause pass. Installed once on [`DefaultHooks`]; the thin
+/// loop never threads this (Phase 7 / G6).
+pub(crate) type InferCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Pre-tool gate decision (Phase 5 / E3).
 #[derive(Debug, Clone, PartialEq)]
@@ -38,13 +46,12 @@ pub(crate) enum BeforeToolAction {
 #[async_trait]
 pub(crate) trait LoopHooks: Send + Sync {
     /// Prologue side effects after inject, before sanitize.
-    /// `infer(false)` is time-throttled interval extraction.
+    /// Interval infer (`infer(session, false)`) is time-throttled extraction.
     async fn before_step(
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
-        infer: &(dyn Fn(bool) + Send + Sync),
     );
 
     /// Classify the parsed LLM response (Phase 5 / G3). Default accepts.
@@ -74,20 +81,29 @@ pub(crate) trait LoopHooks: Send + Sync {
     }
 
     /// Called after status is set to a pause flavor. Default: no-op.
-    /// `infer(true)` bypasses the extraction throttle (fresher transcript).
-    async fn on_pause(
-        &self,
-        _engine: &ReActEngine,
-        _ctx: &StepCtx,
-        _reason: PauseReason,
-        _infer: &(dyn Fn(bool) + Send + Sync),
-    ) {
-    }
+    /// Pause infer (`infer(session, true)`) bypasses the extraction throttle.
+    async fn on_pause(&self, _engine: &ReActEngine, _ctx: &StepCtx, _reason: PauseReason) {}
 }
 
 /// Production hooks: inbox poll, context compaction, interval + pause infer,
 /// response policy, and confirm pre-check.
-pub(crate) struct DefaultHooks;
+pub(crate) struct DefaultHooks {
+    /// Optional session-scoped fact inference. `None` in unit tests that
+    /// construct an engine without an [`crate::InferenceEngine`].
+    infer: Option<InferCallback>,
+}
+
+impl DefaultHooks {
+    pub(crate) fn new(infer: Option<InferCallback>) -> Self {
+        Self { infer }
+    }
+
+    fn call_infer(&self, session_id: &str, bypass_throttle: bool) {
+        if let Some(ref infer) = self.infer {
+            infer(session_id, bypass_throttle);
+        }
+    }
+}
 
 #[async_trait]
 impl LoopHooks for DefaultHooks {
@@ -96,18 +112,23 @@ impl LoopHooks for DefaultHooks {
         engine: &ReActEngine,
         ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
-        infer: &(dyn Fn(bool) + Send + Sync),
     ) {
         engine
             .maybe_poll_inbox(&ctx.session_id, ctx, canonical)
             .await;
         let has_image = canonical_has_image(canonical);
+        // Phase 7 / I2: compact is a nested phase under before_step.
         let _ = engine
-            .maybe_compact(&ctx.session_id, canonical, has_image, &ctx.emitter)
+            .maybe_compact(ctx, canonical, has_image)
+            .instrument(tracing::info_span!(
+                "compact",
+                session_id = %ctx.session_id,
+                step_num = ctx.step_num
+            ))
             .await;
         let interval = engine.context_limits.fact_infer_interval_steps;
         if ctx.step_num > 0 && interval > 0 && ctx.step_num % interval == 0 {
-            infer(false);
+            self.call_infer(&ctx.session_id, false);
         }
     }
 
@@ -169,14 +190,8 @@ impl LoopHooks for DefaultHooks {
         }
     }
 
-    async fn on_pause(
-        &self,
-        _engine: &ReActEngine,
-        _ctx: &StepCtx,
-        _reason: PauseReason,
-        infer: &(dyn Fn(bool) + Send + Sync),
-    ) {
-        infer(true);
+    async fn on_pause(&self, _engine: &ReActEngine, ctx: &StepCtx, _reason: PauseReason) {
+        self.call_infer(&ctx.session_id, true);
     }
 }
 
@@ -192,7 +207,6 @@ impl LoopHooks for NoopHooks {
         _engine: &ReActEngine,
         _ctx: &StepCtx,
         _canonical: &mut Vec<CanonicalMessage>,
-        _infer: &(dyn Fn(bool) + Send + Sync),
     ) {
     }
 }
@@ -201,7 +215,11 @@ impl LoopHooks for NoopHooks {
 pub(crate) type LoopHooksHandle = Arc<dyn LoopHooks>;
 
 pub(crate) fn default_hooks() -> LoopHooksHandle {
-    Arc::new(DefaultHooks)
+    Arc::new(DefaultHooks::new(None))
+}
+
+pub(crate) fn default_hooks_with_infer(infer: InferCallback) -> LoopHooksHandle {
+    Arc::new(DefaultHooks::new(Some(infer)))
 }
 
 #[cfg(test)]
@@ -221,7 +239,7 @@ mod tests {
         // infer. This compile-time / type-level contract is the G1 acceptance
         // for "禁用 infer 的单测不触达 maintenance".
         let noop: &dyn LoopHooks = &NoopHooks;
-        let default: &dyn LoopHooks = &DefaultHooks;
+        let default: &dyn LoopHooks = &DefaultHooks::new(None);
         let _ = (noop, default);
     }
 
@@ -302,10 +320,11 @@ mod tests {
             ReActEngine::new(router.clone(), executor.clone(), db.clone(), 10, limits.clone())
                 .with_hooks(Arc::new(NoopHooks));
 
-        let calls = AtomicUsize::new(0);
-        let infer = |_: bool| {
-            calls.fetch_add(1, Ordering::SeqCst);
-        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_infer = calls.clone();
+        let infer: InferCallback = Arc::new(move |_: &str, _: bool| {
+            calls_infer.fetch_add(1, Ordering::SeqCst);
+        });
         let emitter: Arc<dyn AgentEventEmitter> = Arc::new(SilentEmitter);
         let ctx = StepCtx {
             session_id: "ses-test".into(),
@@ -316,11 +335,11 @@ mod tests {
         let mut canonical = Vec::new();
         engine
             .hooks
-            .before_step(&engine, &ctx, &mut canonical, &infer)
+            .before_step(&engine, &ctx, &mut canonical)
             .await;
         engine
             .hooks
-            .on_pause(&engine, &ctx, PauseReason::TurnEnd, &infer)
+            .on_pause(&engine, &ctx, PauseReason::TurnEnd)
             .await;
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -328,11 +347,12 @@ mod tests {
             "NoopHooks must not invoke infer (G1 acceptance)"
         );
 
-        // DefaultHooks::on_pause must invoke infer(true).
-        let default_engine = ReActEngine::new(router, executor, db, 10, limits);
+        // DefaultHooks::on_pause must invoke infer(session, true) when wired.
+        let default_engine = ReActEngine::new(router, executor, db, 10, limits)
+            .with_hooks(default_hooks_with_infer(infer));
         default_engine
             .hooks
-            .on_pause(&default_engine, &ctx, PauseReason::TurnEnd, &infer)
+            .on_pause(&default_engine, &ctx, PauseReason::TurnEnd)
             .await;
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -362,7 +382,7 @@ mod tests {
             cut_off_retries_max: 2,
             pending_ask: false,
         };
-        let hooks = DefaultHooks;
+        let hooks = DefaultHooks::new(None);
         // after_llm does not need a real engine for classification.
         let action = {
             // Build a minimal engine only to satisfy the trait signature.

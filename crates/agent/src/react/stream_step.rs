@@ -1,23 +1,11 @@
 //! LLM streaming step: StreamForwarder, StreamSession, call_step_llm.
 //!
 //! Phase 1 mechanical extract; Phase 5 / E1 wraps the stream behind
-//! [`StreamSession`] so the thin loop only consumes [`StepResponse`] /
-//! [`StepCallOutcome`] and never constructs [`StreamForwarder`].
+//! [`StreamSession`] so the thin loop only consumes [`StepCallOutcome`]
+//! and never constructs [`StreamForwarder`].
 
 use super::*;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, ToolDefinition};
-
-/// Aggregated result of one streamed LLM call (Phase 5 / E1).
-/// Currently surfaced via [`StepCallOutcome::Response`]'s `LlmResponse`; the
-/// duration is recorded inside `call_step_llm` / usage emit. Kept as the
-/// explicit E1 type so future hooks can take it without reshaping the loop.
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(super) struct StepResponse {
-    pub response: LlmResponse,
-    /// Wall-clock duration of the primary (or compaction-retry) API call.
-    pub duration_ms: Option<u64>,
-}
 
 /// Streaming session for one step: primary call + empty/cut-off retries.
 /// Owns partial buffers and msg-id reuse; the loop only matches outcomes.
@@ -61,7 +49,7 @@ impl<'a> StreamSession<'a> {
         &self,
         llm_messages: &mut Vec<CanonicalMessage>,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &[ReActStep],
+        history: &mut Vec<ReActStep>,
         branch_points: &mut HashMap<u32, BranchPoint>,
     ) -> StepCallOutcome {
         match self
@@ -465,7 +453,7 @@ impl ReActEngine {
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         canonical: &mut Vec<CanonicalMessage>,
-        history: &[ReActStep],
+        history: &mut Vec<ReActStep>,
         branch_points: &mut HashMap<u32, BranchPoint>,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
@@ -517,7 +505,20 @@ impl ReActEngine {
                         result.tokens_before,
                         result.tokens_after
                     );
-                    *canonical = result.compacted;
+                    // Phase 6.1: CompactSummary via apply (emit + persist + replace).
+                    self.reset_token_estimate(&ctx.session_id);
+                    self.apply_transcript(
+                        ctx,
+                        TranscriptEvent::CompactSummary {
+                            compacted: result.compacted,
+                            summary: result.summary,
+                            tokens_before: result.tokens_before,
+                            tokens_after: result.tokens_after,
+                        },
+                        canonical,
+                        history,
+                    )
+                    .await;
                     // The retry must convert the *compacted* canonical
                     // (the old messages are stale), and the role must be
                     // re-resolved: summarizing away the last image-bearing
@@ -528,16 +529,6 @@ impl ReActEngine {
                     } else {
                         EndpointRole::DefaultModel
                     };
-                    EventDispatcher::emit_compaction_from(
-                        &ctx.emitter,
-                        &ctx.session_id,
-                        &result.summary,
-                        result.tokens_before,
-                        result.tokens_after,
-                    )
-                    .await;
-                    self.persist_compaction_summary(&ctx.session_id, &result.summary)
-                        .await;
                     // Reset the accumulators: the first attempt's partial
                     // text was based on pre-compaction context and should
                     // not be mixed with the retry's output.
@@ -644,5 +635,110 @@ impl ReActEngine {
             }
         }
     }
+}
 
+/// Phase 7 / G4: outcome of preparing provider server-side search context
+/// before tool / turn-end handling. The thin loop never branches on
+/// `web_search_*` fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchContextOutcome {
+    /// Search round with no answer yet — context pushed, thought persisted,
+    /// branch saved. Loop must `continue`.
+    ContinueWithoutTools,
+    /// Proceed to tool batch or turn-end. `assistant_already_pushed` is true
+    /// when a synthesized final arrived in the same response as the search
+    /// (canonical already carries the search context).
+    Proceed {
+        assistant_already_pushed: bool,
+    },
+}
+
+impl ReActEngine {
+    /// Phase 7 / G4: push provider server-side search context into the
+    /// canonical when the response carries search items and there are no
+    /// real tool calls (empty actions or synthesized final only). Mixed
+    /// tool+search responses are left for `execute_tool_batch`, which
+    /// round-trips the items alongside function tool results.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn prepare_search_context(
+        &self,
+        ctx: &StepCtx,
+        response: &LlmResponse,
+        thought: &Option<String>,
+        actions: &[Action],
+        canonical: &mut Vec<CanonicalMessage>,
+        history: &[ReActStep],
+        branch_points: &mut HashMap<u32, BranchPoint>,
+    ) -> SearchContextOutcome {
+        if response.web_search_calls.is_empty() {
+            return SearchContextOutcome::Proceed {
+                assistant_already_pushed: false,
+            };
+        }
+        let synthesized_final = !actions.is_empty()
+            && actions
+                .iter()
+                .all(|a| a.is_final && a.tool_call_id.is_none());
+        if !(actions.is_empty() || synthesized_final) {
+            // Mixed real tools + search: tool_batch pushes the search items.
+            return SearchContextOutcome::Proceed {
+                assistant_already_pushed: false,
+            };
+        }
+
+        // Text must match what `persist_session_message` stores (trimmed
+        // thought) or resume dedup fails on leading whitespace.
+        let push_text = thought.as_deref().unwrap_or(&response.text);
+        canonical.push(CanonicalMessage::assistant(
+            vec![ContentPart::text(push_text.to_string())],
+            None,
+            if response.thinking_blocks.is_empty() {
+                response.reasoning.clone()
+            } else {
+                None
+            },
+            response.web_search_calls.clone(),
+            response.thinking_blocks.clone(),
+        ));
+
+        if actions.is_empty() {
+            // Search round: no answer yet — keep the turn open and re-request
+            // with the search context in the next input.
+            if let Some(t) = thought {
+                let message_id =
+                    self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+                self.persist_session_message(
+                    &ctx.session_id,
+                    "assistant",
+                    t,
+                    Some("text"),
+                    None,
+                    Some(&message_id),
+                )
+                .await;
+            }
+            self.save_branch_point(
+                &ctx.session_id,
+                canonical,
+                history,
+                ctx.step_num,
+                branch_points,
+                false,
+            )
+            .await;
+            tracing::debug!(
+                "ReAct step {} session {} server-side search round ({} item(s)); continuing",
+                ctx.step_num,
+                ctx.session_id,
+                response.web_search_calls.len()
+            );
+            return SearchContextOutcome::ContinueWithoutTools;
+        }
+
+        // synthesized_final: answer arrived with the search call — fall
+        // through to turn-end; the push above keeps search context alive.
+        SearchContextOutcome::Proceed {
+            assistant_already_pushed: true,
+        }
+    }
 }
