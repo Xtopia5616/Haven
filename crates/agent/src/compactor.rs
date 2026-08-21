@@ -267,6 +267,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 
@@ -389,6 +390,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 

@@ -247,6 +247,7 @@ pub(crate) async fn transcribe_via_chat(
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         },
     ];
 

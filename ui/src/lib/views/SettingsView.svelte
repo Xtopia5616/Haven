@@ -7,9 +7,9 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
-	import StatusDot from '$lib/StatusDot.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
+	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import ModelSettings from './ModelSettings.svelte';
@@ -31,7 +31,7 @@
 		max_concurrent_requests: 2,
 	});
 
-	/** @type {{ small_model: boolean; default_model: boolean; balanced_model: boolean; image_model: boolean; audio_model: boolean; embedding_model: boolean; stt: boolean; ocr: boolean; tts: boolean; image_gen: boolean; [key: string]: boolean }} */
+	/** @type {{ small_model: boolean; default_model: boolean; balanced_model: boolean; image_model: boolean; audio_model: boolean; embedding_model: boolean; stt: boolean; ocr: boolean; ocr_secret: boolean; tts: boolean; image_gen: boolean; [key: string]: boolean }} */
 	let keyConfigured = $state({
 		small_model: false,
 		default_model: false,
@@ -41,6 +41,7 @@
 		embedding_model: false,
 		stt: false,
 		ocr: false,
+		ocr_secret: false,
 		tts: false,
 		image_gen: false,
 	});
@@ -765,14 +766,16 @@
 		keyChangeDialog = { open: true, model, label };
 	}
 
-	// Media-capability keys (OCR / TTS / 文生图). Role and STT keys are
-	// handled by ModelSettings through the same ApiKeyDialog.
+	// Media-capability keys (OCR / OCR Secret / TTS / 文生图). Role and STT
+	// keys are handled by ModelSettings through the same ApiKeyDialog.
 	/**
 	 * @param {string} value
 	 */
 	function confirmMediaKey(value) {
 		if (keyChangeDialog.model === 'ocr') {
 			ocr.api_key = value;
+		} else if (keyChangeDialog.model === 'ocr_secret') {
+			ocr.api_secret = value;
 		} else if (keyChangeDialog.model === 'tts') {
 			tts.api_key = value;
 		} else if (keyChangeDialog.model === 'image_gen') {
@@ -882,22 +885,20 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
-					<div class="key-cell" class:key-not-configured={!keyConfigured.ocr}>
-						<StatusDot color={keyConfigured.ocr ? 'success' : 'outline'} />
-						<button
-							id="ocr-api-key"
-							class="md-btn md-btn--xs md-btn--outlined"
-							title={keyConfigured.ocr ? 'Configured' : 'Not Configured'}
-							onclick={() => openKeyDialog('ocr', 'OCR API Key')}
-						>
-							{keyConfigured.ocr ? 'Change' : 'Set'}
-						</button>
-					</div>
+					<ApiKeyField
+						id="ocr-api-key"
+						configured={keyConfigured.ocr}
+						onEdit={() => openKeyDialog('ocr', 'OCR API Key')}
+					/>
 				</div>
 				{#if ocr.provider === 'baidu' || ocr.provider === 'tencent'}
 					<div class="model-field">
 						<span class="field-label">Secret Key</span>
-						<input id="ocr-secret" type="password" class="md-input" bind:value={ocr.api_secret} placeholder="Secret Key" autocomplete="off" />
+						<ApiKeyField
+							id="ocr-secret"
+							configured={keyConfigured.ocr_secret}
+							onEdit={() => openKeyDialog('ocr_secret', 'OCR Secret Key')}
+						/>
 					</div>
 				{/if}
 				{#if ocr.provider === 'azure'}
@@ -930,17 +931,11 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
-					<div class="key-cell" class:key-not-configured={!keyConfigured.tts}>
-						<StatusDot color={keyConfigured.tts ? 'success' : 'outline'} />
-						<button
-							id="tts-api-key"
-							class="md-btn md-btn--xs md-btn--outlined"
-							title={keyConfigured.tts ? 'Configured' : 'Not Configured'}
-							onclick={() => openKeyDialog('tts', 'TTS API Key')}
-						>
-							{keyConfigured.tts ? 'Change' : 'Set'}
-						</button>
-					</div>
+					<ApiKeyField
+						id="tts-api-key"
+						configured={keyConfigured.tts}
+						onEdit={() => openKeyDialog('tts', 'TTS API Key')}
+					/>
 				</div>
 				{#if tts.provider === 'openai'}
 					<div class="model-field">
@@ -982,17 +977,11 @@
 				</div>
 				<div class="model-field">
 					<span class="field-label">API Key</span>
-					<div class="key-cell" class:key-not-configured={!keyConfigured.image_gen}>
-						<StatusDot color={keyConfigured.image_gen ? 'success' : 'outline'} />
-						<button
-							id="ig-api-key"
-							class="md-btn md-btn--xs md-btn--outlined"
-							title={keyConfigured.image_gen ? 'Configured' : 'Not Configured'}
-							onclick={() => openKeyDialog('image_gen', '文生图 API Key')}
-						>
-							{keyConfigured.image_gen ? 'Change' : 'Set'}
-						</button>
-					</div>
+					<ApiKeyField
+						id="ig-api-key"
+						configured={keyConfigured.image_gen}
+						onEdit={() => openKeyDialog('image_gen', '文生图 API Key')}
+					/>
 				</div>
 				{#if imageGen.provider !== 'none'}
 					<div class="model-field">
@@ -1447,13 +1436,6 @@
 		font-size: 13px;
 	}
 	.role-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: 2px; line-height: 1.4; }
-	.key-cell {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		min-height: var(--md-comp-textfield-container-height);
-	}
-	.key-cell .md-btn { flex-shrink: 0; min-width: 64px; }
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
 	.shell-warning {
 		margin-top: var(--md-sys-space-sm);

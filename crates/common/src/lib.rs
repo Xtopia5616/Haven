@@ -15,5 +15,6 @@ pub use types::McpTransportType;
 pub use tools::ToolDef;
 
 pub use types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, MessageAttachment, Supplement,
+    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
+    MessageAttachment, Supplement,
 };

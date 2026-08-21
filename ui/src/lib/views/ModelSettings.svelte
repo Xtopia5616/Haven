@@ -8,8 +8,8 @@
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
-	import StatusDot from '$lib/StatusDot.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
+	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { ROLE_KEYS, modelCards } from '$lib/modelRoles.ts';
 	import { inputFormats } from '$lib/inputFormats.ts';
 
@@ -698,13 +698,12 @@
 			{#each llmConfig.providers as p, idx (p.name)}
 			<div class="provider-card">
 				<div class="provider-main">
-					<span class="provider-name">{p.name}</span>
+					<div class="provider-title">
+						<span class="provider-name">{p.name}</span>
+						<ApiKeyField mode="badge" configured={isProviderKeyConfigured(p)} />
+					</div>
 					<span class="provider-desc">
 						{apiStyleLabel(p.api_style)} · {p.base_url}
-					</span>
-					<span class="lib-key">
-						<StatusDot color={isProviderKeyConfigured(p) ? 'success' : 'outline'} />
-						{isProviderKeyConfigured(p) ? '已配置' : '未配置'}
 					</span>
 					{#if modelsByProvider[p.name]?.length}
 						<span class="provider-models">{modelsByProvider[p.name].length} 个模型</span>
@@ -867,17 +866,11 @@
 						</div>
 						<div class="model-field">
 							<span class="field-label">API Key</span>
-							<div class="key-cell" class:key-not-configured={!keyConfigured.stt}>
-								<StatusDot color={keyConfigured.stt ? 'success' : 'outline'} />
-								<button
-									id="au-stt-api-key"
-									class="md-btn md-btn--xs md-btn--outlined"
-									title={keyConfigured.stt ? 'Configured' : 'Not Configured'}
-									onclick={() => openKeyDialog('stt', 'STT API Key')}
-								>
-									{keyConfigured.stt ? 'Change' : 'Set'}
-								</button>
-							</div>
+							<ApiKeyField
+								id="au-stt-api-key"
+								configured={keyConfigured.stt}
+								onEdit={() => openKeyDialog('stt', 'STT API Key')}
+							/>
 						</div>
 					{/if}
 				</div>
@@ -914,12 +907,11 @@
 			</div>
 			<div class="model-field">
 				<span class="field-label">API Key</span>
-				<input
-					type="password"
-					class="md-input"
+				<ApiKeyField
+					mode="edit"
 					bind:value={pdForm.api_key}
-					placeholder={providerDialog.idx !== null ? '已配置，留空保持不变' : ''}
-					autocomplete="off"
+					configured={providerDialog.idx !== null && isProviderKeyConfigured(llmConfig.providers[providerDialog.idx])}
+					placeholder={providerDialog.idx === null ? 'sk-...' : ''}
 				/>
 			</div>
 		</div>
@@ -1034,6 +1026,13 @@
 		gap: 2px;
 		min-width: 0;
 	}
+	.provider-title {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		min-width: 0;
+		flex-wrap: wrap;
+	}
 	.provider-name {
 		font-size: 13px;
 		font-weight: 600;
@@ -1049,13 +1048,6 @@
 	.provider-models {
 		font-size: 11px;
 		color: var(--md-sys-color-primary);
-	}
-	.lib-key {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 11px;
-		color: var(--md-sys-color-on-surface-variant);
 	}
 	.provider-actions {
 		display: flex;
@@ -1108,13 +1100,6 @@
 	}
 	.role-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: 2px; line-height: 1.4; }
 	.provider-note { font-size: 11px; color: var(--md-sys-color-on-surface-variant); font-style: italic; }
-	.key-cell {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		min-height: var(--md-comp-textfield-container-height);
-	}
-	.key-cell .md-btn { flex-shrink: 0; min-width: 64px; }
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
 	.model-hint code {
 		background: var(--md-sys-color-surface-container-highest);

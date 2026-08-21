@@ -60,6 +60,13 @@ impl ConfirmPending {
 }
 
 /// Serializable snapshot of the ReAct loop state for pause/resume (§1.3).
+///
+/// **Authority (Phase 6 / B1-1):**
+/// - [`Self::canonical`] is the **sole LLM transcript** (after
+///   `sanitize_canonical`). Production prompt builds pass `history=&[]`.
+/// - [`Self::history`] is a **derived** debug / `restore_per_session_tools` /
+///   branch-COW projection. Do not add new business branches that key off
+///   history semantics for model context.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReActSnapshot {
     pub canonical: Vec<CanonicalMessage>,
@@ -127,6 +134,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 

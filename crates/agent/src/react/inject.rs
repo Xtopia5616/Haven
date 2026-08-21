@@ -1,9 +1,13 @@
 //! Pending-context injection: steering / follow_up / answer / action_results
 //! and cross-session inbox polling.
 //!
-//! Split from `react.rs` (Phase 1 mechanical extract; behavior unchanged).
+//! Split from `react.rs` (Phase 1 mechanical extract). Phase 6 / B3: inject
+//! origin is structured [`InjectSource`]; prefixes render via
+//! `InjectSource::render_prefix`. Phase 6 / H1: user injects go through
+//! [`ReActEngine::apply_transcript`].
 
 use super::*;
+use haven_common::types::InjectSource;
 use haven_tools::inbox::{InboxBus, MessageType};
 use tokio::sync::watch;
 
@@ -73,16 +77,16 @@ impl ReActEngine {
             // A reply to a pending `ask` is injected as a paired answer so
             // the model sees the old question as resolved instead of treating
             // it as a second open question to answer again.
-            let prefix = if follow_up.is_answer {
+            let source = if follow_up.is_answer {
                 cleared_ask = true;
-                "Answer to your previous question"
+                InjectSource::Answer
             } else {
-                "Additional context from user"
+                InjectSource::FollowUp
             };
             self.push_user_context(
                 ctx,
                 canonical,
-                prefix,
+                source,
                 &follow_up.text,
                 &follow_up.attachments,
                 follow_up.message_id.as_deref(),
@@ -94,16 +98,16 @@ impl ReActEngine {
         for s in &steering {
             // Mid-run steering marked as answer at the ask-pause boundary
             // (C3) uses the Answer prefix too — no queue transfer required.
-            let prefix = if s.is_answer {
+            let source = if s.is_answer {
                 cleared_ask = true;
-                "Answer to your previous question"
+                InjectSource::Answer
             } else {
-                "Steering"
+                InjectSource::Steering
             };
             self.push_user_context(
                 ctx,
                 canonical,
-                prefix,
+                source,
                 &s.text,
                 &s.attachments,
                 s.message_id.as_deref(),
@@ -255,7 +259,7 @@ impl ReActEngine {
         self.push_user_context(
             ctx,
             canonical,
-            "Cross-session message",
+            InjectSource::CrossSession,
             text.trim_end(),
             &[],
             None,
@@ -263,63 +267,32 @@ impl ReActEngine {
         .await;
     }
 
-    /// Emit a Supplement event, persist a matching thought-step row and push
-    /// a user message into the canonical array. Shared by the supplement and
-    /// steering queues (identical mechanics, different text prefixes) so the
-    /// two paths cannot drift. The thought-step row anchors the user message
-    /// to a step after a reload: the row is created under the message's own
-    /// id (`message_id`, persisted at submit time) so review/rollback can
-    /// resolve the step by id; without it an interrupted input would have no
-    /// determinable step. The step row stores no text — the user message row
-    /// is the single content authority.
+    /// Emit + persist + project a user inject via [`TranscriptEvent::UserInject`]
+    /// (Phase 6 / H1). Shared by follow-up / steering / cross-session so the
+    /// paths cannot drift. No content-based dedup — see AGENTS.md resume rules.
     pub(super) async fn push_user_context(
         &self,
         ctx: &StepCtx,
         canonical: &mut Vec<CanonicalMessage>,
-        prefix: &str,
+        source: InjectSource,
         text: &str,
         attachments: &[MessageAttachment],
         message_id: Option<&str>,
     ) {
-        ctx.emitter
-            .emit(crate::event::AgentEvent::Supplement {
-                session_id: ctx.session_id.clone(),
-                additional_context: text.to_string(),
-                step_number: ctx.step_num,
-                run_id: ctx.run_id,
-            })
-            .await;
-        let step_id = message_id
-            .map(String::from)
-            .unwrap_or_else(|| haven_common::types::new_id("step"));
-        let _ = self
-            .db
-            .run_blocking({
-                let session_id = ctx.session_id.clone();
-                let step_id = step_id.clone();
-                let step_num = ctx.step_num;
-                move |db| {
-                    if let Err(e) = db.create_thought_step(&session_id, step_num as i32, &step_id) {
-                        tracing::warn!(
-                            "create_thought_step failed (session={} step={}): {}",
-                            session_id,
-                            step_num,
-                            e
-                        );
-                    }
-                    Ok::<(), anyhow::Error>(())
-                }
-            })
-            .await;
-        let mut content = vec![ContentPart::text(format!("{prefix}: {text}"))];
-        content.extend(attachments.iter().map(attachment_to_content_part));
-        // No content-based dedup here: duplicate submissions are prevented at
-        // the UI layer (the submit path is in-flight locked), and the DB rows
-        // carry unique ids that anchor each input to its own step row. The
-        // canonical is an append-only transcript of what the user actually
-        // sent — collapsing identical inputs would silently drop legitimate
-        // repeated turns (e.g. the user saying "继续" twice on purpose).
-        canonical.push(CanonicalMessage::user(content));
+        // history is unused for UserInject; pass a scratch vec.
+        let mut history = Vec::new();
+        self.apply_transcript(
+            ctx,
+            TranscriptEvent::UserInject {
+                source,
+                text: text.to_string(),
+                attachments: attachments.to_vec(),
+                message_id: message_id.map(str::to_string),
+            },
+            canonical,
+            &mut history,
+        )
+        .await;
     }
 
     /// Shared tail of the two "final answer" branches when a user message or

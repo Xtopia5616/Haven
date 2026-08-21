@@ -21,11 +21,12 @@ pub struct AgentLayer {
     gateway: tokio::sync::RwLock<Option<Arc<haven_llm::media::MediaGateway>>>,
 }
 
-/// A recent conversation message (role, content) used by the FRESH-run path
-/// to embed recent history into the system prompt (`run_session` →
-/// `prompt_builder.build`). Resume does not use this type anymore: the
-/// canonical snapshot is the single authority and post-snapshot inputs are
-/// recovered by timestamp, not by content comparison.
+/// A recent conversation message (role, content) used by the FRESH-run /
+/// snapshot-less path. **S1 authority:** canonical is the LLM truth; this
+/// window may feed Additional context only for turns not already represented
+/// as the first canonical user message. Resume does not use this type: the
+/// snapshot is the single authority and post-snapshot inputs are recovered by
+/// timestamp, not by content comparison.
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationMessage {
     role: String,
@@ -1211,13 +1212,18 @@ impl AgentLayer {
             initial_attachments.len()
         );
         let mut history: Vec<ReActStep> = Vec::new();
+        // S1: do not restate the first user turn (already canonical[1]) inside
+        // system Additional context. Snapshot-less paths may still surface
+        // later DB turns that are not yet in canonical.
         let history_lines: Vec<String> = conversation_history
             .iter()
+            .filter(|m| !(m.role == "user" && m.content == context))
             .map(|m| format!("[{}] {}", m.role, m.content))
             .collect();
+        // S2: exclude this session from Past conversation excerpts.
         let system_prompt = self
             .prompt_builder
-            .build(description, &[], &history_lines)
+            .build_for_session(description, &[], &history_lines, Some(session_id))
             .await;
         tracing::debug!("run_session: system_prompt {} chars", system_prompt.len());
 

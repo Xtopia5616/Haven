@@ -170,23 +170,25 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 
 状态默认 `[待办]`；落地后改为 `[完成]`。
 
-#### S1. 权威边界写进注入策略 `[待办]`
+#### S1. 权威边界写进注入策略 `[完成]`
 
 - **问题**：四套「历史」+ 两套记忆，模型「这一轮记得什么」不清晰。
 - **方向**（策略，少改代码即可先固化）：
   - **canonical** = 本会话 LLM 真源（含压缩摘要气泡）
   - **facts / episodes** = **跨会话**检索层，不负责复述本会话已在 canonical 里的内容
   - **DB messages** = 持久化 + 抽取源；禁止把「已在 canonical 中的同会话窗口」再灌进 Additional context
+- **落地（2026-08-21 / ReAct Phase 6）**：`prompt.rs` / `ReActSnapshot` / `layer.rs` 契约注释；fresh 路径过滤与 `context` 相同的首条 user，避免 Additional context 重复。
 - **位置**：`layer.rs`（fresh / continue 注入）、`prompt.rs`、文档契约
 - **风险**：低
 - **验收**：注释/单测固定「本会话不进 Past excerpts；Additional context 不与首条 user 重复」
 
-#### S2. 同会话去重：episode 排除当前 session + 收敛 Additional context `[待办]`
+#### S2. 同会话去重：episode 排除当前 session + 收敛 Additional context `[完成]`
 
 - **问题**：新开/续跑时，当前会话消息可被当成「过去对话」召回，并与 inject 窗口重复。
 - **方向**：
   - `search_episodes_by_keywords` / 向量 episode 召回支持 `exclude_session_id`（默认当前会话）
   - fresh/continue：若即将把同窗口放进 canonical，不再（或大幅缩短）Additional context
+- **落地（2026-08-21）**：`search_episodes_by_keywords_excluding` + `episode_session_id`；`build_for_session(..., exclude_session_id)`；向量 episode 命中按 owning session 过滤；单测 `past_excerpts_exclude_current_session` / `search_episodes_by_keywords_excludes_current_session`。
 - **位置**：`embeddings.rs`、`prompt.rs`、`layer.rs`
 - **风险**：低
 - **验收**：同会话用户句不出现在「Past conversation excerpts」；续跑 prompt 体积不因重复历史膨胀
@@ -202,14 +204,15 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 - **风险**：中（消息形状、snapshot 体积、provider 对改写 system 的敏感度）
 - **验收**：同会话 pause 后新抽出的 fact 在下一步可见；resume 后跨会话事实不落后于库超过一次维护/抽取周期
 
-#### S4. 与 ReAct 改进对齐的轻量衔接 `[待办]`
+#### S4. 与 ReAct 改进对齐的轻量衔接 `[完成]`（契约）
 
 - **问题**：compact / infer 仍在厚循环内，协作调参困难（见 `docs/react-architecture-improvements.md` G2）。
 - **方向**：短期不拆完钩子，但约定：记忆 patch（S3）挂在 pause / resume，不挂每步 prologue；抽取继续 `infer_session`，全表维护仍只走调度器。
+- **落地**：G2 已将 compact/infer/inbox 迁出 prologue（`before_step` / `on_pause`）；S3 记忆段 patch 仍待办，但调用约定与文档已对齐——步间 infer 不重建 system。
 - **风险**：低
 - **验收**：文档与调用点一致；步间 infer 不触发全量 system 重建
 
-**短期建议顺序**：S1 → S2 → S3 → S4（S1/S2 可同 PR）。
+**短期建议顺序**：S1 → S2 → S3 → S4（S1/S2 已与 ReAct Phase 6 同批落地；下一步 S3）。
 
 ### 3.4 长期（架构债与增强，按需分期）
 
@@ -277,7 +280,8 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 
 ```
 §二 P0-1..3                 ← [完成] 2026-08-20
-§三 S1 → S2 → S3 → S4       ← 协作短期（下一阶段优先）
+§三 S1 → S2 → S4            ← [完成] 2026-08-21（随 ReAct Phase 6）
+§三 S3                      ← 下一优先：resume/infer 后只 patch 记忆段
 §二 P1-5 / P1-8 与 §三 L4   ← 可合并：预算 + 查询形态
 §二 P1-4 / P1-6、§三 L1–L3  ← 规模与架构债
 §二 P2-* / §三 L5–L6        ← 按需；schema 相关走 migration bump
@@ -305,3 +309,4 @@ Schema 由 `haven_memory::schema::init_schema` 管理：`PRAGMA user_version` + 
 | 2026-08-20 | P0-1/2/3 落地：`memory_recall_terms`、热路径 `infer_session`、embedding backlog LIMIT |
 | 2026-08-20 | review 修复：维护启动即跑、CJK 头尾 trigram、中文召回测试加固、episode term cap、去掉 `infer_all` |
 | 2026-08-20 | 新增 §三：Facts / Episodes / 对话历史协作改进计划（短期 S1–S4 / 长期 L1–L6 / 明确不做） |
+| 2026-08-21 | S1/S2/S4 落地（随 ReAct Phase 6）：`exclude_session_id`、Additional context 去首条 user 重复、权威契约注释；S3 仍待办 |

@@ -195,6 +195,10 @@ fn api_key_status(cfg: &AppConfig) -> serde_json::Value {
         serde_json::json!(!cfg.media.ocr.api_key.is_empty()),
     );
     status.insert(
+        "ocr_secret".to_string(),
+        serde_json::json!(!cfg.media.ocr.api_secret.is_empty()),
+    );
+    status.insert(
         "tts".to_string(),
         serde_json::json!(!cfg.media.tts.api_key.is_empty()),
     );

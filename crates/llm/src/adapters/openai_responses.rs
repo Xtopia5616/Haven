@@ -1177,6 +1177,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1186,6 +1187,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let (items, instructions) = OpenAiResponsesAdapter::convert_input(
@@ -1215,6 +1217,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1224,6 +1227,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
@@ -1262,6 +1266,7 @@ mod tests {
                 reasoning: Some("  I should read the file first.  ".into()),
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1271,6 +1276,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
@@ -1327,6 +1333,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Tool,
@@ -1336,6 +1343,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let (with_echo, _) = OpenAiResponsesAdapter::convert_input(
@@ -1378,6 +1386,7 @@ mod tests {
             reasoning: Some(long.clone()),
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1411,6 +1420,7 @@ mod tests {
             reasoning: Some("   ".into()),
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1442,6 +1452,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1477,6 +1488,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             }],
             Vec::new(),
             true,
@@ -1597,6 +1609,7 @@ mod tests {
                 "status": "in_progress"
             })],
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,
@@ -1635,6 +1648,7 @@ mod tests {
             reasoning: None,
             web_search_calls: vec![ws.clone()],
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (items, _) = OpenAiResponsesAdapter::convert_input(
             msgs,

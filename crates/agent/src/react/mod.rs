@@ -18,16 +18,20 @@ use crate::types::{Action, BranchPoint, ReActStep};
 use chrono::Utc;
 
 mod hooks;
+mod identity;
 mod inject;
 mod r#loop;
 mod retries;
 mod snapshot_io;
 pub(crate) mod stream_step;
 mod tool_batch;
+mod transcript;
 
 use hooks::{LoopHooksHandle, default_hooks};
+use identity::IdentityMap;
 
 use inject::MessagingState;
+use transcript::TranscriptEvent;
 
 pub(crate) use snapshot_io::set_status_and_emit;
 #[cfg(test)]
@@ -136,13 +140,9 @@ fn value_conforms_to_prop(prop: &serde_json::Value, value: &serde_json::Value) -
     }
 }
 
-/// Key identifying one streamed block within a run: session, step number,
-/// run id and block kind ("thought" | "reasoning").
-pub(super) type StreamBlockKey = (String, u32, u64, &'static str);
-
 /// RAII guard clearing a session's minted streaming-message ids when the
 /// ReAct run exits (every path — early returns, `?` propagation, cancels),
-/// so finished sessions never leave stale entries in `step_msg_ids`.
+/// so finished sessions never leave stale entries in [`IdentityMap`].
 pub(super) struct RunMsgIdGuard<'a> {
     engine: &'a ReActEngine,
     session_id: String,
@@ -196,15 +196,10 @@ pub struct ReActEngine {
     /// rebuild bumps the version, instead of re-querying the registry on
     /// every step.
     tool_def_cache: Mutex<HashMap<String, (u64, Vec<ToolDefinition>)>>,
-    /// Minted streaming-message ids: a `StreamBlockKey` → the
-    /// `msg-*` id a streamed thinking/reasoning block accumulates into. The
-    /// id is minted when the block's first chunk streams, reused by every
-    /// chunk event, the `agent:thought` snap, and the final
-    /// `persist_session_message` — so the live bubble and the DB row share
-    /// one identity and the frontend merge needs no content dedup.
-    /// Cleared per session at `run_react_loop` entry (one run = one loop
-    /// invocation), so entries never leak across runs.
-    step_msg_ids: Mutex<HashMap<StreamBlockKey, String>>,
+    /// Minted streaming-message ids (Phase 6 / I3): thought/reasoning blocks
+    /// share one identity across chunk events, the snap, and persistence.
+    /// Cleared per session at `run_react_loop` entry.
+    identity: IdentityMap,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
@@ -319,7 +314,7 @@ impl ReActEngine {
             context_window_cache: Mutex::new((0, HashMap::new())),
             last_snapshot_step: Mutex::new(HashMap::new()),
             tool_def_cache: Mutex::new(HashMap::new()),
-            step_msg_ids: Mutex::new(HashMap::new()),
+            identity: IdentityMap::new(),
             hooks: default_hooks(),
         }
     }
@@ -331,26 +326,20 @@ impl ReActEngine {
         self
     }
 
-    /// Mint (or reuse) the id a streamed thought/reasoning block of
-    /// `(session, step, run, kind)` accumulates into. Constant per block so
-    /// chunk events, the snap and the final persistence share one id.
-    ///
-    /// A `thought` block is the content view of a ReAct step: its id is
-    /// minted with the `step-` prefix so the message row and the thought
-    /// step row (created in `emit_thought_from` under the same id) are one
-    /// entity. `reasoning` blocks have no step row and keep `msg-` ids.
-    pub(super) fn ensure_msg_id(&self, session_id: &str, step: u32, run: u64, kind: &'static str) -> String {
-        let mut map = self.step_msg_ids.lock().unwrap();
-        map.entry((session_id.to_string(), step, run, kind))
-            .or_insert_with(|| {
-                let prefix = if kind == "thought" { "step" } else { "msg" };
-                haven_common::types::new_id(prefix)
-            })
-            .clone()
+    /// Mint (or reuse) the id a streamed thought/reasoning block accumulates
+    /// into (Phase 6 / I3 — delegates to [`IdentityMap`]).
+    pub(super) fn ensure_msg_id(
+        &self,
+        session_id: &str,
+        step: u32,
+        run: u64,
+        kind: &'static str,
+    ) -> String {
+        self.identity.ensure_msg_id(session_id, step, run, kind)
     }
 
-    /// Read the minted id for a block without consuming it. `None` when the
-    /// block never streamed (the caller then falls back to a fresh id).
+    /// Read the minted id for a block without consuming it.
+    #[allow(dead_code)] // kept for I3 IdentityMap facade parity with ensure/block
     pub(super) fn peek_msg_id(
         &self,
         session_id: &str,
@@ -358,35 +347,23 @@ impl ReActEngine {
         run: u64,
         kind: &'static str,
     ) -> Option<String> {
-        self.step_msg_ids
-            .lock()
-            .unwrap()
-            .get(&(session_id.to_string(), step, run, kind))
-            .cloned()
+        self.identity.peek_msg_id(session_id, step, run, kind)
     }
 
-    /// The id a streamed block is persisted under: the minted id when the
-    /// block streamed (the live bubble and the DB row must match), a fresh
-    /// id otherwise (prefix follows `ensure_msg_id`'s per-kind rule). THE
-    /// single definition of that fallback — every persist site must go
-    /// through here so the "persisted id == streamed bubble id" invariant
-    /// cannot drift per site.
-    pub(super) fn block_msg_id(&self, session_id: &str, step: u32, run: u64, kind: &'static str) -> String {
-        self.peek_msg_id(session_id, step, run, kind)
-            .unwrap_or_else(|| {
-                let prefix = if kind == "thought" { "step" } else { "msg" };
-                haven_common::types::new_id(prefix)
-            })
+    /// The id a streamed block is persisted under (minted or fresh fallback).
+    pub(super) fn block_msg_id(
+        &self,
+        session_id: &str,
+        step: u32,
+        run: u64,
+        kind: &'static str,
+    ) -> String {
+        self.identity.block_msg_id(session_id, step, run, kind)
     }
 
-    /// Drop every minted message id belonging to a session. Runs once per
-    /// `run_react_loop` invocation so stale ids from a previous run never
-    /// leak or collide with a fresh run's minted ids.
+    /// Drop every minted message id belonging to a session.
     pub(super) fn clear_msg_ids_for_session(&self, session_id: &str) {
-        self.step_msg_ids
-            .lock()
-            .unwrap()
-            .retain(|(sid, ..), _| sid != session_id);
+        self.identity.clear_for_session(session_id);
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
@@ -1196,6 +1173,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 
@@ -1212,6 +1190,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 

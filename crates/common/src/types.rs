@@ -234,6 +234,46 @@ impl std::fmt::Display for CanonicalRole {
     }
 }
 
+/// Origin of a user-role inject into the canonical transcript (Phase 6 / B3).
+/// Runtime queues already carry structured flags (`is_answer`, etc.); this
+/// enum is the single source of truth for the LLM-visible prefix string.
+/// Adapters ignore it — only content reaches the provider wire format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectSource {
+    Steering,
+    FollowUp,
+    Answer,
+    ActionResult,
+    CrossSession,
+}
+
+impl InjectSource {
+    /// Prefix baked into canonical user text for the LLM (behavior freeze:
+    /// same strings as pre-B3). Wire-only rendering (prefix at adapter
+    /// boundary) is a follow-up; resume/dedup stay on `message_id`/`saved_at`.
+    pub fn render_prefix(self) -> &'static str {
+        match self {
+            Self::Steering => "Steering",
+            Self::FollowUp => "Additional context from user",
+            Self::Answer => "Answer to your previous question",
+            Self::ActionResult => "Background action result",
+            Self::CrossSession => "Cross-session message",
+        }
+    }
+
+    /// Prefixes used when matching a raw DB user message against a prefixed
+    /// canonical user turn (rollback). Includes the trailing `": "`.
+    pub fn match_prefixes() -> &'static [&'static str] {
+        &[
+            "Additional context from user: ",
+            "Answer to your previous question: ",
+            "Steering: ",
+            "Cross-session message: ",
+        ]
+    }
+}
+
 /// Provider-neutral message used by the Agent internally.
 /// Converted to provider-specific wire formats at the LLM call boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +304,10 @@ pub struct CanonicalMessage {
     /// the echo. Other consumers treat the list as opaque.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking_blocks: Vec<serde_json::Value>,
+    /// Structured inject origin (Phase 6 / B3). Skipped on the wire by
+    /// adapters; optional so legacy snapshots deserialize cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<InjectSource>,
 }
 
 impl CanonicalMessage {
@@ -276,6 +320,7 @@ impl CanonicalMessage {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 
@@ -288,11 +333,20 @@ impl CanonicalMessage {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 
     pub fn user_text(text: impl Into<String>) -> Self {
         Self::user(vec![ContentPart::text(text)])
+    }
+
+    /// User inject with structured origin (Phase 6 / B3). Content should
+    /// already include the rendered prefix when destined for the LLM.
+    pub fn user_with_source(content: Vec<ContentPart>, source: InjectSource) -> Self {
+        let mut msg = Self::user(content);
+        msg.source = Some(source);
+        msg
     }
 
     pub fn assistant(
@@ -310,6 +364,7 @@ impl CanonicalMessage {
             reasoning,
             web_search_calls,
             thinking_blocks,
+            source: None,
         }
     }
 
@@ -322,6 +377,7 @@ impl CanonicalMessage {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 }
@@ -590,6 +646,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::System);
@@ -608,6 +665,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         };
         assert!(msg.tool_call_id.is_some());
     }
@@ -626,6 +684,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         };
 
         assert_eq!(msg.tool_calls.unwrap().len(), 1);
@@ -641,6 +700,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         };
 
         assert_eq!(msg.role, CanonicalRole::Tool);
@@ -828,6 +888,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -850,6 +911,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         };
 
         let json = serde_json::to_string(&msg).unwrap();

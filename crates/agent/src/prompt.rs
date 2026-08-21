@@ -54,11 +54,36 @@ impl SystemPromptBuilder {
         }
     }
 
+    /// Build the system prompt.
+    ///
+    /// **Authority (memory S1 / ReAct B1-1):**
+    /// - `canonical` (built by the caller) is the session LLM truth.
+    /// - Facts / episodes recalled here are **cross-session** only —
+    ///   pass `exclude_session_id` so the current session is not restated
+    ///   under "Past conversation excerpts".
+    /// - `conversation_history` is Additional context for the system prompt;
+    ///   callers must not re-inject the first user turn already placed in
+    ///   canonical (see `layer::run_session`).
+    /// - `history` (`ReActStep`s) is unused in production (`&[]`); "Steps so
+    ///   far" remains for tests/debug only — do not revive as a second
+    ///   transcript channel.
     pub async fn build(
         &self,
         session_description: &str,
         history: &[ReActStep],
         conversation_history: &[String],
+    ) -> String {
+        self.build_for_session(session_description, history, conversation_history, None)
+            .await
+    }
+
+    /// Like [`Self::build`], excluding episodes belonging to `exclude_session_id` (S2).
+    pub async fn build_for_session(
+        &self,
+        session_description: &str,
+        history: &[ReActStep],
+        conversation_history: &[String],
+        exclude_session_id: Option<&str>,
     ) -> String {
         let sections = self.get_or_build_sections().await;
 
@@ -143,13 +168,29 @@ impl SystemPromptBuilder {
                     }
                     let episode_hits = {
                         let db = self.db.clone();
+                        let exclude = exclude_session_id.map(str::to_string);
                         db.run_blocking(move |db| {
-                            db.search_embeddings(entity_kind::EPISODE, &vec, 5)
+                            let hits = db.search_embeddings(entity_kind::EPISODE, &vec, 8)?;
+                            let filtered: Vec<(String, f64)> = hits
+                                .into_iter()
+                                .filter(|(e, _)| {
+                                    let Some(ex) = exclude.as_deref() else {
+                                        return true;
+                                    };
+                                    match db.episode_session_id(&e.entity_id) {
+                                        Ok(Some(sid)) => sid != ex,
+                                        _ => true,
+                                    }
+                                })
+                                .map(|(e, s)| (e.text, s))
+                                .take(5)
+                                .collect();
+                            Ok::<_, anyhow::Error>(filtered)
                         })
                         .await
                         .unwrap_or_default()
                     };
-                    vector_episodes = episode_hits.into_iter().map(|(e, s)| (e.text, s)).collect();
+                    vector_episodes = episode_hits;
                 }
             }
         }
@@ -296,7 +337,7 @@ impl SystemPromptBuilder {
         let episode_terms = haven_common::text::memory_recall_term_sample(&session_terms, 6);
         let kw_hits = self
             .db
-            .search_episodes_by_keywords(&episode_terms, 5)
+            .search_episodes_by_keywords_excluding(&episode_terms, 5, exclude_session_id)
             .unwrap_or_default();
         let mut episode_texts: Vec<String> = Vec::new();
         let mut seen_episodes: HashSet<String> = HashSet::new();
@@ -609,6 +650,61 @@ mod tests {
         // model needed).
         assert!(prompt.contains("Past conversation excerpts"));
         assert!(prompt.contains("dark theme design last week"));
+    }
+
+    #[tokio::test]
+    async fn past_excerpts_exclude_current_session() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_prompt_exclude_ses_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let current = db.create_session("current", "").unwrap();
+        let past = db.create_session("past", "").unwrap();
+        db.add_message(
+            &current.id,
+            "user",
+            "dark theme preference in the CURRENT session only",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.add_message(
+            &past.id,
+            "user",
+            "dark theme preference from a PAST session",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+
+        let tools = Arc::new(ToolsManager::new());
+        let builder = SystemPromptBuilder::new(tools, db);
+        let prompt = builder
+            .build_for_session("set up dark theme", &[], &[], Some(&current.id))
+            .await;
+
+        assert!(prompt.contains("PAST session"));
+        assert!(
+            !prompt.contains("CURRENT session only"),
+            "same-session user text must not appear in Past excerpts; prompt={prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn additional_context_section_renders_when_provided() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_prompt_addl_ctx_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let tools = Arc::new(ToolsManager::new());
+        let builder = SystemPromptBuilder::new(tools, db);
+        let prompt = builder
+            .build("task", &[], &["[assistant] prior reply".into()])
+            .await;
+        assert!(prompt.contains("Additional context:"));
+        assert!(prompt.contains("[assistant] prior reply"));
     }
 
     #[tokio::test]

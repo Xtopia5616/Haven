@@ -269,11 +269,7 @@ impl AgentLayer {
             && !is_orphan_rollback
             && let Some(target) = target_msg
         {
-            let prefixes = [
-                "Additional context from user: ",
-                "Answer to your previous question: ",
-                "Steering: ",
-            ];
+            let prefixes = haven_common::types::InjectSource::match_prefixes();
             let matches_target = |t: &str| {
                 t == target.content
                     || prefixes

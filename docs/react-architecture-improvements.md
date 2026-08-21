@@ -103,13 +103,13 @@ User / STT
 
 ### B. 状态权威（transcript）
 
-#### B1. 收敛多权威源 `[待办]` · P0（长期，分阶段）
+#### B1. 收敛多权威源 `[进行中]` · P0（长期，分阶段）
 
-- **问题**：模型上下文 `canonical`、`history: Vec<ReActStep>`、DB `messages`、`session_steps` 四处手写对齐；ID 规范（`msg-*`/`step-*` 共用）加剧复杂度。
+- **问题**：模型上下文 `canonical`、`history: Vec<ReActStep>`、DB `messages`/`session_steps` 四处手写对齐；ID 规范（`msg-*`/`step-*` 共用）加剧复杂度。
 - **方向（分阶段）**：
-  1. 短期：规定 **canonical 为 LLM 唯一权威**；history 只作派生/调试，禁止独立业务分支依赖 history 语义。
-  2. 中期：引入 append-only `TranscriptEvent`（Thought / ToolCall / ToolResult / UserInject / CompactSummary），投影到 canonical 与 UI。
-  3. 长期：snapshot = transcript cursor，而非并行拷贝两份数组。
+  1. 短期：规定 **canonical 为 LLM 唯一权威**；history 只作派生/调试，禁止独立业务分支依赖 history 语义。 `[完成]` Phase 6：`ReActSnapshot` / `prompt.rs` 契约注释；生产仍 `history=&[]`。
+  2. 中期：引入 append-only `TranscriptEvent`（Thought / ToolCall / ToolResult / UserInject / CompactSummary），投影到 canonical 与 UI。 `[完成]` Phase 6：`react/transcript.rs`；CompactSummary 预留未接 compact 路径。
+  3. 长期：snapshot = transcript cursor，而非并行拷贝两份数组。 `[待办]`
 - **风险**：高；受 `AGENTS.md` ID 规范与前端气泡关联约束。禁止一次大改。
 - **验收**：新代码路径不再「改 canonical 又改 history 两套逻辑」；resume 只从一条投影重建。
 
@@ -120,10 +120,11 @@ User / STT
 - **风险**：snapshot serde 与 rollback。
 - **验收**：并行工具一轮对应一组事件，无「假 step_number 膨胀」。
 
-#### B3. 注入前缀字符串 → 结构化来源 `[待办]` · P1
+#### B3. 注入前缀字符串 → 结构化来源 `[完成]` · P1
 
 - **问题**：canonical 用 `"Steering:"` / `"Additional context…"` / `"Answer…"` 前缀；DB 存原文；靠 `saved_at` 恢复（`inject_pending_context` / `push_user_context`）。
 - **方向**：消息元数据 `source: steering | follow_up | answer | action_result`；对 LLM 的渲染层再加前缀。
+- **落地（Phase 6）**：`haven_common::InjectSource` + `CanonicalMessage.source`；`render_prefix` / `match_prefixes` 单源；inject 仍把前缀写入 content（行为冻结）；adapters 忽略 `source`。Wire-only 渲染（前缀仅在适配层）留后续。
 - **风险**：provider 可见格式变化需回归。
 - **验收**：resume/去重只按 `message_id`/`saved_at`，从不比字符串内容。
 
@@ -369,10 +370,11 @@ trait LoopHooks: Send + Sync {
 
 ### H. 事件与持久化
 
-#### H1. 统一 `apply(TranscriptEvent)` `[待办]` · P1
+#### H1. 统一 `apply(TranscriptEvent)` `[完成]` · P1
 
 - **问题**：`emit_thought_from` 等「emit」内写 DB（`event.rs`）；Action 先 `begin_action_step` 再 emit——散落且失败模式不一。
 - **方向**：单一 `apply`：持久化（保持「行先于卡」）→ 再投影事件。禁止各处手写双写。
+- **落地（Phase 6）**：`ReActEngine::apply_transcript`；Thought / UserInject 全路径经 apply；ToolCall/ToolResult 投影经 apply（Action/Observation 卡仍由 tool_batch 先 emit，confirm/ask 交织复杂）；`snapshot_io` 流式 snap 仍直调 `emit_thought_from`（与 persist 同路径）。
 - **风险**：前端时序。
 - **验收**：所有 thought/action/observation 只经 `apply`；部分失败有明确错误路径。
 
@@ -401,10 +403,11 @@ trait LoopHooks: Send + Sync {
 - **风险**：低。
 - **验收**：一次 turn 的 trace 树可辨阶段。
 
-#### I3. Msg-id / Identity 集中服务 `[待办]` · P1
+#### I3. Msg-id / Identity 集中服务 `[完成]` · P1
 
 - **问题**：`ensure_msg_id` / `block_msg_id` / action `step-*` mint 分散，易漏（`AGENTS.md` ID 规范）。
 - **方向**：`IdentityMap` 供 stream、persist、events 共用。
+- **落地（Phase 6）**：`react/identity.rs`；`ReActEngine` 委托 `ensure`/`peek`/`block`/`clear`；工具卡 `step-*` mint 仍在 tool_batch（与流式气泡不同生命周期）。
 - **风险**：前端合并回归。
 - **验收**：同一 thought 流式气泡 id 与落库 id 始终一致；有单测。
 
@@ -447,7 +450,7 @@ trait LoopHooks: Send + Sync {
 | **3** | Hook 化 | G1, G2, 侧车迁 compact/infer/inbox | P0 |
 | **4** | 队列收敛 | D1, C3, C5, F2 | P0–P1 |
 | **5** | 工具与确认 | E3, E1, G3 | P1 |
-| **6** | Transcript 收敛 | B1 阶段1–2, B3, H1, I3 | P1 |
+| **6** | Transcript 收敛 | B1 阶段1–2, B3, H1, I3 | P1 · `[完成]` 2026-08-21（B1-3 / CompactSummary 接 compact / Action 卡并入 apply 留 6.1） |
 | **7** | 清理与加固 | A3–A5, B4, F3–F5, G4–G7, C4, C6, D2–D3, E4–E5, J1–J2, I2 | P1–P2 |
 
 每期建议工作流：
@@ -492,3 +495,4 @@ trait LoopHooks: Send + Sync {
 | 2026-08-20 | G2 / 参考链对齐 `memory-architecture.md` §三协作短期 S4 / 长期 L3 |
 | 2026-08-20 | **Phase 4**：D1 队列收敛为 steering + follow_up（`FollowUp` alias、`follow_up_queue`、旧 `add_supplement*` 保留）；C3 去掉 steering→answer 转队列，改为原地 `mark_user_queues_as_answer`；C5 snapshot/`SessionExecutor` 显式 `awaiting_answer: AskPending`；F2 DB/wire `paused_awaiting_answer`（SCHEMA_VERSION=3）+ UI `isPausedStatus`。 |
 | 2026-08-20 | **Phase 5**：G3 `ResponsePolicy` + `LoopHooks::after_llm`（empty/cut-off 短语迁出循环）；E1 `StreamSession`/`StepResponse`（循环只消费结果，重试复用 msg-id）；E3 `before_tool`→`NeedConfirm` 预检，普通工具先跑完再 `PausedAwaitingConfirm` pause，`resolve_confirmation` 写 decision 后 `finish_confirm_batch` 再执行；SCHEMA_VERSION=4 + UI `paused_awaiting_confirm`。调度路径仍保留 bounded `await_confirmation`。 |
+| 2026-08-21 | **Phase 6**：B1-1/2 + B3 + H1 + I3。`TranscriptEvent`/`apply_transcript`；`InjectSource` + `CanonicalMessage.source`；`IdentityMap`；对齐 memory S1/S2（`exclude_session_id`、Additional context 不去重首条 user）。`cargo test -p haven-agent --lib` 233 全绿。 |

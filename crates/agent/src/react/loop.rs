@@ -466,6 +466,7 @@ impl ReActEngine {
                             reasoning: None,
                             web_search_calls: Vec::new(),
                             thinking_blocks: Vec::new(),
+                            source: None,
                         });
                         match stream.retry(&retry_messages).await {
                             Ok(retry_resp) => {
@@ -567,22 +568,22 @@ impl ReActEngine {
 
             if let Some(ref t) = thought {
                 let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
-                EventDispatcher::emit_thought_from(
-                    &emitter,
-                    session_id,
-                    t,
+                let step_ctx = StepCtx {
+                    session_id: session_id.to_string(),
                     step_num,
                     run_id,
-                    &message_id,
-                    &self.db,
+                    emitter: emitter.clone(),
+                };
+                self.apply_transcript(
+                    &step_ctx,
+                    TranscriptEvent::Thought {
+                        text: t.clone(),
+                        message_id,
+                    },
+                    canonical,
+                    history,
                 )
                 .await;
-                history.push(ReActStep {
-                    step_number: step_num,
-                    thought: Some(t.clone()),
-                    action: None,
-                    observation: None,
-                });
             }
 
             // ── Web search round-trip ─────────────────────────────────────

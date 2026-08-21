@@ -5,7 +5,7 @@
 use super::hooks::BeforeToolAction;
 use super::*;
 use crate::types::{Action, BranchPoint, ConfirmPending, ConfirmPendingTool, ReActStep};
-use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
+use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall};
 use haven_tools::is_silent_action;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -251,17 +251,30 @@ impl ReActEngine {
             // carries both: the `web_search_call` items round-trip in the
             // same assistant message so the next request restores the
             // search context alongside the function tool results.
-            canonical.push(CanonicalMessage::assistant(
-                vec![ContentPart::text(push_text.to_string())],
-                tool_calls,
-                if response.thinking_blocks.is_empty() {
-                    response.reasoning.clone()
-                } else {
-                    None
+            // Phase 6 / H1: project via apply (cards already emitted above).
+            let step_ctx = StepCtx {
+                session_id: session_id.to_string(),
+                step_num,
+                run_id,
+                emitter: emitter.clone(),
+            };
+            self.apply_transcript(
+                &step_ctx,
+                TranscriptEvent::ToolCall {
+                    text: push_text.to_string(),
+                    tool_calls: tool_calls.unwrap_or_default(),
+                    reasoning: if response.thinking_blocks.is_empty() {
+                        response.reasoning.clone()
+                    } else {
+                        None
+                    },
+                    web_search_calls: response.web_search_calls.clone(),
+                    thinking_blocks: response.thinking_blocks.clone(),
                 },
-                response.web_search_calls.clone(),
-                response.thinking_blocks.clone(),
-            ));
+                canonical,
+                history,
+            )
+            .await;
         }
 
         self.save_branch_point(
@@ -347,24 +360,18 @@ impl ReActEngine {
                             step_id,
                         })
                         .await;
-                    if let Some(last) = history
-                        .last_mut()
-                        .filter(|s| s.step_number == step_num && s.action.is_none())
-                    {
-                        last.action = Some((*action).clone());
-                        last.observation = Some(error.clone());
-                    } else {
-                        history.push(ReActStep {
-                            step_number: step_num,
-                            thought: None,
-                            action: Some((*action).clone()),
-                            observation: Some(error.clone()),
-                        });
-                    }
-                    canonical.push(CanonicalMessage::tool(
-                        vec![ContentPart::text(error)],
-                        action.tool_call_id.clone(),
-                    ));
+                    self.apply_transcript(
+                        &gate_ctx,
+                        TranscriptEvent::ToolResult {
+                            canonical_observation: error.clone(),
+                            history_observation: error,
+                            tool_call_id: action.tool_call_id.clone(),
+                            action: (*action).clone(),
+                        },
+                        canonical,
+                        history,
+                    )
+                    .await;
                     completed_tool_keys.insert(tool_key(action));
                 }
                 BeforeToolAction::NeedConfirm { risk_level } => {
@@ -556,24 +563,24 @@ impl ReActEngine {
                                 step_id,
                             })
                             .await;
-                        canonical.push(CanonicalMessage::tool(
-                            vec![ContentPart::text(interrupted_text.clone())],
-                            action.tool_call_id.clone(),
-                        ));
-                        if let Some(step) = history
-                            .iter_mut()
-                            .find(|s| s.step_number == step_num && s.action.is_none())
-                        {
-                            step.action = Some((*action).clone());
-                            step.observation = Some(interrupted_text);
-                        } else {
-                            history.push(ReActStep {
-                                step_number: step_num,
-                                thought: None,
-                                action: Some((*action).clone()),
-                                observation: Some(interrupted_text),
-                            });
-                        }
+                        let proj_ctx = StepCtx {
+                            session_id: session_id.to_string(),
+                            step_num,
+                            run_id,
+                            emitter: emitter.clone(),
+                        };
+                        self.apply_transcript(
+                            &proj_ctx,
+                            TranscriptEvent::ToolResult {
+                                canonical_observation: interrupted_text.clone(),
+                                history_observation: interrupted_text,
+                                tool_call_id: action.tool_call_id.clone(),
+                                action: (*action).clone(),
+                            },
+                            canonical,
+                            history,
+                        )
+                        .await;
                     }
                     // A rollback that lands mid-batch must find the DB row
                     // at the pre-batch branch point (the response and
@@ -669,37 +676,27 @@ impl ReActEngine {
                         })
                         .await;
 
-                    if let Some(last) = history
-                        .last_mut()
-                        .filter(|s| s.step_number == step_num && s.action.is_none())
-                    {
-                        // First tool result of this step: fill the thought
-                        // entry pushed at step start.
-                        last.action = Some(action.clone());
-                        last.observation = Some(display_observation.clone());
-                    } else {
-                        // A later tool of a multi-tool step, or a tool-only
-                        // step (thought was None, so no entry was pushed at
-                        // step start): append a fresh entry instead of
-                        // overwriting the previous entry. The old behavior
-                        // kept only the LAST completed tool per step (and
-                        // could clobber the PREVIOUS step's entry when the
-                        // response carried no thought), silently dropping
-                        // every other tool from the step history — which
-                        // also made restore_per_session_tools miss parallel
-                        // load_skill/load_mcp registrations on restart.
-                        history.push(ReActStep {
-                            step_number: step_num,
-                            thought: None,
-                            action: Some(action.clone()),
-                            observation: Some(display_observation),
-                        });
-                    }
-
-                    canonical.push(CanonicalMessage::tool(
-                        vec![ContentPart::text(step_result)],
-                        action.tool_call_id.clone(),
-                    ));
+                    // Phase 6 / H1: history + canonical projection via apply.
+                    // First tool of a step fills the thought entry; later
+                    // tools append (apply's last_mut filter handles that).
+                    let proj_ctx = StepCtx {
+                        session_id: session_id.to_string(),
+                        step_num,
+                        run_id,
+                        emitter: emitter.clone(),
+                    };
+                    self.apply_transcript(
+                        &proj_ctx,
+                        TranscriptEvent::ToolResult {
+                            canonical_observation: step_result,
+                            history_observation: display_observation,
+                            tool_call_id: action.tool_call_id.clone(),
+                            action: action.clone(),
+                        },
+                        canonical,
+                        history,
+                    )
+                    .await;
                     completed_tool_keys.insert(tool_key(&action));
                 }
             }
@@ -1014,24 +1011,24 @@ impl ReActEngine {
                         step_id: tool.step_id.clone(),
                     })
                     .await;
-                if let Some(last) = history
-                    .last_mut()
-                    .filter(|s| s.step_number == step_num && s.action.is_none())
-                {
-                    last.action = Some(action.clone());
-                    last.observation = Some(display_observation);
-                } else {
-                    history.push(ReActStep {
-                        step_number: step_num,
-                        thought: None,
-                        action: Some(action),
-                        observation: Some(display_observation),
-                    });
-                }
-                canonical.push(CanonicalMessage::tool(
-                    vec![ContentPart::text(text)],
-                    tool_call_id,
-                ));
+                let proj_ctx = StepCtx {
+                    session_id: session_id.to_string(),
+                    step_num,
+                    run_id,
+                    emitter: emitter.clone(),
+                };
+                self.apply_transcript(
+                    &proj_ctx,
+                    TranscriptEvent::ToolResult {
+                        canonical_observation: text,
+                        history_observation: display_observation,
+                        tool_call_id,
+                        action,
+                    },
+                    canonical,
+                    history,
+                )
+                .await;
             } else {
                 let error = format!(
                     "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
@@ -1061,24 +1058,24 @@ impl ReActEngine {
                         step_id: tool.step_id.clone(),
                     })
                     .await;
-                if let Some(last) = history
-                    .last_mut()
-                    .filter(|s| s.step_number == step_num && s.action.is_none())
-                {
-                    last.action = Some(action.clone());
-                    last.observation = Some(error.clone());
-                } else {
-                    history.push(ReActStep {
-                        step_number: step_num,
-                        thought: None,
-                        action: Some(action),
-                        observation: Some(error.clone()),
-                    });
-                }
-                canonical.push(CanonicalMessage::tool(
-                    vec![ContentPart::text(error)],
-                    tool_call_id,
-                ));
+                let proj_ctx = StepCtx {
+                    session_id: session_id.to_string(),
+                    step_num,
+                    run_id,
+                    emitter: emitter.clone(),
+                };
+                self.apply_transcript(
+                    &proj_ctx,
+                    TranscriptEvent::ToolResult {
+                        canonical_observation: error.clone(),
+                        history_observation: error,
+                        tool_call_id,
+                        action,
+                    },
+                    canonical,
+                    history,
+                )
+                .await;
             }
         }
 

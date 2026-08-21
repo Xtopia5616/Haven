@@ -273,6 +273,33 @@ impl Database {
         Ok(summary)
     }
 
+    /// Owning session for an episode entity (message or compaction summary).
+    /// Used to exclude the current session from cross-session recall (S2).
+    pub fn episode_session_id(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.conn();
+        let from_msg = match conn.query_row(
+            "SELECT session_id FROM messages WHERE id = ?1",
+            rusqlite::params![entity_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(s) => Some(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        if from_msg.is_some() {
+            return Ok(from_msg);
+        }
+        match conn.query_row(
+            "SELECT session_id FROM memory_episodes WHERE id = ?1",
+            rusqlite::params![entity_id],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(s) => Ok(Some(s)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Brute-force cosine search over one memory domain. Data volumes here are
     /// small (hundreds of facts/episodes), so a linear scan is fast and avoids
     /// a native ANN dependency. Returns up to `limit` hits ordered by
@@ -301,32 +328,65 @@ impl Database {
     /// cross-session recall works even when no `embedding_model` is configured.
     /// Terms are matched as case-insensitive substrings; results are ranked by
     /// the number of distinct terms matched, then recency.
+    ///
+    /// When `exclude_session_id` is set (Phase 6 / S2), rows from that session
+    /// are omitted so the current conversation is not recalled as "past".
     pub fn search_episodes_by_keywords(
         &self,
         terms: &[&str],
         limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        self.search_episodes_by_keywords_excluding(terms, limit, None)
+    }
+
+    /// Like [`Self::search_episodes_by_keywords`], with optional same-session exclusion.
+    pub fn search_episodes_by_keywords_excluding(
+        &self,
+        terms: &[&str],
+        limit: usize,
+        exclude_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<String>> {
         let terms: Vec<&str> = terms.iter().filter(|t| !t.is_empty()).copied().collect();
         if terms.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.conn();
-        // Candidate pool is bounded to the most recent episodes (the oldest
+        // Candidate pool is bounded to the most recent episodes (the newest
         // 1000 user messages by creation time, plus every stored compaction
-        // summary), matching how the vector index behaves.
-        let mut stmt = conn.prepare(
-            "SELECT content, created_at FROM (
-                 SELECT content, created_at FROM messages WHERE role = 'user'
-                 UNION ALL
-                 SELECT summary, created_at FROM memory_episodes
-             )
-             ORDER BY created_at DESC LIMIT 1000",
-        )?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        // summary), matching how the vector index behaves. Same-session rows
+        // are filtered when `exclude_session_id` is provided (S2).
+        let candidates: Vec<(String, String)> = if let Some(sid) = exclude_session_id {
+            let mut stmt = conn.prepare(
+                "SELECT content, created_at FROM (
+                     SELECT content, created_at FROM messages
+                     WHERE role = 'user' AND session_id != ?1
+                     UNION ALL
+                     SELECT summary, created_at FROM memory_episodes
+                     WHERE session_id != ?1
+                 )
+                 ORDER BY created_at DESC LIMIT 1000",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![sid], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT content, created_at FROM (
+                     SELECT content, created_at FROM messages WHERE role = 'user'
+                     UNION ALL
+                     SELECT summary, created_at FROM memory_episodes
+                 )
+                 ORDER BY created_at DESC LIMIT 1000",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
         let lower_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
         let mut scored: Vec<(usize, String)> = Vec::new();
-        for row in rows {
-            let (content, _created) = row?;
+        for (content, _created) in candidates {
             let tl = content.to_lowercase();
             let hits = lower_terms
                 .iter()
@@ -645,6 +705,35 @@ mod tests {
         db.add_message(&session.id, "user", "hello world", Some("text"), None)
             .unwrap();
         assert!(db.search_episodes_by_keywords(&[], 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_episodes_by_keywords_excludes_current_session() {
+        let db = db();
+        let current = db.create_session("current", "").unwrap();
+        let past = db.create_session("past", "").unwrap();
+        db.add_message(
+            &current.id,
+            "user",
+            "I discussed the dark theme in this session",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.add_message(
+            &past.id,
+            "user",
+            "I discussed the dark theme last week",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        let hits = db
+            .search_episodes_by_keywords_excluding(&["dark", "theme"], 5, Some(&current.id))
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].contains("last week"));
+        assert!(!hits.iter().any(|h| h.contains("this session")));
     }
 
     #[test]

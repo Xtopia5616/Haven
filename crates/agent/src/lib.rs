@@ -1675,6 +1675,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1684,6 +1685,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::Assistant,
@@ -1697,6 +1699,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let history = vec![ReActStep {
@@ -1852,6 +1855,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }
     }
 
@@ -3954,6 +3958,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             }],
             history: vec![],
             step_number: 1,
@@ -4062,6 +4067,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let snapshot = ReActSnapshot {
             canonical: canonical.clone(),
@@ -4140,6 +4146,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4149,6 +4156,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let mut branch_points = HashMap::new();
@@ -4246,6 +4254,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let mut branch_points = HashMap::new();
         branch_points.insert(
@@ -4332,6 +4341,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let mut branch_points = HashMap::new();
         branch_points.insert(
@@ -4408,6 +4418,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4417,6 +4428,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let mut branch_points = HashMap::new();
@@ -4580,6 +4592,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4589,6 +4602,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let mut branch_points = HashMap::new();
@@ -4687,6 +4701,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -4696,6 +4711,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             // The steering was pushed into the canonical with its prefix.
             CanonicalMessage {
@@ -4706,6 +4722,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let mut branch_points = HashMap::new();

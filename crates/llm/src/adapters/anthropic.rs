@@ -1156,6 +1156,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1165,6 +1166,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let (out, system) = AnthropicAdapter::convert_messages(msgs);
@@ -1186,6 +1188,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::System,
@@ -1195,6 +1198,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
             CanonicalMessage {
                 role: CanonicalRole::User,
@@ -1204,6 +1208,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             },
         ];
         let (_, system) = AnthropicAdapter::convert_messages(msgs);
@@ -1220,6 +1225,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -1243,6 +1249,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -1274,6 +1281,7 @@ mod tests {
             reasoning: Some("let me plan this out".into()),
             web_search_calls: Vec::new(),
             thinking_blocks: vec![thinking.clone()],
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert_eq!(out.len(), 1);
@@ -1491,6 +1499,7 @@ mod tests {
                 // Layout claims two thinking blocks but only one exists.
                 json!({"__layout": [[0, 0, 0], [0, 1, 0]]}),
             ],
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         let content = out[0].content.as_array().unwrap();
@@ -1518,6 +1527,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: vec![thinking.clone(), json!({"__layout": [[0, 0, 10]]})],
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         let content = out[0].content.as_array().unwrap();
@@ -1541,6 +1551,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         let content = out[0].content.as_array().unwrap();
@@ -1560,6 +1571,7 @@ mod tests {
             reasoning: None,
             web_search_calls: Vec::new(),
             thinking_blocks: Vec::new(),
+            source: None,
         }];
         let (out, _) = AnthropicAdapter::convert_messages(msgs);
         assert!(out.is_empty());
@@ -1583,6 +1595,7 @@ mod tests {
                 reasoning: None,
                 web_search_calls: Vec::new(),
                 thinking_blocks: Vec::new(),
+                source: None,
             }],
             Vec::new(),
             true,
