@@ -13,6 +13,7 @@
 	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { isPausedStatus } from '$lib/sessionStatus.ts';
+	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
 	import Logo from '$lib/Logo.svelte';
@@ -52,13 +53,30 @@
 		history: initialTab === 'history',
 		settings: initialTab === 'settings',
 	});
+	// While a leave-settings confirm is in flight, ignore URL-driven tab
+	// sync so a concurrent `?tab=` change cannot race past the dialog.
+	let leaveSettingsPending = false;
 
 	/** @param {string} id */
-	function switchTab(id) {
-		if (id === activeTab) return;
+	function applyTab(id) {
 		activeTab = id;
 		visited[id] = true;
 		goto('/?tab=' + id, { replaceState: true });
+	}
+
+	/** @param {string} id */
+	async function switchTab(id) {
+		if (id === activeTab || leaveSettingsPending) return;
+		if (activeTab === 'settings' && id !== 'settings') {
+			leaveSettingsPending = true;
+			try {
+				const ok = await confirmLeaveSettingsIfNeeded();
+				if (!ok) return;
+			} finally {
+				leaveSettingsPending = false;
+			}
+		}
+		applyTab(id);
 	}
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => theme = v.theme));
@@ -188,6 +206,25 @@
 		}
 		const tabParam = url.searchParams.get('tab');
 		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
+		if (t === activeTab) {
+			visited[t] = true;
+			return;
+		}
+		if (leaveSettingsPending) return;
+		if (activeTab === 'settings' && t !== 'settings') {
+			// External / deep-link navigation away from dirty settings: revert
+			// the URL and run the same leave prompt as a tab click.
+			goto('/?tab=settings', { replaceState: true });
+			leaveSettingsPending = true;
+			confirmLeaveSettingsIfNeeded()
+				.then((ok) => {
+					if (ok) applyTab(t);
+				})
+				.finally(() => {
+					leaveSettingsPending = false;
+				});
+			return;
+		}
 		activeTab = t;
 		visited[t] = true;
 	});

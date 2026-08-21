@@ -411,9 +411,14 @@ impl ToolsManager {
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Register all tools from an MCP server as per-session tool adapters.
+    /// Register tools from an MCP server as per-session adapters.
     /// Looks up the client by server name and registers `McpToolAdapter`
-    /// for each cached tool. Returns `true` if the client was found.
+    /// for each selected cached tool. Returns `true` if the client was found.
+    ///
+    /// `tool_names`: when `Some` and non-empty, only those raw MCP tool names
+    /// are registered (resume of a selective `load_mcp`). When `None`, every
+    /// cached tool is registered — same all-or-nothing contract as an
+    /// unfiltered live `load_mcp`.
     ///
     /// After a restart the server may still be connecting in the background
     /// (`discover_all`), so the tools cache can be empty even though the
@@ -422,14 +427,30 @@ impl ToolsManager {
     /// zero tools and silently lose the session's MCP access. A server that is
     /// definitively offline gives up early instead of stalling the resume.
     ///
-    /// Defense in depth for resume: all-or-nothing per server under the
-    /// session write lock (same contract as live `load_mcp`). If the server's
+    /// Defense in depth for resume: all-or-nothing for the selected set under
+    /// the session write lock (same contract as live `load_mcp`). If the
     /// *net-new* tools would exceed the budget, none are registered.
-    pub async fn register_mcp_for_session(&self, session_id: &str, server_name: &str) -> bool {
+    pub async fn register_mcp_for_session(
+        &self,
+        session_id: &str,
+        server_name: &str,
+        tool_names: Option<&[String]>,
+    ) -> bool {
         let Some(client) = self.mcp_manager.get_client(server_name).await else {
             return false;
         };
-        let tools = client.wait_for_tools(Duration::from_secs(3)).await;
+        let all_tools = client.wait_for_tools(Duration::from_secs(3)).await;
+        let tools = match tool_names {
+            Some(names) if !names.is_empty() => {
+                let want: std::collections::HashSet<&str> =
+                    names.iter().map(|s| s.as_str()).collect();
+                all_tools
+                    .into_iter()
+                    .filter(|info| want.contains(info.name.as_str()))
+                    .collect::<Vec<_>>()
+            }
+            _ => all_tools,
+        };
         let max = self
             .context_limits
             .read()

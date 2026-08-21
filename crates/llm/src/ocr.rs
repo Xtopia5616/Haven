@@ -3,7 +3,8 @@
 //! Unified dispatch entry point: [`build_ocr_client`] maps an `OcrConfig`
 //! provider id to a concrete client (the OCR counterpart of `stt.rs`).
 //! Providers:
-//! - `none`: no client
+//! - `none`: no client (extract intent passes the image through)
+//! - `llm`: extract via the router's `image_model` / vision role
 //! - `baidu`: Baidu 通用文字识别（标准版）
 //! - `azure`: Azure AI Vision (Computer Vision 3.2 OCR)
 //! - `tencent`: Tencent Cloud 通用印刷体识别
@@ -11,16 +12,21 @@
 //! Every client takes raw image bytes (base64/raw body per provider wire
 //! format) and returns [`OcrResult`]; providers that report per-word
 //! confidence (Baidu, Tencent) fill `confidence` so the gateway's confidence
-//! gate can fall back to the main model, providers that do not (Azure)
+//! gate can fall back to the main model, providers that do not (Azure / llm)
 //! leave it `None` and fall back on error / empty text instead.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
 use haven_common::config::OcrConfig;
+use haven_common::prompts::OCR_SYSTEM_PROMPT;
+use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::LlmRouter;
+use crate::media::multimodal;
 
 /// Outcome of an OCR call: recognized text plus an optional confidence
 /// (0.0-1.0) reported by the provider. `None` confidence means the provider
@@ -41,16 +47,63 @@ pub trait OcrClient: Send + Sync {
 
 /// Build the OCR client for a given config. Returns `None` when the
 /// configured provider is `none`, and an error for an unknown provider id.
-pub fn build_ocr_client(cfg: &OcrConfig) -> Result<Option<Box<dyn OcrClient>>> {
+/// `llm` uses the router's vision role (same path as gateway fallback).
+pub fn build_ocr_client(
+    router: Arc<LlmRouter>,
+    cfg: &OcrConfig,
+) -> Result<Option<Box<dyn OcrClient>>> {
     let timeout = Duration::from_secs(cfg.timeout_secs);
     let client: Box<dyn OcrClient> = match cfg.provider.as_str() {
         "none" => return Ok(None),
+        "llm" => Box::new(LlmOcrAdapter::new(router)),
         "baidu" => Box::new(BaiduOcrClient::new(cfg, timeout)),
         "azure" => Box::new(AzureOcrClient::new(cfg, timeout)),
         "tencent" => Box::new(TencentOcrClient::new(cfg, timeout)),
         other => anyhow::bail!("unknown OCR provider: {}", other),
     };
     Ok(Some(client))
+}
+
+/// OCR adapter that extracts text through the router's vision role
+/// (`image_model` / default). Mirrors [`crate::stt::LlmSttAdapter`].
+pub struct LlmOcrAdapter {
+    router: Arc<LlmRouter>,
+}
+
+impl LlmOcrAdapter {
+    pub fn new(router: Arc<LlmRouter>) -> Self {
+        Self { router }
+    }
+}
+
+#[async_trait]
+impl OcrClient for LlmOcrAdapter {
+    async fn recognize(&self, image_bytes: &[u8], media_type: &str) -> Result<OcrResult> {
+        let role = self.router.vision_role().await;
+        let messages = vec![
+            CanonicalMessage::system(vec![ContentPart::text(OCR_SYSTEM_PROMPT)]),
+            CanonicalMessage {
+                role: CanonicalRole::User,
+                content: vec![multimodal::image_part_from_bytes(media_type, image_bytes)],
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+                source: None,
+                id: None,
+            },
+        ];
+        let resp = self
+            .router
+            .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
+            .await
+            .map_err(|e| anyhow::anyhow!("vision OCR failed: {e}"))?;
+        Ok(OcrResult {
+            text: resp.text.trim().to_string(),
+            confidence: None,
+        })
+    }
 }
 
 fn media_http_client(timeout: Duration) -> reqwest::Client {
@@ -503,13 +556,29 @@ impl OcrClient for TencentOcrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::OcrConfig;
+    use crate::LlmRouter;
+    use haven_common::config::{OcrConfig, RouterConfig};
     use std::time::Duration;
 
+    fn dummy_router() -> Arc<LlmRouter> {
+        Arc::new(LlmRouter::new(RouterConfig::default()))
+    }
+
     #[test]
-    fn ocr_default_cfg_dispatches_none() {
+    fn ocr_default_cfg_dispatches_llm() {
         let cfg = OcrConfig::default();
-        let client = build_ocr_client(&cfg).unwrap();
+        assert_eq!(cfg.provider, "llm");
+        let client = build_ocr_client(dummy_router(), &cfg).unwrap();
+        assert!(client.is_some());
+    }
+
+    #[test]
+    fn ocr_none_provider_returns_none() {
+        let cfg = OcrConfig {
+            provider: "none".into(),
+            ..Default::default()
+        };
+        let client = build_ocr_client(dummy_router(), &cfg).unwrap();
         assert!(client.is_none());
     }
 
@@ -519,20 +588,22 @@ mod tests {
             provider: "not-a-provider".into(),
             ..Default::default()
         };
-        let err = build_ocr_client(&cfg).err().expect("expected error");
+        let err = build_ocr_client(dummy_router(), &cfg)
+            .err()
+            .expect("expected error");
         assert!(err.to_string().contains("unknown OCR provider"));
     }
 
     #[test]
     fn ocr_dispatch_known_providers() {
-        for provider in ["baidu", "azure", "tencent"] {
+        for provider in ["baidu", "azure", "tencent", "llm"] {
             let cfg = OcrConfig {
                 provider: provider.into(),
                 api_key: "k".into(),
                 api_secret: "s".into(),
                 ..Default::default()
             };
-            let client = build_ocr_client(&cfg).unwrap();
+            let client = build_ocr_client(dummy_router(), &cfg).unwrap();
             assert!(client.is_some(), "provider {provider} should build");
         }
     }

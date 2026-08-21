@@ -22,7 +22,7 @@ export const inputFormats = [
 	{
 		id: 'image',
 		label: '图片 Image',
-		hint: '粘贴或选取的图片先压缩为 JPEG，再交由视觉模型理解；关闭专用模型后改由 Default Model 处理。',
+		hint: '粘贴或选取的图片先压缩为 JPEG，再交由视觉模型理解；文字提取（OCR）与理解共用本卡片配置。',
 	},
 	{
 		id: 'file',
@@ -32,6 +32,6 @@ export const inputFormats = [
 	{
 		id: 'voice',
 		label: '语音 Voice',
-		hint: '按住热键录音，经 STT 转写为文本后作为普通消息发送；转写可走专用音频模型或使用 Default Model。',
+		hint: '按住热键录音，经 STT 转写为文本后作为普通消息发送；采集参数与转写提供商均在本卡片配置。',
 	},
 ];

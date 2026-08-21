@@ -245,7 +245,7 @@ impl MediaGateway {
             GenerateKind::Speech => {
                 let Some(tts) = &self.tts else {
                     return Ok(GenerateOutcome::Unsupported {
-                        reason: "未配置 TTS（设置 → 媒体 → TTS）".into(),
+                        reason: "未配置 TTS（设置 → 常规 → TTS）".into(),
                     });
                 };
                 let audio = tts
@@ -262,7 +262,7 @@ impl MediaGateway {
             GenerateKind::Image => {
                 let Some(image_gen) = &self.image_gen else {
                     return Ok(GenerateOutcome::Unsupported {
-                        reason: "未配置文生图（设置 → 媒体 → 文生图）".into(),
+                        reason: "未配置文生图（设置 → 常规 → 文生图）".into(),
                     });
                 };
                 let img = image_gen
@@ -307,7 +307,7 @@ mod tests {
     use crate::LlmClient;
     use crate::types::{LlmError, LlmResponse};
     use async_trait::async_trait;
-    use haven_common::config::OcrConfig;
+    use haven_common::config::{OcrConfig, SttConfig};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // --- mock clients ------------------------------------------------------
@@ -698,6 +698,7 @@ mod tests {
         let cfg = test_config();
         assert_eq!(cfg.ocr.min_confidence, 0.7);
         assert_eq!(cfg.stt.min_confidence, 0.7);
-        assert_eq!(OcrConfig::default().provider, "none");
+        assert_eq!(OcrConfig::default().provider, "llm");
+        assert_eq!(SttConfig::default().provider, "llm");
     }
 }

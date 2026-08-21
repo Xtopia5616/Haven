@@ -73,7 +73,7 @@ pub async fn update_settings(
     tick("config save");
 
     // Propagate audio config to running pipeline
-    state.pipeline.update_config(settings.audio).await;
+    state.pipeline.update_config(settings.media.audio.clone()).await;
     tick("pipeline.update_config");
 
     // Propagate the default shell choice to the shell tool so the running

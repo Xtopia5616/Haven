@@ -25,7 +25,9 @@
 	 *   vision_use_image_model, max_concurrent_requests }`.
 	 *
 	 * @prop {object} llmConfig — shared LlmConfig state (mutable)
-	 * @prop {object} stt — shared media.stt state (mutable; audio card binds to it)
+	 * @prop {object} audio — shared media.audio capture state (mutable; voice card)
+	 * @prop {object} stt — shared media.stt state (mutable; voice card)
+	 * @prop {object} ocr — shared media.ocr state (mutable; image card)
 	 * @prop {object} contextLimits — shared context_limits state (mutable)
 	 * @prop {object} keyConfigured — {role|mediaKey: bool} key status (mutable)
 	 * @prop {object} keyConfiguredProviders — per-provider key status
@@ -34,7 +36,9 @@
 	 */
 	let {
 		llmConfig,
+		audio,
 		stt,
+		ocr,
 		contextLimits,
 		keyConfigured,
 		keyConfiguredProviders = {},
@@ -227,7 +231,7 @@
 	});
 
 	// ---------------------------------------------------------------------
-	// STT sub-configuration (the audio role's transcription backend)
+	// STT / OCR (voice + image input cards)
 	// ---------------------------------------------------------------------
 
 	const STT_PROVIDER_OPTIONS = [
@@ -239,6 +243,13 @@
 		{ value: 'assemblyai', label: 'AssemblyAI' },
 		{ value: 'mcp', label: 'MCP Server' },
 		{ value: 'none', label: 'None' },
+	];
+	const OCR_PROVIDER_OPTIONS = [
+		{ value: 'llm', label: '视觉模型 (Image Model)' },
+		{ value: 'baidu', label: 'Baidu 通用文字识别' },
+		{ value: 'azure', label: 'Azure AI Vision' },
+		{ value: 'tencent', label: 'Tencent 通用印刷体' },
+		{ value: 'none', label: 'None（透传图片）' },
 	];
 	const OPENAI_COMPAT_STT = new Set(['openai', 'groq']);
 	const GEMINI_STT = new Set(['gemini']);
@@ -550,9 +561,15 @@
 	/**
 	 * @param {string} value
 	 */
-	function confirmSttKey(value) {
-		stt.api_key = value;
-		keyConfigured.stt = true;
+	function confirmMediaKey(value) {
+		if (keyDlg.model === 'stt') {
+			stt.api_key = value;
+		} else if (keyDlg.model === 'ocr') {
+			ocr.api_key = value;
+		} else if (keyDlg.model === 'ocr_secret') {
+			ocr.api_secret = value;
+		}
+		keyConfigured[keyDlg.model] = true;
 		keyDlg = { open: false, model: '', label: '' };
 	}
 
@@ -642,6 +659,58 @@
 							onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
 						/>
 					</div>
+					<div class="capability-block">
+						<h4>文字提取（OCR）</h4>
+						<p class="model-hint">「提取文字」意图走 OCR；推荐选视觉模型。专用云 OCR 失败或低置信度时回落到 Image Model。</p>
+						<div class="stt-grid">
+							<div class="model-field">
+								<span class="field-label">OCR Provider</span>
+								<MaterialSelect
+									id="img-ocr-provider"
+									value={ocr.provider}
+									options={OCR_PROVIDER_OPTIONS}
+									onChange={(/** @type {string} */ v) => { ocr.provider = v; }}
+								/>
+							</div>
+							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent' || ocr.provider === 'azure'}
+								<div class="model-field">
+									<span class="field-label">API Key</span>
+									<ApiKeyField
+										id="img-ocr-api-key"
+										configured={keyConfigured.ocr}
+										onEdit={() => openKeyDialog('ocr', 'OCR API Key')}
+									/>
+								</div>
+							{/if}
+							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent'}
+								<div class="model-field">
+									<span class="field-label">Secret Key</span>
+									<ApiKeyField
+										id="img-ocr-secret"
+										configured={keyConfigured.ocr_secret}
+										onEdit={() => openKeyDialog('ocr_secret', 'OCR Secret Key')}
+									/>
+								</div>
+							{/if}
+							{#if ocr.provider === 'azure'}
+								<div class="model-field">
+									<span class="field-label">Base URL</span>
+									<input id="img-ocr-base-url" type="text" class="md-input" bind:value={ocr.base_url} placeholder="https://&lt;resource&gt;.cognitiveservices.azure.com" autocomplete="off" />
+								</div>
+							{/if}
+							{#if ocr.provider !== 'none'}
+								<div class="model-field">
+									<span class="field-label">Timeout (sec)</span>
+									<MaterialNumberField id="img-ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { ocr.timeout_secs = v; }} />
+								</div>
+								<div class="model-field">
+									<span class="field-label">Min Confidence</span>
+									<input id="img-ocr-min-confidence" type="range" class="md-slider" bind:value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" />
+									<span class="range-value">{ocr.min_confidence}</span>
+								</div>
+							{/if}
+						</div>
+					</div>
 				{:else if format.id === 'file'}
 					<div class="form-row">
 						<label for="max-attachment-files">单条消息最多文件数</label>
@@ -670,7 +739,96 @@
 						<span class="switch-label">录音转写使用专用音频模型</span>
 						<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
 					</div>
-					<p class="model-hint">STT 提供商与录音参数（VAD、采样率、时长上限）在「常规 → Audio / STT」与下方 Audio 角色卡片中配置。</p>
+					<div class="form-row">
+						<label for="audio-sample-rate">Sample Rate</label>
+						<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(/** @type {number} */ v) => { audio.sample_rate = v; }} />
+					</div>
+					<div class="form-row">
+						<label for="audio-channels">Channels</label>
+						<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(/** @type {number} */ v) => { audio.channels = v; }} />
+					</div>
+					<div class="form-row">
+						<label for="audio-max-duration">Max Duration (sec)</label>
+						<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(/** @type {number} */ v) => { audio.max_duration_secs = v; }} />
+					</div>
+					<div class="form-row">
+						<label for="audio-silence-timeout">Silence Timeout (ms)</label>
+						<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(/** @type {number} */ v) => { audio.silence_timeout_ms = v; }} />
+					</div>
+					<div class="form-row">
+						<label for="audio-vad-threshold">VAD Threshold</label>
+						<input id="audio-vad-threshold" type="range" class="md-slider" bind:value={audio.vad_threshold} min="0" max="1" step="0.05" style="--vad-fill: {audio.vad_threshold * 100}%" />
+						<span class="range-value">{audio.vad_threshold}</span>
+					</div>
+					<div class="capability-block">
+						<h4>语音转写（STT）</h4>
+						<p class="model-hint">推荐：下方 Audio Model 选 Whisper / Gemini 等，STT Provider 选「音频模型」。也可直接配置独立云端 STT 或 MCP。</p>
+						<div class="stt-grid">
+							<div class="model-field">
+								<span class="field-label">STT Provider</span>
+								<MaterialSelect
+									id="voice-stt-provider"
+									value={stt.provider}
+									options={STT_PROVIDER_OPTIONS}
+									onChange={setSttProvider}
+								/>
+							</div>
+							{#if stt.provider === 'mcp'}
+								<div class="model-field">
+									<span class="field-label">MCP Server</span>
+									<MaterialAutocomplete
+										id="voice-stt-mcp"
+										value={stt.mcp_server}
+										options={mcpServerNames.map((n) => ({ value: n, label: n }))}
+										placeholder="Pick a configured MCP server"
+										loading={false}
+										onChange={(/** @type {string} */ v) => { stt.mcp_server = v; }}
+									/>
+								</div>
+							{:else if isCloudSttProvider(stt.provider)}
+								<div class="model-field">
+									<span class="field-label">Base URL</span>
+									{#if isOpenAiCompatibleStt(stt.provider) || isGeminiStt(stt.provider)}
+										<input id="voice-stt-base-url" type="text" class="md-input" bind:value={stt.base_url} placeholder={sttBasePlaceholder(stt.provider)} autocomplete="off" />
+									{:else}
+										<span class="provider-note">由提供商默认</span>
+									{/if}
+								</div>
+								<div class="model-field">
+									<span class="field-label">Model</span>
+									<MaterialAutocomplete
+										id="voice-stt-model"
+										value={stt.model}
+										options={sttModelOptions(stt.provider)}
+										placeholder={sttModelPlaceholder(stt.provider)}
+										loading={sttFetching}
+										onChange={(/** @type {string} */ v) => { stt.model = v; }}
+										onFocus={() => scheduleSttFetch()}
+									/>
+								</div>
+								<div class="model-field">
+									<span class="field-label">API Key</span>
+									<ApiKeyField
+										id="voice-stt-api-key"
+										configured={keyConfigured.stt}
+										onEdit={() => openKeyDialog('stt', 'STT API Key')}
+									/>
+								</div>
+							{/if}
+							{#if stt.provider !== 'none'}
+								<div class="model-field">
+									<span class="field-label">Timeout (sec)</span>
+									<MaterialNumberField id="voice-stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(/** @type {number} */ v) => { stt.timeout_secs = v; }} />
+								</div>
+								<div class="model-field">
+									<span class="field-label">Min Confidence</span>
+									<input id="voice-stt-min-confidence" type="range" class="md-slider" bind:value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" />
+									<span class="range-value">{stt.min_confidence}</span>
+								</div>
+							{/if}
+						</div>
+						<p class="model-hint">置信度低于阈值时回落主模型。仅 Deepgram / AssemblyAI / MCP 报告置信度；Whisper 等在失败或空结果时回落。</p>
+					</div>
 				{/if}
 			</div>
 		{/each}
@@ -817,65 +975,6 @@
 				/>
 			</div>
 		</div>
-		{#if card.key === 'audio_model'}
-			<div class="audio-stt-block">
-				<h4>语音转写（STT）</h4>
-				<p class="model-hint">推荐：上方 Audio Model 选 Whisper / Gemini / Deepgram / AssemblyAI Provider，STT Provider 选「音频模型」。也可在此直接配置独立云端 STT（与 Provider 库并行，旧配置仍可用）。</p>
-				<div class="stt-grid">
-					<div class="model-field">
-						<span class="field-label">STT Provider</span>
-						<MaterialSelect
-							id="au-stt-provider"
-							value={stt.provider}
-							options={STT_PROVIDER_OPTIONS}
-							onChange={setSttProvider}
-						/>
-					</div>
-					{#if stt.provider === 'mcp'}
-						<div class="model-field">
-							<span class="field-label">MCP Server</span>
-							<MaterialAutocomplete
-								id="au-stt-mcp"
-								value={stt.mcp_server}
-								options={mcpServerNames.map((n) => ({ value: n, label: n }))}
-								placeholder="Pick a configured MCP server"
-								loading={false}
-								onChange={(/** @type {string} */ v) => { stt.mcp_server = v; }}
-							/>
-						</div>
-					{:else if isCloudSttProvider(stt.provider)}
-						<div class="model-field">
-							<span class="field-label">Base URL</span>
-							{#if isOpenAiCompatibleStt(stt.provider) || isGeminiStt(stt.provider)}
-								<input id="au-stt-base-url" type="text" class="md-input" bind:value={stt.base_url} placeholder={sttBasePlaceholder(stt.provider)} autocomplete="off" />
-							{:else}
-								<span class="provider-note">由提供商默认</span>
-							{/if}
-						</div>
-						<div class="model-field">
-							<span class="field-label">Model</span>
-							<MaterialAutocomplete
-								id="au-stt-model"
-								value={stt.model}
-								options={sttModelOptions(stt.provider)}
-								placeholder={sttModelPlaceholder(stt.provider)}
-								loading={sttFetching}
-								onChange={(/** @type {string} */ v) => { stt.model = v; }}
-								onFocus={() => scheduleSttFetch()}
-							/>
-						</div>
-						<div class="model-field">
-							<span class="field-label">API Key</span>
-							<ApiKeyField
-								id="au-stt-api-key"
-								configured={keyConfigured.stt}
-								onEdit={() => openKeyDialog('stt', 'STT API Key')}
-							/>
-						</div>
-					{/if}
-				</div>
-			</div>
-		{/if}
 	</div>
 	{/if}
 {/snippet}
@@ -899,7 +998,7 @@
 				/>
 			</div>
 			{#if isSttOnlyStyle(pdForm.api_style)}
-				<p class="model-hint">该协议仅支持语音转写。请将其分配给 Audio Model，并把录音 STT Provider 设为「音频模型」。</p>
+				<p class="model-hint">该协议仅支持语音转写。请将其分配给 Audio Model，并在上方 Voice 卡片把 STT Provider 设为「音频模型」。</p>
 			{/if}
 			<div class="model-field">
 				<span class="field-label">Base URL</span>
@@ -928,7 +1027,7 @@
 	label={keyDlg.label}
 	configured={keyDlg.model ? !!keyConfigured[keyDlg.model] : false}
 	onClose={() => { keyDlg = { open: false, model: '', label: '' }; }}
-	onConfirm={confirmSttKey}
+	onConfirm={confirmMediaKey}
 />
 
 <style>
@@ -1126,12 +1225,12 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: 13px;
 	}
-	.audio-stt-block {
+	.capability-block {
 		margin-top: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-md);
 		border-top: 1px dashed var(--md-sys-color-outline-variant);
 	}
-	.audio-stt-block h4 {
+	.capability-block h4 {
 		font-size: 12px;
 		font-weight: 600;
 		color: var(--md-sys-color-primary);
@@ -1142,6 +1241,59 @@
 		grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 		gap: var(--md-sys-space-md);
 		align-items: end;
+	}
+	.md-slider {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 100%;
+		height: 4px;
+		outline: none;
+		cursor: pointer;
+		flex: 1;
+		margin: 18px 0;
+		padding: 0;
+		background: transparent;
+	}
+	.md-slider::-webkit-slider-runnable-track {
+		height: 4px;
+		border-radius: 2px;
+		background: linear-gradient(to right, var(--md-sys-color-primary) var(--vad-fill, 50%), var(--md-sys-color-surface-container-highest) var(--vad-fill, 50%));
+	}
+	.md-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: var(--md-sys-color-primary);
+		cursor: pointer;
+		box-shadow: var(--md-sys-elevation-1);
+		margin-top: -6px;
+	}
+	.md-slider::-moz-range-track {
+		height: 4px;
+		border-radius: 2px;
+		background: var(--md-sys-color-surface-container-highest);
+		border: none;
+	}
+	.md-slider::-moz-range-thumb {
+		width: 16px;
+		height: 16px;
+		border-radius: 50%;
+		background: var(--md-sys-color-primary);
+		border: none;
+		cursor: pointer;
+		box-shadow: var(--md-sys-elevation-1);
+	}
+	.range-value {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		height: 40px;
+		min-width: 44px;
+		padding: 0 var(--md-sys-space-sm);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 14px;
 	}
 	@media (max-width: 700px) {
 		.picker-card {

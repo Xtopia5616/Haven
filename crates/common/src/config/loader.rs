@@ -39,7 +39,6 @@ settings_pair! {
     /// `shell` argument. One of `powershell` (built-in Windows PowerShell),
     /// `cmd`, or `pwsh` (PowerShell 7, requires a separate install).
     default_shell: ShellChoice,
-    audio: AudioConfig,
     llm: LlmConfig,
     hotkey: HotkeyConfig,
     session: SessionConfig,
@@ -223,7 +222,6 @@ impl ConfigLoader {
         llm.roles.retain(|r| r.is_assigned());
         self.config.llm = llm;
 
-        self.config.audio = settings.audio.clone();
         self.config.default_shell = settings.default_shell;
         self.config.hotkey = settings.hotkey.clone();
         self.config.session = settings.session.clone();
@@ -284,7 +282,7 @@ mod tests {
     #[test]
     fn default_config_has_expected_values() {
         let cfg = AppConfig::default();
-        assert_eq!(cfg.audio.sample_rate, 16000);
+        assert_eq!(cfg.media.audio.sample_rate, 16000);
         assert_eq!(cfg.hotkey.key_binding, "Ctrl+Shift+Space");
         assert_eq!(cfg.session.max_concurrent, 3);
         assert_eq!(cfg.session.max_steps, 500);
@@ -327,20 +325,20 @@ mod tests {
         assert_eq!(cfg.context_limits.event_chunk_batch_max_bytes, 8 * 1024);
         assert_eq!(cfg.context_limits.input_ring_buffer_secs, 20);
         assert_eq!(cfg.context_limits.embedding_chunk_size, 64);
-        assert_eq!(cfg.context_limits.max_tools_per_request, 350);
+        assert_eq!(cfg.context_limits.max_tools_per_request, 128);
         assert_eq!(cfg.context_limits.partial_checkpoint_interval_secs, 2);
         assert_eq!(cfg.context_limits.fact_infer_interval_steps, 25);
         assert_eq!(cfg.memory.history_retention_days, 90);
         assert!(cfg.security.encrypt_sensitive);
         assert!(cfg.mcp_servers.is_empty());
-        assert_eq!(cfg.media.stt.provider, "mcp");
+        assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(cfg.media.stt.timeout_secs, 30);
         assert!(cfg.media.stt.mcp_server.is_none());
         assert!(cfg.media.stt.api_key.is_empty());
         assert!(cfg.media.stt.model.is_empty());
         assert!(cfg.media.stt.base_url.is_empty());
         assert_eq!(cfg.media.stt.min_confidence, 0.7);
-        assert_eq!(cfg.media.ocr.provider, "none");
+        assert_eq!(cfg.media.ocr.provider, "llm");
         assert!(cfg.media.ocr.api_key.is_empty());
         assert!(cfg.media.ocr.api_secret.is_empty());
         assert_eq!(cfg.media.ocr.timeout_secs, 20);
@@ -652,7 +650,7 @@ mod tests {
         let path = dir.join("config.toml");
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert!(path.exists());
-        assert_eq!(loader.config().audio.sample_rate, 16000);
+        assert_eq!(loader.config().media.audio.sample_rate, 16000);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -702,10 +700,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         let mut cfg = AppConfig::default();
-        cfg.audio.sample_rate = 44100;
+        cfg.media.audio.sample_rate = 44100;
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config().audio.sample_rate, 44100);
+        assert_eq!(loader.config().media.audio.sample_rate, 44100);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -715,7 +713,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         // Genuinely unparsable TOML (unterminated array).
-        let original = "audio = { sample_rate = [1, 2\n";
+        let original = "media = { audio = { sample_rate = [1, 2\n";
         std::fs::write(&path, original).unwrap();
 
         // The corrupt file must NOT be silently discarded: it is backed up

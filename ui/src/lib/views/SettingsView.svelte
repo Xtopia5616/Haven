@@ -12,6 +12,7 @@
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
+	import { settingsDirty, registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import logger from '$lib/logger.ts';
 
@@ -52,13 +53,8 @@
 
 	// Per-card model discovery (role cards, STT) is owned by ModelSettings.
 
-	// Media capability providers for the OCR / TTS / 文生图 cards.
-	const OCR_PROVIDER_OPTIONS = [
-		{ value: 'none', label: 'None' },
-		{ value: 'baidu', label: 'Baidu 通用文字识别' },
-		{ value: 'azure', label: 'Azure AI Vision' },
-		{ value: 'tencent', label: 'Tencent 通用印刷体' },
-	];
+	// Media capability providers for the TTS / 文生图 cards (OCR lives on the
+	// Image input card; STT lives on the Voice input card).
 	const TTS_PROVIDER_OPTIONS = [
 		{ value: 'none', label: 'None' },
 		{ value: 'openai', label: 'OpenAI TTS' },
@@ -143,7 +139,7 @@
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 64,
-		max_tools_per_request: 350,
+		max_tools_per_request: 128,
 	});
 
 	// Data-driven limit editor. `danger: true` fields get a warning badge and
@@ -159,7 +155,7 @@
 				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
 				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
 				{ key: 'max_observation_chars', label: '工具观察字符上限', unit: 'chars', danger: true, hint: '工具结果进入对话的最大字符数，也是 shell/file/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。' },
-				{ key: 'max_tools_per_request', label: '单次请求工具数上限', unit: 'count', danger: true, hint: '发给模型的 tools 数组最大长度。多数提供方硬顶约 350；超限会 400。内置工具优先保留，超出部分截断会话级 MCP/Skill；load_mcp 在会超限时直接拒绝。' },
+				{ key: 'max_tools_per_request', label: '单次请求工具数上限', unit: 'count', danger: true, hint: '发给模型的 tools 数组最大长度。默认 128（提供方硬顶约 350）。内置工具优先保留；load_mcp 可按 tool_names 只加载子集，整服超限时返回工具目录供再选。' },
 				{ key: 'max_transcript_chars', label: '记忆提取转录上限', unit: 'chars', danger: true, hint: '事实提取时发送给模型的转录长度。' },
 				{ key: 'notification_summary_chars', label: '通知摘要字符上限', unit: 'chars', danger: false },
 				{ key: 'partial_checkpoint_min_chars', label: '流式检查点最小增量', unit: 'chars', danger: false, hint: '部分回复累计新增多少字符后落盘一次（崩溃恢复粒度）。' },
@@ -297,7 +293,7 @@
 	let security = $state({ confirmation_mode: 'always', min_risk_level: 'medium' });
 
 	let stt = $state({
-		provider: 'mcp',
+		provider: 'llm',
 		mcp_server: '',
 		api_key: '',
 		model: '',
@@ -306,7 +302,7 @@
 		min_confidence: 0.7,
 	});
 	let ocr = $state({
-		provider: 'none',
+		provider: 'llm',
 		api_key: '',
 		api_secret: '',
 		base_url: '',
@@ -420,6 +416,14 @@
 	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
 	let currentTheme = $state(themeStore.currentTheme);
 	const unsubTheme = themeStore.subscribe((v) => { currentTheme = v.theme; });
+	// Baseline of persistable form state (after load / successful save). Used
+	// to detect unsaved edits when leaving the settings tab.
+	/** @type {string} */
+	let savedSnapshot = '';
+	let leaveDialogOpen = $state(false);
+	/** @type {((ok: boolean) => void) | null} */
+	let leaveDialogResolve = null;
+	let leaveSaving = $state(false);
 	// L12: guards against onDestroy running while onMount's async settings
 	// load is still in flight.
 	let mounted = true;
@@ -441,6 +445,199 @@
 		};
 	}
 
+	/** Serializable subset of form state that Save persists (plus autostart). */
+	function buildPersistableSettings() {
+		return {
+			default_shell: defaultShell,
+			llm: llmConfig,
+			hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode },
+			session: {
+				max_concurrent: session.max_concurrent,
+				max_steps: session.max_steps,
+			},
+			memory: {
+				session_window_size: memory.session_window_size,
+				history_retention_days: memory.history_retention_days,
+			},
+			security: {
+				confirmation_mode: security.confirmation_mode,
+				min_risk_level: security.min_risk_level,
+			},
+			context_limits: contextLimits,
+			media: {
+				audio: {
+					sample_rate: audio.sample_rate,
+					channels: audio.channels,
+					bits_per_sample: audio.bits_per_sample,
+					max_duration_secs: audio.max_duration_secs,
+					silence_timeout_ms: audio.silence_timeout_ms,
+					vad_threshold: audio.vad_threshold,
+				},
+				stt: { ...stt },
+				ocr: { ...ocr },
+				tts: { ...tts },
+				image_gen: { ...imageGen },
+			},
+			notification: {
+				session_created: { ...notification.session_created },
+				session_completed: { ...notification.session_completed },
+				session_paused: { ...notification.session_paused },
+				session_resumed: { ...notification.session_resumed },
+				session_error: { ...notification.session_error },
+			},
+			log: { level: log.level, file_enabled: log.file_enabled },
+			autostart_enabled: autostartEnabled,
+			key_configured: { ...keyConfigured },
+			key_configured_providers: { ...keyConfiguredProviders },
+		};
+	}
+
+	function captureSnapshot() {
+		savedSnapshot = JSON.stringify(buildPersistableSettings());
+	}
+
+	const isDirty = $derived(
+		settingsLoaded && !!savedSnapshot && JSON.stringify(buildPersistableSettings()) !== savedSnapshot,
+	);
+
+	$effect(() => {
+		settingsDirty.set(isDirty);
+	});
+
+	/**
+	 * Align the dirty baseline's default_model role with a toolbar-driven
+	 * remote sync so it does not look like a local unsaved edit.
+	 * @param {any} remote
+	 */
+	function patchSnapshotDefaultModel(remote) {
+		if (!savedSnapshot || !remote) return;
+		try {
+			const snap = JSON.parse(savedSnapshot);
+			const roles = Array.isArray(snap?.llm?.roles) ? snap.llm.roles : [];
+			const idx = roles.findIndex((/** @type {any} */ r) => r.role === 'default_model');
+			const patched = {
+				...(idx >= 0 ? roles[idx] : { role: 'default_model' }),
+				provider: remote.provider,
+				model: remote.model,
+				reasoning_effort: remote.reasoning_effort,
+				web_search: remote.web_search,
+			};
+			if (idx >= 0) roles[idx] = patched;
+			else roles.push(patched);
+			if (!snap.llm) snap.llm = {};
+			snap.llm.roles = roles;
+			savedSnapshot = JSON.stringify(snap);
+		} catch (e) {
+			logger.warn('SettingsView', 'patch snapshot default_model failed', e);
+		}
+	}
+
+	/** Restore form fields from the last saved/loaded snapshot (discard edits). */
+	function discardChanges() {
+		if (!savedSnapshot) return;
+		try {
+			const snap = JSON.parse(savedSnapshot);
+			defaultShell = snap.default_shell || defaultShell;
+			if (snap.llm) {
+				llmConfig = {
+					...llmConfig,
+					...snap.llm,
+					providers: Array.isArray(snap.llm.providers) ? snap.llm.providers : [],
+					roles: Array.isArray(snap.llm.roles) ? snap.llm.roles : [],
+				};
+				rememberSyncedDefaultModel(
+					llmConfig.roles.find((/** @type {any} */ r) => r.role === 'default_model'),
+				);
+			}
+			if (snap.hotkey) {
+				hotkeyBinding = snap.hotkey.key_binding || hotkeyBinding;
+				hotkeyMode = snap.hotkey.mode || hotkeyMode;
+			}
+			if (snap.session) session = { ...session, ...snap.session };
+			if (snap.memory) memory = { ...memory, ...snap.memory };
+			if (snap.security) {
+				security = {
+					confirmation_mode: snap.security.confirmation_mode || security.confirmation_mode,
+					min_risk_level: snap.security.min_risk_level || security.min_risk_level,
+				};
+			}
+			if (snap.context_limits) contextLimits = { ...contextLimits, ...snap.context_limits };
+			if (snap.media?.audio) audio = { ...audio, ...snap.media.audio };
+			if (snap.media?.stt) stt = { ...stt, ...snap.media.stt };
+			if (snap.media?.ocr) ocr = { ...ocr, ...snap.media.ocr };
+			if (snap.media?.tts) tts = { ...tts, ...snap.media.tts };
+			if (snap.media?.image_gen) imageGen = { ...imageGen, ...snap.media.image_gen };
+			if (snap.notification) {
+				notification = {
+					session_created: { ...notification.session_created, ...snap.notification.session_created },
+					session_completed: { ...notification.session_completed, ...snap.notification.session_completed },
+					session_paused: { ...notification.session_paused, ...snap.notification.session_paused },
+					session_resumed: { ...notification.session_resumed, ...snap.notification.session_resumed },
+					session_error: { ...notification.session_error, ...snap.notification.session_error },
+				};
+			}
+			if (snap.log) log = { ...log, level: snap.log.level, file_enabled: snap.log.file_enabled };
+			if (typeof snap.autostart_enabled === 'boolean') autostartEnabled = snap.autostart_enabled;
+			if (snap.key_configured && typeof snap.key_configured === 'object') {
+				keyConfigured = { ...keyConfigured, ...snap.key_configured };
+			}
+			if (snap.key_configured_providers && typeof snap.key_configured_providers === 'object') {
+				keyConfiguredProviders = { ...snap.key_configured_providers };
+			}
+			captureSnapshot();
+		} catch (e) {
+			logger.warn('SettingsView', 'discard changes failed', e);
+		}
+	}
+
+	/**
+	 * @returns {Promise<boolean>}
+	 */
+	function confirmLeave() {
+		if (leaveDialogOpen) {
+			return new Promise((resolve) => {
+				const prev = leaveDialogResolve;
+				leaveDialogResolve = (ok) => {
+					prev?.(false);
+					resolve(ok);
+				};
+			});
+		}
+		leaveDialogOpen = true;
+		return new Promise((resolve) => {
+			leaveDialogResolve = resolve;
+		});
+	}
+
+	/** @param {boolean} ok */
+	function finishLeaveDialog(ok) {
+		leaveDialogOpen = false;
+		leaveSaving = false;
+		const resolve = leaveDialogResolve;
+		leaveDialogResolve = null;
+		resolve?.(ok);
+	}
+
+	function leaveWithoutSaving() {
+		discardChanges();
+		finishLeaveDialog(true);
+	}
+
+	async function leaveWithSaving() {
+		leaveSaving = true;
+		const ok = await saveSettings();
+		if (ok) finishLeaveDialog(true);
+		else {
+			leaveSaving = false;
+			// Stay on settings; keep the dialog open so the user can retry or cancel.
+		}
+	}
+
+	function stayOnSettings() {
+		if (leaveSaving) return;
+		finishLeaveDialog(false);
+	}
+
 	/** @param {any} remote */
 	function applyRemoteDefaultModelFields(remote) {
 		if (!remote) return;
@@ -459,6 +656,7 @@
 			/** @type {any[]} */ (llmConfig.roles).push(remote);
 		}
 		rememberSyncedDefaultModel(remote);
+		patchSnapshotDefaultModel(remote);
 	}
 
 	/**
@@ -519,9 +717,15 @@
 		unsubTheme();
 		eventRegistrations?.dispose();
 		eventRegistrations = null;
+		registerSettingsLeaveGuard(null);
+		if (leaveDialogResolve) {
+			leaveDialogResolve(false);
+			leaveDialogResolve = null;
+		}
 	});
 
 	onMount(async () => {
+		registerSettingsLeaveGuard({ confirmLeave });
 		eventRegistrations = registerListeners(
 			{
 				'llm:config_changed': () => {
@@ -548,7 +752,6 @@
 				);
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
-				audio = settings.audio || audio;
 				session = settings.session || session;
 				contextLimits = settings.context_limits || contextLimits;
 				memory = settings.memory || memory;
@@ -557,8 +760,9 @@
 					min_risk_level: settings.security?.min_risk_level || 'medium',
 				};
 				const media = settings.media || {};
+				audio = media.audio || audio;
 				stt = {
-					provider: media.stt?.provider || 'mcp',
+					provider: media.stt?.provider || 'llm',
 					mcp_server: media.stt?.mcp_server || '',
 					api_key: media.stt?.api_key || '',
 					model: media.stt?.model || '',
@@ -567,7 +771,7 @@
 					min_confidence: media.stt?.min_confidence ?? 0.7,
 				};
 				ocr = {
-					provider: media.ocr?.provider || 'none',
+					provider: media.ocr?.provider || 'llm',
 					api_key: media.ocr?.api_key || '',
 					api_secret: media.ocr?.api_secret || '',
 					base_url: media.ocr?.base_url || '',
@@ -615,6 +819,7 @@
 		} catch (e) {
 			addNotification(`获取开机自启状态失败: ${formatError(e)}`, 'error', 3000);
 		}
+		if (mounted) captureSnapshot();
 	});
 
 	async function runMaintenance() {
@@ -648,6 +853,7 @@
 			: {};
 	}
 
+	/** @returns {Promise<boolean>} true when the settings payload was saved */
 	async function saveSettings() {
 		try {
 			await reconcileDefaultModelBeforeSave();
@@ -657,31 +863,31 @@
 					default_shell: defaultShell,
 					llm: llmConfig,
 					hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },
-					audio: {
-						sample_rate: audio.sample_rate,
-						channels: audio.channels,
-						bits_per_sample: audio.bits_per_sample,
-						max_duration_secs: audio.max_duration_secs,
-						silence_timeout_ms: audio.silence_timeout_ms,
-						vad_threshold: audio.vad_threshold,
+					session: {
+						max_concurrent: session.max_concurrent,
+						max_steps: session.max_steps,
 					},
-				session: {
-					max_concurrent: session.max_concurrent,
-					max_steps: session.max_steps,
-				},
 					memory: {
 						session_window_size: memory.session_window_size,
 						history_retention_days: memory.history_retention_days,
 					},
-				security: {
-					confirmation_mode: security.confirmation_mode,
-					min_risk_level: security.min_risk_level,
-					encrypt_sensitive: true,
-				},
-				// Full object (loaded state kept intact) so fields the UI does
-				// not render are preserved; backend applies it wholesale.
-				context_limits: contextLimits,
+					security: {
+						confirmation_mode: security.confirmation_mode,
+						min_risk_level: security.min_risk_level,
+						encrypt_sensitive: true,
+					},
+					// Full object (loaded state kept intact) so fields the UI does
+					// not render are preserved; backend applies it wholesale.
+					context_limits: contextLimits,
 					media: {
+						audio: {
+							sample_rate: audio.sample_rate,
+							channels: audio.channels,
+							bits_per_sample: audio.bits_per_sample,
+							max_duration_secs: audio.max_duration_secs,
+							silence_timeout_ms: audio.silence_timeout_ms,
+							vad_threshold: audio.vad_threshold,
+						},
 						stt: {
 							provider: stt.provider,
 							mcp_server: stt.mcp_server || null,
@@ -746,11 +952,14 @@
 					addNotification(`取消自动启动：${formatError(e)}`, 'warning');
 				}
 			}
+			if (mounted) captureSnapshot();
+			return true;
 		} catch (e) {
 			// Save never emitted llm:config_changed — clear the skip so the
 			// next real toolbar/config event is not swallowed.
 			skipNextDefaultModelSync = false;
 			addNotification(`保存设置失败: ${formatError(e)}`, 'error', 5000);
+			return false;
 		}
 	}
 
@@ -766,17 +975,12 @@
 		keyChangeDialog = { open: true, model, label };
 	}
 
-	// Media-capability keys (OCR / OCR Secret / TTS / 文生图). Role and STT
-	// keys are handled by ModelSettings through the same ApiKeyDialog.
+	// TTS / 文生图 keys. OCR / STT keys are handled by ModelSettings.
 	/**
 	 * @param {string} value
 	 */
 	function confirmMediaKey(value) {
-		if (keyChangeDialog.model === 'ocr') {
-			ocr.api_key = value;
-		} else if (keyChangeDialog.model === 'ocr_secret') {
-			ocr.api_secret = value;
-		} else if (keyChangeDialog.model === 'tts') {
+		if (keyChangeDialog.model === 'tts') {
 			tts.api_key = value;
 		} else if (keyChangeDialog.model === 'image_gen') {
 			imageGen.api_key = value;
@@ -830,94 +1034,8 @@
 	</div>
 
 	<div class="section">
-		<h2>Audio</h2>
-		<div class="form-row">
-			<label for="audio-sample-rate">Sample Rate</label>
-			<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(/** @type {number} */ v) => { audio.sample_rate = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="audio-channels">Channels</label>
-			<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(/** @type {number} */ v) => { audio.channels = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="audio-max-duration">Max Duration (sec)</label>
-			<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(/** @type {number} */ v) => { audio.max_duration_secs = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="audio-silence-timeout">Silence Timeout (ms)</label>
-			<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(/** @type {number} */ v) => { audio.silence_timeout_ms = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="audio-vad-threshold">VAD Threshold</label>
-			<input id="audio-vad-threshold" type="range" class="md-slider" bind:value={audio.vad_threshold} min="0" max="1" step="0.05" style="--vad-fill: {audio.vad_threshold * 100}%" />
-			<span class="range-value">{audio.vad_threshold}</span>
-		</div>
-	</div>
-
-	<div class="section">
-		<h2>STT (Speech-to-Text)</h2>
-		<p class="model-hint">Provider 与全部配置（API Key / Model / Base URL / MCP Server）都在 Audio Model 行的 API Style 下拉框及其字段中完成。此处仅设置转写超时与置信度阈值。</p>
-		<div class="form-row">
-			<label for="stt-timeout">Timeout (sec)</label>
-			<MaterialNumberField id="stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(/** @type {number} */ v) => { stt.timeout_secs = v; }} />
-		</div>
-		<div class="form-row">
-			<label for="stt-min-confidence">Min Confidence</label>
-			<input id="stt-min-confidence" type="range" class="md-slider" bind:value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" />
-			<span class="range-value">{stt.min_confidence}</span>
-		</div>
-		<p class="model-hint">置信度低于阈值时自动升级主模型转写。仅支持置信度报告的提供商（Deepgram / AssemblyAI / MCP）生效；Whisper 等不报告置信度的提供商在失败或空结果时升级主模型。</p>
-	</div>
-
-	<div class="section">
-		<h2>Media Capabilities（OCR / TTS / 文生图）</h2>
-		<p class="model-hint">媒体网关的专用模型：图片「提取文字」走 OCR；「朗读/配音」走 TTS；「画…」走文生图。选择 None 时相关请求由主模型处理（图片文字提取回落到视觉模型）。</p>
-
-		<div class="model-card">
-			<div class="picker-card">
-				<div class="model-field model-role">
-					<span class="field-label">OCR（图片文字提取）</span>
-					<div class="role-hint">百度/腾讯需 API Key + Secret Key；Azure 需资源端点作为 Base URL</div>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Provider</span>
-					<MaterialSelect id="ocr-provider" value={ocr.provider} options={OCR_PROVIDER_OPTIONS} onChange={(/** @type {string} */ v) => { ocr.provider = v; }} />
-				</div>
-				<div class="model-field">
-					<span class="field-label">API Key</span>
-					<ApiKeyField
-						id="ocr-api-key"
-						configured={keyConfigured.ocr}
-						onEdit={() => openKeyDialog('ocr', 'OCR API Key')}
-					/>
-				</div>
-				{#if ocr.provider === 'baidu' || ocr.provider === 'tencent'}
-					<div class="model-field">
-						<span class="field-label">Secret Key</span>
-						<ApiKeyField
-							id="ocr-secret"
-							configured={keyConfigured.ocr_secret}
-							onEdit={() => openKeyDialog('ocr_secret', 'OCR Secret Key')}
-						/>
-					</div>
-				{/if}
-				{#if ocr.provider === 'azure'}
-					<div class="model-field">
-						<span class="field-label">Base URL</span>
-						<input id="ocr-base-url" type="text" class="md-input" bind:value={ocr.base_url} placeholder="https://&lt;resource&gt;.cognitiveservices.azure.com" autocomplete="off" />
-					</div>
-				{/if}
-				<div class="model-field">
-					<span class="field-label">Min Confidence</span>
-					<input id="ocr-min-confidence" type="range" class="md-slider" bind:value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" />
-					<span class="range-value">{ocr.min_confidence}</span>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Timeout (sec)</span>
-					<MaterialNumberField id="ocr-timeout" value={ocr.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { ocr.timeout_secs = v; }} />
-				</div>
-			</div>
-		</div>
+		<h2>Media Capabilities（TTS / 文生图）</h2>
+		<p class="model-hint">输出类媒体能力：朗读/配音走 TTS，「画…」走文生图。图片 OCR 与语音 STT 已并入「输入」页的 Image / Voice 卡片。</p>
 
 		<div class="model-card">
 			<div class="picker-card">
@@ -1194,7 +1312,9 @@
 	{#if settingsLoaded}
 	<ModelSettings
 		{llmConfig}
+		{audio}
 		{stt}
+		{ocr}
 		{contextLimits}
 		{keyConfigured}
 		{keyConfiguredProviders}
@@ -1304,6 +1424,22 @@
 	{/snippet}
 </MaterialDialog>
 {/if}
+
+<MaterialDialog
+	open={leaveDialogOpen}
+	title="未保存的更改"
+	onClose={stayOnSettings}
+>
+	{#snippet children()}
+		<p>设置已修改但尚未保存。选择「取消」将放弃更改并离开；或先保存再离开。</p>
+	{/snippet}
+	{#snippet footer()}
+		<button class="md-btn md-btn--text" onclick={leaveWithoutSaving} disabled={leaveSaving}>取消</button>
+		<button class="md-btn md-btn--filled" onclick={leaveWithSaving} disabled={leaveSaving}>
+			{leaveSaving ? '保存中…' : '保存并离开'}
+		</button>
+	{/snippet}
+</MaterialDialog>
 
 <style>
 	.settings-page { max-width: var(--md-sys-content-max-width); }

@@ -156,14 +156,14 @@ pub(crate) async fn hot_swap_router(
             .config()
             .media
             .clone();
-        let ocr: Option<Arc<dyn haven_llm::OcrClient>> = match haven_llm::build_ocr_client(&cfg.ocr)
-        {
-            Ok(c) => c.map(std::sync::Arc::from),
-            Err(e) => {
-                tracing::warn!("OCR client rebuild failed, OCR disabled: {e}");
-                None
-            }
-        };
+        let ocr: Option<Arc<dyn haven_llm::OcrClient>> =
+            match haven_llm::build_ocr_client(new_router.clone(), &cfg.ocr) {
+                Ok(c) => c.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("OCR client rebuild failed, OCR disabled: {e}");
+                    None
+                }
+            };
         let tts: Option<Arc<dyn haven_llm::TtsClient>> = match haven_llm::build_tts_client(&cfg.tts)
         {
             Ok(c) => c.map(std::sync::Arc::from),

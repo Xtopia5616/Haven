@@ -145,7 +145,7 @@ impl SystemPromptBuilder {
             String::new()
         } else {
             format!(
-                "\nAvailable MCP servers — call `load_mcp` (server_name) to activate its tools:\n{}",
+                "\nAvailable MCP servers — call `load_mcp` (server_name, optional tool_names) to activate tools:\n{}",
                 sections.mcp_server_index_section
             )
         };

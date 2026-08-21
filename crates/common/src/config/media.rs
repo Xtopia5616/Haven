@@ -1,8 +1,11 @@
-//! Media-related configuration slices: audio capture and STT / OCR / TTS /
-//! image-generation providers under [media.*].
+//! Media-related configuration under `[media.*]`: audio capture, STT, OCR,
+//! TTS, and image generation. Capture (`audio`) and transcription (`stt`) are
+//! separate structs but share one settings surface; same for image limits
+//! (context_limits) + OCR.
 
 use super::*;
 
+/// Microphone capture / VAD parameters. Lives under `[media.audio]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AudioConfig {
@@ -26,17 +29,17 @@ impl Default for AudioConfig {
         }
     }
 }
-/// Speech-to-text configuration. Lives under `[media.stt]` (previously the
-/// top-level `[stt]` section). Cloud providers are materialized into a
-/// [`super::ModelEndpoint`] and dispatched through the same `adapter_for` /
-/// `LlmClient::transcribe` path as chat roles; `llm` uses the router's
-/// `audio_model` (or default) slot.
+
+/// Speech-to-text configuration. Lives under `[media.stt]`. Cloud providers
+/// are materialized into a [`super::ModelEndpoint`] and dispatched through
+/// the same `adapter_for` / `LlmClient::transcribe` path as chat roles;
+/// `llm` uses the router's `audio_model` (or default) slot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SttConfig {
     /// Speech-to-text provider. One of:
-    /// - `mcp`: route through an MCP server exposing `stt.transcribe`
     /// - `llm`: transcribe via the configured `audio_model` LLM endpoint
+    /// - `mcp`: route through an MCP server exposing `stt.transcribe`
     /// - `openai`: OpenAI Whisper-compatible `/audio/transcriptions`
     ///   (also Groq, Deepgram's OpenAI-compatible endpoint, Together,
     ///   local whisper.cpp/LM Studio, and most gateways)
@@ -69,7 +72,7 @@ pub struct SttConfig {
 impl Default for SttConfig {
     fn default() -> Self {
         Self {
-            provider: "mcp".into(),
+            provider: "llm".into(),
             mcp_server: None,
             api_key: String::new(),
             model: String::new(),
@@ -85,10 +88,11 @@ impl Default for SttConfig {
 #[serde(default)]
 pub struct OcrConfig {
     /// OCR provider. One of:
+    /// - `llm`: extract via the configured `image_model` / vision role
     /// - `baidu`: Baidu 通用文字识别（标准版）
     /// - `azure`: Azure AI Vision (Computer Vision 3.2 OCR)
     /// - `tencent`: Tencent Cloud 通用印刷体识别
-    /// - `none`: no OCR client
+    /// - `none`: no OCR client (extract intent passes the image through)
     pub provider: String,
     /// API key / access token for cloud OCR providers.
     pub api_key: String,
@@ -110,7 +114,7 @@ pub struct OcrConfig {
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
-            provider: "none".into(),
+            provider: "llm".into(),
             api_key: String::new(),
             api_secret: String::new(),
             base_url: String::new(),
@@ -188,11 +192,12 @@ impl Default for ImageGenConfig {
     }
 }
 
-/// Unified media capability configuration (STT / OCR / TTS / image
-/// generation). Replaced the legacy top-level `[stt]` section.
+/// Unified media configuration: capture + extract + generate capabilities.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MediaConfig {
+    /// Microphone capture / VAD (voice input card).
+    pub audio: AudioConfig,
     /// Speech-to-text (voice input transcription).
     pub stt: SttConfig,
     /// OCR (image text extraction).

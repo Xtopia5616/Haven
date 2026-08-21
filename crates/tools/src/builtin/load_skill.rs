@@ -66,46 +66,77 @@ impl LoadSkillTool {
         let skill_display_name = skill.name().to_string();
         let runner = self.skill_runner.read().await.clone();
         let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
-        let skill_def = self
-            .activate_skill(&session_id, adapter)
-            .await?;
-
-        Ok(ToolResult::ok(serde_json::json!({
-            "skill": skill_def,
-            "instructions": skill_instructions,
-            "status": "loaded",
-            "skill_name": skill_display_name,
-        })))
+        match self.activate_skill(&session_id, adapter).await? {
+            SkillActivateOutcome::Loaded(skill_def) => Ok(ToolResult::ok(serde_json::json!({
+                "skill": skill_def,
+                "instructions": skill_instructions,
+                "status": "loaded",
+                "skill_name": skill_display_name,
+            }))),
+            // Soft failure: observation for the model, ReAct loop continues.
+            SkillActivateOutcome::BudgetExceeded {
+                tool_name,
+                max,
+                global_count,
+                session_count,
+            } => {
+                let current = global_count.saturating_add(session_count);
+                Ok(ToolResult::ok(serde_json::json!({
+                    "status": "budget_exceeded",
+                    "skill_name": skill_display_name,
+                    "reason": format!(
+                        "Cannot load skill '{}': adding 1 tool would exceed the per-request limit of {} (currently {} tools: {} builtin + {} session). Prefer a new session, fewer MCP tools, or raise context_limits.max_tools_per_request. The conversation continues — do not stop.",
+                        tool_name,
+                        max,
+                        current,
+                        global_count,
+                        session_count
+                    ),
+                    "remaining_budget": max.saturating_sub(current),
+                    "max_tools_per_request": max,
+                })))
+            }
+        }
     }
 
     /// Atomically budget-check + register under the session write lock.
+    /// Over-budget is a soft `BudgetExceeded` outcome — never a hard error.
     async fn activate_skill(
         &self,
         session_id: &str,
         adapter: SkillToolAdapter,
-    ) -> anyhow::Result<Value> {
+    ) -> anyhow::Result<SkillActivateOutcome> {
         let max = self.max_tools_per_request.max(1);
         let global_count = self.registry.list().await.len();
         let name = adapter.name();
         let skill_def = adapter.tool_def().json();
         let mut map = self.session_registrations.write().await;
         let entry = map.entry(session_id.to_string()).or_default();
+        let session_count = entry.len();
         let net_new = if entry.contains_key(&name) { 0 } else { 1 };
-        if ToolsManager::tool_budget_would_exceed(max, global_count, entry.len(), net_new) {
-            anyhow::bail!(
-                "Cannot load skill '{}': adding 1 tool would exceed the per-request limit of {} (currently {} tools: {} builtin + {} session). Prefer unloading unused MCP servers, start a new session, or raise context_limits.max_tools_per_request.",
-                name,
+        if ToolsManager::tool_budget_would_exceed(max, global_count, session_count, net_new) {
+            return Ok(SkillActivateOutcome::BudgetExceeded {
+                tool_name: name,
                 max,
-                global_count.saturating_add(entry.len()),
                 global_count,
-                entry.len()
-            );
+                session_count,
+            });
         }
         entry.insert(name, Arc::new(adapter));
         drop(map);
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
-        Ok(skill_def)
+        Ok(SkillActivateOutcome::Loaded(skill_def))
     }
+}
+
+enum SkillActivateOutcome {
+    Loaded(Value),
+    BudgetExceeded {
+        tool_name: String,
+        max: usize,
+        global_count: usize,
+        session_count: usize,
+    },
 }
 
 #[async_trait]
@@ -328,11 +359,17 @@ mod tests {
                 json!({"skill_name": "echo", "_session_id": "ses-x"}),
                 CancellationToken::new(),
             )
-            .await;
-        assert!(result.is_err());
+            .await
+            .expect("over-budget must be a soft observation, not a hard error");
+        assert!(result.success);
+        assert_eq!(result.output["status"], "budget_exceeded");
+        let reason = result.output["reason"].as_str().unwrap_or("");
         assert!(
-            result.unwrap_err().to_string().contains("per-request limit"),
-            "should refuse over budget"
+            reason.contains("per-request limit"),
+            "should explain the budget: {reason}"
         );
+        // Nothing new registered.
+        let map = tool.session_registrations.read().await;
+        assert_eq!(map.get("ses-x").map(|m| m.len()), Some(1));
     }
 }

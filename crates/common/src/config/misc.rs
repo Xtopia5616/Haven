@@ -225,10 +225,10 @@ pub struct ContextLimitsConfig {
     /// Embedding requests chunk size (provider request limits).
     pub embedding_chunk_size: usize,
     /// Max tool definitions sent on one LLM request. Provider APIs (e.g.
-    /// OpenAI-compatible gateways) reject requests above a hard ceiling
-    /// (commonly 350). Progressive `load_mcp` / `load_skill` can accumulate
-    /// past that; Haven refuses oversized loads and truncates the session
-    /// overlay so builtins stay available.
+    /// OpenAI-compatible gateways) hard-cap around 350; Haven defaults lower
+    /// so progressive `load_mcp` (optional `tool_names` subset) / `load_skill`
+    /// stay focused. Oversized loads are refused and the session overlay is
+    /// truncated so builtins stay available.
     pub max_tools_per_request: usize,
 }
 
@@ -300,7 +300,7 @@ impl Default for ContextLimitsConfig {
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 64,
-            max_tools_per_request: 350,
+            max_tools_per_request: 128,
         }
     }
 }

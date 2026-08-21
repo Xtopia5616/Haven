@@ -255,7 +255,9 @@ impl SessionExecutor {
                         .await;
                 }
                 haven_tools::ToolRegistration::McpServer(name) => {
-                    self.tools.register_mcp_for_session(session_id, name).await;
+                    self.tools
+                        .register_mcp_for_session(session_id, name, None)
+                        .await;
                 }
                 // Action is applied after the running-set guard.
                 haven_tools::ToolRegistration::Action(_) => {}

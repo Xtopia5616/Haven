@@ -78,7 +78,7 @@ Interaction & notifications:\n\
 9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
 Tool selection:\n\
 10. Simple, quick sessions: use built-in tools — they are fast, lightweight, and always available.\n\
-11. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists above, call `load_mcp` with that server name or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
+ 11. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists above, call `load_mcp` with that server name (add `tool_names` when the server is large or returns `needs_selection`) or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
 Failure handling:\n\
 12. {failure_diagnosis}\n\
 \n\

@@ -615,7 +615,7 @@ impl AgentLayer {
     /// `load_skill`/`load_mcp` actions and re-registers the corresponding
     /// adapters. Only steps present in the (possibly truncated) history are
     /// replayed, so rolling back to step N correctly drops tools loaded after
-    /// step N.
+    /// step N. Selective `load_mcp` calls restore only their `tool_names`.
     pub(crate) async fn restore_per_session_tools(
         &self,
         session_id: &str,
@@ -636,7 +636,14 @@ impl AgentLayer {
                     }
                     "load_mcp" => {
                         if let Some(name) = tool.action.tool_input["server_name"].as_str() {
-                            tools.register_mcp_for_session(session_id, name).await;
+                            let tool_names = load_mcp_tool_names_from_input(&tool.action.tool_input);
+                            tools
+                                .register_mcp_for_session(
+                                    session_id,
+                                    name,
+                                    tool_names.as_deref(),
+                                )
+                                .await;
                         }
                     }
                     _ => {}
@@ -867,5 +874,51 @@ impl AgentLayer {
             title: session.title,
             role: req.role,
         })
+    }
+}
+
+/// Parse optional `tool_names` from a saved `load_mcp` tool_input for resume.
+fn load_mcp_tool_names_from_input(input: &Value) -> Option<Vec<String>> {
+    let arr = input.get("tool_names")?.as_array()?;
+    let mut out = Vec::new();
+    for v in arr {
+        if let Some(s) = v.as_str() {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod load_mcp_resume_tests {
+    use super::load_mcp_tool_names_from_input;
+    use serde_json::json;
+
+    #[test]
+    fn parses_tool_names_subset() {
+        let names = load_mcp_tool_names_from_input(&json!({
+            "server_name": "srv",
+            "tool_names": [" a ", "", "b"]
+        }));
+        assert_eq!(names, Some(vec!["a".into(), "b".into()]));
+    }
+
+    #[test]
+    fn missing_or_empty_tool_names_is_none() {
+        assert!(load_mcp_tool_names_from_input(&json!({"server_name": "srv"})).is_none());
+        assert!(
+            load_mcp_tool_names_from_input(&json!({
+                "server_name": "srv",
+                "tool_names": []
+            }))
+            .is_none()
+        );
     }
 }

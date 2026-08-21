@@ -168,7 +168,7 @@ impl AppState {
         // (fail-open: the main model still handles the media).
         let gateway = {
             let ocr: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
-                match haven_llm::build_ocr_client(&cfg.media.ocr) {
+                match haven_llm::build_ocr_client(router.clone(), &cfg.media.ocr) {
                     Ok(c) => c.map(std::sync::Arc::from),
                     Err(e) => {
                         tracing::warn!("OCR client build failed, OCR disabled: {e}");
@@ -427,7 +427,7 @@ mod tests {
         // The default config is loaded and accessible via the mutex.
         let cfg = state.config_loader.lock().unwrap().config().clone();
         assert!(cfg.session.max_steps > 0);
-        assert_eq!(cfg.media.stt.provider, "mcp");
+        assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
     }
 
