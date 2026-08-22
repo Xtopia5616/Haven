@@ -431,6 +431,9 @@ impl SessionExecutor {
         if let Some(gate) = self.run_exit.lock().await.remove(session_id) {
             let _ = gate.tx.send(());
         }
+        if let Some(cb) = self.on_session_cleanup.snap() {
+            cb(session_id.to_string());
+        }
     }
 
     /// Look up an in-memory `SessionInfo` by id (O(1), per-session lock only).

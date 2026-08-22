@@ -2,10 +2,8 @@
 	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 
-	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/agent/src/session.rs):
-	// after this many seconds an unanswered confirmation is treated as
-	// rejected. The frontend resolves first so the dialog closes promptly
-	// instead of hanging until the backend's fail-closed branch fires.
+	// Interactive dialog countdown (starts when shown). Backend keeps a
+	// longer absolute fail-closed ceiling for closed/crashed UI.
 	const TIMEOUT_SECONDS = 120;
 
 	// `deadlineAt` (epoch ms) is the backend's deadline for this confirmation:

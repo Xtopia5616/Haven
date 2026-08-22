@@ -1321,8 +1321,9 @@
 	}
 	.action-output {
 		margin-top: 4px;
-		max-height: 64px;
-		overflow: hidden;
+		max-height: 160px;
+		overflow-x: hidden;
+		overflow-y: auto;
 		font-size: 10px;
 		font-family: var(--md-sys-typescale-mono);
 		line-height: 1.45;
@@ -1330,6 +1331,9 @@
 		white-space: pre-wrap;
 		word-break: break-all;
 		opacity: 0.9;
+		padding: 4px 6px;
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
 	}
 	.scheduled-menu-title {
 		margin-top: var(--md-sys-space-xs);

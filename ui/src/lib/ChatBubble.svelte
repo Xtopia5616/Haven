@@ -23,6 +23,7 @@
 		awaiting = false,
 		received = false,
 		resolved = null,
+		actionId = null,
 		onContextMenu = null,
 		onQuickReply = null,
 		onIgnore = null,
@@ -199,10 +200,14 @@
 	function mdContent(node) {
 		let hintRaf = 0;
 		function scheduleRefresh() {
+			// Skip edge-fade updates while streaming: content mutates every
+			// frame and toggling --sh-l/--sh-r causes visible edge flicker.
+			if (node.classList.contains('streaming')) return;
 			if (hintRaf) return;
 			hintRaf = requestAnimationFrame(() => {
 				hintRaf = 0;
 				if (!mounted) return;
+				if (node.classList.contains('streaming')) return;
 				node.querySelectorAll('pre, table').forEach(refreshScrollHint);
 			});
 		}
@@ -211,7 +216,9 @@
 		node.addEventListener('wheel', handleMdWheel, { passive: false });
 		node.addEventListener('scroll', handleMdScrollCapture, true);
 		const mo = new MutationObserver(scheduleRefresh);
-		mo.observe(node, { childList: true, subtree: true });
+		// Watch class too: when `.streaming` is removed, recompute edge fades
+		// once for the final layout (content may not mutate again).
+		mo.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 		const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleRefresh) : null;
 		ro?.observe(node);
 		scheduleRefresh();
@@ -339,8 +346,14 @@
 					</span>
 				{/if}
 			</div>
-			{#if content}
-				<ToolResultCard {toolName} {content} {streaming} />
+			{#if content || streaming || actionId}
+				<ToolResultCard
+					{toolName}
+					{content}
+					{streaming}
+					{actionId}
+					messageId={messageId}
+				/>
 			{/if}
 		{:else if msgType === 'ask'}
 			<ToolResultCard
@@ -796,6 +809,16 @@
 		pointer-events: none;
 		opacity: 0;
 		transition: opacity 0.15s ease;
+	}
+	/* Streaming: hide edge fades entirely — MutationObserver-driven hint
+	 * refreshes would otherwise flicker at the scroll edges every chunk. */
+	.md-content.streaming :global(.md-code-wrap)::before,
+	.md-content.streaming :global(.md-code-wrap)::after,
+	.md-content.streaming :global(.md-table-wrap)::before,
+	.md-content.streaming :global(.md-table-wrap)::after {
+		content: none;
+		opacity: 0;
+		transition: none;
 	}
 	.md-content :global(.md-code-wrap)::before,
 	.md-content :global(.md-table-wrap)::before {

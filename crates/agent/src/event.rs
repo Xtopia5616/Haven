@@ -135,6 +135,9 @@ pub enum AgentEvent {
     /// prompt/completion/total tokens and the USD cost when the active
     /// endpoint has pricing configured. Emitted after every ReAct step so
     /// the UI can display a running counter and remaining context budget.
+    /// `step_number` / `duration_ms` / `role` / `has_cost` mirror the
+    /// persisted `llm_usage` row so live tool cards can render the same
+    /// per-step token chip that review mode restores from the DB.
     Usage {
         session_id: String,
         prompt_tokens: u32,
@@ -150,6 +153,18 @@ pub enum AgentEvent {
         /// Configured context window for the model (tokens). When `None`,
         /// the UI falls back to a generic budget indicator.
         context_window: Option<u32>,
+        /// ReAct step this call served (`None` for non-step aggregates).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_number: Option<u32>,
+        /// Wall-clock duration of the call in milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        /// Endpoint role that produced the response (`default` / `small` / …).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        /// Whether `cost_usd` is a real priced value (vs absent pricing).
+        #[serde(default)]
+        has_cost: bool,
     },
 }
 
@@ -679,6 +694,10 @@ impl EventDispatcher {
                 cumulative_total_tokens: usage.cumulative_total_tokens,
                 cumulative_cost_usd: usage.cumulative_cost_usd,
                 context_window: usage.context_window,
+                step_number: usage.step_number,
+                duration_ms: usage.duration_ms,
+                role: usage.role,
+                has_cost: usage.has_cost,
             })
             .await;
     }
@@ -700,6 +719,10 @@ pub struct UsagePayload {
     pub cumulative_total_tokens: u32,
     pub cumulative_cost_usd: Option<f64>,
     pub context_window: Option<u32>,
+    pub step_number: Option<u32>,
+    pub duration_ms: Option<u64>,
+    pub role: Option<String>,
+    pub has_cost: bool,
 }
 
 #[cfg(test)]

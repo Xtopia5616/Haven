@@ -1,6 +1,8 @@
-//! Tool execution, safety-gated confirm waits, and action-step persistence.
+//! Tool execution, safety-gated confirms, and action-step persistence.
 //!
-//! Split from `session.rs` (Phase 7 / A3 mechanical extract; behavior unchanged).
+//! Split from `session.rs` (Phase 7 / A3 mechanical extract). R2: confirm never
+//! blocks inside a tool future — ReAct uses pause/continue; scheduled fires
+//! use [`SessionExecutor::request_scheduled_confirm`].
 
 use super::*;
 
@@ -199,6 +201,7 @@ impl SessionExecutor {
                 input.clone(),
                 cancel,
                 pre_confirmed,
+                Some(step_id),
             )
             .await
         {
@@ -348,6 +351,7 @@ impl SessionExecutor {
         input: Value,
         cancel: CancellationToken,
         pre_confirmed: Option<bool>,
+        step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
         let risk_level = self
             .tools
@@ -378,14 +382,21 @@ impl SessionExecutor {
                 });
             }
             ConfirmationResult::RequiresConfirmation { .. } => {
-                // Phase 5 / E3: pause-confirm resume supplies pre_confirmed so
-                // we never block inside the tool future. Scheduled / headless
-                // callers still use the bounded await_confirmation path.
+                // R2 / Phase 5 E3: never block inside the tool future.
+                // Callers must pre-decide via pause-confirm (`Some(true|false)`)
+                // or `request_scheduled_confirm`. Missing pre_confirmed fails closed.
                 match pre_confirmed {
                     Some(true) => {
                         confirmed = Some(true);
                     }
-                    Some(false) => {
+                    Some(false) | None => {
+                        if pre_confirmed.is_none() {
+                            tracing::warn!(
+                                tool = %tool_name,
+                                session = %session_id.unwrap_or("action"),
+                                "execute_gated RequiresConfirmation without pre_confirmed; rejecting (R2 fail-closed)"
+                            );
+                        }
                         return Ok(ToolExecution {
                             result: ToolResult {
                                 success: false,
@@ -401,34 +412,12 @@ impl SessionExecutor {
                             confirmed: Some(false),
                         });
                     }
-                    None => {
-                        if !self
-                            .await_confirmation(session_id, tool_name, risk_level)
-                            .await
-                        {
-                            return Ok(ToolExecution {
-                                result: ToolResult {
-                                    success: false,
-                                    output: Value::Null,
-                                    error: Some(format!(
-                                        "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
-                                        tool_name
-                                    )),
-                                    truncated: false,
-                                    signals: haven_tools::ToolSignals::default(),
-                                },
-                                risk_level,
-                                confirmed: Some(false),
-                            });
-                        }
-                        confirmed = Some(true);
-                    }
                 }
             }
         }
         let result = self
             .tools
-            .execute_tool(session_id, tool_name, input, cancel)
+            .execute_tool_with_step(session_id, tool_name, input, cancel, step_id)
             .await?;
         Ok(ToolExecution {
             result,
@@ -437,40 +426,38 @@ impl SessionExecutor {
         })
     }
 
-    /// Request user confirmation for a safety-gated tool call and wait for
-    /// the answer. Emits `confirm:requested` through the wired callback and
-    /// blocks until `resolve_confirmation` resolves the generated step id, or
-    /// the session's cancellation token fires (end/rollback/stop). Returns
-    /// `true` when the user approved.
-    async fn await_confirmation(
-        &self,
+    /// Queue a scheduled-tool confirmation without blocking the fired-action
+    /// consumer (R2). Emits `confirm:requested` and stores pending args; a
+    /// later [`Self::resolve_confirmation`] (or the timeout task) executes or
+    /// skips. Returns `None` when no confirm channel is wired (fail closed).
+    pub async fn request_scheduled_confirm(
+        self: &Arc<Self>,
         session_id: Option<&str>,
         tool_name: &str,
+        tool_args: Value,
         risk_level: RiskLevel,
-    ) -> bool {
+        title: &str,
+    ) -> Option<haven_common::types::ConfirmId> {
         let step_id: haven_common::types::ConfirmId = haven_common::types::new_id("conf").into();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.confirm_waits.lock().await.insert(
-            step_id.clone(),
-            ConfirmWait {
-                risk_level,
-                session_id: session_id.map(str::to_string),
-                tx,
-            },
-        );
         let tid = session_id.unwrap_or("action").to_string();
-        // No confirmation callback wired (unit tests, degraded startup):
-        // there is no UI that could ever answer — fail closed so the tool
-        // never runs without approval, instead of blocking the session forever.
         if self.on_confirm_request.snap().is_none() {
-            self.confirm_waits.lock().await.remove(&step_id);
             tracing::info!(
-                "confirmation for tool '{}' on session {} rejected: no confirmation channel wired",
+                "scheduled confirmation for tool '{}' on session {} rejected: no confirmation channel wired",
                 tool_name,
                 tid
             );
-            return false;
+            return None;
         }
+        self.scheduled_confirms.lock().await.insert(
+            step_id.clone(),
+            ScheduledConfirmPending {
+                risk_level,
+                session_id: session_id.map(str::to_string),
+                tool_name: tool_name.to_string(),
+                tool_args,
+                title: title.to_string(),
+            },
+        );
         if let Some(cb) = self.on_confirm_request.snap() {
             cb(
                 step_id.clone(),
@@ -479,69 +466,98 @@ impl SessionExecutor {
                 risk_level,
             );
         }
-        let cancel = self.cancellation_token(&tid).await;
-        let decision = tokio::select! {
-            r = rx => r.ok(),
-            _ = cancel.cancelled() => None,
-            // Bounded, fail-closed fallback: an unanswered confirmation (e.g.
-            // the app window is closed when a scheduled action fires) must
-            // not wedge the session — or the sequential scheduled-action consumer —
-            // forever.
-            _ = tokio::time::sleep(CONFIRM_WAIT_TIMEOUT) => {
+        // Absolute fail-closed timer for closed/crashed UI. Interactive
+        // countdown starts when the dialog is shown (frontend), so queued
+        // confirms are not starved by arrival-time deadlines.
+        let executor = Arc::clone(self);
+        let timeout_id = step_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT).await;
+            if executor
+                .scheduled_confirms
+                .lock()
+                .await
+                .contains_key(&timeout_id)
+            {
                 tracing::warn!(
-                    "confirmation for tool '{}' on session {} timed out after {:?}; treating as rejected",
-                    tool_name,
-                    tid,
-                    CONFIRM_WAIT_TIMEOUT
+                    "scheduled confirmation {} timed out after {:?}; treating as rejected",
+                    timeout_id,
+                    SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT
                 );
-                None
+                let _ = executor.resolve_confirmation(&timeout_id, false).await;
             }
-        };
-        self.confirm_waits.lock().await.remove(&step_id);
-        match decision {
-            Some(true) => true,
-            Some(false) | None => {
-                tracing::info!(
-                    "confirmation for tool '{}' on session {} not approved (answer={:?})",
-                    tool_name,
-                    tid,
-                    decision
-                );
-                false
-            }
-        }
+        });
+        Some(step_id)
     }
 
     /// Resolve a pending safety-gateway confirmation and return the risk level
     /// and the owning session id, so the caller can trust the level for the
-    /// right conversation. The approval/denial itself is persisted on the real
-    /// `session_steps` row when `execute_step` completes the pending step (via
-    /// the `confirmed` returned by `execute_gated`); this method only unblocks
-    /// the ReAct loop waiting on the oneshot. Every step id handed here comes
-    /// from a `confirm:requested` payload, which is only emitted by
-    /// `await_confirmation` / pause-confirm request — so an id not present in
-    /// `confirm_waits` (and not in `awaiting_confirm`) is stale.
+    /// right conversation.
+    ///
+    /// Handles (1) scheduled-tool pending (R2 — execute/skip asynchronously)
+    /// and (2) ReAct pause-confirm (`awaiting_confirm`). An unknown id is stale.
     pub async fn resolve_confirmation(
-        &self,
+        self: &Arc<Self>,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
     ) -> anyhow::Result<Option<(RiskLevel, Option<String>)>> {
-        // Legacy / scheduled path: oneshot wait inside execute_gated.
-        if let Some(wait) = self.confirm_waits.lock().await.remove(step_id) {
-            let level = wait.risk_level;
-            let session_id = wait.session_id;
-            let _ = wait.tx.send(confirmed);
+        // Scheduled tool path: non-blocking request → resolve later.
+        if let Some(pending) = self.scheduled_confirms.lock().await.remove(step_id) {
+            let level = pending.risk_level;
+            let session_id = pending.session_id.clone();
+            let executor = Arc::clone(self);
+            tokio::spawn(async move {
+                executor.finish_scheduled_confirm(pending, confirmed).await;
+            });
             return Ok(Some((level, session_id)));
         }
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
-        if let Some((level, session_id)) = self
-            .resolve_confirm_pause(step_id, confirmed)
-            .await
-        {
+        if let Some((level, session_id)) = self.resolve_confirm_pause(step_id, confirmed).await {
             return Ok(Some((level, Some(session_id))));
         }
         Ok(None)
+    }
+
+    async fn finish_scheduled_confirm(&self, pending: ScheduledConfirmPending, confirmed: bool) {
+        let tool_name = pending.tool_name;
+        let title = pending.title;
+        if !confirmed {
+            if let Some(cb) = self.on_scheduled_confirm_outcome.snap() {
+                cb(
+                    title,
+                    format!(
+                        "Scheduled tool '{tool_name}' was NOT executed: \
+                         confirmation was declined or timed out."
+                    ),
+                );
+            }
+            return;
+        }
+        let outcome = self
+            .execute_gated(
+                pending.session_id.as_deref(),
+                &tool_name,
+                pending.tool_args,
+                CancellationToken::new(),
+                Some(true),
+                None,
+            )
+            .await;
+        let summary_chars = self
+            .notification_summary_chars
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let body = match outcome {
+            Ok(g) => {
+                let summary =
+                    crate::truncate_notification(&g.result.summary_text(), summary_chars);
+                format!("schedule tool '{tool_name}':\n{summary}")
+            }
+            Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),
+        };
+        if let Some(cb) = self.on_scheduled_confirm_outcome.snap() {
+            cb(title, body);
+        }
     }
 
     /// Safety-gateway pre-check used by `LoopHooks::before_tool` (Phase 5 / E3).

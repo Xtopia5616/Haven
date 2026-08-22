@@ -50,7 +50,6 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{facts}` — cross-session MEMORY fence (USER FACTS + Past excerpts), or empty;
 ///   resume patches this fence in place without rebuilding tools/skills
 /// - `{context}` — Additional context only (same-session window); episodes live in `{facts}`
-/// - `{history}` — "Steps so far" block, or empty
 /// - `{failure_diagnosis}` — shared tool-failure guidance
 ///   ([`TOOL_FAILURE_DIAGNOSIS`])
 /// - `{tool_notes}` — per-tool supplementary usage notes
@@ -71,21 +70,21 @@ General:\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
 Shell & background actions:\n\
-6. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll it with `action_status`. Use `actions` to see all background actions at once. The user also gets a push notification when a background action finishes.\n\
+  6. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll. Use `actions` to see all background actions at once (optional action_id for one). The user also gets a push notification when a background action finishes.\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
 Interaction & notifications:\n\
 8. Calling ask pauses the session until the user replies; their answer is injected as context for the next step.\n\
 9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
 Tool selection:\n\
 10. Simple, quick sessions: use built-in tools — they are fast, lightweight, and always available.\n\
- 11. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists above, call `load_mcp` with that server name (add `tool_names` when the server is large or returns `needs_selection`) or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
+  11. Complex, comprehensive sessions: prefer MCP servers and Skills — if the session matches a server or a skill in the lists above, call `load_mcp` with that server name (add `tool_names` when the server is large or returns `needs_selection`) or `load_skill` with that skill name to activate it first, then use its more powerful, specialized tools.\n\
 Failure handling:\n\
 12. {failure_diagnosis}\n\
 \n\
 {tool_notes}\n\
 Current session: {session}\n\
 \n\
-{context}{history}\n\
+{context}\n\
 What is your next step?\n";
 
 /// Canonical tool-failure diagnosis guidance, shared by the main system
@@ -100,7 +99,8 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 /// not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own.\n\
-- network: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
+- http: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
+- memory: Use recall(query, kind=fact|episode) to look up stored facts or past conversation episodes (same path as History). Use remember/forget only when the user explicitly asks to store or delete a fact.\n\
 - shell: Never run interactive commands that block waiting for input (interactive prompts, REPLs, editors, pagers, wizards) — they will hang forever because no one is there to answer. Use non-interactive flags (e.g. -y, --yes, -n) or supply all input up front instead.\n\
 - shell (background actions): After launching a background action, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the action's output when it finishes.";
 
@@ -109,7 +109,8 @@ pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a con
 
 /// User fact extraction (balanced_model). Expects a JSON array in response.
 /// The user content lists already-stored facts and a numbered conversation
-/// transcript (`[N] ...`); facts reference the supporting message by number.
+/// transcript (`[N] role: ...`); facts reference the supporting message by number.
+/// Short user confirmations may be paired with the preceding assistant question.
 pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable, generalizable facts about the user from a conversation. Return a JSON array. Each element has these fields:\n\
 - \"subject\": the entity the fact is about. Use \"user\" for facts about the person using Haven (their name, preferences, projects, tools). Use a specific entity name (project name, tool name, file path, organization) when the fact is about that entity rather than about the person — e.g. \"haven\" for \"the haven project lives at D:/Workspace/Haven\". Default to \"user\" when unsure.\n\
 - \"predicate\": a short, stable key naming the attribute. Reuse keys already present in the \"Known user facts\" list (name, birthday, email, city, timezone, works_at, project_path, language, likes, dislikes, uses, verbosity, shell, os, location, etc.). One key per concept, never one key per value: use a single \"likes\" for every liked thing — never \"likes_rust\", \"likes_pizza\". Prefer an existing key over inventing a new one; only create a new key when no existing key fits.\n\
@@ -117,16 +118,39 @@ pub const FACT_EXTRACTION_SYSTEM_PROMPT: &str = "You extract durable, generaliza
 - \"tags\": use ONLY from this set — identity (stable personal attributes), preference (likes, dislikes, wants, and output habits like language/verbosity), workspace (paths, project locations, environment, tools), project (project-specific context). Default to \"preference\" when unsure; at most 2 tags per fact.\n\
 - \"confidence\": a number from 0.5 to 1.0. Start at 0.6 for one explicit statement; raise toward 0.9-1.0 when the user re-confirms or states it emphatically; use 0.5 for weak or indirect signals. Brand-new facts below about 0.55 are dropped, so keep this honest.\n\
 - \"durability\": a number from 0.1 to 1.0 rating how long this fact stays useful. 0.9-1.0 for stable identity and long-term context that will matter for months (name, city, workplace, core project setup); 0.5-0.7 for ongoing preferences and habits that may change over time; 0.2-0.4 for facts that are useful only in the near term or tied to a specific situation. Default to 0.5 when unsure.\n\
-- \"message_index\": the [N] number of the conversation message supporting this fact; omit only when no message clearly supports it.\n\
+- \"message_index\": the [N] number of the conversation message supporting this fact; prefer the user line in an assistant+user pair; omit only when no message clearly supports it.\n\
 \n\
 Only extract facts that will still be true and useful weeks later, in unrelated conversations: stable identity attributes, ongoing preferences, and long-term context (projects, workspace layout, tools). Reject everything transient or one-off: current moods and busy states (\"I am busy today\", \"I love this right now\"), complaints or observations about a single session (\"the build is slow\", \"this error is annoying\"), details that only matter for the current conversation, and trivial tastes stated without intent to last (\"this font looks nice\"). When in doubt whether a fact will matter later, do not extract it.\n\
 \n\
-Only extract clear, explicit facts the user stated. The \"Known user facts\" list shows what is already stored:\n\
+Only extract clear facts the user stated or confirmed. Transcript lines are labeled `assistant:` / `user:` / `tool(name):`. Extra assistant turns and short tool observations are grounding only — never extract a fact from assistant claims or tool output alone. Short user replies (\"ok\", \"yes\", \"dark\", \"就要这个\") may confirm a preference only in light of the immediately preceding assistant question. The \"Known user facts\" list shows what is already stored:\n\
 - The user re-confirms an existing fact: output it again with the same key and a higher confidence — do not invent a new key.\n\
 - A single-valued attribute (name, project_path, works_at, language, verbosity, email, city, etc.) has changed: output the latest value under the same key.\n\
 - An existing fact that is unchanged and not re-confirmed: do not output it again.\n\
 \n\
 If no facts found, return []. Respond with ONLY the JSON array, no markdown, no explanation. NEVER extract secrets or credentials: API keys, tokens, passwords, and anything that looks like a secret must be omitted entirely.";
+
+/// Maintenance-time predicate alias merge (balanced_model). Input lists free
+/// predicate spellings with row counts; output is a JSON array of merge
+/// proposals so maintenance can collapse split keys onto canonical ones.
+/// Canonical key list is injected from
+/// `haven_memory::repositories::facts::CANONICAL_MERGE_TARGETS` via
+/// [`predicate_merge_system_prompt`] so the gate and prompt cannot drift.
+pub fn predicate_merge_system_prompt(canonical_keys: &[&str]) -> String {
+    format!(
+        "You propose predicate alias merges for a personal-fact store. Input is a list of predicate keys with how many fact rows use each key. Return a JSON array. Each element has:\n\
+- \"from\": a non-canonical / free-form predicate spelling to rewrite\n\
+- \"to\": the canonical key it should become\n\
+- \"confidence\": 0.0–1.0 how sure you are the meanings are the same\n\
+\n\
+Rules:\n\
+- Prefer well-known canonical keys: {}.\n\
+- Only propose merges when `from` and `to` clearly mean the SAME attribute (spelling variants, synonyms). Never merge likes with dislikes. Never invent brand-new `to` keys unless unavoidable.\n\
+- Skip already-canonical keys and one-off noisy keys you are unsure about. Never rewrite one canonical key into a different canonical key.\n\
+- At most 20 proposals. If nothing should merge, return [].\n\
+Respond with ONLY the JSON array, no markdown, no explanation.",
+        canonical_keys.join(", ")
+    )
+}
 
 /// Conversation compaction summary prefix (default_model). The transcript
 /// is appended after this text.
@@ -184,7 +208,6 @@ mod tests {
                 ("mcps", ""),
                 ("facts", ""),
                 ("context", ""),
-                ("history", ""),
                 ("tool_notes", TOOL_USAGE_NOTES),
             ],
         );
@@ -193,6 +216,7 @@ mod tests {
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Tool usage notes:"));
         assert!(out.contains("Current session: test session"));
+        assert!(!out.contains("Steps so far:"));
         assert!(out.ends_with("What is your next step?\n"));
     }
 }

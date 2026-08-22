@@ -1,10 +1,8 @@
-use async_trait::async_trait;
-use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::env;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::ToolResult;
 
 pub struct EnvTool {
     /// Output cap (chars) for environment listings.
@@ -21,8 +19,7 @@ pub enum EnvOperation {
     List,
 }
 
-/// Typed parameters for `EnvTool`. Entry ① (native `run`) and entry ②
-/// (`Tool::execute` with LLM JSON) both land in `EnvTool::run`.
+/// Typed parameters for `EnvTool`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct EnvParams {
     /// Operation to perform; defaults to `list`.
@@ -37,8 +34,6 @@ pub struct EnvParams {
 }
 
 impl EnvTool {
-    /// Entry ①: structured native interface (internal code calls — zero
-    /// serialization overhead). Entry ② deserializes JSON and delegates here.
     pub async fn run(
         &self,
         params: EnvParams,
@@ -119,82 +114,9 @@ impl Default for EnvTool {
     }
 }
 
-#[async_trait]
-impl Tool for EnvTool {
-    fn name(&self) -> String {
-        "env".into()
-    }
-    fn description(&self) -> String {
-        "Get or set environment variables".into()
-    }
-
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        match input["operation"].as_str() {
-            Some("set") | Some("unset") | Some("list") => RiskLevel::High,
-            _ => RiskLevel::Low,
-        }
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "operation": { "type": "string", "enum": ["get", "set", "unset", "list"] },
-                "name": { "type": "string", "description": "Environment variable name" },
-                "value": { "type": "string", "description": "Value for set operation" }
-            },
-            "required": ["operation"]
-        })
-    }
-
-    /// Entry ②: LLM JSON entry — convert/validate into `EnvParams`, then
-    /// land in the same implementation as entry ①.
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<EnvParams>(&self.name(), input)?;
-        self.run(params, cancel).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
-    use serde_json::json;
-
-    #[test]
-    fn test_env_tool_name() {
-        assert_eq!(EnvTool::default().name(), "env");
-    }
-
-    #[test]
-    fn test_env_tool_risk_level() {
-        assert_eq!(
-            EnvTool::default().risk_level(&json!({"operation": "get"})),
-            RiskLevel::Low
-        );
-        assert_eq!(
-            EnvTool::default().risk_level(&json!({"operation": "set"})),
-            RiskLevel::High
-        );
-        assert_eq!(
-            EnvTool::default().risk_level(&json!({"operation": "unset"})),
-            RiskLevel::High
-        );
-        assert_eq!(
-            EnvTool::default().risk_level(&json!({"operation": "list"})),
-            RiskLevel::High
-        );
-    }
-
-    #[test]
-    fn test_env_tool_input_schema() {
-        let schema = EnvTool::default().input_schema();
-        assert!(
-            schema["properties"]["operation"]["enum"]
-                .as_array()
-                .is_some()
-        );
-    }
 
     fn unique_var_name(tag: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -210,8 +132,12 @@ mod tests {
             env::set_var(&name, "hello");
         }
         let result = EnvTool::default()
-            .execute(
-                json!({"operation": "get", "name": name}),
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Get),
+                    name: Some(name.clone()),
+                    value: None,
+                },
                 CancellationToken::new(),
             )
             .await
@@ -230,8 +156,12 @@ mod tests {
             env::remove_var(&name);
         }
         let result = EnvTool::default()
-            .execute(
-                json!({"operation": "get", "name": name}),
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Get),
+                    name: Some(name),
+                    value: None,
+                },
                 CancellationToken::new(),
             )
             .await
@@ -243,7 +173,14 @@ mod tests {
     #[tokio::test]
     async fn test_env_get_requires_name() {
         let result = EnvTool::default()
-            .execute(json!({"operation": "get"}), CancellationToken::new())
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Get),
+                    name: None,
+                    value: None,
+                },
+                CancellationToken::new(),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -252,8 +189,12 @@ mod tests {
     async fn test_env_set_and_get_roundtrip() {
         let name = unique_var_name("SET");
         let result = EnvTool::default()
-            .execute(
-                json!({"operation": "set", "name": name, "value": "v1"}),
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Set),
+                    name: Some(name.clone()),
+                    value: Some("v1".into()),
+                },
                 CancellationToken::new(),
             )
             .await
@@ -269,8 +210,12 @@ mod tests {
     #[tokio::test]
     async fn test_env_set_requires_value() {
         let result = EnvTool::default()
-            .execute(
-                json!({"operation": "set", "name": unique_var_name("SET")}),
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Set),
+                    name: Some(unique_var_name("SET")),
+                    value: None,
+                },
                 CancellationToken::new(),
             )
             .await;
@@ -284,8 +229,12 @@ mod tests {
             env::set_var(&name, "temp");
         }
         let result = EnvTool::default()
-            .execute(
-                json!({"operation": "unset", "name": name.clone()}),
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::Unset),
+                    name: Some(name.clone()),
+                    value: None,
+                },
                 CancellationToken::new(),
             )
             .await
@@ -298,7 +247,14 @@ mod tests {
     #[tokio::test]
     async fn test_env_list_returns_variables() {
         let result = EnvTool::default()
-            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::List),
+                    name: None,
+                    value: None,
+                },
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(result.success);
@@ -309,19 +265,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_env_unknown_operation() {
-        let result = EnvTool::default()
-            .execute(json!({"operation": "bogus"}), CancellationToken::new())
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_env_execute_cancelled() {
+    async fn test_env_run_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let result = EnvTool::default()
-            .execute(json!({"operation": "list"}), cancel)
+            .run(
+                EnvParams {
+                    operation: Some(EnvOperation::List),
+                    name: None,
+                    value: None,
+                },
+                cancel,
+            )
             .await;
         assert!(result.is_err());
     }

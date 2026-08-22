@@ -1,6 +1,5 @@
 use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
-use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStep {
@@ -90,7 +89,7 @@ impl Database {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("step"));
-        let now = Utc::now().to_rfc3339();
+        let now = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute(
             "INSERT INTO session_steps (id, session_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
@@ -144,7 +143,7 @@ impl Database {
         confirmed: Option<bool>,
         id: &str,
     ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
+        let now = now_rfc3339_millis();
         let conn = self.conn();
         conn.execute(
             "INSERT OR IGNORE INTO session_steps (id, session_id, step_number, tool_name, input, action_tool, action_input, status, is_high_risk, created_at, silent, confirmed)
@@ -177,7 +176,7 @@ impl Database {
         observation: &str,
         success: bool,
     ) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
+        let now = now_rfc3339_millis();
         let status = if success { "completed" } else { "failed" };
         let conn = self.conn();
         conn.execute(
@@ -195,7 +194,7 @@ impl Database {
         session_id: &str,
         observation: &str,
     ) -> anyhow::Result<usize> {
-        let now = Utc::now().to_rfc3339();
+        let now = now_rfc3339_millis();
         let conn = self.conn();
         let n = conn.execute(
             "UPDATE session_steps SET status = 'failed', observation = ?1, completed_at = ?2 \

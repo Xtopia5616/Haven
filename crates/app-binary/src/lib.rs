@@ -562,6 +562,16 @@ pub fn run() {
                 },
             ));
 
+            // Foreground tool live-output previews (`agent:tool_output`) so
+            // shell (and future long-running tools) can expand the chat card
+            // while still running.
+            let tool_output_handle = handle.clone();
+            state.tools.live_outputs.set_event_sink(Arc::new(
+                move |event: String, payload: serde_json::Value| {
+                    let _ = tool_output_handle.emit(&event, payload);
+                },
+            ));
+
             let cfg = state.config_loader.lock().unwrap();
             let is_hold = cfg.config().hotkey.mode == haven_common::types::HotkeyMode::Hold;
             let key_binding = cfg.config().hotkey.key_binding.clone();
@@ -1206,6 +1216,10 @@ mod tests {
                     cumulative_total_tokens: 3,
                     cumulative_cost_usd: None,
                     context_window: None,
+                    step_number: Some(1),
+                    duration_ms: Some(42),
+                    role: Some("default".into()),
+                    has_cost: false,
                 },
                 "agent:usage",
             ),

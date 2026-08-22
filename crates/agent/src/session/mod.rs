@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -39,14 +40,13 @@ pub type RunHandler =
 
 const DISPATCH_LOG_INTERVAL: u64 = 200; // log every ~20s instead of every 100ms
 
-/// Bounded wait for a user confirmation. A pending confirmation whose
-/// frontend answer never arrives (window closed, dialog lost, scheduled action fired
-/// with no UI attached) must fail CLOSED instead of blocking the session — or,
-/// for the scheduled-action path, the whole sequential scheduled-action consumer — for an
-/// unbounded time. The bound is short enough that a headless queue recovers
-/// quickly, yet still gives an interactive user a comfortable window to
-/// approve/deny a dialog.
-const CONFIRM_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Absolute fail-closed ceiling for an unanswered **scheduled** confirmation
+/// (R2). The interactive UI countdown (120s) starts when the dialog is
+/// **shown**, not when the request arrives — so queued confirms behind a
+/// visible dialog are not starved. This longer backend timer only covers the
+/// closed-UI / crashed-frontend case so pending entries cannot live forever.
+pub(crate) const SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionStatus {
@@ -216,18 +216,26 @@ type ConfirmRequestCallback =
 /// transition (busy indicators, status chip, session list refresh).
 type SessionErrorCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
 
-/// A pending safety-gateway confirmation wait, keyed by a generated step id
-/// in `SessionExecutor::confirm_waits`. The executing session blocks on the oneshot
-/// receiver until the frontend resolves the confirmation via
-/// `resolve_confirmation` (or the session is cancelled).
-struct ConfirmWait {
+/// Non-blocking scheduled-tool confirmation pending (R2). Keyed by `conf-*`
+/// in `SessionExecutor::scheduled_confirms`. The fired-action consumer emits
+/// `confirm:requested` and continues; `resolve_confirmation` (or the
+/// `SCHEDULED_CONFIRM_TIMEOUT` timer) later executes or skips the tool.
+struct ScheduledConfirmPending {
     risk_level: RiskLevel,
-    /// The session (if any) the tool call belonged to. Resolving the wait
-    /// returns it so the app layer can record a "trust for this conversation"
-    /// approval against the right session id.
+    /// Owning session for trust-recording; `None` for headless fires.
     session_id: Option<String>,
-    tx: tokio::sync::oneshot::Sender<bool>,
+    tool_name: String,
+    tool_args: Value,
+    /// Notification title from the scheduled action (outcome toast).
+    title: String,
 }
+
+/// Outcome toast for a resolved scheduled confirm (`title`, `body`).
+type ScheduledConfirmOutcomeCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
+
+/// Fired from [`SessionExecutor::cleanup_session_maps`] so sidecars (inference
+/// MEMORY dirty maps, etc.) can drop per-session state.
+type SessionCleanupCallback = OnceHandler<dyn Fn(String) + Send + Sync>;
 
 /// Result of a safety-gated tool execution: the tool result plus the
 /// risk level and confirmation state recorded for the step.
@@ -290,16 +298,25 @@ pub struct SessionExecutor {
     /// Explicit confirm-awaiting batch per session (Phase 5 / E3). Mirrored
     /// into `ReActSnapshot.awaiting_confirm` on pause and restored on resume.
     awaiting_confirm: Arc<Mutex<HashMap<String, crate::types::ConfirmPending>>>,
-    /// Pending user confirmations for safety-gated tool calls, keyed by the
-    /// generated step id reported in the `confirm:requested` event.
-    /// Used by the legacy blocking path (`await_confirmation`) for scheduled
-    /// / headless tool runs; ReAct sessions use `awaiting_confirm` instead.
-    confirm_waits: Arc<Mutex<HashMap<haven_common::types::ConfirmId, ConfirmWait>>>,
+    /// Pending scheduled-tool confirmations (R2), keyed by the `conf-*` id
+    /// reported in `confirm:requested`. ReAct sessions use `awaiting_confirm`
+    /// (pause/continue) instead — tool futures never block.
+    scheduled_confirms:
+        Arc<Mutex<HashMap<haven_common::types::ConfirmId, ScheduledConfirmPending>>>,
     /// Coordinated lifecycle for checkpointed stream text (checkpoint /
     /// promote / discard), shared with the agent loop and the end/rollback
     /// paths.
     pub partials: Arc<crate::partial::PartialStore>,
     pub on_confirm_request: ConfirmRequestCallback,
+    /// Wired by [`crate::layer::AgentLayer::start`] to surface scheduled
+    /// confirm outcomes as notifications.
+    pub on_scheduled_confirm_outcome: ScheduledConfirmOutcomeCallback,
+    /// Wired by [`crate::layer::AgentLayer::start`] to clear inference
+    /// mid-run MEMORY bookkeeping when a session leaves the working set.
+    pub on_session_cleanup: SessionCleanupCallback,
+    /// Notification body truncation for scheduled-tool outcomes (matches
+    /// `ContextLimitsConfig::notification_summary_chars`).
+    pub notification_summary_chars: AtomicUsize,
     pub on_session_error: SessionErrorCallback,
 }
 
@@ -327,10 +344,18 @@ impl SessionExecutor {
             action_completions: Arc::new(Mutex::new(HashMap::new())),
             awaiting_answer: Arc::new(Mutex::new(HashMap::new())),
             awaiting_confirm: Arc::new(Mutex::new(HashMap::new())),
-            confirm_waits: Arc::new(Mutex::new(HashMap::new())),
+            scheduled_confirms: Arc::new(Mutex::new(HashMap::new())),
             on_confirm_request: OnceHandler::new(),
+            on_scheduled_confirm_outcome: OnceHandler::new(),
+            on_session_cleanup: OnceHandler::new(),
+            notification_summary_chars: AtomicUsize::new(800),
             on_session_error: OnceHandler::new(),
         }
+    }
+
+    pub fn set_notification_summary_chars(&self, chars: usize) {
+        self.notification_summary_chars
+            .store(chars.max(64), Ordering::Relaxed);
     }
 }
 

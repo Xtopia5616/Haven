@@ -122,6 +122,47 @@ fn migrate_legacy_top_level_audio(value: &toml::Value, config: &mut AppConfig) {
     }
 }
 
+/// Remap renamed/removed builtin tool settings keys onto their successors.
+/// Prefer an existing new-key entry over the orphan; drop keys that folded
+/// into another tool without a 1:1 successor when the successor already has
+/// settings.
+fn migrate_tool_settings_keys(config: &mut AppConfig) -> bool {
+    // old → Some(new) rename; old → None drop (folded into another tool).
+    const RENAMES: &[(&str, Option<&str>)] = &[
+        ("facts", Some("memory")),
+        ("network", Some("http")),
+        ("self", Some("haven")),
+        ("action_status", Some("actions")),
+        ("env", Some("system")),
+        ("power", Some("system")),
+        ("registry", Some("system")),
+        ("agents_list", Some("agent")),
+        ("message_send", Some("agent")),
+        ("message_inbox", Some("agent")),
+        ("message_reply", Some("agent")),
+        ("message_request", Some("agent")),
+        ("agent_profile", Some("agent")),
+        ("agent_spawn", Some("agent")),
+    ];
+    let mut changed = false;
+    for &(old, new) in RENAMES {
+        let Some(old_cfg) = config.tool_settings.remove(old) else {
+            continue;
+        };
+        changed = true;
+        if let Some(new_name) = new {
+            config
+                .tool_settings
+                .entry(new_name.to_string())
+                .or_insert(old_cfg);
+            tracing::info!("migrating tool_settings.{old} → tool_settings.{new_name}");
+        } else {
+            tracing::info!("dropping obsolete tool_settings.{old}");
+        }
+    }
+    changed
+}
+
 impl ConfigLoader {
     /// Returns the default config path: `%APPDATA%/haven/config.toml` on Windows.
     pub fn default_path() -> PathBuf {
@@ -183,6 +224,13 @@ impl ConfigLoader {
                 // top-level `[audio]`. Prefer that over default `media.audio`
                 // so a Save does not permanently drop VAD/sample-rate tweaks.
                 migrate_legacy_top_level_audio(&value, &mut cfg);
+                let settings_migrated = migrate_tool_settings_keys(&mut cfg);
+                if settings_migrated {
+                    // Persist remapped keys so orphans do not linger.
+                    if let Ok(toml_str) = toml::to_string_pretty(&cfg) {
+                        let _ = std::fs::write(path, toml_str);
+                    }
+                }
                 cfg
             }
             Err(e) => {

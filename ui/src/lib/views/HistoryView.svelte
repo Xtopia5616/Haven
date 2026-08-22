@@ -760,7 +760,7 @@
 					/>
 				</div>
 			</div>
-			<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 facts 工具的 remember / forget 操作更新这里。</p>
+			<p class="model-hint">Haven 记忆中的全部事实（身份、偏好、工作区等）。你可以手动添加、删除；agent 也会在你明确要求时用 memory 工具的 remember / forget 操作更新这里；检索可用 recall（fact / episode）。</p>
 			<input
 				type="text"
 				class="md-input"

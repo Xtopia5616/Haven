@@ -1,9 +1,6 @@
-use async_trait::async_trait;
-use haven_common::types::RiskLevel;
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::ToolResult;
 
 pub struct PowerTool;
 
@@ -17,8 +14,7 @@ pub enum PowerOperation {
     Hibernate,
 }
 
-/// Typed parameters for `PowerTool`. Entry ① (native `run`) and entry ②
-/// (`Tool::execute` with LLM JSON) both land in `PowerTool::run`.
+/// Typed parameters for `PowerTool`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct PowerParams {
     /// Operation to perform; defaults to `status`.
@@ -27,8 +23,6 @@ pub struct PowerParams {
 }
 
 impl PowerTool {
-    /// Entry ①: structured native interface (internal code calls — zero
-    /// serialization overhead). Entry ② deserializes JSON and delegates here.
     pub async fn run(
         &self,
         params: PowerParams,
@@ -56,40 +50,6 @@ impl PowerTool {
                 Ok(ToolResult::ok(serde_json::json!({"hibernate": true})))
             }
         }
-    }
-}
-
-#[async_trait]
-impl Tool for PowerTool {
-    fn name(&self) -> String {
-        "power".into()
-    }
-    fn description(&self) -> String {
-        "Lock, sleep, hibernate, or query battery status".into()
-    }
-
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        match input["operation"].as_str() {
-            Some("lock") | Some("sleep") | Some("hibernate") => RiskLevel::High,
-            _ => RiskLevel::Safe,
-        }
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "operation": { "type": "string", "enum": ["status", "lock", "sleep", "hibernate"] }
-            },
-            "required": ["operation"]
-        })
-    }
-
-    /// Entry ②: LLM JSON entry — convert/validate into `PowerParams`, then
-    /// land in the same implementation as entry ①.
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<PowerParams>(&self.name(), input)?;
-        self.run(params, cancel).await
     }
 }
 
@@ -207,48 +167,16 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
-    use serde_json::json;
-
-    #[test]
-    fn test_power_tool_name() {
-        assert_eq!(PowerTool.name(), "power");
-    }
-
-    #[test]
-    fn test_power_tool_risk_level() {
-        assert_eq!(
-            PowerTool.risk_level(&json!({"operation": "status"})),
-            RiskLevel::Safe
-        );
-        assert_eq!(
-            PowerTool.risk_level(&json!({"operation": "lock"})),
-            RiskLevel::High
-        );
-        assert_eq!(
-            PowerTool.risk_level(&json!({"operation": "sleep"})),
-            RiskLevel::High
-        );
-        assert_eq!(
-            PowerTool.risk_level(&json!({"operation": "hibernate"})),
-            RiskLevel::High
-        );
-    }
-
-    #[test]
-    fn test_power_tool_input_schema() {
-        let schema = PowerTool.input_schema();
-        assert!(
-            schema["properties"]["operation"]["enum"]
-                .as_array()
-                .is_some()
-        );
-    }
 
     #[tokio::test]
-    async fn test_power_execute_status() {
+    async fn test_power_run_status() {
         let result = PowerTool
-            .execute(json!({"operation": "status"}), CancellationToken::new())
+            .run(
+                PowerParams {
+                    operation: Some(PowerOperation::Status),
+                },
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(result.success);
@@ -267,9 +195,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_power_execute_default_status() {
+    async fn test_power_run_default_status() {
         let result = PowerTool
-            .execute(json!({}), CancellationToken::new())
+            .run(
+                PowerParams { operation: None },
+                CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert!(result.success);
@@ -280,19 +211,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_power_execute_unknown_operation() {
-        let result = PowerTool
-            .execute(json!({"operation": "bogus"}), CancellationToken::new())
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_power_execute_cancelled() {
+    async fn test_power_run_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let result = PowerTool
-            .execute(json!({"operation": "status"}), cancel)
+            .run(
+                PowerParams {
+                    operation: Some(PowerOperation::Status),
+                },
+                cancel,
+            )
             .await;
         assert!(result.is_err());
     }

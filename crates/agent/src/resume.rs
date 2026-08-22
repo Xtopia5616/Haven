@@ -26,7 +26,7 @@
 //! `message_id` and is idempotent (duplicate id is skipped).
 
 use crate::AgentLayer;
-use crate::prompt::SystemPromptBuilder;
+
 use crate::session::SessionStatus;
 use crate::types::{
     BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript,
@@ -297,35 +297,17 @@ impl AgentLayer {
         result
     }
 
-    /// S3 / Phase 7 / G7: surgically replace the MEMORY fence in `canonical[0]`.
-    /// Never calls full `build_for_session` — that would rebuild the tools /
-    /// skills / MCP **short index** (intentionally frozen for the run) and
-    /// drop Additional context when history is empty. Loaded skill/MCP tool
-    /// schemas live in the API `tools[]` list (`build_tool_definitions_for_session`),
-    /// not in this prompt index.
+    /// S3 / Phase 7 / G7 / M2: surgically replace the MEMORY fence in
+    /// `canonical[0]` via [`SystemPromptBuilder::patch_canonical_memory_fence`].
     async fn patch_canonical_memory(
         &self,
         session_id: &str,
         description: &str,
         canonical: &mut [CanonicalMessage],
     ) {
-        let Some(sys) = canonical.first_mut() else {
-            return;
-        };
-        if sys.role != CanonicalRole::System {
-            return;
-        }
-        let sections = self
-            .prompt_builder
-            .build_memory_sections(description, Some(session_id))
+        self.prompt_builder
+            .patch_canonical_memory_fence(session_id, description, canonical)
             .await;
-        let block = SystemPromptBuilder::render_memory_block(&sections);
-        for part in &mut sys.content {
-            if let ContentPart::Text(text) = part {
-                *text = SystemPromptBuilder::patch_system_memory(text, &block);
-                return;
-            }
-        }
     }
 
     async fn run_session_resumed(
@@ -617,7 +599,7 @@ impl AgentLayer {
         // S2: exclude this session from Past conversation excerpts.
         let system_prompt = self
             .prompt_builder
-            .build_for_session(description, &[], &history_lines, Some(session_id))
+            .build_for_session(description, &history_lines, Some(session_id))
             .await;
         tracing::debug!("run_session: system_prompt {} chars", system_prompt.len());
 

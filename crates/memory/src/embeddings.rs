@@ -33,9 +33,21 @@ pub const FACT_EMBED_BACKLOG_LIMIT: usize = 128;
 pub const EPISODE_EMBED_BACKLOG_LIMIT: usize = 64;
 
 /// Cap on embeddings scored per brute-force search when no tighter domain
-/// filter applies (P1-4). Prefer newest rows; sqlite-vec is deferred until
-/// fact volume reaches ~10k.
+/// filter applies (P1-4). Prefer newest rows; above [`ANN_ACTIVATE_MIN`] the
+/// LSH probe path replaces unbounded brute force (M5).
 pub const EMBEDDING_SEARCH_SCAN_CAP: usize = 256;
+
+/// Activate pure-Rust LSH candidate probing once a (entity_type, model)
+/// partition reaches this many rows (M5). Below the threshold the existing
+/// newest-first scan cap stays in force.
+pub const ANN_ACTIVATE_MIN: usize = 4096;
+
+/// Bits in the LSH signature (M5). 16 bits → 65 536 buckets; Hamming-1
+/// probes stay cheap while still collapsing a 10k+ partition.
+const LSH_BITS: u32 = 16;
+
+/// Max candidates pulled from LSH buckets before exact cosine re-rank (M5).
+const LSH_PROBE_CANDIDATE_CAP: usize = 1024;
 
 /// Serialize an f32 vector as a little-endian byte blob for SQLite storage.
 pub fn encode_vector(v: &[f32]) -> Vec<u8> {
@@ -69,6 +81,51 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     dot / (na.sqrt() * nb.sqrt())
 }
 
+/// Deterministic unit-ish component for LSH hyperplane `bit` at dimension `i`
+/// (M5). No stored plane table — same (bit, i) always yields the same sign
+/// contribution so buckets stay stable across process restarts.
+fn lsh_plane_component(bit: u32, i: usize) -> f32 {
+    let mut x = (bit as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add((i as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    // Map to [-1, 1]
+    let u = (x >> 40) as u32;
+    (u as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+}
+
+/// Random-projection LSH bucket for `vec` (M5). Empty vectors hash to 0.
+pub fn lsh_bucket(vec: &[f32]) -> i64 {
+    if vec.is_empty() {
+        return 0;
+    }
+    let mut bucket: u64 = 0;
+    for bit in 0..LSH_BITS {
+        let mut dot = 0.0f32;
+        for (i, &v) in vec.iter().enumerate() {
+            dot += v * lsh_plane_component(bit, i);
+        }
+        if dot >= 0.0 {
+            bucket |= 1u64 << bit;
+        }
+    }
+    bucket as i64
+}
+
+/// Buckets at Hamming distance ≤ 1 from `bucket` (self included) for LSH
+/// probing (M5).
+fn lsh_probe_buckets(bucket: i64) -> Vec<i64> {
+    let base = bucket as u64;
+    let mut out = Vec::with_capacity(1 + LSH_BITS as usize);
+    out.push(bucket);
+    for bit in 0..LSH_BITS {
+        out.push((base ^ (1u64 << bit)) as i64);
+    }
+    out
+}
+
 fn row_to_embedded(row: &rusqlite::Row) -> rusqlite::Result<EmbeddedText> {
     let vector_blob: Vec<u8> = row.get(3)?;
     Ok(EmbeddedText {
@@ -99,6 +156,7 @@ impl Database {
         let now = chrono::Utc::now().to_rfc3339();
         let blob = encode_vector(vector);
         let conn = self.conn();
+        let bucket = lsh_bucket(vector);
         conn.execute(
             "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
@@ -106,8 +164,33 @@ impl Database {
              DO UPDATE SET vector = excluded.vector, text = excluded.text, updated_at = excluded.updated_at",
             rusqlite::params![entity_type, entity_id, model, blob, text, now],
         )?;
+        conn.execute(
+            "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(entity_type, entity_id, model)
+             DO UPDATE SET bucket = excluded.bucket",
+            rusqlite::params![entity_type, entity_id, model, bucket],
+        )?;
         self.cache_invalidate_embeddings(entity_type);
         Ok(())
+    }
+
+    /// Count embeddings for one domain + model (M5 activation gate).
+    pub fn count_embeddings_for_model(
+        &self,
+        entity_type: &str,
+        model: &str,
+    ) -> anyhow::Result<usize> {
+        if model.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_embeddings WHERE entity_type = ?1 AND model = ?2",
+            rusqlite::params![entity_type, model],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
     }
 
     pub fn get_embedding(
@@ -388,8 +471,10 @@ impl Database {
     /// - `fact_subject`: only embeddings whose fact row has this subject
     /// - `exclude_session_id`: drop episode entities owned by this session
     ///
-    /// Candidate set is bounded by `max(limit * 4, EMBEDDING_SEARCH_SCAN_CAP)`
-    /// newest matching rows so prompt build stays cheap before sqlite-vec.
+    /// Below [`ANN_ACTIVATE_MIN`] the candidate set is bounded by
+    /// `max(limit * 4, EMBEDDING_SEARCH_SCAN_CAP)` newest matching rows.
+    /// At/above that size, LSH bucket probing (M5) replaces the newest-only
+    /// scan so older high-similarity rows are still reachable.
     pub fn search_embeddings_filtered(
         &self,
         entity_type: &str,
@@ -402,14 +487,29 @@ impl Database {
         if limit == 0 || model.is_empty() {
             return Ok(Vec::new());
         }
-        let scan_cap = (limit.saturating_mul(4)).max(EMBEDDING_SEARCH_SCAN_CAP);
-        let candidates = self.list_embeddings_for_search(
-            entity_type,
-            model,
-            scan_cap,
-            fact_subject,
-            exclude_session_id,
-        )?;
+        let total = self.count_embeddings_for_model(entity_type, model)?;
+        let use_ann = total >= ANN_ACTIVATE_MIN
+            && self.embedding_lsh_ready_for_ann(entity_type, model, total)?;
+        let candidates = if use_ann {
+            let probe_cap = (limit.saturating_mul(8)).max(LSH_PROBE_CANDIDATE_CAP);
+            self.list_embeddings_via_lsh(
+                entity_type,
+                model,
+                query_vec,
+                probe_cap,
+                fact_subject,
+                exclude_session_id,
+            )?
+        } else {
+            let scan_cap = (limit.saturating_mul(4)).max(EMBEDDING_SEARCH_SCAN_CAP);
+            self.list_embeddings_for_search(
+                entity_type,
+                model,
+                scan_cap,
+                fact_subject,
+                exclude_session_id,
+            )?
+        };
         let mut hits: Vec<(EmbeddedText, f64)> = candidates
             .into_iter()
             .map(|e| {
@@ -420,6 +520,129 @@ impl Database {
         hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(limit);
         Ok(hits)
+    }
+
+    /// True when LSH side-table coverage matches the embedding partition so
+    /// ANN probing will not silently hide unbucketed rows (M5).
+    pub fn embedding_lsh_ready_for_ann(
+        &self,
+        entity_type: &str,
+        model: &str,
+        embed_count: usize,
+    ) -> anyhow::Result<bool> {
+        if model.is_empty() || embed_count < ANN_ACTIVATE_MIN {
+            return Ok(false);
+        }
+        let conn = self.conn();
+        let lsh_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM embedding_lsh WHERE entity_type = ?1 AND model = ?2",
+            rusqlite::params![entity_type, model],
+            |r| r.get(0),
+        )?;
+        Ok(lsh_count as usize >= embed_count)
+    }
+
+    /// True when any embedding for `model` lacks an LSH bucket (M5 rebuild gate).
+    pub fn embedding_lsh_lagging(&self, model: &str) -> anyhow::Result<bool> {
+        if model.is_empty() {
+            return Ok(false);
+        }
+        let conn = self.conn();
+        let embeds: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_embeddings WHERE model = ?1",
+            rusqlite::params![model],
+            |r| r.get(0),
+        )?;
+        let lsh: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM embedding_lsh WHERE model = ?1",
+            rusqlite::params![model],
+            |r| r.get(0),
+        )?;
+        Ok(lsh < embeds)
+    }
+
+    /// LSH candidate fetch for large partitions (M5). Probes the query bucket
+    /// and Hamming-1 neighbors with the same SQL domain filters as the brute
+    /// path; falls back to newest scan when the probe is empty.
+    fn list_embeddings_via_lsh(
+        &self,
+        entity_type: &str,
+        model: &str,
+        query_vec: &[f32],
+        probe_cap: usize,
+        fact_subject: Option<&str>,
+        exclude_session_id: Option<&str>,
+    ) -> anyhow::Result<Vec<EmbeddedText>> {
+        let buckets = lsh_probe_buckets(lsh_bucket(query_vec));
+        let placeholders = buckets
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        bind.push(Box::new(entity_type.to_string()));
+        bind.push(Box::new(model.to_string()));
+        for b in &buckets {
+            bind.push(Box::new(*b));
+        }
+
+        let mut sql = String::from(
+            "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
+                    e.created_at, e.updated_at
+             FROM memory_embeddings e
+             INNER JOIN embedding_lsh l
+               ON l.entity_type = e.entity_type
+              AND l.entity_id = e.entity_id
+              AND l.model = e.model ",
+        );
+        if entity_type == entity_kind::FACT && fact_subject.is_some_and(|s| !s.is_empty()) {
+            sql.push_str("INNER JOIN facts f ON f.id = e.entity_id ");
+        }
+        sql.push_str(&format!(
+            "WHERE e.entity_type = ? AND e.model = ? AND l.bucket IN ({placeholders}) "
+        ));
+        if entity_type == entity_kind::FACT
+            && let Some(subject) = fact_subject.filter(|s| !s.is_empty())
+        {
+            sql.push_str("AND f.subject = ? ");
+            bind.push(Box::new(subject.to_string()));
+        }
+        if entity_type == entity_kind::EPISODE
+            && let Some(sid) = exclude_session_id.filter(|s| !s.is_empty())
+        {
+            sql.push_str(
+                "AND e.entity_id NOT IN (
+                     SELECT id FROM messages WHERE session_id = ?
+                     UNION ALL
+                     SELECT id FROM memory_episodes WHERE session_id = ?
+                 ) ",
+            );
+            bind.push(Box::new(sid.to_string()));
+            bind.push(Box::new(sid.to_string()));
+        }
+        sql.push_str("ORDER BY e.updated_at DESC LIMIT ?");
+        bind.push(Box::new(probe_cap as i64));
+
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(params.as_slice(), row_to_embedded)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        if out.is_empty() {
+            let scan_cap = probe_cap.min(EMBEDDING_SEARCH_SCAN_CAP.saturating_mul(4));
+            return self.list_embeddings_for_search(
+                entity_type,
+                model,
+                scan_cap,
+                fact_subject,
+                exclude_session_id,
+            );
+        }
+        Ok(out)
     }
 
     /// Newest embeddings for one domain + model, optionally narrowed by fact
@@ -800,6 +1023,7 @@ impl Database {
     pub fn clear_embeddings(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
         let deleted = conn.execute("DELETE FROM memory_embeddings", [])? as u64;
+        let _ = conn.execute("DELETE FROM embedding_lsh", []);
         self.cache_invalidate_embeddings(entity_kind::FACT);
         self.cache_invalidate_embeddings(entity_kind::EPISODE);
         Ok(deleted)
@@ -818,11 +1042,67 @@ impl Database {
                  AND entity_id NOT IN (SELECT id FROM memory_episodes))",
             [],
         )? as u64;
+        let _ = conn.execute(
+            "DELETE FROM embedding_lsh WHERE
+                (entity_type, entity_id, model) NOT IN (
+                    SELECT entity_type, entity_id, model FROM memory_embeddings
+                )",
+            [],
+        );
         if deleted > 0 {
             self.cache_invalidate_embeddings(entity_kind::FACT);
             self.cache_invalidate_embeddings(entity_kind::EPISODE);
         }
         Ok(deleted)
+    }
+
+    /// Rebuild LSH buckets for every embedding of `model` (M5). Best-effort
+    /// maintenance hook after model switches / partial index lag. Runs in one
+    /// transaction so a crash cannot leave a half-built side table.
+    pub fn rebuild_embedding_lsh(&self, model: &str) -> anyhow::Result<u64> {
+        if model.is_empty() {
+            return Ok(0);
+        }
+        let rows: Vec<(String, String, Vec<f32>)> = {
+            let conn = self.conn();
+            let mut stmt = conn.prepare(
+                "SELECT entity_type, entity_id, vector FROM memory_embeddings WHERE model = ?1",
+            )?;
+            let mapped = stmt.query_map(rusqlite::params![model], |row| {
+                let entity_type: String = row.get(0)?;
+                let entity_id: String = row.get(1)?;
+                let blob: Vec<u8> = row.get(2)?;
+                Ok((entity_type, entity_id, decode_vector(&blob)))
+            })?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<u64> {
+            let mut n = 0u64;
+            for (entity_type, entity_id, vector) in &rows {
+                let bucket = lsh_bucket(vector);
+                conn.execute(
+                    "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(entity_type, entity_id, model)
+                     DO UPDATE SET bucket = excluded.bucket",
+                    rusqlite::params![entity_type, entity_id, model, bucket],
+                )?;
+                n += 1;
+            }
+            Ok(n)
+        })();
+        match result {
+            Ok(n) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(n)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 }
 
@@ -1344,5 +1624,73 @@ mod tests {
             db.list_embeddings(entity_kind::FACT).unwrap().is_empty(),
             "fact mutation must invalidate the embeddings list cache"
         );
+    }
+
+    #[test]
+    fn lsh_bucket_is_deterministic() {
+        let v = vec![0.1f32, -0.2, 0.5, 0.0, 1.0];
+        assert_eq!(lsh_bucket(&v), lsh_bucket(&v));
+        assert_eq!(lsh_bucket(&[]), 0);
+    }
+
+    #[test]
+    fn save_embedding_writes_lsh_bucket() {
+        let db = db();
+        db.save_embedding(entity_kind::FACT, "f1", "m", &[1.0, 0.0, 0.5], "a")
+            .unwrap();
+        let bucket: i64 = db
+            .conn()
+            .query_row(
+                "SELECT bucket FROM embedding_lsh WHERE entity_type = ?1 AND entity_id = ?2 AND model = ?3",
+                rusqlite::params![entity_kind::FACT, "f1", "m"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bucket, lsh_bucket(&[1.0, 0.0, 0.5]));
+        assert_eq!(db.count_embeddings_for_model(entity_kind::FACT, "m").unwrap(), 1);
+        assert_eq!(db.count_embeddings_for_model(entity_kind::FACT, "").unwrap(), 0);
+    }
+
+    #[test]
+    fn lsh_probe_path_returns_near_neighbors() {
+        let db = db();
+        let target = vec![1.0f32, 0.0, 0.0, 0.0];
+        db.save_embedding(entity_kind::FACT, "near", "m", &target, "near")
+            .unwrap();
+        db.save_embedding(entity_kind::FACT, "far", "m", &[-1.0, 0.0, 0.0, 0.0], "far")
+            .unwrap();
+        // Force LSH path regardless of ANN_ACTIVATE_MIN.
+        let candidates = db
+            .list_embeddings_via_lsh(entity_kind::FACT, "m", &target, 16, None, None)
+            .unwrap();
+        assert!(
+            candidates.iter().any(|e| e.entity_id == "near"),
+            "LSH probe must include the identical vector"
+        );
+        let hits = db
+            .search_embeddings_filtered(entity_kind::FACT, &target, 1, "m", None, None)
+            .unwrap();
+        assert_eq!(hits[0].0.entity_id, "near");
+    }
+
+    #[test]
+    fn rebuild_embedding_lsh_refills_side_table() {
+        let db = db();
+        db.save_embedding(entity_kind::FACT, "f1", "m", &[0.25, 0.75], "x")
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM embedding_lsh", [])
+            .unwrap();
+        let n = db.rebuild_embedding_lsh("m").unwrap();
+        assert_eq!(n, 1);
+        let bucket: i64 = db
+            .conn()
+            .query_row(
+                "SELECT bucket FROM embedding_lsh WHERE entity_id = 'f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bucket, lsh_bucket(&[0.25, 0.75]));
     }
 }

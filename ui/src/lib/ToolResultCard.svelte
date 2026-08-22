@@ -10,30 +10,23 @@
 		file_search: '文件搜索',
 		process: '进程列表',
 		window: '窗口列表',
-		action_status: '后台任务',
+		actions: '后台任务',
 		schedule: '定时任务',
-		env: '环境变量',
 		file: '文件操作',
 		files: '文件与搜索',
-		network: '网络请求',
+		http: 'HTTP 请求',
 		clipboard: '剪贴板',
-		power: '电源状态',
-		system: '系统信息',
+		system: '系统',
 		shell: '终端输出',
 		notify: '通知',
 		audio: '音频',
 		input: '输入操作',
-		self: '自身状态',
+		haven: 'Haven 自身',
+		memory: '记忆',
 		load_mcp: '加载 MCP',
 		load_skill: '加载技能',
 		web_search: '联网搜索',
-		agents_list: 'Agent 列表',
-		agent_profile: 'Agent 档案',
-		agent_spawn: '创建 Agent',
-		message_send: '发送消息',
-		message_inbox: '消息收件箱',
-		message_reply: '回复消息',
-		message_request: '请求并等待',
+		agent: 'Agent 协作',
 	};
 
 	/** @param {unknown} v */
@@ -97,13 +90,19 @@
 	 * - 'notify': readable "Notification sent: ..." text
 	 * - 'raw': anything else — plain text, JSON arrays / primitives, or
 	 *   invalid JSON — pretty-printed in a generic card
-	 * Returns null only for empty content (the card is then omitted).
+	 * Returns null only for empty content on non-shell tools (the card is then
+	 * omitted). Empty shell content still yields a shell card so streaming /
+	 * background placeholders can render.
 	 * @param {string} toolName
 	 * @param {string} content
 	 * @returns {{ kind: string, data: object | null } | null}
 	 */
 	export function parseToolResult(toolName, content) {
-		if (!content) return null;
+		// Empty content is still a shell card while streaming / waiting for
+		// the first live-output chunk (or a background action bind).
+		if (!content) {
+			return toolName === 'shell' ? { kind: 'shell', data: null } : null;
+		}
 		if (toolName === 'shell') {
 			let data = null;
 			try {
@@ -144,17 +143,32 @@
 			case 'files':
 				return Array.isArray(data.results) ? data : null;
 			case 'system':
-				return data.cpu || data.memory || data.os || data.disks ? data : null;
+				return data.cpu ||
+					data.memory ||
+					data.os ||
+					data.disks ||
+					Array.isArray(data.displays) ||
+					Array.isArray(data.variables) ||
+					data.name ||
+					'battery_percent' in data ||
+					data.locked ||
+					data.sleep ||
+					data.hibernate
+					? data
+					: null;
 			case 'process':
 				return Array.isArray(data.processes) ? data : null;
 			case 'window':
-				return Array.isArray(data.windows) ? data : null;
-			case 'action_status':
-				return typeof data.status === 'string' ? data : null;
+				return Array.isArray(data.windows) ||
+					Array.isArray(data.elements) ||
+					typeof data.text === 'string' ||
+					data.waited === true
+					? data
+					: null;
+			case 'actions':
+				return Array.isArray(data.actions) || typeof data.status === 'string' ? data : null;
 			case 'schedule':
 				return Array.isArray(data.scheduled_actions) || (data.id && data.mode) ? data : null;
-			case 'env':
-				return Array.isArray(data.variables) || data.name ? data : null;
 			case 'file':
 			case 'files':
 				return data.written ||
@@ -167,14 +181,10 @@
 					'size' in data
 					? data
 					: null;
-			case 'network':
+			case 'http':
 				return typeof data.status === 'number' ? data : null;
 			case 'clipboard':
 				return 'content' in data || data.written === true ? data : null;
-			case 'power':
-				return 'battery_percent' in data || data.locked || data.sleep || data.hibernate
-					? data
-					: null;
 			default:
 				return null;
 		}
@@ -187,6 +197,7 @@
 	import ContextMenu from '$lib/ContextMenu.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import ExternalRef from '$lib/ExternalRef.svelte';
+	import { actionStore, toolOutputPreviewStore } from '$lib/stores.ts';
 
 	let {
 		type = 'tool',
@@ -199,20 +210,77 @@
 		onIgnore = null,
 		resolved = null,
 		streaming = false,
+		actionId = null,
 	} = $props();
-	let parsed = $derived(type === 'tool' ? parseToolResult(toolName, content) : null);
+
+	const TERMINAL_ACTION = new Set(['completed', 'failed', 'cancelled']);
+
+	// Foreground live tail (side-channel; not written into the message list).
+	let livePreview = $derived(
+		messageId ? /** @type {string|undefined} */ ($toolOutputPreviewStore[messageId]) : undefined,
+	);
+	// Background actions keep streaming via actionStore after the tool call
+	// itself returns `{ background: true, action_id }`. Parent clears actionId
+	// once finished output is persisted onto the message.
+	let boundAction = $derived(
+		actionId ? /** @type {any} */ ($actionStore[actionId] || null) : null,
+	);
+	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
+	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
+	let displayContent = $derived.by(() => {
+		if (actionRunning) {
+			const out =
+				typeof boundAction.output === 'string' ? boundAction.output : livePreview || '';
+			return JSON.stringify({
+				output: out,
+				background: true,
+				action_id: actionId,
+				status: 'running',
+			});
+		}
+		if (boundAction && TERMINAL_ACTION.has(boundAction.status)) {
+			const rawOut =
+				typeof boundAction.output === 'string'
+					? boundAction.output
+					: typeof boundAction.error === 'string'
+						? boundAction.error
+						: '';
+			if (typeof rawOut === 'string' && rawOut.trim().startsWith('{')) {
+				return rawOut;
+			}
+			return JSON.stringify({
+				output: rawOut,
+				background: true,
+				action_id: actionId,
+				status: boundAction.status,
+				...(boundAction.exit_code != null ? { exit_code: boundAction.exit_code } : {}),
+				...(boundAction.error && !boundAction.output
+					? { error: boundAction.error }
+					: {}),
+			});
+		}
+		if (livePreview != null && livePreview !== '') {
+			return JSON.stringify({ output: livePreview });
+		}
+		return content;
+	});
+
+	let parsed = $derived(
+		type === 'tool' ? parseToolResult(toolName, displayContent) : null,
+	);
 
 	// Collapsible body: expands while the tool streams so live output is
 	// visible and auto-collapses once the observation is final (constraint
 	// tool_call_output_expand_during_collapse_after). Only streaming
 	// TRANSITIONS drive the state, so a manual click afterwards is never
-	// clobbered by content-only re-renders.
-	let cardOpen = $state(untrack(() => streaming));
-	let lastStreaming = untrack(() => streaming);
+	// clobbered by content-only re-renders. Background actions stay open
+	// while `actionStore` reports running.
+	let cardOpen = $state(untrack(() => liveStreaming));
+	let lastStreaming = untrack(() => liveStreaming);
 	$effect.pre(() => {
-		if (streaming === lastStreaming) return;
-		cardOpen = streaming;
-		lastStreaming = streaming;
+		if (liveStreaming === lastStreaming) return;
+		cardOpen = liveStreaming;
+		lastStreaming = liveStreaming;
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
@@ -222,7 +290,7 @@
 	let rawText = $derived(
 		kind === 'raw'
 			? parsed?.data == null
-				? content
+				? displayContent
 				: JSON.stringify(parsed?.data, null, 2)
 			: '',
 	);
@@ -232,7 +300,7 @@
 				? data.output
 				: Object.keys(data).length > 0
 					? JSON.stringify(data, null, 2)
-					: content
+					: displayContent
 			: '',
 	);
 	function notifyPartsOf() {
@@ -501,7 +569,7 @@
 							d="M8 21h8M12 17v4"
 						/></svg
 					>
-				{:else if toolName === 'action_status'}
+				{:else if toolName === 'actions'}
 					<svg
 						width="12"
 						height="12"
@@ -529,22 +597,6 @@
 							d="M13.73 21a2 2 0 0 1-3.46 0"
 						/></svg
 					>
-				{:else if toolName === 'env'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><path
-							d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"
-						/><path
-							d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"
-						/></svg
-					>
 		{:else if toolName === 'file' || (toolName === 'files' && !Array.isArray(data.results))}
 					<svg
 						width="12"
@@ -559,7 +611,7 @@
 							d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
 						/><polyline points="14 2 14 8 20 8" /></svg
 					>
-				{:else if toolName === 'network'}
+				{:else if toolName === 'http'}
 					<svg
 						width="12"
 						height="12"
@@ -587,23 +639,6 @@
 							d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
 						/><rect x="8" y="2" width="8" height="4" rx="1" /></svg
 					>
-				{:else if toolName === 'power'}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2.5"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						><rect x="1" y="6" width="18" height="12" rx="2" /><line
-							x1="23"
-							y1="10"
-							x2="23"
-							y2="14"
-						/><line x1="5" y1="10" x2="5" y2="14" /></svg
-					>
 				{/if}
 			</span>
 			<span class="tool-card-label">{LABELS[toolName] ?? toolName}</span>
@@ -614,8 +649,20 @@
 			{#if data.truncated}
 				<div class="tool-card-count">输出过长已截断</div>
 			{/if}
+			{#if data.background && data.status === 'running'}
+				<div class="tool-card-count">后台运行中{#if data.action_id} · {data.action_id}{/if}</div>
+			{:else if data.background && data.status === 'cancelled'}
+				<div class="tool-card-count">后台已取消{#if data.action_id} · {data.action_id}{/if}</div>
+			{:else if data.background && (data.status === 'completed' || data.status === 'failed')}
+				<div class="tool-card-count">
+					后台{data.status === 'completed' ? '已完成' : '失败'}{#if data.action_id}
+						· {data.action_id}{/if}
+				</div>
+			{/if}
 			{#if shellText}
-				<pre class="content-preview">{shellText}</pre>
+				<pre class="content-preview" class:streaming={liveStreaming}>{shellText}</pre>
+			{:else if liveStreaming}
+				<p class="tool-card-empty">等待输出…</p>
 			{:else}
 				<p class="tool-card-empty">（无输出）</p>
 			{/if}
@@ -721,6 +768,88 @@
 				{#if data.os?.uptime_secs != null}
 					<div class="tool-card-meta">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
 				{/if}
+				{#if Array.isArray(data.displays)}
+					<div class="tool-card-count">{data.displays.length} 个显示器</div>
+					<div class="tool-card-list">
+						{#each data.displays as d (d.name ?? d.left)}
+							<div class="window-row">
+								<span class="window-title">{d.name || 'Display'}{d.primary ? ' · 主屏' : ''}</span>
+								<span class="window-pid">{d.width}×{d.height}</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
+				{#if Array.isArray(data.variables)}
+					<div class="tool-card-count">
+						{#if envFilter}
+							{filteredEnv.length} / {envList.length} 个变量
+						{:else}
+							{envList.length} 个变量
+						{/if}
+					</div>
+					<input
+						class="tool-search"
+						type="search"
+						placeholder="筛选变量..."
+						bind:value={envFilter}
+						aria-label="筛选变量"
+					/>
+					{#if filteredEnv.length > 0}
+						<div class="tool-card-list">
+							{#each filteredEnv as v (v.name)}
+								<div class="env-row">
+									<span class="env-name" title={v.name}>{v.name}</span>
+									<span class="env-value" title={v.value ?? ''}
+										>{v.value ?? '(未设置)'}</span
+									>
+									{#if typeof v.value === 'string' && v.value}
+										<button
+											class="env-copy"
+											type="button"
+											aria-label="复制值"
+											title="复制值"
+											onclick={() => copyEnvValue(v.value)}>⧉</button
+										>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="tool-card-empty">没有匹配的变量</p>
+					{/if}
+				{:else if data.name && ('value' in data || data.set || data.removed)}
+					<div class="env-row">
+						<span class="env-name">{data.name}</span>
+						<span class="env-value" title={data.value ?? ''}
+							>{data.value ?? '(未设置)'}</span
+						>
+					</div>
+				{/if}
+				{#if data.battery_percent != null}
+					<div class="meter-row">
+						<span class="meter-label">电池</span>
+						<span class="meter-value">{data.battery_percent}%</span>
+						<span class="meter-track"
+							><span
+								class="meter-fill"
+								style="width: {clampPct(data.battery_percent)}%"
+							></span></span
+						>
+						<span class="meter-sub"
+							>{data.battery_status ?? 'unknown'}{data.ac_power === 'online'
+								? ' · 已接电源'
+								: ''}</span
+						>
+					</div>
+				{:else if data.locked || data.sleep || data.hibernate}
+					<p class="tool-card-empty">
+						{data.locked
+							? '已锁定'
+							: data.sleep
+								? '已睡眠'
+								: '已休眠'}
+					</p>
+				{/if}
 			{:else if toolName === 'process'}
 				<div class="tool-card-count">
 					{#if processFilter}
@@ -798,13 +927,29 @@
 				{:else}
 					<p class="tool-card-empty">没有可见窗口</p>
 				{/if}
-			{:else if toolName === 'action_status'}
-				<div class="action-row">
-					<span class="action-id">{data.job_id}</span>
-					<span class="status-badge status-{data.status}">{data.status}</span>
-				</div>
-				{#if data.exit_code != null}
-					<div class="tool-card-meta">退出码 {data.exit_code}</div>
+			{:else if toolName === 'actions'}
+				{#if Array.isArray(data.actions)}
+					<div class="tool-card-count">{data.actions.length} 个后台任务</div>
+					{#if data.actions.length > 0}
+						<div class="tool-card-list">
+							{#each data.actions as a (a.action_id ?? a.job_id)}
+								<div class="action-row">
+									<span class="action-id">{a.action_id ?? a.job_id}</span>
+									<span class="status-badge status-{a.status}">{a.status}</span>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="tool-card-empty">没有后台任务</p>
+					{/if}
+				{:else}
+					<div class="action-row">
+						<span class="action-id">{data.action_id ?? data.job_id}</span>
+						<span class="status-badge status-{data.status}">{data.status}</span>
+					</div>
+					{#if data.exit_code != null}
+						<div class="tool-card-meta">退出码 {data.exit_code}</div>
+					{/if}
 				{/if}
 			{:else if toolName === 'schedule'}
 				{#if Array.isArray(data.scheduled_actions)}
@@ -834,62 +979,6 @@
 					{#if data.fires_at}
 						<div class="tool-card-meta">触发时间 {data.fires_at}</div>
 					{/if}
-				{/if}
-			{:else if toolName === 'env'}
-				{#if Array.isArray(data.variables)}
-					<div class="tool-card-count">
-						{#if envFilter}
-							{filteredEnv.length} / {envList.length} 个变量
-						{:else}
-							{envList.length} 个变量
-						{/if}
-					</div>
-					<input
-						class="tool-search"
-						type="search"
-						placeholder="筛选变量..."
-						bind:value={envFilter}
-						aria-label="筛选变量"
-					/>
-					{#if filteredEnv.length > 0}
-						<div class="tool-card-list">
-							{#each filteredEnv as v (v.name)}
-								<div class="env-row">
-									<span class="env-name" title={v.name}>{v.name}</span>
-									<span class="env-value" title={v.value ?? ''}
-										>{v.value ?? '(未设置)'}</span
-									>
-									{#if typeof v.value === 'string' && v.value}
-										<button
-											class="env-copy"
-											type="button"
-											aria-label="复制值"
-											title="复制值"
-											onclick={() => copyEnvValue(v.value)}>⧉</button
-										>
-									{/if}
-								</div>
-							{/each}
-						</div>
-					{:else}
-						<p class="tool-card-empty">没有匹配的变量</p>
-					{/if}
-				{:else}
-					<div class="env-row">
-						<span class="env-name">{data.name}</span>
-						<span class="env-value" title={data.value ?? ''}
-							>{data.value ?? '(未设置)'}</span
-						>
-						{#if typeof data.value === 'string' && data.value}
-							<button
-								class="env-copy"
-								type="button"
-								aria-label="复制值"
-								title="复制值"
-								onclick={() => copyEnvValue(data.value)}>⧉</button
-							>
-						{/if}
-					</div>
 				{/if}
 			{:else if toolName === 'file'}
 				{#if data.written}
@@ -937,7 +1026,7 @@
 						<pre class="content-preview">{data.content}</pre>
 					{/if}
 				{/if}
-			{:else if toolName === 'network'}
+			{:else if toolName === 'http'}
 				<div class="action-row">
 					<span
 						class="status-badge status-{data.status >= 200 && data.status < 300
@@ -970,34 +1059,7 @@
 				{:else}
 					<p class="tool-card-empty">剪贴板为空</p>
 				{/if}
-			{:else if toolName === 'power'}
-				{#if data.battery_percent != null}
-					<div class="meter-row">
-						<span class="meter-label">电池</span>
-						<span class="meter-value">{data.battery_percent}%</span>
-						<span class="meter-track"
-							><span
-								class="meter-fill"
-								style="width: {clampPct(data.battery_percent)}%"
-							></span></span
-						>
-						<span class="meter-sub"
-							>{data.battery_status ?? 'unknown'}{data.ac_power === 'online'
-								? ' · 已接电源'
-								: ''}</span
-						>
-					</div>
-				{:else}
-					<p class="tool-card-empty">
-						{data.locked
-							? '已锁定'
-							: data.sleep
-								? '已休眠'
-								: data.hibernate
-									? '已休眠'
-									: '电源状态未知'}
-					</p>
-				{/if}
+
 			{/if}
 
 			{#if data.hint}
@@ -1525,6 +1587,10 @@
 		max-height: 180px;
 		overflow-y: auto;
 		margin: var(--md-sys-space-xs) 0 0;
+	}
+	.content-preview.streaming {
+		max-height: 280px;
+		border-left: 2px solid var(--md-sys-color-primary);
 	}
 	.tool-card-hint {
 		margin-top: var(--md-sys-space-xs);

@@ -187,11 +187,24 @@ pub trait Tool: Send + Sync {
         30
     }
 
+    /// Per-call timeout. Defaults to [`Self::default_timeout_secs`]; tools with
+    /// op-dependent waits (e.g. `agent` request) override this.
+    fn timeout_secs_for(&self, _input: &Value) -> u64 {
+        self.default_timeout_secs()
+    }
+
     /// Whether this tool needs the private `_session_id` input field injected
     /// before execution (e.g. `schedule`/`actions` scope to the current session).
     /// The id is injected after the LLM-facing input was captured, so it
     /// never reaches the tool schema, the step history, or the LLM.
     fn requires_session_id(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool streams live output to the chat card while running
+    /// (`agent:tool_output`). When true, `_session_id` and `_step_id` are
+    /// injected privately so the tool can key preview events to the card.
+    fn supports_live_output(&self) -> bool {
         false
     }
 

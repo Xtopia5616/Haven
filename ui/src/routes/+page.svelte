@@ -27,6 +27,7 @@
 		webSearchLabel,
 		finalizeStreamBlocks,
 		newToolMessage,
+		actionIdFromObservation,
 	} from '$lib/streaming.ts';
 	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
@@ -59,6 +60,9 @@
 		updateModelState,
 		modelStateStore,
 		refreshActions,
+		setToolOutputPreview,
+		clearToolOutputPreview,
+		appendSessionLlmUsage,
 		DRAFT_KEY,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
@@ -92,10 +96,9 @@
 	// must wait for its own user answer, so they are queued and displayed one
 	// at a time instead of auto-rejecting the visible dialog.
 	let confirmQueue = /** @type {Array<any>} */ ($state([]));
-	// Must match the backend's CONFIRM_WAIT_TIMEOUT (crates/agent/src/session.rs)
-	// and ConfirmationDialog.svelte's TIMEOUT_SECONDS. The countdown shown for
-	// a queued confirmation starts from its server-side deadline (arrival +
-	// this window), not from when the dialog is finally displayed.
+	// Interactive countdown for the visible dialog. Starts when the dialog is
+	// shown (not when the request arrived) so queued confirms are not starved.
+	// Backend uses a longer absolute fail-closed ceiling for closed UI.
 	const CONFIRM_TIMEOUT_MS = 120_000;
 	let confirmDialog = $state({
 		stepId: null,
@@ -1647,15 +1650,34 @@
 						];
 					});
 				},
+				'agent:tool_output': (event) => {
+					// Live stdout/stderr preview while a foreground tool runs.
+					// Side-channel store — does not rewrite the transcript list.
+					const data = event.payload || {};
+					const toolMsgId = data.step_id;
+					const output = typeof data.output === 'string' ? data.output : '';
+					if (!toolMsgId) return;
+					setToolOutputPreview(toolMsgId, output);
+				},
 				'agent:observation': (event) => {
 					const data = event.payload;
-					if (data.silent) return;
 					const tid = data.session_id;
+					const toolMsgId = data.step_id;
+					if (data.silent) {
+						// Empty inbox (and other silent tools): action may have
+						// already inserted a streaming placeholder — remove it.
+						clearToolOutputPreview(toolMsgId);
+						if (toolMsgId) {
+							updateSessionMessages(tid, (m) => m.filter((x) => x.id !== toolMsgId));
+						}
+						return;
+					}
 					flushChunksNow();
 					updateModelState('streaming');
 					// Same minted step id the matching `agent:action` carried,
 					// so the placeholder fill and the final badge stay one card.
-					const toolMsgId = data.step_id;
+					clearToolOutputPreview(toolMsgId);
+					const actionId = actionIdFromObservation(data.observation);
 					updateSessionMessages(tid, (m) => {
 						const idx = m.findIndex((x) => x.id === toolMsgId);
 						const msg = newToolMessage({
@@ -1664,17 +1686,62 @@
 							toolName: data.tool_name,
 							content: data.observation,
 							askOptions: data.ask_options || [],
+							actionId,
 						});
 						if (idx >= 0) {
 							// Preserve the fields set by the action handler (e.g. the
 							// bubble's timestamp) — only overwrite the observation
-							// content and related fields.
+							// content and related fields. Background shells keep
+							// actionId so the card binds to actionStore live output.
 							const next = [...m];
 							next[idx] = { ...next[idx], ...msg, streaming: false };
 							return next;
 						}
 						return [...m, msg];
 					});
+				},
+				'action:finished': (event) => {
+					// Persist terminal background output onto the tool card and
+					// clear actionId so a later refreshActions() cannot revert
+					// the card to the original "running" observation ack.
+					const p = event.payload || {};
+					const actionId = p.action_id;
+					if (!actionId) return;
+					const status = p.status || 'completed';
+					const rawOut =
+						typeof p.output === 'string'
+							? p.output
+							: typeof p.error === 'string'
+								? p.error
+								: '';
+					const finalContent =
+						typeof rawOut === 'string' && rawOut.trim().startsWith('{')
+							? rawOut
+							: JSON.stringify({
+									output: rawOut,
+									background: true,
+									action_id: actionId,
+									status,
+									...(p.exit_code != null ? { exit_code: p.exit_code } : {}),
+									...(p.error && !p.output ? { error: p.error } : {}),
+								});
+					const all = get(sessionMessagesStore) || {};
+					for (const tid of Object.keys(all)) {
+						updateSessionMessages(tid, (m) => {
+							let changed = false;
+							const next = m.map((msg) => {
+								if (msg.actionId !== actionId) return msg;
+								changed = true;
+								return {
+									...msg,
+									content: finalContent,
+									actionId: null,
+									streaming: false,
+								};
+							});
+							return changed ? next : m;
+						});
+					}
 				},
 				'confirm:requested': (event) => {
 					const data = event.payload;
@@ -1701,12 +1768,6 @@
 							sessionId: tid,
 							sessionTitle: session?.title || (tid || ''),
 							riskLevel: data.risk_level || 'medium',
-							// The backend's CONFIRM_WAIT_TIMEOUT starts when the
-							// request is created, not when the dialog is shown.
-							// Recording the arrival time lets a queued dialog
-							// count down from the TRUE server deadline instead of
-							// granting a fresh window the backend will never honor.
-							receivedAt: Date.now(),
 						},
 					];
 					showNextConfirm();
@@ -1732,6 +1793,22 @@
 						// the widget switches back to the per-step context view.
 						restored: false,
 					});
+					// Also append the per-call detail so tool-card token chips
+					// (stepUsage) update live — previously they only appeared
+					// after restoreSessionLlmUsage on review/reopen.
+					if (d.step_number != null) {
+						appendSessionLlmUsage(d.session_id, {
+							step_number: d.step_number,
+							role: d.role || undefined,
+							model: d.model ?? null,
+							prompt_tokens: d.prompt_tokens || 0,
+							completion_tokens: d.completion_tokens || 0,
+							total_tokens: d.total_tokens || 0,
+							cost_usd: d.cost_usd ?? null,
+							has_cost: !!d.has_cost,
+							duration_ms: d.duration_ms ?? null,
+						});
+					}
 				},
 				// Context compaction notice — summarize a portion of the history.
 				'agent:compaction': (event) => {
@@ -2062,7 +2139,9 @@
 		confirmQueue = rest;
 		confirmDialog = {
 			...next,
-			deadlineAt: next.receivedAt + CONFIRM_TIMEOUT_MS,
+			// Fresh 120s window from show time — queued items keep a full
+			// interactive budget instead of inheriting arrival-time debt.
+			deadlineAt: Date.now() + CONFIRM_TIMEOUT_MS,
 		};
 	}
 
@@ -2148,7 +2227,7 @@
 							type={msg.type}
 							voice={msg.voice}
 							time={msg.time}
-							streaming={msg.streaming && isLast}
+							streaming={msg.type === 'tool' ? !!msg.streaming : !!(msg.streaming && isLast)}
 							toolName={msg.toolName ?? ''}
 							messageId={msg.id}
 							stepNumber={msg.stepNumber}
@@ -2158,6 +2237,7 @@
 							awaiting={msg.awaiting ?? false}
 							received={msg.received ?? false}
 							resolved={msg.resolved ?? null}
+							actionId={msg.actionId ?? null}
 							onContextMenu={handleContextMenu}
 							onQuickReply={handleQuickReply}
 							onIgnore={handleIgnoreAsk}

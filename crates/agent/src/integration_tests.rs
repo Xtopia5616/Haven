@@ -279,7 +279,7 @@
     #[tokio::test]
     async fn build_system_prompt_succeeds() {
         let (agent, _) = make_test_agent();
-        let prompt = agent.prompt_builder.build("test session", &[], &[]).await;
+        let prompt = agent.prompt_builder.build("test session", &[]).await;
         assert!(prompt.contains("You have access to the following built-in tools"));
     }
 
@@ -318,7 +318,7 @@
 
         let tools = Arc::new(ToolsManager::new());
         let builder = SystemPromptBuilder::new(tools, db);
-        let prompt = builder.build("test session", &[], &[]).await;
+        let prompt = builder.build("test session", &[]).await;
 
         assert!(prompt.contains("name=Xtopia"));
         assert!(prompt.contains("likes=Rust"));

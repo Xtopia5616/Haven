@@ -31,6 +31,13 @@ use crate::types::TranscriptRecord;
 /// loop never threads this (Phase 7 / G6).
 pub(crate) type InferCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
+/// Mid-run MEMORY fence refresh (M2): dirty flag lives on [`crate::InferenceEngine`];
+/// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only.
+pub(crate) struct MemoryPatchHandle {
+    pub inference: Arc<crate::InferenceEngine>,
+    pub prompt_builder: Arc<crate::SystemPromptBuilder>,
+}
+
 /// Pre-tool gate decision (Phase 5 / E3).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BeforeToolAction {
@@ -88,16 +95,26 @@ pub(crate) trait LoopHooks: Send + Sync {
 }
 
 /// Production hooks: inbox poll, context compaction, interval + pause infer,
-/// response policy, and confirm pre-check.
+/// throttled MEMORY fence refresh (M2), response policy, and confirm pre-check.
 pub(crate) struct DefaultHooks {
     /// Optional session-scoped fact inference. `None` in unit tests that
     /// construct an engine without an [`crate::InferenceEngine`].
     infer: Option<InferCallback>,
+    /// Optional mid-run MEMORY patch after outbox fact writes (M2).
+    memory_patch: Option<MemoryPatchHandle>,
 }
 
 impl DefaultHooks {
     pub(crate) fn new(infer: Option<InferCallback>) -> Self {
-        Self { infer }
+        Self {
+            infer,
+            memory_patch: None,
+        }
+    }
+
+    pub(crate) fn with_memory_patch(mut self, handle: MemoryPatchHandle) -> Self {
+        self.memory_patch = Some(handle);
+        self
     }
 
     fn call_infer(&self, session_id: &str, bypass_throttle: bool) {
@@ -129,6 +146,21 @@ impl LoopHooks for DefaultHooks {
                 step_num = ctx.step_num
             ))
             .await;
+        // M2: after outbox fact writes, surgically refresh MEMORY fence
+        // (throttled). Never rebuild tools/skills/MCP short index.
+        if let Some(ref patch) = self.memory_patch
+            && patch.inference.take_memory_dirty_throttled(&ctx.session_id)
+        {
+            let description = match engine.executor.get_session(&ctx.session_id).await {
+                Some(s) if !s.summary.is_empty() => s.summary,
+                Some(s) => s.input,
+                None => String::new(),
+            };
+            patch
+                .prompt_builder
+                .patch_canonical_memory_fence(&ctx.session_id, &description, canonical)
+                .await;
+        }
         let interval = engine.context_limits.fact_infer_interval_steps;
         if ctx.step_num > 0 && interval > 0 && ctx.step_num % interval == 0 {
             self.call_infer(&ctx.session_id, false);
@@ -222,8 +254,16 @@ pub(crate) fn default_hooks() -> LoopHooksHandle {
     Arc::new(DefaultHooks::new(None))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn default_hooks_with_infer(infer: InferCallback) -> LoopHooksHandle {
     Arc::new(DefaultHooks::new(Some(infer)))
+}
+
+pub(crate) fn default_hooks_with_infer_and_patch(
+    infer: InferCallback,
+    memory_patch: MemoryPatchHandle,
+) -> LoopHooksHandle {
+    Arc::new(DefaultHooks::new(Some(infer)).with_memory_patch(memory_patch))
 }
 
 #[cfg(test)]

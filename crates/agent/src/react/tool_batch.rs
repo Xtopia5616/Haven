@@ -32,13 +32,22 @@ pub(crate) fn tool_key(a: &Action) -> String {
         .unwrap_or_else(|| a.tool_name.clone())
 }
 
-/// `message_inbox` result is an empty poll (`count: 0`): nothing for the
-/// user to see, so the observation card is suppressed.
+/// `agent` operation=inbox result is an empty poll (`count: 0`): nothing for
+/// the user to see, so the observation card is suppressed.
 pub(crate) fn empty_inbox_output(result: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(result)
         .ok()
         .and_then(|v| v.get("count").and_then(|c| c.as_u64()))
         == Some(0)
+}
+
+/// True when this is an `agent` inbox poll (check tool_input.operation).
+pub(crate) fn is_agent_inbox_call(tool_name: &str, tool_input: &serde_json::Value) -> bool {
+    tool_name == "agent"
+        && tool_input
+            .get("operation")
+            .and_then(|v| v.as_str())
+            == Some("inbox")
 }
 
 impl ReActEngine {
@@ -664,10 +673,10 @@ impl ReActEngine {
                     // while the session pauses for an answer would leave the
                     // user waiting on a question they can't see.
                     let silent = is_silent_action(&tool_name, &action.tool_input)
-                        // An empty message_inbox poll carries no user
+                        // An empty agent inbox poll carries no user
                         // information — hide the card instead of spamming
                         // the chat on every routine check.
-                        || (tool_name == "message_inbox"
+                        || (is_agent_inbox_call(&tool_name, &action.tool_input)
                             && empty_inbox_output(&step_result));
                     // For `ask`, the chat/review bubble shows the readable
                     // question text; the canonical (model) context keeps
@@ -990,7 +999,8 @@ impl ReActEngine {
                         .await;
                 }
                 let silent = is_silent_action(&tool.tool_name, &tool.tool_input)
-                    || (tool.tool_name == "message_inbox" && empty_inbox_output(&text));
+                    || (is_agent_inbox_call(&tool.tool_name, &tool.tool_input)
+                        && empty_inbox_output(&text));
                 let display_observation = if let Some(q) = &ask_question {
                     q.clone()
                 } else if let Some(title) = &notify_title {
@@ -1140,6 +1150,23 @@ mod tests {
             r#"{"count": 1, "messages": [{"id": "msg-x"}]}"#
         ));
         assert!(!empty_inbox_output("not json"));
+    }
+
+    #[test]
+    fn is_agent_inbox_call_requires_name_and_operation() {
+        assert!(is_agent_inbox_call(
+            "agent",
+            &serde_json::json!({"operation": "inbox"})
+        ));
+        assert!(!is_agent_inbox_call(
+            "agent",
+            &serde_json::json!({"operation": "list"})
+        ));
+        assert!(!is_agent_inbox_call(
+            "message_inbox",
+            &serde_json::json!({"operation": "inbox"})
+        ));
+        assert!(!is_agent_inbox_call("agent", &serde_json::json!({})));
     }
 
     #[test]

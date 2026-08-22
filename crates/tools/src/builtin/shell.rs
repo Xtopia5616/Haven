@@ -6,11 +6,14 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::bg::{self, BackgroundActions};
+use crate::live_output::LiveOutputHub;
 use crate::{Tool, ToolResult};
 
 pub struct ShellTool {
     /// Registry of background actions for `background: true` invocations.
     pub actions: Arc<BackgroundActions>,
+    /// Live stdout/stderr previews for foreground shell tool cards.
+    pub live_outputs: Arc<LiveOutputHub>,
     /// Output cap (chars) for command output.
     pub max_output_chars: usize,
     /// Shell used when the model omits the `shell` argument
@@ -22,6 +25,7 @@ impl Default for ShellTool {
     fn default() -> Self {
         Self {
             actions: Arc::new(BackgroundActions::new()),
+            live_outputs: Arc::new(LiveOutputHub::new()),
             max_output_chars: 20_000,
             #[cfg(windows)]
             default_shell: "powershell".into(),
@@ -49,6 +53,12 @@ pub struct ShellParams {
     /// Working directory to run the command in (default: shared Temp dir).
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Private: pre-minted `step-*` id for live `agent:tool_output` events.
+    #[serde(default, rename = "_step_id")]
+    pub step_id: Option<String>,
+    /// Private: owning session id for live output events.
+    #[serde(default, rename = "_session_id")]
+    pub session_id: Option<String>,
 }
 
 impl ShellTool {
@@ -132,15 +142,47 @@ impl ShellTool {
 
         // Stream stdout/stderr into capped buffers so huge command output never
         // gets fully buffered (OOM protection). Mirrors network tool behavior.
-        // No live tail: foreground shell output is shown in the tool card only
-        // after it completes.
+        // Live tail: while the command runs, push a bounded preview to the
+        // tool card via `agent:tool_output` (skipped when silent or no step id).
         let max_collect = bg::collect_byte_cap(max_chars);
-        let stdout_fut = bg::read_stream_capped(child.stdout.take(), max_collect, None, 0);
-        let stderr_fut = bg::read_stream_capped(child.stderr.take(), max_collect, None, 0);
+        let step_id = params.step_id.clone().unwrap_or_default();
+        let session_id = params.session_id.clone().unwrap_or_default();
+        let live = !silent && !step_id.is_empty();
+        let (tail, running, tail_max) = if live {
+            let tail = Arc::new(std::sync::Mutex::new(String::new()));
+            let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let emit_interval = self.live_outputs.emit_interval().await;
+            let tail_max = self.live_outputs.tail_max_chars().await;
+            self.live_outputs.spawn_tail_emitter(
+                session_id.clone(),
+                step_id.clone(),
+                Arc::clone(&tail),
+                Arc::clone(&running),
+                emit_interval,
+            );
+            (Some(tail), Some(running), tail_max)
+        } else {
+            (None, None, 0)
+        };
+        let stdout_fut = bg::read_stream_capped(
+            child.stdout.take(),
+            max_collect,
+            tail.as_ref().map(Arc::clone),
+            tail_max,
+        );
+        let stderr_fut = bg::read_stream_capped(
+            child.stderr.take(),
+            max_collect,
+            tail.as_ref().map(Arc::clone),
+            tail_max,
+        );
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
         let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
             tokio::join!(stdout_fut, stderr_fut);
+        if let Some(flag) = &running {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         let status = match child.wait().await {
             Ok(s) => s,
             Err(e) => {
@@ -264,6 +306,10 @@ impl Tool for ShellTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn supports_live_output(&self) -> bool {
+        true
     }
 
     /// Entry ②: LLM JSON entry — convert/validate into `ShellParams`, then

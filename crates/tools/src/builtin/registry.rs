@@ -1,9 +1,6 @@
-use async_trait::async_trait;
-use haven_common::types::RiskLevel;
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Tool, ToolResult};
+use crate::ToolResult;
 
 pub struct RegistryTool;
 
@@ -17,8 +14,7 @@ pub enum RegistryOperation {
     List,
 }
 
-/// Typed parameters for `RegistryTool`. Entry ① (native `run`) and entry ②
-/// (`Tool::execute` with LLM JSON) both land in `RegistryTool::run`.
+/// Typed parameters for `RegistryTool`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RegistryParams {
     /// Operation to perform; defaults to `list`.
@@ -105,47 +101,7 @@ fn parse_hex_bytes(value: &str) -> anyhow::Result<Vec<u8>> {
         .collect()
 }
 
-#[async_trait]
-impl Tool for RegistryTool {
-    fn name(&self) -> String {
-        "registry".into()
-    }
-    fn description(&self) -> String {
-        "Read or write the Windows Registry".into()
-    }
-
-    fn risk_level(&self, input: &Value) -> RiskLevel {
-        match input["operation"].as_str() {
-            Some("set") | Some("delete") => RiskLevel::High,
-            _ => RiskLevel::Medium,
-        }
-    }
-
-    fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "operation": { "type": "string", "enum": ["get", "set", "delete", "list"] },
-                "path": { "type": "string", "description": "Registry path, e.g. HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion" },
-                "name": { "type": "string", "description": "Value name" },
-                "value": { "type": "string", "description": "Value data (for set)" },
-                "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"], "description": "Value type for set" }
-            },
-            "required": ["operation", "path"]
-        })
-    }
-
-    /// Entry ②: LLM JSON entry — convert/validate into `RegistryParams`,
-    /// then land in the same implementation as entry ①.
-    async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        let params = crate::tool::parse_tool_input::<RegistryParams>(&self.name(), input)?;
-        self.run(params, cancel).await
-    }
-}
-
 impl RegistryTool {
-    /// Entry ①: structured native interface (internal code calls — zero
-    /// serialization overhead). Entry ② deserializes JSON and delegates here.
     pub async fn run(
         &self,
         params: RegistryParams,
@@ -303,35 +259,6 @@ impl RegistryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tool;
-    use serde_json::json;
-
-    #[test]
-    fn test_registry_tool_name() {
-        assert_eq!(RegistryTool.name(), "registry");
-    }
-
-    #[test]
-    fn test_registry_tool_risk_level() {
-        assert_eq!(
-            RegistryTool.risk_level(&json!({"operation": "get"})),
-            RiskLevel::Medium
-        );
-        assert_eq!(
-            RegistryTool.risk_level(&json!({"operation": "set"})),
-            RiskLevel::High
-        );
-    }
-
-    #[test]
-    fn test_registry_tool_input_schema() {
-        let schema = RegistryTool.input_schema();
-        assert!(
-            schema["properties"]["operation"]["enum"]
-                .as_array()
-                .is_some()
-        );
-    }
 
     #[test]
     fn test_normalize_short_backslash() {

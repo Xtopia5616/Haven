@@ -15,12 +15,13 @@ const DEFAULT_RECORD_SECS: f64 = 10.0;
 /// config still applies as a final bound).
 const MAX_RECORD_SECS: f64 = 60.0;
 
-/// Play or record audio. `record` captures through the shared input pipeline
-/// (same engine/STT as user voice input) and returns the transcription;
-/// `play` is not yet implemented (no playback engine exists).
-/// Play or record audio. `record` captures through the shared input pipeline
-/// (same engine/STT as user voice input) and returns the transcription;
-/// `play` is not yet implemented (no playback engine exists).
+/// Play / record audio and control system volume / mute.
+///
+/// `record` captures through the shared input pipeline (same engine/STT as
+/// user voice input) and returns the transcription.
+/// `play` plays a `.wav` via WinMM `PlaySoundW`. TTS via `text` is not wired
+/// into this tool (no App `media.tts` config is available here) and returns a
+/// clear error.
 pub struct AudioTool {
     /// Shared capture/STT pipeline. `None` in headless/test contexts where
     /// recording is unavailable; the `record` operation then fails cleanly.
@@ -33,6 +34,10 @@ pub struct AudioTool {
 pub enum AudioOperation {
     Record,
     Play,
+    VolumeGet,
+    VolumeSet,
+    MuteGet,
+    MuteSet,
 }
 
 /// Typed parameters for `AudioTool`. Entry ① (native `run`) and entry ②
@@ -41,15 +46,21 @@ pub enum AudioOperation {
 pub struct AudioParams {
     /// What to do with audio.
     pub operation: AudioOperation,
-    /// Path to audio file for play operation.
+    /// Path to a `.wav` file for `play`.
     #[serde(default)]
     pub file_path: Option<String>,
     /// Recording duration in seconds (default 10, max 60).
     #[serde(default)]
     pub duration: Option<f64>,
-    /// Text to synthesize for TTS.
+    /// Text to synthesize for TTS (`play`). Not wired without App TTS config.
     #[serde(default)]
     pub text: Option<String>,
+    /// Master volume scalar in `[0.0, 1.0]` for `volume_set`.
+    #[serde(default)]
+    pub volume: Option<f64>,
+    /// Mute state for `mute_set`.
+    #[serde(default)]
+    pub muted: Option<bool>,
 }
 
 impl AudioTool {
@@ -64,9 +75,41 @@ impl AudioTool {
         params: AudioParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
         match params.operation {
             AudioOperation::Record => self.record(&params, cancel).await,
-            AudioOperation::Play => Err(anyhow::anyhow!("audio tool: play is not yet implemented")),
+            AudioOperation::Play => self.play(&params).await,
+            AudioOperation::VolumeGet => {
+                let volume = tokio::task::spawn_blocking(imp::get_volume).await??;
+                Ok(ToolResult::ok(serde_json::json!({ "volume": volume })))
+            }
+            AudioOperation::VolumeSet => {
+                let level = params.volume.ok_or_else(|| {
+                    anyhow::anyhow!("audio tool: volume (0.0–1.0) is required for volume_set")
+                })?;
+                let clamped = level.clamp(0.0, 1.0) as f32;
+                tokio::task::spawn_blocking(move || imp::set_volume(clamped)).await??;
+                Ok(ToolResult::ok(serde_json::json!({
+                    "volume": clamped,
+                    "set": true,
+                })))
+            }
+            AudioOperation::MuteGet => {
+                let muted = tokio::task::spawn_blocking(imp::get_mute).await??;
+                Ok(ToolResult::ok(serde_json::json!({ "muted": muted })))
+            }
+            AudioOperation::MuteSet => {
+                let muted = params.muted.ok_or_else(|| {
+                    anyhow::anyhow!("audio tool: muted (boolean) is required for mute_set")
+                })?;
+                tokio::task::spawn_blocking(move || imp::set_mute(muted)).await??;
+                Ok(ToolResult::ok(serde_json::json!({
+                    "muted": muted,
+                    "set": true,
+                })))
+            }
         }
     }
 }
@@ -78,16 +121,18 @@ impl Tool for AudioTool {
     }
 
     fn description(&self) -> String {
-        "Play or record audio on the system: `record` captures a clip through \
-         the microphone, transcribes it with the configured STT provider and \
-         returns the text"
+        "Play or record audio and control system volume/mute: `record` captures \
+         through the microphone and returns an STT transcript; `play` plays a \
+         `.wav` file (TTS via `text` is not available in this tool); \
+         `volume_get`/`volume_set` (0.0–1.0) and `mute_get`/`mute_set` control \
+         the default playback endpoint."
             .into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
         match input["operation"].as_str() {
-            Some("play") => RiskLevel::Low,
-            Some("record") => RiskLevel::Medium,
+            Some("record") | Some("volume_set") | Some("mute_set") => RiskLevel::Medium,
+            Some("play") | Some("volume_get") | Some("mute_get") => RiskLevel::Low,
             _ => RiskLevel::Low,
         }
     }
@@ -98,11 +143,18 @@ impl Tool for AudioTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["play", "record"]
+                    "enum": [
+                        "play",
+                        "record",
+                        "volume_get",
+                        "volume_set",
+                        "mute_get",
+                        "mute_set"
+                    ]
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Path to audio file for play operation"
+                    "description": "Path to a .wav file for play"
                 },
                 "duration": {
                     "type": "number",
@@ -110,7 +162,15 @@ impl Tool for AudioTool {
                 },
                 "text": {
                     "type": "string",
-                    "description": "Text to synthesize for TTS"
+                    "description": "Text for TTS play (not wired; returns a clear error)"
+                },
+                "volume": {
+                    "type": "number",
+                    "description": "Master volume scalar 0.0–1.0 for volume_set"
+                },
+                "muted": {
+                    "type": "boolean",
+                    "description": "Mute state for mute_set"
                 }
             },
             "required": ["operation"]
@@ -187,6 +247,147 @@ impl AudioTool {
             .unwrap_or_else(|| "no speech detected in the recording".into());
         Err(anyhow::anyhow!("audio tool: {detail}"))
     }
+
+    async fn play(&self, params: &AudioParams) -> anyhow::Result<ToolResult> {
+        if let Some(text) = params
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            let _ = text;
+            return Err(anyhow::anyhow!(
+                "audio tool: TTS play via `text` is not wired here — AudioTool has no App \
+                 media.tts config. Use a .wav file_path, or synthesize audio elsewhere and \
+                 pass the .wav path."
+            ));
+        }
+
+        let path = params
+            .file_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("audio tool: file_path (.wav) is required for play when text is unset")
+            })?;
+
+        let lower = path.to_ascii_lowercase();
+        if !lower.ends_with(".wav") {
+            return Err(anyhow::anyhow!(
+                "audio tool: play currently supports only .wav files (got '{}')",
+                path
+            ));
+        }
+        if !std::path::Path::new(path).is_file() {
+            return Err(anyhow::anyhow!("audio tool: file not found: {}", path));
+        }
+
+        let path_owned = path.to_string();
+        tokio::task::spawn_blocking(move || imp::play_wav(&path_owned)).await??;
+        Ok(ToolResult::ok(serde_json::json!({
+            "played": path,
+            "format": "wav",
+        })))
+    }
+}
+
+#[cfg(windows)]
+mod imp {
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        PlaySoundW, SND_ASYNC, SND_FILENAME, IMMDevice, IMMDeviceEnumerator,
+        MMDeviceEnumerator, eConsole, eRender,
+    };
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+    };
+    use windows::core::PCWSTR;
+
+    fn get_endpoint_volume() -> anyhow::Result<IAudioEndpointVolume> {
+        // RPC_E_CHANGED_MODE (0x80010106) is fine if COM is already initialized
+        // on this thread with a different apartment model.
+        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER)? };
+
+        let device: IMMDevice =
+            unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole)? };
+
+        let ep: IAudioEndpointVolume =
+            unsafe { device.Activate(CLSCTX_INPROC_SERVER, None)? };
+
+        Ok(ep)
+    }
+
+    pub fn get_volume() -> anyhow::Result<f32> {
+        let ep = get_endpoint_volume()?;
+        let level: f32 = unsafe { ep.GetMasterVolumeLevelScalar()? };
+        Ok(level)
+    }
+
+    pub fn set_volume(level: f32) -> anyhow::Result<()> {
+        let level = level.clamp(0.0, 1.0);
+        let ep = get_endpoint_volume()?;
+        unsafe {
+            ep.SetMasterVolumeLevelScalar(level, std::ptr::null())?;
+        }
+        Ok(())
+    }
+
+    pub fn get_mute() -> anyhow::Result<bool> {
+        let ep = get_endpoint_volume()?;
+        let muted: BOOL = unsafe { ep.GetMute()? };
+        Ok(muted.as_bool())
+    }
+
+    pub fn set_mute(muted: bool) -> anyhow::Result<()> {
+        let ep = get_endpoint_volume()?;
+        unsafe {
+            ep.SetMute(BOOL::from(muted), std::ptr::null())?;
+        }
+        Ok(())
+    }
+
+    pub fn play_wav(path: &str) -> anyhow::Result<()> {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let ok = unsafe {
+            PlaySoundW(
+                PCWSTR(wide.as_ptr()),
+                None,
+                SND_FILENAME | SND_ASYNC,
+            )
+        };
+        if !ok.as_bool() {
+            anyhow::bail!("PlaySoundW failed for '{}'", path);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+mod imp {
+    pub fn get_volume() -> anyhow::Result<f32> {
+        Ok(0.0)
+    }
+
+    pub fn set_volume(_level: f32) -> anyhow::Result<()> {
+        anyhow::bail!("audio control requires Windows")
+    }
+
+    pub fn get_mute() -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn set_mute(_muted: bool) -> anyhow::Result<()> {
+        anyhow::bail!("audio control requires Windows")
+    }
+
+    pub fn play_wav(_path: &str) -> anyhow::Result<()> {
+        anyhow::bail!("audio playback requires Windows")
+    }
 }
 
 #[cfg(test)]
@@ -202,20 +403,35 @@ mod tests {
 
     #[test]
     fn test_audio_tool_description() {
-        assert!(AudioTool::new(None).description().contains("audio"));
+        let desc = AudioTool::new(None).description();
+        assert!(desc.contains("audio"));
+        assert!(desc.contains("volume"));
     }
 
     #[test]
     fn test_audio_tool_risk_level() {
+        let tool = AudioTool::new(None);
         assert_eq!(
-            AudioTool::new(None).risk_level(&json!({"operation": "play"})),
+            tool.risk_level(&json!({"operation": "play"})),
             RiskLevel::Low
         );
         assert_eq!(
-            AudioTool::new(None).risk_level(&json!({"operation": "record"})),
+            tool.risk_level(&json!({"operation": "record"})),
             RiskLevel::Medium
         );
-        assert_eq!(AudioTool::new(None).risk_level(&json!({})), RiskLevel::Low);
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "volume_set"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "volume_get"})),
+            RiskLevel::Low
+        );
+        assert_eq!(
+            tool.risk_level(&json!({"operation": "mute_set"})),
+            RiskLevel::Medium
+        );
+        assert_eq!(tool.risk_level(&json!({})), RiskLevel::Low);
     }
 
     #[test]
@@ -226,26 +442,48 @@ mod tests {
             .as_array()
             .unwrap();
         let ops: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(ops.contains(&"play"));
-        assert!(ops.contains(&"record"));
+        for expected in [
+            "play",
+            "record",
+            "volume_get",
+            "volume_set",
+            "mute_get",
+            "mute_set",
+        ] {
+            assert!(ops.contains(&expected), "missing op {expected}");
+        }
         let required = schema["required"].as_array().unwrap();
         let req: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(req.contains(&"operation"));
         assert!(schema["properties"]["file_path"]["type"].as_str().is_some());
         assert!(schema["properties"]["duration"]["type"].as_str().is_some());
         assert!(schema["properties"]["text"]["type"].as_str().is_some());
+        assert!(schema["properties"]["volume"]["type"].as_str().is_some());
+        assert!(schema["properties"]["muted"]["type"].as_str().is_some());
     }
 
     #[tokio::test]
-    async fn test_audio_execute_play_not_implemented() {
+    async fn test_audio_execute_play_requires_wav() {
         let result = AudioTool::new(None)
             .execute(
-                json!({"operation": "play", "file_path": "x.wav"}),
+                json!({"operation": "play", "file_path": "x.mp3"}),
                 CancellationToken::new(),
             )
             .await;
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("not yet implemented"));
+        assert!(err.to_string().contains(".wav"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_execute_play_tts_not_wired() {
+        let result = AudioTool::new(None)
+            .execute(
+                json!({"operation": "play", "text": "hello"}),
+                CancellationToken::new(),
+            )
+            .await;
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("TTS"));
     }
 
     #[tokio::test]
@@ -265,7 +503,7 @@ mod tests {
             .execute(json!({"operation": "record"}), cancel)
             .await;
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("unavailable"));
+        assert!(err.to_string().contains("cancelled") || err.to_string().contains("unavailable"));
     }
 
     #[tokio::test]
@@ -286,11 +524,63 @@ mod tests {
                     file_path: None,
                     duration: None,
                     text: None,
+                    volume: None,
+                    muted: None,
                 },
                 CancellationToken::new(),
             )
             .await;
         let err = result.unwrap_err();
         assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_volume_get_set_roundtrip() {
+        let tool = AudioTool::new(None);
+        let get = tool
+            .execute(json!({"operation": "volume_get"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(get.success);
+        let vol = get.output["volume"].as_f64().unwrap();
+        assert!((0.0..=1.0).contains(&vol));
+
+        let set = tool
+            .execute(
+                json!({"operation": "volume_set", "volume": vol}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(set.success);
+        assert_eq!(set.output["set"], true);
+    }
+
+    #[tokio::test]
+    async fn test_audio_mute_get() {
+        let result = AudioTool::new(None)
+            .execute(json!({"operation": "mute_get"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output["muted"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn test_audio_volume_set_requires_value() {
+        let err = AudioTool::new(None)
+            .execute(json!({"operation": "volume_set"}), CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("volume"));
+    }
+
+    #[tokio::test]
+    async fn test_audio_mute_set_requires_value() {
+        let err = AudioTool::new(None)
+            .execute(json!({"operation": "mute_set"}), CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("muted"));
     }
 }

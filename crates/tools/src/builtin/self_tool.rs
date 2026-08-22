@@ -1288,11 +1288,11 @@ fn validate_skill_name(name: &str) -> anyhow::Result<()> {
 #[async_trait]
 impl Tool for SelfTool {
     fn name(&self) -> String {
-        "self".into()
+        "haven".into()
     }
 
     fn description(&self) -> String {
-        "Inspect and manage Haven's own state.".into()
+        "Inspect and manage Haven itself: config, skills, builtin tools, MCP servers, logs, sessions.".into()
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
@@ -1442,7 +1442,7 @@ mod tests {
     #[test]
     fn test_self_name_and_schema() {
         let (tool, _dir) = make_tool();
-        assert_eq!(tool.name(), "self");
+        assert_eq!(tool.name(), "haven");
         let schema = tool.input_schema();
         let ops = schema["properties"]["operation"]["enum"]
             .as_array()

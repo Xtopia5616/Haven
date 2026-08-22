@@ -3,6 +3,7 @@ pub mod bg;
 pub mod builtin;
 pub mod circuit;
 pub mod inbox;
+pub mod live_output;
 pub mod simulate;
 pub mod skill_runner;
 pub mod tool;
@@ -33,6 +34,7 @@ pub use builtin::{
     SelfTool, SelfToolContext,
 };
 pub use circuit::ToolCircuitRegistry;
+pub use live_output::LiveOutputHub;
 pub use haven_mcp::{
     McpClient, McpClientStatus, McpManager, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
@@ -109,6 +111,8 @@ pub struct ToolsManager {
     router: RwLock<Option<Arc<LlmRouter>>>,
     /// Registry of background actions (shell with background: true).
     pub background_actions: Arc<bg::BackgroundActions>,
+    /// Live stdout/stderr previews for foreground tools (shell).
+    pub live_outputs: Arc<live_output::LiveOutputHub>,
     /// Registry of in-process scheduled actions (the `schedule` tool). The fired
     /// channel is consumed by the agent layer, which notifies, runs the
     /// scheduled tool, or resumes the scheduling session (see `ScheduleMode`).
@@ -135,8 +139,10 @@ pub struct ToolsManager {
     /// the loop re-querying schemas on every step. Shared as `Arc` so
     /// `load_mcp` / `load_skill` can bump after in-tool atomic registration.
     catalog_version: Arc<AtomicU64>,
-    /// Desktop-wired callback for `agent_spawn`. Shared across catalog rebuilds.
+    /// Desktop-wired callback for `agent` spawn. Shared across catalog rebuilds.
     agent_spawner: builtin::AgentSpawnerSlot,
+    /// Desktop-wired History/`InferenceEngine` recall for `memory` recall.
+    memory_recall: builtin::MemoryRecallSlot,
 }
 
 impl ToolsManager {
@@ -147,6 +153,7 @@ impl ToolsManager {
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
         let registry = ToolRegistry::new();
         let background_actions = Arc::new(bg::BackgroundActions::new());
+        let live_outputs = Arc::new(live_output::LiveOutputHub::new());
         let scheduled_actions = Arc::new(builtin::scheduled_action::ScheduledActionCenter::new());
         // Wire the background-action registry into the scheduled_action center so
         // `watch_action_id` scheduled_actions can wait for a action to finish.
@@ -169,6 +176,7 @@ impl ToolsManager {
             tool_circuits: ToolCircuitRegistry::new(),
             router: RwLock::new(None),
             background_actions,
+            live_outputs,
             scheduled_actions,
             self_context: RwLock::new(None),
             self_tool: RwLock::new(None),
@@ -176,13 +184,19 @@ impl ToolsManager {
             audio_pipeline: RwLock::new(None),
             catalog_version: Arc::new(AtomicU64::new(0)),
             agent_spawner: builtin::new_agent_spawner_slot(),
+            memory_recall: builtin::new_memory_recall_slot(),
         }
     }
 
-    /// Install the desktop agent-layer callback used by `agent_spawn`.
+    /// Install the desktop agent-layer callback used by `agent` spawn.
     /// Does not rebuild the catalog (the tool already holds this slot).
     pub async fn set_agent_spawner(&self, spawner: builtin::AgentSpawner) {
         *self.agent_spawner.write().await = Some(spawner);
+    }
+
+    /// Install History-aligned recall for `memory` operation=recall.
+    pub async fn set_memory_recall(&self, recall: builtin::MemoryRecallFn) {
+        *self.memory_recall.write().await = Some(recall);
     }
 
     /// Monotonic catalog version (see `catalog_version`). Consumers cache
@@ -236,6 +250,7 @@ impl ToolsManager {
         self.mcp_manager.set_limits(&context_limits).await;
         self.skills_engine.set_limits(&context_limits).await;
         self.background_actions.set_limits(&context_limits).await;
+        self.live_outputs.set_limits(&context_limits).await;
         self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
         self.safety_gateway
@@ -295,6 +310,7 @@ impl ToolsManager {
         self.mcp_manager.set_limits(&limits).await;
         self.skills_engine.set_limits(&limits).await;
         self.background_actions.set_limits(&limits).await;
+        self.live_outputs.set_limits(&limits).await;
         self.scheduled_actions.set_limits(&limits).await;
         *self.context_limits.write().await = limits;
         self.rebuild_catalog().await;
@@ -363,6 +379,7 @@ impl ToolsManager {
             &self.mcp_server_configs,
             router,
             self.background_actions.clone(),
+            self.live_outputs.clone(),
             self.scheduled_actions.clone(),
             self_context,
             self.registry.clone(),
@@ -374,6 +391,7 @@ impl ToolsManager {
             self.session_registrations.clone(),
             self.catalog_version.clone(),
             self.agent_spawner.clone(),
+            self.memory_recall.clone(),
         )
         .await;
         *self.self_tool.write().await = self_tool_arc;
@@ -768,6 +786,21 @@ impl ToolsManager {
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.execute_tool_with_step(session_id, tool_name, input, cancel, None)
+            .await
+    }
+
+    /// Like [`Self::execute_tool`], but also injects the pre-minted `step-*`
+    /// id so tools that stream live output (shell) can key `agent:tool_output`
+    /// events to the matching chat card.
+    pub async fn execute_tool_with_step(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+        step_id: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
         if !self.tool_circuits.allow_request(tool_name) {
             tracing::warn!("tool '{}' circuit breaker open — fast-failing", tool_name);
             anyhow::bail!(
@@ -786,24 +819,35 @@ impl ToolsManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("tool '{}' not found in registry", tool_name))?;
 
-        // Tools that scope to the current session (schedule, actions) get the session
-        // id injected privately here — after the LLM-facing input was
-        // captured by the caller — so it never reaches the tool schema, the
-        // step history, or the LLM. Declared via `Tool::requires_session_id` so
-        // the injection cannot drift from the tool that consumes it.
+        // Private fields (`_session_id` / `_step_id`) are never trusted from
+        // the LLM or scheduled tool_args: always strip first, validate the
+        // LLM-facing input, then re-inject only caller-supplied values.
+        // Declared via `Tool::requires_session_id` / `supports_live_output`.
         let mut exec_input = input;
-        if tool.requires_session_id()
-            && let Some(tid) = session_id
-            && let Some(obj) = exec_input.as_object_mut()
-        {
-            obj.insert("_session_id".into(), serde_json::json!(tid));
+        if let Some(obj) = exec_input.as_object_mut() {
+            obj.remove("_session_id");
+            obj.remove("_step_id");
         }
         tool.validate_input(&exec_input)?;
+        if let Some(obj) = exec_input.as_object_mut() {
+            let want_session = tool.requires_session_id()
+                || (tool.supports_live_output() && step_id.is_some());
+            if want_session
+                && let Some(tid) = session_id
+            {
+                obj.insert("_session_id".into(), serde_json::json!(tid));
+            }
+            if tool.supports_live_output()
+                && let Some(sid) = step_id.filter(|s| !s.is_empty())
+            {
+                obj.insert("_step_id".into(), serde_json::json!(sid));
+            }
+        }
         let settings = self.tool_settings.read().await;
         let cfg = settings.get(tool_name);
         let timeout_secs = cfg
             .map(|c| c.timeout_secs)
-            .unwrap_or_else(|| tool.default_timeout_secs());
+            .unwrap_or_else(|| tool.timeout_secs_for(&exec_input));
         let max_retries = cfg.map(|c| c.max_retries).unwrap_or(0);
         let backoff_secs = cfg.map(|c| c.retry_backoff_secs).unwrap_or(2);
         drop(settings);
@@ -1293,5 +1337,72 @@ mod tests {
             .map(|d| d.name.as_str())
             .collect();
         assert_eq!(session_kept, vec!["s_a", "s_b"]);
+    }
+
+    /// LLM-/schedule-supplied `_step_id` / `_session_id` must never reach the
+    /// live-output hub. Without a trusted step id the shell path stays silent;
+    /// with one, only the trusted id is emitted.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn private_live_output_ids_are_stripped_and_reinjected() {
+        use std::sync::Mutex;
+
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let hits2 = hits.clone();
+        mgr.live_outputs.set_event_sink(Arc::new(move |_event, payload| {
+            if let Some(sid) = payload["step_id"].as_str() {
+                hits2.lock().unwrap().push(sid.to_string());
+            }
+        }));
+
+        // Forged private fields, no trusted step → no live emit.
+        let _ = mgr
+            .execute_tool(
+                Some("ses-1"),
+                "shell",
+                json!({
+                    "command": "echo forged",
+                    "shell": "cmd",
+                    "_step_id": "step-forged",
+                    "_session_id": "ses-evil",
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !hits.lock().unwrap().iter().any(|s| s == "step-forged"),
+            "forged step id must not reach agent:tool_output"
+        );
+
+        // Trusted step id wins over a forged one in the input.
+        hits.lock().unwrap().clear();
+        let _ = mgr
+            .execute_tool_with_step(
+                Some("ses-1"),
+                "shell",
+                json!({
+                    "command": "echo trusted",
+                    "shell": "cmd",
+                    "_step_id": "step-forged",
+                }),
+                CancellationToken::new(),
+                Some("step-trusted"),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = hits.lock().unwrap().clone();
+        assert!(
+            !seen.iter().any(|s| s == "step-forged"),
+            "forged id must be overwritten by trusted step id"
+        );
+        // Live emit is best-effort (fast commands may finish before the first
+        // tick); when anything is emitted it must be the trusted id.
+        assert!(
+            seen.iter().all(|s| s == "step-trusted"),
+            "only trusted step id may be emitted, got {seen:?}"
+        );
     }
 }

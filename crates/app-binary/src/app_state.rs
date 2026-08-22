@@ -112,7 +112,7 @@ impl AppState {
         ));
         agent.set_session_max_steps(session_max_steps);
 
-        // Plan A multi-agent: `agent_spawn` creates real peer sessions through
+        // Plan A multi-agent: `agent` spawn creates real peer sessions through
         // the agent layer (tools crate cannot depend on haven-agent).
         {
             let agent_for_spawn = agent.clone();
@@ -120,6 +120,16 @@ impl AppState {
                 .set_agent_spawner(std::sync::Arc::new(move |req| {
                     let agent = agent_for_spawn.clone();
                     Box::pin(async move { agent.spawn_peer_session(req).await })
+                }))
+                .await;
+        }
+        // `memory` recall shares History/`InferenceEngine::recall_memory`.
+        {
+            let agent_for_recall = agent.clone();
+            tools
+                .set_memory_recall(std::sync::Arc::new(move |query, kind, limit| {
+                    let agent = agent_for_recall.clone();
+                    Box::pin(async move { agent.recall_memory(&query, &kind, limit).await })
                 }))
                 .await;
         }

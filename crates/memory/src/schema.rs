@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -41,6 +41,7 @@ struct Migration {
 ///   so safety-confirm pause survives process restart.
 /// - v5: episode `topics`/`entities` JSON columns (P2-10 / L6); backfill
 ///   bare `company` → `works_at` predicate alias (P2-11).
+/// - v6: `embedding_lsh` side table for large-partition ANN probing (M5).
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -57,6 +58,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 5,
         apply: migrate_v5_episodes_structured_and_company_alias,
+    },
+    Migration {
+        version: 6,
+        apply: migrate_v6_embedding_lsh,
     },
 ];
 
@@ -203,6 +208,22 @@ fn migrate_v4_paused_awaiting_confirm_status(conn: &rusqlite::Connection) -> any
         "#,
     )?;
     conn.execute_batch("PRAGMA foreign_keys=ON")?;
+    Ok(())
+}
+
+/// M5: LSH bucket side table for ANN probing once embedding partitions grow.
+fn migrate_v6_embedding_lsh(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS embedding_lsh (
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            bucket INTEGER NOT NULL,
+            PRIMARY KEY (entity_type, entity_id, model)
+         );
+         CREATE INDEX IF NOT EXISTS idx_embedding_lsh_probe
+             ON embedding_lsh(entity_type, model, bucket);",
+    )?;
     Ok(())
 }
 
@@ -435,6 +456,17 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     PRIMARY KEY (entity_type, entity_id, model)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_type ON memory_embeddings(entity_type);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_type_model
+    ON memory_embeddings(entity_type, model, updated_at);
+CREATE TABLE IF NOT EXISTS embedding_lsh (
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    bucket INTEGER NOT NULL,
+    PRIMARY KEY (entity_type, entity_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_lsh_probe
+    ON embedding_lsh(entity_type, model, bucket);
 ";
 
 /// Triggers that keep `memory_embeddings` in sync with the `facts` table: any
@@ -446,9 +478,11 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
          DROP TRIGGER IF EXISTS facts_embed_upd;
          CREATE TRIGGER facts_embed_del AFTER DELETE ON facts BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
+             DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
          END;
          CREATE TRIGGER facts_embed_upd AFTER UPDATE ON facts BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
+             DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
          END;",
     )?;
     Ok(())
@@ -745,14 +779,15 @@ mod tests {
         let tables = get_tables(&conn);
 
         let expected = &[
+            "actions",
+            "embedding_lsh",
             "facts",
+            "kv_store",
             "llm_usage",
             "memory_embeddings",
             "memory_episodes",
             "messages",
             "partial_messages",
-            "kv_store",
-            "actions",
             "session_steps",
             "session_usage",
             "sessions",
@@ -788,10 +823,12 @@ mod tests {
         let indexes = get_indexes(&conn);
 
         let expected = &[
+            "idx_embedding_lsh_probe",
             "idx_facts_confidence",
             "idx_facts_subject",
             "idx_llm_usage_session",
             "idx_memory_embeddings_type",
+            "idx_memory_embeddings_type_model",
             "idx_memory_episodes_created",
             "idx_memory_episodes_session",
             "idx_messages_created_at",

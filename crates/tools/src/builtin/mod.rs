@@ -1,17 +1,16 @@
-pub mod action_status;
 pub mod actions;
 pub mod ask;
 pub mod audio;
 pub mod clipboard;
 pub mod env;
-pub mod facts;
+pub mod memory;
 pub mod file_search;
 pub mod files;
 pub mod input;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod messaging;
-pub mod network;
+pub mod http;
 pub mod notify;
 pub mod power;
 pub mod process;
@@ -33,7 +32,7 @@ use crate::skill_runner::SkillRunner;
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
 
-pub use facts::FactsTool;
+pub use memory::{MemoryRecallFn, MemoryRecallSlot, MemoryTool, new_memory_recall_slot};
 pub use messaging::{
     AgentSpawnRequest, AgentSpawnResult, AgentSpawner, AgentSpawnerSlot, new_agent_spawner_slot,
 };
@@ -68,6 +67,7 @@ pub async fn register_builtin_tools(
     server_configs: &Arc<RwLock<HashMap<String, haven_common::McpServerConfig>>>,
     router: Option<Arc<haven_llm::LlmRouter>>,
     background_actions: Arc<BackgroundActions>,
+    live_outputs: Arc<crate::live_output::LiveOutputHub>,
     scheduled_actions: Arc<ScheduledActionCenter>,
     self_context: Option<SelfToolContext>,
     registry: ToolRegistry,
@@ -81,10 +81,13 @@ pub async fn register_builtin_tools(
     >,
     catalog_version: Arc<std::sync::atomic::AtomicU64>,
     agent_spawner: messaging::AgentSpawnerSlot,
+    memory_recall: memory::MemoryRecallSlot,
 ) -> Option<Arc<self_tool::SelfTool>> {
     let mut self_tool_arc: Option<Arc<self_tool::SelfTool>> = None;
     tools.push(Arc::new(audio::AudioTool::new(audio_pipeline)));
     tools.push(Arc::new(ask::AskTool));
+    // Clone before FilesTool consumes `router` so WindowTool can OCR via vision.
+    let window_router = router.clone();
     tools.push(Arc::new(files::FilesTool::new(
         router,
         tool_output_cap(settings, "files", limits.max_observation_chars),
@@ -115,11 +118,9 @@ pub async fn register_builtin_tools(
     )));
     tools.push(Arc::new(shell::ShellTool {
         actions: background_actions.clone(),
+        live_outputs,
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
-    }));
-    tools.push(Arc::new(action_status::ActionStatusTool {
-        actions: background_actions.clone(),
     }));
     tools.push(Arc::new(actions::ActionsTool {
         actions: background_actions,
@@ -131,42 +132,21 @@ pub async fn register_builtin_tools(
         // schedule time; taken before `registry` is moved into SelfTool.
         registry: Some(registry.probe()),
     }));
-    tools.push(Arc::new(system::SystemTool));
-    tools.push(Arc::new(env::EnvTool {
-        max_output_chars: tool_output_cap(settings, "env", limits.max_observation_chars),
+    tools.push(Arc::new(system::SystemTool {
+        max_output_chars: tool_output_cap(settings, "system", limits.max_observation_chars),
     }));
-    tools.push(Arc::new(window::WindowTool));
-    tools.push(Arc::new(registry::RegistryTool));
-    tools.push(Arc::new(network::NetworkTool {
+    tools.push(Arc::new(window::WindowTool::new(window_router)));
+    tools.push(Arc::new(http::HttpTool {
         max_retries: limits.network_max_retries,
         backoff_base_secs: limits.network_backoff_base_secs,
         max_body_bytes: limits.network_max_body_bytes,
     }));
     tools.push(Arc::new(notify::NotifyTool));
-    tools.push(Arc::new(power::PowerTool));
-    // Cross-session messaging / peer collab: shared file bus + spawn hook.
-    // Agents lazily register on first messaging call; `agent_spawn` needs the
+    // Cross-session messaging / peer collab: single `agent` tool over the
+    // shared file bus. Agents lazily register on first call; spawn needs the
     // desktop-wired spawner slot (None in headless → tool errors clearly).
     let messaging_bus = Arc::new(crate::inbox::InboxBus::default_root());
-    tools.push(Arc::new(messaging::AgentsListTool::new(
-        messaging_bus.clone(),
-    )));
-    tools.push(Arc::new(messaging::MessageSendTool::new(
-        messaging_bus.clone(),
-    )));
-    tools.push(Arc::new(messaging::MessageInboxTool::new(
-        messaging_bus.clone(),
-    )));
-    tools.push(Arc::new(messaging::MessageReplyTool::new(
-        messaging_bus.clone(),
-    )));
-    tools.push(Arc::new(messaging::AgentProfileTool::new(
-        messaging_bus.clone(),
-    )));
-    tools.push(Arc::new(messaging::MessageRequestTool::new(
-        messaging_bus.clone(),
-    )));
-    tools.push(Arc::new(messaging::AgentSpawnTool::new(
+    tools.push(Arc::new(messaging::AgentTool::new(
         messaging_bus,
         agent_spawner,
     )));
@@ -190,7 +170,10 @@ pub async fn register_builtin_tools(
     if let Some(ctx) = self_context {
         // Facts memory needs the DB; like SelfTool it only registers once the
         // desktop shell wires the app context (headless builds skip it).
-        tools.push(Arc::new(facts::FactsTool::new(ctx.db.clone())));
+        tools.push(Arc::new(memory::MemoryTool::new(
+            ctx.db.clone(),
+            memory_recall,
+        )));
         let tool = Arc::new(self_tool::SelfTool::new(
             ctx,
             skills_engine.clone(),

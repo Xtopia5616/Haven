@@ -5,6 +5,31 @@ import logger from '$lib/logger.ts';
 export const sessionStore = writable<any[]>([]);
 
 /**
+ * Live foreground tool-output previews keyed by `step-*` id.
+ * Populated by `agent:tool_output`; cleared on `agent:observation`.
+ * Kept out of the message list so ticks do not rewrite the transcript store.
+ */
+export const toolOutputPreviewStore = writable<Record<string, string>>({});
+
+export function setToolOutputPreview(stepId: string, output: string) {
+	if (!stepId) return;
+	toolOutputPreviewStore.update((m) => {
+		if (m[stepId] === output) return m;
+		return { ...m, [stepId]: output };
+	});
+}
+
+export function clearToolOutputPreview(stepId: string) {
+	if (!stepId) return;
+	toolOutputPreviewStore.update((m) => {
+		if (!(stepId in m)) return m;
+		const next = { ...m };
+		delete next[stepId];
+		return next;
+	});
+}
+
+/**
  * Action registry (background actions + pending scheduled actions):
  * `{ [id]: Action }` where each entry mirrors a row from the backend's
  * `list_actions`:
@@ -487,6 +512,18 @@ export const sessionLlmUsageStore = writable<Record<string, LlmUsage[]>>({});
 export function restoreSessionLlmUsage(sessionId: string, usageList: LlmUsage[]) {
 	if (!sessionId || !Array.isArray(usageList)) return;
 	sessionLlmUsageStore.update((m) => ({ ...m, [sessionId]: usageList }));
+}
+
+/**
+ * Append one live `agent:usage` call onto the per-session detail list so
+ * tool-card token chips update during the run (not only after review restore).
+ */
+export function appendSessionLlmUsage(sessionId: string, entry: LlmUsage) {
+	if (!sessionId) return;
+	sessionLlmUsageStore.update((m) => {
+		const prev = m[sessionId] || [];
+		return { ...m, [sessionId]: [...prev, entry] };
+	});
 }
 
 /** Clear per-call usage detail for a finished/reset session. */

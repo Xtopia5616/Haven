@@ -7,6 +7,7 @@ import {
 	webSearchLabel,
 	finalizeStreamBlocks,
 	newToolMessage,
+	actionIdFromObservation,
 } from './streaming.ts';
 
 const STEP_ID = 'msg-thought-1';
@@ -585,5 +586,32 @@ describe('newToolMessage', () => {
 	it('omits time when falsy so observation fills preserve the placeholder timestamp', () => {
 		const msg = newToolMessage({ id: 'x', stepNumber: 1, toolName: 'file', content: 'ok' });
 		expect('time' in msg).toBe(false);
+	});
+
+	it('carries actionId for background shell observations', () => {
+		const msg = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'shell',
+			content: '{"background":true}',
+			actionId: 'act-abc',
+		});
+		expect(msg.actionId).toBe('act-abc');
+	});
+});
+
+describe('actionIdFromObservation', () => {
+	it('extracts action_id from background shell observations', () => {
+		expect(
+			actionIdFromObservation(
+				JSON.stringify({ background: true, action_id: 'act-1', status: 'running' }),
+			),
+		).toBe('act-1');
+	});
+	it('returns null for foreground / non-JSON observations', () => {
+		expect(actionIdFromObservation('{"output":"hi"}')).toBeNull();
+		expect(actionIdFromObservation('plain text')).toBeNull();
+		expect(actionIdFromObservation('')).toBeNull();
+		expect(actionIdFromObservation(null)).toBeNull();
 	});
 });

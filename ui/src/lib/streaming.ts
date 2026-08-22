@@ -91,6 +91,7 @@ export function newToolMessage({
 	content = '',
 	streaming = false,
 	askOptions = null,
+	actionId = null,
 }: {
 	id: string;
 	stepNumber: number;
@@ -99,6 +100,7 @@ export function newToolMessage({
 	content?: string;
 	streaming?: boolean;
 	askOptions?: string[] | null;
+	actionId?: string | null;
 }) {
 	const isAsk = toolName === 'ask';
 	return {
@@ -111,8 +113,23 @@ export function newToolMessage({
 		stepNumber,
 		...(time ? { time } : {}),
 		streaming,
+		...(actionId ? { actionId } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
 	};
+}
+
+/** Extract a background `action_id` from a shell/tool observation payload. */
+export function actionIdFromObservation(observation: string | undefined | null): string | null {
+	if (!observation) return null;
+	try {
+		const j = JSON.parse(observation);
+		if (j && typeof j === 'object' && j.background === true && typeof j.action_id === 'string') {
+			return j.action_id;
+		}
+	} catch {
+		// not JSON
+	}
+	return null;
 }
 
 // Streaming blocks always live at the tail of the conversation (or just in

@@ -28,7 +28,9 @@ mod tool_batch;
 mod transcript;
 
 use hooks::{LoopHooksHandle, default_hooks};
-pub(crate) use hooks::{InferCallback, default_hooks_with_infer};
+pub(crate) use hooks::{
+    InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch,
+};
 use identity::IdentityMap;
 use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, MessagingPoller, SnapshotBufs,
@@ -187,6 +189,8 @@ pub struct ReActEngine {
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
+    /// Optional fact engine for compaction-summary extraction (M3).
+    inference: Option<Arc<crate::InferenceEngine>>,
 }
 
 /// Per-step context shared by the ReAct-loop helpers (context injection,
@@ -267,6 +271,7 @@ impl ReActEngine {
             balanced_model: BalancedModelNotifier::new(),
             identity: IdentityMap::new(),
             hooks: default_hooks(),
+            inference: None,
         }
     }
 
@@ -274,6 +279,12 @@ impl ReActEngine {
     /// `hooks::NoopHooks` to skip inbox/infer).
     pub(crate) fn with_hooks(mut self, hooks: LoopHooksHandle) -> Self {
         self.hooks = hooks;
+        self
+    }
+
+    /// Attach the shared [`crate::InferenceEngine`] for M3 summary→facts.
+    pub(crate) fn with_inference(mut self, inference: Arc<crate::InferenceEngine>) -> Self {
+        self.inference = Some(inference);
         self
     }
 
@@ -673,6 +684,10 @@ impl ReActEngine {
                 cumulative_total_tokens: cum_total,
                 cumulative_cost_usd: cum_cost_opt,
                 context_window,
+                step_number: Some(step_number as u32),
+                duration_ms,
+                role: Some(role.as_str().to_string()),
+                has_cost: call_has_cost,
             },
         )
         .await;
@@ -972,7 +987,7 @@ mod tests {
     fn classify_environmental_network() {
         assert_eq!(
             ReActEngine::classify_tool_failure(
-                "network",
+                "http",
                 "tcp connect error: A connection attempt failed because the connected party did not properly respond"
             ),
             FailureKind::Environmental

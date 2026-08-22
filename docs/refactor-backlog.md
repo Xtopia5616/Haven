@@ -2,7 +2,7 @@
 
 > 状态：`[待办]` / `[可选]` / `[完成归档]`  
 > 原则：**可大改、不向下兼容**（记忆与 ReAct 两边可一起重构；旧 dual-array snapshot / 远古 schema 可删库重建）。  
-> 更新日期：2026-08-21  
+> 更新日期：2026-08-22  
 > 取代：`docs/memory-architecture.md`、`docs/react-architecture-improvements.md`（已删除，内容并入本文）。
 
 ---
@@ -50,7 +50,7 @@ Schema：`haven_memory::schema::init_schema`，`PRAGMA user_version` + `MIGRATIO
 - 抽取：ReAct 只 `enqueue_infer(session_id)` → outbox worker；维护走调度器（启动 + ~6h）
 - Prompt：`build_memory_sections` + 字符预算；`get_facts_limited` / `search_facts_any`
 
-入口：`crates/memory/`、`crates/agent/src/{inference,prompt,layer,compactor}.rs`、`crates/tools/src/builtin/facts.rs`
+入口：`crates/memory/`、`crates/agent/src/{inference,prompt,layer,compactor}.rs`、`crates/tools/src/builtin/memory.rs`（工具名 `memory`，含 recall）
 
 ### 1.2 ReAct（对照 PI：薄循环 + 厚 hook；产品能力留宿主）
 
@@ -92,6 +92,8 @@ User/STT → AgentLayer (ingress/resume)
 | P2 | `source_ref` 清孤儿 + `source_snippet`；episodes 结构化+FTS；谓词别名；facts 多 subject；embedding 按 model 过滤；FTS→LIKE 收紧 |
 | 协作 S1–S4 | 权威契约、同会话去重、resume MEMORY patch、与 G2 衔接 |
 | 协作 L1–L4 / L6 | 压缩共享 `msg-*`；source_ref 消费；outbox；预算/查询形态；episodes FTS |
+| P0/P1 (2026-08-22) | M1 确认轮次配对抽取；M2 步间节流 MEMORY patch；M3 摘要轻量抽 facts |
+| P2 (2026-08-22) | M4 抽取视野含有界 assistant/tool；M5 LSH ANN（schema v6）；M6 维护期 LLM 谓词合并 |
 
 ### 2.2 ReAct — 完成（Phase 0–8）
 
@@ -105,8 +107,9 @@ User/STT → AgentLayer (ingress/resume)
 | 6 / 6.1 | `TranscriptEvent`/`apply`；`InjectSource`；`IdentityMap`；CompactSummary / Action·Observation 入 apply |
 | 7 | `session/` 拆分；ingress/resume；统一 projector；exit/turn_end；队列契约；SnapshotStore；spans；sanitize 计数；G4–G7 等 |
 | 8 | events 权威；`ReActRound`；wire-only inject 前缀；BP cursor；BufferedEmitter 测试；`session_max_steps`；集成测迁出 `lib.rs`；sidecars |
+| P0 (2026-08-22) | R2 删除 `await_confirmation`，调度确认非阻塞；X7 删除 Steps so far / `{history}` |
 
-基线曾绿：`cargo test -p haven-agent --lib`（Phase 8：268）。
+基线曾绿：`cargo test -p haven-agent --lib`（2026-08-22 P2：281）；`cargo test -p haven-memory --lib`（202）。
 
 ---
 
@@ -116,46 +119,35 @@ User/STT → AgentLayer (ingress/resume)
 
 ### 3.1 Memory — 显式与残留
 
-#### M1. 抽取窗口含「用户确认」轮次 `[待办]` · 原 L5
+#### M1. 抽取窗口含「用户确认」轮次 `[完成归档]` · 原 L5
 
-- **问题**：仅 user 消息时，「好的 / 就要这个」抽不到偏好。
-- **方向**：成对纳入「上一 assistant 问句 + 当前 user」；默认仍不全量 transcript。
-- **位置**：`inference.rs` 抽取窗口组装
-- **风险**：中（噪声 / 把 agent 话当事实）
+- **落地**：`build_extraction_window` 按 user 游标增量组装；新 user 前若紧邻非压缩 assistant 则成对纳入；transcript 为 `[N] role: …`；`source_ref` 优先落 user 行；抽取 prompt 允许短确认对照上一问句。
+- **位置**：`inference.rs` / `common::prompts::FACT_EXTRACTION_SYSTEM_PROMPT`
 
-#### M2. 步间 / worker 回调刷新 MEMORY fence `[待办]` · 原 §3.2-1 残留
+#### M2. 步间 / worker 回调刷新 MEMORY fence `[完成归档]` · 原 §3.2-1 残留
 
-- **问题**：步间 `infer_session` 不改 system；新 fact 须 pause→resume 才可见。
-- **方向**：outbox 写入成功后节流触发 `patch_canonical_memory`（或下一 `before_step`）；**禁止**无节流全量重建 tools/skills。
-- **位置**：`inference` worker 回调 / `hooks` / `prompt.rs`
-- **风险**：中（provider 对改写 system 敏感；与 snapshot 体积）
+- **落地**：fact 写入成功 → `mark_memory_dirty`；下一 `before_step` 经 `take_memory_dirty_throttled` 调用 `SystemPromptBuilder::patch_canonical_memory_fence`（仅 MEMORY fence）；**禁止**全量重建 tools/skills。
+- **位置**：`inference.rs` / `react/hooks.rs` / `prompt.rs` / `layer.rs`
 
-#### M3. Compaction 摘要轻量抽 facts `[待办]` · 原 L1 未做支线
+#### M3. Compaction 摘要轻量抽 facts `[完成归档]` · 原 L1 未做支线
 
-- **问题**：压缩只写 episode，不从摘要抽事实。
-- **方向**：对 CompactSummary 跑受节流约束的轻量抽取；遵守现有游标。
-- **位置**：`compactor` / `inference`
-- **风险**：中
+- **落地**：`persist_compaction_summary` 成功后 `enqueue_summary_extract`；独立游标 `fact_extraction_episode.{session}`；共享时间节流；不推进 user 游标；写入后置 dirty（接 M2）。
+- **位置**：`react/snapshot_io.rs` / `inference.rs` / `ReActEngine::with_inference`
 
-#### M4. 抽取视野对齐 canonical（适度） `[待办]` · 原 §3.2-6
+#### M4. 抽取视野对齐 canonical（适度） `[完成归档]` · 原 §3.2-6
 
-- **问题**：抽取读 DB user，与模型当前视野解耦，缺 assistant/tool 轮次。
-- **方向**：在 M1 之上评估是否纳入少量 tool/assistant 上下文；仍避免整段 transcript。
-- **依赖**：M1
-- **风险**：中–高
+- **落地**：每新 user 纳入同轮最多 2 条非压缩 assistant（跳过 reasoning）+ 最多 3 条 tool 观察（`role=tool` 优先，否则从 `session_steps` 合成 `tool(name): …`，单条截断 300 字）；游标仍只推进 user id；prompt 声明 tool/assistant 仅作 grounding。
+- **位置**：`inference.rs` / `common::prompts::FACT_EXTRACTION_SYSTEM_PROMPT`
 
-#### M5. 万级向量索引 `[可选]` · 原 P1-4 尾巴
+#### M5. 万级向量索引 `[完成归档]` · 原 P1-4 尾巴
 
-- **问题**：暴力 cosine + scan cap；上千×高维拖慢 prompt / recall。
-- **方向**：事实量达万级评估 `sqlite-vec` / HNSW；换模仍 fail-closed 按 model 过滤。
-- **位置**：`embeddings.rs`
-- **风险**：中（依赖 / 重建索引）
+- **落地**：纯 Rust 随机投影 LSH（无 sqlite-vec / 无新 native 依赖）；`embedding_lsh` 侧表 + schema v6；分区 ≥ `ANN_ACTIVATE_MIN`(4096) 时 Hamming-1 probe + 精确 cosine 重排；以下仍 newest scan cap；换模 fail-closed；维护期 `rebuild_embedding_lsh`。
+- **位置**：`embeddings.rs` / `schema.rs`
 
-#### M6. 谓词冲突 LLM 辅助合并 `[可选]` · 原 P2-11 方向支线
+#### M6. 谓词冲突 LLM 辅助合并 `[完成归档]` · 原 P2-11 方向支线
 
-- **问题**：别名已扩；自由谓词仍易分裂行。
-- **方向**：维护期可选 LLM 合并；保留 demote / 极性冲突。
-- **风险**：中（误合并）
+- **落地**：维护期 BalancedModel 提出 merge；仅当静态别名已映射或 confidence≥0.85 且目标为已知 canonical；禁止 likes↔dislikes；LLM 在 DB 锁外，`rewrite_predicate` + `dedup_facts` 落库。
+- **位置**：`inference.rs` / `facts.rs` / `PREDICATE_MERGE_SYSTEM_PROMPT`
 
 ---
 
@@ -168,12 +160,10 @@ User/STT → AgentLayer (ingress/resume)
 - **位置**：`tool_batch` / `queues` / hooks
 - **风险**：中（UX / cancel 语义）
 
-#### R2. 清除调度路径遗留 `await_confirmation` `[待办]` · Phase 5 尾巴
+#### R2. 清除调度路径遗留 `await_confirmation` `[完成归档]` · Phase 5 尾巴
 
-- **问题**：E3 主路径已 NeedConfirm→pause；调度路径仍可能 bounded 阻塞等待。
-- **方向**：全部走 pause/continue；删除工具 future 内长等待。
-- **位置**：`session/tool_runner.rs` 等
-- **风险**：中（并行批 + 对话框 UX）
+- **落地**：删除 `await_confirmation` / `confirm_waits`；`execute_gated` 缺 `pre_confirmed` 时 fail-closed；`ScheduleMode::Tool` 经 `request_scheduled_confirm` 非阻塞排队，`resolve_confirmation` / `SCHEDULED_CONFIRM_TIMEOUT` 后续执行或跳过。
+- **位置**：`session/{mod,tool_runner}.rs` / `layer.rs`
 
 #### R3. Skill/MCP 加载后刷新 prompt 工具短索引 `[可选]` · 原 G7 反向选择
 
@@ -228,10 +218,9 @@ User/STT → AgentLayer (ingress/resume)
 
 - 召回现为 prompt / 工具结果形态；独立 Tab 需改产品约束 `ui.agent_tool_display` 相关约定。
 
-#### X7. 并行启用「Steps so far」与 canonical `[可选·不推荐]` · 原 memory §3.2-3 / §3.5
+#### X7. 并行启用「Steps so far」与 canonical `[完成归档·已删除]` · 原 memory §3.2-3 / §3.5
 
-- 生产现 `history=&[]`；双通道会再次分裂权威。
-- **更优**：删死代码路径，或把 Steps 只做调试投影。
+- **落地**：删除 `ReActRound`→system prompt 注入、`{history}` 占位与 Steps so far 渲染；canonical 为唯一 LLM transcript 权威。`ReActRound` 投影与 Additional context 保留。
 
 #### X8. 重写为 TypeScript / 依赖 pi-agent-core `[可选·不推荐]` · 原 react §五
 
@@ -265,14 +254,14 @@ User/STT → AgentLayer (ingress/resume)
 
 | ID | 状态 | 域 | 一句话 |
 |---|---|---|---|
-| M1 | 待办 | Memory | 抽取含确认轮次 |
-| M2 | 待办 | Memory | 步间/worker 刷新 MEMORY |
-| M3 | 待办 | Memory | 摘要抽 facts |
-| M4 | 待办 | Memory | 抽取视野对齐 canonical |
-| M5 | 可选 | Memory | 万级 sqlite-vec/HNSW |
-| M6 | 可选 | Memory | 维护期 LLM 谓词合并 |
+| M1 | 完成 | Memory | 抽取含确认轮次 |
+| M2 | 完成 | Memory | 步间/worker 刷新 MEMORY |
+| M3 | 完成 | Memory | 摘要抽 facts |
+| M4 | 完成 | Memory | 抽取视野对齐 canonical |
+| M5 | 完成 | Memory | 万级 LSH ANN（≥4096） |
+| M6 | 完成 | Memory | 维护期 LLM 谓词合并 |
 | R1 | 可选 | ReAct | CancelToolsOnSteer |
-| R2 | 待办 | ReAct | 去掉遗留 await_confirmation |
+| R2 | 完成 | ReAct | 去掉遗留 await_confirmation |
 | R3 | 可选 | ReAct | skill/mcp 后 patch 工具短索引 |
 | R4 | 可选 | ReAct | snapshot 显式 RunBudget |
 | R5 | 可选 | ReAct | 薄循环单测加厚 |
@@ -282,7 +271,7 @@ User/STT → AgentLayer (ingress/resume)
 | X4 | 不推荐 | Context | 出窗历史灌回 canonical |
 | X5 | 可选 | Memory | source_ref 矛盾引擎 |
 | X6 | 可选·产品 | UI | 记忆独立 Tab |
-| X7 | 不推荐 | Prompt | Steps so far 双通道 |
+| X7 | 完成 | Prompt | 已删 Steps so far 死路径 |
 | X8 | 不推荐 | 栈 | TS / pi-agent-core |
 | X9 | 不推荐 | 持久化 | 去掉 snapshot/rollback |
 | X10 | 不推荐 | 安全 | 去掉 confirm |
@@ -290,26 +279,26 @@ User/STT → AgentLayer (ingress/resume)
 | X12 | 可选·史诗 | 跨切 | DB↔events 统一日志 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **5**（M1–M4、R2）· 可选 **11** · 不推荐 **7** · 史诗计入可选。
+**计数**：待办 **0** · 可选 **8** · 不推荐 **6** · 完成归档本轮 **8**（M1–M6、R2、X7）· 史诗计入可选。
 
 ---
 
 ## 4. 建议分期（不顾兼容）
 
 ```
-P0  契约清理
+P0  契约清理                         ✅ 2026-08-22
     R2  清除 await_confirmation 遗留
-    X7  删除或调试-only「Steps so far」死路径（选更优，不做双通道）
+    X7  删除「Steps so far」死路径（不做双通道）
 
-P1  记忆协作加深
+P1  记忆协作加深                     ✅ 2026-08-22
     M1  确认轮次抽取
     M2  步间/worker MEMORY patch（节流）
     M3  摘要 → facts
 
-P2  抽取与检索增强
-    M4  抽取视野（依赖 M1）
-    M5  万级向量（数据量触发）
-    M6  谓词 LLM 合并（误合并可接受时）
+P2  抽取与检索增强                     ✅ 2026-08-22
+    M4  抽取视野（assistant/tool 有界上下文）
+    M5  万级向量（LSH ANN，≥4096 激活）
+    M6  谓词 LLM 合并（门闩 + demote/极性保留）
 
 P3  ReAct 产品旋钮
     R1  CancelToolsOnSteer（产品拍板后）
@@ -357,4 +346,6 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-22 | P2 落地：M4 抽取视野含有界 assistant/tool；M5 embedding_lsh + ANN≥4096；M6 维护期 LLM 谓词合并 |
+| 2026-08-22 | P0+P1 落地：R2 非阻塞调度确认；X7 删除 Steps so far；M1 确认轮次抽取；M2 节流 MEMORY patch；M3 摘要→facts |
 | 2026-08-21 | 初版：合并并取代 `memory-architecture.md` 与 `react-architecture-improvements.md`；完成项归档；剩余项含原「明确不做」；原则改为可大改、不向下兼容 |

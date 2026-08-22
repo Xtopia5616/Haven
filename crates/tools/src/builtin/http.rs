@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Tool, ToolResult};
 
-pub struct NetworkTool {
+pub struct HttpTool {
     /// Max retries for failed HTTP requests.
     pub max_retries: u32,
     /// Exponential backoff base (secs) between retries.
@@ -33,8 +33,8 @@ impl NetworkMethod {
     }
 }
 
-/// Typed parameters for `NetworkTool`. Entry ① (native `run`) and entry ②
-/// (`Tool::execute` with LLM JSON) both land in `NetworkTool::run`.
+/// Typed parameters for `HttpTool`. Entry ① (native `run`) and entry ②
+/// (`Tool::execute` with LLM JSON) both land in `HttpTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NetworkParams {
     /// HTTP method; defaults to GET.
@@ -57,7 +57,7 @@ pub struct NetworkParams {
     pub timeout_secs: Option<i64>,
 }
 
-impl NetworkTool {
+impl HttpTool {
     /// Entry ①: structured native interface (internal code calls — zero
     /// serialization overhead). Entry ② deserializes JSON and delegates here.
     pub async fn run(
@@ -132,7 +132,7 @@ impl NetworkTool {
     }
 }
 
-impl Default for NetworkTool {
+impl Default for HttpTool {
     fn default() -> Self {
         Self {
             max_retries: 2,
@@ -143,12 +143,12 @@ impl Default for NetworkTool {
 }
 
 #[async_trait]
-impl Tool for NetworkTool {
+impl Tool for HttpTool {
     fn name(&self) -> String {
-        "network".into()
+        "http".into()
     }
     fn description(&self) -> String {
-        "Fetch web pages or API data via HTTP GET/POST. HTML pages are converted to plain text by default; pass as_html to get the raw HTML instead.".into()
+        "HTTP GET/POST for pages or APIs. HTML is converted to plain text by default; pass as_html for raw HTML. For web search prefer load_mcp.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -432,20 +432,20 @@ mod tests {
 
     #[test]
     fn test_network_tool_name() {
-        assert_eq!(NetworkTool::default().name(), "network");
+        assert_eq!(HttpTool::default().name(), "http");
     }
 
     #[test]
     fn test_network_tool_risk_level() {
         assert_eq!(
-            NetworkTool::default().risk_level(&json!({})),
+            HttpTool::default().risk_level(&json!({})),
             RiskLevel::Medium
         );
     }
 
     #[test]
     fn test_network_tool_input_schema() {
-        let schema = NetworkTool::default().input_schema();
+        let schema = HttpTool::default().input_schema();
         assert!(schema["properties"]["url"].is_object());
     }
 
@@ -533,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_get_success() {
         let url = serve_once("200 OK", "text/plain", "hello from mock server").await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -582,7 +582,7 @@ mod tests {
     async fn test_network_execute_html_converted_to_text() {
         let html = "<html><head><title>x</title></head><body><h1>Welcome</h1><p>Hello Haven</p><script>bad()</script></body></html>";
         let url = serve_once("200 OK", "text/html; charset=utf-8", html).await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -602,7 +602,7 @@ mod tests {
     async fn test_network_execute_as_html_returns_raw() {
         let html = "<html><body><p>hi</p></body></html>";
         let url = serve_once("200 OK", "text/html", html).await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "as_html": true, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -616,7 +616,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_plain_body_format_raw() {
         let url = serve_once("200 OK", "application/json", "{\"ok\":true}").await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -630,7 +630,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_get_not_found_no_retry() {
         let url = serve_once("404 Not Found", "text/plain", "nope").await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "GET", "url": url, "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -645,7 +645,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_execute_post_with_body() {
         let url = serve_once("201 Created", "text/plain", "created").await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "POST", "url": url, "body": "payload", "timeout_secs": 5}),
                 CancellationToken::new(),
@@ -687,7 +687,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_execute_unsupported_method() {
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "PUT", "url": "http://127.0.0.1:1/"}),
                 CancellationToken::new(),
@@ -704,7 +704,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_network_execute_requires_url() {
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(json!({"method": "GET"}), CancellationToken::new())
             .await;
         assert!(result.is_err());
@@ -720,7 +720,7 @@ mod tests {
     async fn test_network_execute_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .execute(
                 json!({"method": "GET", "url": "http://127.0.0.1:1/"}),
                 cancel,
@@ -732,7 +732,7 @@ mod tests {
     #[tokio::test]
     async fn test_network_native_entry_lands_in_run() {
         let url = serve_once("200 OK", "text/plain", "hello native").await;
-        let result = NetworkTool::default()
+        let result = HttpTool::default()
             .run(
                 NetworkParams {
                     method: Some(NetworkMethod::Get),

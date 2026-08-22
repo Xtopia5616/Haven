@@ -7,13 +7,11 @@ use tokio_util::sync::CancellationToken;
 use crate::bg::BackgroundActions;
 use crate::{Tool, ToolResult};
 
-/// One-call board of every background action started by the current session
-/// (action_id, status, timestamps, output preview), so the agent can inspect all
-/// background work at once instead of polling `status` action by action.
+/// Background-action board for the current session.
 ///
-/// The owning session id is injected privately by the tools manager
-/// (`_session_id`), mirroring the `scheduled_action` tool, so a action board can never
-/// leak other sessions' actions or outputs.
+/// - Without `action_id`: list all (optional `status` filter).
+/// - With `action_id`: return that single action's status (results are also
+///   pushed back automatically on completion — prefer not polling).
 pub struct ActionsTool {
     pub actions: Arc<BackgroundActions>,
 }
@@ -25,7 +23,10 @@ pub struct ActionsParams {
     /// Private owning session id, injected by the tools manager.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
-    /// Optional filter: only list actions in this state.
+    /// When set, return this single action's status instead of the board.
+    #[serde(default)]
+    pub action_id: Option<String>,
+    /// Optional filter when listing: only actions in this state.
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -41,6 +42,17 @@ impl ActionsTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
+
+        if let Some(action_id) = params
+            .action_id
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            let status = self.actions.status(action_id).await;
+            return Ok(ToolResult::ok(status));
+        }
+
         let session_id = params
             .session_id
             .ok_or_else(|| anyhow::anyhow!("actions requires a session context"))?;
@@ -59,8 +71,7 @@ impl Tool for ActionsTool {
         "actions".into()
     }
     fn description(&self) -> String {
-        "List all background actions of the current session in one call: action_id, status, timestamps and a brief output preview. Use this instead of polling status action by action."
-            .into()
+        "List background actions of the current session (action_id, status, timestamps, output preview), or pass action_id to inspect one. Completion results are pushed back automatically — do not poll.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -68,7 +79,7 @@ impl Tool for ActionsTool {
     }
 
     /// Needs the private `_session_id` input so the action board is scoped to the
-    /// current session.
+    /// current session (single-id lookup does not need it).
     fn requires_session_id(&self) -> bool {
         true
     }
@@ -77,17 +88,19 @@ impl Tool for ActionsTool {
         serde_json::json!({
             "type": "object",
             "properties": {
+                "action_id": {
+                    "type": "string",
+                    "description": "Optional: inspect this single background action instead of listing"
+                },
                 "status": {
                     "type": "string",
                     "enum": ["running", "completed", "failed", "cancelled"],
-                    "description": "Optional filter: only list actions in this state"
+                    "description": "Optional filter when listing: only actions in this state"
                 }
             }
         })
     }
 
-    /// Entry ②: LLM JSON entry — convert/validate into `ActionsParams`, then
-    /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool::parse_tool_input::<ActionsParams>(&self.name(), input)?;
         self.run(params, cancel).await
@@ -125,6 +138,7 @@ mod tests {
             actions: Arc::new(BackgroundActions::new()),
         };
         let schema = tool.input_schema();
+        assert!(schema["properties"]["action_id"].is_object());
         let filter = &schema["properties"]["status"]["enum"];
         assert!(filter.is_array());
     }
@@ -154,6 +168,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_actions_tool_single_action_status() {
+        let tool = ActionsTool {
+            actions: Arc::new(BackgroundActions::new()),
+        };
+        let result = tool
+            .execute(
+                json!({"action_id": "act-nope", "_session_id": "ses-x"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["status"], "not_found");
+    }
+
+    #[tokio::test]
     async fn test_actions_tool_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
@@ -173,6 +203,7 @@ mod tests {
             .run(
                 ActionsParams {
                     session_id: Some("ses-x".into()),
+                    action_id: None,
                     status: None,
                 },
                 CancellationToken::new(),

@@ -127,6 +127,38 @@ pub fn is_identity_predicate(predicate: &str) -> bool {
     )
 }
 
+/// Canonical merge targets for maintenance LLM predicate rewrites (M6).
+/// Shared by the gate and the merge system prompt so the two cannot drift.
+pub const CANONICAL_MERGE_TARGETS: &[&str] = &[
+    "name",
+    "birthday",
+    "email",
+    "phone",
+    "city",
+    "country",
+    "timezone",
+    "works_at",
+    "project_path",
+    "language",
+    "likes",
+    "dislikes",
+    "uses",
+    "verbosity",
+    "shell",
+    "os",
+    "location",
+    "role",
+    "address",
+];
+
+/// True when `predicate` (already normalized / lowercase) is an allowed
+/// maintenance merge target (M6).
+pub fn is_canonical_merge_target(predicate: &str) -> bool {
+    CANONICAL_MERGE_TARGETS
+        .iter()
+        .any(|t| predicate.eq_ignore_ascii_case(t))
+}
+
 /// Canonical form for a fact predicate: trimmed + lowercase + alias mapping.
 /// Every write path (inference persistence, `set_user_fact`, the facts tool)
 /// normalizes so the same concept arriving under different spellings merges
@@ -1125,6 +1157,43 @@ impl Database {
         Ok(())
     }
 
+    /// Distinct predicates with row counts, highest count first (M6).
+    pub fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT predicate, COUNT(*) AS n FROM facts
+             GROUP BY predicate
+             ORDER BY n DESC, predicate ASC",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Rewrite every row with predicate `from` to `to`, then collapse exact
+    /// duplicates. Used by maintenance LLM alias merge (M6). Returns rows
+    /// updated before dedup.
+    pub fn rewrite_predicate(&self, from: &str, to: &str) -> anyhow::Result<u64> {
+        let from = from.trim();
+        let to = to.trim();
+        if from.is_empty() || to.is_empty() || from == to {
+            return Ok(0);
+        }
+        let updated = {
+            let conn = self.conn();
+            conn.execute(
+                "UPDATE facts SET predicate = ?1 WHERE predicate = ?2",
+                rusqlite::params![to, from],
+            )? as u64
+        };
+        if updated > 0 {
+            self.cache_invalidate_all_facts();
+            self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+            // Drop the connection before dedup — `conn()` is a mutex pool.
+            let _ = self.dedup_facts()?;
+        }
+        Ok(updated)
+    }
+
     pub fn dedup_facts(&self) -> anyhow::Result<u64> {
         // P1-6: only load rows that participate in duplicate groups (not the
         // full table), merge tags onto the keeper, then collapse with the same
@@ -1289,8 +1358,10 @@ impl Database {
         Ok(count)
     }
 
-    /// Clear `source_ref.message_id` when the referenced message no longer
-    /// exists; keep the snippet so “why we remember” still works (L2 / P2-9).
+    /// Clear `source_ref.message_id` when the referenced message **and**
+    /// episode no longer exist; keep the snippet so “why we remember” still
+    /// works (L2 / P2-9). Compaction-summary facts (M3) store the episode
+    /// `msg-*` id, which lives in `memory_episodes` not `messages`.
     pub fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -1300,6 +1371,10 @@ impl Database {
                AND json_extract(source_ref, '$.message_id') != ''
                AND NOT EXISTS (
                    SELECT 1 FROM messages
+                   WHERE id = json_extract(facts.source_ref, '$.message_id')
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM memory_episodes
                    WHERE id = json_extract(facts.source_ref, '$.message_id')
                )",
         )?;
@@ -1867,6 +1942,43 @@ mod tests {
         assert_eq!(remaining.len(), 2);
     }
 
+    #[test]
+    fn test_list_predicate_counts_and_rewrite() {
+        let db = create_db();
+        // Bypass normalize_predicate to simulate legacy free-form rows (M6).
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
+             VALUES ('fact-a', 'user', 'fav_lang', 'Rust', 'inferred', 0.8, '2026-01-01T00:00:00Z'),
+                    ('fact-b', 'user', 'language', 'Rust', 'inferred', 0.9, '2026-01-01T00:00:01Z'),
+                    ('fact-c', 'user', 'fav_lang', 'Go', 'inferred', 0.7, '2026-01-01T00:00:02Z')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        db.cache_invalidate_all_facts();
+
+        let counts = db.list_predicate_counts().unwrap();
+        assert!(
+            counts
+                .iter()
+                .any(|(p, n)| p == "fav_lang" && *n == 2)
+        );
+        let rewritten = db.rewrite_predicate("fav_lang", "language").unwrap();
+        assert_eq!(rewritten, 2);
+        let remaining = db.list_facts().unwrap();
+        assert!(remaining.iter().all(|f| f.predicate == "language"));
+        // Identical (subject, predicate, object=Rust) collapsed by dedup.
+        assert_eq!(
+            remaining
+                .iter()
+                .filter(|f| f.object == "Rust")
+                .count(),
+            1
+        );
+        assert!(remaining.iter().any(|f| f.object == "Go"));
+    }
+
     /// Age every fact past the 1-day flush grace period so decay/flush
     /// thresholds apply (fresh facts are exempt by design). The raw SQL write
     /// bypasses the repository methods (and fires the facts_embed_upd
@@ -2290,6 +2402,34 @@ mod tests {
         let go_ref = go.source_ref.as_ref().unwrap();
         assert!(go_ref.message_id.is_empty());
         assert_eq!(go_ref.snippet, "orphan snippet");
+    }
+
+    #[test]
+    fn test_cleanup_orphan_source_refs_keeps_episode_ids() {
+        let db = create_db();
+        let session = db.create_session("t", "").unwrap();
+        let episode_id = haven_common::types::new_id("msg");
+        db.add_episode_with_id(&session.id, "User prefers dark theme", &episode_id)
+            .unwrap();
+        let from_episode = FactSourceRef::from_message(&episode_id, "User prefers dark theme");
+        db.upsert_fact(
+            "user",
+            "theme",
+            "dark",
+            "inferred",
+            0.9,
+            &["preference"],
+            Some(&from_episode),
+        )
+        .unwrap();
+        let cleared = db.cleanup_orphan_source_refs().unwrap();
+        assert_eq!(cleared, 0);
+        let facts = db.get_facts("user").unwrap();
+        let theme = facts.iter().find(|f| f.predicate == "theme").unwrap();
+        assert_eq!(
+            theme.source_ref.as_ref().unwrap().message_id,
+            episode_id
+        );
     }
 
     #[test]

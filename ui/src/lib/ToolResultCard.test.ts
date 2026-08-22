@@ -9,7 +9,7 @@ describe('canRenderToolResult', () => {
 	it('accepts search with a results array', () => {
 		expect(canRenderToolResult('files', searchJson([{ path: 'a.rs' }]))).toBe(true);
 	});
-	it('accepts system, process, window, status, reminder, env, file, network, clipboard, power', () => {
+	it('accepts system, process, window, actions, schedule, file, http, clipboard', () => {
 		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
 			true,
 		);
@@ -19,18 +19,18 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('window', JSON.stringify({ windows: [{ title: 'x' }] }))).toBe(
 			true,
 		);
-		expect(canRenderToolResult('action_status', JSON.stringify({ status: 'running' }))).toBe(true);
+		expect(canRenderToolResult('actions', JSON.stringify({ status: 'running' }))).toBe(true);
 		expect(canRenderToolResult('schedule', JSON.stringify({ reminders: [] }))).toBe(true);
 		expect(canRenderToolResult('schedule', JSON.stringify({ id: 'r1', mode: 'notify' }))).toBe(
 			true,
 		);
-		expect(canRenderToolResult('env', JSON.stringify({ variables: [] }))).toBe(true);
+		expect(canRenderToolResult('system', JSON.stringify({ variables: [] }))).toBe(true);
 		expect(canRenderToolResult('file', JSON.stringify({ written: true, path: 'x' }))).toBe(
 			true,
 		);
-		expect(canRenderToolResult('network', JSON.stringify({ status: 200 }))).toBe(true);
+		expect(canRenderToolResult('http', JSON.stringify({ status: 200 }))).toBe(true);
 		expect(canRenderToolResult('clipboard', JSON.stringify({ content: 'hi' }))).toBe(true);
-		expect(canRenderToolResult('power', JSON.stringify({ battery_percent: 80 }))).toBe(true);
+		expect(canRenderToolResult('system', JSON.stringify({ battery_percent: 80 }))).toBe(true);
 	});
 	it('accepts shell text, notify text and any JSON observation', () => {
 		expect(canRenderToolResult('shell', 'plain stdout text')).toBe(true);
@@ -57,16 +57,19 @@ describe('canRenderToolResult', () => {
 });
 
 describe('parseToolResult', () => {
-	it('returns null for empty content', () => {
+	it('returns null for empty content on non-shell tools', () => {
 		expect(parseToolResult('files', '')).toBeNull();
+	});
+	it('keeps an empty shell card for streaming placeholders', () => {
+		expect(parseToolResult('shell', '')).toEqual({ kind: 'shell', data: null });
 	});
 	it('classifies non-JSON text, arrays and primitives as raw', () => {
 		expect(parseToolResult('files', 'plain text')).toEqual({ kind: 'raw', data: null });
-		expect(parseToolResult('action_status', JSON.stringify([1, 2]))).toEqual({
+		expect(parseToolResult('actions', JSON.stringify([1, 2]))).toEqual({
 			kind: 'raw',
 			data: [1, 2],
 		});
-		expect(parseToolResult('action_status', '42')).toEqual({ kind: 'raw', data: 42 });
+		expect(parseToolResult('actions', '42')).toEqual({ kind: 'raw', data: 42 });
 	});
 });
 
@@ -206,7 +209,7 @@ describe('ToolResultCard raw', () => {
 
 	it('pretty-prints JSON array observations', () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'action_status',
+			toolName: 'actions',
 			content: JSON.stringify([1, 2, { a: 'b' }]),
 		});
 		expect(container.querySelector('.content-preview')!.textContent).toContain('"a"');
@@ -302,7 +305,7 @@ describe('ToolResultCard system', () => {
 				memory: { total_bytes: 16 * 1024 ** 3, used_bytes: 8 * 1024 ** 3 },
 			}),
 		});
-		expect(screen.getByText('系统信息')).toBeTruthy();
+		expect(screen.getByText('系统')).toBeTruthy();
 		expect(screen.getByText('Windows 11')).toBeTruthy();
 		expect(screen.getByText('DESKTOP-X')).toBeTruthy();
 		expect(screen.getByText('25.5%')).toBeTruthy();
@@ -378,13 +381,13 @@ describe('ToolResultCard process', () => {
 	});
 });
 
-describe('ToolResultCard status', () => {
-	it('renders the job id with a completed badge', () => {
+describe('ToolResultCard actions', () => {
+	it('renders the action id with a completed badge', () => {
 		render(ToolResultCard, {
-			toolName: 'action_status',
-			content: JSON.stringify({ job_id: 'job-1', status: 'completed', exit_code: 0 }),
+			toolName: 'actions',
+			content: JSON.stringify({ action_id: 'act-1', status: 'completed', exit_code: 0 }),
 		});
-		expect(screen.getByText('job-1')).toBeTruthy();
+		expect(screen.getByText('act-1')).toBeTruthy();
 		expect(screen.getByText('completed')).toBeTruthy();
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 	});
@@ -411,10 +414,10 @@ describe('ToolResultCard file', () => {
 	});
 });
 
-describe('ToolResultCard network', () => {
+describe('ToolResultCard http', () => {
 	it('renders status badge and body preview', () => {
 		render(ToolResultCard, {
-			toolName: 'network',
+			toolName: 'http',
 			content: JSON.stringify({ status: 200, body: '{"ok":true}', truncated: false }),
 		});
 		expect(screen.getByText('200')).toBeTruthy();
@@ -423,7 +426,7 @@ describe('ToolResultCard network', () => {
 
 	it('marks non-2xx status as failed', () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'network',
+			toolName: 'http',
 			content: JSON.stringify({ status: 404, body: '' }),
 		});
 		expect(container.querySelector('.status-failed')).toBeTruthy();
@@ -444,10 +447,10 @@ describe('ToolResultCard network', () => {
 	});
 });
 
-describe('ToolResultCard env', () => {
+describe('ToolResultCard system env', () => {
 	it('renders a variables list', () => {
 		render(ToolResultCard, {
-			toolName: 'env',
+			toolName: 'system',
 			content: JSON.stringify({ variables: [{ name: 'PATH', value: 'C:\\bin' }], count: 1 }),
 		});
 		expect(screen.getByText('1 个变量')).toBeTruthy();
@@ -457,7 +460,7 @@ describe('ToolResultCard env', () => {
 
 	it('filters variables by name and value', async () => {
 		render(ToolResultCard, {
-			toolName: 'env',
+			toolName: 'system',
 			content: JSON.stringify({
 				variables: [
 					{ name: 'PATH', value: 'C:\\bin' },
@@ -483,7 +486,7 @@ describe('ToolResultCard env', () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
 		render(ToolResultCard, {
-			toolName: 'env',
+			toolName: 'system',
 			content: JSON.stringify({ variables: [{ name: 'API_KEY', value: 'secret-value' }] }),
 		});
 		await fireEvent.click(screen.getByTitle('复制值'));
