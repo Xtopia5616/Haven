@@ -8,14 +8,18 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
-    spawn_line_reader, stream_header_timeout,
+    LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
+    normalize_web_search_call_item, resolve_web_search_mode, send_request, spawn_line_reader,
+    stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage};
 use haven_common::config::ModelEndpoint;
+
+/// Anthropic server-side web search tool type id (Messages API).
+const ANTHROPIC_WEB_SEARCH_TOOL_TYPE: &str = "web_search_20250305";
 
 // ---------------------------------------------------------------------------
 // Anthropic Messages API request / response types
@@ -25,13 +29,6 @@ use haven_common::config::ModelEndpoint;
 struct AnthropicMessage {
     role: String,
     content: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct AnthropicTool {
-    name: String,
-    description: String,
-    input_schema: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,8 +45,10 @@ struct AnthropicRequest {
     top_k: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stop_sequences: Option<Vec<String>>,
+    /// Client function tools and Anthropic server tools (`web_search_*`) share
+    /// this array as raw JSON objects.
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<AnthropicTool>>,
+    tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
     stream: bool,
@@ -183,12 +182,18 @@ struct AnthropicStreamError {
 pub struct AnthropicAdapter {
     endpoint: ModelEndpoint,
     client: reqwest::Client,
+    web_search_mode: WebSearchMode,
 }
 
 impl AnthropicAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
         let client = build_client(&endpoint);
-        Self { endpoint, client }
+        let web_search_mode = resolve_web_search_mode(&endpoint);
+        Self {
+            endpoint,
+            client,
+            web_search_mode,
+        }
     }
 
     /// Anthropic authenticates with `x-api-key` (no Bearer prefix). If the
@@ -493,13 +498,15 @@ impl AnthropicAdapter {
         (out, system)
     }
 
-    fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<AnthropicTool> {
+    fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<Value> {
         tools
             .into_iter()
-            .map(|t| AnthropicTool {
-                name: t.function.name,
-                description: t.function.description,
-                input_schema: t.function.parameters,
+            .map(|t| {
+                json!({
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "input_schema": t.function.parameters,
+                })
             })
             .collect()
     }
@@ -510,8 +517,50 @@ impl AnthropicAdapter {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> AnthropicRequest {
+        self.build_request_body_with_mode(messages, tools, stream, self.web_search_mode)
+    }
+
+    fn build_request_body_with_mode(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        web_search_mode: WebSearchMode,
+    ) -> AnthropicRequest {
         let (messages, system) = Self::convert_messages(messages);
-        let has_tools = !tools.is_empty();
+        let mut tools_json = Self::convert_tools(tools);
+        let had_client_tools = !tools_json.is_empty();
+        let tool_choice: Option<Value> = match web_search_mode {
+            WebSearchMode::Off => {
+                if tools_json.is_empty() {
+                    None
+                } else {
+                    Some(json!({"type": "auto"}))
+                }
+            }
+            WebSearchMode::Auto => {
+                tools_json.push(json!({
+                    "type": ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
+                    "name": "web_search",
+                    "max_uses": 5,
+                }));
+                Some(json!({"type": "auto"}))
+            }
+            WebSearchMode::Always => {
+                tools_json.push(json!({
+                    "type": ANTHROPIC_WEB_SEARCH_TOOL_TYPE,
+                    "name": "web_search",
+                    "max_uses": 5,
+                }));
+                // Force only when there are no Haven ReAct function tools —
+                // otherwise `tool_choice: web_search` blocks the agent loop.
+                if had_client_tools {
+                    Some(json!({"type": "auto"}))
+                } else {
+                    Some(json!({"type": "tool", "name": "web_search"}))
+                }
+            }
+        };
         AnthropicRequest {
             model: self.endpoint.model_name.clone(),
             max_tokens: self.endpoint.max_tokens,
@@ -521,16 +570,12 @@ impl AnthropicAdapter {
             top_p: self.endpoint.top_p,
             top_k: self.endpoint.top_k,
             stop_sequences: self.endpoint.stop.clone(),
-            tools: if has_tools {
-                Some(Self::convert_tools(tools))
-            } else {
+            tools: if tools_json.is_empty() {
                 None
-            },
-            tool_choice: if has_tools {
-                Some(json!({"type": "auto"}))
             } else {
-                None
+                Some(tools_json)
             },
+            tool_choice,
             stream,
         }
     }
@@ -543,6 +588,7 @@ impl AnthropicAdapter {
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
+        let mut web_search_calls = Vec::new();
         let mut thinking_blocks = Vec::new();
         // Original position of each captured block (index in the content
         // array + visible-text char count before it) so the next tool-use
@@ -593,6 +639,38 @@ impl AnthropicAdapter {
                         layout.push((Self::LAYOUT_KIND_TOOL_USE, i, text.chars().count()));
                     }
                 }
+                Some("server_tool_use") if block.name.as_deref() == Some("web_search") => {
+                    let id = block.id.clone().unwrap_or_else(|| format!("ws_{i}"));
+                    let queries = block
+                        .input
+                        .as_ref()
+                        .and_then(|v| v.get("query"))
+                        .cloned()
+                        .map(|q| json!([q]))
+                        .unwrap_or_else(|| json!([]));
+                    web_search_calls.push(normalize_web_search_call_item(json!({
+                        "type": "web_search_call",
+                        "id": id,
+                        "status": "completed",
+                        "action": {"type": "search", "queries": queries},
+                    })));
+                }
+                Some("web_search_tool_result") => {
+                    let id = block
+                        .id
+                        .clone()
+                        .unwrap_or_else(|| format!("ws_result_{i}"));
+                    web_search_calls.push(normalize_web_search_call_item(json!({
+                        "type": "web_search_call",
+                        "id": id,
+                        "status": "completed",
+                        "action": {
+                            "type": "search",
+                            "queries": [],
+                            "result": block.input.clone().unwrap_or(Value::Null),
+                        },
+                    })));
+                }
                 _ => {}
             }
         }
@@ -623,7 +701,7 @@ impl AnthropicAdapter {
             } else {
                 Some(reasoning)
             },
-            web_search_calls: Vec::new(),
+            web_search_calls,
             thinking_blocks,
         })
     }
@@ -1638,9 +1716,59 @@ mod tests {
         let body = client.build_request_body(vec![], tools, false);
         let tools = body.tools.unwrap();
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "search");
-        assert_eq!(tools[0].input_schema["type"], "object");
+        assert_eq!(tools[0]["name"], "search");
+        assert_eq!(tools[0]["input_schema"]["type"], "object");
         assert_eq!(body.tool_choice, Some(json!({"type": "auto"})));
+    }
+
+    #[test]
+    fn web_search_mode_injects_server_tool() {
+        let client = AnthropicAdapter::new(ModelEndpoint::default());
+        let auto = client.build_request_body_with_mode(
+            vec![],
+            vec![],
+            false,
+            WebSearchMode::Auto,
+        );
+        let tools = auto.tools.expect("web_search tool present");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], ANTHROPIC_WEB_SEARCH_TOOL_TYPE);
+        assert_eq!(tools[0]["name"], "web_search");
+        assert_eq!(auto.tool_choice, Some(json!({"type": "auto"})));
+
+        let always = client.build_request_body_with_mode(
+            vec![],
+            vec![],
+            false,
+            WebSearchMode::Always,
+        );
+        assert_eq!(
+            always.tool_choice,
+            Some(json!({"type": "tool", "name": "web_search"}))
+        );
+
+        let with_fn = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "shell".into(),
+                description: "run".into(),
+                parameters: json!({"type": "object"}),
+            },
+        }];
+        let always_with_tools = client.build_request_body_with_mode(
+            vec![],
+            with_fn,
+            false,
+            WebSearchMode::Always,
+        );
+        assert_eq!(
+            always_with_tools.tool_choice,
+            Some(json!({"type": "auto"})),
+            "Always must not force web_search when ReAct function tools are present"
+        );
+
+        let off = client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Off);
+        assert!(off.tools.is_none());
     }
 
     #[test]

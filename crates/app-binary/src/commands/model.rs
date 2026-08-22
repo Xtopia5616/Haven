@@ -54,7 +54,11 @@ fn stt_only_catalog_for_url(base_url: &str) -> Option<Vec<ModelInfo>> {
 
 /// Static model catalog for STT-only providers that have no `/models` list.
 fn stt_only_catalog(api_style: Option<&str>, provider_hint: &str) -> Option<Vec<ModelInfo>> {
-    let style = api_style.unwrap_or(provider_hint);
+    let raw = api_style.unwrap_or(provider_hint);
+    if !haven_llm::is_stt_only_style(raw) {
+        return None;
+    }
+    let style = haven_llm::normalize_api_style(raw);
     let (provider, models): (&str, &[&str]) = match style {
         "deepgram" => (
             "deepgram",
@@ -486,6 +490,9 @@ pub async fn set_reasoning_effort(
 /// ("off" | "auto" | "always"). "auto" lets the model decide when to search;
 /// any other value (including empty) is rejected. Updates config.toml and
 /// hot-swaps the LlmRouter at runtime.
+///
+/// Non-`off` modes are rejected when the role's provider wire style does not
+/// support a built-in search tool (see `supports_builtin_web_search`).
 #[tauri::command]
 pub async fn set_web_search(
     role: String,
@@ -501,6 +508,46 @@ pub async fn set_web_search(
             return Err(format!(
                 "invalid web search mode: {:?} (expected off|auto|always)",
                 mode
+            ));
+        }
+    }
+
+    // Capability gate: only `off` (or clear) is allowed on styles without a
+    // provider built-in search tool. Resolve style under the loader lock, then
+    // drop it before `update_role_field` re-acquires the same mutex.
+    if !matches!(normalized.as_deref(), Some("off") | None) {
+        let style = {
+            let loader = state
+                .config_loader
+                .lock()
+                .map_err(|e| log_err("set_web_search", e))?;
+            let llm = &loader.config().llm;
+            let slot = llm
+                .roles
+                .iter()
+                .find(|r| r.role == role)
+                .ok_or_else(|| format!("unknown or unconfigured role: {}", role))?;
+            llm.providers
+                .iter()
+                .find(|p| p.name == slot.provider)
+                .and_then(|p| {
+                    p.api_style
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            if p.provider.is_empty() {
+                                None
+                            } else {
+                                Some(p.provider.clone())
+                            }
+                        })
+                })
+                .unwrap_or_else(|| "openai-chat".into())
+        };
+        if !haven_llm::supports_builtin_web_search(&style) {
+            return Err(format!(
+                "provider wire style `{style}` does not support built-in web search"
             ));
         }
     }

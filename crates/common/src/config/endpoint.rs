@@ -9,15 +9,19 @@ pub struct ModelEndpoint {
     pub provider: String,
     /// Wire protocol style for this endpoint. One of:
     /// - `openai-chat` (default): OpenAI `/chat/completions` compatible
-    ///   (also Ollama, vLLM, DeepSeek, and most gateways)
+    ///   (also Ollama, vLLM, DeepSeek chat, and most gateways)
     /// - `llama.cpp`: llama.cpp server (OpenAI-compatible `/chat/completions`)
-    /// - `openai-responses`: OpenAI Responses API (`/v1/responses`)
+    /// - `openai-responses`: OpenAI / DeepSeek Responses API (`/v1/responses`);
+    ///   alias `deepseek-responses` normalizes to this
+    /// - `xai`: xAI Grok chat + Live Search (`search_parameters`)
     /// - `anthropic`: Anthropic Messages API (`/v1/messages`)
     /// - `gemini`: Google Gemini `generateContent` / `streamGenerateContent`
+    /// - `deepgram` / `assemblyai`: speech-to-text only
     ///
     /// When empty/`None`, the style is derived from `provider`
     /// (`anthropic` → anthropic, `google`/`gemini` → gemini,
-    /// `llama`/`llama.cpp`/`llamacpp` → llama.cpp, otherwise openai-chat).
+    /// `xai`/`grok` → xai, `llama`/`llama.cpp`/`llamacpp` → llama.cpp,
+    /// otherwise openai-chat).
     #[serde(default)]
     pub api_style: Option<String>,
     pub base_url: String,
@@ -45,8 +49,10 @@ pub struct ModelEndpoint {
     pub auth_header_prefix: String,
     // §2.9: streaming timeout (None = no timeout until SSE ends)
     pub timeout_streaming_secs: Option<u64>,
-    // §2.8: reasoning effort for reasoning models ("low" | "medium" | "high"),
-    // forwarded to OpenAI-compatible APIs as `reasoning_effort`.
+    // §2.8: reasoning / thinking intensity from the chat UI ("low" | "medium" |
+    // "high", plus "none"/"off"/"disabled" to turn thinking off). Chat adapter
+    // forwards it as OpenAI `reasoning_effort` and, for DeepSeek/Kimi, also as
+    // vendor `thinking` extras; Responses adapter maps it to `reasoning.effort`.
     pub reasoning_effort: Option<String>,
     /// Provider built-in web search mode for Responses-API endpoints
     /// (DeepSeek etc.): `"off"` | `"auto"` | `"always"`. `None` defers to the
@@ -470,6 +476,17 @@ impl LlmConfig {
         if let Some(r) = slot.reasoning_echo_max_chars {
             ep.reasoning_echo_max_chars = Some(r);
         }
+        // Sticky role/provider `web_search` must not reshape requests for
+        // styles without a built-in search tool (e.g. openai-chat leftovers
+        // from when the chat UI had no capability gate).
+        let style = ep
+            .api_style
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(ep.provider.as_str());
+        if !supports_builtin_web_search(style) {
+            ep.web_search = None;
+        }
         ep
     }
 
@@ -506,19 +523,111 @@ impl LlmConfig {
     }
 }
 
+/// Normalize a stored / UI `api_style` (or provider-derived label) to the
+/// canonical wire-protocol id. Unknown values fall back to `openai-chat`.
+pub fn normalize_api_style(style: &str) -> &'static str {
+    match style.trim().to_ascii_lowercase().as_str() {
+        "openai-responses" | "deepseek-responses" | "responses" => "openai-responses",
+        "openai-chat" | "openai" | "chat" => "openai-chat",
+        "llama.cpp" | "llama" | "llamacpp" => "llama.cpp",
+        "xai" | "grok" => "xai",
+        "anthropic" | "claude" => "anthropic",
+        "gemini" | "google" => "gemini",
+        "deepgram" => "deepgram",
+        "assemblyai" => "assemblyai",
+        _ => "openai-chat",
+    }
+}
+
+/// True when `style` is a known wire-protocol id or alias (not a typo that
+/// would silently remap to `openai-chat`).
+pub fn is_known_api_style(style: &str) -> bool {
+    matches!(
+        style.trim().to_ascii_lowercase().as_str(),
+        "openai-responses"
+            | "deepseek-responses"
+            | "responses"
+            | "openai-chat"
+            | "openai"
+            | "chat"
+            | "llama.cpp"
+            | "llama"
+            | "llamacpp"
+            | "xai"
+            | "grok"
+            | "anthropic"
+            | "claude"
+            | "gemini"
+            | "google"
+            | "deepgram"
+            | "assemblyai"
+    )
+}
+
+/// Derive `api_style` from a legacy `provider` hint when the endpoint leaves
+/// `api_style` empty.
+pub fn api_style_from_provider(provider: &str) -> &'static str {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "anthropic" | "claude" => "anthropic",
+        "google" | "gemini" => "gemini",
+        "llama" | "llama.cpp" | "llamacpp" => "llama.cpp",
+        "xai" | "grok" => "xai",
+        "deepgram" => "deepgram",
+        "assemblyai" => "assemblyai",
+        _ => "openai-chat",
+    }
+}
+
+/// True when the wire style can drive a provider built-in web search tool from
+/// the role's `off|auto|always` mode.
+pub fn supports_builtin_web_search(style: &str) -> bool {
+    matches!(
+        normalize_api_style(style),
+        "openai-responses" | "xai" | "anthropic" | "gemini"
+    )
+}
+
+/// True when the style is speech-to-text only (no chat).
+pub fn is_stt_only_style(style: &str) -> bool {
+    matches!(normalize_api_style(style), "deepgram" | "assemblyai")
+}
+
 /// Normalize the legacy `provider` hint used by [`ModelEndpoint::api_style`]
 /// derivation and the `discover_models` auth scheme when no explicit
 /// `api_style` is configured.
 fn wire_provider_hint(provider_hint: &str, api_style: &Option<String>) -> String {
-    match api_style.as_deref() {
-        Some("anthropic") => "anthropic".into(),
-        Some("gemini") => "gemini".into(),
-        Some("llama.cpp") => "llama.cpp".into(),
-        Some("deepgram") => "deepgram".into(),
-        Some("assemblyai") => "assemblyai".into(),
-        Some(_) => "openai".into(),
-        None if provider_hint.is_empty() => "openai".into(),
-        None => provider_hint.to_string(),
+    // Prefer an explicit legacy provider hint when the wire style is an
+    // OpenAI-family protocol (chat / responses / xai): DeepSeek Responses and
+    // proxied gateways need `provider` to stay `deepseek` / `xai` so reasoning
+    // echo and Live Search detection keep working.
+    let style = api_style
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    match style.as_str() {
+        "anthropic" | "claude" => "anthropic".into(),
+        "gemini" | "google" => "gemini".into(),
+        "llama.cpp" | "llama" | "llamacpp" => "llama.cpp".into(),
+        "deepgram" => "deepgram".into(),
+        "assemblyai" => "assemblyai".into(),
+        "xai" | "grok" => {
+            if provider_hint.is_empty() {
+                "xai".into()
+            } else {
+                provider_hint.to_string()
+            }
+        }
+        "openai-responses" | "deepseek-responses" | "openai-chat" | "openai" | "chat" => {
+            if provider_hint.is_empty() {
+                "openai".into()
+            } else {
+                provider_hint.to_string()
+            }
+        }
+        "" if provider_hint.is_empty() => "openai".into(),
+        "" => provider_hint.to_string(),
+        _ if !provider_hint.is_empty() => provider_hint.to_string(),
+        _ => "openai".into(),
     }
 }
 
@@ -635,5 +744,59 @@ impl RouterConfig {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn materialize_clears_web_search_for_unsupported_style() {
+        let llm = LlmConfig {
+            providers: vec![ProviderConfig {
+                name: "chat".into(),
+                provider: "openai".into(),
+                api_style: Some("openai-chat".into()),
+                api_key: "sk".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                ..Default::default()
+            }],
+            roles: vec![RoleConfig {
+                role: "default_model".into(),
+                provider: "chat".into(),
+                model: "gpt-4o".into(),
+                web_search: Some("auto".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
+        assert!(ep.web_search.is_none());
+    }
+
+    #[test]
+    fn materialize_keeps_web_search_for_responses_style() {
+        let llm = LlmConfig {
+            providers: vec![ProviderConfig {
+                name: "ds".into(),
+                provider: "deepseek".into(),
+                api_style: Some("openai-responses".into()),
+                api_key: "sk".into(),
+                base_url: "https://api.deepseek.com".into(),
+                ..Default::default()
+            }],
+            roles: vec![RoleConfig {
+                role: "default_model".into(),
+                provider: "ds".into(),
+                model: "deepseek-reasoner".into(),
+                web_search: Some("always".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
+        assert_eq!(ep.web_search.as_deref(), Some("always"));
+        assert_eq!(ep.provider, "deepseek");
     }
 }

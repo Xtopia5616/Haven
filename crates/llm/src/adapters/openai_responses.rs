@@ -8,10 +8,10 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, build_client, build_headers, empty_chunk, health_check_request,
+    LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
     normalize_web_search_call_item, reasoning_tail, reasoning_text_from_thinking_blocks,
-    requires_reasoning_echo, send_request, spawn_line_reader, stream_header_timeout,
-    upsert_web_search_call,
+    requires_reasoning_echo, resolve_web_search_mode, responses_reasoning_config, send_request,
+    spawn_line_reader, stream_header_timeout, upsert_web_search_call,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -25,52 +25,6 @@ use haven_common::config::ModelEndpoint;
 // ---------------------------------------------------------------------------
 // OpenAI Responses API request / response types
 // ---------------------------------------------------------------------------
-
-/// Web search mode for the provider's built-in search tool. Selected via the
-/// endpoint's `web_search` config field or the `HAVEN_WEB_SEARCH` environment
-/// variable (`off` | `auto` | `always`). Unconfigured defaults to `off`:
-/// web search is opt-in and never changes the request shape on its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WebSearchMode {
-    /// Never expose the web_search tool: request shape identical to before.
-    Off,
-    /// Expose `{"type": "web_search"}` with `tool_choice: "auto"` — the model
-    /// decides whether the question needs real-time information.
-    Auto,
-    /// Force a search on every request via
-    /// `tool_choice: {"type": "web_search"}`.
-    Always,
-}
-
-/// Parse a web search mode value (`off` | `auto` | `always`, case-insensitive).
-/// Unset/empty/unrecognized values fall back to `Off` — web search only
-/// activates through an explicit `off`/`auto`/`always` choice.
-pub fn parse_web_search_mode(value: Option<&str>) -> WebSearchMode {
-    match value
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "auto" => WebSearchMode::Auto,
-        "always" | "required" | "on" | "1" | "true" => WebSearchMode::Always,
-        _ => WebSearchMode::Off,
-    }
-}
-
-fn web_search_mode_from_env() -> WebSearchMode {
-    parse_web_search_mode(std::env::var("HAVEN_WEB_SEARCH").ok().as_deref())
-}
-
-/// Resolve the effective web search mode for an endpoint: the endpoint's
-/// `web_search` config field wins, then an explicitly set `HAVEN_WEB_SEARCH`
-/// environment variable, then the default (`off`).
-fn resolve_web_search_mode(endpoint: &ModelEndpoint) -> WebSearchMode {
-    match endpoint.web_search.as_deref() {
-        Some(v) if !v.trim().is_empty() => parse_web_search_mode(Some(v)),
-        _ => web_search_mode_from_env(),
-    }
-}
 
 /// `action.type` from a `web_search_call` item (`search` / `open_page` /
 /// `find_in_page`). Absent on the `output_item.added` skeleton.
@@ -124,6 +78,9 @@ struct ResponsesRequest {
     tools: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<Value>,
+    /// OpenAI / DeepSeek Responses reasoning config: `{ "effort": "…" }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -548,13 +505,18 @@ impl OpenAiResponsesAdapter {
                 Some(json!({"type": "web_search"}))
             }
         };
+        let reasoning = responses_reasoning_config(&self.endpoint);
+        let temperature = if reasoning.is_some() || self.endpoint.temperature == 1.0 {
+            None
+        } else {
+            Some(self.endpoint.temperature)
+        };
         ResponsesRequest {
             model: self.endpoint.model_name.clone(),
             instructions,
             input,
             max_output_tokens: Some(self.endpoint.max_tokens),
-            // o-series models reject temperature != 1; skip it when unset-ish.
-            temperature: (self.endpoint.temperature != 1.0).then_some(self.endpoint.temperature),
+            temperature,
             stream,
             tools: if tools_json.is_empty() {
                 None
@@ -562,6 +524,7 @@ impl OpenAiResponsesAdapter {
                 Some(tools_json)
             },
             tool_choice,
+            reasoning,
         }
     }
 
@@ -1592,20 +1555,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_web_search_mode_maps_env_values() {
-        // Unset / unrecognized values default to Off (web search is opt-in).
-        assert_eq!(parse_web_search_mode(None), WebSearchMode::Off);
-        assert_eq!(parse_web_search_mode(Some("")), WebSearchMode::Off);
-        assert_eq!(parse_web_search_mode(Some("bogus")), WebSearchMode::Off);
-        assert_eq!(parse_web_search_mode(Some("off")), WebSearchMode::Off);
-        assert_eq!(parse_web_search_mode(Some("OFF")), WebSearchMode::Off);
-        assert_eq!(parse_web_search_mode(Some("auto")), WebSearchMode::Auto);
-        assert_eq!(parse_web_search_mode(Some("Auto")), WebSearchMode::Auto);
-        assert_eq!(parse_web_search_mode(Some("always")), WebSearchMode::Always);
-        assert_eq!(parse_web_search_mode(Some("Always")), WebSearchMode::Always);
-    }
-
-    #[test]
     fn convert_input_supplies_missing_web_search_call_action() {
         // DeepSeek rejects an `action`-less web_search_call input item with a
         // 400 ("missing field `action`"): the stream's output_item.added
@@ -1921,5 +1870,76 @@ mod tests {
         let headers = client.build_headers();
         let val = headers.get("authorization").unwrap().to_str().unwrap();
         assert_eq!(val, "Bearer sk-test");
+    }
+
+    #[test]
+    fn build_request_body_forwards_reasoning_effort() {
+        let ep = ModelEndpoint {
+            model_name: "gpt-5".into(),
+            temperature: 0.4,
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        let body = OpenAiResponsesAdapter::new(ep).build_request_body_with_mode(
+            vec![],
+            Vec::new(),
+            false,
+            WebSearchMode::Off,
+        );
+        assert_eq!(
+            body.reasoning,
+            Some(serde_json::json!({"effort": "medium"}))
+        );
+        assert!(body.temperature.is_none());
+    }
+
+    #[test]
+    fn build_request_body_deepseek_reasoning_maps_medium_and_none() {
+        let ep = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            model_name: "deepseek-v4-flash".into(),
+            api_style: Some("openai-responses".into()),
+            reasoning_effort: Some("medium".into()),
+            temperature: 0.7,
+            ..Default::default()
+        };
+        let body = OpenAiResponsesAdapter::new(ep.clone()).build_request_body_with_mode(
+            vec![],
+            Vec::new(),
+            false,
+            WebSearchMode::Off,
+        );
+        assert_eq!(body.reasoning, Some(serde_json::json!({"effort": "high"})));
+        assert!(body.temperature.is_none());
+
+        let off = ModelEndpoint {
+            reasoning_effort: Some("none".into()),
+            ..ep
+        };
+        let body = OpenAiResponsesAdapter::new(off).build_request_body_with_mode(
+            vec![],
+            Vec::new(),
+            false,
+            WebSearchMode::Off,
+        );
+        assert_eq!(body.reasoning, Some(serde_json::json!({"effort": "none"})));
+    }
+
+    #[test]
+    fn build_request_body_omits_reasoning_when_effort_unset() {
+        let ep = ModelEndpoint {
+            model_name: "gpt-5".into(),
+            temperature: 0.4,
+            ..Default::default()
+        };
+        let body = OpenAiResponsesAdapter::new(ep).build_request_body_with_mode(
+            vec![],
+            Vec::new(),
+            false,
+            WebSearchMode::Off,
+        );
+        assert!(body.reasoning.is_none());
+        assert_eq!(body.temperature, Some(0.4));
     }
 }

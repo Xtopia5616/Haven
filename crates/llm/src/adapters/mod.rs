@@ -1,11 +1,17 @@
 pub mod anthropic;
 pub mod assemblyai;
+pub mod capabilities;
 pub mod deepgram;
 pub mod gemini;
 pub mod openai;
 pub mod openai_responses;
 
 pub use anthropic::AnthropicAdapter;
+pub use capabilities::{
+    WebSearchMode, api_style_from_provider, is_known_api_style, is_stt_only_style,
+    normalize_api_style, parse_web_search_mode, resolve_web_search_mode,
+    supports_builtin_web_search, xai_search_mode,
+};
 pub use openai::OpenAiAdapter;
 
 use futures_util::FutureExt;
@@ -48,36 +54,39 @@ pub(crate) fn apply_wire_inject_prefix(
 }
 
 /// Resolve the wire protocol style for an endpoint. An explicit `api_style`
-/// wins; otherwise the style is derived from `provider`.
-pub fn api_style_for(endpoint: &ModelEndpoint) -> &str {
+/// wins (after [`normalize_api_style`]); otherwise the style is derived from
+/// `provider` via [`api_style_from_provider`].
+pub fn api_style_for(endpoint: &ModelEndpoint) -> &'static str {
     if let Some(style) = &endpoint.api_style
         && !style.is_empty()
     {
-        return style;
+        if !is_known_api_style(style) {
+            tracing::warn!(
+                api_style = %style,
+                "unknown api_style; falling back to openai-chat"
+            );
+        }
+        return normalize_api_style(style);
     }
-    match endpoint.provider.as_str() {
-        "anthropic" => "anthropic",
-        "google" | "gemini" => "gemini",
-        "llama" | "llama.cpp" | "llamacpp" => "llama.cpp",
-        "deepgram" => "deepgram",
-        "assemblyai" => "assemblyai",
-        _ => "openai-chat",
-    }
+    api_style_from_provider(&endpoint.provider)
 }
 
 /// Build the protocol adapter for an endpoint.
 ///
-/// Dispatch happens on the resolved `api_style` (see `api_style_for`):
+/// Dispatch happens on the resolved + normalized `api_style`
+/// (see `api_style_for` / [`normalize_api_style`]):
 /// - `openai-chat` / `llama.cpp`: OpenAI-compatible `/chat/completions`
-///   (OpenAI, Ollama, vLLM, DeepSeek, llama.cpp server, and most third-party
-///   gateways). Whisper-family models also implement `transcribe` via
-///   `/audio/transcriptions`.
-/// - `openai-responses`: OpenAI Responses API
-/// - `anthropic`: Anthropic Messages API
-/// - `gemini`: Google Gemini API (chat + STT via `generateContent`)
+///   (OpenAI, Ollama, vLLM, DeepSeek chat, llama.cpp server, and most
+///   third-party gateways). Whisper-family models also implement `transcribe`
+///   via `/audio/transcriptions`.
+/// - `xai`: same OpenAI chat adapter with xAI Live Search `search_parameters`
+/// - `openai-responses` (+ alias `deepseek-responses`): OpenAI Responses API
+///   (`/v1/responses`), including DeepSeek thinking + built-in `web_search`
+/// - `anthropic`: Anthropic Messages API (+ optional server `web_search`)
+/// - `gemini`: Google Gemini API (+ optional `google_search` grounding)
 /// - `deepgram` / `assemblyai`: speech-to-text only
 pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
-    match api_style_for(endpoint) {
+    match normalize_api_style(api_style_for(endpoint)) {
         "anthropic" => Box::new(anthropic::AnthropicAdapter::new(endpoint.clone())),
         "gemini" => Box::new(gemini::GeminiAdapter::new(endpoint.clone())),
         "openai-responses" => Box::new(openai_responses::OpenAiResponsesAdapter::new(
@@ -85,6 +94,10 @@ pub fn adapter_for(endpoint: &ModelEndpoint) -> Box<dyn LlmClient> {
         )),
         "deepgram" => Box::new(deepgram::DeepgramAdapter::new(endpoint.clone())),
         "assemblyai" => Box::new(assemblyai::AssemblyAiAdapter::new(endpoint.clone())),
+        "xai" => Box::new(openai::OpenAiAdapter::new_with_style(
+            endpoint.clone(),
+            "xai",
+        )),
         _ => Box::new(openai::OpenAiAdapter::new(endpoint.clone())),
     }
 }
@@ -291,6 +304,145 @@ pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_j
     item
 }
 
+/// Lowercased `provider` + `base_url` + `model_name` haystack used to detect
+/// vendor-specific extras (DeepSeek thinking, Kimi `thinking.type`, etc.) even
+/// when the endpoint is behind a gateway that sets `provider: "openai"`.
+pub(crate) fn vendor_haystack(endpoint: &ModelEndpoint) -> String {
+    [&endpoint.provider, &endpoint.base_url, &endpoint.model_name]
+        .map(String::as_str)
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+pub(crate) fn is_deepseek(endpoint: &ModelEndpoint) -> bool {
+    vendor_haystack(endpoint).contains("deepseek")
+}
+
+pub(crate) fn is_kimi_or_moonshot(endpoint: &ModelEndpoint) -> bool {
+    let hay = vendor_haystack(endpoint);
+    hay.contains("kimi") || hay.contains("moonshot")
+}
+
+/// True when the configured effort means "turn thinking off"
+/// (`none` / `off` / `disabled`). Used by DeepSeek chat (`thinking.type`) and
+/// Responses (`reasoning.effort: "none"`), and by Kimi `thinking.type`.
+pub(crate) fn is_thinking_disabled(effort: &str) -> bool {
+    matches!(
+        effort.trim().to_ascii_lowercase().as_str(),
+        "none" | "off" | "disabled"
+    )
+}
+
+/// Map Haven UI `reasoning_effort` (`low`/`medium`/`high`) onto DeepSeek's
+/// accepted effort values. DeepSeek docs: medium/high/xhigh → high; max → max;
+/// none disables thinking (Responses) / pairs with `thinking.type=disabled`.
+pub(crate) fn map_deepseek_effort(effort: &str) -> &'static str {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "low" => "low",
+        "medium" | "high" | "xhigh" => "high",
+        "max" => "max",
+        "none" | "off" | "disabled" => "none",
+        _ => "high",
+    }
+}
+
+/// Vendor chat-completions extras derived from `reasoning_effort` + vendor
+/// detection. Returns `(thinking_object, reasoning_effort_to_send)`.
+pub(crate) fn chat_thinking_extras(
+    endpoint: &ModelEndpoint,
+) -> (Option<serde_json::Value>, Option<String>) {
+    let effort = endpoint
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if is_deepseek(endpoint) {
+        return match effort {
+            None => (None, None),
+            Some(e) if is_thinking_disabled(e) => {
+                (Some(serde_json::json!({"type": "disabled"})), None)
+            }
+            Some(e) => (
+                Some(serde_json::json!({"type": "enabled"})),
+                Some(map_deepseek_effort(e).to_string()),
+            ),
+        };
+    }
+
+    if is_kimi_or_moonshot(endpoint) {
+        return kimi_chat_thinking_extras(&endpoint.model_name, effort);
+    }
+
+    // OpenAI / other chat providers: never send disable tokens as
+    // `reasoning_effort` (rejected by the API).
+    match effort {
+        None => (None, None),
+        Some(e) if is_thinking_disabled(e) => (None, None),
+        Some(e) => (None, Some(e.to_string())),
+    }
+}
+
+fn kimi_chat_thinking_extras(
+    model_name: &str,
+    effort: Option<&str>,
+) -> (Option<serde_json::Value>, Option<String>) {
+    let model = model_name.to_ascii_lowercase();
+    if model.contains("kimi-k3") || model.split(['/', '-', '_']).any(|p| p == "k3") {
+        let mapped = effort.map(|e| {
+            if is_thinking_disabled(e) {
+                return None;
+            }
+            Some(
+                match e.to_ascii_lowercase().as_str() {
+                    "low" => "low",
+                    "max" => "max",
+                    _ => "high",
+                }
+                .to_string(),
+            )
+        });
+        return (None, mapped.flatten());
+    }
+    if model.contains("k2.7") {
+        return (None, None);
+    }
+    let supports_keep = model.contains("k2.6")
+        || !(model.contains("k2.5") || model.contains("k2.7") || model.contains("kimi-k3"));
+
+    match effort {
+        None => (None, None),
+        Some(e) if is_thinking_disabled(e) => {
+            (Some(serde_json::json!({"type": "disabled"})), None)
+        }
+        Some(_) => {
+            let thinking = if supports_keep {
+                serde_json::json!({"type": "enabled", "keep": "all"})
+            } else {
+                serde_json::json!({"type": "enabled"})
+            };
+            (Some(thinking), None)
+        }
+    }
+}
+
+/// Responses-API `reasoning` object from `reasoning_effort`.
+pub(crate) fn responses_reasoning_config(endpoint: &ModelEndpoint) -> Option<serde_json::Value> {
+    let effort = endpoint
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+
+    if is_deepseek(endpoint) {
+        return Some(serde_json::json!({ "effort": map_deepseek_effort(effort) }));
+    }
+    if is_thinking_disabled(effort) {
+        return None;
+    }
+    Some(serde_json::json!({ "effort": effort }))
+}
+
 /// True when the endpoint's thinking mode requires the assistant's reasoning
 /// to be echoed back on every request that carries tool-call history
 /// (chat-completions: `reasoning_content`; Responses compat: `reasoning_text`).
@@ -302,10 +454,7 @@ pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_j
 /// model name so a proxied/gatewayed endpoint is caught too.
 pub(crate) fn requires_reasoning_echo(endpoint: &ModelEndpoint) -> bool {
     const REASONING_ECHO_PROVIDERS: [&str; 4] = ["deepseek", "kimi", "moonshot", "mimo"];
-    let hay = [&endpoint.provider, &endpoint.base_url, &endpoint.model_name]
-        .map(String::as_str)
-        .join(" ")
-        .to_ascii_lowercase();
+    let hay = vendor_haystack(endpoint);
     REASONING_ECHO_PROVIDERS.iter().any(|p| hay.contains(p))
 }
 
@@ -570,6 +719,141 @@ mod tests {
     }
 
     #[test]
+    fn map_deepseek_effort_follows_official_mapping() {
+        assert_eq!(map_deepseek_effort("low"), "low");
+        assert_eq!(map_deepseek_effort("medium"), "high");
+        assert_eq!(map_deepseek_effort("high"), "high");
+        assert_eq!(map_deepseek_effort("xhigh"), "high");
+        assert_eq!(map_deepseek_effort("max"), "max");
+        assert_eq!(map_deepseek_effort("none"), "none");
+        assert_eq!(map_deepseek_effort("off"), "none");
+    }
+
+    #[test]
+    fn chat_thinking_extras_deepseek_toggle_and_effort() {
+        let base = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            model_name: "deepseek-v4-pro".into(),
+            ..Default::default()
+        };
+        let (thinking, effort) = chat_thinking_extras(&base);
+        assert!(thinking.is_none());
+        assert!(effort.is_none());
+
+        let enabled = ModelEndpoint {
+            reasoning_effort: Some("medium".into()),
+            ..base.clone()
+        };
+        let (thinking, effort) = chat_thinking_extras(&enabled);
+        assert_eq!(thinking, Some(serde_json::json!({"type": "enabled"})));
+        assert_eq!(effort.as_deref(), Some("high"));
+
+        let disabled = ModelEndpoint {
+            reasoning_effort: Some("off".into()),
+            ..base
+        };
+        let (thinking, effort) = chat_thinking_extras(&disabled);
+        assert_eq!(thinking, Some(serde_json::json!({"type": "disabled"})));
+        assert!(effort.is_none());
+    }
+
+    #[test]
+    fn chat_thinking_extras_kimi_type_and_keep() {
+        let k26 = ModelEndpoint {
+            provider: "moonshot".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            model_name: "kimi-k2.6".into(),
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let (thinking, effort) = chat_thinking_extras(&k26);
+        assert_eq!(
+            thinking,
+            Some(serde_json::json!({"type": "enabled", "keep": "all"}))
+        );
+        assert!(effort.is_none());
+
+        let k25 = ModelEndpoint {
+            model_name: "kimi-k2.5".into(),
+            reasoning_effort: Some("low".into()),
+            ..k26.clone()
+        };
+        let (thinking, effort) = chat_thinking_extras(&k25);
+        assert_eq!(thinking, Some(serde_json::json!({"type": "enabled"})));
+        assert!(effort.is_none());
+
+        let k27 = ModelEndpoint {
+            model_name: "kimi-k2.7-code".into(),
+            reasoning_effort: Some("high".into()),
+            ..k26.clone()
+        };
+        let (thinking, effort) = chat_thinking_extras(&k27);
+        assert!(thinking.is_none());
+        assert!(effort.is_none());
+
+        let k3 = ModelEndpoint {
+            model_name: "kimi-k3".into(),
+            reasoning_effort: Some("medium".into()),
+            ..k26
+        };
+        let (thinking, effort) = chat_thinking_extras(&k3);
+        assert!(thinking.is_none());
+        assert_eq!(effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn responses_reasoning_config_openai_and_deepseek() {
+        let openai = ModelEndpoint {
+            provider: "openai".into(),
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            responses_reasoning_config(&openai),
+            Some(serde_json::json!({"effort": "medium"}))
+        );
+        let openai_off = ModelEndpoint {
+            reasoning_effort: Some("off".into()),
+            ..openai
+        };
+        assert!(responses_reasoning_config(&openai_off).is_none());
+
+        let deepseek = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            model_name: "deepseek-v4-flash".into(),
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            responses_reasoning_config(&deepseek),
+            Some(serde_json::json!({"effort": "high"}))
+        );
+        let off = ModelEndpoint {
+            reasoning_effort: Some("none".into()),
+            ..deepseek
+        };
+        assert_eq!(
+            responses_reasoning_config(&off),
+            Some(serde_json::json!({"effort": "none"}))
+        );
+        assert!(responses_reasoning_config(&ModelEndpoint::default()).is_none());
+    }
+
+    #[test]
+    fn chat_thinking_extras_openai_off_omits_effort() {
+        let ep = ModelEndpoint {
+            provider: "openai".into(),
+            reasoning_effort: Some("off".into()),
+            ..Default::default()
+        };
+        let (thinking, effort) = chat_thinking_extras(&ep);
+        assert!(thinking.is_none());
+        assert!(effort.is_none());
+    }
+
+    #[test]
     fn reasoning_text_from_thinking_blocks_concatenates_thinking_only() {
         let blocks = vec![
             serde_json::json!({"type": "thinking", "thinking": "first part", "signature": "s1"}),
@@ -675,6 +959,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(adapter_for(&responses).style(), "openai-responses");
+        let deepseek_alias = ModelEndpoint {
+            api_style: Some("deepseek-responses".into()),
+            provider: "deepseek".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&deepseek_alias), "openai-responses");
+        assert_eq!(adapter_for(&deepseek_alias).style(), "openai-responses");
         let openai = ModelEndpoint::default();
         assert_eq!(adapter_for(&openai).style(), "openai-chat");
         // llama.cpp speaks the OpenAI-compatible wire protocol and is served by
@@ -684,6 +975,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(adapter_for(&llama).style(), "openai-chat");
+        let xai = ModelEndpoint {
+            api_style: Some("xai".into()),
+            provider: "xai".into(),
+            ..Default::default()
+        };
+        assert_eq!(adapter_for(&xai).style(), "xai");
+        let grok_provider = ModelEndpoint {
+            provider: "grok".into(),
+            ..Default::default()
+        };
+        assert_eq!(api_style_for(&grok_provider), "xai");
+        assert_eq!(adapter_for(&grok_provider).style(), "xai");
         let deepgram = ModelEndpoint {
             provider: "deepgram".into(),
             ..Default::default()
@@ -694,6 +997,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(adapter_for(&assemblyai).style(), "assemblyai");
+        assert!(supports_builtin_web_search("openai-responses"));
+        assert!(supports_builtin_web_search("xai"));
+        assert!(!supports_builtin_web_search("openai-chat"));
     }
 
     #[test]

@@ -71,10 +71,22 @@
 
 ### 2.2 `haven-llm` —— 模型与媒体能力的唯一实现方
 
-- `adapters/`：chat / stream / tools 的 provider 适配（OpenAI / Anthropic / Gemini）与统一
-  `LlmClient` trait + `with_retry`。
-- `router.rs`：`LlmRouter`，按 `EndpointRole`（small / default / balanced / reasoning /
-  image 等）把请求路由到对应适配器。
+- `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
+  `with_retry`。能力矩阵见 `adapters/capabilities.rs`：
+  - `openai-chat` / `llama.cpp` → OpenAI Chat Completions
+  - `openai-responses`（含 DeepSeek Responses 别名 / thinking echo + `web_search`）
+  - `xai` → OpenAI chat + xAI Live Search `search_parameters`
+  - `anthropic` → Messages API（可选 server `web_search_*`）
+  - `gemini` → `generateContent`（可选 `google_search` grounding）
+  - `deepgram` / `assemblyai` → STT only
+- 聊天页「联网搜索」为角色级 `off|auto|always`；仅
+  `supports_builtin_web_search(api_style)` 为真时由对应适配器注入内置搜索工具，
+  UI 对不支持的线协议灰显。
+- 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
+  `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
+  复用聊天页「思考强度」，不另开线协议。
+- `router.rs`：`LlmRouter`，按 `EndpointRole`（small / default / balanced /
+  image / audio / embedding）把请求路由到对应适配器。
 - `stt.rs` / `ocr.rs` / `tts.rs` / `image_gen.rs`：各专用客户端实现 + 统一分发入口
   （`build_stt_client` 等）。
 - `media/`：**媒体网关**（原 `haven-gateway` 并入，历史归属 input crate，现已在此）——

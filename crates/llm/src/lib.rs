@@ -10,7 +10,10 @@ pub mod stt;
 pub mod tts;
 pub mod types;
 
-pub use adapters::{AnthropicAdapter, OpenAiAdapter};
+pub use adapters::{
+    AnthropicAdapter, OpenAiAdapter, WebSearchMode, is_known_api_style, is_stt_only_style,
+    normalize_api_style, parse_web_search_mode, supports_builtin_web_search,
+};
 pub use client::{LlmClient, with_retry};
 pub use image_gen::{GeneratedImage, ImageGenClient, build_image_gen_client};
 pub use ocr::{OcrClient, OcrResult, build_ocr_client};

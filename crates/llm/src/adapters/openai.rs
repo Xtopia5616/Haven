@@ -9,9 +9,10 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    build_client, build_headers, health_check_request, normalize_web_search_call_item,
-    reasoning_tail, reasoning_text_from_thinking_blocks, requires_reasoning_echo, send_request,
-    stream_header_timeout,
+    WebSearchMode, build_client, build_headers, chat_thinking_extras, health_check_request,
+    normalize_web_search_call_item, reasoning_tail, reasoning_text_from_thinking_blocks,
+    requires_reasoning_echo, resolve_web_search_mode, send_request, stream_header_timeout,
+    xai_search_mode,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -93,8 +94,16 @@ struct OpenAiRequest {
     response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    /// Vendor thinking toggle (DeepSeek / Kimi): `{"type":"enabled|disabled"}`,
+    /// optionally with Kimi `keep: "all"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    /// xAI Live Search (`search_parameters`). Omitted for non-xAI styles and
+    /// when web search mode is `off`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_parameters: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -188,6 +197,9 @@ struct OpenAiResponse {
     choices: Vec<OpenAiChoice>,
     usage: Option<OpenAiUsage>,
     model: Option<String>,
+    /// xAI Live Search citation URLs (top-level on the final response).
+    #[serde(default)]
+    citations: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +208,8 @@ struct OpenAiStreamResponse {
     choices: Vec<OpenAiChoice>,
     usage: Option<OpenAiUsage>,
     model: Option<String>,
+    #[serde(default)]
+    citations: Vec<String>,
 }
 
 /// True when `model` is a dedicated ASR id that speaks
@@ -213,16 +227,33 @@ pub(crate) fn is_whisper_model(model: &str) -> bool {
 }
 
 /// OpenAI-compatible chat adapter: the common wire format spoken by OpenAI,
-/// Ollama, vLLM, DeepSeek, and most third-party gateways.
+/// Ollama, vLLM, DeepSeek, llama.cpp, xAI Grok, and most third-party gateways.
+///
+/// When constructed via [`Self::new_with_style`] with `"xai"`, request bodies
+/// may include xAI Live Search `search_parameters` driven by the endpoint's
+/// `web_search` mode (`off` | `auto` | `always`).
 pub struct OpenAiAdapter {
     endpoint: ModelEndpoint,
     client: reqwest::Client,
+    /// Reported `LlmClient::style()` — `"openai-chat"` (default) or `"xai"`.
+    style: &'static str,
+    web_search_mode: WebSearchMode,
 }
 
 impl OpenAiAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
+        Self::new_with_style(endpoint, "openai-chat")
+    }
+
+    pub fn new_with_style(endpoint: ModelEndpoint, style: &'static str) -> Self {
         let client = build_client(&endpoint);
-        Self { endpoint, client }
+        let web_search_mode = resolve_web_search_mode(&endpoint);
+        Self {
+            endpoint,
+            client,
+            style,
+            web_search_mode,
+        }
     }
 
     fn build_headers(&self) -> HeaderMap {
@@ -372,9 +403,14 @@ impl OpenAiAdapter {
                     // stateless chat API to restore the search context, with
                     // the `action` discriminator filled when the captured
                     // skeleton lacks it (DeepSeek 400s otherwise).
+                    // Skip synthetic xAI citation markers — Live Search is
+                    // driven by `search_parameters`, not call round-trip.
                     web_search_call: m
                         .web_search_calls
                         .into_iter()
+                        .filter(|c| {
+                            c.get("id").and_then(Value::as_str) != Some("xai_citations")
+                        })
                         .map(normalize_web_search_call_item)
                         .collect(),
                 }
@@ -423,7 +459,31 @@ impl OpenAiAdapter {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> OpenAiRequest {
+        self.build_request_body_with_mode(messages, tools, stream, self.web_search_mode)
+    }
+
+    /// Request-body construction with an explicit web search mode (tests pin
+    /// the mode without touching process-global env vars).
+    fn build_request_body_with_mode(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        stream: bool,
+        web_search_mode: WebSearchMode,
+    ) -> OpenAiRequest {
         let has_tools = !tools.is_empty();
+        let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
+        let omit_temperature = reasoning_effort.is_some() || thinking.is_some();
+        let search_parameters = if self.style == "xai" {
+            xai_search_mode(web_search_mode).map(|mode| {
+                serde_json::json!({
+                    "mode": mode,
+                    "return_citations": true,
+                })
+            })
+        } else {
+            None
+        };
         OpenAiRequest {
             model: self.endpoint.model_name.clone(),
             messages: Self::convert_messages(
@@ -434,15 +494,9 @@ impl OpenAiAdapter {
                     .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
             ),
             max_tokens: Some(self.endpoint.max_tokens),
-            // Reasoning models (o1/o3-family, reasoning_effort configured)
-            // reject a non-default temperature; the Responses adapter skips
-            // it for the same reason. Omit it whenever the endpoint pins a
-            // reasoning effort — the provider's default (1.0) applies.
-            temperature: self
-                .endpoint
-                .reasoning_effort
-                .is_none()
-                .then_some(self.endpoint.temperature),
+            // Reasoning / thinking modes reject or ignore non-default
+            // temperature. Omit whenever effort or vendor thinking is pinned.
+            temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
                 Some(Self::convert_tools(tools))
@@ -461,7 +515,8 @@ impl OpenAiAdapter {
             stop: self.endpoint.stop.clone(),
             seed: self.endpoint.seed,
             response_format: self.endpoint.response_format.clone(),
-            reasoning_effort: self.endpoint.reasoning_effort.clone(),
+            reasoning_effort,
+            thinking,
             stream_options: if stream {
                 Some(StreamOptions {
                     include_usage: true,
@@ -469,6 +524,7 @@ impl OpenAiAdapter {
             } else {
                 None
             },
+            search_parameters,
         }
     }
 
@@ -492,7 +548,7 @@ impl OpenAiAdapter {
             .as_ref()
             .and_then(|m| m.reasoning_content.clone());
         let tool_calls = Self::extract_tool_calls(&choice);
-        let web_search_calls = choice
+        let mut web_search_calls: Vec<Value> = choice
             .message
             .as_ref()
             .map(|m| {
@@ -503,6 +559,20 @@ impl OpenAiAdapter {
                     .collect()
             })
             .unwrap_or_default();
+        // xAI returns citation URLs at the top level; fold them into the
+        // canonical web_search_calls list so multi-turn echo / UI cards work.
+        if !json.citations.is_empty() {
+            web_search_calls.push(normalize_web_search_call_item(serde_json::json!({
+                "type": "web_search_call",
+                "id": "xai_citations",
+                "status": "completed",
+                "action": {
+                    "type": "search",
+                    "queries": [],
+                    "citations": json.citations,
+                },
+            })));
+        }
 
         let usage = json
             .usage
@@ -812,6 +882,21 @@ impl OpenAiAdapter {
                                 cost: None,
                             });
                         }
+                        if !resp.citations.is_empty() {
+                            crate::adapters::upsert_web_search_call(
+                                &mut state.web_search_acc,
+                                normalize_web_search_call_item(serde_json::json!({
+                                    "type": "web_search_call",
+                                    "id": "xai_citations",
+                                    "status": "completed",
+                                    "action": {
+                                        "type": "search",
+                                        "queries": [],
+                                        "citations": resp.citations,
+                                    },
+                                })),
+                            );
+                        }
                         if let Some(choice) = resp.choices.into_iter().next() {
                             if let Some(delta) = choice_delta(&choice)
                                 && let Some(content) = &delta.content
@@ -897,7 +982,7 @@ impl OpenAiAdapter {
 #[async_trait]
 impl LlmClient for OpenAiAdapter {
     fn style(&self) -> &'static str {
-        "openai-chat"
+        self.style
     }
 
     async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
@@ -1164,6 +1249,7 @@ mod tests {
             choices: vec![choice],
             usage: None,
             model: Some("deepseek".into()),
+            citations: Vec::new(),
         };
         let ep = ModelEndpoint::default();
         let adapter = OpenAiAdapter::new(ep);
@@ -1460,6 +1546,115 @@ mod tests {
         assert!(body.tools.is_some());
         assert_eq!(body.tools.as_ref().unwrap().len(), 1);
         assert_eq!(body.tools.unwrap()[0].tool_type, "function");
+    }
+
+    #[test]
+    fn xai_search_parameters_follow_web_search_mode() {
+        let ep = ModelEndpoint {
+            api_style: Some("xai".into()),
+            provider: "xai".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            model_name: "grok-3".into(),
+            web_search: Some("auto".into()),
+            ..Default::default()
+        };
+        let client = OpenAiAdapter::new_with_style(ep, "xai");
+        assert_eq!(client.style(), "xai");
+        let auto = client.build_request_body_with_mode(
+            vec![],
+            vec![],
+            false,
+            WebSearchMode::Auto,
+        );
+        assert_eq!(
+            auto.search_parameters,
+            Some(serde_json::json!({"mode": "auto", "return_citations": true}))
+        );
+        let always = client.build_request_body_with_mode(
+            vec![],
+            vec![],
+            false,
+            WebSearchMode::Always,
+        );
+        assert_eq!(
+            always.search_parameters,
+            Some(serde_json::json!({"mode": "on", "return_citations": true}))
+        );
+        let off = client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Off);
+        assert!(off.search_parameters.is_none());
+        // Non-xAI style never injects search_parameters.
+        let chat = OpenAiAdapter::new(ModelEndpoint::default());
+        let body = chat.build_request_body_with_mode(
+            vec![],
+            vec![],
+            false,
+            WebSearchMode::Always,
+        );
+        assert!(body.search_parameters.is_none());
+    }
+
+    #[test]
+    fn build_request_body_deepseek_thinking_enabled_maps_medium() {
+        let ep = ModelEndpoint {
+            provider: "deepseek".into(),
+            base_url: "https://api.deepseek.com".into(),
+            model_name: "deepseek-v4-pro".into(),
+            temperature: 0.7,
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(body.thinking, Some(serde_json::json!({"type": "enabled"})));
+        assert_eq!(body.reasoning_effort.as_deref(), Some("high"));
+        assert!(body.temperature.is_none());
+    }
+
+    #[test]
+    fn build_request_body_deepseek_thinking_disabled() {
+        let ep = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://gateway.example/v1".into(),
+            model_name: "deepseek-chat".into(),
+            reasoning_effort: Some("disabled".into()),
+            ..Default::default()
+        };
+        let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(
+            body.thinking,
+            Some(serde_json::json!({"type": "disabled"}))
+        );
+        assert!(body.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn build_request_body_kimi_thinking_keep_all() {
+        let ep = ModelEndpoint {
+            provider: "moonshot".into(),
+            base_url: "https://api.moonshot.ai/v1".into(),
+            model_name: "kimi-k2.6".into(),
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert_eq!(
+            body.thinking,
+            Some(serde_json::json!({"type": "enabled", "keep": "all"}))
+        );
+        assert!(body.reasoning_effort.is_none());
+    }
+
+    #[test]
+    fn build_request_body_openai_passes_reasoning_effort_without_thinking() {
+        let ep = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model_name: "o3".into(),
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
+        assert!(body.thinking.is_none());
+        assert_eq!(body.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]

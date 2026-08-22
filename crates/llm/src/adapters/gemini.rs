@@ -8,8 +8,9 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, build_client, build_headers, empty_chunk, health_check_request, send_request,
-    spawn_line_reader, stream_header_timeout,
+    LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
+    normalize_web_search_call_item, resolve_web_search_mode, send_request, spawn_line_reader,
+    stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
@@ -50,9 +51,17 @@ struct GeminiFunctionDeclaration {
     parameters: Value,
 }
 
+/// Gemini tools are a heterogeneous list: function declarations and built-in
+/// tools such as `google_search` grounding share the same `tools[]` array.
 #[derive(Debug, Serialize)]
-struct GeminiTool {
-    function_declarations: Vec<GeminiFunctionDeclaration>,
+#[serde(untagged)]
+enum GeminiTool {
+    Functions {
+        function_declarations: Vec<GeminiFunctionDeclaration>,
+    },
+    GoogleSearch {
+        google_search: Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -137,12 +146,18 @@ struct GeminiUsage {
 pub struct GeminiAdapter {
     endpoint: ModelEndpoint,
     client: reqwest::Client,
+    web_search_mode: WebSearchMode,
 }
 
 impl GeminiAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
         let client = build_client(&endpoint);
-        Self { endpoint, client }
+        let web_search_mode = resolve_web_search_mode(&endpoint);
+        Self {
+            endpoint,
+            client,
+            web_search_mode,
+        }
     }
 
     /// Gemini authenticates with `x-goog-api-key`. If the user customized
@@ -387,7 +402,7 @@ impl GeminiAdapter {
     fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<GeminiTool> {
         tools
             .into_iter()
-            .map(|t| GeminiTool {
+            .map(|t| GeminiTool::Functions {
                 function_declarations: vec![GeminiFunctionDeclaration {
                     name: t.function.name,
                     description: t.function.description,
@@ -403,15 +418,32 @@ impl GeminiAdapter {
         tools: Vec<ToolDefinition>,
         _stream: bool,
     ) -> GeminiRequest {
+        self.build_request_body_with_mode(messages, tools, self.web_search_mode)
+    }
+
+    fn build_request_body_with_mode(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        web_search_mode: WebSearchMode,
+    ) -> GeminiRequest {
         let (contents, system_instruction) = Self::convert_contents(messages);
-        let has_tools = !tools.is_empty();
+        let mut tools_json = Self::convert_tools(tools);
+        // Gemini grounding: append `{"google_search": {}}`. Auto and Always
+        // both expose the tool (Gemini has no forced-search tool_choice
+        // equivalent for google_search); Always still opts the model in.
+        if !matches!(web_search_mode, WebSearchMode::Off) {
+            tools_json.push(GeminiTool::GoogleSearch {
+                google_search: json!({}),
+            });
+        }
         GeminiRequest {
             contents,
             system_instruction,
-            tools: if has_tools {
-                Some(Self::convert_tools(tools))
-            } else {
+            tools: if tools_json.is_empty() {
                 None
+            } else {
+                Some(tools_json)
             },
             generation_config: Some(GeminiGenerationConfig {
                 temperature: self.endpoint.temperature,
@@ -499,6 +531,28 @@ impl GeminiAdapter {
         })
     }
 
+    /// Fold Gemini `groundingMetadata` into a compact `web_search_call` (queries
+    /// only — never the full grounding blob, which balloons transcript size).
+    fn web_search_calls_from_grounding(raw: &Value) -> Vec<Value> {
+        let Some(meta) = raw
+            .pointer("/candidates/0/groundingMetadata")
+            .or_else(|| raw.pointer("/candidates/0/grounding_metadata"))
+        else {
+            return Vec::new();
+        };
+        let queries = meta
+            .get("webSearchQueries")
+            .or_else(|| meta.get("web_search_queries"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        vec![normalize_web_search_call_item(json!({
+            "type": "web_search_call",
+            "id": "gemini_grounding",
+            "status": "completed",
+            "action": {"type": "search", "queries": queries},
+        }))]
+    }
+
     async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -526,10 +580,15 @@ impl GeminiAdapter {
             .await
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         tracing::trace!("POST {} response body: {} chars", url, txt.len());
-        let json: GeminiResponse =
+        let raw: Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let web_search_calls = Self::web_search_calls_from_grounding(&raw);
+        let json: GeminiResponse = serde_json::from_value(raw)
+            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model_version.clone();
-        self.parse_response(json, model)
+        let mut parsed = self.parse_response(json, model)?;
+        parsed.web_search_calls = web_search_calls;
+        Ok(parsed)
     }
 
     async fn chat_stream_inner(
@@ -1248,12 +1307,43 @@ mod tests {
         }];
         let body = client.build_request_body(vec![], tools, false);
         let gtools = body.tools.unwrap();
-        assert_eq!(gtools[0].function_declarations[0].name, "search");
+        match &gtools[0] {
+            GeminiTool::Functions {
+                function_declarations,
+            } => assert_eq!(function_declarations[0].name, "search"),
+            GeminiTool::GoogleSearch { .. } => panic!("expected function tool"),
+        }
         let cfg = body.generation_config.unwrap();
         assert_eq!(cfg.max_output_tokens, 2048);
         assert_eq!(cfg.temperature, 0.2);
         assert_eq!(cfg.top_p, Some(0.9));
         assert_eq!(cfg.top_k, Some(40));
+    }
+
+    #[test]
+    fn google_search_tool_injected_when_web_search_on() {
+        let client = GeminiAdapter::new(ModelEndpoint::default());
+        let body = client.build_request_body_with_mode(vec![], vec![], WebSearchMode::Auto);
+        let tools = body.tools.expect("google_search present");
+        assert!(matches!(tools[0], GeminiTool::GoogleSearch { .. }));
+        let off = client.build_request_body_with_mode(vec![], vec![], WebSearchMode::Off);
+        assert!(off.tools.is_none());
+    }
+
+    #[test]
+    fn grounding_metadata_keeps_queries_only() {
+        let raw = json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "webSearchQueries": ["haven voice"],
+                    "groundingChunks": [{"huge": "blob".repeat(100)}],
+                }
+            }]
+        });
+        let calls = GeminiAdapter::web_search_calls_from_grounding(&raw);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["action"]["queries"], json!(["haven voice"]));
+        assert!(calls[0]["action"].get("grounding_metadata").is_none());
     }
 
     #[test]

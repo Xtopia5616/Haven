@@ -12,6 +12,12 @@
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { ROLE_KEYS, modelCards } from '$lib/modelRoles.ts';
 	import { inputFormats } from '$lib/inputFormats.ts';
+	import {
+		API_STYLE_OPTIONS,
+		apiStylePreset,
+		displayApiStyle,
+		isSttOnlyStyle,
+	} from '$lib/apiStyle.ts';
 
 	/**
 	 * LLM model configuration (providers + role slots).
@@ -125,6 +131,13 @@
 	 */
 	function isLocalProvider(p) {
 		return p?.api_style === 'llama.cpp' || p?.provider === 'llama.cpp';
+	}
+
+	/**
+	 * @param {any} p
+	 */
+	function providerDisplayStyle(p) {
+		return displayApiStyle(p);
 	}
 
 	// ---------------------------------------------------------------------
@@ -390,7 +403,7 @@
 			idx,
 			form: {
 				name: p.name,
-				api_style: p.api_style || 'openai-chat',
+				api_style: providerDisplayStyle(p),
 				base_url: p.base_url,
 				api_key: '', // masked
 			},
@@ -411,11 +424,11 @@
 			return;
 		}
 		const prevKey = idx !== null ? llmConfig.providers[idx]?.api_key || '' : '';
-		const preset = API_STYLE_PRESETS[form.api_style] || API_STYLE_PRESETS['openai-chat'];
+		const preset = apiStylePreset(form.api_style);
 		const provider = {
 			name,
 			provider: preset.provider,
-			api_style: form.api_style,
+			api_style: preset.api_style,
 			base_url: form.base_url.trim(),
 			api_key: form.api_key || prevKey,
 			auth_header_name: preset.auth_header_name,
@@ -424,7 +437,7 @@
 			no_proxy: null,
 			default_max_tokens: null,
 			default_temperature: null,
-			default_timeout_secs: isSttOnlyStyle(form.api_style) ? 30 : null,
+			default_timeout_secs: isSttOnlyStyle(preset.api_style) ? 30 : null,
 			default_timeout_streaming_secs: null,
 			default_web_search: null,
 		};
@@ -470,76 +483,12 @@
 		addNotification(`已删除 Provider ${p.name}`, 'success', 2000);
 	}
 
-	const API_STYLE_OPTIONS = [
-		{ value: 'openai-chat', label: 'OpenAI Chat Completions' },
-		{ value: 'llama.cpp', label: 'llama.cpp server (local)' },
-		{ value: 'openai-responses', label: 'OpenAI Responses API' },
-		{ value: 'anthropic', label: 'Anthropic (Claude)' },
-		{ value: 'gemini', label: 'Google Gemini' },
-		{ value: 'deepgram', label: 'Deepgram (STT only)' },
-		{ value: 'assemblyai', label: 'AssemblyAI (STT only)' },
-	];
-
-	/** @type {Record<string, { base_url: string, provider: string, auth_header_name: string, auth_header_prefix: string }>} */
-	const API_STYLE_PRESETS = {
-		'openai-chat': {
-			base_url: 'https://api.openai.com/v1',
-			provider: 'openai',
-			auth_header_name: 'Authorization',
-			auth_header_prefix: 'Bearer',
-		},
-		'llama.cpp': {
-			base_url: 'http://127.0.0.1:8080/v1',
-			provider: 'llama.cpp',
-			auth_header_name: 'Authorization',
-			auth_header_prefix: 'Bearer',
-		},
-		'openai-responses': {
-			base_url: 'https://api.openai.com/v1',
-			provider: 'openai',
-			auth_header_name: 'Authorization',
-			auth_header_prefix: 'Bearer',
-		},
-		anthropic: {
-			base_url: 'https://api.anthropic.com',
-			provider: 'anthropic',
-			auth_header_name: 'x-api-key',
-			auth_header_prefix: '',
-		},
-		gemini: {
-			base_url: 'https://generativelanguage.googleapis.com/v1beta',
-			provider: 'gemini',
-			auth_header_name: 'x-goog-api-key',
-			auth_header_prefix: '',
-		},
-		deepgram: {
-			base_url: 'https://api.deepgram.com',
-			provider: 'deepgram',
-			auth_header_name: 'Authorization',
-			auth_header_prefix: 'Token',
-		},
-		assemblyai: {
-			base_url: 'https://api.assemblyai.com',
-			provider: 'assemblyai',
-			auth_header_name: 'authorization',
-			auth_header_prefix: '',
-		},
-	};
-
-	/**
-	 * @param {string} style
-	 */
-	function isSttOnlyStyle(style) {
-		return style === 'deepgram' || style === 'assemblyai';
-	}
-
 	/**
 	 * @param {string} style
 	 */
 	function applyApiStylePreset(style) {
 		if (!providerDialog?.form) return;
-		const preset = API_STYLE_PRESETS[style];
-		if (!preset) return;
+		const preset = apiStylePreset(style);
 		providerDialog.form.api_style = style;
 		providerDialog.form.base_url = preset.base_url;
 	}
@@ -576,7 +525,12 @@
 	/**
 	 * @param {string} style
 	 */
-	function apiStyleLabel(style) {
+	/**
+	 * @param {any} pOrStyle
+	 */
+	function apiStyleLabel(pOrStyle) {
+		const style =
+			typeof pOrStyle === 'string' ? pOrStyle : providerDisplayStyle(pOrStyle);
 		return API_STYLE_OPTIONS.find((o) => o.value === style)?.label || style || '自动';
 	}
 
@@ -861,7 +815,7 @@
 						<ApiKeyField mode="badge" configured={isProviderKeyConfigured(p)} />
 					</div>
 					<span class="provider-desc">
-						{apiStyleLabel(p.api_style)} · {p.base_url}
+						{apiStyleLabel(p)} · {p.base_url}
 					</span>
 					{#if modelsByProvider[p.name]?.length}
 						<span class="provider-models">{modelsByProvider[p.name].length} 个模型</span>

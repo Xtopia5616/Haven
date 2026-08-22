@@ -28,6 +28,7 @@
 		finalizeStreamBlocks,
 		newToolMessage,
 	} from '$lib/streaming.ts';
+	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { fly } from 'svelte/transition';
@@ -119,6 +120,10 @@
 	// Provider built-in web search mode ("off" | "auto" | "always").
 	// Defaults to off (opt-in); "auto" lets the model decide when to search.
 	let currentWebSearch = $state('off');
+	/** Default-model provider wire style supports built-in 联网搜索. */
+	let webSearchSupported = $state(false);
+	/** Normalized wire style of the default-model provider (for mode filtering). */
+	let currentApiStyle = $state('openai-chat');
 	// The configured recording hotkey binding, loaded from settings and kept
 	// in sync via `hotkey:rebind` so placeholders show the real value.
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
@@ -327,17 +332,30 @@
 		{ value: 'low', label: '低' },
 		{ value: 'medium', label: '中' },
 		{ value: 'high', label: '高' },
+		// Vendor thinking off (DeepSeek/Kimi/Responses); omitted for plain OpenAI.
+		{ value: 'off', label: '关闭' },
 	];
 
-	const webSearchOptions = [
+	const webSearchOptionsAll = [
 		{ value: 'off', label: '关闭' },
 		{ value: 'auto', label: '自动' },
 		{ value: 'always', label: '总是' },
 	];
 
+	/** Gemini has no forced-search tool_choice; hide Always for that style. */
+	let webSearchOptions = $derived(
+		currentApiStyle === 'gemini'
+			? webSearchOptionsAll.filter((o) => o.value !== 'always')
+			: webSearchOptionsAll,
+	);
+
 	/** @param {string} value */
 	async function handleWebSearchSelect(value) {
-		const label = webSearchOptions.find((o) => o.value === value)?.label || '关闭';
+		if (!webSearchSupported && value !== 'off') {
+			addNotification('当前模型线协议不支持内置联网搜索', 'info', 3000);
+			return;
+		}
+		const label = webSearchOptionsAll.find((o) => o.value === value)?.label || '关闭';
 		skipNextDefaultModelRefresh = true;
 		try {
 			await invoke('set_web_search', { role: 'default_model', mode: value });
@@ -1219,6 +1237,22 @@
 		currentModelName = dmModel;
 		currentEffort = dmRole?.reasoning_effort || '';
 		currentWebSearch = dmRole?.web_search || 'off';
+		currentApiStyle = normalizeApiStyle(dmProvider?.api_style || dmProvider?.provider);
+		webSearchSupported = supportsBuiltinWebSearch(currentApiStyle);
+		// Stale auto/always on an unsupported style: clear to off so it cannot
+		// resurrect when the user later switches to a supporting provider.
+		if (!webSearchSupported && currentWebSearch !== 'off') {
+			currentWebSearch = 'off';
+			invoke('set_web_search', { role: 'default_model', mode: 'off' }).catch((e) => {
+				logger.warn('+page', 'clear unsupported web_search failed', e);
+			});
+		} else if (webSearchSupported && currentApiStyle === 'gemini' && currentWebSearch === 'always') {
+			// Gemini Always ≡ Auto; normalize stored value.
+			currentWebSearch = 'auto';
+			invoke('set_web_search', { role: 'default_model', mode: 'auto' }).catch((e) => {
+				logger.warn('+page', 'normalize gemini web_search always→auto failed', e);
+			});
+		}
 		if (dmProvider?.base_url) {
 			ensureDefaultModelOptions(dmProvider.base_url, dmProvider.name);
 		} else {
@@ -2421,16 +2455,28 @@
 							</div>
 							<div class="model-menu-divider"></div>
 							<div class="model-menu-title">联网搜索</div>
-							<div class="effort-row">
-								{#each webSearchOptions as opt}
+							{#if webSearchSupported}
+								<div class="effort-row">
+									{#each webSearchOptions as opt}
+										<button
+											class="effort-item"
+											class:selected={currentWebSearch === opt.value}
+											onclick={() => handleWebSearchSelect(opt.value)}
+											type="button">{opt.label}</button
+										>
+									{/each}
+								</div>
+							{:else}
+								<div class="model-menu-hint">当前线协议不支持内置联网搜索</div>
+								<div class="effort-row">
 									<button
 										class="effort-item"
-										class:selected={currentWebSearch === opt.value}
-										onclick={() => handleWebSearchSelect(opt.value)}
-										type="button">{opt.label}</button
+										class:selected={currentWebSearch === 'off'}
+										onclick={() => handleWebSearchSelect('off')}
+										type="button">关闭</button
 									>
-								{/each}
-							</div>
+								</div>
+							{/if}
 						</div>
 					{/if}
 				</div>
@@ -2727,6 +2773,12 @@
 		text-transform: uppercase;
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	.model-menu-hint {
+		font-size: 12px;
+		color: var(--md-sys-color-on-surface-variant);
+		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
+		opacity: 0.85;
 	}
 	.model-item {
 		display: flex;
