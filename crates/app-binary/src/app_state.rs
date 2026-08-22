@@ -159,6 +159,13 @@ impl AppState {
                 }
             };
         pipeline.set_stt_client(stt_client.clone()).await;
+        // `provider == "llm"`: hotkey transcription uses the same
+        // `LlmRouter::transcribe_audio` path as MediaGateway (no LlmSttAdapter).
+        if stt_config.provider == "llm" {
+            pipeline.set_stt_router(Some(router.clone())).await;
+        } else {
+            pipeline.set_stt_router(None).await;
+        }
 
         // Media gateway: dedicated OCR / TTS / image-generation clients plus
         // the shared STT client. The gateway pre-processes attachments
@@ -168,7 +175,7 @@ impl AppState {
         // (fail-open: the main model still handles the media).
         let gateway = {
             let ocr: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
-                match haven_llm::build_ocr_client(router.clone(), &cfg.media.ocr) {
+                match haven_llm::build_ocr_client(&cfg.media.ocr) {
                     Ok(c) => c.map(std::sync::Arc::from),
                     Err(e) => {
                         tracing::warn!("OCR client build failed, OCR disabled: {e}");

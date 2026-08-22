@@ -5,8 +5,8 @@
 //! consumer-facing factory (the STT counterpart of `adapters::adapter_for`):
 //! - `none`: no client
 //! - `mcp`: route through an MCP server exposing `stt.transcribe`
-//! - `llm`: transcribe via the `audio_model` / default LLM endpoint (native
-//!   `transcribe` first, multimodal chat fallback)
+//! - `llm`: no dedicated client — InputPipeline and MediaGateway both call
+//!   [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
 //! - `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: synthesize a
 //!   [`ModelEndpoint`] from [`SttConfig`] and dispatch through `adapter_for`
 
@@ -61,12 +61,14 @@ pub trait McpToolCaller: Send + Sync {
 /// (required only for the `mcp` provider). Dedicated cloud providers are
 /// dispatched through the same [`adapter_for`] path as chat endpoints.
 pub fn build_stt_client(
-    router: Arc<LlmRouter>,
+    _router: Arc<LlmRouter>,
     mcp: Option<Arc<dyn McpToolCaller>>,
     cfg: &SttConfig,
 ) -> Result<Option<Box<dyn SttClient>>> {
+    // `_router` is unused: `provider == "llm"` is wired through
+    // InputPipeline::set_stt_router / MediaGateway::extract_via_llm instead.
     let client: Box<dyn SttClient> = match cfg.provider.as_str() {
-        "none" => return Ok(None),
+        "none" | "llm" => return Ok(None),
         "mcp" => {
             let server = cfg.mcp_server.clone().ok_or_else(|| {
                 anyhow::anyhow!("STT provider is 'mcp' but no mcp_server is configured")
@@ -76,7 +78,6 @@ pub fn build_stt_client(
             })?;
             Box::new(McpSttClient::new(caller, &server, cfg.timeout_secs))
         }
-        "llm" => Box::new(LlmSttAdapter::new(router)),
         "openai" | "groq" | "gemini" | "deepgram" | "assemblyai" => {
             let endpoint = endpoint_from_stt_config(cfg);
             Box::new(LlmClientSttBridge {
@@ -201,27 +202,6 @@ impl SttClient for McpSttClient {
             .to_string();
         let confidence = result.output["confidence"].as_f64().map(|c| c as f32);
         Ok(SttResult { text, confidence })
-    }
-}
-
-/// STT adapter that transcribes audio through the router's STT role
-/// (`audio_model` / default). Prefers native [`LlmClient::transcribe`]; falls
-/// back to multimodal chat with an `input_audio` content part when the
-/// endpoint adapter does not implement STT (e.g. gpt-4o-audio-preview).
-pub struct LlmSttAdapter {
-    router: Arc<LlmRouter>,
-}
-
-impl LlmSttAdapter {
-    pub fn new(router: Arc<LlmRouter>) -> Self {
-        Self { router }
-    }
-}
-
-#[async_trait]
-impl SttClient for LlmSttAdapter {
-    async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult> {
-        Ok(self.router.transcribe_audio(wav_data).await?)
     }
 }
 
@@ -370,31 +350,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_llm_stt_adapter_transcribes_audio() {
+    async fn test_transcribe_audio_via_router() {
         let router = mock_router("你好世界");
         router
             .force_role_configured(EndpointRole::AudioModel, true)
             .await;
-        let adapter = LlmSttAdapter::new(router);
-        let result = adapter.transcribe(&[0u8; 44]).await.unwrap();
+        let result = router.transcribe_audio(&[0u8; 44]).await.unwrap();
         assert_eq!(result.text, "你好世界");
         assert!(result.confidence.is_none());
     }
 
     #[tokio::test]
-    async fn test_llm_stt_adapter_unconfigured_errors() {
+    async fn test_transcribe_audio_unconfigured_errors() {
         let router = mock_router("ignored");
-        let adapter = LlmSttAdapter::new(router);
-        let err = adapter.transcribe(&[0u8; 44]).await.unwrap_err();
+        let err = router.transcribe_audio(&[0u8; 44]).await.unwrap_err();
         assert!(err.to_string().contains("audio_model"));
     }
 
     #[tokio::test]
-    async fn test_llm_stt_adapter_uses_default_model_when_routing_disabled() {
+    async fn test_transcribe_audio_uses_default_model_when_routing_disabled() {
         let router = mock_router("走默认模型的转写");
         router.force_routing_flags(false, true).await;
-        let adapter = LlmSttAdapter::new(router);
-        let result = adapter.transcribe(&[0u8; 44]).await.unwrap();
+        let result = router.transcribe_audio(&[0u8; 44]).await.unwrap();
         assert_eq!(result.text, "走默认模型的转写");
     }
 
@@ -420,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_llm_stt_adapter_rewrites_unsupported_audio_input_error() {
+    async fn test_transcribe_audio_rewrites_unsupported_audio_input_error() {
         let err_body = "400 Bad Request: Only text and image_url are supported.";
         let client: Arc<dyn LlmClient> = Arc::new(MockLlmErr {
             err: LlmError::RequestFailed(err_body.into()),
@@ -435,9 +412,8 @@ mod tests {
         router
             .force_role_configured(EndpointRole::AudioModel, true)
             .await;
-        let adapter = LlmSttAdapter::new(router);
-        let err = adapter
-            .transcribe(&[0u8; 44])
+        let err = router
+            .transcribe_audio(&[0u8; 44])
             .await
             .unwrap_err()
             .to_string();
@@ -488,6 +464,13 @@ mod tests {
         let mcp: Arc<dyn McpToolCaller> = Arc::new(NoopMcpCaller);
         let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
         assert!(client.is_none());
+
+        let cfg = SttConfig {
+            provider: "llm".into(),
+            ..Default::default()
+        };
+        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
+        assert!(client.is_none(), "llm provider uses router path, no client");
 
         let cfg = test_stt_cfg("mcp");
         let err = build_stt_client(router.clone(), Some(mcp.clone()), &cfg)

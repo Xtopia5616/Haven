@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { invoke, listen } from './tauri.ts';
+import { invoke, listen, isTauri } from './tauri.ts';
 
 describe('tauri.ts in a non-Tauri environment', () => {
 	beforeEach(() => {
 		const w = window as any;
 		delete w.__TAURI_INTERNALS__;
 		delete w.__TAURI__;
+	});
+
+	it('isTauri is false without Tauri globals', () => {
+		expect(isTauri()).toBe(false);
 	});
 
 	it('invoke rejects with a helpful error', async () => {

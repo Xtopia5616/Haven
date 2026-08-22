@@ -88,6 +88,40 @@ fn timestamped_backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{base}.toml.{ts}.bak"))
 }
 
+fn backup_unparsable_config(path: &Path, err: &str) {
+    // Never silently start with defaults: the next save() would overwrite the
+    // user's config (MCP servers, API keys, skills) with defaults. Back up the
+    // unparsable file so it can be recovered, then continue with defaults.
+    let backup = timestamped_backup_path(path);
+    match std::fs::copy(path, &backup) {
+        Ok(_) => tracing::error!(
+            "config parse error at {}; original backed up to {}: {err}",
+            path.display(),
+            backup.display()
+        ),
+        Err(be) => tracing::error!(
+            "config parse error at {} (backup to {} failed: {}): {err}",
+            path.display(),
+            backup.display(),
+            be
+        ),
+    }
+}
+
+/// Copy legacy top-level `[audio]` into `media.audio` when present.
+fn migrate_legacy_top_level_audio(value: &toml::Value, config: &mut AppConfig) {
+    let Some(legacy) = value.get("audio") else {
+        return;
+    };
+    match legacy.clone().try_into::<AudioConfig>() {
+        Ok(audio) => {
+            tracing::info!("migrating top-level [audio] into [media.audio]");
+            config.media.audio = audio;
+        }
+        Err(e) => tracing::warn!("ignoring legacy top-level [audio]: {e}"),
+    }
+}
+
 impl ConfigLoader {
     /// Returns the default config path: `%APPDATA%/haven/config.toml` on Windows.
     pub fn default_path() -> PathBuf {
@@ -136,27 +170,23 @@ impl ConfigLoader {
         }
         tracing::info!("loading config from {}", path.display());
         let content = std::fs::read_to_string(path)?;
-        let config: AppConfig = match toml::from_str::<AppConfig>(&content) {
-            Ok(c) => c,
+        let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
+            Ok(value) => {
+                let mut cfg: AppConfig = match value.clone().try_into() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        backup_unparsable_config(path, &e.to_string());
+                        AppConfig::default()
+                    }
+                };
+                // One-shot bridge: pre-unification configs stored capture under
+                // top-level `[audio]`. Prefer that over default `media.audio`
+                // so a Save does not permanently drop VAD/sample-rate tweaks.
+                migrate_legacy_top_level_audio(&value, &mut cfg);
+                cfg
+            }
             Err(e) => {
-                // Never silently start with defaults: the next save() would
-                // overwrite the user's config (MCP servers, API keys, skills)
-                // with defaults, destroying it. Back up the unparsable file
-                // so it can be recovered, then continue with defaults.
-                let backup = timestamped_backup_path(path);
-                match std::fs::copy(path, &backup) {
-                    Ok(_) => tracing::error!(
-                        "config parse error at {}; original backed up to {}: {e}",
-                        path.display(),
-                        backup.display()
-                    ),
-                    Err(be) => tracing::error!(
-                        "config parse error at {} (backup to {} failed: {}): {e}",
-                        path.display(),
-                        backup.display(),
-                        be
-                    ),
-                }
+                backup_unparsable_config(path, &e.to_string());
                 AppConfig::default()
             }
         };
@@ -704,6 +734,26 @@ mod tests {
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().media.audio.sample_rate, 44100);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_migrates_legacy_top_level_audio() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[audio]
+sample_rate = 22050
+vad_threshold = 0.25
+"#,
+        )
+        .unwrap();
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(loader.config().media.audio.sample_rate, 22050);
+        assert!((loader.config().media.audio.vad_threshold - 0.25).abs() < f32::EPSILON);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

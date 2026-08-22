@@ -81,6 +81,14 @@ pub async fn update_settings(
     state.tools.set_default_shell(settings.default_shell).await;
     tick("set_default_shell");
 
+    // Propagate context limits (incl. max_tools_per_request) so load_mcp /
+    // resume budgets pick up Settings changes without a process restart.
+    state
+        .tools
+        .set_context_limits(settings.context_limits.clone())
+        .await;
+    tick("set_context_limits");
+
     // Reload MCP servers from config
     let (
         mcp_servers,

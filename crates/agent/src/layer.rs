@@ -878,22 +878,21 @@ impl AgentLayer {
 }
 
 /// Parse optional `tool_names` from a saved `load_mcp` tool_input for resume.
+/// Missing key → `None` (load-all). Present key → `Some` subset (possibly empty
+/// after trim; empty means register nothing, never collapse to load-all).
 fn load_mcp_tool_names_from_input(input: &Value) -> Option<Vec<String>> {
     let arr = input.get("tool_names")?.as_array()?;
     let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for v in arr {
         if let Some(s) = v.as_str() {
             let trimmed = s.trim();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
                 out.push(trimmed.to_string());
             }
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -911,14 +910,14 @@ mod load_mcp_resume_tests {
     }
 
     #[test]
-    fn missing_or_empty_tool_names_is_none() {
+    fn missing_tool_names_is_none_empty_array_is_empty_subset() {
         assert!(load_mcp_tool_names_from_input(&json!({"server_name": "srv"})).is_none());
-        assert!(
+        assert_eq!(
             load_mcp_tool_names_from_input(&json!({
                 "server_name": "srv",
                 "tool_names": []
-            }))
-            .is_none()
+            })),
+            Some(vec![])
         );
     }
 }

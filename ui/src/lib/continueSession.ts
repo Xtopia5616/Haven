@@ -11,8 +11,17 @@ export type ContinueStrategy =
 	| { mode: 'resend_user'; text: string }
 	| { mode: 'continue'; text: '继续' };
 
+/** Message shape used by continue heuristics (extra fields allowed). */
+export type ContinueMessage = {
+	role?: string;
+	type?: string | null;
+	content?: string;
+	id?: string;
+	toolName?: string;
+};
+
 /** Assistant bubbles that mean the model started generating after the user turn. */
-function isGenerationMessage(msg: { role?: string; type?: string | null }): boolean {
+function isGenerationMessage(msg: ContinueMessage): boolean {
 	if (msg.role !== 'assistant') return false;
 	// Supplement badges are injected context markers, not model output.
 	return msg.type !== 'supplement';
@@ -22,9 +31,7 @@ function isGenerationMessage(msg: { role?: string; type?: string | null }): bool
  * Decide which continue payload to use from the pre-continue message list.
  * Must be called BEFORE `continue_session` truncates partial assistant output.
  */
-export function pickContinueStrategy(
-	messages: Array<{ role?: string; type?: string | null; content?: string }>,
-): ContinueStrategy {
+export function pickContinueStrategy(messages: ContinueMessage[]): ContinueStrategy {
 	let lastUserIdx = -1;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		if (messages[i].role === 'user') {
@@ -55,7 +62,7 @@ export function pickContinueStrategy(
  * would duplicate. If it is gone (send never landed / ghost cleanup), resubmit.
  */
 export function shouldResubmitOriginalUser(
-	syncedMessages: Array<{ role?: string; type?: string | null; content?: string; id?: string }>,
+	syncedMessages: ContinueMessage[],
 	originalText: string,
 ): boolean {
 	const want = originalText.trim();

@@ -81,8 +81,6 @@ mod tests {
     }
 
     #[test]
-
-    #[test]
     fn cleanup_orphan_extraction_cursors_removes_stale_keys() {
         let db = test_db();
         let session = db.create_session("", "").unwrap();

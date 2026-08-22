@@ -3,7 +3,8 @@ let _tauriListen: ((event: string, handler: (event: unknown) => void) => Promise
 let _initialized = false;
 let _logger: { debug: (c: string, m: string, ...a: unknown[]) => void; info: (c: string, m: string, ...a: unknown[]) => void; warn: (c: string, m: string, ...a: unknown[]) => void; error: (c: string, m: string, ...a: unknown[]) => void } | null = null;
 
-const isTauri = () => {
+/** True when running inside a Tauri webview (not plain browser / SSR). */
+export const isTauri = () => {
 	const w = typeof window !== 'undefined' ? (window as any) : null;
 	return !!w && !!(w.__TAURI_INTERNALS__ || w.__TAURI__);
 };

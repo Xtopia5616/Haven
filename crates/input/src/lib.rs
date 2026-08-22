@@ -108,7 +108,12 @@ pub struct InputPipeline {
     handler: OnceHandler<dyn InputHandler>,
     cancel_token: StdMutex<Option<CancellationToken>>,
     result_rx: StdMutex<Option<tokio::sync::oneshot::Receiver<RecordingResult>>>,
+    /// Dedicated STT providers (cloud / MCP). Cleared when provider is `llm`
+    /// or `none`.
     stt_client: Arc<Mutex<Option<Arc<dyn SttClient>>>>,
+    /// Shared LLM path (`media.stt.provider == "llm"`): same
+    /// [`haven_llm::LlmRouter::transcribe_audio`] the media gateway uses.
+    stt_router: Arc<Mutex<Option<Arc<haven_llm::LlmRouter>>>>,
 }
 
 impl InputPipeline {
@@ -125,6 +130,7 @@ impl InputPipeline {
             cancel_token: StdMutex::new(None),
             result_rx: StdMutex::new(None),
             stt_client: Arc::new(Mutex::new(None)),
+            stt_router: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -147,17 +153,22 @@ impl InputPipeline {
         *self.ring_buffer_secs.lock().unwrap() = limits.input_ring_buffer_secs;
     }
 
-    /// Install or clear the STT client. `None` disables transcription
-    /// (e.g. when the provider is set to `none` at runtime).
+    /// Install or clear the dedicated STT client (cloud / MCP). Mutually
+    /// exclusive with [`Self::set_stt_router`] at the app layer.
     pub async fn set_stt_client(&self, client: Option<Arc<dyn SttClient>>) {
         *self.stt_client.lock().await = client;
     }
 
-    /// Whether speech-to-text is configured (an STT client is installed).
+    /// Install or clear the shared LLM STT path (`provider == "llm"`).
+    pub async fn set_stt_router(&self, router: Option<Arc<haven_llm::LlmRouter>>) {
+        *self.stt_router.lock().await = router;
+    }
+
+    /// Whether speech-to-text is configured (dedicated client or LLM router).
     /// Used by callers that should only record when transcription can
     /// actually produce a transcript (e.g. the wake hotkey).
     pub async fn recording_configured(&self) -> bool {
-        self.stt_client.lock().await.is_some()
+        self.stt_client.lock().await.is_some() || self.stt_router.lock().await.is_some()
     }
 
     /// Start the capture engine at app startup so the first recording pays no
@@ -579,36 +590,43 @@ impl InputPipeline {
             }
         }
 
-        // Clone the client out of the lock: the STT call is a network
+        // Clone backends out of the locks: the STT call is a network
         // round-trip, and holding the mutex across it would block
-        // `set_stt_client` (e.g. a provider switch in settings) for the
-        // whole transcription.
+        // `set_stt_client` / `set_stt_router` for the whole transcription.
         let client = self.stt_client.lock().await.clone();
-        if let Some(client) = client {
-            // `result.pcm` is always the resampled mono stream at
-            // TARGET_SAMPLE_RATE.
-            let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
+        let router = self.stt_router.lock().await.clone();
+        // `result.pcm` is always the resampled mono stream at TARGET_SAMPLE_RATE.
+        let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
 
-            match client.transcribe(&wav).await {
-                Ok(stt) => {
-                    if !stt.text.trim().is_empty() {
-                        result.transcript = Some(stt.text);
-                    } else {
-                        tracing::warn!(
-                            "STT returned an empty transcription ({}s of audio); skipping — no speech detected",
-                            result.duration_ms / 1000
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("STT transcription failed: {}", e);
-                    result.transcript_error = Some(e.to_string());
-                }
-            }
+        let stt_result = if let Some(client) = client {
+            client.transcribe(&wav).await
+        } else if let Some(router) = router {
+            router
+                .transcribe_audio(&wav)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
         } else {
             result.transcript_error = Some(
-                "未配置 STT 服务（设置 → STT Provider 选择 MCP Server 或 LLM Adapter）".into(),
+                "未配置 STT 服务（设置 → 输入 → Voice → STT Provider）".into(),
             );
+            return;
+        };
+
+        match stt_result {
+            Ok(stt) => {
+                if !stt.text.trim().is_empty() {
+                    result.transcript = Some(stt.text);
+                } else {
+                    tracing::warn!(
+                        "STT returned an empty transcription ({}s of audio); skipping — no speech detected",
+                        result.duration_ms / 1000
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("STT transcription failed: {}", e);
+                result.transcript_error = Some(e.to_string());
+            }
         }
     }
 

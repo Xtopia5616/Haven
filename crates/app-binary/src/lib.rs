@@ -1044,7 +1044,7 @@ mod tests {
             title: Some("My Title".into()),
             status: SessionStatus::Running,
             steps: vec![],
-            supplement_queue: vec![],
+            follow_up_queue: vec![],
             steering_queue: vec![],
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),

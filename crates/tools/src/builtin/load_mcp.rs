@@ -60,7 +60,8 @@ impl LoadMcpTool {
         let session_id = params.session_id.filter(|s| !s.is_empty()).ok_or_else(|| {
             anyhow::anyhow!("session context required to load MCP server '{}'", server_name)
         })?;
-        let tool_names = normalize_tool_names(params.tool_names);
+        let tool_names =
+            normalize_tool_names(params.tool_names).map_err(|e| anyhow::anyhow!(e))?;
 
         // Read config and the available-server list under one lock.
         let (config, available) = {
@@ -262,9 +263,14 @@ enum ActivateOutcome {
     },
 }
 
-/// `None` / empty → load-all path. Non-empty → subset (deduped, order preserved).
-fn normalize_tool_names(names: Option<Vec<String>>) -> Option<Vec<String>> {
-    let names = names?;
+/// Normalize optional `tool_names`:
+/// - omitted / `null` → `Ok(None)` (load-all when budget allows)
+/// - non-empty → `Ok(Some(deduped))` subset
+/// - explicit empty / all-whitespace → `Err` (do not collapse to load-all)
+fn normalize_tool_names(names: Option<Vec<String>>) -> Result<Option<Vec<String>>, String> {
+    let Some(names) = names else {
+        return Ok(None);
+    };
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for name in names {
@@ -275,9 +281,12 @@ fn normalize_tool_names(names: Option<Vec<String>>) -> Option<Vec<String>> {
         out.push(trimmed.to_string());
     }
     if out.is_empty() {
-        None
+        Err(
+            "tool_names was provided but empty; omit tool_names to load all tools that fit the budget, or pass at least one tool name"
+                .into(),
+        )
     } else {
-        Some(out)
+        Ok(Some(out))
     }
 }
 
@@ -346,7 +355,7 @@ impl Tool for LoadMcpTool {
                 "tool_names": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional subset of tool names from that server. Omit to load all when they fit the budget; if the server is too large, the first call returns a catalog and you must call again with tool_names."
+                    "description": "Optional subset of tool names from that server. Omit (or null) to load all when they fit the budget; never pass an empty array. If the server is too large, the first call returns a catalog and you must call again with tool_names."
                 }
             },
             "required": ["server_name"]
@@ -430,10 +439,14 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_tool_names_empty_is_none() {
-        assert!(normalize_tool_names(None).is_none());
-        assert!(normalize_tool_names(Some(vec![])).is_none());
-        assert!(normalize_tool_names(Some(vec!["  ".into()])).is_none());
+    fn test_normalize_tool_names_omitted_is_all() {
+        assert_eq!(normalize_tool_names(None).unwrap(), None);
+    }
+
+    #[test]
+    fn test_normalize_tool_names_explicit_empty_errors() {
+        assert!(normalize_tool_names(Some(vec![])).is_err());
+        assert!(normalize_tool_names(Some(vec!["  ".into()])).is_err());
     }
 
     #[test]
@@ -443,7 +456,8 @@ mod tests {
             " a ".into(),
             "b".into(),
             "a".into(),
-        ]));
+        ]))
+        .unwrap();
         assert_eq!(names, Some(vec!["a".into(), "b".into()]));
     }
 

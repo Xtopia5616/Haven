@@ -3,7 +3,7 @@
 	import { addNotification, recordingOverlay, activeSessionIdStore, modelStateStore, updateModelState, clearModelStateTimer, upsertAction, removeAction, refreshActions, actionStore, sessionStore, cancelAction, refreshActionHistory, deleteAction, formatMessageTime } from '$lib/stores.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
-	import { invoke } from '$lib/tauri.ts';
+	import { invoke, isTauri } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { registerListeners } from '$lib/events.ts';
@@ -56,12 +56,20 @@
 	// While a leave-settings confirm is in flight, ignore URL-driven tab
 	// sync so a concurrent `?tab=` change cannot race past the dialog.
 	let leaveSettingsPending = false;
+	// While applyTab has set activeTab but goto has not yet updated $page.url,
+	// ignore URL sync. Otherwise the effect sees activeTab=settings with a
+	// stale ?tab=chat and mis-fires the leave-settings bounce (settings
+	// appears unopenable; other tabs self-heal when the URL catches up).
+	let applyingTab = false;
 
 	/** @param {string} id */
 	function applyTab(id) {
+		applyingTab = true;
 		activeTab = id;
 		visited[id] = true;
-		goto('/?tab=' + id, { replaceState: true });
+		void goto('/?tab=' + id, { replaceState: true }).finally(() => {
+			applyingTab = false;
+		});
 	}
 
 	/** @param {string} id */
@@ -130,6 +138,9 @@
 	});
 	async function probeLlmConnection() {
 		if (modelState !== 'ready' || llmProbeInFlight) return;
+		// Browser / SSR / tests have no backend — skip without WARN spam or
+		// treating the missing IPC as a real disconnect.
+		if (!isTauri()) return;
 		llmProbeInFlight = true;
 		try {
 			const status = await invoke('check_llm_connection');
@@ -210,7 +221,7 @@
 			visited[t] = true;
 			return;
 		}
-		if (leaveSettingsPending) return;
+		if (leaveSettingsPending || applyingTab) return;
 		if (activeTab === 'settings' && t !== 'settings') {
 			// External / deep-link navigation away from dirty settings: revert
 			// the URL and run the same leave prompt as a tab click.
@@ -475,17 +486,19 @@
 		}
 
 		// Load notify config + hotkey binding in background — don't block
-		// listener registration.
-		invoke('get_settings').then((settings) => {
-			if (settings?.notification) {
-				notifyCfg = { ...notifyCfg, ...settings.notification };
-			}
-			if (settings?.hotkey?.key_binding) {
-				hotkeyBinding = settings.hotkey.key_binding;
-			}
-		}).catch((e) => {
-			logger.warn('+layout', 'get_settings error', e);
-		});
+		// listener registration. Skip outside Tauri (browser / SSR preview).
+		if (isTauri()) {
+			invoke('get_settings').then((settings) => {
+				if (settings?.notification) {
+					notifyCfg = { ...notifyCfg, ...settings.notification };
+				}
+				if (settings?.hotkey?.key_binding) {
+					hotkeyBinding = settings.hotkey.key_binding;
+				}
+			}).catch((e) => {
+				logger.warn('+layout', 'get_settings error', e);
+			});
+		}
 
 		const registrations = registerListeners({
 			'app:bootstrap': (event) => {
@@ -796,15 +809,19 @@
 		// that fires in the gap cannot be missed (probe-then-listen TOCTOU).
 		await registrations.ready;
 
-		try {
-			const status = await invoke('get_bootstrap_status');
-			if (status === 'ready') {
+		if (isTauri()) {
+			try {
+				const status = await invoke('get_bootstrap_status');
+				if (status === 'ready') {
+					bootstrapReady = true;
+					probeLlmConnection();
+				}
+			} catch (e) {
+				logger.warn('+layout', 'get_bootstrap_status error', e);
+				// Fail open so a missing command never leaves the chip stuck.
 				bootstrapReady = true;
-				probeLlmConnection();
 			}
-		} catch (e) {
-			logger.warn('+layout', 'get_bootstrap_status error', e);
-			// Fail open so a missing command never leaves the chip stuck.
+		} else {
 			bootstrapReady = true;
 		}
 
@@ -815,8 +832,8 @@
 
 		// The modelStateStore subscribe above fires synchronously on mount
 		// (modelState is 'ready') and triggers the first probe; here we just
-		// start the cadence for all subsequent probes.
-		scheduleLlmProbe();
+		// start the cadence for all subsequent probes (Tauri only).
+		if (isTauri()) scheduleLlmProbe();
 		window.addEventListener('click', handleWindowClick);
 	});
 

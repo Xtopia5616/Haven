@@ -12,7 +12,7 @@
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { settingsDirty, registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
+	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import logger from '$lib/logger.ts';
 
@@ -496,13 +496,10 @@
 		savedSnapshot = JSON.stringify(buildPersistableSettings());
 	}
 
-	const isDirty = $derived(
-		settingsLoaded && !!savedSnapshot && JSON.stringify(buildPersistableSettings()) !== savedSnapshot,
-	);
-
-	$effect(() => {
-		settingsDirty.set(isDirty);
-	});
+	/** Lazy dirty check — only run on leave, not on every keystroke. */
+	function isDirty() {
+		return settingsLoaded && !!savedSnapshot && JSON.stringify(buildPersistableSettings()) !== savedSnapshot;
+	}
 
 	/**
 	 * Align the dirty baseline's default_model role with a toolbar-driven
@@ -725,7 +722,7 @@
 	});
 
 	onMount(async () => {
-		registerSettingsLeaveGuard({ confirmLeave });
+		registerSettingsLeaveGuard({ isDirty, confirmLeave });
 		eventRegistrations = registerListeners(
 			{
 				'llm:config_changed': () => {
@@ -1626,74 +1623,6 @@
 		text-transform: uppercase;
 	}
 
-	.form-row input[type='range'] { flex: 1; }
-	.md-slider {
-		-webkit-appearance: none;
-		appearance: none;
-		width: 100%;
-		height: 4px;
-		outline: none;
-		cursor: pointer;
-		flex: 1;
-		margin: 18px 0;
-		padding: 0;
-		background: transparent;
-	}
-	.md-slider::-webkit-slider-runnable-track {
-		height: 4px;
-		border-radius: 2px;
-		background: linear-gradient(to right, var(--md-sys-color-primary) var(--vad-fill, 50%), var(--md-sys-color-surface-container-highest) var(--vad-fill, 50%));
-	}
-	.md-slider::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		appearance: none;
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: var(--md-sys-color-primary);
-		cursor: pointer;
-		box-shadow: var(--md-sys-elevation-1);
-		margin-top: -6px;
-		transition: transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-	}
-	.md-slider::-webkit-slider-thumb:hover {
-		transform: scale(1.25);
-	}
-	.md-slider::-moz-range-track {
-		height: 4px;
-		border-radius: 2px;
-		background: var(--md-sys-color-surface-container-highest);
-		border: none;
-	}
-	.md-slider::-moz-range-thumb {
-		width: 16px;
-		height: 16px;
-		border-radius: 50%;
-		background: var(--md-sys-color-primary);
-		border: none;
-		cursor: pointer;
-		box-shadow: var(--md-sys-elevation-1);
-	}
-	.md-slider::-moz-range-thumb:hover {
-		transform: scale(1.25);
-	}
-	.md-slider:focus-visible::-webkit-slider-thumb {
-		box-shadow: 0 0 0 4px color-mix(in srgb, var(--md-sys-color-primary) 20%, transparent);
-	}
-	.md-slider:focus-visible::-moz-range-thumb {
-		box-shadow: 0 0 0 4px color-mix(in srgb, var(--md-sys-color-primary) 20%, transparent);
-	}
-	.range-value {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		height: 40px;
-		min-width: 44px;
-		padding: 0 var(--md-sys-space-sm);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 14px;
-		font-weight: 500;
-	}
 	.autostart-section .autostart-row {
 		display: flex;
 		align-items: center;

@@ -16,7 +16,8 @@ export const sessionStore = writable<any[]>([]);
  * `action:finished` events (registered in +layout.svelte, hydrated via
  * `refreshActions`).
  */
-export const actionStore = writable<Record<string, unknown>>({});
+type ActionEntry = Record<string, unknown>;
+export const actionStore = writable<Record<string, ActionEntry>>({});
 
 /** Cap terminal entries so a long session cannot grow the store unbounded. */
 const ACTION_STORE_MAX = 64;
@@ -26,12 +27,12 @@ function actionKey(payload: { id?: string; action_id?: string }) {
 }
 
 /** Live board rows that must never be evicted to make room for history. */
-function isLiveActionRow(entry: Record<string, unknown>) {
+function isLiveActionRow(entry: ActionEntry) {
 	if (entry.kind === 'scheduled') return true;
 	return entry.status === 'running';
 }
 
-function trimActionStore(entries: Record<string, Record<string, unknown>>) {
+function trimActionStore(entries: Record<string, ActionEntry>) {
 	const ids = Object.keys(entries);
 	if (ids.length <= ACTION_STORE_MAX) return entries;
 	const excess = ids.length - ACTION_STORE_MAX;
@@ -52,7 +53,7 @@ export function upsertAction(payload: Record<string, unknown>) {
 	if (!key) return;
 	actionStore.update((m) => {
 		const hadPrev = Object.prototype.hasOwnProperty.call(m, key);
-		const prev = (m as Record<string, Record<string, unknown>>)[key] || {};
+		const prev = m[key] || {};
 		const kind =
 			payload.kind || prev.kind || (payload.action_id ? 'background' : 'scheduled');
 		// Default `running` only on a create-like first insert (has started_at).
@@ -67,7 +68,7 @@ export function upsertAction(payload: Record<string, unknown>) {
 		) {
 			status = 'running';
 		}
-		const next = {
+		const next: ActionEntry = {
 			...prev,
 			...payload,
 			id: key,
@@ -100,12 +101,12 @@ export async function refreshActions() {
 		// events, fired scheduled actions leave the pending list), so they must
 		// not linger as stale rows.
 		actionStore.update((m) => {
-			const next: Record<string, Record<string, unknown>> = {};
+			const next: Record<string, ActionEntry> = {};
 			for (const row of rows) {
 				const key = actionKey(row as { id?: string; action_id?: string });
 				if (!key) continue;
-				const merged = {
-					...((m[key] as Record<string, unknown>) || {}),
+				const merged: ActionEntry = {
+					...(m[key] || {}),
 					...(row as Record<string, unknown>),
 					id: key,
 				};

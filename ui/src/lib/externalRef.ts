@@ -9,13 +9,8 @@ export const EXT_REF_TITLE = '单击复制 · 按住 Ctrl 再点击打开';
 /** CSS class applied to interactive URL/path anchors. */
 export const EXT_REF_CLASS = 'ext-ref';
 
-/**
- * Resolve the target string from an ext-ref element (data-target, then href,
- * then text content).
- * @param {Element | null | undefined} el
- * @returns {string}
- */
-export function extRefTarget(el) {
+/** Resolve the target string from an ext-ref element (data-target, then href, then text). */
+export function extRefTarget(el: Element | null | undefined): string {
 	if (!el) return '';
 	const data = el.getAttribute?.('data-target');
 	if (data && data.trim()) return data.trim();
@@ -24,12 +19,8 @@ export function extRefTarget(el) {
 	return (el.textContent || '').trim();
 }
 
-/**
- * Open a URL in the default browser, or a filesystem path in the file manager.
- * @param {string} target
- * @returns {Promise<boolean>}
- */
-export async function openExternal(target) {
+/** Open a URL in the default browser, or a filesystem path in the file manager. */
+export async function openExternal(target: string): Promise<boolean> {
 	const value = typeof target === 'string' ? target.trim() : '';
 	if (!value) {
 		addNotification('打开失败：目标为空', 'error', 2000);
@@ -50,13 +41,10 @@ export async function openExternal(target) {
  * - Left or right click → copy
  * - Ctrl/Meta + click → open in browser / file manager
  * Returns true when the event targeted an ext-ref (caller should stop bubble menus).
- * @param {MouseEvent} e
- * @returns {boolean}
  */
-export function handleExtRefEvent(e) {
-	const el = /** @type {Element | null} */ (
-		e.target instanceof Element ? e.target.closest(`.${EXT_REF_CLASS}`) : null
-	);
+export function handleExtRefEvent(e: MouseEvent): boolean {
+	const el =
+		e.target instanceof Element ? e.target.closest(`.${EXT_REF_CLASS}`) : null;
 	if (!el) return false;
 
 	e.preventDefault();
@@ -78,11 +66,7 @@ export function handleExtRefEvent(e) {
 	return true;
 }
 
-/**
- * @param {string} value
- * @returns {boolean}
- */
-export function looksLikeUrl(value) {
+export function looksLikeUrl(value: string): boolean {
 	const lower = value.trim().toLowerCase();
 	return lower.startsWith('http://') || lower.startsWith('https://');
 }

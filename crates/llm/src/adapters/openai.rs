@@ -200,12 +200,16 @@ struct OpenAiStreamResponse {
 
 /// True when `model` is a dedicated ASR id that speaks
 /// `/audio/transcriptions` (OpenAI `whisper-1` / `gpt-4o-transcribe*`, Groq
-/// `whisper-large-v3*`, local whisper.cpp aliases, …). Multimodal chat-audio
-/// models (e.g. `gpt-4o-audio-preview`) return false so the router can fall
-/// back to chat + `input_audio`.
+/// `whisper-large-v3*`, SiliconFlow `FunAudioLLM/SenseVoiceSmall` /
+/// `TeleAI/TeleSpeechASR`, local whisper.cpp aliases, …). Multimodal
+/// chat-audio models (e.g. `gpt-4o-audio-preview`) return false so the
+/// router can fall back to chat + `input_audio`.
 pub(crate) fn is_whisper_model(model: &str) -> bool {
     let n = model.to_ascii_lowercase();
-    n.contains("whisper") || n.contains("transcribe")
+    n.contains("whisper")
+        || n.contains("transcribe")
+        || n.contains("sensevoice")
+        || n.contains("asr")
 }
 
 /// OpenAI-compatible chat adapter: the common wire format spoken by OpenAI,
@@ -924,12 +928,12 @@ impl LlmClient for OpenAiAdapter {
     }
 
     async fn transcribe(&self, wav_data: &[u8]) -> Result<SttResult, LlmError> {
-        // Native `/audio/transcriptions` only for Whisper-family models.
+        // Native `/audio/transcriptions` only for dedicated ASR models.
         // Multimodal chat models (e.g. gpt-4o-audio-preview) return
         // Unsupported so the router can fall back to chat + `input_audio`.
         if !is_whisper_model(&self.endpoint.model_name) {
             return Err(LlmError::UnsupportedCapability(format!(
-                "model '{}' is not a Whisper transcription model",
+                "model '{}' is not a native /audio/transcriptions model",
                 self.endpoint.model_name
             )));
         }
@@ -1352,6 +1356,8 @@ mod tests {
         assert!(is_whisper_model("whisper-1"));
         assert!(is_whisper_model("gpt-4o-transcribe"));
         assert!(is_whisper_model("gpt-4o-mini-transcribe"));
+        assert!(is_whisper_model("FunAudioLLM/SenseVoiceSmall"));
+        assert!(is_whisper_model("TeleAI/TeleSpeechASR"));
         assert!(!is_whisper_model("gpt-4o-audio-preview"));
         assert!(!is_whisper_model("gpt-4o"));
     }

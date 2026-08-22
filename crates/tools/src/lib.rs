@@ -441,7 +441,8 @@ impl ToolsManager {
         };
         let all_tools = client.wait_for_tools(Duration::from_secs(3)).await;
         let tools = match tool_names {
-            Some(names) if !names.is_empty() => {
+            None => all_tools,
+            Some(names) => {
                 let want: std::collections::HashSet<&str> =
                     names.iter().map(|s| s.as_str()).collect();
                 all_tools
@@ -449,7 +450,6 @@ impl ToolsManager {
                     .filter(|info| want.contains(info.name.as_str()))
                     .collect::<Vec<_>>()
             }
-            _ => all_tools,
         };
         let max = self
             .context_limits

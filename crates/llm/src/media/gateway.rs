@@ -18,9 +18,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{EndpointRole, ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
+use crate::{ImageGenClient, LlmRouter, OcrClient, SttClient, TtsClient};
 use haven_common::config::MediaConfig;
-use haven_common::prompts::{OCR_SYSTEM_PROMPT, STT_SYSTEM_PROMPT};
+use haven_common::prompts::OCR_SYSTEM_PROMPT;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, new_id};
 
 use crate::media::coverage::{CoverageAction, MediaDecision, coverage_for, coverage_for_generate};
@@ -115,12 +115,17 @@ impl MediaGateway {
 
         match action {
             CoverageAction::Ocr => {
+                let media_type = detect_media_type(bytes).to_string();
+                // Shared `llm` path: one shot through the vision role. No
+                // dedicated client (would duplicate this call on fallback).
+                if self.config.ocr.provider == "llm" {
+                    return self.extract_via_llm(decision, bytes, &media_type, false).await;
+                }
                 let Some(ocr) = &self.ocr else {
                     // No OCR provider configured: pass the image to the agent
                     // unchanged (the vision model still reads the text).
                     return Ok(AttachmentOutcome::PassThrough { decision });
                 };
-                let media_type = detect_media_type(bytes).to_string();
                 let threshold = self.config.ocr.min_confidence;
                 match ocr.recognize(bytes, &media_type).await {
                     Ok(res)
@@ -133,13 +138,19 @@ impl MediaGateway {
                         })
                     }
                     Ok(_) | Err(_) => {
-                        // Low confidence / empty / error → main model.
-                        self.extract_with_main_model(decision, bytes, &media_type)
-                            .await
+                        self.extract_via_llm(decision, bytes, &media_type, true).await
                     }
                 }
             }
             CoverageAction::Stt => {
+                let media_type = detect_media_type(bytes).to_string();
+                // Shared `llm` path: one shot through `transcribe_audio`
+                // (native Whisper first, multimodal chat fallback). Hotkey
+                // recording uses the same router method via
+                // InputPipeline::set_stt_router.
+                if self.config.stt.provider == "llm" {
+                    return self.extract_via_llm(decision, bytes, &media_type, false).await;
+                }
                 let Some(stt) = &self.stt else {
                     return Ok(AttachmentOutcome::PassThrough { decision });
                 };
@@ -155,8 +166,7 @@ impl MediaGateway {
                         })
                     }
                     Ok(_) | Err(_) => {
-                        self.extract_with_main_model(decision, bytes, detect_media_type(bytes))
-                            .await
+                        self.extract_via_llm(decision, bytes, &media_type, true).await
                     }
                 }
             }
@@ -164,61 +174,57 @@ impl MediaGateway {
         }
     }
 
-    /// Fall back to the main model for an extraction action: the media is sent
-    /// as a content part (image → vision role, audio → STT role) with the
-    /// extraction system prompt, and the model's reply becomes the extracted
-    /// text. The decision carries `fallback = true`.
-    async fn extract_with_main_model(
+    /// Unified LLM extraction for OCR / STT: image → vision role chat; audio →
+    /// [`LlmRouter::transcribe_audio`] (native STT then multimodal chat).
+    /// Used as the primary path when `provider == "llm"`, and as the dedicated
+    /// provider fallback when `fallback` is true.
+    async fn extract_via_llm(
         &self,
         mut decision: MediaDecision,
         bytes: &[u8],
         media_type: &str,
+        fallback: bool,
     ) -> anyhow::Result<AttachmentOutcome> {
-        decision.fallback = true;
+        decision.fallback = fallback;
         decision.routed_to = match decision.action {
             CoverageAction::Ocr => "llm:image".to_string(),
             CoverageAction::Stt => "llm:audio".to_string(),
             _ => decision.action.as_str().to_string(),
         };
-        let (role, system_prompt, part) = match decision.action {
-            CoverageAction::Ocr => (
-                self.router.vision_role().await,
-                OCR_SYSTEM_PROMPT,
-                multimodal::image_part_from_bytes(media_type, bytes),
-            ),
-            CoverageAction::Stt => {
-                let role = match self.router.stt_role().await {
-                    Some(role) => role,
-                    None => EndpointRole::DefaultModel,
-                };
-                (
-                    role,
-                    STT_SYSTEM_PROMPT,
-                    multimodal::audio_part_from_bytes(media_type, bytes),
-                )
+        let text = match decision.action {
+            CoverageAction::Ocr => {
+                let role = self.router.vision_role().await;
+                let messages = vec![
+                    CanonicalMessage::system(vec![ContentPart::text(OCR_SYSTEM_PROMPT)]),
+                    CanonicalMessage {
+                        role: CanonicalRole::User,
+                        content: vec![multimodal::image_part_from_bytes(media_type, bytes)],
+                        tool_calls: None,
+                        tool_call_id: None,
+                        reasoning: None,
+                        web_search_calls: Vec::new(),
+                        thinking_blocks: Vec::new(),
+                        source: None,
+                        id: None,
+                    },
+                ];
+                let resp = self
+                    .router
+                    .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
+                    .await
+                    .map_err(|e| anyhow::anyhow!("主模型提取失败: {e}"))?;
+                resp.text.trim().to_string()
             }
-            _ => unreachable!("extract_with_main_model only called for Ocr/Stt actions"),
+            CoverageAction::Stt => {
+                let res = self
+                    .router
+                    .transcribe_audio(bytes)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("主模型转写失败: {e}"))?;
+                res.text.trim().to_string()
+            }
+            _ => unreachable!("extract_via_llm only called for Ocr/Stt actions"),
         };
-        let messages = vec![
-            CanonicalMessage::system(vec![ContentPart::text(system_prompt)]),
-            CanonicalMessage {
-                role: CanonicalRole::User,
-                content: vec![part],
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-                thinking_blocks: Vec::new(),
-                source: None,
-                id: None,
-            },
-        ];
-        let resp = self
-            .router
-            .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
-            .await
-            .map_err(|e| anyhow::anyhow!("主模型提取失败: {e}"))?;
-        let text = resp.text.trim().to_string();
         if text.is_empty() {
             anyhow::bail!("主模型提取失败: 返回为空");
         }
@@ -390,8 +396,21 @@ mod tests {
         ))
     }
 
+    /// Dedicated-provider config for tests that inject MockOcr / MockStt.
+    /// Defaults are now `llm` (gateway one-shot path); tests that exercise
+    /// specialized clients must opt into a non-llm provider.
     fn test_config() -> MediaConfig {
-        MediaConfig::default()
+        let mut cfg = MediaConfig::default();
+        cfg.ocr.provider = "baidu".into();
+        cfg.stt.provider = "openai".into();
+        cfg
+    }
+
+    fn test_config_llm_or_none(ocr: &str, stt: &str) -> MediaConfig {
+        let mut cfg = MediaConfig::default();
+        cfg.ocr.provider = ocr.into();
+        cfg.stt.provider = stt.into();
+        cfg
     }
 
     fn image_bytes() -> Vec<u8> {
@@ -578,7 +597,14 @@ mod tests {
 
     #[tokio::test]
     async fn no_ocr_configured_passes_through() {
-        let gw = MediaGateway::new(mock_router("unused"), None, None, None, None, test_config());
+        let gw = MediaGateway::new(
+            mock_router("unused"),
+            None,
+            None,
+            None,
+            None,
+            test_config_llm_or_none("none", "none"),
+        );
         let outcome = gw
             .process_attachment(&image_bytes(), "a.png", "提取文字", None)
             .await
@@ -592,7 +618,14 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_intent_override_wins() {
-        let gw = MediaGateway::new(mock_router("unused"), None, None, None, None, test_config());
+        let gw = MediaGateway::new(
+            mock_router("unused"),
+            None,
+            None,
+            None,
+            None,
+            test_config_llm_or_none("none", "none"),
+        );
         let outcome = gw
             .process_attachment(&image_bytes(), "a.png", "随便聊聊", Some(Intent::Extract))
             .await
@@ -601,6 +634,28 @@ mod tests {
             panic!("expected PassThrough");
         };
         assert_eq!(decision.action, CoverageAction::Ocr);
+    }
+
+    #[tokio::test]
+    async fn llm_ocr_provider_extracts_once_via_vision() {
+        let gw = MediaGateway::new(
+            mock_router("vision OCR 文本"),
+            None,
+            None,
+            None,
+            None,
+            test_config_llm_or_none("llm", "none"),
+        );
+        let outcome = gw
+            .process_attachment(&image_bytes(), "a.png", "提取文字", None)
+            .await
+            .unwrap();
+        let AttachmentOutcome::Extracted { text, decision } = outcome else {
+            panic!("expected Extracted");
+        };
+        assert_eq!(text, "vision OCR 文本");
+        assert_eq!(decision.routed_to, "llm:image");
+        assert!(!decision.fallback);
     }
 
     // --- generate ----------------------------------------------------------

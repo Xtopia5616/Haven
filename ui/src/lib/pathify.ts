@@ -8,11 +8,17 @@
  * - Unix absolute: `/home/user/file`
  */
 
+import type MarkdownIt from 'markdown-it';
+import type Token from 'markdown-it/lib/token.mjs';
+
+/** markdown-it nesting: 1 = open, 0 = self-closing, -1 = close. */
+type Nesting = 1 | 0 | -1;
+type TokenCtor = new (type: string, tag: string, nesting: Nesting) => Token;
+
 /**
  * Global matcher. Groups:
  * 1 = Windows drive path
  * 2 = Unix absolute (may be preceded by a delimiter outside the group)
- * @type {RegExp}
  */
 export const PATH_FIND_RE = new RegExp(
 	[
@@ -30,12 +36,8 @@ const PATH_HINT_RE = /[/\\:]/;
 /** Trailing punctuation that often sticks to paths in prose. */
 const TRAIL_PUNCT_RE = /[.,;:!?)\]\}。，；：！？）】」』]+$/;
 
-/**
- * Trim trailing punctuation from a matched path.
- * @param {string} path
- * @returns {string}
- */
-export function trimPathMatch(path) {
+/** Trim trailing punctuation from a matched path. */
+export function trimPathMatch(path: string): string {
 	return path.replace(TRAIL_PUNCT_RE, '');
 }
 
@@ -43,13 +45,9 @@ export function trimPathMatch(path) {
  * Walk an inline token's children and wrap path matches in link tokens.
  * Skips content already inside links. Returns the original array when nothing
  * changed so streaming renders avoid needless reallocations.
- * @param {import('markdown-it/index.js').Token[]} children
- * @param {any} Token markdown-it Token constructor
- * @returns {import('markdown-it/index.js').Token[]}
  */
-export function pathifyChildren(children, Token) {
-	/** @type {import('markdown-it/index.js').Token[]} */
-	const out = [];
+export function pathifyChildren(children: Token[], Token: TokenCtor): Token[] {
+	const out: Token[] = [];
 	let linkDepth = 0;
 	let changed = false;
 
@@ -80,23 +78,17 @@ export function pathifyChildren(children, Token) {
 	return changed ? out : children;
 }
 
-/**
- * @param {import('markdown-it/index.js').Token} child
- * @param {any} Token
- * @returns {import('markdown-it/index.js').Token[]}
- */
-function splitTextByPaths(child, Token) {
+function splitTextByPaths(child: Token, Token: TokenCtor): Token[] {
 	const text = child.content;
 	if (!PATH_HINT_RE.test(text)) {
 		return [child];
 	}
 
 	PATH_FIND_RE.lastIndex = 0;
-	/** @type {import('markdown-it/index.js').Token[]} */
-	const tokens = [];
+	const tokens: Token[] = [];
 	let last = 0;
 	let found = false;
-	let match;
+	let match: RegExpExecArray | null;
 	while ((match = PATH_FIND_RE.exec(text)) !== null) {
 		const pathRaw = match[1] || match[2] || '';
 		const path = trimPathMatch(pathRaw);
@@ -124,21 +116,13 @@ function splitTextByPaths(child, Token) {
 	return tokens;
 }
 
-/**
- * @param {any} Token
- * @param {string} content
- */
-function makeTextToken(Token, content) {
+function makeTextToken(Token: TokenCtor, content: string): Token {
 	const tok = new Token('text', '', 0);
 	tok.content = content;
 	return tok;
 }
 
-/**
- * @param {any} Token
- * @param {string} path
- */
-function makePathLinkTokens(Token, path) {
+function makePathLinkTokens(Token: TokenCtor, path: string): Token[] {
 	const open = new Token('link_open', 'a', 1);
 	open.attrs = [
 		['href', path],
@@ -155,9 +139,8 @@ function makePathLinkTokens(Token, path) {
  * markdown-it plugin: after `text_join` (so backslash-escaped fragments are
  * already merged into plain `text` tokens), turn bare absolute paths into links.
  * Skipped while streaming (same deferral pattern as code fences).
- * @param {import('markdown-it').default} md
  */
-export function pathifyPlugin(md) {
+export function pathifyPlugin(md: MarkdownIt): void {
 	md.core.ruler.after('text_join', 'haven_pathify', (state) => {
 		if (state.env?.havenStreaming) return;
 		const Token = state.Token;
