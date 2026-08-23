@@ -73,7 +73,10 @@ pub async fn update_settings(
     tick("config save");
 
     // Propagate audio config to running pipeline
-    state.pipeline.update_config(settings.media.audio.clone()).await;
+    state
+        .pipeline
+        .update_config(settings.media.audio.clone())
+        .await;
     tick("pipeline.update_config");
 
     // Propagate the default shell choice to the shell tool so the running
@@ -81,12 +84,16 @@ pub async fn update_settings(
     state.tools.set_default_shell(settings.default_shell).await;
     tick("set_default_shell");
 
-    // Propagate context limits (incl. max_tools_per_request) so load_mcp /
-    // resume budgets pick up Settings changes without a process restart.
+    // Propagate context limits (incl. max_tools_per_request / default
+    // context window) so tools + agent pick up Settings changes without a
+    // process restart.
     state
         .tools
         .set_context_limits(settings.context_limits.clone())
         .await;
+    state
+        .agent
+        .set_context_limits(settings.context_limits.clone());
     tick("set_context_limits");
 
     // Reload MCP servers from config
@@ -122,15 +129,18 @@ pub async fn update_settings(
     tick("load_mcp_from_config");
     state.tools.mcp_manager.start_monitors(&mcp_discovery).await;
     tick("mcp_manager.start_monitors");
-    let new_router = Arc::new(LlmRouter::new(
+    let new_router = Arc::new(LlmRouter::with_default_context_window(
         llm_config.materialize(Some(max_response_tokens), Some(reasoning_echo_max_chars)),
+        settings.context_limits.default_context_window,
     ));
     tick("LlmRouter::new");
     hot_swap_router(&state, new_router).await?;
     tick("hot_swap_router");
     crate::commands::emit_llm_config_changed(&app);
     state.agent.set_max_steps(per_run_max_steps);
-    state.agent.set_session_max_steps(session_lifetime_max_steps);
+    state
+        .agent
+        .set_session_max_steps(session_lifetime_max_steps);
     state.executor.set_max_concurrent(session_max_concurrent);
     state
         .tools

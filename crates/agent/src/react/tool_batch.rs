@@ -430,7 +430,7 @@ impl ReActEngine {
             let session_id = session_id.to_string();
             let tool_name = action.tool_name.clone();
             let tool_input = action.tool_input.clone();
-            let max_obs = self.context_limits.max_observation_chars;
+            let max_obs = self.limits().max_observation_chars;
             let executor = self.executor.clone();
             // The same step id minted at Action-emit time keys the step
             // row execute_step creates, so the live card id, the DB badge
@@ -937,7 +937,7 @@ impl ReActEngine {
             return Ok(ToolBatchOutcome::Continue);
         };
         let step_num = pending.step_number;
-        let max_obs = self.context_limits.max_observation_chars;
+        let max_obs = self.limits().max_observation_chars;
 
         for tool in &pending.tools {
             let Some(decision) = tool.decision else {

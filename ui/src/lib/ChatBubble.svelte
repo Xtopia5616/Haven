@@ -5,6 +5,7 @@
 	import { imageDataUrl, formatTokenCount } from '$lib/stores.ts';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
+	import { PEER_KICKOFF_PREFIX } from '$lib/peerKickoff.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 
 	let {
@@ -291,12 +292,17 @@
 		mdHtml = text ? renderMarkdown(text, !!streaming) : '';
 		lastMdRender = performance.now();
 	}
+
+	let isPeerKickoff = $derived(
+		msgType === 'peer_kickoff' ||
+			(typeof content === 'string' && content.startsWith(PEER_KICKOFF_PREFIX)),
+	);
 </script>
 
 <div
 	class="bubble"
-	class:user={role === 'user'}
-	class:assistant={role === 'assistant'}
+	class:user={role === 'user' && !isPeerKickoff}
+	class:assistant={role === 'assistant' || isPeerKickoff}
 	class:streaming
 	role="button"
 	tabindex="0"
@@ -305,9 +311,15 @@
 >
 	<div class="bubble-header">
 		<span class="bubble-role">
-			{role === 'user' ? 'You' : 'Haven'}
+			{#if isPeerKickoff}
+				Peer 委托
+			{:else if role === 'user'}
+				You
+			{:else}
+				Haven
+			{/if}
 			{#if voice}<span class="mic-icon" title="Voice input">&#127908;</span>{/if}
-			{#if role === 'user' && received}<span class="received-tag" title="Agent 已收到">✓</span
+			{#if role === 'user' && !isPeerKickoff && received}<span class="received-tag" title="Agent 已收到">✓</span
 				>{/if}
 		</span>
 		{#if time}
@@ -315,7 +327,12 @@
 		{/if}
 	</div>
 	<div class="bubble-content">
-		{#if msgType === 'thought'}
+		{#if isPeerKickoff}
+			<div class="peer-kickoff-badge" title="低信任委托任务，不是用户指令">
+				<span class="peer-kickoff-label">低信任委托</span>
+				<pre class="peer-kickoff-body">{content}</pre>
+			</div>
+		{:else if msgType === 'thought'}
 			<em class="thought"
 				>{content}{#if streaming && content}<span class="caret"></span>{/if}</em
 			>
@@ -535,6 +552,32 @@
 		font-size: 12px;
 		font-weight: 600;
 		display: inline-block;
+	}
+	.peer-kickoff-badge {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xs);
+		background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 55%, transparent);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+	}
+	.peer-kickoff-label {
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--md-sys-color-on-tertiary-container);
+		letter-spacing: 0.02em;
+	}
+	.peer-kickoff-body {
+		margin: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-family: var(--md-sys-typescale-mono);
+		font-size: 11px;
+		line-height: 1.45;
+		color: var(--md-sys-color-on-surface-variant);
+		max-height: 12em;
+		overflow: auto;
 	}
 	.attachments {
 		display: flex;

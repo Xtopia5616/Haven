@@ -161,7 +161,7 @@ impl LoopHooks for DefaultHooks {
                 .patch_canonical_memory_fence(&ctx.session_id, &description, canonical)
                 .await;
         }
-        let interval = engine.context_limits.fact_infer_interval_steps;
+        let interval = engine.limits().fact_infer_interval_steps;
         if ctx.step_num > 0 && interval > 0 && ctx.step_num % interval == 0 {
             self.call_infer(&ctx.session_id, false);
         }

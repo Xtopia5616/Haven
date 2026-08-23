@@ -368,7 +368,8 @@ impl ReActEngine {
             // Phase 5 / G3: empty / cut-off classification lives in
             // ResponsePolicy via hooks.after_llm — the thin loop has no
             // phrase literals and only orchestrates retries.
-            let mut empty_retries_remaining = self.context_limits.empty_response_max_retries;
+            let limits = self.limits();
+            let mut empty_retries_remaining = limits.empty_response_max_retries;
             let pending_ask = self
                 .executor
                 .get_awaiting_answer(session_id)
@@ -378,9 +379,9 @@ impl ReActEngine {
             loop {
                 let policy_state = ResponsePolicyState {
                     empty_retries_remaining,
-                    empty_retry_delay_ms: self.context_limits.empty_response_retry_delay_ms,
+                    empty_retry_delay_ms: limits.empty_response_retry_delay_ms,
                     cut_off_retries_used: cut_off_retries,
-                    cut_off_retries_max: self.context_limits.cut_off_retries,
+                    cut_off_retries_max: limits.cut_off_retries,
                     pending_ask,
                 };
                 let action = self
@@ -466,7 +467,7 @@ impl ReActEngine {
                             session_id,
                             response.finish_reason,
                             cut_off_retries,
-                            self.context_limits.cut_off_retries
+                            limits.cut_off_retries
                         );
                         let mut retry_messages = llm_messages.clone();
                         retry_messages.push(CanonicalMessage {
@@ -648,7 +649,7 @@ impl ReActEngine {
                 // error instead so the user can retry the session, and the real
                 // cause (upstream silent failure) is visible.
                 if thought.is_none()
-                    && empty_retries_remaining < self.context_limits.empty_response_max_retries
+                    && empty_retries_remaining < limits.empty_response_max_retries
                 {
                     let err_msg = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。"
                         .to_string();

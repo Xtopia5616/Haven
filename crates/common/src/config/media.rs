@@ -37,27 +37,24 @@ impl Default for AudioConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SttConfig {
-    /// Speech-to-text provider. One of:
+    /// Speech-to-text provider. Prefer a name from `llm.providers` (reuses
+    /// that provider's base URL + API key). Also accepts:
     /// - `llm`: transcribe via the configured `audio_model` LLM endpoint
     /// - `mcp`: route through an MCP server exposing `stt.transcribe`
-    /// - `openai`: OpenAI Whisper-compatible `/audio/transcriptions`
-    ///   (also Groq, Deepgram's OpenAI-compatible endpoint, Together,
-    ///   local whisper.cpp/LM Studio, and most gateways)
-    /// - `groq`: Groq host with OpenAI-Whisper-compatible wire format
-    /// - `gemini`: Google Gemini `generateContent` audio transcription
-    /// - `deepgram`: Deepgram REST `/v1/listen`
-    /// - `assemblyai`: AssemblyAI `/v2/transcript`
+    /// - `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: legacy
+    ///   capability ids with local credentials
     /// - `none`: no transcription
     pub provider: String,
     /// MCP server name when `provider == "mcp"`.
     pub mcp_server: Option<String>,
-    /// API key for cloud STT providers.
+    /// Legacy / resolved API key. Unused when `provider` names an LLM
+    /// provider.
     pub api_key: String,
     /// Model id for providers that require one (e.g. `whisper-1`,
     /// `nova-2`, `whisper-large-v3-turbo`).
     pub model: String,
-    /// Base URL override for OpenAI-compatible providers. Overrides the
-    /// provider's default host when non-empty.
+    /// Legacy / resolved base URL. Unused when `provider` names an LLM
+    /// provider.
     pub base_url: String,
     /// Transcription timeout in seconds.
     pub timeout_secs: u64,
@@ -128,11 +125,13 @@ impl Default for OcrConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct TtsConfig {
-    /// TTS provider. One of:
-    /// - `openai`: OpenAI `/v1/audio/speech` (tts-1 / tts-1-hd / gpt-4o-mini-tts)
-    /// - `elevenlabs`: ElevenLabs `/v1/text-to-speech/{voice_id}`
-    /// - `none`: no TTS client
+    /// TTS provider. Prefer a name from `llm.providers` (reuses that
+    /// provider's base URL + API key). Also accepts:
+    /// - `openai` / `elevenlabs`: legacy capability ids with local credentials
+    /// - `none` / empty: no TTS client
     pub provider: String,
+    /// Legacy / resolved API key. When `provider` names an LLM provider this
+    /// is unused at build time (credentials come from that provider).
     pub api_key: String,
     /// Model id for providers that require one (e.g. `tts-1`,
     /// `gpt-4o-mini-tts`).
@@ -140,8 +139,8 @@ pub struct TtsConfig {
     /// Voice id / name for providers that expose voices
     /// (e.g. `alloy`, `11labs_voice_id`).
     pub voice: String,
-    /// Base URL override. Overrides the provider's default host when
-    /// non-empty.
+    /// Legacy / resolved base URL. Unused when `provider` names an LLM
+    /// provider (URL comes from that provider).
     pub base_url: String,
     /// TTS timeout in seconds.
     pub timeout_secs: u64,
@@ -164,17 +163,19 @@ impl Default for TtsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ImageGenConfig {
-    /// Image generation provider. One of:
-    /// - `openai`: OpenAI `/v1/images/generations` (gpt-image-1 / dall-e-3)
-    /// - `gemini`: Google Gemini `generateContent` (image modality)
-    /// - `none`: no image generation client
+    /// Image generation provider. Prefer a name from `llm.providers` (reuses
+    /// that provider's base URL + API key). Also accepts:
+    /// - `openai` / `gemini`: legacy capability ids with local credentials
+    /// - `none` / empty: no image generation client
     pub provider: String,
+    /// Legacy / resolved API key. Unused when `provider` names an LLM
+    /// provider.
     pub api_key: String,
     /// Model id for providers that require one (e.g. `gpt-image-1`,
     /// `gemini-2.5-flash-image`).
     pub model: String,
-    /// Base URL override. Overrides the provider's default host when
-    /// non-empty.
+    /// Legacy / resolved base URL. Unused when `provider` names an LLM
+    /// provider.
     pub base_url: String,
     /// Image generation timeout in seconds.
     pub timeout_secs: u64,

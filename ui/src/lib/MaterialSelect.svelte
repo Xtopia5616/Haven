@@ -9,6 +9,22 @@
 	/** @type {HTMLDivElement | null} */
 	let dropdownRef = null;
 
+	/** Flatten options into rows with optional group headers. */
+	let menuRows = $derived.by(() => {
+		/** @type {{ kind: 'group' | 'option', label: string, value?: string }[]} */
+		const rows = [];
+		let lastGroup = null;
+		for (const opt of options) {
+			const group = opt.group || null;
+			if (group && group !== lastGroup) {
+				rows.push({ kind: 'group', label: group });
+				lastGroup = group;
+			}
+			rows.push({ kind: 'option', label: opt.label, value: opt.value });
+		}
+		return rows;
+	});
+
 	function toggle() {
 		open = !open;
 	}
@@ -54,18 +70,22 @@
 
 	{#if open}
 		<div class="md-select-menu" role="listbox" in:fly={{ y: -4, duration: 300, easing: cubicOut }}>
-			{#each options as opt}
-				<button
-					class="md-select-option"
-					class:selected={opt.value === value}
-					role="option"
-					aria-selected={opt.value === value}
-					onclick={() => select(opt.value)}
-					onmousedown={(e) => e.preventDefault()}
-					type="button"
-				>
-					{opt.label}
-				</button>
+			{#each menuRows as row}
+				{#if row.kind === 'group'}
+					<div class="md-select-group" role="presentation">{row.label}</div>
+				{:else}
+					<button
+						class="md-select-option"
+						class:selected={row.value === value}
+						role="option"
+						aria-selected={row.value === value}
+						onclick={() => select(row.value)}
+						onmousedown={(e) => e.preventDefault()}
+						type="button"
+					>
+						{row.label}
+					</button>
+				{/if}
 			{/each}
 		</div>
 	{/if}
@@ -124,12 +144,22 @@
 		top: calc(100% + 4px);
 		left: 0;
 		right: 0;
+		max-height: min(360px, 60vh);
+		overflow-y: auto;
 		background: var(--md-sys-color-surface-container-lowest);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
 		box-shadow: var(--md-sys-elevation-3);
 		z-index: 100;
-		overflow: hidden;
+	}
+	.md-select-group {
+		padding: 10px var(--md-sys-space-lg) 4px;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--md-sys-color-on-surface-variant);
+		user-select: none;
 	}
 	.md-select-option {
 		display: flex;

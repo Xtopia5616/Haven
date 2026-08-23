@@ -16,5 +16,5 @@ pub use tools::ToolDef;
 
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
-    MessageAttachment, Supplement,
+    MessageAttachment, PEER_KICKOFF_PREFIX, Supplement,
 };

@@ -13,6 +13,32 @@ export const ROLE_KEYS = [
 	'audio_model',
 ];
 
+/** Empty role slot used when materializing missing pickers. */
+export function emptyRoleSlot(key: string) {
+	return {
+		role: key,
+		provider: '',
+		model: '',
+		temperature: null as number | null,
+		context_window: null as number | null,
+		cost_per_1k_input_tokens: null as number | null,
+		cost_per_1k_output_tokens: null as number | null,
+	};
+}
+
+/**
+ * Ensure every ROLE_KEYS slot exists on the shared roles array (mutate in place).
+ * Call before the dirty snapshot so ModelSettings mount effects are not a false edit.
+ */
+export function ensureRoleSlots(roles: { role: string }[]) {
+	if (!Array.isArray(roles)) return;
+	for (const key of ROLE_KEYS) {
+		if (!roles.some((r) => r.role === key)) {
+			roles.push(emptyRoleSlot(key));
+		}
+	}
+}
+
 /** Single source of truth for the LLM endpoint cards. */
 export const modelCards = [
 	{ key: 'default_model', label: 'Default Model', hint: 'Primary reasoning & tool-use agent', prefix: 'dm', basePlaceholder: 'https://api.openai.com/v1', group: 'core' },

@@ -1,6 +1,6 @@
-// Canonical input-channel metadata for the settings「输入」page.
-// Mirrors the chat input modalities (text / image / file / voice) so cards
-// and copy stay in one place; per-format field widgets stay in ModelSettings.
+// Canonical media-channel metadata for the settings「媒体」page.
+// Mirrors chat modalities (text / image / file / voice) so cards and copy
+// stay in one place; per-channel field widgets stay in ModelSettings.
 
 /** @typedef {'text' | 'image' | 'file' | 'voice'} InputFormatId */
 
@@ -12,26 +12,26 @@
  *   appended in the card body when needed.
  */
 
-/** Single source of truth for the input-format cards. */
+/** Single source of truth for the media-channel cards (voice first). */
 export const inputFormats = [
 	{
-		id: 'text',
-		label: '文本 Text',
-		hint: '文字指令直接发送给 Default Model 处理。语音转写结果也以文本形式进入同一通道，无需额外配置。',
+		id: 'voice',
+		label: '语音 Voice',
+		hint: '输入：热键录音 → STT 转写为文本。输出：朗读/配音走 TTS。',
 	},
 	{
 		id: 'image',
 		label: '图片 Image',
-		hint: '粘贴或选取的图片先压缩为 JPEG，再交由视觉模型理解；文字提取（OCR）与理解共用本卡片配置。',
+		hint: '输入：附件压缩后交视觉模型理解，文字提取走 OCR。输出：文生图。',
 	},
 	{
 		id: 'file',
 		label: '文件 File',
-		hint: '附件以 base64 上传，后端保存到磁盘，agent 通过 file 工具读取路径进行处理，无需额外配置。',
+		hint: '附件以 base64 上传，后端落盘后由 agent 通过 file 工具读取，无需额外 Provider。',
 	},
 	{
-		id: 'voice',
-		label: '语音 Voice',
-		hint: '按住热键录音，经 STT 转写为文本后作为普通消息发送；采集参数与转写提供商均在本卡片配置。',
+		id: 'text',
+		label: '文本 Text',
+		hint: '文字指令直接发给 Default Model；语音转写结果也进入同一通道，无需额外配置。',
 	},
 ];

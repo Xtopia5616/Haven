@@ -27,6 +27,8 @@ import {
 	actionStore,
 	upsertAction,
 	removeAction,
+	sessionMessagesStore,
+	finalizeBackgroundActionMessages,
 } from './stores.ts';
 
 describe('upsertAction', () => {
@@ -77,6 +79,30 @@ describe('upsertAction', () => {
 		upsertAction({ action_id: 'act-3', status: 'running' });
 		removeAction('act-3');
 		expect(get(actionStore)['act-3']).toBeUndefined();
+	});
+
+	it('finalizeBackgroundActionMessages clears actionId and writes terminal content', () => {
+		sessionMessagesStore.set({
+			'ses-1': [
+				{
+					id: 'msg-1',
+					actionId: 'act-fin',
+					content: JSON.stringify({ background: true, action_id: 'act-fin', status: 'running' }),
+					streaming: true,
+				},
+			],
+		});
+		finalizeBackgroundActionMessages({
+			action_id: 'act-fin',
+			status: 'cancelled',
+			output: 'stopped',
+		});
+		const msg = get(sessionMessagesStore)['ses-1'][0] as Record<string, unknown>;
+		expect(msg.actionId).toBeNull();
+		expect(msg.streaming).toBe(false);
+		const body = JSON.parse(String(msg.content));
+		expect(body.status).toBe('cancelled');
+		expect(body.output).toBe('stopped');
 	});
 });
 

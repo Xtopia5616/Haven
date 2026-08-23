@@ -190,7 +190,9 @@ mod tests {
             terms
         );
         assert!(
-            terms.iter().any(|t| t == "配置喝" || t == "我配置" || t.contains('配')),
+            terms
+                .iter()
+                .any(|t| t == "配置喝" || t == "我配置" || t.contains('配')),
             "expected surrounding CJK trigrams, got {:?}",
             terms
         );
@@ -227,7 +229,9 @@ mod tests {
             terms
         );
         assert!(
-            terms.iter().any(|t| t.starts_with('请') || t.contains("帮我")),
+            terms
+                .iter()
+                .any(|t| t.starts_with('请') || t.contains("帮我")),
             "long CJK run must also keep head trigrams, got {:?}",
             terms
         );

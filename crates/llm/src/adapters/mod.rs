@@ -8,9 +8,9 @@ pub mod openai_responses;
 
 pub use anthropic::AnthropicAdapter;
 pub use capabilities::{
-    WebSearchMode, api_style_from_provider, is_known_api_style, is_stt_only_style,
-    normalize_api_style, parse_web_search_mode, resolve_web_search_mode,
-    supports_builtin_web_search, xai_search_mode,
+    WebSearchMode, api_style_from_provider, is_known_api_style, is_openai_family_wire_style,
+    is_stt_only_style, is_tts_only_style, normalize_api_style, parse_web_search_mode,
+    resolve_web_search_mode, supports_builtin_web_search, xai_search_mode,
 };
 pub use openai::OpenAiAdapter;
 
@@ -181,7 +181,22 @@ pub(crate) fn build_headers(
             headers.insert(name, v);
         }
     }
+    apply_vendor_request_headers(endpoint, &mut headers);
     headers
+}
+
+/// Vendor-specific request headers that are not part of the auth scheme
+/// (e.g. OpenRouter attribution). Applied after auth so callers share one path.
+fn apply_vendor_request_headers(endpoint: &ModelEndpoint, headers: &mut HeaderMap) {
+    if is_openrouter(endpoint) {
+        // OpenRouter ranks apps by these optional headers.
+        if let Ok(v) = HeaderValue::from_str("Haven") {
+            headers.insert("X-Title", v);
+        }
+        if let Ok(v) = HeaderValue::from_str("https://haven.app") {
+            headers.insert("HTTP-Referer", v);
+        }
+    }
 }
 
 /// Default budget for the streaming response-HEADER wait when the endpoint
@@ -323,6 +338,10 @@ pub(crate) fn is_kimi_or_moonshot(endpoint: &ModelEndpoint) -> bool {
     hay.contains("kimi") || hay.contains("moonshot")
 }
 
+pub(crate) fn is_openrouter(endpoint: &ModelEndpoint) -> bool {
+    vendor_haystack(endpoint).contains("openrouter")
+}
+
 /// True when the configured effort means "turn thinking off"
 /// (`none` / `off` / `disabled`). Used by DeepSeek chat (`thinking.type`) and
 /// Responses (`reasoning.effort: "none"`), and by Kimi `thinking.type`.
@@ -412,9 +431,7 @@ fn kimi_chat_thinking_extras(
 
     match effort {
         None => (None, None),
-        Some(e) if is_thinking_disabled(e) => {
-            (Some(serde_json::json!({"type": "disabled"})), None)
-        }
+        Some(e) if is_thinking_disabled(e) => (Some(serde_json::json!({"type": "disabled"})), None),
         Some(_) => {
             let thinking = if supports_keep {
                 serde_json::json!({"type": "enabled", "keep": "all"})
@@ -716,6 +733,36 @@ mod tests {
             ..Default::default()
         };
         assert!(!requires_reasoning_echo(&zhipu));
+    }
+
+    #[test]
+    fn openrouter_gets_attribution_headers() {
+        let ep = ModelEndpoint {
+            provider: "openrouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        assert!(is_openrouter(&ep));
+        let headers = build_headers(&ep, "Authorization", true);
+        assert_eq!(
+            headers.get("X-Title").and_then(|v| v.to_str().ok()),
+            Some("Haven")
+        );
+        assert_eq!(
+            headers.get("HTTP-Referer").and_then(|v| v.to_str().ok()),
+            Some("https://haven.app")
+        );
+        let plain = ModelEndpoint {
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: "sk-test".into(),
+            ..Default::default()
+        };
+        assert!(!is_openrouter(&plain));
+        assert!(build_headers(&plain, "Authorization", true)
+            .get("X-Title")
+            .is_none());
     }
 
     #[test]

@@ -319,6 +319,13 @@ impl SessionExecutor {
         self.running_sessions.lock().await.len()
     }
 
+    /// Current `session.max_concurrent` ceiling (may temporarily be exceeded
+    /// while in-flight sessions finish after a lowering).
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Return a list of currently running session IDs.
     pub async fn running_actions_list(&self) -> Vec<String> {
         self.running_sessions.lock().await.iter().cloned().collect()

@@ -106,6 +106,10 @@ pub enum AgentEvent {
         additional_context: String,
         step_number: u32,
         run_id: u64,
+        /// Structured inject origin so the UI can render peer mail as an
+        /// `agent` tool card while still marking human steering as received.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inject_source: Option<haven_common::types::InjectSource>,
     },
     SessionUpdated {
         session_id: String,

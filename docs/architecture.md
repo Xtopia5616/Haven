@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.0 | 日期: 2026-08-18
+> 版本: v1.1 | 日期: 2026-08-22
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -125,6 +125,32 @@ resume 会按 `per_run_cap = max(max_steps, start_step - 1 + max_steps)` 再给�
 
 **判定标准**：会话的业务编排中心，不知道也不关心 provider 细节 / 录音硬件细节。
 
+### 2.4.1 多 Agent 协作（Plan A）
+
+同一机器上多个 session 通过内置工具 `agent` + 文件总线协作；**不**单独做通讯 Tab（产品约束：协作过程以工具结果形式出现在对话页）。
+
+```
+Parent session                    Child session(s)
+     │  agent operation=spawn          │
+     │──────────────────────────────►  │  peer_kickoff（低信任 brief）
+     │  agent operation=request        │
+     │──────────────────────────────►  │  inbox auto-inject / reply
+     │  ← reply (in_reply_to) + receipt│
+```
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`，`operation=` list / send / inbox / reply / profile / request / spawn |
+| 总线 | `haven-tools` `inbox.rs` | `%APPDATA%/haven/inbox`：`agents.json` + 每 agent JSONL 邮箱 / archive；进程内 `InboxNotifier` |
+| 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
+| 接线 | `haven-app-binary` `app_state` | 安装 `AgentSpawner` 回调（tools 不依赖 agent） |
+| 运行时 | `react/inject.rs` | 每步 heartbeat；通知或每 3 步 poll inbox；注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
+| 生命周期 | `session/status.rs` | 终端态/`end_session` → BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
+| 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
+| UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |
+
+协议约定：同伴消息 ≠ 用户指令；`in_reply_to` 对齐 request id；子会话默认工作目录仍为 Temp（全局约束）。
+
 ### 2.5 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
 - `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /
@@ -188,6 +214,7 @@ MCP STT 仍走独立 `McpSttClient`（依赖 `McpToolCaller`）。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-22 | §2.4.1 多 Agent（Plan A）：`agent` 工具、InboxBus、spawn/cascade、低信任与 UI 展示 |
 | 2026-08-18 | 初版；`Supplement` 从 `haven-input` 下沉 `haven-common::types`，去除 `agent → input` 依赖 |
 | 2026-08-20 | 曾增加 memory / react 改进文档（已并于 2026-08-21 合并为 `refactor-backlog.md`） |
 | 2026-08-21 | 相关文档改为 `refactor-backlog.md`；删除 `memory-architecture.md` / `react-architecture-improvements.md` |

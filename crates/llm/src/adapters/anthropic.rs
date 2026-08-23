@@ -433,8 +433,7 @@ impl AnthropicAdapter {
                             }]),
                         });
                     } else {
-                        m.content =
-                            crate::adapters::apply_wire_inject_prefix(m.source, m.content);
+                        m.content = crate::adapters::apply_wire_inject_prefix(m.source, m.content);
                         let blocks = Self::content_to_blocks(&m.content);
                         if blocks.is_empty() {
                             continue;
@@ -656,10 +655,7 @@ impl AnthropicAdapter {
                     })));
                 }
                 Some("web_search_tool_result") => {
-                    let id = block
-                        .id
-                        .clone()
-                        .unwrap_or_else(|| format!("ws_result_{i}"));
+                    let id = block.id.clone().unwrap_or_else(|| format!("ws_result_{i}"));
                     web_search_calls.push(normalize_web_search_call_item(json!({
                         "type": "web_search_call",
                         "id": id,
@@ -1724,24 +1720,15 @@ mod tests {
     #[test]
     fn web_search_mode_injects_server_tool() {
         let client = AnthropicAdapter::new(ModelEndpoint::default());
-        let auto = client.build_request_body_with_mode(
-            vec![],
-            vec![],
-            false,
-            WebSearchMode::Auto,
-        );
+        let auto = client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Auto);
         let tools = auto.tools.expect("web_search tool present");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["type"], ANTHROPIC_WEB_SEARCH_TOOL_TYPE);
         assert_eq!(tools[0]["name"], "web_search");
         assert_eq!(auto.tool_choice, Some(json!({"type": "auto"})));
 
-        let always = client.build_request_body_with_mode(
-            vec![],
-            vec![],
-            false,
-            WebSearchMode::Always,
-        );
+        let always =
+            client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Always);
         assert_eq!(
             always.tool_choice,
             Some(json!({"type": "tool", "name": "web_search"}))
@@ -1755,12 +1742,8 @@ mod tests {
                 parameters: json!({"type": "object"}),
             },
         }];
-        let always_with_tools = client.build_request_body_with_mode(
-            vec![],
-            with_fn,
-            false,
-            WebSearchMode::Always,
-        );
+        let always_with_tools =
+            client.build_request_body_with_mode(vec![], with_fn, false, WebSearchMode::Always);
         assert_eq!(
             always_with_tools.tool_choice,
             Some(json!({"type": "auto"})),

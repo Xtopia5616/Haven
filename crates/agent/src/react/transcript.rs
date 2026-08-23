@@ -245,6 +245,7 @@ impl ReActEngine {
                             additional_context: text.clone(),
                             step_number: ctx.step_num,
                             run_id: ctx.run_id,
+                            inject_source: Some(source),
                         })
                         .await;
                     let step_id = message_id

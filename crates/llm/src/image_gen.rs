@@ -1,10 +1,11 @@
 //! Text-to-image generation capability.
 //!
 //! Unified dispatch entry point: [`build_image_gen_client`] maps an
-//! `ImageGenConfig` provider id to a concrete client. Providers:
-//! - `none`: no client
-//! - `openai`: OpenAI `/v1/images/generations` (gpt-image-1 / dall-e-3)
-//! - `gemini`: Google Gemini `generateContent` (image modality)
+//! `ImageGenConfig` provider id to a concrete client. `provider` is either:
+//! - `none` / empty: no client
+//! - a name from `llm.providers`: credentials and OpenAI vs Gemini backend
+//!   are taken from that provider
+//! - legacy `openai` / `gemini`: uses `ImageGenConfig.api_key` / `base_url`
 //!
 //! Every client returns the generated image bytes (PNG/JPEG) plus its media
 //! type; saving/display is the caller's job.
@@ -12,7 +13,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
-use haven_common::config::ImageGenConfig;
+use haven_common::config::{ImageGenConfig, ProviderConfig, provider_config_wire_style};
 use std::time::Duration;
 
 /// A generated image: raw bytes plus the media type the provider returned.
@@ -28,15 +29,85 @@ pub trait ImageGenClient: Send + Sync {
     async fn generate(&self, prompt: &str) -> Result<GeneratedImage>;
 }
 
-/// Build the image generation client for a given config. Returns `None`
-/// when the configured provider is `none`, and an error for an unknown
-/// provider id.
-pub fn build_image_gen_client(cfg: &ImageGenConfig) -> Result<Option<Box<dyn ImageGenClient>>> {
-    let timeout = Duration::from_secs(cfg.timeout_secs);
-    let client: Box<dyn ImageGenClient> = match cfg.provider.as_str() {
-        "none" => return Ok(None),
-        "openai" => Box::new(OpenAiImageGenClient::new(cfg, timeout)),
-        "gemini" => Box::new(GeminiImageGenClient::new(cfg, timeout)),
+/// Resolve image-gen config against named LLM providers. Returns `None` when
+/// disabled. Rewrites a provider-name reference into `openai` / `gemini` with
+/// that provider's URL + key.
+pub fn resolve_image_gen_config(
+    cfg: &ImageGenConfig,
+    providers: &[ProviderConfig],
+) -> Result<Option<ImageGenConfig>> {
+    let name = cfg.provider.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    // Named llm.providers win over legacy capability ids so a provider
+    // named `openai` / `gemini` reuses that entry's URL + key.
+    if let Some(p) = providers.iter().find(|p| p.name == name) {
+        let backend = image_gen_backend_for(p)?;
+        let base_url = if backend == "gemini" {
+            normalize_gemini_image_base(&p.base_url)
+        } else {
+            p.base_url.clone()
+        };
+        return Ok(Some(ImageGenConfig {
+            provider: backend.to_string(),
+            api_key: p.api_key.clone(),
+            base_url,
+            model: cfg.model.clone(),
+            timeout_secs: cfg.timeout_secs,
+        }));
+    }
+    if name == "openai" || name == "gemini" {
+        return Ok(Some(cfg.clone()));
+    }
+    Err(anyhow::anyhow!(
+        "image generation references unknown provider '{name}'"
+    ))
+}
+
+fn image_gen_backend_for(p: &ProviderConfig) -> Result<&'static str> {
+    use haven_common::config::is_openai_family_wire_style;
+    let style = provider_config_wire_style(p);
+    if style == "elevenlabs" || p.provider.eq_ignore_ascii_case("elevenlabs") {
+        anyhow::bail!(
+            "provider '{}' is TTS-only (ElevenLabs); use OpenAI-compatible or Gemini for image generation",
+            p.name
+        );
+    }
+    match style {
+        "gemini" => Ok("gemini"),
+        _ if is_openai_family_wire_style(style) => Ok("openai"),
+        other => anyhow::bail!(
+            "provider '{}' (api_style={other}) does not support image generation; use OpenAI-compatible or Gemini",
+            p.name
+        ),
+    }
+}
+
+/// Strip a trailing `/v1beta` so Gemini image URLs stay
+/// `{host}/v1beta/models/...` even when the LLM provider stores the chat
+/// base URL that already includes `/v1beta`.
+fn normalize_gemini_image_base(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    trimmed
+        .strip_suffix("/v1beta")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// Build the image generation client, resolving named LLM providers when
+/// `providers` is supplied. Returns `None` when disabled.
+pub fn build_image_gen_client(
+    cfg: &ImageGenConfig,
+    providers: &[ProviderConfig],
+) -> Result<Option<Box<dyn ImageGenClient>>> {
+    let Some(resolved) = resolve_image_gen_config(cfg, providers)? else {
+        return Ok(None);
+    };
+    let timeout = Duration::from_secs(resolved.timeout_secs);
+    let client: Box<dyn ImageGenClient> = match resolved.provider.as_str() {
+        "openai" => Box::new(OpenAiImageGenClient::new(&resolved, timeout)),
+        "gemini" => Box::new(GeminiImageGenClient::new(&resolved, timeout)),
         other => anyhow::bail!("unknown image generation provider: {}", other),
     };
     Ok(Some(client))
@@ -279,12 +350,12 @@ impl ImageGenClient for GeminiImageGenClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::ImageGenConfig;
+    use haven_common::config::{ImageGenConfig, ProviderConfig};
 
     #[test]
     fn imagegen_default_cfg_dispatches_none() {
         assert!(
-            build_image_gen_client(&ImageGenConfig::default())
+            build_image_gen_client(&ImageGenConfig::default(), &[])
                 .unwrap()
                 .is_none()
         );
@@ -296,11 +367,10 @@ mod tests {
             provider: "nope".into(),
             ..Default::default()
         };
-        let err = build_image_gen_client(&cfg).err().expect("expected error");
-        assert!(
-            err.to_string()
-                .contains("unknown image generation provider")
-        );
+        let err = build_image_gen_client(&cfg, &[])
+            .err()
+            .expect("expected error");
+        assert!(err.to_string().contains("unknown provider"));
     }
 
     #[test]
@@ -312,10 +382,56 @@ mod tests {
                 ..Default::default()
             };
             assert!(
-                build_image_gen_client(&cfg).unwrap().is_some(),
+                build_image_gen_client(&cfg, &[]).unwrap().is_some(),
                 "provider {provider} should build"
             );
         }
+    }
+
+    #[test]
+    fn imagegen_resolves_named_openai_provider() {
+        let providers = vec![ProviderConfig {
+            name: "oai".into(),
+            provider: "openai".into(),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "secret".into(),
+            ..Default::default()
+        }];
+        let cfg = ImageGenConfig {
+            provider: "oai".into(),
+            model: "gpt-image-1".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_image_gen_config(&cfg, &providers)
+            .unwrap()
+            .expect("resolved");
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.api_key, "secret");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
+    }
+
+    #[test]
+    fn imagegen_strips_v1beta_from_gemini_provider_url() {
+        let providers = vec![ProviderConfig {
+            name: "g".into(),
+            provider: "gemini".into(),
+            api_style: Some("gemini".into()),
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            api_key: "k".into(),
+            ..Default::default()
+        }];
+        let cfg = ImageGenConfig {
+            provider: "g".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_image_gen_config(&cfg, &providers)
+            .unwrap()
+            .expect("resolved");
+        assert_eq!(resolved.provider, "gemini");
+        assert_eq!(
+            resolved.base_url,
+            "https://generativelanguage.googleapis.com"
+        );
     }
 
     #[test]

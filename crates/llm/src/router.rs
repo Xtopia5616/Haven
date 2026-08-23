@@ -9,9 +9,7 @@ use crate::adapters::adapter_for;
 use crate::client::{LlmClient, with_retry};
 use haven_common::types::{CanonicalMessage, ContentPart};
 
-use crate::stream_rules::{
-    StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules,
-};
+use crate::stream_rules::{StreamRule, StreamRuleMatch, StreamRuleMode, check_stream_rules};
 use crate::types::{
     Embedding, FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk,
     ToolDefinition, Usage,
@@ -304,7 +302,14 @@ pub struct LlmRouter {
 }
 
 impl LlmRouter {
-    pub fn new(mut config: RouterConfig) -> Self {
+    pub fn new(config: RouterConfig) -> Self {
+        Self::with_default_context_window(config, crate::registry::FALLBACK_CONTEXT_WINDOW)
+    }
+
+    /// Like [`Self::new`], but clamp `max_tokens` against
+    /// `context_limits.default_context_window` when a role has no explicit
+    /// `context_window` (instead of the hardcoded 128K fallback).
+    pub fn with_default_context_window(mut config: RouterConfig, default_context_window: u32) -> Self {
         // The per-response cap floor (`with_response_cap`) can push
         // `max_tokens` far above a provider's per-model output limit; sending
         // the raw value (e.g. the 1M default floor) makes Anthropic/OpenAI/
@@ -313,6 +318,11 @@ impl LlmRouter {
         // floor can never exceed what the provider will accept, while small
         // legacy caps (8192) still get lifted so long outputs are not
         // truncated mid-stream.
+        let fallback = if default_context_window > 0 {
+            default_context_window
+        } else {
+            crate::registry::FALLBACK_CONTEXT_WINDOW
+        };
         for ep in [
             &mut config.small_model,
             &mut config.default_model,
@@ -321,7 +331,7 @@ impl LlmRouter {
             &mut config.audio_model,
             &mut config.embedding_model,
         ] {
-            let window = crate::registry::context_window_for(ep);
+            let window = crate::registry::context_window_for(ep).unwrap_or(fallback);
             if window > 0 {
                 ep.max_tokens = ep.max_tokens.min(window);
             }
@@ -637,7 +647,10 @@ impl LlmRouter {
     /// Tries native [`LlmClient::transcribe`] first; when the adapter reports
     /// [`LlmError::UnsupportedCapability`], falls back to multimodal chat
     /// with an `input_audio` content part (gpt-4o-audio-preview etc.).
-    pub async fn transcribe_audio(&self, wav_data: &[u8]) -> Result<crate::types::SttResult, LlmError> {
+    pub async fn transcribe_audio(
+        &self,
+        wav_data: &[u8],
+    ) -> Result<crate::types::SttResult, LlmError> {
         let role = match self.stt_role().await {
             Some(role) => role,
             None => {

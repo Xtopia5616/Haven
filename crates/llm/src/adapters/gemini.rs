@@ -583,8 +583,8 @@ impl GeminiAdapter {
         let raw: Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let web_search_calls = Self::web_search_calls_from_grounding(&raw);
-        let json: GeminiResponse = serde_json::from_value(raw)
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let json: GeminiResponse =
+            serde_json::from_value(raw).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model_version.clone();
         let mut parsed = self.parse_response(json, model)?;
         parsed.web_search_calls = web_search_calls;

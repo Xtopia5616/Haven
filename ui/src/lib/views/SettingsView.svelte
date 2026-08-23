@@ -1,5 +1,5 @@
 <script>
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
 	import { themeStore } from '$lib/themeStore.ts';
@@ -8,11 +8,10 @@
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
-	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
-	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import { addNotification } from '$lib/stores.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
+	import { ensureRoleSlots } from '$lib/modelRoles.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import logger from '$lib/logger.ts';
 
@@ -32,7 +31,7 @@
 		max_concurrent_requests: 2,
 	});
 
-	/** @type {{ small_model: boolean; default_model: boolean; balanced_model: boolean; image_model: boolean; audio_model: boolean; embedding_model: boolean; stt: boolean; ocr: boolean; ocr_secret: boolean; tts: boolean; image_gen: boolean; [key: string]: boolean }} */
+	/** @type {{ small_model: boolean; default_model: boolean; balanced_model: boolean; image_model: boolean; audio_model: boolean; embedding_model: boolean; stt: boolean; ocr: boolean; ocr_secret: boolean; [key: string]: boolean }} */
 	let keyConfigured = $state({
 		small_model: false,
 		default_model: false,
@@ -43,28 +42,13 @@
 		stt: false,
 		ocr: false,
 		ocr_secret: false,
-		tts: false,
-		image_gen: false,
 	});
 
 	// Per-provider api_key configured status (from get_api_key_status.
 	// `providers`).
 	let keyConfiguredProviders = $state({});
 
-	// Per-card model discovery (role cards, STT) is owned by ModelSettings.
-
-	// Media capability providers for the TTS / 文生图 cards (OCR lives on the
-	// Image input card; STT lives on the Voice input card).
-	const TTS_PROVIDER_OPTIONS = [
-		{ value: 'none', label: 'None' },
-		{ value: 'openai', label: 'OpenAI TTS' },
-		{ value: 'elevenlabs', label: 'ElevenLabs' },
-	];
-	const IMAGE_GEN_PROVIDER_OPTIONS = [
-		{ value: 'none', label: 'None' },
-		{ value: 'openai', label: 'OpenAI（gpt-image-1）' },
-		{ value: 'gemini', label: 'Google Gemini' },
-	];
+	// Per-card model discovery (role cards, STT) and TTS / 文生图 UI live in ModelSettings.
 
 	let hotkeyMode = $state('toggle');
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
@@ -150,7 +134,7 @@
 			title: '上下文与压缩',
 			hint: '模型上下文窗口与自动压缩（compaction）行为的阈值。压缩阈值过高可能导致上下文溢出。',
 			fields: [
-				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'tokens', danger: true, hint: '端点未配置 context_window 且模型不在内置目录时的回退窗口。调高会增大每次请求的成本与溢出风险。' },
+				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'tokens', danger: true, hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口。调高会增大每次请求的成本与溢出风险。' },
 				{ key: 'max_response_tokens', label: '回复输出 token 下限', unit: 'tokens', danger: false, hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大）。默认极大，长回复不会被截断；需要限制输出长度时调低此项。' },
 				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
 				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
@@ -279,13 +263,14 @@
 		return v;
 	}
 
-	// Settings sub-tabs: general vs. 输入 (formats + model config) vs. limits.
+	// Settings sub-tabs: general / models / media / limits.
 	// The full `context_limits` object is sent on save so fields the UI
 	// does not render are never reset to defaults.
 	let settingsTab = $state('general');
 	const settingsTabs = [
 		{ id: 'general', label: '常规' },
-		{ id: 'input', label: '输入' },
+		{ id: 'models', label: '模型' },
+		{ id: 'media', label: '媒体' },
 		{ id: 'limits', label: '限制' },
 	];
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
@@ -311,17 +296,13 @@
 	});
 	let tts = $state({
 		provider: 'none',
-		api_key: '',
 		model: '',
 		voice: '',
-		base_url: '',
 		timeout_secs: 60,
 	});
 	let imageGen = $state({
 		provider: 'none',
-		api_key: '',
 		model: '',
-		base_url: '',
 		timeout_secs: 120,
 	});
 	/** @type {{ session_created: { in_app: boolean; windows: boolean }; session_completed: { in_app: boolean; windows: boolean }; session_paused: { in_app: boolean; windows: boolean }; session_resumed: { in_app: boolean; windows: boolean }; session_error: { in_app: boolean; windows: boolean }; [key: string]: { in_app: boolean; windows: boolean } }} */
@@ -411,7 +392,6 @@
 	// its audio-card STT selector can initialize from the stored config.
 	let settingsLoaded = $state(false);
 
-	let keyChangeDialog = $state({ open: false, model: '', label: '' });
 	let accent = $state(themeStore.currentAccent);
 	let customAccentHex = $state(themeStore.isPreset ? '#2C5090' : themeStore.accentColor);
 	let currentTheme = $state(themeStore.currentTheme);
@@ -445,6 +425,13 @@
 		};
 	}
 
+	/** Coerce range/number inputs so DOM string values do not look like edits. */
+	/** @param {unknown} v */
+	function asNumber(v) {
+		const n = Number(v);
+		return Number.isFinite(n) ? n : 0;
+	}
+
 	/** Serializable subset of form state that Save persists (plus autostart). */
 	function buildPersistableSettings() {
 		return {
@@ -452,12 +439,12 @@
 			llm: llmConfig,
 			hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode },
 			session: {
-				max_concurrent: session.max_concurrent,
-				max_steps: session.max_steps,
+				max_concurrent: asNumber(session.max_concurrent),
+				max_steps: asNumber(session.max_steps),
 			},
 			memory: {
-				session_window_size: memory.session_window_size,
-				history_retention_days: memory.history_retention_days,
+				session_window_size: asNumber(memory.session_window_size),
+				history_retention_days: asNumber(memory.history_retention_days),
 			},
 			security: {
 				confirmation_mode: security.confirmation_mode,
@@ -466,17 +453,42 @@
 			context_limits: contextLimits,
 			media: {
 				audio: {
-					sample_rate: audio.sample_rate,
-					channels: audio.channels,
-					bits_per_sample: audio.bits_per_sample,
-					max_duration_secs: audio.max_duration_secs,
-					silence_timeout_ms: audio.silence_timeout_ms,
-					vad_threshold: audio.vad_threshold,
+					sample_rate: asNumber(audio.sample_rate),
+					channels: asNumber(audio.channels),
+					bits_per_sample: asNumber(audio.bits_per_sample),
+					max_duration_secs: asNumber(audio.max_duration_secs),
+					silence_timeout_ms: asNumber(audio.silence_timeout_ms),
+					vad_threshold: asNumber(audio.vad_threshold),
 				},
-				stt: { ...stt },
-				ocr: { ...ocr },
-				tts: { ...tts },
-				image_gen: { ...imageGen },
+				stt: {
+					provider: stt.provider,
+					mcp_server: stt.mcp_server || null,
+					api_key: '',
+					model: stt.model,
+					base_url: '',
+					timeout_secs: asNumber(stt.timeout_secs),
+					min_confidence: asNumber(stt.min_confidence),
+				},
+				ocr: {
+					...ocr,
+					timeout_secs: asNumber(ocr.timeout_secs),
+					min_confidence: asNumber(ocr.min_confidence),
+				},
+				tts: {
+					provider: tts.provider,
+					api_key: '',
+					model: tts.model,
+					voice: tts.voice,
+					base_url: '',
+					timeout_secs: asNumber(tts.timeout_secs),
+				},
+				image_gen: {
+					provider: imageGen.provider,
+					api_key: '',
+					model: imageGen.model,
+					base_url: '',
+					timeout_secs: asNumber(imageGen.timeout_secs),
+				},
 			},
 			notification: {
 				session_created: { ...notification.session_created },
@@ -562,8 +574,21 @@
 			if (snap.media?.audio) audio = { ...audio, ...snap.media.audio };
 			if (snap.media?.stt) stt = { ...stt, ...snap.media.stt };
 			if (snap.media?.ocr) ocr = { ...ocr, ...snap.media.ocr };
-			if (snap.media?.tts) tts = { ...tts, ...snap.media.tts };
-			if (snap.media?.image_gen) imageGen = { ...imageGen, ...snap.media.image_gen };
+			if (snap.media?.tts) {
+				tts = {
+					provider: snap.media.tts.provider || 'none',
+					model: snap.media.tts.model || '',
+					voice: snap.media.tts.voice || '',
+					timeout_secs: snap.media.tts.timeout_secs || 60,
+				};
+			}
+			if (snap.media?.image_gen) {
+				imageGen = {
+					provider: snap.media.image_gen.provider || 'none',
+					model: snap.media.image_gen.model || '',
+					timeout_secs: snap.media.image_gen.timeout_secs || 120,
+				};
+			}
 			if (snap.notification) {
 				notification = {
 					session_created: { ...notification.session_created, ...snap.notification.session_created },
@@ -744,6 +769,9 @@
 				// the arrays exist so downstream UI code can always iterate.
 				llmConfig.providers = Array.isArray(llmConfig.providers) ? llmConfig.providers : [];
 				llmConfig.roles = Array.isArray(llmConfig.roles) ? llmConfig.roles : [];
+				// Materialize all role slots before the dirty baseline — otherwise
+				// ModelSettings' mount $effect appending empty slots looks like an edit.
+				ensureRoleSlots(llmConfig.roles);
 				rememberSyncedDefaultModel(
 					llmConfig.roles.find((/** @type {any} */ r) => r.role === 'default_model'),
 				);
@@ -777,17 +805,13 @@
 				};
 				tts = {
 					provider: media.tts?.provider || 'none',
-					api_key: media.tts?.api_key || '',
 					model: media.tts?.model || '',
 					voice: media.tts?.voice || '',
-					base_url: media.tts?.base_url || '',
 					timeout_secs: media.tts?.timeout_secs || 60,
 				};
 				imageGen = {
 					provider: media.image_gen?.provider || 'none',
-					api_key: media.image_gen?.api_key || '',
 					model: media.image_gen?.model || '',
-					base_url: media.image_gen?.base_url || '',
 					timeout_secs: media.image_gen?.timeout_secs || 120,
 				};
 				// MCP server names for the Audio Model card's MCP STT mode.
@@ -816,7 +840,11 @@
 		} catch (e) {
 			addNotification(`获取开机自启状态失败: ${formatError(e)}`, 'error', 3000);
 		}
-		if (mounted) captureSnapshot();
+		// Let ModelSettings mount effects settle before baselining dirty state.
+		if (mounted) {
+			await tick();
+			if (mounted) captureSnapshot();
+		}
 	});
 
 	async function runMaintenance() {
@@ -888,9 +916,9 @@
 						stt: {
 							provider: stt.provider,
 							mcp_server: stt.mcp_server || null,
-							api_key: stt.api_key,
+							api_key: '',
 							model: stt.model,
-							base_url: stt.base_url,
+							base_url: '',
 							timeout_secs: stt.timeout_secs,
 							min_confidence: stt.min_confidence,
 						},
@@ -904,17 +932,17 @@
 						},
 						tts: {
 							provider: tts.provider,
-							api_key: tts.api_key,
+							api_key: '',
 							model: tts.model,
 							voice: tts.voice,
-							base_url: tts.base_url,
+							base_url: '',
 							timeout_secs: tts.timeout_secs,
 						},
 						image_gen: {
 							provider: imageGen.provider,
-							api_key: imageGen.api_key,
+							api_key: '',
 							model: imageGen.model,
-							base_url: imageGen.base_url,
+							base_url: '',
 							timeout_secs: imageGen.timeout_secs,
 						},
 					},
@@ -965,28 +993,6 @@
 	}
 
 	/**
-	 * @param {string} model
-	 * @param {string} label
-	 */
-	function openKeyDialog(model, label) {
-		keyChangeDialog = { open: true, model, label };
-	}
-
-	// TTS / 文生图 keys. OCR / STT keys are handled by ModelSettings.
-	/**
-	 * @param {string} value
-	 */
-	function confirmMediaKey(value) {
-		if (keyChangeDialog.model === 'tts') {
-			tts.api_key = value;
-		} else if (keyChangeDialog.model === 'image_gen') {
-			imageGen.api_key = value;
-		}
-		keyConfigured[keyChangeDialog.model] = true;
-		keyChangeDialog = { open: false, model: '', label: '' };
-	}
-
-	/**
 	 * @param {string} hex
 	 */
 	function contrastText(hex) {
@@ -1027,92 +1033,6 @@
 		<div class="form-row">
 			<label for="hotkey-mode">Mode</label>
 			<MaterialSelect id="hotkey-mode" value={hotkeyMode} options={[{ value: 'toggle', label: 'Toggle (press to start/stop)' }, { value: 'hold', label: 'Hold (push-to-talk)' }]} onChange={(/** @type {string} */ v) => { hotkeyMode = v; }} />
-		</div>
-	</div>
-
-	<div class="section">
-		<h2>Media Capabilities（TTS / 文生图）</h2>
-		<p class="model-hint">输出类媒体能力：朗读/配音走 TTS，「画…」走文生图。图片 OCR 与语音 STT 已并入「输入」页的 Image / Voice 卡片。</p>
-
-		<div class="model-card">
-			<div class="picker-card">
-				<div class="model-field model-role">
-					<span class="field-label">TTS（朗读 / 配音）</span>
-					<div class="role-hint">对「朗读这段话」「读出来」等请求合成语音并附到消息</div>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Provider</span>
-					<MaterialSelect id="tts-provider" value={tts.provider} options={TTS_PROVIDER_OPTIONS} onChange={(/** @type {string} */ v) => { tts.provider = v; }} />
-				</div>
-				<div class="model-field">
-					<span class="field-label">API Key</span>
-					<ApiKeyField
-						id="tts-api-key"
-						configured={keyConfigured.tts}
-						onEdit={() => openKeyDialog('tts', 'TTS API Key')}
-					/>
-				</div>
-				{#if tts.provider === 'openai'}
-					<div class="model-field">
-						<span class="field-label">Model</span>
-						<input id="tts-model" type="text" class="md-input" bind:value={tts.model} placeholder="tts-1 / gpt-4o-mini-tts" autocomplete="off" />
-					</div>
-					<div class="model-field">
-						<span class="field-label">Voice</span>
-						<input id="tts-voice" type="text" class="md-input" bind:value={tts.voice} placeholder="alloy / nova / echo…" autocomplete="off" />
-					</div>
-					<div class="model-field">
-						<span class="field-label">Base URL</span>
-						<input id="tts-base-url" type="text" class="md-input" bind:value={tts.base_url} placeholder="https://api.openai.com/v1" autocomplete="off" />
-					</div>
-				{:else if tts.provider === 'elevenlabs'}
-					<div class="model-field">
-						<span class="field-label">Voice ID</span>
-						<input id="tts-voice" type="text" class="md-input" bind:value={tts.voice} placeholder="elevenlabs voice id" autocomplete="off" />
-					</div>
-				{/if}
-				{#if tts.provider !== 'none'}
-					<div class="model-field">
-						<span class="field-label">Timeout (sec)</span>
-						<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { tts.timeout_secs = v; }} />
-					</div>
-				{/if}
-			</div>
-		</div>
-
-		<div class="model-card">
-			<div class="picker-card">
-				<div class="model-field model-role">
-					<span class="field-label">文生图（画…）</span>
-					<div class="role-hint">对「画一只猫」「生成海报」等请求生成图片并附到消息</div>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Provider</span>
-					<MaterialSelect id="ig-provider" value={imageGen.provider} options={IMAGE_GEN_PROVIDER_OPTIONS} onChange={(/** @type {string} */ v) => { imageGen.provider = v; }} />
-				</div>
-				<div class="model-field">
-					<span class="field-label">API Key</span>
-					<ApiKeyField
-						id="ig-api-key"
-						configured={keyConfigured.image_gen}
-						onEdit={() => openKeyDialog('image_gen', '文生图 API Key')}
-					/>
-				</div>
-				{#if imageGen.provider !== 'none'}
-					<div class="model-field">
-						<span class="field-label">Model</span>
-						<input id="ig-model" type="text" class="md-input" bind:value={imageGen.model} placeholder={imageGen.provider === 'openai' ? 'gpt-image-1' : 'gemini-2.5-flash-image'} autocomplete="off" />
-					</div>
-					<div class="model-field">
-						<span class="field-label">Base URL</span>
-						<input id="ig-base-url" type="text" class="md-input" bind:value={imageGen.base_url} placeholder={imageGen.provider === 'openai' ? 'https://api.openai.com/v1' : 'https://generativelanguage.googleapis.com'} autocomplete="off" />
-					</div>
-					<div class="model-field">
-						<span class="field-label">Timeout (sec)</span>
-						<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={(/** @type {number} */ v) => { imageGen.timeout_secs = v; }} />
-					</div>
-				{/if}
-			</div>
 		</div>
 	</div>
 
@@ -1305,13 +1225,16 @@
 	</div>
 	{/if}
 
-	{#if settingsTab === 'input'}
+	{#if settingsTab === 'models' || settingsTab === 'media'}
 	{#if settingsLoaded}
 	<ModelSettings
+		section={settingsTab}
 		{llmConfig}
 		{audio}
 		{stt}
 		{ocr}
+		{tts}
+		{imageGen}
 		{contextLimits}
 		{keyConfigured}
 		{keyConfiguredProviders}
@@ -1321,7 +1244,7 @@
 	{:else}
 	<p class="model-hint">正在加载模型与 API Key 状态…</p>
 	{/if}
-{/if}
+	{/if}
 
 	{#snippet limitRow(/** @type {any} */ f, boxed = false)}
 	<div class="form-row limit-row" class:danger-row={f.danger && !boxed}>
@@ -1393,14 +1316,6 @@
 		Save Settings
 	</button>
 </div>
-
-<ApiKeyDialog
-	open={keyChangeDialog.open}
-	label={keyChangeDialog.label}
-	configured={keyChangeDialog.model ? !!keyConfigured[keyChangeDialog.model] : false}
-	onClose={() => { keyChangeDialog = { open: false, model: '', label: '' }; }}
-	onConfirm={confirmMediaKey}
-/>
 
 {#if logView.open}
 <MaterialDialog
@@ -1534,41 +1449,6 @@
 		margin-bottom: var(--md-sys-space-sm);
 	}
 	.llm-head h2 { margin: 0; }
-	.picker-card {
-		display: grid;
-		grid-template-columns: 1.2fr 1fr 1fr;
-		gap: var(--md-sys-space-lg);
-		align-items: end;
-	}
-	.model-card {
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-lowest);
-		padding: var(--md-sys-space-md);
-	}
-	.model-field {
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-	.model-field .md-input { width: 100%; }
-	.model-field :global(.md-number-field) { width: 100%; }
-	.model-field :global(.md-select-container),
-	.model-field :global(.ma-root) { width: 100%; }
-	.field-label {
-		font-size: 11px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--md-sys-color-on-surface-variant);
-		white-space: nowrap;
-	}
-	.model-role .field-label {
-		color: var(--md-sys-color-primary);
-		font-size: 13px;
-	}
-	.role-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: 2px; line-height: 1.4; }
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
 	.shell-warning {
 		margin-top: var(--md-sys-space-sm);
@@ -1712,10 +1592,6 @@
 			flex-direction: column;
 			align-items: stretch;
 			gap: var(--md-sys-space-xs);
-		}
-		.picker-card {
-			grid-template-columns: 1fr;
-			gap: var(--md-sys-space-md);
 		}
 		.form-row label,
 		.form-row .form-label {

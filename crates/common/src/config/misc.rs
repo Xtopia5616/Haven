@@ -67,7 +67,7 @@ pub struct ContextLimitsConfig {
     /// compaction threshold (headroom floor).
     pub compaction_reserve_tokens: u32,
     /// Context window in tokens used when an endpoint has no explicit
-    /// `context_window` and the model id is not in the builtin catalog.
+    /// `context_window` (e.g. provider `/models` did not report one).
     pub default_context_window: u32,
     /// Per-response output cap floor (tokens) applied to every role endpoint
     /// when the router is built: the effective `max_tokens` sent to the

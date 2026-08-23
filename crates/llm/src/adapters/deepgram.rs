@@ -125,7 +125,9 @@ impl LlmClient for DeepgramAdapter {
         let alternative = &json["results"]["channels"][0]["alternatives"][0];
         let text = alternative["transcript"]
             .as_str()
-            .ok_or_else(|| LlmError::InvalidResponse("Deepgram response missing transcript".into()))?
+            .ok_or_else(|| {
+                LlmError::InvalidResponse("Deepgram response missing transcript".into())
+            })?
             .trim()
             .to_string();
         let confidence = alternative["confidence"].as_f64().map(|c| c as f32);

@@ -19,8 +19,8 @@
 use haven_common::config::ModelEndpoint;
 
 pub use haven_common::config::{
-    api_style_from_provider, is_known_api_style, is_stt_only_style, normalize_api_style,
-    supports_builtin_web_search,
+    api_style_from_provider, is_known_api_style, is_openai_family_wire_style, is_stt_only_style,
+    is_tts_only_style, normalize_api_style, supports_builtin_web_search,
 };
 
 /// Web search mode for a provider's built-in search tool. Selected via the
@@ -83,7 +83,10 @@ mod tests {
 
     #[test]
     fn normalize_aliases() {
-        assert_eq!(normalize_api_style("deepseek-responses"), "openai-responses");
+        assert_eq!(
+            normalize_api_style("deepseek-responses"),
+            "openai-responses"
+        );
         assert_eq!(normalize_api_style("OpenAI-Responses"), "openai-responses");
         assert_eq!(normalize_api_style("grok"), "xai");
         assert_eq!(normalize_api_style("xai"), "xai");

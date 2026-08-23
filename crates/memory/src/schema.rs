@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -42,6 +42,8 @@ struct Migration {
 /// - v5: episode `topics`/`entities` JSON columns (P2-10 / L6); backfill
 ///   bare `company` → `works_at` predicate alias (P2-11).
 /// - v6: `embedding_lsh` side table for large-partition ANN probing (M5).
+/// - v7: allow `peer_kickoff` on `messages.message_type` (Plan A multi-agent
+///   spawn brief rows).
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -62,6 +64,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 6,
         apply: migrate_v6_embedding_lsh,
+    },
+    Migration {
+        version: 7,
+        apply: migrate_v7_peer_kickoff_message_type,
     },
 ];
 
@@ -227,6 +233,57 @@ fn migrate_v6_embedding_lsh(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Expand `messages.message_type` CHECK to include `peer_kickoff` (Plan A).
+/// SQLite cannot ALTER CHECK in place, so rebuild the table (same crash-safe
+/// pattern as sessions status migrations).
+fn migrate_v7_peer_kickoff_message_type(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let has_messages = table_exists(conn, "messages")?;
+    let has_v7 = table_exists(conn, "messages_v7")?;
+    if !has_messages && has_v7 {
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            ALTER TABLE messages_v7 RENAME TO messages;
+            PRAGMA foreign_keys=ON;
+            "#,
+        )?;
+        return Ok(());
+    }
+    if !has_messages {
+        return Ok(());
+    }
+    if has_v7 {
+        conn.execute_batch("DROP TABLE IF EXISTS messages_v7")?;
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    conn.execute_batch(
+        r#"
+        BEGIN IMMEDIATE;
+        CREATE TABLE messages_v7 (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+            content TEXT NOT NULL,
+            message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning','peer_kickoff')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            tool_call_id TEXT,
+            attachments TEXT,
+            voice INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO messages_v7
+            (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice)
+        SELECT id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice
+          FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_v7 RENAME TO messages;
+        CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+        COMMIT;
+        "#,
+    )?;
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
+    Ok(())
+}
+
 /// P2-10 / L6: optional structured fields on episodes; P2-11: bare `company`
 /// → `works_at` for rows written before the alias was added.
 fn migrate_v5_episodes_structured_and_company_alias(
@@ -312,7 +369,7 @@ const SCHEMA_SQL: &[&str] = &[
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
         content TEXT NOT NULL,
-        message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning')),
+        message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning','peer_kickoff')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         tool_call_id TEXT,
         attachments TEXT,
@@ -1110,6 +1167,61 @@ mod tests {
             [],
         )
         .expect("v4 CHECK must accept paused_awaiting_confirm");
+    }
+
+    #[test]
+    fn v7_migration_allows_peer_kickoff_message_type() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, input_text, status) VALUES ('ses-p', 'hi', 'pending')",
+            [],
+        )
+        .unwrap();
+        // Simulate a v6 DB whose CHECK still rejects peer_kickoff.
+        set_user_version(&conn, 6).unwrap();
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys=OFF;
+            CREATE TABLE messages_v6 (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+                content TEXT NOT NULL,
+                message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                tool_call_id TEXT,
+                attachments TEXT,
+                voice INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO messages_v6
+                (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice)
+            SELECT id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice
+              FROM messages;
+            DROP TABLE messages;
+            ALTER TABLE messages_v6 RENAME TO messages;
+            CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+            PRAGMA foreign_keys=ON;
+            "#,
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, message_type)
+                 VALUES ('msg-pk', 'ses-p', 'user', 'brief', 'peer_kickoff')",
+                [],
+            )
+            .is_err(),
+            "v6 CHECK must reject peer_kickoff"
+        );
+        init_schema(&conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content, message_type)
+             VALUES ('msg-pk', 'ses-p', 'user', 'brief', 'peer_kickoff')",
+            [],
+        )
+        .expect("v7 CHECK must accept peer_kickoff");
     }
 
     #[test]

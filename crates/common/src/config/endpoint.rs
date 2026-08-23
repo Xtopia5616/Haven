@@ -65,9 +65,9 @@ pub struct ModelEndpoint {
     pub cost_per_1k_input_tokens: f64,
     pub cost_per_1k_output_tokens: f64,
     /// True context window of the model in tokens. When unset (None), Haven
-    /// resolves it from the builtin model catalog (by `model_name`), falling
-    /// back to a 128K default. Used to drive context compaction and the
-    /// token-usage display.
+    /// falls back to `context_limits.default_context_window`. Prefer filling
+    /// this from provider `/models` metadata when the user picks a model.
+    /// Used to drive context compaction and the token-usage display.
     #[serde(default)]
     pub context_window: Option<u32>,
     /// Per-endpoint override for the reasoning-echo cap (chars) sent back to
@@ -210,9 +210,9 @@ impl Default for ProviderConfig {
 /// ([`EndpointRole`]). `role` holds the canonical slot name (stamped by
 /// [`LlmConfig::set_role`]); `provider` names a [`ProviderConfig`]; `model` is
 /// a model id on that provider. All tuning fields are optional overrides:
-/// `None` falls back to the provider default, then the builtin model catalog
-/// (context window) or [`ModelEndpoint`] built-in defaults. An empty
-/// `provider` means the role is unconfigured.
+/// `None` falls back to the provider default, then
+/// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
+/// An empty `provider` means the role is unconfigured.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct RoleConfig {
@@ -409,8 +409,9 @@ impl LlmConfig {
     }
 
     /// True when a role is usable at runtime: it references a configured
-    /// provider (non-empty api_key) and names a model. Used by tools that
-    /// should no-op gracefully when an endpoint is not set up.
+    /// provider (API key present, or a keyless local server) and names a
+    /// model. Used by tools that should no-op gracefully when an endpoint is
+    /// not set up.
     pub fn is_configured(&self, role: EndpointRole) -> bool {
         let Some(slot) = self.role(role) else {
             return false;
@@ -419,7 +420,7 @@ impl LlmConfig {
             return false;
         }
         self.provider(slot.provider.as_str())
-            .is_some_and(|p| !p.api_key.is_empty())
+            .is_some_and(provider_credentials_ready)
     }
 
     /// Materialize the endpoint backing a role from its provider + role slot.
@@ -523,6 +524,35 @@ impl LlmConfig {
     }
 }
 
+/// True when a provider has usable credentials: a non-empty API key, or a
+/// keyless local server (llama.cpp / Ollama).
+pub fn provider_credentials_ready(p: &ProviderConfig) -> bool {
+    if !p.api_key.is_empty() {
+        return true;
+    }
+    let style = provider_config_wire_style(p);
+    style == "llama.cpp"
+        || p.provider.eq_ignore_ascii_case("ollama")
+        || p.provider.eq_ignore_ascii_case("llama.cpp")
+}
+
+/// True when a materialized endpoint has usable credentials (same keyless
+/// rules as [`provider_credentials_ready`]).
+pub fn endpoint_credentials_ready(ep: &ModelEndpoint) -> bool {
+    if !ep.api_key.is_empty() {
+        return true;
+    }
+    let style = ep
+        .api_style
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(normalize_api_style)
+        .unwrap_or_else(|| api_style_from_provider(&ep.provider));
+    style == "llama.cpp"
+        || ep.provider.eq_ignore_ascii_case("ollama")
+        || ep.provider.eq_ignore_ascii_case("llama.cpp")
+}
+
 /// Normalize a stored / UI `api_style` (or provider-derived label) to the
 /// canonical wire-protocol id. Unknown values fall back to `openai-chat`.
 pub fn normalize_api_style(style: &str) -> &'static str {
@@ -535,6 +565,7 @@ pub fn normalize_api_style(style: &str) -> &'static str {
         "gemini" | "google" => "gemini",
         "deepgram" => "deepgram",
         "assemblyai" => "assemblyai",
+        "elevenlabs" => "elevenlabs",
         _ => "openai-chat",
     }
 }
@@ -561,6 +592,7 @@ pub fn is_known_api_style(style: &str) -> bool {
             | "google"
             | "deepgram"
             | "assemblyai"
+            | "elevenlabs"
     )
 }
 
@@ -574,8 +606,32 @@ pub fn api_style_from_provider(provider: &str) -> &'static str {
         "xai" | "grok" => "xai",
         "deepgram" => "deepgram",
         "assemblyai" => "assemblyai",
+        "elevenlabs" => "elevenlabs",
         _ => "openai-chat",
     }
+}
+
+/// OpenAI-compatible family used by STT / TTS / image-gen allowlists.
+pub fn is_openai_family_wire_style(style: &str) -> bool {
+    matches!(
+        normalize_api_style(style),
+        "openai-chat" | "openai-responses" | "llama.cpp" | "xai"
+    )
+}
+
+/// True when the style is TTS-only (no chat / STT / image gen).
+pub fn is_tts_only_style(style: &str) -> bool {
+    normalize_api_style(style) == "elevenlabs"
+}
+
+/// Effective wire style for a [`ProviderConfig`]: non-empty `api_style` wins
+/// (after [`normalize_api_style`]); otherwise derived from `provider`.
+pub fn provider_config_wire_style(p: &ProviderConfig) -> &'static str {
+    p.api_style
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(normalize_api_style)
+        .unwrap_or_else(|| api_style_from_provider(&p.provider))
 }
 
 /// True when the wire style can drive a provider built-in web search tool from
@@ -705,10 +761,11 @@ impl RouterConfig {
         }
     }
 
-    /// True when the role has a non-empty api_key configured. Used by tools
-    /// that should no-op gracefully when an endpoint is not set up.
+    /// True when the role has usable credentials (API key or keyless local
+    /// server). Used by tools that should no-op gracefully when an endpoint
+    /// is not set up.
     pub fn is_configured(&self, role: EndpointRole) -> bool {
-        !self.endpoint(role).api_key.is_empty()
+        endpoint_credentials_ready(self.endpoint(role))
     }
 
     /// Owned iteration over every role slot in canonical order (a fixed 6
@@ -798,5 +855,31 @@ mod tests {
         let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
         assert_eq!(ep.web_search.as_deref(), Some("always"));
         assert_eq!(ep.provider, "deepseek");
+    }
+
+    #[test]
+    fn keyless_local_providers_count_as_configured() {
+        let ollama = ProviderConfig {
+            name: "local".into(),
+            provider: "ollama".into(),
+            api_style: Some("openai-chat".into()),
+            api_key: String::new(),
+            base_url: "http://127.0.0.1:11434/v1".into(),
+            ..Default::default()
+        };
+        assert!(provider_credentials_ready(&ollama));
+        let llm = LlmConfig {
+            providers: vec![ollama],
+            roles: vec![RoleConfig {
+                role: "default_model".into(),
+                provider: "local".into(),
+                model: "llama3.2".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(llm.is_configured(EndpointRole::DefaultModel));
+        let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
+        assert!(endpoint_credentials_ready(&ep));
     }
 }

@@ -420,6 +420,85 @@ impl InboxBus {
         Ok(())
     }
 
+    /// Agents whose registry `parent` equals `parent` (spawned children).
+    /// Filters under one lock without the online-first sort used by
+    /// [`Self::list_agents`] (cascade / spawn caps care about identity, not UI order).
+    pub fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>> {
+        validate_agent_name(parent)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        let now = Local::now();
+        Ok(self
+            .read_registry_unlocked()?
+            .into_values()
+            .filter(|e| e.parent.as_deref() == Some(parent))
+            .map(|e| AgentInfo {
+                status: if is_online(&e.last_seen, now) {
+                    AgentStatus::Online
+                } else {
+                    AgentStatus::Offline
+                },
+                name: e.name,
+                last_seen: e.last_seen,
+                started_at: e.started_at,
+                title: e.title,
+                role: e.role,
+                parent: e.parent,
+                capabilities: e.capabilities,
+            })
+            .collect())
+    }
+
+    /// BFS descendants of `root` via registry `parent` links (cycle-safe).
+    pub fn list_descendants(&self, root: &str) -> anyhow::Result<Vec<String>> {
+        validate_agent_name(root)?;
+        let _lock = LockGuard::acquire(&self.root)?;
+        self.ensure_dir()?;
+        let reg = self.read_registry_unlocked()?;
+        let mut by_parent: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for e in reg.values() {
+            if let Some(p) = e.parent.as_deref() {
+                by_parent
+                    .entry(p.to_string())
+                    .or_default()
+                    .push(e.name.clone());
+            }
+        }
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut queue = vec![root.to_string()];
+        seen.insert(root.to_string());
+        while let Some(cur) = queue.pop() {
+            let Some(kids) = by_parent.get(&cur) else {
+                continue;
+            };
+            for child in kids {
+                if seen.insert(child.clone()) {
+                    out.push(child.clone());
+                    queue.push(child.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Deliver a low-trust system notice to `to` (used for parent-ended
+    /// cascade). Missing mailbox is a soft skip so cascade stays best-effort.
+    pub fn deliver_system_notice(&self, from: &str, to: &str, text: &str) -> anyhow::Result<()> {
+        validate_agent_name(from)?;
+        validate_agent_name(to)?;
+        let mut env = Envelope::new(from, to, text);
+        env.r#type = MessageType::System;
+        match self.deliver(to, &env) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::debug!("deliver_system_notice to {to} skipped: {e}");
+                Ok(())
+            }
+        }
+    }
+
     /// All registered agents with computed liveness, online first.
     pub fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
         let _lock = LockGuard::acquire(&self.root)?;
@@ -1393,6 +1472,39 @@ mod tests {
         // New registrations without a title stay untitled.
         bus.register("ses-b", &[]).unwrap();
         assert!(bus.list_agents().unwrap()[1].title.is_none());
+    }
+
+    #[test]
+    fn list_children_filters_by_parent() {
+        let (_dir, bus) = test_bus();
+        bus.register_with_profile("ses-parent", &[], Some("p"), None, None)
+            .unwrap();
+        bus.register_with_profile("ses-c1", &[], Some("c1"), Some("worker"), Some("ses-parent"))
+            .unwrap();
+        bus.register_with_profile("ses-c2", &[], Some("c2"), None, Some("ses-parent"))
+            .unwrap();
+        bus.register_with_profile("ses-other", &[], None, None, Some("ses-else"))
+            .unwrap();
+        let kids = bus.list_children("ses-parent").unwrap();
+        let mut names: Vec<_> = kids.into_iter().map(|a| a.name).collect();
+        names.sort();
+        assert_eq!(names, vec!["ses-c1", "ses-c2"]);
+    }
+
+    #[test]
+    fn list_descendants_bfs_and_cycle_safe() {
+        let (_dir, bus) = test_bus();
+        bus.register_with_profile("ses-root", &[], None, None, None)
+            .unwrap();
+        bus.register_with_profile("ses-a", &[], None, None, Some("ses-root"))
+            .unwrap();
+        bus.register_with_profile("ses-b", &[], None, None, Some("ses-a"))
+            .unwrap();
+        bus.register_with_profile("ses-c", &[], None, None, Some("ses-root"))
+            .unwrap();
+        let mut names = bus.list_descendants("ses-root").unwrap();
+        names.sort();
+        assert_eq!(names, vec!["ses-a", "ses-b", "ses-c"]);
     }
 
     #[test]

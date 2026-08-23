@@ -1,17 +1,18 @@
 //! Text-to-speech (TTS) capability.
 //!
 //! Unified dispatch entry point: [`build_tts_client`] maps a `TtsConfig`
-//! provider id to a concrete client. Providers:
-//! - `none`: no client
-//! - `openai`: OpenAI `/v1/audio/speech` (tts-1 / tts-1-hd / gpt-4o-mini-tts)
-//! - `elevenlabs`: ElevenLabs `/v1/text-to-speech/{voice_id}`
+//! provider id to a concrete client. `provider` is either:
+//! - `none` / empty: no client
+//! - a name from `llm.providers`: credentials (base URL + API key) and the
+//!   OpenAI-compatible vs ElevenLabs backend are taken from that provider
+//! - legacy `openai` / `elevenlabs`: uses `TtsConfig.api_key` / `base_url`
 //!
 //! Every client returns raw audio bytes (MP3); decoding/playback is the
 //! caller's job.
 
 use anyhow::Result;
 use async_trait::async_trait;
-use haven_common::config::TtsConfig;
+use haven_common::config::{ProviderConfig, TtsConfig, provider_config_wire_style};
 use std::time::Duration;
 
 /// Trait for text-to-speech synthesis. Implementations receive plain text
@@ -21,14 +22,64 @@ pub trait TtsClient: Send + Sync {
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>>;
 }
 
-/// Build the TTS client for a given config. Returns `None` when the
-/// configured provider is `none`, and an error for an unknown provider id.
-pub fn build_tts_client(cfg: &TtsConfig) -> Result<Option<Box<dyn TtsClient>>> {
-    let timeout = Duration::from_secs(cfg.timeout_secs);
-    let client: Box<dyn TtsClient> = match cfg.provider.as_str() {
-        "none" => return Ok(None),
-        "openai" => Box::new(OpenAiTtsClient::new(cfg, timeout)),
-        "elevenlabs" => Box::new(ElevenLabsTtsClient::new(cfg, timeout)),
+/// Resolve TTS config against named LLM providers. Returns `None` when TTS
+/// is disabled (`none` / empty). Rewrites a provider-name reference into a
+/// concrete backend (`openai` / `elevenlabs`) with that provider's URL + key.
+pub fn resolve_tts_config(
+    cfg: &TtsConfig,
+    providers: &[ProviderConfig],
+) -> Result<Option<TtsConfig>> {
+    let name = cfg.provider.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    // Named llm.providers win over legacy capability ids so a provider
+    // named `openai` / `elevenlabs` reuses that entry's URL + key.
+    if let Some(p) = providers.iter().find(|p| p.name == name) {
+        let backend = tts_backend_for(p)?;
+        return Ok(Some(TtsConfig {
+            provider: backend.to_string(),
+            api_key: p.api_key.clone(),
+            base_url: p.base_url.clone(),
+            model: cfg.model.clone(),
+            voice: cfg.voice.clone(),
+            timeout_secs: cfg.timeout_secs,
+        }));
+    }
+    if name == "openai" || name == "elevenlabs" {
+        return Ok(Some(cfg.clone()));
+    }
+    Err(anyhow::anyhow!("TTS references unknown provider '{name}'"))
+}
+
+fn tts_backend_for(p: &ProviderConfig) -> Result<&'static str> {
+    use haven_common::config::is_openai_family_wire_style;
+    let style = provider_config_wire_style(p);
+    if style == "elevenlabs" || p.provider.eq_ignore_ascii_case("elevenlabs") {
+        return Ok("elevenlabs");
+    }
+    if is_openai_family_wire_style(style) {
+        return Ok("openai");
+    }
+    anyhow::bail!(
+        "provider '{}' (api_style={style}) does not support TTS; use OpenAI-compatible or ElevenLabs",
+        p.name
+    )
+}
+
+/// Build the TTS client for a given config, resolving named LLM providers
+/// when `providers` is supplied. Returns `None` when disabled.
+pub fn build_tts_client(
+    cfg: &TtsConfig,
+    providers: &[ProviderConfig],
+) -> Result<Option<Box<dyn TtsClient>>> {
+    let Some(resolved) = resolve_tts_config(cfg, providers)? else {
+        return Ok(None);
+    };
+    let timeout = Duration::from_secs(resolved.timeout_secs);
+    let client: Box<dyn TtsClient> = match resolved.provider.as_str() {
+        "openai" => Box::new(OpenAiTtsClient::new(&resolved, timeout)),
+        "elevenlabs" => Box::new(ElevenLabsTtsClient::new(&resolved, timeout)),
         other => anyhow::bail!("unknown TTS provider: {}", other),
     };
     Ok(Some(client))
@@ -186,11 +237,15 @@ fn media_body_error(kind: &str, status: reqwest::StatusCode, body: &str) -> anyh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::TtsConfig;
+    use haven_common::config::{ProviderConfig, TtsConfig};
 
     #[test]
     fn tts_default_cfg_dispatches_none() {
-        assert!(build_tts_client(&TtsConfig::default()).unwrap().is_none());
+        assert!(
+            build_tts_client(&TtsConfig::default(), &[])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -199,8 +254,8 @@ mod tests {
             provider: "nope".into(),
             ..Default::default()
         };
-        let err = build_tts_client(&cfg).err().expect("expected error");
-        assert!(err.to_string().contains("unknown TTS provider"));
+        let err = build_tts_client(&cfg, &[]).err().expect("expected error");
+        assert!(err.to_string().contains("unknown provider"));
     }
 
     #[test]
@@ -213,10 +268,78 @@ mod tests {
                 ..Default::default()
             };
             assert!(
-                build_tts_client(&cfg).unwrap().is_some(),
+                build_tts_client(&cfg, &[]).unwrap().is_some(),
                 "provider {provider} should build"
             );
         }
+    }
+
+    #[test]
+    fn tts_resolves_named_llm_provider() {
+        let providers = vec![ProviderConfig {
+            name: "my-openai".into(),
+            provider: "openai".into(),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "secret".into(),
+            ..Default::default()
+        }];
+        let cfg = TtsConfig {
+            provider: "my-openai".into(),
+            model: "tts-1-hd".into(),
+            voice: "nova".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_tts_config(&cfg, &providers)
+            .unwrap()
+            .expect("resolved");
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.api_key, "secret");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
+        assert_eq!(resolved.model, "tts-1-hd");
+        assert_eq!(resolved.voice, "nova");
+        assert!(build_tts_client(&cfg, &providers).unwrap().is_some());
+    }
+
+    #[test]
+    fn tts_named_provider_openai_wins_over_legacy_id() {
+        let providers = vec![ProviderConfig {
+            name: "openai".into(),
+            provider: "openai".into(),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "from-provider".into(),
+            ..Default::default()
+        }];
+        let cfg = TtsConfig {
+            provider: "openai".into(),
+            api_key: "legacy".into(),
+            base_url: "https://legacy.example/v1".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_tts_config(&cfg, &providers)
+            .unwrap()
+            .expect("resolved");
+        assert_eq!(resolved.api_key, "from-provider");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
+    }
+
+    #[test]
+    fn tts_rejects_unsupported_provider_style() {
+        let providers = vec![ProviderConfig {
+            name: "claude".into(),
+            provider: "anthropic".into(),
+            api_style: Some("anthropic".into()),
+            base_url: "https://api.anthropic.com".into(),
+            api_key: "k".into(),
+            ..Default::default()
+        }];
+        let cfg = TtsConfig {
+            provider: "claude".into(),
+            ..Default::default()
+        };
+        let err = resolve_tts_config(&cfg, &providers)
+            .err()
+            .expect("expected error");
+        assert!(err.to_string().contains("does not support TTS"));
     }
 
     #[test]

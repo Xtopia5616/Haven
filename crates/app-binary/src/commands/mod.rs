@@ -109,10 +109,13 @@ pub(crate) async fn rebuild_router(state: &AppState, ctx: &str) -> Result<(), St
         let guard = state.config_loader.lock().map_err(|e| log_err(ctx, e))?;
         guard.config().clone()
     };
-    let new_router = Arc::new(LlmRouter::new(config.llm.materialize(
-        Some(config.context_limits.max_response_tokens),
-        Some(config.context_limits.reasoning_echo_max_chars),
-    )));
+    let new_router = Arc::new(LlmRouter::with_default_context_window(
+        config.llm.materialize(
+            Some(config.context_limits.max_response_tokens),
+            Some(config.context_limits.reasoning_echo_max_chars),
+        ),
+        config.context_limits.default_context_window,
+    ));
     hot_swap_router(state, new_router).await
 }
 
@@ -127,22 +130,27 @@ pub(crate) async fn hot_swap_router(
     state.agent.replace_router(new_router.clone());
     state.tools.set_router(new_router.clone()).await;
 
-    let stt_config = {
+    let (stt_config, providers) = {
         let cfg = state
             .config_loader
             .lock()
             .map_err(|e| log_err("hot_swap_router", e))?;
-        cfg.config().media.stt.clone()
+        let c = cfg.config();
+        (c.media.stt.clone(), c.llm.providers.clone())
     };
     let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.tools.mcp_manager.clone());
-    let stt_client: Option<Arc<dyn haven_llm::SttClient>> =
-        match build_stt_client(new_router.clone(), Some(mcp_caller), &stt_config) {
-            Ok(client) => client.map(std::sync::Arc::from),
-            Err(e) => {
-                tracing::warn!("STT client rebuild failed, transcription disabled: {e}");
-                None
-            }
-        };
+    let stt_client: Option<Arc<dyn haven_llm::SttClient>> = match build_stt_client(
+        new_router.clone(),
+        Some(mcp_caller),
+        &stt_config,
+        &providers,
+    ) {
+        Ok(client) => client.map(std::sync::Arc::from),
+        Err(e) => {
+            tracing::warn!("STT client rebuild failed, transcription disabled: {e}");
+            None
+        }
+    };
     state.pipeline.set_stt_client(stt_client.clone()).await;
     if stt_config.provider == "llm" {
         state
@@ -157,31 +165,32 @@ pub(crate) async fn hot_swap_router(
     // calls (low confidence / failed dedicated provider) keep routing to the
     // freshly-switched model endpoints.
     {
-        let cfg = state
-            .config_loader
-            .lock()
-            .map_err(|e| log_err("hot_swap_router", e))?
-            .config()
-            .media
-            .clone();
-        let ocr: Option<Arc<dyn haven_llm::OcrClient>> = match haven_llm::build_ocr_client(&cfg.ocr)
-        {
-            Ok(c) => c.map(std::sync::Arc::from),
-            Err(e) => {
-                tracing::warn!("OCR client rebuild failed, OCR disabled: {e}");
-                None
-            }
+        let (media, providers) = {
+            let guard = state
+                .config_loader
+                .lock()
+                .map_err(|e| log_err("hot_swap_router", e))?;
+            let cfg = guard.config();
+            (cfg.media.clone(), cfg.llm.providers.clone())
         };
-        let tts: Option<Arc<dyn haven_llm::TtsClient>> = match haven_llm::build_tts_client(&cfg.tts)
-        {
-            Ok(c) => c.map(std::sync::Arc::from),
-            Err(e) => {
-                tracing::warn!("TTS client rebuild failed, TTS disabled: {e}");
-                None
-            }
-        };
+        let ocr: Option<Arc<dyn haven_llm::OcrClient>> =
+            match haven_llm::build_ocr_client(&media.ocr) {
+                Ok(c) => c.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("OCR client rebuild failed, OCR disabled: {e}");
+                    None
+                }
+            };
+        let tts: Option<Arc<dyn haven_llm::TtsClient>> =
+            match haven_llm::build_tts_client(&media.tts, &providers) {
+                Ok(c) => c.map(std::sync::Arc::from),
+                Err(e) => {
+                    tracing::warn!("TTS client rebuild failed, TTS disabled: {e}");
+                    None
+                }
+            };
         let image_gen: Option<Arc<dyn haven_llm::ImageGenClient>> =
-            match haven_llm::build_image_gen_client(&cfg.image_gen) {
+            match haven_llm::build_image_gen_client(&media.image_gen, &providers) {
                 Ok(c) => c.map(std::sync::Arc::from),
                 Err(e) => {
                     tracing::warn!(
@@ -191,7 +200,7 @@ pub(crate) async fn hot_swap_router(
                 }
             };
         let gateway = Arc::new(haven_llm::media::MediaGateway::new(
-            new_router, stt_client, ocr, tts, image_gen, cfg,
+            new_router, stt_client, ocr, tts, image_gen, media,
         ));
         state.agent.set_gateway(Some(gateway)).await;
     }

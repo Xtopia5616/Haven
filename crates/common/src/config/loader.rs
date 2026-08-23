@@ -319,6 +319,9 @@ impl ConfigLoader {
             if s.stt.api_key.is_empty() {
                 s.stt.api_key = prev.stt.api_key.clone();
             }
+            if s.stt.base_url.is_empty() {
+                s.stt.base_url = prev.stt.base_url.clone();
+            }
             if s.ocr.api_key.is_empty() {
                 s.ocr.api_key = prev.ocr.api_key.clone();
             }
@@ -328,8 +331,14 @@ impl ConfigLoader {
             if s.tts.api_key.is_empty() {
                 s.tts.api_key = prev.tts.api_key.clone();
             }
+            if s.tts.base_url.is_empty() {
+                s.tts.base_url = prev.tts.base_url.clone();
+            }
             if s.image_gen.api_key.is_empty() {
                 s.image_gen.api_key = prev.image_gen.api_key.clone();
+            }
+            if s.image_gen.base_url.is_empty() {
+                s.image_gen.base_url = prev.image_gen.base_url.clone();
             }
             s
         };
@@ -618,13 +627,17 @@ mod tests {
         cfg.media.ocr.api_key = "keep-ocr-key".to_string();
         cfg.media.ocr.api_secret = "keep-ocr-secret".to_string();
         cfg.media.tts.api_key = "keep-tts-key".to_string();
+        cfg.media.tts.base_url = "https://tts-gateway.example/v1".to_string();
         cfg.media.image_gen.api_key = "keep-ig-key".to_string();
+        cfg.media.image_gen.base_url = "https://ig-gateway.example/v1".to_string();
         let mut settings = Settings::from(&cfg);
-        // Frontend sends masked (empty) api keys but new models/voices.
+        // Frontend sends masked (empty) api keys / base URLs but new models/voices.
         settings.media.stt.model = "whisper-1".to_string();
         settings.media.ocr.provider = "baidu".to_string();
         settings.media.tts.voice = "alloy".to_string();
+        settings.media.tts.base_url.clear();
         settings.media.image_gen.model = "gpt-image-1".to_string();
+        settings.media.image_gen.base_url.clear();
         let mut loader = ConfigLoader {
             path: PathBuf::from("unused"),
             config: cfg,
@@ -638,8 +651,10 @@ mod tests {
         assert_eq!(media.ocr.api_secret, "keep-ocr-secret");
         assert_eq!(media.ocr.provider, "baidu");
         assert_eq!(media.tts.api_key, "keep-tts-key");
+        assert_eq!(media.tts.base_url, "https://tts-gateway.example/v1");
         assert_eq!(media.tts.voice, "alloy");
         assert_eq!(media.image_gen.api_key, "keep-ig-key");
+        assert_eq!(media.image_gen.base_url, "https://ig-gateway.example/v1");
         assert_eq!(media.image_gen.model, "gpt-image-1");
     }
 

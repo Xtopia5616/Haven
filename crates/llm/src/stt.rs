@@ -7,13 +7,15 @@
 //! - `mcp`: route through an MCP server exposing `stt.transcribe`
 //! - `llm`: no dedicated client — InputPipeline and MediaGateway both call
 //!   [`LlmRouter::transcribe_audio`] (same single-shot path as OCR `llm`)
-//! - `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: synthesize a
-//!   [`ModelEndpoint`] from [`SttConfig`] and dispatch through `adapter_for`
-
+//! - a name from `llm.providers`: credentials + backend (openai/groq/gemini/
+//!   deepgram/assemblyai) are taken from that provider
+//! - legacy `openai` / `groq` / `gemini` / `deepgram` / `assemblyai`: local
+//!   `api_key` / `base_url` on [`SttConfig`]
+//!
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
-use haven_common::config::{ModelEndpoint, SttConfig};
+use haven_common::config::{ModelEndpoint, ProviderConfig, SttConfig, provider_config_wire_style};
 use haven_common::prompts::STT_SYSTEM_PROMPT;
 use serde_json::Value;
 use std::sync::Arc;
@@ -55,6 +57,70 @@ pub trait McpToolCaller: Send + Sync {
     ) -> anyhow::Result<McpToolOutcome>;
 }
 
+/// Resolve STT config against named LLM providers. Rewrites a provider-name
+/// reference into a concrete backend (`openai` / `groq` / …) with that
+/// provider's URL + key. Leaves `none` / `llm` / `mcp` and legacy capability
+/// ids unchanged when no matching `llm.providers` entry exists.
+pub fn resolve_stt_config(cfg: &SttConfig, providers: &[ProviderConfig]) -> Result<SttConfig> {
+    let name = cfg.provider.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
+        return Ok(cfg.clone());
+    }
+    // Named llm.providers win over legacy capability ids.
+    if let Some(p) = providers.iter().find(|p| p.name == name) {
+        return stt_from_provider(cfg, p);
+    }
+    if matches!(
+        name,
+        "openai" | "groq" | "gemini" | "deepgram" | "assemblyai"
+    ) {
+        return Ok(cfg.clone());
+    }
+    anyhow::bail!("STT references unknown provider '{name}'")
+}
+
+fn stt_from_provider(cfg: &SttConfig, p: &ProviderConfig) -> Result<SttConfig> {
+    let backend = stt_backend_for(p)?;
+    Ok(SttConfig {
+        provider: backend.to_string(),
+        mcp_server: None,
+        api_key: p.api_key.clone(),
+        base_url: p.base_url.clone(),
+        model: cfg.model.clone(),
+        timeout_secs: cfg.timeout_secs,
+        min_confidence: cfg.min_confidence,
+    })
+}
+
+fn stt_backend_for(p: &ProviderConfig) -> Result<&'static str> {
+    use haven_common::config::is_openai_family_wire_style;
+    let style = provider_config_wire_style(p);
+    if style == "elevenlabs" || p.provider.eq_ignore_ascii_case("elevenlabs") {
+        anyhow::bail!(
+            "provider '{}' is TTS-only (ElevenLabs); use OpenAI-compatible, Gemini, Deepgram, or AssemblyAI for STT",
+            p.name
+        );
+    }
+    match style {
+        "deepgram" => Ok("deepgram"),
+        "assemblyai" => Ok("assemblyai"),
+        "gemini" => Ok("gemini"),
+        _ if is_openai_family_wire_style(style) => {
+            if p.provider.eq_ignore_ascii_case("groq")
+                || p.base_url.to_ascii_lowercase().contains("groq.com")
+            {
+                Ok("groq")
+            } else {
+                Ok("openai")
+            }
+        }
+        other => anyhow::bail!(
+            "provider '{}' (api_style={other}) does not support STT; use OpenAI-compatible, Gemini, Deepgram, or AssemblyAI",
+            p.name
+        ),
+    }
+}
+
 /// Build the STT client for a given config. Returns `None` when the configured
 /// provider does not need a client (e.g. `none`), and returns an error for an
 /// unknown provider id. `mcp` is the MCP caller injected by the app layer
@@ -64,22 +130,24 @@ pub fn build_stt_client(
     _router: Arc<LlmRouter>,
     mcp: Option<Arc<dyn McpToolCaller>>,
     cfg: &SttConfig,
+    providers: &[ProviderConfig],
 ) -> Result<Option<Box<dyn SttClient>>> {
     // `_router` is unused: `provider == "llm"` is wired through
     // InputPipeline::set_stt_router / MediaGateway::extract_via_llm instead.
-    let client: Box<dyn SttClient> = match cfg.provider.as_str() {
+    let resolved = resolve_stt_config(cfg, providers)?;
+    let client: Box<dyn SttClient> = match resolved.provider.as_str() {
         "none" | "llm" => return Ok(None),
         "mcp" => {
-            let server = cfg.mcp_server.clone().ok_or_else(|| {
+            let server = resolved.mcp_server.clone().ok_or_else(|| {
                 anyhow::anyhow!("STT provider is 'mcp' but no mcp_server is configured")
             })?;
             let caller = mcp.ok_or_else(|| {
                 anyhow::anyhow!("STT provider is 'mcp' but no MCP caller is available")
             })?;
-            Box::new(McpSttClient::new(caller, &server, cfg.timeout_secs))
+            Box::new(McpSttClient::new(caller, &server, resolved.timeout_secs))
         }
         "openai" | "groq" | "gemini" | "deepgram" | "assemblyai" => {
-            let endpoint = endpoint_from_stt_config(cfg);
+            let endpoint = endpoint_from_stt_config(&resolved);
             Box::new(LlmClientSttBridge {
                 client: adapter_for(&endpoint),
             })
@@ -105,7 +173,12 @@ pub fn endpoint_from_stt_config(cfg: &SttConfig) -> ModelEndpoint {
             "https://generativelanguage.googleapis.com/v1beta",
             "gemini-2.5-flash",
         ),
-        "deepgram" => ("deepgram", Some("deepgram".into()), "https://api.deepgram.com", "nova-3"),
+        "deepgram" => (
+            "deepgram",
+            Some("deepgram".into()),
+            "https://api.deepgram.com",
+            "nova-3",
+        ),
         "assemblyai" => (
             "assemblyai",
             Some("assemblyai".into()),
@@ -239,8 +312,7 @@ pub(crate) async fn transcribe_via_chat(
         Ok(r) => r,
         Err(e) => {
             let msg = e.to_string();
-            if msg.contains("input_audio")
-                || msg.contains("Only text and image_url are supported")
+            if msg.contains("input_audio") || msg.contains("Only text and image_url are supported")
             {
                 return Err(LlmError::RequestFailed(format!(
                     "audio_model endpoint does not support audio input ({msg}). \
@@ -462,18 +534,18 @@ mod tests {
         };
         let router = mock_router("unused");
         let mcp: Arc<dyn McpToolCaller> = Arc::new(NoopMcpCaller);
-        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
+        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[]).unwrap();
         assert!(client.is_none());
 
         let cfg = SttConfig {
             provider: "llm".into(),
             ..Default::default()
         };
-        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
+        let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[]).unwrap();
         assert!(client.is_none(), "llm provider uses router path, no client");
 
         let cfg = test_stt_cfg("mcp");
-        let err = build_stt_client(router.clone(), Some(mcp.clone()), &cfg)
+        let err = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[])
             .err()
             .expect("expected mcp without server to fail");
         assert!(err.to_string().contains("mcp_server"));
@@ -483,14 +555,14 @@ mod tests {
             mcp_server: Some("svc".into()),
             ..Default::default()
         };
-        let err = build_stt_client(router.clone(), None, &cfg)
+        let err = build_stt_client(router.clone(), None, &cfg, &[])
             .err()
             .expect("expected mcp without caller to fail");
         assert!(err.to_string().contains("MCP caller"));
 
         for provider in ["openai", "groq", "gemini", "deepgram", "assemblyai"] {
             let cfg = test_stt_cfg(provider);
-            let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg).unwrap();
+            let client = build_stt_client(router.clone(), Some(mcp.clone()), &cfg, &[]).unwrap();
             assert!(
                 client.is_some(),
                 "provider {provider} should yield a client"
@@ -501,10 +573,53 @@ mod tests {
     #[test]
     fn build_stt_client_unknown_provider_errors() {
         let cfg = test_stt_cfg("not-a-provider");
-        let err = build_stt_client(mock_router("unused"), None, &cfg)
+        let err = build_stt_client(mock_router("unused"), None, &cfg, &[])
             .err()
             .expect("expected unknown provider to fail");
-        assert!(err.to_string().contains("unknown STT provider"));
+        assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn resolve_stt_named_provider_reuses_credentials() {
+        use haven_common::config::ProviderConfig;
+        let providers = vec![ProviderConfig {
+            name: "whisper-gw".into(),
+            provider: "openai".into(),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "from-provider".into(),
+            ..Default::default()
+        }];
+        let cfg = SttConfig {
+            provider: "whisper-gw".into(),
+            model: "whisper-1".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_stt_config(&cfg, &providers).unwrap();
+        assert_eq!(resolved.provider, "openai");
+        assert_eq!(resolved.api_key, "from-provider");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
+        assert_eq!(resolved.model, "whisper-1");
+    }
+
+    #[test]
+    fn resolve_stt_named_openai_wins_over_legacy() {
+        use haven_common::config::ProviderConfig;
+        let providers = vec![ProviderConfig {
+            name: "openai".into(),
+            provider: "openai".into(),
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "from-provider".into(),
+            ..Default::default()
+        }];
+        let cfg = SttConfig {
+            provider: "openai".into(),
+            api_key: "legacy".into(),
+            base_url: "https://legacy.example/v1".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_stt_config(&cfg, &providers).unwrap();
+        assert_eq!(resolved.api_key, "from-provider");
+        assert_eq!(resolved.base_url, "https://gateway.example/v1");
     }
 
     #[test]

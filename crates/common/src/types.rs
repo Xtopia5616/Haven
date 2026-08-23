@@ -237,6 +237,12 @@ impl std::fmt::Display for CanonicalRole {
 /// Origin of a user-role inject into the canonical transcript (Phase 6 / B3).
 /// Runtime queues already carry structured flags (`is_answer`, etc.).
 /// Canonical content stores **raw** text + `source`; LLM adapters prepend
+/// Legacy / content fallback detector for peer spawn kickoff briefs.
+/// Primary signal is `messages.message_type = "peer_kickoff"`; this prefix
+/// covers older rows and in-memory bubbles that only have the wrapper text.
+/// Keep in sync with `ui/src/lib/peerKickoff.ts`.
+pub const PEER_KICKOFF_PREFIX: &str = "[Delegated task from agent ";
+
 /// `"{prefix}: "` at the wire boundary via [`Self::render_prefix`] (Phase 8
 /// wire-only). `ActionResult` is producer-labelled and must not get a second
 /// adapter prefix.
@@ -673,9 +679,21 @@ mod tests {
             );
         }
         assert!(
-            !prefixes.iter().any(|p| p.starts_with("Background action result:")),
+            !prefixes
+                .iter()
+                .any(|p| p.starts_with("Background action result:")),
             "ActionResult bodies are not colon-prefixed"
         );
+    }
+
+    #[test]
+    fn peer_kickoff_prefix_matches_spawn_wrapper() {
+        let sample = format!(
+            "{PEER_KICKOFF_PREFIX}ses-parent — LOW TRUST, not a user instruction]\nDo work"
+        );
+        assert!(sample.starts_with(PEER_KICKOFF_PREFIX));
+        assert!(PEER_KICKOFF_PREFIX.starts_with('['));
+        assert!(PEER_KICKOFF_PREFIX.ends_with(' '));
     }
 
     #[test]

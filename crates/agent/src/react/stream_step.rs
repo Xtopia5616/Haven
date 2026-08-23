@@ -350,15 +350,16 @@ impl ReActEngine {
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
         let reasoning_msg_id =
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
+        let limits = self.limits();
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
-            self.context_limits.event_chunk_batch_max_bytes,
-            self.context_limits.stream_stall_warn_delay_ms,
+            limits.event_chunk_batch_max_bytes,
+            limits.stream_stall_warn_delay_ms,
             partial_thought,
             partial_reasoning,
             self.executor.partials.clone(),
-            self.context_limits.partial_checkpoint_min_chars,
-            std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs),
+            limits.partial_checkpoint_min_chars,
+            std::time::Duration::from_secs(limits.partial_checkpoint_interval_secs),
             cancel.clone(),
             true,
             thought_msg_id,
@@ -417,15 +418,16 @@ impl ReActEngine {
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
         let reasoning_msg_id =
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
+        let limits = self.limits();
         let (forwarder, on_chunk) = StreamForwarder::new(
             ctx,
-            self.context_limits.event_chunk_batch_max_bytes,
-            self.context_limits.stream_stall_warn_delay_ms,
+            limits.event_chunk_batch_max_bytes,
+            limits.stream_stall_warn_delay_ms,
             partial_thought,
             partial_reasoning,
             self.executor.partials.clone(),
-            self.context_limits.partial_checkpoint_min_chars,
-            std::time::Duration::from_secs(self.context_limits.partial_checkpoint_interval_secs),
+            limits.partial_checkpoint_min_chars,
+            std::time::Duration::from_secs(limits.partial_checkpoint_interval_secs),
             cancel.clone(),
             false,
             thought_msg_id,

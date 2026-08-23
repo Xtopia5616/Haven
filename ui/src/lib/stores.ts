@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 
@@ -174,8 +174,56 @@ export async function refreshActionHistory(kind: string | null = 'scheduled', li
 }
 
 /** Delete a persisted action row (history cleanup) by id. */
-export async function deleteAction(id: string) {
+export function deleteAction(id: string) {
 	return invoke('delete_action', { actionId: id });
+}
+
+/**
+ * Persist a terminal background-action payload onto any tool cards still
+ * bound via `actionId`, then clear that bind so the card cannot fall back to
+ * the original "running" observation ack.
+ */
+export function finalizeBackgroundActionMessages(payload: Record<string, unknown>) {
+	const actionId =
+		(typeof payload.action_id === 'string' && payload.action_id) ||
+		(typeof payload.id === 'string' && payload.id) ||
+		'';
+	if (!actionId) return;
+	const status = typeof payload.status === 'string' ? payload.status : 'completed';
+	const rawOut =
+		typeof payload.output === 'string'
+			? payload.output
+			: typeof payload.error === 'string'
+				? payload.error
+				: '';
+	const finalContent =
+		typeof rawOut === 'string' && rawOut.trim().startsWith('{')
+			? rawOut
+			: JSON.stringify({
+					output: rawOut,
+					background: true,
+					action_id: actionId,
+					status,
+					...(payload.exit_code != null ? { exit_code: payload.exit_code } : {}),
+					...(payload.error && !payload.output ? { error: payload.error } : {}),
+				});
+	const all = get(sessionMessagesStore) || {};
+	for (const tid of Object.keys(all)) {
+		updateSessionMessages(tid, (m) => {
+			let changed = false;
+			const next = m.map((msg) => {
+				if (msg.actionId !== actionId) return msg;
+				changed = true;
+				return {
+					...msg,
+					content: finalContent,
+					actionId: null,
+					streaming: false,
+				};
+			});
+			return changed ? next : m;
+		});
+	}
 }
 
 export const notificationStore = writable<Array<{ id: string; msg: string; type: string }>>([]);

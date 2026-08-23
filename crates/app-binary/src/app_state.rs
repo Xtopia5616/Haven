@@ -83,16 +83,19 @@ impl AppState {
         });
 
         let cfg = config_loader.config().clone();
+        let context_limits = cfg.context_limits.clone();
+        let context_limits_clone = context_limits.clone();
         let llm_config = cfg.llm.materialize(
-            Some(cfg.context_limits.max_response_tokens),
-            Some(cfg.context_limits.reasoning_echo_max_chars),
+            Some(context_limits.max_response_tokens),
+            Some(context_limits.reasoning_echo_max_chars),
         );
-        let router = Arc::new(LlmRouter::new(llm_config));
+        let router = Arc::new(LlmRouter::with_default_context_window(
+            llm_config,
+            context_limits.default_context_window,
+        ));
         let max_steps = cfg.session.max_steps;
         let session_max_steps = cfg.session.session_max_steps;
         let conversation_window_size = cfg.memory.session_window_size;
-        let context_limits = cfg.context_limits.clone();
-        let context_limits_clone = context_limits.clone();
 
         let tools = Arc::new(ToolsManager::new());
 
@@ -160,14 +163,18 @@ impl AppState {
         // or `none`, the pipeline gets no client so transcription is disabled.
         let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
             std::sync::Arc::new(tools.mcp_manager.clone());
-        let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
-            match build_stt_client(router.clone(), Some(mcp_caller), stt_config) {
-                Ok(client) => client.map(std::sync::Arc::from),
-                Err(e) => {
-                    tracing::warn!("STT client build failed, transcription disabled: {e}");
-                    None
-                }
-            };
+        let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> = match build_stt_client(
+            router.clone(),
+            Some(mcp_caller),
+            stt_config,
+            &cfg.llm.providers,
+        ) {
+            Ok(client) => client.map(std::sync::Arc::from),
+            Err(e) => {
+                tracing::warn!("STT client build failed, transcription disabled: {e}");
+                None
+            }
+        };
         pipeline.set_stt_client(stt_client.clone()).await;
         // `provider == "llm"`: hotkey transcription uses the same
         // `LlmRouter::transcribe_audio` path as MediaGateway (no LlmSttAdapter).
@@ -193,7 +200,7 @@ impl AppState {
                     }
                 };
             let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
-                match haven_llm::build_tts_client(&cfg.media.tts) {
+                match haven_llm::build_tts_client(&cfg.media.tts, &cfg.llm.providers) {
                     Ok(c) => c.map(std::sync::Arc::from),
                     Err(e) => {
                         tracing::warn!("TTS client build failed, TTS disabled: {e}");
@@ -201,7 +208,7 @@ impl AppState {
                     }
                 };
             let image_gen: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
-                match haven_llm::build_image_gen_client(&cfg.media.image_gen) {
+                match haven_llm::build_image_gen_client(&cfg.media.image_gen, &cfg.llm.providers) {
                     Ok(c) => c.map(std::sync::Arc::from),
                     Err(e) => {
                         tracing::warn!(
@@ -406,9 +413,7 @@ impl AppState {
 
             agent.start();
 
-            if !catalog_finished
-                && let Err(e) = catalog.await
-            {
+            if !catalog_finished && let Err(e) = catalog.await {
                 tracing::warn!("bootstrap catalog task panicked: {e}");
             }
 

@@ -188,8 +188,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
                     attachments, voice
-             FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text')
-             ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+             FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
+              ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id, limit], map_message_row)?;
         let mut msgs = Vec::new();

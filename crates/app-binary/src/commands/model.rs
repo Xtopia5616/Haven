@@ -83,15 +83,7 @@ fn stt_only_catalog(api_style: Option<&str>, provider_hint: &str) -> Option<Vec<
     Some(
         models
             .iter()
-            .map(|id| ModelInfo {
-                id: (*id).into(),
-                provider: provider.into(),
-                name: (*id).into(),
-                context_window: 0,
-                supports_streaming: false,
-                supports_tools: false,
-                supports_vision: false,
-            })
+            .map(|id| ModelInfo::bare(*id, provider))
             .collect(),
     )
 }
@@ -162,16 +154,29 @@ fn resolve_discovery_auth(
 }
 
 /// True when the settings UI should treat a provider as configured.
-/// A stored API key always counts; llama.cpp is commonly local and keyless.
+/// Delegates to [`haven_common::config::provider_credentials_ready`] so UI
+/// status and runtime `LlmConfig::is_configured` stay aligned.
 fn provider_is_configured(p: &ProviderConfig) -> bool {
-    !p.api_key.is_empty()
-        || matches!(p.api_style.as_deref(), Some("llama.cpp"))
-        || p.provider == "llama.cpp"
+    haven_common::config::provider_credentials_ready(p)
+}
+
+/// STT key status: named `llm.providers` entry wins; else legacy `api_key`.
+fn stt_key_configured(stt: &haven_common::config::SttConfig, providers: &[ProviderConfig]) -> bool {
+    let name = stt.provider.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("none") || name == "llm" || name == "mcp" {
+        return false;
+    }
+    if let Some(p) = providers.iter().find(|p| p.name == name) {
+        return provider_is_configured(p);
+    }
+    !stt.api_key.is_empty()
 }
 
 /// Build the `{role: bool, providers: {name: bool}, stt/ocr/...}` payload the
 /// settings page uses for StatusDot / Set vs Change. Reads the live config
 /// (same snapshot as model discovery), not a fresh disk reload.
+/// TTS / image-gen reuse `providers` credentials, so they have no separate
+/// key flags here.
 fn api_key_status(cfg: &AppConfig) -> serde_json::Value {
     let mut status = serde_json::Map::new();
     // Per-role status: "usable" = references a configured provider + model.
@@ -192,7 +197,7 @@ fn api_key_status(cfg: &AppConfig) -> serde_json::Value {
     );
     status.insert(
         "stt".to_string(),
-        serde_json::json!(!cfg.media.stt.api_key.is_empty()),
+        serde_json::json!(stt_key_configured(&cfg.media.stt, &cfg.llm.providers)),
     );
     status.insert(
         "ocr".to_string(),
@@ -201,14 +206,6 @@ fn api_key_status(cfg: &AppConfig) -> serde_json::Value {
     status.insert(
         "ocr_secret".to_string(),
         serde_json::json!(!cfg.media.ocr.api_secret.is_empty()),
-    );
-    status.insert(
-        "tts".to_string(),
-        serde_json::json!(!cfg.media.tts.api_key.is_empty()),
-    );
-    status.insert(
-        "image_gen".to_string(),
-        serde_json::json!(!cfg.media.image_gen.api_key.is_empty()),
     );
     serde_json::Value::Object(status)
 }
@@ -239,21 +236,6 @@ pub async fn check_llm_connection(state: State<'_, Arc<AppState>>) -> Result<Str
         .await
         .as_str()
         .to_string())
-}
-
-/// §2.7: List available models from the built-in catalog
-#[tauri::command]
-pub async fn list_models(query: Option<String>) -> Result<Vec<ModelInfo>, String> {
-    let reg = ModelRegistry::new();
-    let results = match query {
-        Some(q) if !q.is_empty() => {
-            // Return owned ModelInfo from search
-            let found = reg.search(&q);
-            found.into_iter().cloned().collect()
-        }
-        _ => reg.all().into_iter().cloned().collect(),
-    };
-    Ok(results)
 }
 
 /// Resolve the auth scheme (header name, prefix) for an STT provider during
@@ -299,16 +281,22 @@ pub async fn discover_models(
 
     // STT-only providers (Deepgram / AssemblyAI) have no `/models` endpoint;
     // return the static catalog so the role picker can still assign a model.
-    // Resolve by media.stt provider, named llm provider, or base URL host so
-    // unsaved UI providers (not yet in config.toml) still get a catalog.
-    if role.as_deref() == Some("stt")
+    // Prefer the explicitly requested named provider / URL host; only fall
+    // back to disk `media.stt.provider` when it matches the request (or no
+    // named provider was supplied).
+    if let Some(name) = provider.as_deref().filter(|n| !n.is_empty()) {
+        if let Some(p) = cfg.llm.provider(name)
+            && let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str())
+        {
+            return Ok(list);
+        }
+        if name.eq_ignore_ascii_case(cfg.media.stt.provider.as_str())
+            && let Some(list) = stt_only_catalog(None, cfg.media.stt.provider.as_str())
+        {
+            return Ok(list);
+        }
+    } else if role.as_deref() == Some("stt")
         && let Some(list) = stt_only_catalog(None, cfg.media.stt.provider.as_str())
-    {
-        return Ok(list);
-    }
-    if let Some(name) = provider.as_deref()
-        && let Some(p) = cfg.llm.provider(name)
-        && let Some(list) = stt_only_catalog(p.api_style.as_deref(), p.provider.as_str())
     {
         return Ok(list);
     }
@@ -317,25 +305,59 @@ pub async fn discover_models(
     }
 
     let key_and_auth = if role.as_deref() == Some("stt") {
-        // STT discovery: the key comes from `media.stt` (or the explicit one),
-        // guarded by the STT provider's effective base URL.
+        // STT discovery: prefer an explicit key, then a named llm.providers
+        // entry (media.stt.provider or `provider` arg), then legacy media.stt.
         let stt = &cfg.media.stt;
-        let stt_base = if stt.base_url.is_empty() {
-            stt_default_base_url(&stt.provider)
-        } else {
-            stt.base_url.as_str()
-        };
         let requested = normalize_endpoint_url(&base_url);
         if !api_key.is_empty() {
-            let (h, pfx) = stt_auth_scheme(&stt.provider);
+            let scheme_name = provider
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .unwrap_or(stt.provider.as_str());
+            let backend = cfg
+                .llm
+                .provider(scheme_name)
+                .map(|p| p.provider.as_str())
+                .unwrap_or(scheme_name);
+            let (h, pfx) = stt_auth_scheme(backend);
             let value = auth_value(&pfx, &api_key);
             Some((api_key.clone(), (h, value)))
-        } else if normalize_endpoint_url(stt_base) == requested {
-            let (h, pfx) = stt_auth_scheme(&stt.provider);
-            let value = auth_value(&pfx, &stt.api_key);
-            Some((stt.api_key.clone(), (h, value)))
+        } else if let Some(name) = provider
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .or(Some(stt.provider.as_str()))
+            .filter(|n| {
+                !matches!(
+                    *n,
+                    "none"
+                        | "llm"
+                        | "mcp"
+                        | "openai"
+                        | "groq"
+                        | "gemini"
+                        | "deepgram"
+                        | "assemblyai"
+                )
+            })
+            && let Some(p) = cfg.llm.provider(name)
+            && normalize_endpoint_url(&p.base_url) == requested
+        {
+            let (h, pfx) = stt_auth_scheme(&p.provider);
+            let value = auth_value(&pfx, &p.api_key);
+            Some((p.api_key.clone(), (h, value)))
         } else {
-            None
+            let stt_base = if stt.base_url.is_empty() {
+                stt_default_base_url(&stt.provider)
+            } else {
+                stt.base_url.as_str()
+            };
+            if normalize_endpoint_url(stt_base) == requested {
+                let (h, pfx) = stt_auth_scheme(&stt.provider);
+                let value = auth_value(&pfx, &stt.api_key);
+                Some((stt.api_key.clone(), (h, value)))
+            } else {
+                None
+            }
         }
     } else {
         resolve_discovery_auth(&cfg, &base_url, &api_key, provider.as_deref())

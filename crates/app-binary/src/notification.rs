@@ -208,10 +208,7 @@ impl DesktopNotifications {
             } => {
                 // Agent 显式 `notify`：双通道默认全开，不读 NotificationConfig
                 //（设置页注明「Agent 通知始终开启」）。
-                self.show_windows_toast(
-                    if title.is_empty() { "Haven" } else { title },
-                    body,
-                );
+                self.show_windows_toast(if title.is_empty() { "Haven" } else { title }, body);
             }
             _ => {}
         }

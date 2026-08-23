@@ -408,9 +408,7 @@ impl OpenAiAdapter {
                     web_search_call: m
                         .web_search_calls
                         .into_iter()
-                        .filter(|c| {
-                            c.get("id").and_then(Value::as_str) != Some("xai_citations")
-                        })
+                        .filter(|c| c.get("id").and_then(Value::as_str) != Some("xai_citations"))
                         .map(normalize_web_search_call_item)
                         .collect(),
                 }
@@ -1434,7 +1432,10 @@ mod tests {
         let headers = client.build_headers();
         assert!(headers.contains_key("x-api-key"));
         // Empty prefix must send the raw key — never `" sk-test"`.
-        assert_eq!(headers.get("x-api-key").unwrap().to_str().unwrap(), "sk-test");
+        assert_eq!(
+            headers.get("x-api-key").unwrap().to_str().unwrap(),
+            "sk-test"
+        );
     }
 
     #[test]
@@ -1560,22 +1561,13 @@ mod tests {
         };
         let client = OpenAiAdapter::new_with_style(ep, "xai");
         assert_eq!(client.style(), "xai");
-        let auto = client.build_request_body_with_mode(
-            vec![],
-            vec![],
-            false,
-            WebSearchMode::Auto,
-        );
+        let auto = client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Auto);
         assert_eq!(
             auto.search_parameters,
             Some(serde_json::json!({"mode": "auto", "return_citations": true}))
         );
-        let always = client.build_request_body_with_mode(
-            vec![],
-            vec![],
-            false,
-            WebSearchMode::Always,
-        );
+        let always =
+            client.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Always);
         assert_eq!(
             always.search_parameters,
             Some(serde_json::json!({"mode": "on", "return_citations": true}))
@@ -1584,12 +1576,7 @@ mod tests {
         assert!(off.search_parameters.is_none());
         // Non-xAI style never injects search_parameters.
         let chat = OpenAiAdapter::new(ModelEndpoint::default());
-        let body = chat.build_request_body_with_mode(
-            vec![],
-            vec![],
-            false,
-            WebSearchMode::Always,
-        );
+        let body = chat.build_request_body_with_mode(vec![], vec![], false, WebSearchMode::Always);
         assert!(body.search_parameters.is_none());
     }
 
@@ -1619,10 +1606,7 @@ mod tests {
             ..Default::default()
         };
         let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
-        assert_eq!(
-            body.thinking,
-            Some(serde_json::json!({"type": "disabled"}))
-        );
+        assert_eq!(body.thinking, Some(serde_json::json!({"type": "disabled"})));
         assert!(body.reasoning_effort.is_none());
     }
 

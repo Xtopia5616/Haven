@@ -81,7 +81,19 @@ impl SessionExecutor {
     /// always marked as Completed —regardless of whether it was still
     /// Running (forced stop) or Paused (naturally finished). Clean up
     /// resources either way. Called from the frontend "结束任务" button.
+    /// Cascades to peer children (BFS) after the parent is torn down.
     pub async fn end_session(&self, session_id: &str) -> anyhow::Result<SessionStatus> {
+        self.end_session_inner(session_id, true).await
+    }
+
+    /// Shared end path. `cascade` controls whether peer descendants are force-
+    /// ended after this session (false when the caller already enumerated the
+    /// subtree via [`Self::cascade_end_children`]).
+    async fn end_session_inner(
+        &self,
+        session_id: &str,
+        cascade: bool,
+    ) -> anyhow::Result<SessionStatus> {
         // Cancel the running token first to interrupt any active ReAct loop.
         // Ensure a real token exists even when the dispatcher hasn't created
         // one yet (race window between try_claim_pending and token insertion);
@@ -120,6 +132,7 @@ impl SessionExecutor {
                 );
                 return Err(e);
             }
+            self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
         {
@@ -152,14 +165,77 @@ impl SessionExecutor {
             self.cleanup_session_maps(session_id).await;
         }
         self.sessions.lock().await.remove(session_id);
+        self.finish_ended_session(session_id, cascade).await;
+        Ok(SessionStatus::Completed)
+    }
+
+    /// Shared post-terminal cleanup: unregister inbox, optional child cascade,
+    /// clear per-session trust. Used by both `end_session` exits and the
+    /// `update_session_status` terminal path.
+    async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
         Self::unregister_from_inbox(session_id);
-        // The conversation is over — its trusted risk levels must not outlive
-        // it (a later conversation must ask again).
+        // Leaf sessions (never spawned peers) skip registry I/O entirely.
+        if cascade && self.may_have_children(session_id).await {
+            self.cascade_end_children(session_id).await;
+        }
+        self.clear_has_children(session_id).await;
         self.tools
             .safety_gateway
             .clear_session_trust(session_id)
             .await;
-        Ok(SessionStatus::Completed)
+    }
+
+    /// Best-effort cascade: BFS-collect descendants, system-notice each, then
+    /// end them without nested cascade (descendants already listed). Emits
+    /// `on_cascade_completed` per child so the UI clears busy state.
+    async fn cascade_end_children(&self, parent_session_id: &str) {
+        let parent = parent_session_id.to_string();
+        let descendants = match tokio::task::spawn_blocking({
+            let parent = parent.clone();
+            move || {
+                let bus = haven_tools::inbox::InboxBus::default_root();
+                let kids = bus.list_descendants(&parent).unwrap_or_default();
+                for child in &kids {
+                    let _ = bus.deliver_system_notice(
+                        &parent,
+                        child,
+                        "Parent session ended; stop work and finish this delegated task.",
+                    );
+                }
+                kids
+            }
+        })
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("cascade_end_children join failed for {parent}: {e}");
+                return;
+            }
+        };
+        for child_id in descendants {
+            if child_id == parent {
+                continue;
+            }
+            let title = self
+                .get_session(&child_id)
+                .await
+                .map(|s| s.title.clone().unwrap_or(s.input))
+                .unwrap_or_default();
+            // End without re-cascading: the BFS list already includes the tree.
+            match Box::pin(self.end_session_inner(&child_id, false)).await {
+                Ok(_) => {
+                    if let Some(cb) = self.on_cascade_completed.snap() {
+                        cb(child_id, title);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        "cascade_end_children: end_session({child_id}) after parent {parent}: {e}"
+                    );
+                }
+            }
+        }
     }
 
     /// Remove a session entirely from the in-memory state.
@@ -354,15 +430,9 @@ impl SessionExecutor {
             self.dequeue_pending(session_id).await;
             self.cleanup_session_maps(session_id).await;
             self.tools.unregister_session(session_id).await;
-            Self::unregister_from_inbox(session_id);
-            // The conversation ended — drop its trusted risk levels too (the
-            // ReAct loop / dispatcher-panic path reaches terminal status
-            // through here, not `end_session`, so this must happen on every
-            // terminal transition or the per-session trust map leaks).
-            self.tools
-                .safety_gateway
-                .clear_session_trust(session_id)
-                .await;
+            // Cascade + unregister + trust clear (ReAct / dispatcher-panic
+            // reach terminal status here, not only via `end_session`).
+            self.finish_ended_session(session_id, true).await;
             if let Some(tx) = self.status_tx.lock().await.remove(session_id) {
                 let _ = tx.send(status);
             }

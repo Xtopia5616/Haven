@@ -15,7 +15,7 @@
 		onstop,
 		toolbarLeft,
 		toolbarRight,
-		// Attachment & compression limits, driven by the settings "输入"
+		// Attachment & compression limits, driven by the settings "媒体"
 		// page via [context_limits]; defaults mirror the backend config.
 		maxImages = 4,
 		maxImageBytes = 10 * 1024 * 1024,

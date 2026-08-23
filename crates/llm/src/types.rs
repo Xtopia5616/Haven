@@ -674,10 +674,7 @@ mod tests {
             "additionalProperties": null
         }));
         assert_eq!(cleaned["additionalProperties"], false);
-        assert_eq!(
-            cleaned["properties"]["cwd"]["additionalProperties"],
-            false
-        );
+        assert_eq!(cleaned["properties"]["cwd"]["additionalProperties"], false);
     }
 
     #[test]

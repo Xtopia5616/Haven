@@ -119,7 +119,9 @@ impl MediaGateway {
                 // Shared `llm` path: one shot through the vision role. No
                 // dedicated client (would duplicate this call on fallback).
                 if self.config.ocr.provider == "llm" {
-                    return self.extract_via_llm(decision, bytes, &media_type, false).await;
+                    return self
+                        .extract_via_llm(decision, bytes, &media_type, false)
+                        .await;
                 }
                 let Some(ocr) = &self.ocr else {
                     // No OCR provider configured: pass the image to the agent
@@ -138,7 +140,8 @@ impl MediaGateway {
                         })
                     }
                     Ok(_) | Err(_) => {
-                        self.extract_via_llm(decision, bytes, &media_type, true).await
+                        self.extract_via_llm(decision, bytes, &media_type, true)
+                            .await
                     }
                 }
             }
@@ -149,7 +152,9 @@ impl MediaGateway {
                 // recording uses the same router method via
                 // InputPipeline::set_stt_router.
                 if self.config.stt.provider == "llm" {
-                    return self.extract_via_llm(decision, bytes, &media_type, false).await;
+                    return self
+                        .extract_via_llm(decision, bytes, &media_type, false)
+                        .await;
                 }
                 let Some(stt) = &self.stt else {
                     return Ok(AttachmentOutcome::PassThrough { decision });
@@ -166,7 +171,8 @@ impl MediaGateway {
                         })
                     }
                     Ok(_) | Err(_) => {
-                        self.extract_via_llm(decision, bytes, &media_type, true).await
+                        self.extract_via_llm(decision, bytes, &media_type, true)
+                            .await
                     }
                 }
             }

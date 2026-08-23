@@ -166,7 +166,8 @@ pub struct ReActEngine {
     max_steps: Mutex<u32>,
     /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
     session_max_steps: Mutex<Option<u32>>,
-    context_limits: ContextLimitsConfig,
+    /// Hot-reloaded via [`Self::set_context_limits`] on settings save.
+    context_limits: std::sync::Mutex<ContextLimitsConfig>,
     run_counter: AtomicU64,
     /// Cross-session messaging: heartbeat + automatic inbox polling.
     messaging: MessagingPoller,
@@ -259,7 +260,7 @@ impl ReActEngine {
             db,
             max_steps: Mutex::new(max_steps),
             session_max_steps: Mutex::new(None),
-            context_limits,
+            context_limits: std::sync::Mutex::new(context_limits),
             run_counter: AtomicU64::new(0),
             messaging: MessagingPoller::new(),
             usage: UsageTracker::new(),
@@ -318,6 +319,18 @@ impl ReActEngine {
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
         *self.router.write().unwrap() = new_router;
+    }
+
+    /// Snapshot of `[context_limits]` (cloned; safe across awaits).
+    pub(crate) fn limits(&self) -> ContextLimitsConfig {
+        self.context_limits.lock().unwrap().clone()
+    }
+
+    /// Hot-reload `[context_limits]` from settings save and drop cached windows
+    /// so the next step re-resolves against the new default.
+    pub fn set_context_limits(&self, limits: ContextLimitsConfig) {
+        *self.context_limits.lock().unwrap() = limits;
+        self.context_windows.clear();
     }
 
     pub fn set_max_steps(&self, max_steps: u32) {
@@ -707,15 +720,16 @@ impl ReActEngine {
     }
 
     /// Resolve the model's true context window for the endpoint used by
-    /// `role` —explicit `context_window` config, else the builtin catalog
-    /// (e.g. 1M for gpt-4.1-nano / Gemini 2.5 Flash), else a 128K default.
-    /// This is the real input budget for the token-usage display, not the
-    /// per-response output cap (`max_tokens`).
+    /// Explicit `context_window` on the role/endpoint when set. Callers fall
+    /// back to `context_limits.default_context_window`. Prefer writing the
+    /// window from provider `/models` metadata into the role slot when the
+    /// user picks a model. This is the real input budget for the token-usage
+    /// display, not the per-response output cap (`max_tokens`).
     pub(super) fn context_window_for_role(
         cfg: &haven_common::config::RouterConfig,
         role: EndpointRole,
     ) -> Option<u32> {
-        Some(haven_llm::registry::context_window_for(cfg.endpoint(role)))
+        haven_llm::registry::context_window_for(cfg.endpoint(role))
     }
 
     /// Resolve the model's true context window for `role` using a per-router
@@ -738,24 +752,25 @@ impl ReActEngine {
         // time and recomputed on the next miss.
         let cfg = router.config().await;
         let window = Self::context_window_for_role(&cfg, role)
-            .unwrap_or(self.context_limits.default_context_window);
+            .unwrap_or(self.limits().default_context_window);
         self.context_windows.insert(ptr, role, window);
         window
     }
 
     /// Build a compactor whose context window reflects the *actual* model for
-    /// the role that will handle the step (explicit `context_window` config,
-    /// else the builtin catalog, else `context_limits.default_context_window`).
-    /// The window comes from `cached_context_window`, so a hot-swapped router
-    /// config takes effect immediately without cloning the full config on
-    /// every step. The compaction threshold (ratio and reserve) and the
-    /// fallback window come from `context_limits`.
+    /// the role that will handle the step (explicit `context_window` on the
+    /// role, else `context_limits.default_context_window`). The window comes
+    /// from `cached_context_window`, so a hot-swapped router config takes
+    /// effect immediately without cloning the full config on every step. The
+    /// compaction threshold (ratio and reserve) and the fallback window come
+    /// from `context_limits`.
     pub(super) async fn context_compactor(&self, role: EndpointRole) -> ContextCompactor {
         let window = self.cached_context_window(role).await;
+        let limits = self.limits();
         ContextCompactor::with_ratio(
             window,
-            self.context_limits.compaction_reserve_tokens,
-            self.context_limits.compaction_ratio,
+            limits.compaction_reserve_tokens,
+            limits.compaction_ratio,
         )
     }
 

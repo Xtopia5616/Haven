@@ -425,6 +425,15 @@
 		try {
 			const ok = await cancelAction(actionId, kind);
 			if (!ok) {
+				// Backend already dropped/finished the action (completed, failed,
+				// or session-end cancel) without a matching live-board update —
+				// clear the ghost row only. Do NOT finalize tool cards as
+				// cancelled: that would overwrite a successful terminal payload
+				// and block a later action:finished repair.
+				removeAction(actionId);
+				if (actionMenuOpen) {
+					refreshActionHistory(null, 50).then((rows) => (actionHistory = rows));
+				}
 				addNotification(
 					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',
 					'warning',

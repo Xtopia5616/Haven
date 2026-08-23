@@ -385,9 +385,18 @@ impl InferenceEngine {
         let window = build_extraction_window(&messages, cursor.as_deref(), &steps);
         if window.messages.is_empty() {
             tracing::debug!("fact inference: no new messages since cursor");
-            // Nothing new to extract; indexing catch-up happens in the
-            // bounded hot-path embed after `infer_session`, or the full
-            // maintenance pass the app scheduler runs.
+            // Still advance when the only new rows were low-trust (peer
+            // kickoff / cross-session) so extraction does not stall forever.
+            if let Some(last) = window.cursor_last {
+                let db = self.db.clone();
+                let key = cursor_key.clone();
+                let _ = db
+                    .run_blocking(move |db| {
+                        db.set_kv(&key, &last)?;
+                        Ok::<(), anyhow::Error>(())
+                    })
+                    .await;
+            }
             return;
         }
 
@@ -642,7 +651,7 @@ impl InferenceEngine {
     /// duplicate facts, purge sensitive facts, flush stale low-confidence
     /// facts, and prune embeddings whose source rows were deleted, then catch
     /// up on vector indexing (facts + episodes, incl. compaction summaries).
-    /// Optionally proposes LLM predicate merges (M6) when BalancedModel is
+    /// Optionally proposes LLM predicate merges (M6) when SmallModel is
     /// configured. Intended for the app-level scheduler (and explicit admin
     /// paths) — not the ReAct hot path, which only runs [`Self::infer_session`].
     ///
@@ -735,7 +744,7 @@ impl InferenceEngine {
     async fn merge_predicates_with_llm(&self) -> u64 {
         if !self
             .router
-            .is_role_configured(EndpointRole::BalancedModel)
+            .is_role_configured(EndpointRole::SmallModel)
             .await
         {
             return 0;
@@ -777,7 +786,7 @@ impl InferenceEngine {
         let merge_prompt = predicate_merge_system_prompt(CANONICAL_MERGE_TARGETS);
         let response = match self
             .router
-            .chat_with_prompt(EndpointRole::BalancedModel, &merge_prompt, &user_content)
+            .chat_with_prompt(EndpointRole::SmallModel, &merge_prompt, &user_content)
             .await
         {
             Ok(r) => r,
@@ -1408,6 +1417,11 @@ fn build_extraction_window(
     }
     let mut messages = Vec::new();
     for (pos, &ui) in user_indices[start_user..].iter().enumerate() {
+        // Peer kickoff / cross-session mail are low-trust and must not become
+        // durable user facts (Plan A trust model).
+        if is_low_trust_extraction_user(&all[ui]) {
+            continue;
+        }
         let abs_user_pos = start_user + pos;
         let (span_start, after_ts) = if abs_user_pos == 0 {
             (0, None)
@@ -1439,6 +1453,21 @@ fn is_extraction_assistant(m: &haven_memory::repositories::messages::Message) ->
         Some("reasoning") | Some("thought") | Some("action") | Some("observation") => false,
         _ => true,
     }
+}
+
+/// Low-trust user rows that must never seed durable facts: peer spawn kickoff
+/// (`message_type=peer_kickoff` or delegated-task wrapper). Cross-session mail
+/// is inject-only (not persisted as user rows), so it is not filtered here.
+fn is_low_trust_extraction_user(m: &haven_memory::repositories::messages::Message) -> bool {
+    if m.role != "user" {
+        return false;
+    }
+    if m.message_type.as_deref() == Some("peer_kickoff") {
+        return true;
+    }
+    m.content
+        .trim_start()
+        .starts_with(haven_common::types::PEER_KICKOFF_PREFIX)
 }
 
 /// Collect up to [`EXTRACTION_MAX_ASSISTANTS_PER_TURN`] assistants (closest to
@@ -1961,6 +1990,24 @@ mod tests {
         assert_eq!(window.messages[0].role, "assistant");
         assert_eq!(window.messages[1].id, confirm.id);
         assert_eq!(window.cursor_last.as_deref(), Some(confirm.id.as_str()));
+    }
+
+    #[test]
+    fn extraction_window_skips_peer_kickoff() {
+        let mut kickoff = make_role_message(
+            "user",
+            "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nDo work",
+        );
+        kickoff.message_type = Some("peer_kickoff".into());
+        let legacy = make_role_message(
+            "user",
+            "[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nold",
+        );
+        let real = make_role_message("user", "My name is Alice");
+        let window = build_extraction_window(&[kickoff.clone(), legacy, real.clone()], None, &[]);
+        assert_eq!(window.messages.len(), 1);
+        assert_eq!(window.messages[0].id, real.id);
+        assert_eq!(window.cursor_last.as_deref(), Some(real.id.as_str()));
     }
 
     #[test]

@@ -1784,9 +1784,9 @@ mod tests {
         )
         .unwrap();
         match in_progress {
-            ResponsesStreamEvent::WebSearchInProgress {
-                item_id: Some(id),
-            } => assert_eq!(id, "ws_1"),
+            ResponsesStreamEvent::WebSearchInProgress { item_id: Some(id) } => {
+                assert_eq!(id, "ws_1")
+            }
             other => panic!("expected WebSearchInProgress with item_id, got {other:?}"),
         }
 
@@ -1795,9 +1795,9 @@ mod tests {
         )
         .unwrap();
         match searching {
-            ResponsesStreamEvent::WebSearchSearching {
-                item_id: Some(id),
-            } => assert_eq!(id, "ws_1"),
+            ResponsesStreamEvent::WebSearchSearching { item_id: Some(id) } => {
+                assert_eq!(id, "ws_1")
+            }
             other => panic!("expected WebSearchSearching with item_id, got {other:?}"),
         }
 

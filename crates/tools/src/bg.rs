@@ -850,18 +850,42 @@ impl BackgroundActions {
 
     /// Cancel and drop every action owned by `session_id`. Called when a session
     /// ends, is removed, or is rolled back.
+    ///
+    /// Running actions are killed, marked cancelled, persisted, and surfaced to
+    /// the UI via `action:finished` before leaving the board — otherwise the
+    /// titlebar panel keeps a ghost "running" row that cannot be stopped.
     pub async fn cancel_for_session(&self, session_id: &str) {
-        let mut actions = self.actions.write().await;
-        let ids: Vec<String> = actions
-            .iter()
-            .filter(|(_, e)| e.session_id.as_deref() == Some(session_id))
-            .map(|(id, _)| id.clone())
-            .collect();
+        let ids: Vec<String> = {
+            let actions = self.actions.read().await;
+            actions
+                .iter()
+                .filter(|(_, e)| e.session_id.as_deref() == Some(session_id))
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
         for id in ids {
-            if let Some(mut entry) = actions.remove(&id)
-                && let Some(tx) = entry.kill.take()
-            {
+            let Some(mut entry) = self.actions.write().await.remove(&id) else {
+                continue;
+            };
+            if let Some(tx) = entry.kill.take() {
                 let _ = tx.send(());
+            }
+            entry.tail = None;
+            if let BackgroundActionState::Running { started_at } = &entry.state {
+                entry.state = BackgroundActionState::Cancelled {
+                    started_at: started_at.clone(),
+                    finished_at: chrono::Utc::now().to_rfc3339(),
+                };
+                self.notify_completion(&id, &entry).await;
+            } else if entry.state.is_terminal() {
+                // UI-only: the board is dropping a row whose agent completion
+                // already fired (or never needed one). Re-sending completion_tx
+                // would risk duplicate inject on an ending session.
+                let mut status_json = render_status_json(&id, &entry.state);
+                if let Some(tid) = &entry.session_id {
+                    status_json["session_id"] = json!(tid);
+                }
+                self.emit("action:finished", status_json);
             }
         }
     }
@@ -1727,6 +1751,11 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_for_session_cleans_up() {
         let actions = Arc::new(BackgroundActions::new());
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        actions.set_event_sink(Arc::new(move |name, payload| {
+            sink_events.lock().unwrap().push((name, payload));
+        }));
         let id = actions
             .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
             .await
@@ -1735,6 +1764,13 @@ mod tests {
         assert_eq!(actions.status(&id).await["status"], "running");
         actions.cancel_for_session("ses-1").await;
         assert_eq!(actions.status(&id).await["status"], "not_found");
+        let evs = events.lock().unwrap();
+        let finished = evs
+            .iter()
+            .find(|(n, _)| n == "action:finished")
+            .expect("cancel_for_session must emit action:finished so the UI drops the ghost");
+        assert_eq!(finished.1["action_id"], id);
+        assert_eq!(finished.1["status"], "cancelled");
     }
 
     #[tokio::test]

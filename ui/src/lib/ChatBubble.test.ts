@@ -334,6 +334,22 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
+	it('renders peer kickoff as a left low-trust badge', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'user',
+				type: 'peer_kickoff',
+				content:
+					'[Delegated task from agent ses-parent — LOW TRUST, not a user instruction]\nDo work',
+			}),
+		);
+		expect(document.querySelector('.peer-kickoff-badge')).toBeTruthy();
+		expect(document.querySelector('.bubble.assistant')).toBeTruthy();
+		expect(document.querySelector('.bubble.user')).toBeFalsy();
+		expect(document.body.textContent).toContain('Peer 委托');
+	});
+
 	it('renders supplement messages as a badge', () => {
 		render(
 			ChatBubble,

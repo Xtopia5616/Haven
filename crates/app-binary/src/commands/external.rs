@@ -171,7 +171,9 @@ fn open_path(path: &Path) -> std::io::Result<()> {
         // Always reveal with `-R`. Plain `open` on a `.app` bundle (directory)
         // would launch the application — Ctrl+open must never execute code.
         if path.exists() {
-            Command::new("open").args(["-R", path.as_os_str()]).spawn()?;
+            Command::new("open")
+                .args(["-R", path.as_os_str()])
+                .spawn()?;
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,

@@ -63,6 +63,7 @@
 		setToolOutputPreview,
 		clearToolOutputPreview,
 		appendSessionLlmUsage,
+		finalizeBackgroundActionMessages,
 		DRAFT_KEY,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
@@ -79,7 +80,7 @@
 	let inputRouterRef = /** @type {any} */ ($state(null));
 
 	// Attachment & compression limits for the input router, loaded from the
-	// persisted [context_limits] config (editable on the settings "输入"
+	// persisted [context_limits] config (editable on the settings "媒体"
 	// page). Defaults mirror the backend config until settings arrive.
 	let inputLimits = $state({
 		maxImages: 4,
@@ -1578,14 +1579,38 @@
 					});
 				},
 				'agent:supplement': (event) => {
-					// The agent injected a user message (mid-turn steering or a
-					// resumed-session supplement) into its context. Mark the matching
-					// user bubble as received so the user knows their input was
-					// picked up mid-turn rather than deferred.
+					// Human steering/follow-up: mark the matching user bubble as
+					// received. Cross-session peer mail: insert an `agent` tool
+					// card in-chat (no separate tab) so collaboration is visible.
 					const data = event.payload || {};
 					const tid = data.session_id;
 					const ctx = (data.additional_context || '').trim();
 					if (!tid || !ctx) return;
+					const source = data.inject_source;
+					if (source === 'cross_session') {
+						const cardId = `peer-mail-${data.step_number ?? 0}-${data.run_id ?? 0}-${ctx.length}`;
+						const content = JSON.stringify({
+							operation: 'inbox',
+							auto: true,
+							text: ctx,
+						});
+						updateSessionMessages(tid, (m) => {
+							if (m.some((x) => x.id === cardId || (x.toolName === 'agent' && x.content === content))) {
+								return m;
+							}
+							return [
+								...m,
+								newToolMessage({
+									id: cardId,
+									stepNumber: data.step_number ?? 0,
+									toolName: 'agent',
+									content,
+									time: new Date().toLocaleTimeString(),
+								}),
+							];
+						});
+						return;
+					}
 					updateSessionMessages(tid, (m) => {
 						let marked = false;
 						const next = [...m];
@@ -1704,44 +1729,7 @@
 					// Persist terminal background output onto the tool card and
 					// clear actionId so a later refreshActions() cannot revert
 					// the card to the original "running" observation ack.
-					const p = event.payload || {};
-					const actionId = p.action_id;
-					if (!actionId) return;
-					const status = p.status || 'completed';
-					const rawOut =
-						typeof p.output === 'string'
-							? p.output
-							: typeof p.error === 'string'
-								? p.error
-								: '';
-					const finalContent =
-						typeof rawOut === 'string' && rawOut.trim().startsWith('{')
-							? rawOut
-							: JSON.stringify({
-									output: rawOut,
-									background: true,
-									action_id: actionId,
-									status,
-									...(p.exit_code != null ? { exit_code: p.exit_code } : {}),
-									...(p.error && !p.output ? { error: p.error } : {}),
-								});
-					const all = get(sessionMessagesStore) || {};
-					for (const tid of Object.keys(all)) {
-						updateSessionMessages(tid, (m) => {
-							let changed = false;
-							const next = m.map((msg) => {
-								if (msg.actionId !== actionId) return msg;
-								changed = true;
-								return {
-									...msg,
-									content: finalContent,
-									actionId: null,
-									streaming: false,
-								};
-							});
-							return changed ? next : m;
-						});
-					}
+					finalizeBackgroundActionMessages(event.payload || {});
 				},
 				'confirm:requested': (event) => {
 					const data = event.payload;

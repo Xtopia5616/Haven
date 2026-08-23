@@ -237,6 +237,12 @@ type ScheduledConfirmOutcomeCallback = OnceHandler<dyn Fn(String, String) + Send
 /// MEMORY dirty maps, etc.) can drop per-session state.
 type SessionCleanupCallback = OnceHandler<dyn Fn(String) + Send + Sync>;
 
+/// Cascade-ended child sessions (parent terminal path) that never go through
+/// the Tauri `end_session` command — the app layer wires this to emit
+/// `session:completed` (+ secondary `session:updated`) so busy chips / lists
+/// clear for descendants too. Args: `(session_id, title)`.
+type CascadeCompletedCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
+
 /// Result of a safety-gated tool execution: the tool result plus the
 /// risk level and confirmation state recorded for the step.
 pub struct ToolExecution {
@@ -314,6 +320,12 @@ pub struct SessionExecutor {
     /// Wired by [`crate::layer::AgentLayer::start`] to clear inference
     /// mid-run MEMORY bookkeeping when a session leaves the working set.
     pub on_session_cleanup: SessionCleanupCallback,
+    /// Wired by [`crate::layer::AgentLayer::start`] for cascade child ends.
+    pub on_cascade_completed: CascadeCompletedCallback,
+    /// Session ids that have successfully spawned at least one peer child in
+    /// this process. Used to skip inbox registry I/O on terminal cleanup for
+    /// the common leaf-session path.
+    sessions_with_children: Mutex<HashSet<String>>,
     /// Notification body truncation for scheduled-tool outcomes (matches
     /// `ContextLimitsConfig::notification_summary_chars`).
     pub notification_summary_chars: AtomicUsize,
@@ -348,6 +360,8 @@ impl SessionExecutor {
             on_confirm_request: OnceHandler::new(),
             on_scheduled_confirm_outcome: OnceHandler::new(),
             on_session_cleanup: OnceHandler::new(),
+            on_cascade_completed: OnceHandler::new(),
+            sessions_with_children: Mutex::new(HashSet::new()),
             notification_summary_chars: AtomicUsize::new(800),
             on_session_error: OnceHandler::new(),
         }
@@ -356,6 +370,26 @@ impl SessionExecutor {
     pub fn set_notification_summary_chars(&self, chars: usize) {
         self.notification_summary_chars
             .store(chars.max(64), Ordering::Relaxed);
+    }
+
+    /// Record that `parent_session_id` spawned a peer child (in-process hint
+    /// for cascade skip).
+    pub async fn mark_has_children(&self, parent_session_id: &str) {
+        self.sessions_with_children
+            .lock()
+            .await
+            .insert(parent_session_id.to_string());
+    }
+
+    async fn may_have_children(&self, session_id: &str) -> bool {
+        self.sessions_with_children
+            .lock()
+            .await
+            .contains(session_id)
+    }
+
+    async fn clear_has_children(&self, session_id: &str) {
+        self.sessions_with_children.lock().await.remove(session_id);
     }
 }
 

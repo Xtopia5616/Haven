@@ -332,6 +332,13 @@ impl ContextWindowCache {
         }
         cache.1.insert(role, window);
     }
+
+    /// Drop all cached windows (e.g. after `context_limits` hot-reload).
+    pub(super) fn clear(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.0 = 0;
+        cache.1.clear();
+    }
 }
 
 impl Default for ContextWindowCache {

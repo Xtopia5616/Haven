@@ -74,6 +74,11 @@ pub struct AgentSpawnResult {
     pub session_id: String,
     pub title: Option<String>,
     pub role: Option<String>,
+    /// True when the child was accepted but must wait for a free
+    /// `session.max_concurrent` slot before its ReAct loop starts.
+    pub queued: bool,
+    pub running_sessions: usize,
+    pub max_concurrent: usize,
 }
 
 /// Async callback the desktop shell installs so `agent` spawn can create and
@@ -272,11 +277,16 @@ fn check_explicit_type(t: Option<String>) -> anyhow::Result<Option<MessageType>>
             if s.is_empty() {
                 return Ok(None);
             }
+            if s.eq_ignore_ascii_case("system") {
+                anyhow::bail!(
+                    "type=system is reserved for runtime notices (parent-ended cascade); use message|reply|broadcast|request"
+                );
+            }
             serde_json::from_value(Value::String(s.to_string()))
                 .map(Some)
                 .map_err(|_| {
                     anyhow::anyhow!(
-                        "invalid type '{s}': expected message|reply|broadcast|request|system"
+                        "invalid type '{s}': expected message|reply|broadcast|request"
                     )
                 })
         }
@@ -347,7 +357,7 @@ pub struct AgentParams {
     #[serde(default)]
     pub payload: Option<Value>,
     /// Optional explicit envelope type: message | reply | broadcast |
-    /// request | system (auto-derived when omitted). Used by send.
+    /// request (auto-derived when omitted; `system` is runtime-reserved).
     #[serde(default, rename = "type")]
     pub msg_type: Option<String>,
     #[serde(default)]
@@ -725,13 +735,7 @@ impl AgentTool {
         let bus = self.inner.bus.clone();
         let parent = sid.clone();
         let child_count = blocking(bus, move |bus| {
-            let agents = bus.list_agents()?;
-            Ok::<_, anyhow::Error>(
-                agents
-                    .into_iter()
-                    .filter(|a| a.parent.as_deref() == Some(parent.as_str()))
-                    .count(),
-            )
+            Ok::<_, anyhow::Error>(bus.list_children(&parent)?.len())
         })
         .await?;
         if child_count >= MAX_CHILDREN_PER_PARENT {
@@ -755,6 +759,14 @@ impl AgentTool {
         })
         .await?;
 
+        let hint = if result.queued {
+            format!(
+                "Child session created but queued behind other runs ({}/{} slots busy). Prefer a longer request timeout, or wait until the child is online via operation=list before operation=request.",
+                result.running_sessions, result.max_concurrent
+            )
+        } else {
+            "Use agent operation=request to coordinate; the child should agent operation=reply with in_reply_to set to the request id.".into()
+        };
         Ok(ToolResult::ok(json!({
             "ok": true,
             "session_id": result.session_id,
@@ -763,7 +775,10 @@ impl AgentTool {
             "title": result.title.or(title),
             "role": result.role.or(role),
             "capabilities": capabilities,
-            "hint": "Use agent operation=request to coordinate; the child should agent operation=reply with in_reply_to set to the request id.",
+            "queued": result.queued,
+            "running_sessions": result.running_sessions,
+            "max_concurrent": result.max_concurrent,
+            "hint": hint,
         })))
     }
 }
@@ -829,7 +844,7 @@ impl Tool for AgentTool {
                 },
                 "type": {
                     "type": "string",
-                    "description": "Optional explicit envelope type for send: message | reply | broadcast | request | system."
+                    "description": "Optional explicit envelope type for send: message | reply | broadcast | request (system is runtime-reserved)."
                 },
                 "expires_at": {
                     "type": "string",
@@ -1489,6 +1504,9 @@ mod tests {
                     session_id: child,
                     title: req.title,
                     role: req.role,
+                    queued: false,
+                    running_sessions: 0,
+                    max_concurrent: 3,
                 })
             })
         }));

@@ -10,30 +10,35 @@
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import ApiKeyDialog from '$lib/ApiKeyDialog.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
-	import { ROLE_KEYS, modelCards } from '$lib/modelRoles.ts';
+	import { emptyRoleSlot, ensureRoleSlots, modelCards } from '$lib/modelRoles.ts';
 	import { inputFormats } from '$lib/inputFormats.ts';
 	import {
 		API_STYLE_OPTIONS,
 		apiStylePreset,
 		displayApiStyle,
 		isSttOnlyStyle,
+		isTtsOnlyStyle,
+		mediaCapabilityBackend,
+		sttCapabilityBackend,
 	} from '$lib/apiStyle.ts';
 
 	/**
-	 * LLM model configuration (providers + role slots).
+	 * Settings pages for LLM models and media channels.
 	 *
-	 * - The model library is gone as a manual list: each configured provider's
-	 *   `/models` endpoint is fetched (auto-refreshed in the background on
-	 *   load + a manual refresh button) and cached per provider; roles pick a
-	 *   provider + one model id from that fetched list.
-	 * - `llmConfig` is the shared, mutable state passed down from the settings
-	 *   page: `{ providers: [], roles: [], stt_use_audio_model,
-	 *   vision_use_image_model, max_concurrent_requests }`.
+	 * - `section="models"`: providers + role slots (model library via `/models`).
+	 * - `section="media"`: voice / image / file / text channels (STT, OCR, TTS,
+	 *   image gen, attachment limits).
+	 * - `llmConfig` is shared mutable state from the settings page:
+	 *   `{ providers, roles, stt_use_audio_model, vision_use_image_model,
+	 *   max_concurrent_requests }`.
 	 *
+	 * @prop {'models' | 'media'} section
 	 * @prop {object} llmConfig — shared LlmConfig state (mutable)
 	 * @prop {object} audio — shared media.audio capture state (mutable; voice card)
 	 * @prop {object} stt — shared media.stt state (mutable; voice card)
 	 * @prop {object} ocr — shared media.ocr state (mutable; image card)
+	 * @prop {object} tts — shared media.tts state (mutable; rewritten on provider rename/delete)
+	 * @prop {object} imageGen — shared media.image_gen state (mutable; rewritten on provider rename/delete)
 	 * @prop {object} contextLimits — shared context_limits state (mutable)
 	 * @prop {object} keyConfigured — {role|mediaKey: bool} key status (mutable)
 	 * @prop {object} keyConfiguredProviders — per-provider key status
@@ -41,10 +46,13 @@
 	 * @prop {boolean} loaded — true once the parent finished loading settings
 	 */
 	let {
+		section = 'models',
 		llmConfig,
 		audio,
 		stt,
 		ocr,
+		tts,
+		imageGen,
 		contextLimits,
 		keyConfigured,
 		keyConfiguredProviders = {},
@@ -73,15 +81,7 @@
 	function ensureRole(key) {
 		const existing = roleFor(key);
 		if (existing) return existing;
-		const slot = {
-			role: key,
-			provider: '',
-			model: '',
-			temperature: null,
-			context_window: null,
-			cost_per_1k_input_tokens: null,
-			cost_per_1k_output_tokens: null,
-		};
+		const slot = emptyRoleSlot(key);
 		llmConfig.roles.push(slot);
 		return slot;
 	}
@@ -107,7 +107,63 @@
 		// A model from another provider almost never exists here: reset it and
 		// force a fresh pick from the new provider's fetched list.
 		slot.model = '';
+		slot.context_window = null;
+		slot.cost_per_1k_input_tokens = null;
+		slot.cost_per_1k_output_tokens = null;
 		if (providerName) refreshProviderModels(providerName);
+	}
+
+	/**
+	 * Apply `/models` metadata onto a role slot when the user picks a model.
+	 * @param {any} slot
+	 * @param {string} providerName
+	 * @param {string} modelId
+	 * @param {{ overwrite?: boolean }} [opts] — overwrite=true replaces existing
+	 *   Context/cost; false only fills empty slots (used when refreshing lists
+	 *   for roles that still have null Context after the builtin catalog was
+	 *   removed).
+	 */
+	function applyDiscoveredModelMeta(slot, providerName, modelId, opts = {}) {
+		const overwrite = !!opts.overwrite;
+		const list = modelsByProvider[providerName] || [];
+		const m = list.find((/** @type {any} */ x) => x.id === modelId);
+		if (!m) {
+			if (overwrite) {
+				slot.context_window = null;
+				slot.cost_per_1k_input_tokens = null;
+				slot.cost_per_1k_output_tokens = null;
+			}
+			return;
+		}
+		if (overwrite || slot.context_window == null || slot.context_window === 0) {
+			slot.context_window = m.context_window > 0 ? m.context_window : null;
+		}
+		if (overwrite || slot.cost_per_1k_input_tokens == null) {
+			slot.cost_per_1k_input_tokens =
+				typeof m.cost_per_1k_input_tokens === 'number' ? m.cost_per_1k_input_tokens : null;
+		}
+		if (overwrite || slot.cost_per_1k_output_tokens == null) {
+			slot.cost_per_1k_output_tokens =
+				typeof m.cost_per_1k_output_tokens === 'number' ? m.cost_per_1k_output_tokens : null;
+		}
+	}
+
+	/** Fill empty Context/cost on existing roles from the latest `/models` map. */
+	function backfillRoleMetaFromDiscovery() {
+		for (const slot of llmConfig.roles || []) {
+			if (!slot?.provider || !slot?.model) continue;
+			applyDiscoveredModelMeta(slot, slot.provider, slot.model, { overwrite: false });
+		}
+	}
+
+	/**
+	 * @param {string} key
+	 * @param {string} modelId
+	 */
+	function setRoleModel(key, modelId) {
+		const slot = ensureRole(key);
+		slot.model = modelId;
+		applyDiscoveredModelMeta(slot, slot.provider, modelId, { overwrite: true });
 	}
 
 	/**
@@ -130,7 +186,7 @@
 	 * @param {any} p
 	 */
 	function isLocalProvider(p) {
-		return p?.api_style === 'llama.cpp' || p?.provider === 'llama.cpp';
+		return isKeylessProvider(p);
 	}
 
 	/**
@@ -182,6 +238,7 @@
 				const map = await invoke('discover_all_models');
 				modelsByProvider = map || {};
 			}
+			backfillRoleMetaFromDiscovery();
 			if (!silent) {
 				const now = Date.now();
 				if (now - lastRefreshNotify > 2500) {
@@ -213,6 +270,7 @@
 				provider: providerName,
 			});
 			modelsByProvider = { ...modelsByProvider, [providerName]: list || [] };
+			backfillRoleMetaFromDiscovery();
 		} catch (e) {
 			const msg = formatError(e);
 			logger.warn('ModelSettings', `discover_models ${providerName} error`, msg);
@@ -234,12 +292,13 @@
 
 	// Materialize the six role slots in the shared state after load, so the
 	// pickers always bind to a real slot (assignments only happen on user
-	// actions, never during render).
+	// actions, never during render). Parent also materializes before the
+	// dirty snapshot; this remains a safety net if roles arrive later.
 	let rolesInitialized = $state(false);
 	$effect(() => {
 		if (loaded && !rolesInitialized) {
 			rolesInitialized = true;
-			for (const k of ROLE_KEYS) ensureRole(k);
+			ensureRoleSlots(llmConfig.roles || []);
 		}
 	});
 
@@ -247,75 +306,94 @@
 	// STT / OCR (voice + image input cards)
 	// ---------------------------------------------------------------------
 
-	const STT_PROVIDER_OPTIONS = [
-		{ value: 'llm', label: '音频模型 (Audio Model)' },
-		{ value: 'openai', label: 'OpenAI Whisper' },
-		{ value: 'groq', label: 'Groq' },
-		{ value: 'gemini', label: 'Google Gemini' },
-		{ value: 'deepgram', label: 'Deepgram' },
-		{ value: 'assemblyai', label: 'AssemblyAI' },
-		{ value: 'mcp', label: 'MCP Server' },
-		{ value: 'none', label: 'None' },
-	];
+	const STT_SPECIAL = new Set(['llm', 'mcp', 'none']);
 	const OCR_PROVIDER_OPTIONS = [
 		{ value: 'llm', label: '视觉模型 (Image Model)' },
 		{ value: 'baidu', label: 'Baidu 通用文字识别' },
 		{ value: 'azure', label: 'Azure AI Vision' },
 		{ value: 'tencent', label: 'Tencent 通用印刷体' },
-		{ value: 'none', label: 'None（透传图片）' },
+		{ value: 'none', label: '未配置（透传图片）' },
 	];
-	const OPENAI_COMPAT_STT = new Set(['openai', 'groq']);
-	const GEMINI_STT = new Set(['gemini']);
 
-	/**
-	 * @param {string} provider
-	 */
-	function isOpenAiCompatibleStt(provider) {
-		return OPENAI_COMPAT_STT.has(provider);
+	/** TTS / 文生图：None + llm.providers 名称。 */
+	function mediaProviderOptions(/** @type {string} */ current) {
+		/** @type {{ value: string, label: string }[]} */
+		const opts = [{ value: 'none', label: '未配置' }];
+		for (const p of llmConfig.providers || []) {
+			if (!p?.name) continue;
+			opts.push({ value: p.name, label: p.name });
+		}
+		if (current && current !== 'none' && !opts.some((o) => o.value === current)) {
+			opts.push({ value: current, label: `${current}（需重选「模型」页 Provider）` });
+		}
+		return opts;
 	}
 
 	/**
-	 * @param {string} provider
+	 * @param {string} name
+	 * @param {'tts' | 'image_gen'} capability
+	 * @returns {'openai' | 'gemini' | 'elevenlabs' | ''}
 	 */
-	function isGeminiStt(provider) {
-		return GEMINI_STT.has(provider);
+	function mediaProviderKind(name, capability) {
+		if (!name || name === 'none') return '';
+		const p = providerByName(name);
+		if (!p) {
+			// Legacy capability ids when no matching llm.providers entry.
+			if (name === 'openai' || name === 'elevenlabs' || name === 'gemini') {
+				if (capability === 'tts' && name === 'gemini') return '';
+				if (capability === 'image_gen' && name === 'elevenlabs') return '';
+				return /** @type {'openai' | 'gemini' | 'elevenlabs'} */ (name);
+			}
+			return '';
+		}
+		return mediaCapabilityBackend(p, capability);
+	}
+
+	function sttProviderOptions() {
+		/** @type {{ value: string, label: string }[]} */
+		const opts = [
+			{ value: 'llm', label: '音频模型 (Audio Model)' },
+			{ value: 'mcp', label: 'MCP Server' },
+			{ value: 'none', label: '未配置' },
+		];
+		for (const p of llmConfig.providers || []) {
+			if (!p?.name) continue;
+			opts.push({ value: p.name, label: p.name });
+		}
+		const current = stt.provider;
+		if (current && !STT_SPECIAL.has(current) && !opts.some((o) => o.value === current)) {
+			opts.push({ value: current, label: `${current}（需重选「模型」页 Provider）` });
+		}
+		return opts;
 	}
 
 	/**
-	 * @param {string} provider
+	 * @param {string} name
+	 * @returns {'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai' | ''}
 	 */
-	function isCloudSttProvider(provider) {
-		return ['openai', 'groq', 'gemini', 'deepgram', 'assemblyai'].includes(provider);
+	function sttBackendKind(name) {
+		if (!name || STT_SPECIAL.has(name)) return '';
+		if (['openai', 'groq', 'gemini', 'deepgram', 'assemblyai'].includes(name)) {
+			return /** @type {'openai' | 'groq' | 'gemini' | 'deepgram' | 'assemblyai'} */ (name);
+		}
+		const p = providerByName(name);
+		if (!p) return '';
+		return sttCapabilityBackend(p);
+	}
+
+	function isNamedSttProvider(/** @type {string} */ provider) {
+		return !!provider && !STT_SPECIAL.has(provider);
 	}
 
 	/**
-	 * @param {string} provider
+	 * @param {string} kind
 	 */
-	function sttModelPlaceholder(provider) {
-		if (provider === 'deepgram') return 'nova-3';
-		if (provider === 'assemblyai') return 'assemblyai_default';
-		if (provider === 'groq') return 'whisper-large-v3-turbo';
-		if (isGeminiStt(provider)) return 'gemini-2.5-flash';
+	function sttModelPlaceholder(kind) {
+		if (kind === 'deepgram') return 'nova-3';
+		if (kind === 'assemblyai') return 'assemblyai_default';
+		if (kind === 'groq') return 'whisper-large-v3-turbo';
+		if (kind === 'gemini') return 'gemini-2.5-flash';
 		return 'whisper-1';
-	}
-
-	/**
-	 * @param {string} provider
-	 */
-	function sttBasePlaceholder(provider) {
-		if (provider === 'deepgram') return 'https://api.deepgram.com';
-		if (provider === 'assemblyai') return 'https://api.assemblyai.com';
-		if (provider === 'groq') return 'https://api.groq.com/openai/v1';
-		if (isGeminiStt(provider)) return 'https://generativelanguage.googleapis.com/v1beta';
-		return 'https://api.openai.com/v1';
-	}
-
-	/**
-	 * @param {string} provider
-	 */
-	function sttFetchBaseUrl(provider) {
-		if (stt.base_url.trim()) return stt.base_url.trim();
-		return sttBasePlaceholder(provider);
 	}
 
 	/** @type {any[]} */
@@ -325,10 +403,10 @@
 	let sttFetchTimer = undefined;
 
 	/**
-	 * @param {string} provider
+	 * @param {string} kind
 	 */
-	function sttModelOptions(provider) {
-		if (provider === 'deepgram') {
+	function sttModelOptions(kind) {
+		if (kind === 'deepgram') {
 			return [
 				{ value: 'nova-3', label: 'nova-3' },
 				{ value: 'nova-2', label: 'nova-2' },
@@ -336,7 +414,7 @@
 				{ value: 'whisper-large-v3-turbo', label: 'whisper-large-v3-turbo' },
 			];
 		}
-		if (provider === 'assemblyai') {
+		if (kind === 'assemblyai') {
 			return [
 				{ value: 'assemblyai_default', label: 'AssemblyAI Default' },
 				{ value: 'universal', label: 'universal' },
@@ -348,18 +426,26 @@
 	}
 
 	async function fetchSttModels() {
-		const provider = stt.provider;
-		if (provider === 'llm' || provider === 'deepgram' || provider === 'assemblyai' || provider === 'mcp' || provider === 'none') {
-			return;
-		}
-		const base = sttFetchBaseUrl(provider);
-		if (!base || (!stt.api_key && !keyConfigured.stt)) {
+		const name = stt.provider;
+		if (!isNamedSttProvider(name)) return;
+		const kind = sttBackendKind(name);
+		if (!kind || kind === 'deepgram' || kind === 'assemblyai') return;
+		const p = providerByName(name);
+		const base = (p?.base_url || '').trim();
+		const key = p?.api_key || '';
+		const keyOk = !!key || !!keyConfiguredProviders[name] || !!keyConfigured.stt;
+		if (!base || !keyOk) {
 			sttModels = [];
 			return;
 		}
 		sttFetching = true;
 		try {
-			const list = await invoke('discover_models', { baseUrl: base, apiKey: stt.api_key, role: 'stt' });
+			const list = await invoke('discover_models', {
+				baseUrl: base,
+				apiKey: key,
+				provider: name,
+				role: 'stt',
+			});
 			sttModels = list || [];
 		} catch (e) {
 			sttModels = [];
@@ -423,9 +509,11 @@
 			addNotification('Provider 名称已存在', 'error', 3000);
 			return;
 		}
-		const prevKey = idx !== null ? llmConfig.providers[idx]?.api_key || '' : '';
+		const prev = idx !== null ? llmConfig.providers[idx] : null;
+		const prevKey = prev?.api_key || '';
 		const preset = apiStylePreset(form.api_style);
 		const provider = {
+			...(prev || {}),
 			name,
 			provider: preset.provider,
 			api_style: preset.api_style,
@@ -433,13 +521,15 @@
 			api_key: form.api_key || prevKey,
 			auth_header_name: preset.auth_header_name,
 			auth_header_prefix: preset.auth_header_prefix,
-			proxy_url: null,
-			no_proxy: null,
-			default_max_tokens: null,
-			default_temperature: null,
-			default_timeout_secs: isSttOnlyStyle(preset.api_style) ? 30 : null,
-			default_timeout_streaming_secs: null,
-			default_web_search: null,
+			proxy_url: prev?.proxy_url ?? null,
+			no_proxy: prev?.no_proxy ?? null,
+			default_max_tokens: prev?.default_max_tokens ?? null,
+			default_temperature: prev?.default_temperature ?? null,
+			default_timeout_secs:
+				prev?.default_timeout_secs ??
+				(isSttOnlyStyle(preset.api_style) ? 30 : null),
+			default_timeout_streaming_secs: prev?.default_timeout_streaming_secs ?? null,
+			default_web_search: prev?.default_web_search ?? null,
 		};
 		if (idx === null) {
 			llmConfig.providers.push(provider);
@@ -447,10 +537,13 @@
 			const oldName = llmConfig.providers[idx].name;
 			llmConfig.providers[idx] = provider;
 			if (oldName !== name) {
-				// Keep role references pointing at the renamed provider.
+				// Keep role / media-capability references pointing at the renamed provider.
 				for (const r of llmConfig.roles) {
 					if (r.provider === oldName) r.provider = name;
 				}
+				if (stt?.provider === oldName) stt.provider = name;
+				if (tts?.provider === oldName) tts.provider = name;
+				if (imageGen?.provider === oldName) imageGen.provider = name;
 				if (keyConfiguredProviders[oldName]) {
 					delete keyConfiguredProviders[oldName];
 					keyConfiguredProviders[name] = true;
@@ -471,13 +564,16 @@
 	function deleteProvider(idx) {
 		const p = llmConfig.providers[idx];
 		if (!p) return;
-		// Detach every role that referenced the deleted provider.
+		// Detach every role / media capability that referenced the deleted provider.
 		for (const r of llmConfig.roles) {
 			if (r.provider === p.name) {
 				r.provider = '';
 				r.model = '';
 			}
 		}
+		if (stt?.provider === p.name) stt.provider = 'llm';
+		if (tts?.provider === p.name) tts.provider = 'none';
+		if (imageGen?.provider === p.name) imageGen.provider = 'none';
 		llmConfig.providers.splice(idx, 1);
 		delete modelsByProvider[p.name];
 		addNotification(`已删除 Provider ${p.name}`, 'success', 2000);
@@ -511,9 +607,7 @@
 	 * @param {string} value
 	 */
 	function confirmMediaKey(value) {
-		if (keyDlg.model === 'stt') {
-			stt.api_key = value;
-		} else if (keyDlg.model === 'ocr') {
+		if (keyDlg.model === 'ocr') {
 			ocr.api_key = value;
 		} else if (keyDlg.model === 'ocr_secret') {
 			ocr.api_secret = value;
@@ -541,16 +635,16 @@
 	 */
 	function setSttProvider(v) {
 		stt.provider = v;
-		if (v === 'llm' || v === 'mcp') {
-			// No cloud model list to fetch.
+		if (!isNamedSttProvider(v)) {
 			sttModels = [];
 		}
 	}
 </script>
 
-<div class="section input-section">
-	<h2>输入</h2>
-	<p class="model-hint">每种输入通道的处理方式与限制。保存后对聊天输入框生效，后端校验使用相同配置。</p>
+{#if section === 'media'}
+<div class="section media-section">
+	<h2>媒体</h2>
+	<p class="model-hint">按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 Audio / Image Model；TTS / 文生图复用「模型」页已添加的 Provider（Base URL + API Key）。</p>
 
 	<div class="card-list">
 		{#each inputFormats as format (format.id)}
@@ -560,61 +654,183 @@
 					<p class="card-hint">{format.hint}</p>
 				</div>
 
-				{#if format.id === 'image'}
-					<p class="model-hint">
-						当前压缩：最长边 ≤{contextLimits.max_attachment_image_dim_px}px、质量
-						{Math.round(contextLimits.attachment_image_jpeg_quality * 100)}%。
-					</p>
-					<div class="form-row switch-row">
-						<span class="switch-label">图片理解使用专用视觉模型</span>
-						<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(/** @type {boolean} */ v) => { llmConfig.vision_use_image_model = v; }} />
-					</div>
-					<div class="form-row">
-						<label for="max-attachment-images">单条消息最多图片数</label>
-						<MaterialNumberField
-							id="max-attachment-images"
-							value={contextLimits.max_attachment_images}
-							min={1}
-							max={20}
-							step={1}
-							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_images = v; }}
-						/>
-					</div>
-					<div class="form-row">
-						<label for="max-attachment-image-mb">单张图片大小上限 (MiB)</label>
-						<MaterialNumberField
-							id="max-attachment-image-mb"
-							value={Math.round((contextLimits.max_attachment_image_bytes / 1048576) * 10) / 10}
-							min={1}
-							max={50}
-							step={1}
-							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
-						/>
-					</div>
-					<div class="form-row">
-						<label for="max-attachment-image-dim">压缩最长边 (px)</label>
-						<MaterialNumberField
-							id="max-attachment-image-dim"
-							value={contextLimits.max_attachment_image_dim_px}
-							min={512}
-							max={4096}
-							step={64}
-							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_dim_px = v; }}
-						/>
-					</div>
-					<div class="form-row">
-						<label for="attachment-image-quality">JPEG 压缩质量</label>
-						<MaterialNumberField
-							id="attachment-image-quality"
-							value={contextLimits.attachment_image_jpeg_quality}
-							min={0.1}
-							max={1}
-							step={0.05}
-							onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
-						/>
+				{#if format.id === 'voice'}
+					<div class="capability-block first">
+						<h4>输入 · 采集</h4>
+						<div class="form-row switch-row">
+							<span class="switch-label">录音转写使用专用音频模型</span>
+							<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
+						</div>
+						<div class="form-row">
+							<label for="audio-sample-rate">Sample Rate</label>
+							<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(/** @type {number} */ v) => { audio.sample_rate = v; }} />
+						</div>
+						<div class="form-row">
+							<label for="audio-channels">Channels</label>
+							<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(/** @type {number} */ v) => { audio.channels = v; }} />
+						</div>
+						<div class="form-row">
+							<label for="audio-max-duration">Max Duration (sec)</label>
+							<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(/** @type {number} */ v) => { audio.max_duration_secs = v; }} />
+						</div>
+						<div class="form-row">
+							<label for="audio-silence-timeout">Silence Timeout (ms)</label>
+							<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(/** @type {number} */ v) => { audio.silence_timeout_ms = v; }} />
+						</div>
+						<div class="form-row">
+							<label for="audio-vad-threshold">VAD Threshold</label>
+							<input id="audio-vad-threshold" type="range" class="md-slider" value={audio.vad_threshold} min="0" max="1" step="0.05" style="--vad-fill: {audio.vad_threshold * 100}%" oninput={(/** @type {Event} */ e) => { audio.vad_threshold = Number(/** @type {HTMLInputElement} */ (e.currentTarget).value); }} />
+							<span class="range-value">{audio.vad_threshold}</span>
+						</div>
 					</div>
 					<div class="capability-block">
-						<h4>文字提取（OCR）</h4>
+						<h4>输入 · 语音转写（STT）</h4>
+						<p class="model-hint">推荐：「模型」页 Audio Model 选 Whisper / Gemini 等，此处 Provider 选「音频模型」。也可选已配置 Provider 或 MCP。</p>
+						<div class="stt-grid">
+							<div class="model-field">
+								<span class="field-label">STT Provider</span>
+								<MaterialSelect
+									id="voice-stt-provider"
+									value={stt.provider}
+									options={sttProviderOptions()}
+									onChange={setSttProvider}
+								/>
+							</div>
+							{#if stt.provider === 'mcp'}
+								<div class="model-field">
+									<span class="field-label">MCP Server</span>
+									<MaterialAutocomplete
+										id="voice-stt-mcp"
+										value={stt.mcp_server}
+										options={mcpServerNames.map((n) => ({ value: n, label: n }))}
+										placeholder="Pick a configured MCP server"
+										loading={false}
+										onChange={(/** @type {string} */ v) => { stt.mcp_server = v; }}
+									/>
+								</div>
+							{:else if isNamedSttProvider(stt.provider)}
+								{#if sttBackendKind(stt.provider)}
+									<div class="model-field">
+										<span class="field-label">Model</span>
+										<MaterialAutocomplete
+											id="voice-stt-model"
+											value={stt.model}
+											options={sttModelOptions(sttBackendKind(stt.provider))}
+											placeholder={sttModelPlaceholder(sttBackendKind(stt.provider))}
+											loading={sttFetching}
+											onChange={(/** @type {string} */ v) => { stt.model = v; }}
+											onFocus={() => scheduleSttFetch()}
+										/>
+									</div>
+								{:else}
+									<p class="model-hint">该 Provider 不支持 STT（需 OpenAI 兼容 / Gemini / Deepgram / AssemblyAI）。</p>
+								{/if}
+							{/if}
+							{#if stt.provider !== 'none'}
+								<div class="model-field">
+									<span class="field-label">Timeout (sec)</span>
+									<MaterialNumberField id="voice-stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(/** @type {number} */ v) => { stt.timeout_secs = v; }} />
+								</div>
+								<div class="model-field">
+									<span class="field-label">Min Confidence</span>
+									<input id="voice-stt-min-confidence" type="range" class="md-slider" value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" oninput={(/** @type {Event} */ e) => { stt.min_confidence = Number(/** @type {HTMLInputElement} */ (e.currentTarget).value); }} />
+									<span class="range-value">{stt.min_confidence}</span>
+								</div>
+							{/if}
+						</div>
+						<p class="model-hint">置信度低于阈值时回落主模型。仅 Deepgram / AssemblyAI / MCP 报告置信度；Whisper 等在失败或空结果时回落。</p>
+					</div>
+					<div class="capability-block">
+						<h4>输出 · 语音合成（TTS）</h4>
+						<p class="model-hint">「朗读这段话」「读出来」等请求合成语音并附到消息；选「模型」页已添加的 Provider。</p>
+						<div class="stt-grid">
+							<div class="model-field">
+								<span class="field-label">Provider</span>
+								<MaterialSelect id="tts-provider" value={tts.provider} options={mediaProviderOptions(tts.provider)} onChange={(/** @type {string} */ v) => { tts.provider = v; }} />
+							</div>
+							{#if tts.provider !== 'none'}
+								{#if mediaProviderKind(tts.provider, 'tts') === 'elevenlabs'}
+									<div class="model-field">
+										<span class="field-label">Voice ID</span>
+										<input id="tts-voice" type="text" class="md-input" bind:value={tts.voice} placeholder="elevenlabs voice id" autocomplete="off" />
+									</div>
+								{:else if mediaProviderKind(tts.provider, 'tts') === 'openai'}
+									<div class="model-field">
+										<span class="field-label">Model</span>
+										<input id="tts-model" type="text" class="md-input" bind:value={tts.model} placeholder="tts-1 / gpt-4o-mini-tts" autocomplete="off" />
+									</div>
+									<div class="model-field">
+										<span class="field-label">Voice</span>
+										<input id="tts-voice" type="text" class="md-input" bind:value={tts.voice} placeholder="alloy / nova / echo…" autocomplete="off" />
+									</div>
+								{:else}
+									<p class="model-hint">该 Provider 不支持 TTS（需 OpenAI 兼容）。</p>
+								{/if}
+								<div class="model-field">
+									<span class="field-label">Timeout (sec)</span>
+									<MaterialNumberField id="tts-timeout" value={tts.timeout_secs} min={5} max={300} onChange={(/** @type {number} */ v) => { tts.timeout_secs = v; }} />
+								</div>
+							{/if}
+						</div>
+					</div>
+				{:else if format.id === 'image'}
+					<div class="capability-block first">
+						<h4>输入 · 附件与理解</h4>
+						<p class="model-hint">
+							当前压缩：最长边 ≤{contextLimits.max_attachment_image_dim_px}px、质量
+							{Math.round(contextLimits.attachment_image_jpeg_quality * 100)}%。
+						</p>
+						<div class="form-row switch-row">
+							<span class="switch-label">图片理解使用专用视觉模型</span>
+							<MaterialSwitch checked={llmConfig.vision_use_image_model} onChange={(/** @type {boolean} */ v) => { llmConfig.vision_use_image_model = v; }} />
+						</div>
+						<div class="form-row">
+							<label for="max-attachment-images">单条消息最多图片数</label>
+							<MaterialNumberField
+								id="max-attachment-images"
+								value={contextLimits.max_attachment_images}
+								min={1}
+								max={20}
+								step={1}
+								onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_images = v; }}
+							/>
+						</div>
+						<div class="form-row">
+							<label for="max-attachment-image-mb">单张图片大小上限 (MiB)</label>
+							<MaterialNumberField
+								id="max-attachment-image-mb"
+								value={Math.round((contextLimits.max_attachment_image_bytes / 1048576) * 10) / 10}
+								min={1}
+								max={50}
+								step={1}
+								onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_bytes = Math.round(v * 1024 * 1024); }}
+							/>
+						</div>
+						<div class="form-row">
+							<label for="max-attachment-image-dim">压缩最长边 (px)</label>
+							<MaterialNumberField
+								id="max-attachment-image-dim"
+								value={contextLimits.max_attachment_image_dim_px}
+								min={512}
+								max={4096}
+								step={64}
+								onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_image_dim_px = v; }}
+							/>
+						</div>
+						<div class="form-row">
+							<label for="attachment-image-quality">JPEG 压缩质量</label>
+							<MaterialNumberField
+								id="attachment-image-quality"
+								value={contextLimits.attachment_image_jpeg_quality}
+								min={0.1}
+								max={1}
+								step={0.05}
+								onChange={(/** @type {number} */ v) => { contextLimits.attachment_image_jpeg_quality = v; }}
+							/>
+						</div>
+					</div>
+					<div class="capability-block">
+						<h4>输入 · 文字提取（OCR）</h4>
 						<p class="model-hint">「提取文字」意图走 OCR；推荐选视觉模型。专用云 OCR 失败或低置信度时回落到 Image Model。</p>
 						<div class="stt-grid">
 							<div class="model-field">
@@ -659,9 +875,33 @@
 								</div>
 								<div class="model-field">
 									<span class="field-label">Min Confidence</span>
-									<input id="img-ocr-min-confidence" type="range" class="md-slider" bind:value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" />
+									<input id="img-ocr-min-confidence" type="range" class="md-slider" value={ocr.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {ocr.min_confidence * 100}%" oninput={(/** @type {Event} */ e) => { ocr.min_confidence = Number(/** @type {HTMLInputElement} */ (e.currentTarget).value); }} />
 									<span class="range-value">{ocr.min_confidence}</span>
 								</div>
+							{/if}
+						</div>
+					</div>
+					<div class="capability-block">
+						<h4>输出 · 文生图</h4>
+						<p class="model-hint">「画一只猫」「生成海报」等请求生成图片并附到消息；需 OpenAI 兼容或 Gemini Provider。</p>
+						<div class="stt-grid">
+							<div class="model-field">
+								<span class="field-label">Provider</span>
+								<MaterialSelect id="ig-provider" value={imageGen.provider} options={mediaProviderOptions(imageGen.provider)} onChange={(/** @type {string} */ v) => { imageGen.provider = v; }} />
+							</div>
+							{#if imageGen.provider !== 'none'}
+								{#if mediaProviderKind(imageGen.provider, 'image_gen')}
+									<div class="model-field">
+										<span class="field-label">Model</span>
+										<input id="ig-model" type="text" class="md-input" bind:value={imageGen.model} placeholder={mediaProviderKind(imageGen.provider, 'image_gen') === 'gemini' ? 'gemini-2.5-flash-image' : 'gpt-image-1'} autocomplete="off" />
+									</div>
+									<div class="model-field">
+										<span class="field-label">Timeout (sec)</span>
+										<MaterialNumberField id="ig-timeout" value={imageGen.timeout_secs} min={10} max={600} onChange={(/** @type {number} */ v) => { imageGen.timeout_secs = v; }} />
+									</div>
+								{:else}
+									<p class="model-hint">该 Provider 不支持文生图（需 OpenAI 兼容或 Gemini）。</p>
+								{/if}
 							{/if}
 						</div>
 					</div>
@@ -688,107 +928,14 @@
 							onChange={(/** @type {number} */ v) => { contextLimits.max_attachment_file_bytes = Math.round(v * 1024 * 1024); }}
 						/>
 					</div>
-				{:else if format.id === 'voice'}
-					<div class="form-row switch-row">
-						<span class="switch-label">录音转写使用专用音频模型</span>
-						<MaterialSwitch checked={llmConfig.stt_use_audio_model} onChange={(/** @type {boolean} */ v) => { llmConfig.stt_use_audio_model = v; }} />
-					</div>
-					<div class="form-row">
-						<label for="audio-sample-rate">Sample Rate</label>
-						<MaterialNumberField id="audio-sample-rate" value={audio.sample_rate} onChange={(/** @type {number} */ v) => { audio.sample_rate = v; }} />
-					</div>
-					<div class="form-row">
-						<label for="audio-channels">Channels</label>
-						<MaterialNumberField id="audio-channels" value={audio.channels} min={1} max={2} onChange={(/** @type {number} */ v) => { audio.channels = v; }} />
-					</div>
-					<div class="form-row">
-						<label for="audio-max-duration">Max Duration (sec)</label>
-						<MaterialNumberField id="audio-max-duration" value={audio.max_duration_secs} min={10} max={300} onChange={(/** @type {number} */ v) => { audio.max_duration_secs = v; }} />
-					</div>
-					<div class="form-row">
-						<label for="audio-silence-timeout">Silence Timeout (ms)</label>
-						<MaterialNumberField id="audio-silence-timeout" value={audio.silence_timeout_ms} min={500} max={10000} step={100} onChange={(/** @type {number} */ v) => { audio.silence_timeout_ms = v; }} />
-					</div>
-					<div class="form-row">
-						<label for="audio-vad-threshold">VAD Threshold</label>
-						<input id="audio-vad-threshold" type="range" class="md-slider" bind:value={audio.vad_threshold} min="0" max="1" step="0.05" style="--vad-fill: {audio.vad_threshold * 100}%" />
-						<span class="range-value">{audio.vad_threshold}</span>
-					</div>
-					<div class="capability-block">
-						<h4>语音转写（STT）</h4>
-						<p class="model-hint">推荐：下方 Audio Model 选 Whisper / Gemini 等，STT Provider 选「音频模型」。也可直接配置独立云端 STT 或 MCP。</p>
-						<div class="stt-grid">
-							<div class="model-field">
-								<span class="field-label">STT Provider</span>
-								<MaterialSelect
-									id="voice-stt-provider"
-									value={stt.provider}
-									options={STT_PROVIDER_OPTIONS}
-									onChange={setSttProvider}
-								/>
-							</div>
-							{#if stt.provider === 'mcp'}
-								<div class="model-field">
-									<span class="field-label">MCP Server</span>
-									<MaterialAutocomplete
-										id="voice-stt-mcp"
-										value={stt.mcp_server}
-										options={mcpServerNames.map((n) => ({ value: n, label: n }))}
-										placeholder="Pick a configured MCP server"
-										loading={false}
-										onChange={(/** @type {string} */ v) => { stt.mcp_server = v; }}
-									/>
-								</div>
-							{:else if isCloudSttProvider(stt.provider)}
-								<div class="model-field">
-									<span class="field-label">Base URL</span>
-									{#if isOpenAiCompatibleStt(stt.provider) || isGeminiStt(stt.provider)}
-										<input id="voice-stt-base-url" type="text" class="md-input" bind:value={stt.base_url} placeholder={sttBasePlaceholder(stt.provider)} autocomplete="off" />
-									{:else}
-										<span class="provider-note">由提供商默认</span>
-									{/if}
-								</div>
-								<div class="model-field">
-									<span class="field-label">Model</span>
-									<MaterialAutocomplete
-										id="voice-stt-model"
-										value={stt.model}
-										options={sttModelOptions(stt.provider)}
-										placeholder={sttModelPlaceholder(stt.provider)}
-										loading={sttFetching}
-										onChange={(/** @type {string} */ v) => { stt.model = v; }}
-										onFocus={() => scheduleSttFetch()}
-									/>
-								</div>
-								<div class="model-field">
-									<span class="field-label">API Key</span>
-									<ApiKeyField
-										id="voice-stt-api-key"
-										configured={keyConfigured.stt}
-										onEdit={() => openKeyDialog('stt', 'STT API Key')}
-									/>
-								</div>
-							{/if}
-							{#if stt.provider !== 'none'}
-								<div class="model-field">
-									<span class="field-label">Timeout (sec)</span>
-									<MaterialNumberField id="voice-stt-timeout" value={stt.timeout_secs} min={5} max={600} onChange={(/** @type {number} */ v) => { stt.timeout_secs = v; }} />
-								</div>
-								<div class="model-field">
-									<span class="field-label">Min Confidence</span>
-									<input id="voice-stt-min-confidence" type="range" class="md-slider" bind:value={stt.min_confidence} min="0" max="1" step="0.05" style="--vad-fill: {stt.min_confidence * 100}%" />
-									<span class="range-value">{stt.min_confidence}</span>
-								</div>
-							{/if}
-						</div>
-						<p class="model-hint">置信度低于阈值时回落主模型。仅 Deepgram / AssemblyAI / MCP 报告置信度；Whisper 等在失败或空结果时回落。</p>
-					</div>
 				{/if}
 			</div>
 		{/each}
 	</div>
 </div>
+{/if}
 
+{#if section === 'models'}
 <div class="section">
 	<div class="llm-head">
 		<h2>模型配置</h2>
@@ -799,7 +946,7 @@
 			<button class="md-btn md-btn--outlined" onclick={startAddProvider}>添加 Provider</button>
 		</div>
 	</div>
-	<p class="model-hint">模型库改为按 Provider 自动获取：添加 Provider（地址 + API Key）后，其 <code>/models</code> 列表会被拉取并缓存；每个模型角色只需选择 Provider 与其中的一个模型。可选参数（温度 / 上下文 / 成本）留空则用 Provider 默认或内置目录自动解析。</p>
+	<p class="model-hint">添加 Provider（地址 + API Key）后拉取 <code>/models</code>（含上下文长度、能力、定价等元数据）；选模型时自动填入 Context / 成本（若 Provider 有返回）。媒体能力在「媒体」页配置。</p>
 
 	{#if (llmConfig.providers || []).length === 0}
 		<div class="providers-empty">
@@ -844,8 +991,9 @@
 		{/each}
 	</div>
 
-	<p class="cost-hint">上下文窗口留空时自动从内置模型目录解析；成本（USD/1K token）留空则默认 0（不显示成本）。</p>
+	<p class="cost-hint">Context / 成本优先用 Provider 返回的元数据；均未填写时上下文回退到「限制」页的默认上下文窗口，成本按 0（不显示）。</p>
 </div>
+{/if}
 
 {#snippet rolePicker(/** @type {any} */ card)}
 	{@const slot = roleFor(card.key)}
@@ -874,7 +1022,7 @@
 						options={roleModelOptions(slot.provider)}
 						placeholder={slot.model ? slot.model : '从获取的模型列表中选择或输入'}
 						loading={roleModelLoading(slot.provider)}
-						onChange={(/** @type {string} */ v) => { slot.model = v; }}
+						onChange={(/** @type {string} */ v) => setRoleModel(card.key, v)}
 						onFocus={() => {
 							if (!modelsByProvider[slot.provider]?.length) {
 								refreshProviderModels(slot.provider);
@@ -943,7 +1091,7 @@
 				<input type="text" class="md-input" bind:value={pdForm.name} placeholder="唯一名称，角色据此选择" autocomplete="off" />
 			</div>
 			<div class="model-field">
-				<span class="field-label">API Style（接线协议）</span>
+				<span class="field-label">Provider 预设</span>
 				<MaterialSelect
 					id="prov-api-style"
 					value={pdForm.api_style}
@@ -951,8 +1099,25 @@
 					onChange={(/** @type {string} */ v) => applyApiStylePreset(v)}
 				/>
 			</div>
-			{#if isSttOnlyStyle(pdForm.api_style)}
-				<p class="model-hint">该协议仅支持语音转写。请将其分配给 Audio Model，并在上方 Voice 卡片把 STT Provider 设为「音频模型」。</p>
+			{#if apiStylePreset(pdForm.api_style)}
+				{@const preset = apiStylePreset(pdForm.api_style)}
+				<p class="model-hint">
+					线协议 <code>{preset.api_style}</code>
+					{#if preset.hint}
+						— {preset.hint}
+					{/if}
+					{#if preset.docs_url || preset.console_url}
+						{' '}
+						{#if preset.docs_url}<a href={preset.docs_url} target="_blank" rel="noreferrer">文档</a>{/if}
+						{#if preset.docs_url && preset.console_url} · {/if}
+						{#if preset.console_url}<a href={preset.console_url} target="_blank" rel="noreferrer">控制台</a>{/if}
+					{/if}
+				</p>
+			{/if}
+			{#if isSttOnlyStyle(apiStylePreset(pdForm.api_style).api_style)}
+				<p class="model-hint">该协议仅支持语音转写。请将其分配给 Audio Model，并在「媒体」页语音卡片把 STT Provider 设为「音频模型」。</p>
+			{:else if isTtsOnlyStyle(apiStylePreset(pdForm.api_style).api_style)}
+				<p class="model-hint">该协议仅支持语音合成。在「媒体」页语音卡片把 TTS Provider 设为此项，并填写 Voice ID。</p>
 			{/if}
 			<div class="model-field">
 				<span class="field-label">Base URL</span>
@@ -995,10 +1160,10 @@
 		font-size: 13px; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
 		text-transform: uppercase; letter-spacing: 1px; margin-bottom: var(--md-sys-space-lg);
 	}
-	.input-section {
+	.media-section {
 		max-width: 640px;
 	}
-	.input-section .form-row :global(.md-number-field) {
+	.media-section .form-row :global(.md-number-field) {
 		width: 200px;
 	}
 	.card-list {
@@ -1153,11 +1318,18 @@
 	}
 	.role-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: 2px; line-height: 1.4; }
 	.provider-note { font-size: 11px; color: var(--md-sys-color-on-surface-variant); font-style: italic; }
-	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
+	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); line-height: 1.45; }
 	.model-hint code {
 		background: var(--md-sys-color-surface-container-highest);
 		padding: 1px 4px;
 		border-radius: 4px;
+	}
+	.model-hint a {
+		color: var(--md-sys-color-primary);
+		text-decoration: none;
+	}
+	.model-hint a:hover {
+		text-decoration: underline;
 	}
 	.form-row {
 		display: flex; align-items: center; margin-bottom: var(--md-sys-space-sm); gap: var(--md-sys-space-md);
@@ -1183,6 +1355,11 @@
 		margin-top: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-md);
 		border-top: 1px dashed var(--md-sys-color-outline-variant);
+	}
+	.capability-block.first {
+		margin-top: 0;
+		padding-top: 0;
+		border-top: none;
 	}
 	.capability-block h4 {
 		font-size: 12px;
