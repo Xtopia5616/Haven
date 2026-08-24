@@ -169,6 +169,11 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 	return out;
 }
 
+/**
+ * Rebuild chat bubbles from DB projections (`messages` + `session_steps`).
+ * X12: these tables are materialized views of `TranscriptEvent` / execution
+ * status — live UI still uses AgentEvent; this path is history/reload only.
+ */
 export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 	const items: ReviewMessage[] = [];
 	const msgs = data.messages || [];

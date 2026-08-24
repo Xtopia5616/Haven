@@ -265,77 +265,11 @@ impl ReActEngine {
         .await;
     }
 
-    /// Shared tail of the two "final answer" branches when a user message or
-    /// background-action result arrived while the LLM was generating: persist
-    /// the finished answer, insert it BEFORE the injected messages (so the
-    /// re-run's LLM call sees the completed answer followed by the
-    /// interjection, instead of answering blind and duplicating the bubble),
-    /// and keep a rollback target for the interrupted final step.
-    #[allow(clippy::too_many_arguments)] // consolidates two near-identical final branches
-    pub(super) async fn deliver_final_with_pending_context(
-        &self,
-        ctx: &StepCtx,
-        final_text: &str,
-        reasoning: Option<String>,
-        thinking_blocks: Vec<serde_json::Value>,
-        events: &mut Vec<TranscriptRecord>,
-        canonical: &mut Vec<CanonicalMessage>,
-        branch_points: &mut HashMap<u32, BranchPoint>,
-        before_inject_len: usize,
-        already_pushed: bool,
-    ) {
-        let message_id = self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
-        self.persist_session_message(
-            &ctx.session_id,
-            "assistant",
-            final_text,
-            Some("text"),
-            None,
-            Some(&message_id),
-        )
-        .await;
-        if !already_pushed {
-            // Same rule as finish_turn_end: prefer thinking_blocks over a
-            // plain reasoning string when both are present.
-            let reasoning = if thinking_blocks.is_empty() {
-                reasoning
-            } else {
-                None
-            };
-            // Inject appended UserInjects at the end of `events`; insert the
-            // final-answer ToolCall before them so projection order matches
-            // the canonical insert below.
-            let n_injected = canonical.len().saturating_sub(before_inject_len);
-            let insert_at = events.len().saturating_sub(n_injected);
-            events.insert(
-                insert_at,
-                TranscriptRecord::ToolCall {
-                    step_number: ctx.step_num,
-                    text: final_text.to_string(),
-                    tool_calls: Vec::new(),
-                    reasoning: reasoning.clone(),
-                    web_search_calls: Vec::new(),
-                    thinking_blocks: thinking_blocks.clone(),
-                },
-            );
-            canonical.insert(
-                before_inject_len,
-                CanonicalMessage::assistant(
-                    vec![ContentPart::text(final_text.to_string())],
-                    None,
-                    reasoning,
-                    Vec::new(),
-                    thinking_blocks,
-                ),
-            );
-        }
-        self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
-            .await;
-    }
-
-    /// Phase 7 / C6: shared turn-end for empty-actions and explicit
-    /// `final_answer`. Both paths enter the same inject / canonical-push /
-    /// `pause_turn` / `PauseReason::TurnEnd` implementation.
+    /// Phase 7 / C6 + X12: shared turn-end for empty-actions and explicit
+    /// `final_answer`. Final text is applied via `apply_transcript(ToolCall)`
+    /// (events authority + optional messages projection), then pending
+    /// context is injected so order is final → injects. `pause_turn` never
+    /// re-projects content.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn finish_turn_end(
         &self,
@@ -348,48 +282,65 @@ impl ReActEngine {
         thinking_blocks: Vec<serde_json::Value>,
         already_pushed: bool,
     ) -> anyhow::Result<TurnEndOutcome> {
-        let before_inject_len = canonical.len();
-        if self.inject_pending_context(ctx, events, canonical).await {
-            self.deliver_final_with_pending_context(
+        let thought_projected = events.iter().any(|e| {
+            matches!(
+                e,
+                TranscriptRecord::Thought { step_number, .. }
+                    if *step_number == ctx.step_num
+            )
+        });
+        // Prefer thinking_blocks over a plain reasoning string when both exist.
+        let reasoning = if thinking_blocks.is_empty() {
+            reasoning
+        } else {
+            None
+        };
+        // Thought apply already projected under the thought id — only project
+        // again when there was no Thought for this step (synthetic finals).
+        let persist_text_id = if thought_projected {
+            None
+        } else {
+            Some(self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought"))
+        };
+
+        if !already_pushed {
+            self.apply_transcript(
                 ctx,
-                final_text,
-                reasoning,
-                thinking_blocks,
+                TranscriptEvent::ToolCall {
+                    text: final_text.to_string(),
+                    tool_calls: Vec::new(),
+                    reasoning,
+                    web_search_calls: Vec::new(),
+                    thinking_blocks,
+                    action_cards: Vec::new(),
+                    persist_text_id,
+                },
                 events,
                 canonical,
-                branch_points,
-                before_inject_len,
-                already_pushed,
             )
             .await;
+        } else if let Some(ref mid) = persist_text_id {
+            // Search context already pushed the ToolCall event; still need the
+            // messages projection when Thought did not land one.
+            self.project_chat_message(
+                &ctx.session_id,
+                "assistant",
+                final_text,
+                Some("text"),
+                None,
+                Some(mid),
+            )
+            .await;
+        }
+
+        // Inject AFTER the final so canonical/events order is final → injects
+        // (replaces the old insert-before-injects dance).
+        if self.inject_pending_context(ctx, events, canonical).await {
+            self.save_branch_point(&ctx.session_id, events, ctx.step_num, branch_points, false)
+                .await;
             return Ok(TurnEndOutcome::Continue);
         }
-        // Mirror the finished answer into events + canonical before the pause
-        // so the snapshot (events authority) carries the complete conversation.
-        if !already_pushed {
-            let reasoning = if thinking_blocks.is_empty() {
-                reasoning
-            } else {
-                None
-            };
-            events.push(TranscriptRecord::ToolCall {
-                step_number: ctx.step_num,
-                text: final_text.to_string(),
-                tool_calls: Vec::new(),
-                reasoning: reasoning.clone(),
-                web_search_calls: Vec::new(),
-                thinking_blocks: thinking_blocks.clone(),
-            });
-            canonical.push(CanonicalMessage::assistant(
-                vec![ContentPart::text(final_text.to_string())],
-                None,
-                reasoning,
-                Vec::new(),
-                thinking_blocks,
-            ));
-        }
-        let persist_message_id =
-            self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+
         self.pause_turn(
             &ctx.session_id,
             events,
@@ -399,8 +350,8 @@ impl ReActEngine {
             SessionStatus::Paused,
             final_text,
             Some(ctx.step_num),
-            Some(&persist_message_id),
-            false,
+            None,
+            true,
         )
         .await?;
         Ok(TurnEndOutcome::Done(LoopExit::Paused {

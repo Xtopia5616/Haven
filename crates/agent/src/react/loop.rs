@@ -336,13 +336,21 @@ impl ReActEngine {
 
             if let Some(ref reasoning) = response.reasoning {
                 let reasoning_id = self.block_msg_id(session_id, step_num, run_id, "reasoning");
-                self.persist_session_message(
-                    session_id,
-                    "assistant",
-                    reasoning,
-                    Some("reasoning"),
-                    None,
-                    Some(&reasoning_id),
+                let step_ctx = StepCtx {
+                    session_id: session_id.to_string(),
+                    step_num,
+                    run_id,
+                    emitter: emitter.clone(),
+                };
+                // X12: reasoning row is projected from apply (events authority).
+                self.apply_transcript(
+                    &step_ctx,
+                    TranscriptEvent::Reasoning {
+                        text: reasoning.clone(),
+                        message_id: reasoning_id.clone(),
+                    },
+                    events,
+                    canonical,
                 )
                 .await;
                 // Reconcile the frontend's streamed reasoning with the
@@ -622,6 +630,18 @@ impl ReActEngine {
                             )
                             .await;
                     }
+                    // Re-surface as a messages-only row (fresh id) so resume
+                    // can re-seed chat history without polluting events /
+                    // canonical. Review still prefers the original ask card.
+                    self.project_chat_message(
+                        session_id,
+                        "assistant",
+                        &question,
+                        Some("text"),
+                        None,
+                        None,
+                    )
+                    .await;
                     self.pause_turn(
                         session_id,
                         events,
@@ -631,15 +651,8 @@ impl ReActEngine {
                         SessionStatus::PausedAwaitingAnswer,
                         &question,
                         None,
-                        // The question is re-persisted as a plain assistant
-                        // message (fresh id, `is_ask` false so pause_turn
-                        // persists it): the row re-seeds the resume canonical.
-                        // The review renders the ask CARD from the original
-                        // question message (persisted under the ask step's id
-                        // at pause time) and drops this fresh bubble by
-                        // content match (legacy path).
                         None,
-                        false,
+                        true,
                     )
                     .await?;
                     return Ok(LoopExit::Paused {
@@ -710,21 +723,7 @@ impl ReActEngine {
                 }
             }
 
-            if let Some(ref t) = thought {
-                let text = t.trim();
-                if !text.is_empty() {
-                    let message_id = self.block_msg_id(session_id, step_num, run_id, "thought");
-                    self.persist_session_message(
-                        session_id,
-                        "assistant",
-                        text,
-                        Some("text"),
-                        None,
-                        Some(&message_id),
-                    )
-                    .await;
-                }
-            }
+            // Thought text was projected inside apply_transcript(Thought).
 
             match self
                 .execute_tool_batch(

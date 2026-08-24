@@ -1389,6 +1389,9 @@ const EXTRACTION_TOOL_CONTENT_CHARS: usize = 300;
 /// Incremental extraction window (M1+M4): cursor is on **user** message ids;
 /// each new user turn may include a bounded assistant/tool slice from the
 /// same turn (skip compacted summaries / reasoning). Not a full transcript.
+///
+/// X12: reads the `messages` / `session_steps` projections (not the events
+/// blob). Cursor stays on the last processed **user** message id.
 struct ExtractionWindow {
     messages: Vec<haven_memory::repositories::messages::Message>,
     cursor_last: Option<String>,
