@@ -32,7 +32,8 @@ use crate::types::TranscriptRecord;
 pub(crate) type InferCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Mid-run MEMORY fence refresh (M2): dirty flag lives on [`crate::InferenceEngine`];
-/// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only.
+/// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only
+/// (resume uses full rebuild — X2; do not widen this to tools/skills).
 pub(crate) struct MemoryPatchHandle {
     pub inference: Arc<crate::InferenceEngine>,
     pub prompt_builder: Arc<crate::SystemPromptBuilder>,

@@ -240,7 +240,7 @@ impl ReActEngine {
         let non_final: Vec<&Action> = actions.iter().filter(|a| !a.is_final).collect();
         // Mint one `step-*` id per action, shared by the Action event,
         // the tool's step row (created inside execute_step) and the
-        // Observation event, so the live card and the review badge (both
+        // Observation event, so the live card and the resume badge (both
         // keyed `step-<id>`) are one entity. The ids are indexed by the
         // action's position in `non_final` (NOT by `tool_call_id`, which
         // two actions of a malformed provider response could share —
@@ -575,7 +575,7 @@ impl ReActEngine {
                             &action.tool_input,
                         );
                         // Complete the pending step row minted at Action
-                        // time so review/resume rebuilds the Interrupted
+                        // time so resume rebuilds the Interrupted
                         // card from session_steps (not live-only).
                         let step_id = action_step_ids[idx].clone();
                         self.executor
@@ -678,7 +678,7 @@ impl ReActEngine {
                         // the chat on every routine check.
                         || (is_agent_inbox_call(&tool_name, &action.tool_input)
                             && empty_inbox_output(&step_result));
-                    // For `ask`, the chat/review bubble shows the readable
+                    // For `ask`, the chat/resume bubble shows the readable
                     // question text; the canonical (model) context keeps
                     // the raw JSON so the model can still parse the flag.
                     // Same for `notify`: show a readable confirmation
@@ -810,7 +810,7 @@ impl ReActEngine {
             // Persist one question message per ask step, each under the
             // step row's id: the message row is the ask card's content
             // authority (the step row only carries execution state), and
-            // the shared id lets the review builder link them without
+            // the shared id lets the resume builder link them without
             // content matching or a sentinel. The message row also
             // re-seeds the question into the canonical on resume. A
             // defensive fresh id keeps the question visible even if a

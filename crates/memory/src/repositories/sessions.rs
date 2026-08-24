@@ -84,7 +84,7 @@ impl Database {
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
         let conn = self.conn();
         // react_state is excluded here too: it is a full ReAct snapshot that
-        // can be tens of KB, and consumers of the Session row (review payload,
+        // can be tens of KB, and consumers of the Session row (resume payload,
         // last-conversation restore) never read it. The agent reads it via
         // `get_react_state`, which selects only that column.
         let mut stmt = conn.prepare(

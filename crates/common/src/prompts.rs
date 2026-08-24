@@ -48,7 +48,7 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
 /// - `{facts}` — user facts block, or empty
 /// - `{session}` — current session description
 /// - `{facts}` — cross-session MEMORY fence (USER FACTS + Past excerpts), or empty;
-///   resume patches this fence in place without rebuilding tools/skills
+///   mid-run patches this fence; resume fully rebuilds the system prompt (X2)
 /// - `{context}` — Additional context only (same-session window); episodes live in `{facts}`
 /// - `{failure_diagnosis}` — shared tool-failure guidance
 ///   ([`TOOL_FAILURE_DIAGNOSIS`])
@@ -98,7 +98,7 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 /// the one-line tool index so each tool can carry richer "when to use / when
 /// not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
-- Tool schemas: the per-step API `tools[]` list is the sole authority for names, parameters, and availability. The short tools/skills/MCP index in this system prompt is frozen at session open (load_skill / load_mcp appear in `tools[]` on the next step, not by rewriting this index).\n\
+- Tool schemas: the per-step API `tools[]` list is the sole authority for names, parameters, and availability. The short tools/skills/MCP index in this system prompt is frozen for the current run (load_skill / load_mcp appear in `tools[]` on the next step, not by rewriting this index); the index is refreshed when the session resumes.\n\
 - ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own. One question per ask call: put a single decision in `question`, and keep `options` as short answers to that question only. Do not combine two questions into one ask or mix unrelated options together; call ask again for the next question.\n\
 - http: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
 - memory: Use recall(query, kind=fact|episode) to look up stored facts or past conversation episodes (same path as History). Use remember/forget only when the user explicitly asks to store or delete a fact.\n\
@@ -216,6 +216,8 @@ mod tests {
         assert!(out.contains("You have access to the following built-in tools:"));
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Tool usage notes:"));
+        assert!(out.contains("frozen for the current run"));
+        assert!(out.contains("refreshed when the session resumes"));
         assert!(out.contains("Current session: test session"));
         assert!(!out.contains("Steps so far:"));
         assert!(out.ends_with("What is your next step?\n"));

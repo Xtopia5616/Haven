@@ -37,10 +37,10 @@ describe('submitTranscript', () => {
 		expect(list[0].voice).toBe(false);
 	});
 
-	it('drops the review placeholder when a real message is submitted', async () => {
+	it('drops the resume placeholder when a real message is submitted', async () => {
 		invokeMock.mockResolvedValue({});
 		activeSessionIdStore.set('session-a');
-		// A rolled-back conversation: the DB is empty, so the review rebuild
+		// A rolled-back conversation: the DB is empty, so the resume rebuild
 		// showed a display-only placeholder carrying the session input text.
 		sessionMessagesStore.set({
 			'session-a': [{ id: 'placeholder-session-a', role: 'user', content: '第一条消息' }],

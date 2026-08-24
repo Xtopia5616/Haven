@@ -342,7 +342,7 @@ impl SessionExecutor {
     }
 
     /// Transition a session's status in MEMORY ONLY, without persisting it to
-    /// the DB. Used by the history-review reopen flow: a merely VIEWED
+    /// the DB. Used by the history-resume reopen flow: a merely VIEWED
     /// completed/errored session must be made resumable for the current run
     /// (Paused) without resurrecting it in the DB — otherwise the ended
     /// conversation would be auto-restored on every app start and shown as an
@@ -482,7 +482,7 @@ impl SessionExecutor {
             (Paused, Completed) | (Paused, Error) => true,
             (PausedAwaitingAnswer, Completed) | (PausedAwaitingAnswer, Error) => true,
             (PausedAwaitingConfirm, Completed) | (PausedAwaitingConfirm, Error) => true,
-            // User-driven exceptions: reopen a finished session for review
+            // User-driven exceptions: reopen a finished session for resume
             // (history flow), retry an errored session from its snapshot.
             (Completed, Paused) | (Error, Paused) => true,
             (Error, Pending) => true,

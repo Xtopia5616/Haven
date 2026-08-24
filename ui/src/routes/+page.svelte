@@ -17,7 +17,7 @@
 <script>
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
+	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
 	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
@@ -47,7 +47,7 @@
 		adoptDraftMessages,
 		clearSessionMessages,
 		clearSeqMap,
-		reviewTargetStore,
+		resumeTargetStore,
 		activeSessionIdStore,
 		sessionTokenStatsStore,
 		updateSessionTokenStats,
@@ -158,7 +158,7 @@
 	 * @property {string|null} model
 	 * @property {boolean} [estimated] - totals restored from a rough backend
 	 *   estimate (session predates usage persistence), not real recorded usage.
-	 * @property {boolean} [restored] - entry came from persistence (review /
+	 * @property {boolean} [restored] - entry came from persistence (resume /
 	 *   reopened conversation) with no live `agent:usage` events expected:
 	 *   the widget shows the cumulative total instead of the per-step context.
 	 */
@@ -183,7 +183,7 @@
 	});
 
 	// Per-LLM-call usage detail for the active session (restored from the
-	// persisted `llm_usage` when a review conversation opens). Used to render
+	// persisted `llm_usage` when a resume conversation opens). Used to render
 	// per-step token chips on tool cards and the tooltip call count.
 	/** @type {Array<import('$lib/stores.ts').LlmUsage>} */
 	let llmUsage = $state([]);
@@ -633,8 +633,8 @@
 		if (!localMsgId || /^(msg|step)-/.test(localMsgId)) return localMsgId;
 		const localTs = Number.parseInt(String(localMsgId).split('-')[0], 10);
 		try {
-			const result = await invoke('get_session_for_review', { sessionId });
-			const dbMessages = buildReviewMessages(result);
+			const result = await invoke('get_session_for_resume', { sessionId });
+			const dbMessages = buildResumeMessages(result);
 			const candidates = dbMessages.filter(
 				(m) => m.role === 'user' && m.content === clickedContent && /^msg-/.test(m.id),
 			);
@@ -715,8 +715,8 @@
 	async function resyncSessionMessages(sessionId) {
 		if (!sessionId) return;
 		try {
-			const result = await invoke('get_session_for_review', { sessionId });
-			const dbMessages = buildReviewMessages(result);
+			const result = await invoke('get_session_for_resume', { sessionId });
+			const dbMessages = buildResumeMessages(result);
 			// Rollback rebuilds the timeline from the truncated DB state, so the
 			// pre-rollback live messages in `existing` are STALE: their content
 			// was truncated out of the DB, so mergeLiveStreaming's content-dedup
@@ -783,8 +783,8 @@
 		// switchToSession reloads from the DB when it is re-opened.
 		const prevActive = activeSessionId;
 		try {
-			const result = await invoke('get_session_for_review', { sessionId });
-			const dbMessages = buildReviewMessages(result);
+			const result = await invoke('get_session_for_resume', { sessionId });
+			const dbMessages = buildResumeMessages(result);
 			// Live tool cards and DB step badges share the same `step-*` id
 			// (minted by the backend when the action started), so the merge
 			// dedups them by id alone — a mid-step card keeps streaming its
@@ -898,9 +898,9 @@
 			// during the await is merged in on top; the old captured partials
 			// are dropped from the existing store so they aren't re-added.
 			try {
-				const result = await invoke('get_session_for_review', { sessionId: tid });
+				const result = await invoke('get_session_for_resume', { sessionId: tid });
 				updateSessionMessages(tid, (existing) => {
-				const dbMessages = buildReviewMessages(result);
+				const dbMessages = buildResumeMessages(result);
 				const keptExistingMessages = existing.filter((m) => !partialIds.has(m.id));
 				return mergeLiveStreaming(dbMessages, keptExistingMessages);
 				});
@@ -951,7 +951,7 @@
 	// Sync the Svelte store to a $state variable — $effect does NOT track
 	// get(store), so we must use .subscribe() to get reactive updates.
 	// Also read the current value once on mount via get(), otherwise values
-	// set before subscription (e.g. by history review) are never received.
+	// set before subscription (e.g. by history resume) are never received.
 	/** @type {Record<string, any[]>} */
 	let sessionMessagesDict = $state({});
 	$effect(() =>
@@ -1044,7 +1044,7 @@
 	}
 
 	// Cold-mount scroll for conversations opened as a bulk snapshot (history
-	// review, app-start auto-restore): at that moment every bubble is
+	// resume, app-start auto-restore): at that moment every bubble is
 	// content-visibility-skipped and reports only its contain-intrinsic-size
 	// estimate (~120px), so the first scrollToBottom lands above the real
 	// bottom. Force one full render pass — the real sizes are then remembered
@@ -1381,15 +1381,15 @@
 	// Open a reviewed conversation (from the history page). The chat view
 	// stays mounted while other tabs are open, so this runs both at mount and
 	// whenever the store changes afterwards.
-	/** @param {any} reviewTarget */
-	function processReviewTarget(reviewTarget) {
-		if (reviewTarget && reviewTarget.sessionId) {
+	/** @param {any} resumeTarget */
+	function processResumeTarget(resumeTarget) {
+		if (resumeTarget && resumeTarget.sessionId) {
 			// Opening a reviewed conversation abandons any pending fresh-start
 			// intent (the user chose this conversation explicitly).
 			newSessionIntentStore.set(false);
 			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			const prevActive = activeSessionId;
-			activeSessionId = reviewTarget.sessionId;
+			activeSessionId = resumeTarget.sessionId;
 			activeSessionIdStore.set(activeSessionId);
 			// The session being left: if it is terminal (or has dropped out of
 			// the executor's working set, which only happens for terminal
@@ -1398,7 +1398,7 @@
 			// because evictTerminalSessionMemory skips the active session.
 			// Same rule as switchToSession; without it every reviewed session
 			// would keep its full message list in memory for the whole app run.
-			if (prevActive && prevActive !== reviewTarget.sessionId) {
+			if (prevActive && prevActive !== resumeTarget.sessionId) {
 				const prevSession = sessions.find((x) => x.id === prevActive);
 				if (
 					!prevSession ||
@@ -1412,38 +1412,38 @@
 			// If this session was errored when reviewed, show the continue button.
 			// reopen_session already set it to Paused, but we still want the user
 			// to see the option to retry the failed step.
-			if (reviewTarget.wasError) {
-				sessionErrorId = reviewTarget.sessionId;
+			if (resumeTarget.wasError) {
+				sessionErrorId = resumeTarget.sessionId;
 				activeSessionError = true;
 			}
 			// Defer clearing so it survives rapid remounts during init.
-			setTimeout(() => reviewTargetStore.set(null), 0);
+			setTimeout(() => resumeTargetStore.set(null), 0);
 		}
 	}
 
-	// The review target set by the history page's "open session" flow must be
+	// The resume target set by the history page's "open session" flow must be
 	// handled while the chat view is already mounted. `$effect` does NOT track
 	// `get(store)` (svelte/store wraps the read in `untrack`), so a plain
-	// `get(reviewTargetStore)` here would only see the initial value and never
+	// `get(resumeTargetStore)` here would only see the initial value and never
 	// react to later history clicks. Subscribing via syncStore runs the callback
 	// on every store change (and synchronously once with the current value).
-	$effect(() => syncStore(reviewTargetStore, (v) => processReviewTarget(v)));
+	$effect(() => syncStore(resumeTargetStore, (v) => processResumeTarget(v)));
 
 	onMount(async () => {
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
 		// load: the store is in-memory only, but the intent survives app
 		// restarts via `haven.no_auto_restore`. Without this, `loadSessions`
 		// auto-assign would re-select the old conversation on restart and the
-		// persisted intent would be silently defeated. The reviewTarget
+		// persisted intent would be silently defeated. The resumeTarget
 		// branch below (an explicit user choice) clears it again if needed.
 		if (browser && localStorage.getItem(NEW_ACTION_INTENT_KEY)) {
 			newSessionIntentStore.set(true);
 		}
 
-		// Process review target first so loadSessions won't overwrite
+		// Process resume target first so loadSessions won't overwrite
 		// activeSessionId with a stale paused session whose messages are gone.
-		const initialReviewTarget = get(reviewTargetStore);
-		processReviewTarget(initialReviewTarget);
+		const initialResumeTarget = get(resumeTargetStore);
+		processResumeTarget(initialResumeTarget);
 
 		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.
@@ -1765,7 +1765,7 @@
 					updateModelState('tool');
 					// The event carries the minted `step-*` id — the same id the
 					// step row is persisted under — so the live card and the
-					// review badge are one entity.
+					// resume badge are one entity.
 					const toolMsgId = data.step_id;
 					const { reasoningId, thoughtId } = blockIdsOf(
 						tid,
@@ -1916,7 +1916,7 @@
 					});
 					// Also append the per-call detail so tool-card token chips
 					// (stepUsage) update live — previously they only appeared
-					// after restoreSessionLlmUsage on review/reopen.
+					// after restoreSessionLlmUsage on resume/reopen.
 					if (d.step_number != null) {
 						appendSessionLlmUsage(d.session_id, {
 							step_number: d.step_number,
@@ -1982,11 +1982,11 @@
 		// without waiting for `reopen_session` (a second IPC round-trip that
 		// only makes the session resumable for follow-up messages).
 		const sessionsP = loadSessions();
-		const restoreP = restoreLastConversation(initialReviewTarget);
+		const restoreP = restoreLastConversation(initialResumeTarget);
 
 		await Promise.all([sessionsP, restoreP, readyP]);
 
-		// Conversation just opened (history review or auto-restore): scroll to
+		// Conversation just opened (history resume or auto-restore): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
 		// render first (see scrollToBottomAfterOpen).
 		if (activeSessionId) {
@@ -2065,17 +2065,17 @@
 	}
 
 	// Auto-restore the last conversation from a previous run so reopening
-	// the app shows where you left off. Skipped when a review target is
+	// the app shows where you left off. Skipped when a resume target is
 	// pending, a session is already active, or the user explicitly started a
 	// fresh conversation (新对话) and no new session has been created since.
 	// Messages render as soon as `get_last_conversation` returns; the
 	// follow-up `reopen_session` (which only lets follow-up messages continue
 	// this session instead of being dropped as a terminal-session supplement) runs
 	// afterwards without blocking the UI.
-	/** @param {any} reviewTarget */
-	async function restoreLastConversation(reviewTarget) {
+	/** @param {any} resumeTarget */
+	async function restoreLastConversation(resumeTarget) {
 		if (
-			reviewTarget ||
+			resumeTarget ||
 			get(newSessionIntentStore) ||
 			(browser && localStorage.getItem(NEW_ACTION_INTENT_KEY))
 		) {
@@ -2108,7 +2108,7 @@
 		// history page; the window starts blank instead.
 		if (last.session.status === 'completed') return;
 		const wasError = last.session.status === 'error' || last.session.status === 'failed';
-		updateSessionMessages(last.session.id, () => buildReviewMessages(last));
+		updateSessionMessages(last.session.id, () => buildResumeMessages(last));
 		restoreSessionTokenStats(last.session.id, last.usage, last.usage_estimated);
 		restoreSessionLlmUsage(last.session.id, last.llm_usage);
 		activeSessionId = last.session.id;
@@ -2422,7 +2422,7 @@
 				<div class="welcome" in:fly={{ y: 12, duration: 330 }}>
 					<Logo size={48} />
 					<h2>Haven</h2>
-					<p>PC 语音助手 · 按 {hotkeyBinding} 开始录音，或直接输入指令</p>
+					<p>按 {hotkeyBinding} 开始录音，或直接输入指令</p>
 				</div>
 			{:else}
 				<div class="message-list">

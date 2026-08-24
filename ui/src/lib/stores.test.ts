@@ -252,7 +252,7 @@ describe('truncateSessionMessages', () => {
 	});
 
 	it('does not cut on a user message at the target step', () => {
-		// Review-mode messages: user inputs carry the stepNumber of the
+		// Resume-mode messages: user inputs carry the stepNumber of the
 		// following assistant message. Cutting ON the user message would drop
 		// the user's input from the view while the backend keeps it (it was
 		// persisted before the branch point). The cut lands on the first

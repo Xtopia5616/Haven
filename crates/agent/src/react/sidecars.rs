@@ -120,19 +120,38 @@ pub(super) struct CumulativeTotals {
     pub(super) cached_tokens: u32,
     pub(super) cache_creation_tokens: u32,
     pub(super) cost_usd: Option<f64>,
-    pub(super) has_cost: bool,
 }
 
 /// Per-session cumulative token usage tracker.
 pub(crate) struct UsageTracker {
     map: Mutex<HashMap<String, CumulativeUsage>>,
+    /// Persist-epoch per session. Bumped on rollback/truncate so a detached
+    /// fire-and-forget write from a discarded call cannot re-insert usage
+    /// after the detail rows were cut.
+    epochs: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl UsageTracker {
     pub(crate) fn new() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
+            epochs: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Current persist epoch for `session_id` (0 when never invalidated).
+    pub(crate) fn epoch(&self, session_id: &str) -> u64 {
+        self.epochs
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Shared epoch map so a detached persist task can observe invalidation.
+    pub(crate) fn epochs_handle(&self) -> Arc<Mutex<HashMap<String, u64>>> {
+        Arc::clone(&self.epochs)
     }
 
     /// Seed (if missing) then add one call's tokens/cost; returns running totals.
@@ -178,12 +197,20 @@ impl UsageTracker {
             cached_tokens: entry.cached_tokens,
             cache_creation_tokens: entry.cache_creation_tokens,
             cost_usd,
-            has_cost: entry.has_cost,
         }
     }
 
     pub(crate) fn reset(&self, session_id: &str) {
         self.map.lock().unwrap().remove(session_id);
+    }
+
+    /// Clear in-memory counters and bump the persist epoch so in-flight
+    /// writes captured before a truncate are ignored.
+    pub(crate) fn invalidate_after_truncate(&self, session_id: &str) {
+        self.map.lock().unwrap().remove(session_id);
+        let mut epochs = self.epochs.lock().unwrap();
+        let next = epochs.get(session_id).copied().unwrap_or(0).saturating_add(1);
+        epochs.insert(session_id.to_string(), next);
     }
 }
 
@@ -480,5 +507,18 @@ mod tests {
         }
         poller.clear_session("ses-a");
         assert!(!poller.lock().title_cache.contains_key("ses-a"));
+    }
+
+    #[test]
+    fn usage_tracker_invalidate_bumps_epoch_and_clears_map() {
+        let tracker = UsageTracker::new();
+        assert_eq!(tracker.epoch("ses-a"), 0);
+        let _ = tracker.record_with_seed("ses-a", 10, 5, 15, 0, 0, None, CumulativeUsage::default);
+        tracker.invalidate_after_truncate("ses-a");
+        assert_eq!(tracker.epoch("ses-a"), 1);
+        // Next record must re-seed (map was cleared), not keep the old 15.
+        let totals =
+            tracker.record_with_seed("ses-a", 1, 1, 2, 0, 0, None, CumulativeUsage::default);
+        assert_eq!(totals.total_tokens, 2);
     }
 }

@@ -168,7 +168,7 @@ impl AgentLayer {
     }
 
     /// Reopen a terminal session to Paused state.
-    /// Used by the history review flow — shows the session as active on the chat
+    /// Used by the history resume flow — shows the session as active on the chat
     /// page. The dispatcher won't pick it up until the user sends a
     /// follow-up message (which calls supplement_session Paused→Pending).
     ///
@@ -176,7 +176,7 @@ impl AgentLayer {
     /// injected into the agent (queued as steering/supplement and then lost
     /// when the session errored, completed, or was cancelled mid-batch), they
     /// are re-queued as supplements so a later Continue / follow-up can
-    /// deliver them. History review itself stays Paused — auto-resuming here
+    /// deliver them. History resume itself stays Paused — auto-resuming here
     /// would re-run ReAct on old chats and undo the memory-only
     /// Completed→Paused guard.
     pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
@@ -240,7 +240,7 @@ impl AgentLayer {
                 );
             }
         }
-        // Stay Paused: review must not auto-dispatch. Continue / a new user
+        // Stay Paused: resume must not auto-dispatch. Continue / a new user
         // message transitions to Pending and drains these supplements.
         Ok(())
     }

@@ -108,13 +108,18 @@ impl AgentLayer {
                             )
                         })?;
                     let _ = self.db.delete_messages_from(session_id, &target.created_at);
+                    let _ = self.db.delete_llm_usage_from(session_id, &target.created_at);
+                    let _ = self.db.rebuild_session_usage_from_calls(session_id);
                 } else if let Some(ts) = self.db.last_user_message_ts(session_id) {
-                    let _ = self.db.delete_messages_after(session_id, &ts);
+                    let _ = self.db.truncate_session_after(session_id, &ts, false);
                 }
                 // After truncation (and after any in-flight run join above):
                 // drop the cutoff cache so a late persist cannot repopulate
-                // timestamps that no longer exist.
+                // timestamps that no longer exist. Also invalidate in-memory
+                // usage so the next run re-seeds from the rebuilt DB totals.
                 self.react_engine.clear_last_msg_at(session_id);
+                self.react_engine
+                    .invalidate_usage_after_truncate(session_id);
                 // Reload into memory and set status.
                 self.executor.ensure_session_loaded(session_id).await?;
                 self.set_session_status(
@@ -246,16 +251,26 @@ impl AgentLayer {
                 // the user message too (they belong to the discarded
                 // timeline).
                 self.db.delete_session_steps_after(session_id, &user_ts)?;
+                // Usage for the discarded assistant turns is at-or-after the
+                // user message; cut it and rebuild cumulative counters so
+                // token stats do not stay inflated after edit-resend.
+                self.db.delete_llm_usage_from(session_id, &user_ts)?;
+                self.db.rebuild_session_usage_from_calls(session_id)?;
             } else {
                 // Strict `>` for both: the branch-point cutoff is the last
                 // message BEFORE the discarded step, so we keep the cutoff
                 // itself intact (truncate_session_after is non-inclusive).
+                // Also rebuilds session_usage from remaining llm_usage rows.
                 self.db.truncate_session_after(session_id, ts, false)?;
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a
-        // stale-high cutoff in the mid-run branch-point cache.
+        // stale-high cutoff in the mid-run branch-point cache. Invalidate
+        // usage so in-memory counters re-seed from the rebuilt DB row and
+        // late detached persists from discarded calls are ignored.
         self.react_engine.clear_last_msg_at(session_id);
+        self.react_engine
+            .invalidate_usage_after_truncate(session_id);
 
         // Drop any checkpointed partial stream text: the restored timeline
         // must not inherit a stale partial from the discarded run. Discard
@@ -432,14 +447,17 @@ impl AgentLayer {
             if let Some(ts) = cutoff {
                 // Retry OVERWRITES the previous attempt: drop both messages
                 // and step rows (tool badges, thought entries) after the
-                // branch point so the review history stays linear. Only
+                // branch point so the resume history stays linear. Only
                 // branching creates separate timelines.
                 self.db.truncate_session_after(session_id, &ts, false)?;
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a
-        // stale-high cutoff in the mid-run branch-point cache.
+        // stale-high cutoff in the mid-run branch-point cache. Invalidate
+        // usage so retry re-seeds from rebuilt totals.
         self.react_engine.clear_last_msg_at(session_id);
+        self.react_engine
+            .invalidate_usage_after_truncate(session_id);
 
         // Drop any checkpointed partial stream text: the retry re-streams
         // from scratch, so a crash during the retry must not promote the

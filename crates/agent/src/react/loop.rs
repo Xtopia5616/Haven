@@ -21,7 +21,8 @@ impl ReActEngine {
     /// Tool definitions (API `tools[]`) are rebuilt at the top of each step so
     /// tools loaded via `load_skill` / `load_mcp` become visible on the next
     /// step. The system-prompt tools/skills/MCP **index** stays frozen for the
-    /// run (Phase 7 / G7) — schemas come from this API list only.
+    /// current run (G7 freeze-per-run); resume rebuilds it (X2). Schemas come
+    /// from this API list only.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_react_loop(
         &self,
@@ -634,7 +635,7 @@ impl ReActEngine {
                         // The question is re-persisted as a plain assistant
                         // message (fresh id, `is_ask` false so pause_turn
                         // persists it): the row re-seeds the resume canonical.
-                        // The review renders the ask CARD from the original
+                        // The resume renders the ask CARD from the original
                         // question message (persisted under the ask step's id
                         // at pause time) and drops this fresh bubble by
                         // content match (legacy path).

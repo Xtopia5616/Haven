@@ -277,7 +277,7 @@ impl AgentLayer {
                     // add_follow_up). Only non-terminal sessions may be
                     // reactivated by a follow-up message; Completed/Error sessions
                     // were ended on purpose and must be reopened explicitly via
-                    // the review flow — auto-converting them would resurrect a
+                    // the resume flow — auto-converting them would resurrect a
                     // ghost session.
                     let fresh_state = self.executor.get_session_state(&session_id).await;
                     if fresh_state == Some(SessionStatus::Completed)

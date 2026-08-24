@@ -29,7 +29,7 @@ pub enum AgentEvent {
         tool_call_id: Option<String>,
         /// The `step-*` id of the step row this action is persisted under
         /// (minted before the action starts). The frontend uses it as the
-        /// live tool-card id, matching the review badge built from the DB.
+        /// live tool-card id, matching the resume badge built from the DB.
         step_id: String,
     },
     Observation {
@@ -142,7 +142,7 @@ pub enum AgentEvent {
     /// the UI can display a running counter and remaining context budget.
     /// `step_number` / `duration_ms` / `role` / `has_cost` mirror the
     /// persisted `llm_usage` row so live tool cards can render the same
-    /// per-step token chip that review mode restores from the DB.
+    /// per-step token chip that resume mode restores from the DB.
     Usage {
         session_id: String,
         prompt_tokens: u32,

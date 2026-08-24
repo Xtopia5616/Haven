@@ -51,7 +51,7 @@ impl SessionExecutor {
     }
 
     /// Persist an Interrupted observation onto the pending step row (creating
-    /// it if Action-time begin failed). Keeps the review badge aligned with
+    /// it if Action-time begin failed). Keeps the resume badge aligned with
     /// the live Interrupted card across resume/resync.
     pub async fn finish_interrupted_step(
         &self,
@@ -100,7 +100,7 @@ impl SessionExecutor {
 
     /// Execute a tool step. `step_id` is the pre-minted `step-*` id the frontend's
     /// live tool card already uses; the persisted step row reuses it so the live
-    /// card and the review badge are one entity. The pending row is normally
+    /// card and the resume badge are one entity. The pending row is normally
     /// created by [`Self::begin_action_step`] at Action emit; this method
     /// ensures + completes it after the tool finishes.
     #[allow(clippy::too_many_arguments)]
@@ -295,7 +295,7 @@ impl SessionExecutor {
         let persist_step_id = step_id.to_string();
         let tool_name_owned = tool_name.to_string();
         // The in-memory StepInfo reuses the persisted step row's id so the
-        // live session state and the review history reference the same step.
+        // live session state and the resume history reference the same step.
         if let Some(entry) = self.sessions.lock().await.get(session_id).cloned() {
             let mut session = entry.lock().await;
             session.steps.push(StepInfo {

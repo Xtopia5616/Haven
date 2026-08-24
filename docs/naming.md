@@ -66,6 +66,7 @@
 - **前端只在边界转换**（invoke 调用 / 事件监听处），内部统一 camelCase。
 - **Reactive / 数据字段**（如 DB 行字段、测试 fixture）允许保留后端 snake_case，不强行改前端内部就 camelCase 化。
 - 不要在调用链深处出现重复的手工 snake↔camel 转换；将来集中收敛到命令/事件封装层。
+- **会话恢复统一叫 `resume`**：从历史打开会话、崩溃恢复、DB→气泡重建均用 `resume`（如 `get_session_for_resume`、`resumeTargetStore`、`buildResumeMessages`、`SessionResumeResponse`）。禁止再用 `review` 指代该流程（`preview` 预览、code review 注释、工具 capability `"review"` 除外）。
 
 ---
 
@@ -93,5 +94,6 @@
 - [ ] Svelte 组件文件名 = 组件名（PascalCase）；JS 模块 camelCase，store 尾缀 `Store`
 - [ ] JS 局部变量 camelCase，常量 UPPER_SNAKE
 - [ ] 跨层只在边界转换 snake↔camel
+- [ ] 会话恢复用语统一 `resume`，不用 `review`
 - [ ] 集合用复数、单元素用单数、派生集合不用裸形容词（`selected`→`selectedSessions`）
 - [ ] 文件名与结构体/实体单复数一致（`file.rs`→`files.rs` 对应 `FilesTool`；仓库随表复数）

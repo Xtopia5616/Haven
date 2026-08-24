@@ -808,7 +808,7 @@ pub struct Supplement {
     /// follow-up or ask answer). The row is written at submit time, so the
     /// ReAct loop uses the id to anchor the input's thought-step row (same
     /// id, no content matching) and forward-dates the steering row's
-    /// `created_at` when it injects — the review rebuild then orders it
+    /// `created_at` when it injects — the resume rebuild then orders it
     /// after the interrupted thought instead of before it. `None` when no
     /// row was persisted (e.g. tests, direct API use).
     #[serde(default)]

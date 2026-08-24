@@ -389,13 +389,14 @@ impl ReActEngine {
     /// plus per-session skill/MCP adapters registered via `load_skill`/`load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
     ///
-    /// Phase 7 / G7 + R3 — **API `tools[]` is the schema authority.** The
+    /// G7 (X2 rethink) — **API `tools[]` is the schema authority.** The
     /// system prompt only embeds a short built-in / installable-skill /
-    /// MCP-server **index** (names + one-line descriptions), permanently
-    /// frozen for the open session (`TOOL_USAGE_NOTES` declares this; resume
-    /// / mid-run `load_skill` never rebuild the index). After `load_skill` /
-    /// `load_mcp`, new tool schemas appear here on the next step; they are
-    /// **not** spliced into the prompt index.
+    /// MCP-server **index** (names + one-line descriptions), frozen for the
+    /// **current run** (`TOOL_USAGE_NOTES` declares this). Mid-run
+    /// `load_skill` / `load_mcp` never rewrite the index; resume fully
+    /// rebuilds the system prompt (X2) so catalog drift is picked up between
+    /// runs. After `load_skill` / `load_mcp`, new tool schemas appear here on
+    /// the next step; they are **not** spliced into the prompt index.
     ///
     /// The result is cached per session against the ToolsManager catalog version:
     /// the definitions only change when a per-session registration
@@ -678,7 +679,6 @@ impl ReActEngine {
         let cum_cached = totals.cached_tokens;
         let cum_cache_creation = totals.cache_creation_tokens;
         let cum_cost_opt = totals.cost_usd;
-        let has_cost = totals.has_cost;
 
         let model = response.model.clone().or_else(|| usage.model_name.clone());
 
@@ -695,19 +695,16 @@ impl ReActEngine {
             model
         );
 
-        // Persist the cumulative counters AND one per-call detail row so a
-        // resumed session (after session completion or app restart) restores the
-        // correct token-stats display instead of restarting from zero, and
-        // keeps the granular history behind it. Fire-and-forget on a blocking
-        // thread: the autocommit hits the disk/fsync path and awaiting it
-        // would stall the agent step loop on every usage event (the previous
-        // awaited variant serialized each step behind the disk write). A
-        // dropped handle only risks losing the final step's counters on a
-        // hard kill — the next usage event rewrites the absolute totals, and
-        // the in-memory map stays authoritative for the running session.
+        // Persist one per-call detail row and rebuild `session_usage` from the
+        // SUM of remaining detail rows (not the in-memory absolute totals).
+        // That keeps cumulative counters correct when fire-and-forget writes
+        // complete out of order, and matches what rollback rebuilds after a
+        // truncate. Detached on the blocking pool so the step loop is not
+        // stalled behind fsync; a hard kill can still drop the last call.
+        // An epoch captured here is checked inside the task so a rollback that
+        // truncates usage after this spawn cannot be undone by a late insert.
         let db = self.db.clone();
         let session_id_for_persist = session_id.to_string();
-        let cum_cost = cum_cost_opt.unwrap_or(0.0);
         let call_cost = step_cost.unwrap_or(0.0);
         let call_has_cost = step_cost.is_some();
         let model_for_persist = model.clone();
@@ -716,18 +713,21 @@ impl ReActEngine {
         let usage_total = usage.total_tokens;
         let usage_cached = usage.cached_tokens;
         let usage_cache_creation = usage.cache_creation_tokens;
+        let persist_epoch = self.usage.epoch(session_id);
+        let epochs = self.usage.epochs_handle();
         let persist = tokio::task::spawn_blocking(move || {
-            let _ = db.update_session_usage(
-                &session_id_for_persist,
-                cum_prompt,
-                cum_completion,
-                cum_total,
-                cum_cached,
-                cum_cache_creation,
-                cum_cost,
-                has_cost,
-            );
-            let _ = db.record_llm_call_usage(
+            let epoch_now = || {
+                epochs
+                    .lock()
+                    .unwrap()
+                    .get(&session_id_for_persist)
+                    .copied()
+                    .unwrap_or(0)
+            };
+            if epoch_now() != persist_epoch {
+                return;
+            }
+            let Ok(rec) = db.persist_llm_call_and_refresh_session_usage(
                 &session_id_for_persist,
                 Some(step_number),
                 role.as_str(),
@@ -740,7 +740,15 @@ impl ReActEngine {
                 call_cost,
                 call_has_cost,
                 duration_ms,
-            );
+            ) else {
+                return;
+            };
+            // Rollback may have truncated between the pre-check and the
+            // insert; drop the phantom row and rebuild so totals stay true.
+            if epoch_now() != persist_epoch {
+                let _ = db.delete_llm_usage_by_id(&rec.id);
+                let _ = db.rebuild_session_usage_from_calls(&session_id_for_persist);
+            }
         });
         // Detach: the write completes on the blocking pool without the step
         // loop waiting for it.
@@ -785,6 +793,14 @@ impl ReActEngine {
         self.last_msg_at.remove(session_id);
         self.snapshot_bufs.remove(session_id);
         self.messaging.clear_session(session_id);
+    }
+
+    /// After rollback/truncate rebuilt `session_usage` from remaining
+    /// `llm_usage` rows: clear in-memory counters and bump the persist epoch
+    /// so a late fire-and-forget write from a discarded call cannot re-inflate
+    /// the totals. Next live usage event re-seeds from the rebuilt DB row.
+    pub fn invalidate_usage_after_truncate(&self, session_id: &str) {
+        self.usage.invalidate_after_truncate(session_id);
     }
 
     /// Resolve the model's true context window for the endpoint used by

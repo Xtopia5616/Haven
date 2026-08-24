@@ -534,7 +534,7 @@
 
     /// M3/H10: a follow-up message must NOT resurrect a session that was ended.
     /// Terminal sessions are only reactivated explicitly via `reopen_session`
-    /// (Completed/Error ??Paused) in the review flow.
+    /// (Completed/Error ??Paused) in the resume flow.
     #[tokio::test]
     async fn process_input_does_not_resurrect_ended_session() {
         let (agent, executor) = make_test_agent();
@@ -668,7 +668,7 @@
 
         agent.reopen_session(&session.id).await.unwrap();
 
-        // Re-queued for a later Continue / follow-up, but review stays Paused
+        // Re-queued for a later Continue / follow-up, but resume stays Paused
         // so opening history never auto-runs ReAct on old chats.
         assert_eq!(
             executor.get_session_state(&session.id).await,
@@ -694,7 +694,7 @@
 
         agent.reopen_session(&session.id).await.unwrap();
 
-        // No lost inputs: the session reopens as Paused (review-only),
+        // No lost inputs: the session reopens as Paused (resume-only),
         // matching the historical behavior.
         assert_eq!(
             executor.get_session_state(&session.id).await,
@@ -3133,7 +3133,7 @@
     async fn retry_after_ask_answer_error_keeps_single_history() {
         // Reproduce the reported issue: the agent asks a question, the user
         // answers, the resumed step fails, and the user retries. Every retry
-        // must OVERWRITE the previous attempt's persisted output ??the review
+        // must OVERWRITE the previous attempt's persisted output — the resume
         // history should show exactly one question, one answer, one response.
         let tools = Arc::new(ToolsManager::new());
         tools
@@ -3246,7 +3246,7 @@
         assert_eq!(finals, 1, "final answer must appear exactly once");
 
         // Step rows from the failed attempt must be overwritten too — the
-        // review history stays linear (only branching splits timelines).
+        // resume history stays linear (only branching splits timelines).
         // Thought rows carry no text anymore (the text lives in messages),
         // so count by step number: the failed attempt's step-2 rows must be
         // gone, leaving only the retried step.
@@ -3314,7 +3314,7 @@
         assert_eq!(title, "Build");
         assert_eq!(body, "Compilation finished");
 
-        // The chat/review observation must be readable, not raw JSON.
+        // The chat/resume observation must be readable, not raw JSON.
         assert!(collector.has_observation("notify"));
 
         // Unlike `ask`, notify must not pause the session mid-loop: the loop
@@ -3639,7 +3639,7 @@
             pending
         );
         // Pending step rows created at Action emit must be completed with the
-        // Interrupted observation so review/resume rebuilds the tool cards
+        // Interrupted observation so resume rebuilds the tool cards
         // from session_steps (not live-only UI state).
         let db_steps = agent.db.get_session_steps(&session.id).unwrap();
         let interrupted_db = db_steps
@@ -4117,7 +4117,7 @@
 
         // User-message rollback: the user message itself must be removed from
         // the session (its text returns to the composer for editing) ??not
-        // left behind to reappear on the next review rebuild.
+        // left behind to reappear on the next resume rebuild.
         agent
             .rollback_session(&session.id, 1, true, Some(&hello_id))
             .await

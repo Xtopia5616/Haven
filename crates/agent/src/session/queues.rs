@@ -31,7 +31,7 @@ impl SessionExecutor {
     /// `message_id` is the id of the persisted user message row this
     /// follow-up's words were stored under (persisted at submit time by
     /// `process_input`). The ReAct loop's `push_user_context` creates the
-    /// anchoring thought-step row under that same id, so review/rollback
+    /// anchoring thought-step row under that same id, so resume/rollback
     /// resolve the step by id. `None` when no row was persisted.
     pub async fn add_follow_up_with_attachments(
         &self,

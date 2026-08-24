@@ -18,7 +18,7 @@ pub struct SessionStep {
     pub is_high_risk: bool,
     pub confirmed: Option<bool>,
     /// Whether the tool output was hidden from the user in the live chat
-    /// (`"silent": true` in the tool input). Persisted so the history review
+    /// (`"silent": true` in the tool input). Persisted so the history resume
     /// renders the same as the live conversation.
     pub silent: bool,
     pub started_at: Option<String>,
@@ -31,7 +31,7 @@ impl Database {
     ///
     /// The row is the execution-state anchor of a streamed thought (or a user
     /// supplement/steering input): its id is the SAME id its content message
-    /// row is persisted under in the `messages` table, so the review builder
+    /// row is persisted under in the `messages` table, so the resume builder
     /// links the two without content matching. The `thought` column is
     /// intentionally NOT written — the text lives exclusively in the
     /// `messages` table (single content authority). Legacy rows keep their
@@ -126,7 +126,7 @@ impl Database {
 
     /// Ensure a pending action step row exists under the pre-minted `step-*`
     /// id. The ReAct loop calls this at Action-emit time so an interrupted /
-    /// mid-flight tool always has a DB row the review rebuild can hydrate;
+    /// mid-flight tool always has a DB row the resume rebuild can hydrate;
     /// `execute_step` calls it again as a fallback when tests invoke it
     /// without going through Action emit. Idempotent: a second call with the
     /// same id is a no-op (optionally refreshing `confirmed` while still
@@ -187,7 +187,7 @@ impl Database {
     }
 
     /// Fail every still-`pending` action step for a session (handler panic /
-    /// abort after `begin_action_step`). Without this, review rebuilds show
+    /// abort after `begin_action_step`). Without this, resume rebuilds show
     /// blank tool badges that never completed.
     pub fn fail_pending_action_steps(
         &self,
@@ -240,7 +240,7 @@ impl Database {
 
     /// Delete every step row created strictly after the given timestamp.
     /// Used by retry/rollback: the re-run OVERWRITES the previous attempt's
-    /// recorded steps instead of appending to them, so the review history
+    /// recorded steps instead of appending to them, so the resume history
     /// stays linear — only branching creates separate timelines.
     pub fn delete_session_steps_after(
         &self,

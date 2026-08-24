@@ -68,14 +68,14 @@
 
 	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
+	import { buildResumeMessages, mergeLiveStreaming } from '$lib/resumeMessages.ts';
 	import { formatMessageTime } from '$lib/stores.ts';
 	import { statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { invoke } from '$lib/tauri.ts';
-	import { updateSessionMessages, clearSessionMessages, clearAllSessionMessages, reviewTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
+	import { updateSessionMessages, clearSessionMessages, clearAllSessionMessages, resumeTargetStore, activeSessionIdStore, restoreSessionTokenStats, restoreSessionLlmUsage, addNotification } from '$lib/stores.ts';
 	import { registerOne } from '$lib/events.ts';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -239,11 +239,11 @@
 	/**
 	 * @param {HistorySession} session
 	 */
-	async function reviewSession(session) {
+	async function resumeSession(session) {
 		try {
 			await invoke('reopen_session', { sessionId: session.id });
-			const result = await invoke('get_session_for_review', { sessionId: session.id });
-			const dbMessages = buildReviewMessages(result);
+			const result = await invoke('get_session_for_resume', { sessionId: session.id });
+			const dbMessages = buildResumeMessages(result);
 			// Atomically merge DB messages with any in-memory streaming messages
 			// that arrived concurrently (e.g. from background session streaming).
 			updateSessionMessages(session.id, (existing) =>
@@ -251,7 +251,7 @@
 			);
 			restoreSessionTokenStats(session.id, result.usage, result.usage_estimated);
 			restoreSessionLlmUsage(session.id, result.llm_usage);
-			reviewTargetStore.set({ sessionId: session.id, summary: session.input_text, title: session.title, wasError: session.status === 'error' || session.status === 'failed' });
+			resumeTargetStore.set({ sessionId: session.id, summary: session.input_text, title: session.title, wasError: session.status === 'error' || session.status === 'failed' });
 			await goto('/');
 		} catch (e) {
 			addNotification(`加载会话详情失败: ${formatError(e)}`, 'error', 4000);
@@ -424,7 +424,7 @@
 		const session = ctxMenu.session;
 		if (!session) return [];
 		return [
-			{ id: 'open', label: '打开', icon: 'open', action: () => reviewSession(session) },
+			{ id: 'open', label: '打开', icon: 'open', action: () => resumeSession(session) },
 			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(session) },
 			{ id: 'export', label: '导出', icon: 'export', action: () => downloadSessions([session]) },
 			{ id: 'delete', label: '删除', icon: 'delete', danger: true, action: () => (deleteTarget = session) },
@@ -650,8 +650,8 @@
 				class:selected={selectedIds.has(session.id)}
 				role="button"
 				tabindex="0"
-				onclick={() => reviewSession(session)}
-				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), reviewSession(session))}
+				onclick={() => resumeSession(session)}
+				onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), resumeSession(session))}
 				oncontextmenu={(e) => openCtxMenu(e, session)}
 			>
 				<div class="history-item-main">

@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::repositories::messages::now_rfc3339_millis;
 
 /// Per-session cumulative token/cost counters, persisted so a resumed or
 /// reopened session can restore the token-stats display instead of resetting
@@ -18,49 +19,6 @@ pub struct SessionUsage {
 }
 
 impl Database {
-    /// Upsert the cumulative token/cost counters for a session. Callers pass the
-    /// full cumulative values (not per-step deltas) — the row is replaced.
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_session_usage(
-        &self,
-        session_id: &str,
-        prompt_tokens: u32,
-        completion_tokens: u32,
-        total_tokens: u32,
-        cached_tokens: u32,
-        cache_creation_tokens: u32,
-        cost_usd: f64,
-        has_cost: bool,
-    ) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "INSERT INTO session_usage
-                 (session_id, prompt_tokens, completion_tokens, total_tokens,
-                  cached_tokens, cache_creation_tokens, cost_usd, has_cost, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
-             ON CONFLICT(session_id) DO UPDATE SET
-                 prompt_tokens = excluded.prompt_tokens,
-                 completion_tokens = excluded.completion_tokens,
-                 total_tokens = excluded.total_tokens,
-                 cached_tokens = excluded.cached_tokens,
-                 cache_creation_tokens = excluded.cache_creation_tokens,
-                 cost_usd = excluded.cost_usd,
-                 has_cost = excluded.has_cost,
-                 updated_at = excluded.updated_at",
-            rusqlite::params![
-                session_id,
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
-                cached_tokens,
-                cache_creation_tokens,
-                cost_usd,
-                has_cost
-            ],
-        )?;
-        Ok(())
-    }
-
     /// Load the persisted cumulative counters for a session, if any.
     pub fn get_session_usage(&self, session_id: &str) -> anyhow::Result<Option<SessionUsage>> {
         let conn = self.conn();
@@ -115,12 +73,9 @@ pub struct LlmCallUsage {
 }
 
 impl Database {
-    /// Append one LLM-call usage row. Fire-and-forget friendly: the caller
-    /// (the agent step loop) persists the detail the same way it persists
-    /// the cumulative counters — on a blocking thread, errors ignored.
-    /// `created_at` is stamped RFC3339 (like `messages.created_at`) so
-    /// rollback's `truncate_session_after` can cut usage rows on the same
-    /// timeline as messages and steps.
+    /// Test-only insert without refreshing `session_usage`. Live path must use
+    /// [`Self::persist_llm_call_and_refresh_session_usage`].
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn record_llm_call_usage(
         &self,
@@ -138,8 +93,164 @@ impl Database {
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmCallUsage> {
         let id = haven_common::types::new_id("usage");
-        let created_at = chrono::Utc::now().to_rfc3339();
+        let created_at = now_rfc3339_millis();
         let conn = self.conn();
+        Self::insert_llm_call_usage_conn(
+            &conn,
+            &id,
+            session_id,
+            step_number,
+            role,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            cost_usd,
+            has_cost,
+            duration_ms,
+            &created_at,
+        )?;
+        Ok(LlmCallUsage {
+            id,
+            session_id: session_id.into(),
+            step_number,
+            role: role.into(),
+            model: model.map(String::from),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            cost_usd,
+            has_cost,
+            duration_ms,
+            created_at,
+        })
+    }
+
+    /// Insert one call-detail row and rebuild `session_usage` from the
+    /// remaining `llm_usage` rows in a single transaction. Using the SUM of
+    /// detail rows (instead of an absolute in-memory cumulative write) keeps
+    /// totals correct when fire-and-forget persists complete out of order.
+    ///
+    /// `created_at` uses [`now_rfc3339_millis`] (same shape as messages/steps)
+    /// so string cutoffs in rollback/`truncate_session_after` compare correctly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn persist_llm_call_and_refresh_session_usage(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        role: &str,
+        model: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cost_usd: f64,
+        has_cost: bool,
+        duration_ms: Option<u64>,
+    ) -> anyhow::Result<LlmCallUsage> {
+        let id = haven_common::types::new_id("usage");
+        let created_at = now_rfc3339_millis();
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<LlmCallUsage> {
+            Self::insert_llm_call_usage_conn(
+                &conn,
+                &id,
+                session_id,
+                step_number,
+                role,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cost_usd,
+                has_cost,
+                duration_ms,
+                &created_at,
+            )?;
+            Self::rebuild_session_usage_from_calls_conn(&conn, session_id)?;
+            Ok(LlmCallUsage {
+                id: id.clone(),
+                session_id: session_id.into(),
+                step_number,
+                role: role.into(),
+                model: model.map(String::from),
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cost_usd,
+                has_cost,
+                duration_ms,
+                created_at,
+            })
+        })();
+        match result {
+            Ok(rec) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(rec)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// Recompute `session_usage` as the SUM of remaining `llm_usage` rows
+    /// (zeros when none remain). Called after rollback/truncate so discarded
+    /// steps do not leave inflated totals, and resume does not fall back to
+    /// estimate_session_usage.
+    pub fn rebuild_session_usage_from_calls(&self, session_id: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        Self::rebuild_session_usage_from_calls_conn(&conn, session_id)
+    }
+
+    /// Delete `llm_usage` rows at-or-after `ts` (inclusive), matching
+    /// user-message rollback's `delete_messages_from` cutoff.
+    pub fn delete_llm_usage_from(&self, session_id: &str, created_at: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "DELETE FROM llm_usage WHERE session_id = ?1 AND created_at >= ?2",
+            rusqlite::params![session_id, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Remove one detail row by id (used when a detached persist lands after
+    /// its session epoch was invalidated by rollback).
+    pub fn delete_llm_usage_by_id(&self, id: &str) -> anyhow::Result<()> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM llm_usage WHERE id = ?1", rusqlite::params![id])?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_llm_call_usage_conn(
+        conn: &rusqlite::Connection,
+        id: &str,
+        session_id: &str,
+        step_number: Option<i32>,
+        role: &str,
+        model: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cost_usd: f64,
+        has_cost: bool,
+        duration_ms: Option<u64>,
+        created_at: &str,
+    ) -> anyhow::Result<()> {
         conn.execute(
             "INSERT INTO llm_usage
                  (id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
@@ -163,22 +274,72 @@ impl Database {
                 created_at,
             ],
         )?;
-        Ok(LlmCallUsage {
-            id,
-            session_id: session_id.into(),
-            step_number,
-            role: role.into(),
-            model: model.map(String::from),
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            cached_tokens,
-            cache_creation_tokens,
-            cost_usd,
-            has_cost,
-            duration_ms,
-            created_at,
-        })
+        Ok(())
+    }
+
+    fn rebuild_session_usage_from_calls_conn(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let (prompt, completion, total, cached, creation, cost, has_cost): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            f64,
+            i64,
+        ) = conn.query_row(
+            "SELECT COALESCE(SUM(prompt_tokens), 0),
+                    COALESCE(SUM(completion_tokens), 0),
+                    COALESCE(SUM(total_tokens), 0),
+                    COALESCE(SUM(cached_tokens), 0),
+                    COALESCE(SUM(cache_creation_tokens), 0),
+                    COALESCE(SUM(CASE WHEN has_cost != 0 THEN cost_usd ELSE 0 END), 0),
+                    COALESCE(MAX(CASE WHEN has_cost != 0 THEN 1 ELSE 0 END), 0)
+             FROM llm_usage WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )?;
+        // Always upsert — including zeros when no detail remains — so resume
+        // does not treat a cleared row as "predates persistence" and fall
+        // back to estimate_session_usage.
+        conn.execute(
+            "INSERT INTO session_usage
+                 (session_id, prompt_tokens, completion_tokens, total_tokens,
+                  cached_tokens, cache_creation_tokens, cost_usd, has_cost, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+             ON CONFLICT(session_id) DO UPDATE SET
+                 prompt_tokens = excluded.prompt_tokens,
+                 completion_tokens = excluded.completion_tokens,
+                 total_tokens = excluded.total_tokens,
+                 cached_tokens = excluded.cached_tokens,
+                 cache_creation_tokens = excluded.cache_creation_tokens,
+                 cost_usd = excluded.cost_usd,
+                 has_cost = excluded.has_cost,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![
+                session_id,
+                prompt as u32,
+                completion as u32,
+                total as u32,
+                cached as u32,
+                creation as u32,
+                cost,
+                has_cost != 0
+            ],
+        )?;
+        Ok(())
     }
 
     /// All usage-detail rows for a session, oldest first. `session_usage` carries
@@ -226,12 +387,25 @@ mod tests {
     }
 
     #[test]
-    fn update_and_get_session_usage_roundtrip() {
+    fn persist_and_get_session_usage_roundtrip() {
         let db = test_db();
         let session = db.create_session("hello", "").unwrap();
         assert!(db.get_session_usage(&session.id).unwrap().is_none());
-        db.update_session_usage(&session.id, 100, 50, 150, 40, 5, 0.25, true)
-            .unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            None,
+            100,
+            50,
+            150,
+            40,
+            5,
+            0.25,
+            true,
+            None,
+        )
+        .unwrap();
         let u = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(u.prompt_tokens, 100);
         assert_eq!(u.completion_tokens, 50);
@@ -243,30 +417,24 @@ mod tests {
     }
 
     #[test]
-    fn update_replaces_cumulative_values() {
-        let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
-        db.update_session_usage(&session.id, 10, 5, 15, 0, 0, 0.0, false)
-            .unwrap();
-        // Callers pass the full cumulative totals, so a later call replaces
-        // (not accumulates) the stored row.
-        db.update_session_usage(&session.id, 20, 10, 30, 8, 1, 0.5, true)
-            .unwrap();
-        let u = db.get_session_usage(&session.id).unwrap().unwrap();
-        assert_eq!(u.total_tokens, 30);
-        assert_eq!(u.prompt_tokens, 20);
-        assert_eq!(u.cached_tokens, 8);
-        assert_eq!(u.cache_creation_tokens, 1);
-        assert_eq!(u.cost_usd, 0.5);
-        assert!(u.has_cost);
-    }
-
-    #[test]
     fn session_usage_cascades_on_session_delete() {
         let db = test_db();
         let session = db.create_session("hello", "").unwrap();
-        db.update_session_usage(&session.id, 10, 5, 15, 0, 0, 0.0, false)
-            .unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            None,
+            10,
+            5,
+            15,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
         assert!(db.get_session_usage(&session.id).unwrap().is_some());
         db.delete_session(&session.id).unwrap();
         assert!(db.get_session_usage(&session.id).unwrap().is_none());
@@ -382,5 +550,159 @@ mod tests {
         .unwrap();
         db.delete_session(&session.id).unwrap();
         assert!(db.get_session_llm_usage(&session.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn persist_llm_call_refreshes_session_usage_from_sum() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            Some("gpt-5"),
+            100,
+            50,
+            150,
+            40,
+            0,
+            0.25,
+            true,
+            Some(10),
+        )
+        .unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(2),
+            "default_model",
+            Some("gpt-5"),
+            20,
+            10,
+            30,
+            5,
+            1,
+            0.05,
+            true,
+            Some(5),
+        )
+        .unwrap();
+        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(u.prompt_tokens, 120);
+        assert_eq!(u.completion_tokens, 60);
+        assert_eq!(u.total_tokens, 180);
+        assert_eq!(u.cached_tokens, 45);
+        assert_eq!(u.cache_creation_tokens, 1);
+        assert!((u.cost_usd - 0.30).abs() < 1e-9);
+        assert!(u.has_cost);
+    }
+
+    #[test]
+    fn rebuild_session_usage_zeros_row_when_no_calls_remain() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            "default_model",
+            None,
+            10,
+            5,
+            15,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            db.get_session_usage(&session.id).unwrap().unwrap().total_tokens,
+            15
+        );
+        let cutoff = "1970-01-01T00:00:00.000Z";
+        db.delete_llm_usage_from(&session.id, cutoff).unwrap();
+        db.rebuild_session_usage_from_calls(&session.id).unwrap();
+        let u = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(u.prompt_tokens, 0);
+        assert_eq!(u.completion_tokens, 0);
+        assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.cached_tokens, 0);
+        assert_eq!(u.cache_creation_tokens, 0);
+        assert_eq!(u.cost_usd, 0.0);
+        assert!(!u.has_cost);
+    }
+
+    #[test]
+    fn persist_stamps_created_at_like_messages() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        let rec = db
+            .persist_llm_call_and_refresh_session_usage(
+                &session.id,
+                Some(1),
+                "default_model",
+                None,
+                1,
+                1,
+                2,
+                0,
+                0,
+                0.0,
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(
+            rec.created_at.ends_with('Z'),
+            "expected Millis+Z stamp, got {}",
+            rec.created_at
+        );
+        assert!(
+            rec.created_at.contains('.'),
+            "expected fractional millis, got {}",
+            rec.created_at
+        );
+    }
+
+    #[test]
+    fn delete_llm_usage_by_id_removes_one_row() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        let a = db
+            .record_llm_call_usage(
+                &session.id,
+                Some(1),
+                "default_model",
+                None,
+                10,
+                5,
+                15,
+                0,
+                0,
+                0.0,
+                false,
+                None,
+            )
+            .unwrap();
+        let b = db
+            .record_llm_call_usage(
+                &session.id,
+                Some(2),
+                "default_model",
+                None,
+                20,
+                10,
+                30,
+                0,
+                0,
+                0.0,
+                false,
+                None,
+            )
+            .unwrap();
+        db.delete_llm_usage_by_id(&a.id).unwrap();
+        let usage = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].id, b.id);
     }
 }

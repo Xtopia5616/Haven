@@ -327,7 +327,7 @@ pub async fn continue_session(
 }
 
 #[derive(Serialize)]
-pub struct SessionReviewResponse {
+pub struct SessionResumeResponse {
     pub session: Session,
     pub messages: Vec<Message>,
     pub steps: Vec<SessionStep>,
@@ -413,29 +413,29 @@ fn estimate_session_usage(
     }
 }
 
-/// Load the session's messages and steps into a review response.
-/// Shared by `get_session_for_review` and `get_last_conversation`.
-fn review_response_for_session(
+/// Load the session's messages and steps into a resume response.
+/// Shared by `get_session_for_resume` and `get_last_conversation`.
+fn resume_response_for_session(
     db: &haven_memory::Database,
     session: Session,
-) -> Result<SessionReviewResponse, String> {
+) -> Result<SessionResumeResponse, String> {
     let messages = db
         .get_session_messages(&session.id)
-        .map_err(|e| log_err("review_response_for_session", e))?;
+        .map_err(|e| log_err("resume_response_for_session", e))?;
     let steps = db
         .get_session_steps(&session.id)
-        .map_err(|e| log_err("review_response_for_session", e))?;
+        .map_err(|e| log_err("resume_response_for_session", e))?;
     let (usage, usage_estimated) = match db
         .get_session_usage(&session.id)
-        .map_err(|e| log_err("review_response_for_session", e))?
+        .map_err(|e| log_err("resume_response_for_session", e))?
     {
         Some(u) => (Some(u), false),
         None => (Some(estimate_session_usage(&messages, &steps)), true),
     };
     let llm_usage = db
         .get_session_llm_usage(&session.id)
-        .map_err(|e| log_err("review_response_for_session", e))?;
-    Ok(SessionReviewResponse {
+        .map_err(|e| log_err("resume_response_for_session", e))?;
+    Ok(SessionResumeResponse {
         session,
         messages,
         steps,
@@ -446,16 +446,16 @@ fn review_response_for_session(
 }
 
 #[tauri::command]
-pub async fn get_session_for_review(
+pub async fn get_session_for_resume(
     state: State<'_, Arc<AppState>>,
     session_id: String,
-) -> Result<SessionReviewResponse, String> {
+) -> Result<SessionResumeResponse, String> {
     let session = state
         .db
         .get_session(&session_id)
-        .map_err(|e| log_err("get_session_for_review", e))?
+        .map_err(|e| log_err("get_session_for_resume", e))?
         .ok_or_else(|| format!("Session not found: {}", session_id))?;
-    review_response_for_session(&state.db, session)
+    resume_response_for_session(&state.db, session)
 }
 
 /// Return the most recent persisted session with its session messages and
@@ -464,13 +464,13 @@ pub async fn get_session_for_review(
 #[tauri::command]
 pub async fn get_last_conversation(
     state: State<'_, Arc<AppState>>,
-) -> Result<Option<SessionReviewResponse>, String> {
+) -> Result<Option<SessionResumeResponse>, String> {
     let sessions = state
         .db
         .list_sessions(1, 0)
         .map_err(|e| log_err("get_last_conversation", e))?;
     match sessions.into_iter().next() {
-        Some(session) => review_response_for_session(&state.db, session).map(Some),
+        Some(session) => resume_response_for_session(&state.db, session).map(Some),
         None => Ok(None),
     }
 }

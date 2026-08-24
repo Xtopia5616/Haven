@@ -26,6 +26,7 @@ pub enum LifecycleOp {
     BranchRollback,
     /// In-loop empty / cut-off retry (`ResponsePolicy`). Not consulted for
     /// external API calls — documented here for the matrix.
+    #[allow(dead_code)] // constructed only in unit tests (matrix documentation)
     TruncateRetry,
     /// `continue_session` (errored / paused retry).
     ErroredContinue,

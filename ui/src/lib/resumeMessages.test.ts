@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReviewMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './reviewMessages.ts';
+import { buildResumeMessages, mergeLiveStreaming, ASK_MSG_TOOL_CALL_ID } from './resumeMessages.ts';
 import { formatMessageTime } from './stores.ts';
 
 const sampleSession = {
@@ -9,9 +9,9 @@ const sampleSession = {
 	created_at: '2026-08-01T10:00:00.000Z',
 };
 
-describe('buildReviewMessages', () => {
+describe('buildResumeMessages', () => {
 	it('converts session messages into chat bubble items', () => {
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -25,7 +25,7 @@ describe('buildReviewMessages', () => {
 	});
 
 	it('preserves the voice flag from persisted messages', () => {
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'mv', role: 'user', content: '打开计算器', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [], voice: true },
@@ -38,7 +38,7 @@ describe('buildReviewMessages', () => {
 	});
 
 	it('adds tool badges from steps with action_tool', () => {
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -52,9 +52,9 @@ describe('buildReviewMessages', () => {
 	});
 
 	it('hides silent tool steps like the live chat does', () => {
-		// `"silent": true` on a tool input hides its card live; the review
+		// `"silent": true` on a tool input hides its card live; the resume
 		// rebuild must not resurrect it as a tool badge.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -72,7 +72,7 @@ describe('buildReviewMessages', () => {
 		// The silent action itself has no badge, but its preceding thought
 		// must resolve to the step via the matching thought step row so
 		// rollback targeting keeps working.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -89,13 +89,13 @@ describe('buildReviewMessages', () => {
 	});
 
 	it('falls back to the session input text when there are no messages', () => {
-		const items = buildReviewMessages({ session: sampleSession, messages: [], steps: [] });
+		const items = buildResumeMessages({ session: sampleSession, messages: [], steps: [] });
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({ role: 'user', content: '打开记事本' });
 	});
 
 	it('sorts items chronologically', () => {
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'late', role: 'assistant', content: 'later', message_type: 'text', created_at: '2026-08-01T10:05:00Z', attachments: [] },
@@ -113,7 +113,7 @@ describe('buildReviewMessages', () => {
 		// the following answer. The card's logical position is when its
 		// observation landed (completed_at), which sits between the thought
 		// and the next message whenever the tool spans a second boundary.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -140,7 +140,7 @@ describe('buildReviewMessages', () => {
 		// ordering fix): the answer row is persisted AFTER the tool
 		// completed, so its created_at is later than the card's completed_at
 		// even within one second — the card sorts between thought and answer.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -165,7 +165,7 @@ describe('buildReviewMessages', () => {
 	it('falls back to created_at for cards without completed_at', () => {
 		// Steps that never completed (interrupted/failed) have no
 		// completed_at; the card keeps its creation time as the sort key.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -192,7 +192,7 @@ describe('buildReviewMessages', () => {
 		// a step observation. It must surface once, as an `ask`-type card
 		// under the STEP row's id (the id the live card used) — no
 		// "Calling ask / Result" duplicate, no extra question bubble.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -223,9 +223,9 @@ describe('buildReviewMessages', () => {
 
 	it('skips the marked ask question message by the __ask__ sentinel', () => {
 		// New records mark the question message with the `__ask__`
-		// tool_call_id sentinel; the review build drops it by marker alone —
+		// tool_call_id sentinel; the resume build drops it by marker alone —
 		// no content comparison with the step observation.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -257,7 +257,7 @@ describe('buildReviewMessages', () => {
 		// The DB stores the ask tool's structured output as raw JSON, while
 		// the session message holds the readable question. The card must still
 		// match and render as ask (not a raw JSON tool badge).
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -284,7 +284,7 @@ describe('buildReviewMessages', () => {
 		// Old sessions may lack the persisted session message for the question.
 		// The step must still surface as an ask card with the extracted
 		// question, never as a raw JSON tool badge.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -319,7 +319,7 @@ describe('buildReviewMessages', () => {
 		// (marker or legacy content match) and every step renders its own
 		// card, mirroring the live view — no raw tool badge, no duplicate
 		// text bubble.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -339,9 +339,9 @@ describe('buildReviewMessages', () => {
 	it('links an ask card to its question message persisted under the step id', () => {
 		// New records persist ONE question message per ask step, under the
 		// step row's id (the message is the card's content authority). The
-		// review build must skip the message by id and render the card from
+		// resume build must skip the message by id and render the card from
 		// it — no sentinel, no content comparison.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -372,7 +372,7 @@ describe('buildReviewMessages', () => {
 	it('renders each ask of a batched step from its own id-shared message', () => {
 		// The batched-ask case on new records: one message per ask step,
 		// each under its step id — both cards render, each from its message.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -392,7 +392,7 @@ describe('buildReviewMessages', () => {
 	it('resolves a thought stepNumber by id when the message shares the step id', () => {
 		// New records persist the thought text only in messages, and the
 		// thought step row under the SAME id — no content matching needed.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -410,7 +410,7 @@ describe('buildReviewMessages', () => {
 		// Steering/supplement inputs: the thought step row is created under
 		// the user message's own id (no thought text), so the interrupted
 		// input resolves to its step by id after reload.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -429,7 +429,7 @@ describe('buildReviewMessages', () => {
 		// own words. After reload the input must resolve to that step even
 		// when nothing follows it (e.g. the session errored right after), so
 		// rollback stays available.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
 				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -447,7 +447,7 @@ describe('buildReviewMessages', () => {
 		// quick-reply options and awaiting state, otherwise the user cannot
 		// answer from the chat view after a switch/reload. Phase 4 / F2 uses
 		// distinct `paused_awaiting_answer`; plain `paused` still works.
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: { ...sampleSession, status: 'paused_awaiting_answer' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -473,7 +473,7 @@ describe('buildReviewMessages', () => {
 	});
 
 	it('keeps ask cards non-awaiting for non-paused sessions', () => {
-		const items = buildReviewMessages({
+		const items = buildResumeMessages({
 			session: { ...sampleSession, status: 'completed' },
 			messages: [
 				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
@@ -500,7 +500,7 @@ describe('formatMessageTime', () => {
 	});
 
 	it('formats today timestamps as wall-clock time only', () => {
-		// Same-day messages use the live-stream format so a merged review
+		// Same-day messages use the live-stream format so a merged resume
 		// list never mixes formats.
 		const now = new Date();
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 30, 15);
@@ -755,7 +755,7 @@ describe('ASK_MSG_TOOL_CALL_ID sentinel', () => {
 	it('pins the legacy marker old ask question messages carry', () => {
 		// New records no longer set the marker (the question message is
 		// persisted under the ask step row's id instead); the string stays
-		// pinned so legacy rows with it are still skipped by the review
+		// pinned so legacy rows with it are still skipped by the resume
 		// builder.
 		expect(ASK_MSG_TOOL_CALL_ID).toBe('__ask__');
 	});

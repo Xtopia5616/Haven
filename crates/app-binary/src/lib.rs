@@ -872,7 +872,7 @@ pub fn run() {
             commands::settings::enable_autostart,
             commands::settings::disable_autostart,
             commands::settings::is_autostart_enabled,
-            commands::session::get_session_for_review,
+            commands::session::get_session_for_resume,
             commands::session::rollback_session,
             commands::session::continue_session,
             commands::session::update_session_title,

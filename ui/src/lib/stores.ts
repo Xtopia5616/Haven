@@ -341,7 +341,7 @@ export function clearAllSessionMessages() {
 }
 
 // Internal: find the index to cut at for truncate/branch. Skips user
-// messages (they carry no stepNumber in the live view; the review
+// messages (they carry no stepNumber in the live view; the resume
 // builder assigns them the FOLLOWING assistant's stepNumber — cutting
 // ON a user message would drop user input from the view even though
 // the backend kept it).
@@ -360,7 +360,7 @@ function cutIndexForStep(list: any[], targetStep: number) {
  * timeline.
  *
  * The cut lands on the first NON-user message at/after the target step.
- * User messages carry no stepNumber in the live view, but the review
+ * User messages carry no stepNumber in the live view, but the resume
  * builder assigns them the stepNumber of the FOLLOWING assistant message —
  * cutting ON a user message would drop the user's input from the view even
  * though the backend kept it in the session (rollback only discards
@@ -431,9 +431,9 @@ export function moveSessionMessages(fromSessionId: string, toSessionId: string) 
 	sessionMessagesStore.update((m) => _moveMessages(m, fromSessionId, toSessionId));
 }
 
-// Review target for navigating from history to chat with a session context.
+// Resume target for navigating from history to chat with a session context.
 // Set by history page before navigating to /, consumed by +page.svelte on mount.
-export const reviewTargetStore = writable<any>(null);
+export const resumeTargetStore = writable<any>(null);
 
 // Active session ID that persists across SvelteKit page navigations so the
 // send handler and voice recording can supplement the same session.
@@ -510,10 +510,10 @@ export function clearSessionTokenStats(sessionId: string) {
 
 /**
  * Restore token stats for a session from persisted backend usage counters
- * (returned by get_session_for_review / get_last_conversation). Cumulative
+ * (returned by get_session_for_resume / get_last_conversation). Cumulative
  * totals are the persisted running totals; per-step and budget fields stay
  * empty until the next `agent:usage` event. `restored` marks the entry as
- * coming from persistence (a review / reopened conversation): no further
+ * coming from persistence (a resume / reopened conversation): no further
  * `agent:usage` events may arrive, so the widget falls back to showing the
  * cumulative total instead of the per-step context count. When the session
  * predates usage persistence, `estimated` marks the restored totals as a
@@ -558,7 +558,7 @@ export function restoreSessionTokenStats(
 }
 
 /**
- * Per-session per-LLM-call usage detail (restored from get_session_for_review /
+ * Per-session per-LLM-call usage detail (restored from get_session_for_resume /
  * get_last_conversation `llm_usage`), keyed by session id. Each entry is one
  * model response: { step_number, role, model, prompt_tokens,
  * completion_tokens, total_tokens, cost_usd, has_cost, duration_ms,
@@ -569,7 +569,7 @@ export const sessionLlmUsageStore = writable<Record<string, LlmUsage[]>>({});
 
 /**
  * Restore the per-call usage-detail list for a session (from
- * `get_session_for_review` / `get_last_conversation`). An EMPTY array overwrites
+ * `get_session_for_resume` / `get_last_conversation`). An EMPTY array overwrites
  * too: after a rollback truncates the usage rows the backend returns `[]`,
  * and the stale detail for discarded steps must not linger in the store
  * (mirrors restoreSessionTokenStats's unconditional overwrite). Only `undefined`
@@ -582,7 +582,7 @@ export function restoreSessionLlmUsage(sessionId: string, usageList: LlmUsage[])
 
 /**
  * Append one live `agent:usage` call onto the per-session detail list so
- * tool-card token chips update during the run (not only after review restore).
+ * tool-card token chips update during the run (not only after resume restore).
  */
 export function appendSessionLlmUsage(sessionId: string, entry: LlmUsage) {
 	if (!sessionId) return;
@@ -655,7 +655,7 @@ export function imageDataUrl(att: { media_type: string; data: string }) {
  * Format a message timestamp for bubble display. Messages from today show
  * the wall-clock time (matching live streaming bubbles); older messages
  * show the full `yyyy/mm/dd hh:mm:ss` so history stays navigable. Both the
- * live path (Date) and the review path (RFC3339 `created_at` string) share
+ * live path (Date) and the resume path (RFC3339 `created_at` string) share
  * this helper so a merged list never mixes formats.
  * @param {Date|string|number} input
  * @returns {string}

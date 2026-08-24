@@ -12,7 +12,7 @@
 //
 // IDs are NOT constructed here anymore: every streaming event carries the
 // `message_id` / `step_id` the backend minted (the same ids the DB rows are
-// persisted under), so the live bubble, the snap and the review copy are
+// persisted under), so the live bubble, the snap and the resume copy are
 // one entity and merges need no content-based dedup.
 
 /** A chat-bubble message in the live streaming view. */

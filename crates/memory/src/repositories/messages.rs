@@ -3,7 +3,7 @@ use chrono::{SecondsFormat, Utc};
 use haven_common::types::MessageAttachment;
 
 /// Milliseconds-precision RFC3339: rows written within the same second must
-/// remain distinguishable for the review timeline rebuild (the messages and
+/// remain distinguishable for the resume timeline rebuild (the messages and
 /// session_steps tables are interleaved by created_at on read).
 pub(crate) fn now_rfc3339_millis() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -11,7 +11,7 @@ pub(crate) fn now_rfc3339_millis() -> String {
 
 /// Lower bound for undelivered-input recovery scans. Older unanchored rows are
 /// treated as historical noise (legacy id formats / failed thought-step writes)
-/// and must not re-enter the ReAct loop on history review or crash resume.
+/// and must not re-enter the ReAct loop on history resume or crash resume.
 pub const UNDELIVERED_RECOVERY_MAX_AGE: chrono::Duration = chrono::Duration::days(2);
 
 /// RFC3339 timestamp `now - UNDELIVERED_RECOVERY_MAX_AGE` for recovery scans.
@@ -232,7 +232,7 @@ impl Database {
     /// `create_thought_step`). A `msg-*` user row without that anchor was
     /// queued as steering/supplement and then lost — the session errored,
     /// completed, or was cancelled mid-batch before the loop drained the queue.
-    /// Reopen/resume re-delivers these so history review never leaves a user
+    /// Reopen/resume re-delivers these so history resume never leaves a user
     /// message stranded in a "pending / not delivered" state.
     ///
     /// The session's FIRST user message is the session input seeded into the
@@ -243,7 +243,7 @@ impl Database {
 
     /// Like [`Self::get_undelivered_user_messages`], but when `since_created_at`
     /// is set only rows with `created_at > since` are returned. Callers use this
-    /// to bound crash/review recovery (e.g. last 2 days) so ancient false
+    /// to bound crash/resume recovery (e.g. last 2 days) so ancient false
     /// positives from missing anchors never re-enter the ReAct loop.
     pub fn get_undelivered_user_messages_since(
         &self,
@@ -309,7 +309,7 @@ impl Database {
 
     /// Forward-date a message row's `created_at`. Mid-turn interjections
     /// (steering) are persisted at SUBMIT time — before the interrupted
-    /// step's thought row lands — so the review rebuild would order them
+    /// step's thought row lands — so the resume rebuild would order them
     /// before the text they interrupted. The ReAct loop calls this when it
     /// actually injects the message, moving the row to its logical position
     /// (after the interrupted thought, before the answer to it).
@@ -377,7 +377,8 @@ impl Database {
     /// step-row source (e.g. per-session tool tables) only needs one edit.
     /// `llm_usage` detail rows are cut on the same timeline (their
     /// `created_at` is RFC3339 like messages), so discarded steps leave no
-    /// orphaned usage history behind.
+    /// orphaned usage history behind. `session_usage` is then rebuilt from
+    /// the remaining detail rows so cumulative token stats stay accurate.
     pub fn truncate_session_after(
         &self,
         session_id: &str,
@@ -394,6 +395,8 @@ impl Database {
         conn.execute(&msgs_sql, rusqlite::params![session_id, ts])?;
         conn.execute(&steps_sql, rusqlite::params![session_id, ts])?;
         conn.execute(&usage_sql, rusqlite::params![session_id, ts])?;
+        drop(conn);
+        self.rebuild_session_usage_from_calls(session_id)?;
         self.cache_invalidate_messages(session_id);
         Ok(())
     }
@@ -715,7 +718,7 @@ mod tests {
         let tid = test_session(&db);
         // Rows recorded in two batches separated by a cutoff; only the
         // second batch (after the cutoff) must be removed.
-        db.record_llm_call_usage(
+        db.persist_llm_call_and_refresh_session_usage(
             &tid,
             Some(1),
             "default_model",
@@ -732,7 +735,7 @@ mod tests {
         .unwrap();
         let cutoff = chrono::Utc::now().to_rfc3339();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        db.record_llm_call_usage(
+        db.persist_llm_call_and_refresh_session_usage(
             &tid,
             Some(2),
             "default_model",
@@ -747,9 +750,16 @@ mod tests {
             None,
         )
         .unwrap();
+        let before = db.get_session_usage(&tid).unwrap().unwrap();
+        assert_eq!(before.total_tokens, 45);
         db.truncate_session_after(&tid, &cutoff, false).unwrap();
         let usage = db.get_session_llm_usage(&tid).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].step_number, Some(1));
+        // Cumulative counters must shrink with the detail rows, not stay at 45.
+        let after = db.get_session_usage(&tid).unwrap().unwrap();
+        assert_eq!(after.prompt_tokens, 10);
+        assert_eq!(after.completion_tokens, 5);
+        assert_eq!(after.total_tokens, 15);
     }
 }

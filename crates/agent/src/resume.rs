@@ -340,16 +340,17 @@ impl AgentLayer {
         result
     }
 
-    /// S3 / Phase 7 / G7 / M2: surgically replace the MEMORY fence in
-    /// `canonical[0]` via [`SystemPromptBuilder::patch_canonical_memory_fence`].
-    async fn patch_canonical_memory(
+    /// X2 / G7 (freeze-per-run): fully rebuild `canonical[0]` on resume
+    /// (tools/skills/MCP short index + MEMORY + session). Mid-run memory
+    /// refresh stays fence-only via hooks / M2.
+    async fn rebuild_canonical_system(
         &self,
         session_id: &str,
         description: &str,
         canonical: &mut [CanonicalMessage],
     ) {
         self.prompt_builder
-            .patch_canonical_memory_fence(session_id, description, canonical)
+            .rebuild_canonical_system(session_id, description, canonical)
             .await;
     }
 
@@ -383,10 +384,11 @@ impl AgentLayer {
             }
         }
 
-        // S3: refresh cross-session facts/episodes in canonical[0] without
-        // rebuilding tools/skills/MCP (or Additional context). Pause-path
-        // infer writes the DB; this patch makes them visible on the next run.
-        self.patch_canonical_memory(session_id, description, &mut canonical)
+        // X2 / G7: full system rebuild on resume (short index + MEMORY +
+        // session). Pause-path infer writes the DB; this rebuild makes facts
+        // and any newly installed skills/MCP visible on the next run. Mid-run
+        // load_skill still only updates API tools[] (freeze-per-run).
+        self.rebuild_canonical_system(session_id, description, &mut canonical)
             .await;
 
         // Phase 7 / D2 — post-snapshot recovery (durability ≠ RAM queues):

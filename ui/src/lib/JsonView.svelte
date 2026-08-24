@@ -5,7 +5,7 @@
 	// Recursive, collapsible JSON tree viewer with syntax coloring and a
 	// copy-to-clipboard button at the root. Used by ToolResultCard for tool
 	// observations whose JSON has no dedicated renderer, so both live chat
-	// and history review share the same visualization.
+	// and history resume share the same visualization.
 
 	let {
 		value = null,

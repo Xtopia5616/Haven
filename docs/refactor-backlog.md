@@ -46,7 +46,7 @@ Schema：`haven_memory::schema::init_schema`，`PRAGMA user_version` + `MIGRATIO
 - **canonical** = 本会话 LLM 真源（含压缩摘要气泡）
 - **facts / episodes** = **跨会话**检索；同会话不进 Past excerpts（`exclude_session_id`）
 - **DB messages** = 持久化 + 抽取源；Additional context 不与首条 user 重复
-- 记忆注入：开场写入 `canonical[0]` 的 `--- MEMORY ---` fence；**resume 入环前** `patch_canonical_memory`；步间 `infer_session` **不**改 system
+- 记忆注入：开场写入 `canonical[0]` 的 `--- MEMORY ---` fence；**resume 入环前** 全量重建 system（X2 / `rebuild_canonical_system`）；步间 dirty 仅 patch MEMORY fence（M2）；`infer_session` **不**改 system
 - 抽取：ReAct 只 `enqueue_infer(session_id)` → outbox worker；维护走调度器（启动 + ~6h）
 - Prompt：`build_memory_sections` + 字符预算；`get_facts_limited` / `search_facts_any`
 
@@ -68,7 +68,7 @@ User/STT → AgentLayer (ingress/resume)
 - 队列：steering + follow_up（answer = follow_up + `reply_to`）；action_results 独立
 - Pause = 写 snapshot 后 **退出 run**；仅 dispatcher 再 claim
 - Ask / Confirm：显式 `awaiting_answer` / `PausedAwaitingConfirm`（DB 区分状态）
-- 工具 schema 权威 = 每步 API `tools[]`；prompt 短索引开场冻结
+- 工具 schema 权威 = 每步 API `tools[]`；prompt 短索引 **按 run 冻结**（G7），resume 全量重建（X2）
 - 步数：`max_steps` = per-run；可选 `session_max_steps` 截断绝对步号
 
 入口：`crates/agent/src/react/`、`session/`、`ingress.rs`、`resume.rs`、`canonical.rs`、`event.rs`  
@@ -163,10 +163,11 @@ User/STT → AgentLayer (ingress/resume)
 - **落地**：删除 `await_confirmation` / `confirm_waits`；`execute_gated` 缺 `pre_confirmed` 时 fail-closed；`ScheduleMode::Tool` 经 `request_scheduled_confirm` 非阻塞排队，`resolve_confirmation` / `SCHEDULED_CONFIRM_TIMEOUT` 后续执行或跳过。
 - **位置**：`session/{mod,tool_runner}.rs` / `layer.rs`
 
-#### R3. Skill/MCP 加载后刷新 prompt 工具短索引 `[完成归档]` · 原 G7 反向选择
+#### R3. Skill/MCP 加载后刷新 prompt 工具短索引 `[完成归档·已被 X2 重订]` · 原 G7 反向选择
 
-- **落地（P3 / freeze+declare）**：永久冻结开场短索引；`TOOL_USAGE_NOTES` 声明 API `tools[]` 为唯一 schema 权威；`load_skill` / `load_mcp` 仅在下一步 `tools[]` 可见，不 patch prompt。
-- **位置**：`common::prompts::TOOL_USAGE_NOTES` / `prompt.rs` / `react/mod.rs`
+- **落地（P3 / freeze+declare）**：开场短索引在 **run 内**冻结；`TOOL_USAGE_NOTES` 声明 API `tools[]` 为唯一 schema 权威；`load_skill` / `load_mcp` 仅在下一步 `tools[]` 可见，不 patch prompt。
+- **X2 重订（2026-08-24）**：冻结范围从「整段 session」收窄为「当前 run」；resume 全量重建短索引（见 X2），步间仍不 patch。
+- **位置**：`common::prompts::TOOL_USAGE_NOTES` / `prompt.rs` / `react/mod.rs` / `resume.rs`
 
 #### R4. `run_budget` 写入 snapshot（可观测） `[完成归档]` · 原 J1 未落地字段
 
@@ -195,10 +196,11 @@ User/STT → AgentLayer (ingress/resume)
 - 把 `facts` + `memory_episodes` + `messages` 合成统一记忆存储或图谱。
 - **代价**：schema、召回、UI、迁移全面重做。
 
-#### X2. Resume 全量重建 system prompt `[可选]` · 原 memory §3.5
+#### X2. Resume 全量重建 system prompt `[完成归档]` · 原 memory §3.5
 
-- 每次 resume 整份重建（含 tools/skills），替代 MEMORY fence patch。
-- **代价**：token / 延迟；与「tools 开场冻结」策略冲突，需一并重定 G7。
+- **落地（2026-08-24）**：`run_session_resumed` 调用 `SystemPromptBuilder::rebuild_canonical_system`（tools/skills/MCP 短索引 + MEMORY + session）；保留 Additional context 行；清 `schema_cache` 以拾取新装技能/MCP。
+- **G7 重订**：freeze-per-run（步间 `load_*` 仍只改 API `tools[]`；resume 刷新短索引）。M2 步间 dirty 仍仅 patch MEMORY fence。
+- **位置**：`prompt.rs` / `resume.rs` / `common::prompts::TOOL_USAGE_NOTES`
 
 #### X3. 恢复「按内容比对」resume 去重 `[可选·不推荐]` · 原 memory §3.5 / AGENTS.md
 
@@ -263,12 +265,12 @@ User/STT → AgentLayer (ingress/resume)
 | M6 | 完成 | Memory | 维护期 LLM 谓词合并 |
 | R1 | 完成 | ReAct | 文档默认：steer 不 cancel 工具 |
 | R2 | 完成 | ReAct | 去掉遗留 await_confirmation |
-| R3 | 完成 | ReAct | 永久冻结短索引 + prompt 声明 |
+| R3 | 完成·X2重订 | ReAct | freeze-per-run + prompt 声明（原永久冻结） |
 | R4 | 完成 | ReAct | snapshot 显式 RunBudget |
 | R5 | 完成 | ReAct | 薄循环/窗口矩阵单测加厚 |
 | R6 | 完成 | ReAct | 分支/重试跨生命周期窗口硬化 |
 | X1 | 可选·史诗 | 跨切 | 记忆大表/图谱 |
-| X2 | 可选 | Memory | resume 全量重建 system |
+| X2 | 完成 | Memory | resume 全量重建 system；G7→freeze-per-run |
 | X3 | 不推荐 | Resume | 内容比对去重 |
 | X4 | 不推荐 | Context | 出窗历史灌回 canonical |
 | X5 | 可选 | Memory | source_ref 矛盾引擎 |
@@ -281,7 +283,7 @@ User/STT → AgentLayer (ingress/resume)
 | X12 | 可选·史诗 | 跨切 | DB↔events 统一日志 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **0** · 可选 **8**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **13**（M1–M6、R1–R6、X7）· 史诗计入可选。
+**计数**：待办 **0** · 可选 **7**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **14**（M1–M6、R1–R6、X2、X7）· 史诗计入可选。
 
 ---
 
@@ -305,9 +307,13 @@ P2  抽取与检索增强                     ✅ 2026-08-22
 P3  ReAct 产品旋钮 + 窗口期硬化                     ✅ 2026-08-24
     R6  分支/重试跨生命周期窗口（lifecycle 矩阵 + cancel/join + 清 gate）
     R1  文档默认：steer 不 cancel 工具（无 CancelToolsOnSteer）
-    R3  freeze+declare：短索引永久冻结，API tools[] 权威
+    R3  freeze+declare：短索引 run 内冻结，API tools[] 权威（后经 X2 重订）
     R4  RunBudget 入 snapshot
     R5  窗口矩阵单测 + 工具中/ask 等待 rollback 集成测
+
+P3.1 X2 + G7 重订                                   ✅ 2026-08-24
+    X2  resume 全量重建 system（短索引 + MEMORY）；M2 仍 fence-only
+    G7  freeze-per-run（非整段 session）；TOOL_USAGE_NOTES 同步
 
 P4  史诗（单独立项）
     X12 DB↔events 统一
@@ -315,7 +321,6 @@ P4  史诗（单独立项）
     X5  矛盾引擎
     X6  记忆 UI Tab
     X13 events 冷存储
-    X2  仅当放弃 fence 策略时
 
 明确保持禁止（除非推翻 AGENTS.md / 安全模型）
     X3 内容比对去重 · X4 出窗灌回 · X8 TS 重写

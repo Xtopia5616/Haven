@@ -1,6 +1,6 @@
 <script module>
 	// Structured renderers for tool observations whose output is JSON, plus the
-	// `ask` question card. Kept in one place so live chat and history review
+	// `ask` question card. Kept in one place so live chat and history resume
 	// share the same cards with a unified look. JSON without a dedicated
 	// renderer falls through to the generic JsonView tree below.
 

@@ -1,6 +1,6 @@
-// Shared conversion of a session review payload (session + session messages +
+// Shared conversion of a session resume payload (session + session messages +
 // steps) into the chat bubble message list used by the chat page and the
-// history review flow.
+// history resume flow.
 
 import { formatMessageTime } from '$lib/stores.ts';
 import { isPausedStatus } from '$lib/sessionStatus.ts';
@@ -8,11 +8,11 @@ import { isPausedStatus } from '$lib/sessionStatus.ts';
 // Sentinel the backend used to persist in `messages.tool_call_id` for
 // assistant messages carrying an `ask` question text. New records no
 // longer set it: the question message is persisted under the ask step row's
-// id, so the review builder skips it by id and renders the ask CARD from
+// id, so the resume builder skips it by id and renders the ask CARD from
 // the message. Legacy rows still carry the sentinel — kept for them.
 export const ASK_MSG_TOOL_CALL_ID = '__ask__';
 
-interface ReviewMessage {
+interface ResumeMessage {
 	id: string;
 	role?: string;
 	content?: string;
@@ -28,7 +28,7 @@ interface ReviewMessage {
 	toolName?: string;
 }
 
-interface ReviewStep {
+interface ResumeStep {
 	id: string;
 	action_tool?: string | null;
 	silent?: boolean;
@@ -41,7 +41,7 @@ interface ReviewStep {
 	step_number: number;
 }
 
-interface ReviewMsg {
+interface ResumeMsg {
 	id: string;
 	role: string;
 	content: string;
@@ -52,15 +52,15 @@ interface ReviewMsg {
 	tool_call_id?: string | null;
 }
 
-interface ReviewData {
+interface ResumeData {
 	session?: {
 		id?: string;
 		status?: string;
 		input_text?: string;
 		created_at?: string;
 	} | null;
-	messages?: ReviewMsg[];
-	steps?: ReviewStep[];
+	messages?: ResumeMsg[];
+	steps?: ResumeStep[];
 }
 
 /**
@@ -83,10 +83,10 @@ interface ReviewData {
  *   pending row, and dropping them made post-resume tool calls vanish.
  *   Transient cards (e.g. `web_search`) and user bubbles still drop.
  *
- * @param {Array<object>} dbMessages   buildReviewMessages() result
+ * @param {Array<object>} dbMessages   buildResumeMessages() result
  * @param {Array<object>} existing     current sessionMessages entry
  */
-export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: ReviewMessage[]): ReviewMessage[] {
+export function mergeLiveStreaming(dbMessages: ResumeMessage[], existing: ResumeMessage[]): ResumeMessage[] {
 	// Awaiting live ask cards carry quick-reply options the DB build may lack
 	// (the pause status can land after the observation). Prefer EVERY
 	// awaiting card over its DB copy so all questions in a batched step stay
@@ -100,7 +100,7 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 	const liveStreamingToolById = new Map(
 		existing.filter((m) => m.type === 'tool' && m.streaming).map((m) => [m.id, m]),
 	);
-	const out: ReviewMessage[] = [];
+	const out: ResumeMessage[] = [];
 	const existingIdxOf = new Map(existing.map((m, i) => [m.id, i]));
 	// For each emitted DB row that also exists in the live list: its position
 	// in `existing` (to order finalized live-only leftovers) and its position
@@ -134,7 +134,7 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 	// leftovers use the same rule (not an unconditional tail append) so a
 	// mid-turn steer that already landed in the DB cannot jump above the
 	// still-streaming thought.
-	const leftovers: Array<{ item: ReviewMessage; existingIdx: number }> = [];
+	const leftovers: Array<{ item: ResumeMessage; existingIdx: number }> = [];
 	existing.forEach((m, i) => {
 		if (emitted.has(m.id)) return;
 		if (m.streaming) {
@@ -169,8 +169,8 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 	return out;
 }
 
-export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
-	const items: ReviewMessage[] = [];
+export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
+	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
 	const session = data.session || {};
 
@@ -217,7 +217,7 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 		if (!step.action_tool) continue;
 		if (msgIds.has(stepId) && step.action_tool !== 'ask') continue;
 		// Silent tool steps (input `"silent": true`) are hidden in the live
-		// chat; keep them hidden here so review matches the live view.
+		// chat; keep them hidden here so resume matches the live view.
 		if (step.silent) continue;
 		const obs = (step.observation && step.observation !== '{}') ? step.observation : null;
 		// The `ask` tool surfaces the question as a dedicated question card
@@ -335,7 +335,7 @@ export function buildReviewMessages(data: ReviewData): ReviewMessage[] {
 	}
 	items.sort((a, b) => (a._ts || 0) - (b._ts || 0));
 	// Fallback: if no messages or steps exist, show the session input text
-	// so the review page is not completely empty.
+	// so the resume page is not completely empty.
 	if (items.length === 0 && session.input_text) {
 		items.push({
 			id: `placeholder-${session.id}`,
