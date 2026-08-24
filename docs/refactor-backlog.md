@@ -45,7 +45,7 @@ Schema：`haven_memory::schema::init_schema`，`PRAGMA user_version` + `MIGRATIO
 
 - **canonical** = 本会话 LLM 真源（含压缩摘要气泡）
 - **facts / episodes** = **跨会话**检索；同会话不进 Past excerpts（`exclude_session_id`）
-- **DB messages** = 持久化 + 抽取源；Additional context 不与首条 user 重复
+- **DB messages / session_steps** = events 的物化投影（X12）；抽取与 UI resume 读投影；Additional context 不与首条 user 重复
 - 记忆注入：开场写入 `canonical[0]` 的 `--- MEMORY ---` fence；**resume 入环前** 全量重建 system（X2 / `rebuild_canonical_system`）；步间 dirty 仅 patch MEMORY fence（M2）；`infer_session` **不**改 system
 - 抽取：ReAct 只 `enqueue_infer(session_id)` → outbox worker；维护走调度器（启动 + ~6h）
 - Prompt：`build_memory_sections` + 字符预算；`get_facts_limited` / `search_facts_any`
@@ -241,11 +241,12 @@ User/STT → AgentLayer (ingress/resume)
 
 - 中文模型截断实测有用；已外置 `ResponsePolicy`。可调参，不宜为行数删除。
 
-#### X12. DB messages 与 events 一次大合并 `[可选·史诗]` · 原 react §五尾巴
+#### X12. DB messages 与 events 一次大合并 `[完成归档]` · 原 react §五尾巴
 
-- Phase 8：snapshot = events；DB `messages`/`session_steps` 仍独立投影。
-- **方向**：单一 append-only 日志同时服务 LLM / UI / 抽取；或 DB 只存 events blob + 物化视图。
-- **风险**：高；与 ID 规范、前端气泡、抽取源强耦合。
+- **落地（2026-08-24）**：events 为唯一 append-only 权威；`messages`/`session_steps` 降为物化投影。统一 writer = `apply_transcript`（Thought/Reasoning/ToolCall/ToolResult→`project_chat_message` + step 行）；消灭 loop/inject/stream_step/tool_batch/pause_turn 的平行 assistant persist。保留 shared-id（thought/ask/steering）、ask/confirm gates、CompactSummary（内存折叠 vs 聊天投影全量）、`BranchPoint.event_cursor`↔`last_msg_at` truncate、undelivered/`saved_at` resume。抽取与 UI resume 继续读投影。schema 未 bump（仍 `SCHEMA_VERSION=8`；无新表）。
+- **例外（文档化）**：ingress 用户 seed；error partials；terminal action-result；confirm/ask 重提示 UI-only 气泡。
+- **未做（可后续）**：`sessions.react_state` blob → `session_events` 表 + checkpoint 行（X13 相邻）；ingress 用户行完全迁入 `UserInject` apply。
+- **位置**：`react/transcript.rs` / `snapshot_io.rs` / `inject.rs` / `loop.rs` / `tool_batch.rs` / `stream_step.rs`；`AGENTS.md` 写路径；`types.rs` `TranscriptRecord::Reasoning`。
 
 #### X13. BranchPoint 外置 blob / 完整 transcript 索引 `[可选]` · 原 F4 延后支线
 
@@ -280,10 +281,10 @@ User/STT → AgentLayer (ingress/resume)
 | X9 | 不推荐 | 持久化 | 去掉 snapshot/rollback |
 | X10 | 不推荐 | 安全 | 去掉 confirm |
 | X11 | 不推荐 | 策略 | 删除截断重试 |
-| X12 | 可选·史诗 | 跨切 | DB↔events 统一日志 |
+| X12 | 完成 | 跨切 | events 权威 + messages/steps 投影 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **0** · 可选 **7**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **14**（M1–M6、R1–R6、X2、X7）· 史诗计入可选。
+**计数**：待办 **0** · 可选 **6**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **15**（M1–M6、R1–R6、X2、X7、X12）· 史诗计入可选。
 
 ---
 
@@ -316,7 +317,7 @@ P3.1 X2 + G7 重订                                   ✅ 2026-08-24
     G7  freeze-per-run（非整段 session）；TOOL_USAGE_NOTES 同步
 
 P4  史诗（单独立项）
-    X12 DB↔events 统一
+    X12 DB↔events 统一（✓ 2026-08-24：统一 writer + 投影契约；blob→表仍属 X13）
     X1  记忆图谱/大表
     X5  矛盾引擎
     X6  记忆 UI Tab
@@ -355,6 +356,7 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-24 | X12 落地：events 权威 + messages/steps 投影；`apply_transcript` 统一 writer；`TranscriptRecord::Reasoning`；文档/AGENTS 同步 |
 | 2026-08-24 | ReAct 热路径减负：heartbeat 不 await（per-session 合流）；`last_msg_at` 缓存（ingress 同步 + truncate 后清）；sanitize 健康快路径；thought step `run_blocking`；ToolDefCache `Arc`；去掉步头 `canonical.clone` |
 | 2026-08-24 | P3 落地：R6 lifecycle 窗口矩阵 + rollback/continue 硬化；R1 文档默认；R3 freeze+declare；R4 RunBudget；R5 窗口测 |
 | 2026-08-24 | 新增 R6：分支/重试在工具调用、模型流式、claim→spawn、ask/confirm、pause 等窗口期硬化 |

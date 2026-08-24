@@ -109,7 +109,8 @@ provider（STT 客户端来自 `haven-llm`）。
 
 ### 2.4 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `inject` / `snapshot_io` / `retries` / `hooks`），流式响应、快照/分支、压缩。
+- `react/`：ReAct 循环（`loop` / `stream_step` / `tool_batch` / `inject` / `snapshot_io` / `retries` / `hooks` / `transcript`），流式响应、快照/分支、压缩。
+- **X12 持久化契约**：`apply_transcript` 是 events→投影的统一 writer；`messages`/`session_steps` 为物化投影（UI/抽取/rollback 读投影；LLM resume 读 events）。
 - `session/`：`SessionExecutor` 门面 + `dispatcher` / `queues` / `status` / `tool_runner`（FIFO、信号量、steering/follow_up、confirm）。
 - `layer.rs` + `ingress.rs` / `resume.rs`：对外入口与 resume 投影。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。

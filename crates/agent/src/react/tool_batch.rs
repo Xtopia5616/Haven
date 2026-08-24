@@ -272,16 +272,16 @@ impl ReActEngine {
                     arguments: a.tool_input.clone(),
                 })
                 .collect();
-            // The text must match what `persist_session_message` stores
-            // (trimmed thought) so resume dedup cannot fail; a
-            // retry-replaced response also must not echo the cut-off
-            // original text.
+            // Text matches Thought projection (trimmed) so review/resume
+            // share one id/content; a retry-replaced response must not echo
+            // the cut-off original text.
             let push_text = thought.as_deref().unwrap_or(&response.text);
             // A response mixing real tool calls with a web search round
             // carries both: the `web_search_call` items round-trip in the
             // same assistant message so the next request restores the
             // search context alongside the function tool results.
-            // Phase 6.1: Action cards + pending rows + canonical via apply.
+            // Phase 6.1 + X12: Action cards + pending rows + canonical via apply.
+            // Thought already projected the messages row — no persist_text_id.
             let action_cards: Vec<ActionCard> = non_final
                 .iter()
                 .enumerate()
@@ -311,6 +311,7 @@ impl ReActEngine {
                     web_search_calls: response.web_search_calls.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),
                     action_cards,
+                    persist_text_id: None,
                 },
                 events,
                 canonical,
@@ -750,22 +751,8 @@ impl ReActEngine {
         // next turn still surfaces the question.
         if !need_confirm.is_empty() {
             if !asked_questions.is_empty() {
+                // Ask question rows were projected inside apply(ToolResult).
                 let question = asked_questions.join("\n\n");
-                for (i, q) in asked_questions.iter().enumerate() {
-                    let msg_id = ask_step_ids
-                        .get(i)
-                        .cloned()
-                        .unwrap_or_else(|| haven_common::types::new_id("step"));
-                    self.persist_session_message(
-                        session_id,
-                        "assistant",
-                        q,
-                        Some("text"),
-                        None,
-                        Some(&msg_id),
-                    )
-                    .await;
-                }
                 self.executor
                     .set_awaiting_answer(
                         session_id,
@@ -783,6 +770,18 @@ impl ReActEngine {
             self.executor
                 .request_confirm_batch(session_id, pending)
                 .await;
+            // UI-only waiting notice in `messages` (not an LLM event — must
+            // not enter `react_state.events` or resume would re-feed it).
+            let notice = "Waiting for confirmation…";
+            self.project_chat_message(
+                session_id,
+                "assistant",
+                notice,
+                Some("text"),
+                None,
+                None,
+            )
+            .await;
             self.pause_turn(
                 session_id,
                 events,
@@ -790,10 +789,10 @@ impl ReActEngine {
                 branch_points,
                 emitter,
                 SessionStatus::PausedAwaitingConfirm,
-                "Waiting for confirmation…",
+                notice,
                 None,
                 None,
-                false,
+                true,
             )
             .await?;
             return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
@@ -807,29 +806,8 @@ impl ReActEngine {
         // answer as context at the top of the next step).
         if !asked_questions.is_empty() {
             let question = asked_questions.join("\n\n");
-            // Persist one question message per ask step, each under the
-            // step row's id: the message row is the ask card's content
-            // authority (the step row only carries execution state), and
-            // the shared id lets the resume builder link them without
-            // content matching or a sentinel. The message row also
-            // re-seeds the question into the canonical on resume. A
-            // defensive fresh id keeps the question visible even if a
-            // step row is missing.
-            for (i, q) in asked_questions.iter().enumerate() {
-                let msg_id = ask_step_ids
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| haven_common::types::new_id("step"));
-                self.persist_session_message(
-                    session_id,
-                    "assistant",
-                    q,
-                    Some("text"),
-                    None,
-                    Some(&msg_id),
-                )
-                .await;
-            }
+            // X12: ask question messages were projected in apply(ToolResult)
+            // under each ask step id (shared-id protocol).
             // Phase 4 / C3: no steering→answer queue transfer. Mid-run user
             // input landed in steering while status was still Running; mark
             // those (and any follow-ups) as answers in place. Only set the
@@ -858,13 +836,11 @@ impl ReActEngine {
                 events,
                 step_num + 1,
                 branch_points,
-                &emitter,
+                emitter,
                 status,
                 &question,
                 None,
-                // The question messages were persisted above (one per ask
-                // step, under the step ids); `is_ask` tells pause_turn to
-                // skip its own persist.
+                // Ask questions already projected in apply(ToolResult).
                 None,
                 true,
             )

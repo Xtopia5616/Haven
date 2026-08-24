@@ -447,14 +447,11 @@ impl AgentLayer {
                             continue;
                         }
                     }
-                    // A session that is no longer alive (completed, errored, or
-                    // removed) has no ReAct loop left to inject the result
-                    // into, so the buffered context above would be dropped.
-                    // Persist the result as a message in the session's history
-                    // instead — reopening the session shows what the background
-                    // action produced. (Live/paused sessions get the result via the
-                    // next ReAct step; awaiting-answer sessions keep it buffered
-                    // until the user replies.)
+                    // X12 exception: terminal/missing session has no live loop
+                    // to apply UserInject — history-only persist so reopen still
+                    // shows the background-action result. Live/paused sessions
+                    // get the result via the next ReAct step; awaiting-answer
+                    // sessions keep it buffered until the user replies.
                     if matches!(&state, Some(s) if s.is_terminal()) || state.is_none() {
                         match crate::persist_session_message(
                             &agent.executor,

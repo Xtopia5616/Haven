@@ -43,13 +43,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::title::TitleGenerator;
 
-/// The single persistence entry point for chat messages: insert a message
-/// into a session's message stream, dropping any checkpointed partial stream
-/// text first (a real message supersedes it). Both user turns (AgentLayer)
-/// and assistant turns (ReActEngine) go through this one implementation so
-/// the two paths cannot drift apart. The partial discard goes through the
-/// executor's `PartialStore` so an in-flight stream checkpoint can never
-/// re-create the row after the real message landed.
+/// Low-level `messages` insert (partial discard + `add_message_full`).
+///
+/// X12: ReAct-loop assistant/thought/ask/reasoning rows must go through
+/// `ReActEngine::apply_transcript` → `project_chat_message`. Direct callers
+/// are limited to ingress user seeds, terminal action-result history, and
+/// recovery partials. Do not reintroduce parallel assistant writers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_session_message(
     executor: &crate::session::SessionExecutor,
@@ -64,8 +63,7 @@ pub(crate) async fn persist_session_message(
     // thought/reasoning block starts so the live bubble and the DB row
     // share one identity.
     message_id: Option<&str>,
-    // `tool_call_id` for the row (sentinel markers like `__ask__` ride
-    // along here); `None` for ordinary messages.
+    // Optional `tool_call_id` for the row; `None` for ordinary messages.
     tool_call_id: Option<&str>,
 ) -> anyhow::Result<Message> {
     executor.partials.discard(session_id).await;

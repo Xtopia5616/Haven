@@ -2,8 +2,24 @@
 //! Phase 8 / B1-3: events are the snapshot authority; canonical is a
 //! projection cache updated here).
 //!
-//! `apply` order is always: persist (row before card) → emit UI event →
-//! append [`TranscriptRecord`] → project into `canonical`.
+//! # X12 projection contract
+//!
+//! Events are the sole append-only authority. `messages` / `session_steps` are
+//! materialized projections written from [`ReActEngine::apply_transcript`]
+//! (or the shared [`ReActEngine::project_chat_message`] helper it owns).
+//!
+//! `apply` order is always: **project row → emit UI event → append
+//! [`TranscriptRecord`] → project into `canonical`**.
+//!
+//! Exceptions (documented, not parallel authorities):
+//! - **Ingress user seed**: `layer`/`ingress` may insert the user `messages`
+//!   row before `UserInject` is applied (crash-safe queue). `UserInject` with
+//!   `message_id` assumes that row already exists and only creates the
+//!   shared-id thought step.
+//! - **Error partials**: `persist_partial_on_error` writes recovery-only rows
+//!   intentionally *outside* the event log so continue/rollback can truncate
+//!   them via `last_msg_at` without replaying a failed step.
+//! - **Terminal action-result**: no live loop left — history-only persist.
 
 use super::*;
 use crate::types::{Action, TranscriptRecord};
@@ -39,6 +55,11 @@ pub(super) enum TranscriptEvent {
         text: String,
         message_id: String,
     },
+    /// Reasoning block → `messages` projection (type=`reasoning`) + event log.
+    Reasoning {
+        text: String,
+        message_id: String,
+    },
     ToolCall {
         text: String,
         tool_calls: Vec<CanonicalToolCall>,
@@ -46,6 +67,9 @@ pub(super) enum TranscriptEvent {
         web_search_calls: Vec<serde_json::Value>,
         thinking_blocks: Vec<serde_json::Value>,
         action_cards: Vec<ActionCard>,
+        /// When `Some`, project `text` into `messages` under this id (final
+        /// answer / synthetic text when Thought did not already project).
+        persist_text_id: Option<String>,
     },
     ToolResult {
         canonical_observation: String,
@@ -73,6 +97,11 @@ impl TranscriptEvent {
     fn to_record(&self, step_number: u32) -> TranscriptRecord {
         match self {
             Self::Thought { text, message_id } => TranscriptRecord::Thought {
+                step_number,
+                text: text.clone(),
+                message_id: message_id.clone(),
+            },
+            Self::Reasoning { text, message_id } => TranscriptRecord::Reasoning {
                 step_number,
                 text: text.clone(),
                 message_id: message_id.clone(),
@@ -135,7 +164,11 @@ impl TranscriptEvent {
 }
 
 impl ReActEngine {
-    /// Persist → emit → append record → project into canonical cache.
+    /// Project → emit → append record → project into canonical cache.
+    ///
+    /// All durable assistant/thought/ask/reasoning chat rows for the ReAct
+    /// loop are written here (X12). See module docs for the few documented
+    /// exceptions (ingress seed, error partials, terminal action-result).
     pub(super) async fn apply_transcript(
         &self,
         ctx: &StepCtx,
@@ -146,6 +179,18 @@ impl ReActEngine {
         let record = event.to_record(ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    self.project_chat_message(
+                        &ctx.session_id,
+                        "assistant",
+                        trimmed,
+                        Some("text"),
+                        None,
+                        Some(&message_id),
+                    )
+                    .await;
+                }
                 EventDispatcher::emit_thought_from(
                     &ctx.emitter,
                     &ctx.session_id,
@@ -158,6 +203,21 @@ impl ReActEngine {
                 .await;
                 events.push(record);
             }
+            TranscriptEvent::Reasoning { text, message_id } => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    self.project_chat_message(
+                        &ctx.session_id,
+                        "assistant",
+                        trimmed,
+                        Some("reasoning"),
+                        None,
+                        Some(&message_id),
+                    )
+                    .await;
+                }
+                events.push(record);
+            }
             TranscriptEvent::ToolCall {
                 text,
                 tool_calls,
@@ -165,7 +225,22 @@ impl ReActEngine {
                 web_search_calls,
                 thinking_blocks,
                 action_cards,
+                persist_text_id,
             } => {
+                if let Some(ref mid) = persist_text_id {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        self.project_chat_message(
+                            &ctx.session_id,
+                            "assistant",
+                            trimmed,
+                            Some("text"),
+                            None,
+                            Some(mid),
+                        )
+                        .await;
+                    }
+                }
                 for card in &action_cards {
                     self.executor
                         .begin_action_step(
@@ -208,18 +283,34 @@ impl ReActEngine {
                 action,
                 observation_card,
             } => {
-                if let Some(card) = observation_card {
+                if let Some(ref card) = observation_card {
+                    // Ask question text is the messages projection under the
+                    // shared step id (review card content authority).
+                    if card.tool_name == "ask" {
+                        let q = history_observation.trim();
+                        if !q.is_empty() {
+                            self.project_chat_message(
+                                &ctx.session_id,
+                                "assistant",
+                                q,
+                                Some("text"),
+                                None,
+                                Some(&card.step_id),
+                            )
+                            .await;
+                        }
+                    }
                     ctx.emitter
                         .emit(crate::event::AgentEvent::Observation {
                             session_id: ctx.session_id.clone(),
                             observation: history_observation.clone(),
-                            tool_name: card.tool_name,
+                            tool_name: card.tool_name.clone(),
                             step_number: ctx.step_num,
                             run_id: ctx.run_id,
                             silent: card.silent,
-                            tool_call_id: card.tool_call_id,
-                            ask_options: card.ask_options,
-                            step_id: card.step_id,
+                            tool_call_id: card.tool_call_id.clone(),
+                            ask_options: card.ask_options.clone(),
+                            step_id: card.step_id.clone(),
                         })
                         .await;
                 }
@@ -253,7 +344,7 @@ impl ReActEngine {
                     .await;
                 if source != InjectSource::ActionResult {
                     let step_id = message_id
-                        .map(String::from)
+                        .clone()
                         .unwrap_or_else(|| haven_common::types::new_id("step"));
                     let _ = self
                         .db
@@ -489,7 +580,8 @@ mod tests {
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
         let session = db.create_session("t", "hi").unwrap();
-        let engine = test_engine(db);
+        let mid = haven_common::types::new_id("step");
+        let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);
         let mut canonical = Vec::new();
         let mut events = Vec::new();
@@ -498,7 +590,7 @@ mod tests {
                 &ctx,
                 TranscriptEvent::Thought {
                     text: "thinking".into(),
-                    message_id: haven_common::types::new_id("step"),
+                    message_id: mid.clone(),
                 },
                 &mut events,
                 &mut canonical,
@@ -509,6 +601,57 @@ mod tests {
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].thought.as_deref(), Some("thinking"));
         assert!(canonical.is_empty());
+        // X12: Thought projects the messages row under the shared id.
+        let msgs = db.get_session_messages(&session.id).unwrap();
+        assert!(
+            msgs.iter()
+                .any(|m| m.id == mid && m.content == "thinking" && m.role == "assistant"),
+            "expected projected thought message, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_reasoning_projects_message_not_canonical() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_transcript_reasoning_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let session = db.create_session("t", "hi").unwrap();
+        let mid = haven_common::types::new_id("msg");
+        let engine = test_engine(db.clone());
+        let ctx = step_ctx(&session.id);
+        let mut canonical = Vec::new();
+        let mut events = Vec::new();
+        engine
+            .apply_transcript(
+                &ctx,
+                TranscriptEvent::Reasoning {
+                    text: "why".into(),
+                    message_id: mid.clone(),
+                },
+                &mut events,
+                &mut canonical,
+            )
+            .await;
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            TranscriptRecord::Reasoning { message_id, .. } if message_id == &mid
+        ));
+        assert!(canonical.is_empty());
+        let (canon, rounds) = project_transcript(&events);
+        assert!(canon.is_empty());
+        assert!(rounds.is_empty());
+        let msgs = db.get_session_messages(&session.id).unwrap();
+        assert!(
+            msgs.iter().any(|m| {
+                m.id == mid
+                    && m.content == "why"
+                    && m.message_type.as_deref() == Some("reasoning")
+            }),
+            "expected projected reasoning message, got {msgs:?}"
+        );
     }
 
     #[tokio::test]
@@ -631,6 +774,7 @@ mod tests {
                         tool_call_id: Some("call-1".into()),
                         step_id: step_id.clone(),
                     }],
+                    persist_text_id: None,
                 },
                 &mut events,
                 &mut canonical,
@@ -765,5 +909,51 @@ mod tests {
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools.len(), 2);
         assert_eq!(canonical.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn apply_ask_tool_result_projects_question_under_step_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_transcript_ask_proj_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let session = db.create_session("t", "hi").unwrap();
+        let step_id = haven_common::types::new_id("step");
+        let engine = test_engine(db.clone());
+        let ctx = step_ctx(&session.id);
+        let mut canonical = Vec::new();
+        let mut events = Vec::new();
+        engine
+            .apply_transcript(
+                &ctx,
+                TranscriptEvent::ToolResult {
+                    canonical_observation: r#"{"question":"Pick one?"}"#.into(),
+                    history_observation: "Pick one?".into(),
+                    tool_call_id: Some("call-ask".into()),
+                    action: Action {
+                        tool_name: "ask".into(),
+                        tool_input: serde_json::json!({"question":"Pick one?"}),
+                        is_final: false,
+                        tool_call_id: Some("call-ask".into()),
+                    },
+                    observation_card: Some(ObservationCard {
+                        tool_name: "ask".into(),
+                        tool_call_id: Some("call-ask".into()),
+                        step_id: step_id.clone(),
+                        silent: false,
+                        ask_options: vec!["A".into(), "B".into()],
+                    }),
+                },
+                &mut events,
+                &mut canonical,
+            )
+            .await;
+        let msgs = db.get_session_messages(&session.id).unwrap();
+        assert!(
+            msgs.iter()
+                .any(|m| m.id == step_id && m.content == "Pick one?" && m.role == "assistant"),
+            "ask question must project under shared step id, got {msgs:?}"
+        );
     }
 }

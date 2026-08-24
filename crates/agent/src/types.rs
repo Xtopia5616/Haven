@@ -32,6 +32,13 @@ pub enum TranscriptRecord {
         text: String,
         message_id: String,
     },
+    /// Streamed/complete reasoning block projected to `messages` (type=`reasoning`).
+    /// Not part of the LLM canonical transcript — lives in events for authority.
+    Reasoning {
+        step_number: u32,
+        text: String,
+        message_id: String,
+    },
     ToolCall {
         step_number: u32,
         text: String,
@@ -272,6 +279,9 @@ pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>
                     thought: Some(text.clone()),
                     tools: Vec::new(),
                 });
+            }
+            TranscriptRecord::Reasoning { .. } => {
+                // Chat projection only — not part of LLM canonical / rounds.
             }
             TranscriptRecord::ToolCall {
                 text,

@@ -115,13 +115,13 @@ const BUDGET_EXHAUSTED_TITLE: &str = "任务步骤上限已用尽";
 const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任务已暂停。发一条消息即可继续。";
 
 impl ReActEngine {
-    /// Persist an assistant message into the session's message stream.
-    /// Delegates to the shared `crate::persist_session_message` so this path
-    /// cannot drift from the user-turn persistence path (same trim, same
-    /// error policy). Persistence failures are logged here instead of being
-    /// silently swallowed: a dropped write would make the streamed content
-    /// disappear after a reload while the UI keeps showing it.
-    pub(super) async fn persist_session_message(
+    /// Project a chat row into `messages` and refresh `last_msg_at`.
+    ///
+    /// X12: the ReAct loop must call this only from [`Self::apply_transcript`]
+    /// (or documented recovery exceptions). Ingress user seeds go through
+    /// `crate::persist_session_message` directly so the queue has a durable id
+    /// before `UserInject` lands.
+    pub(super) async fn project_chat_message(
         &self,
         session_id: &str,
         role: &str,
@@ -130,7 +130,6 @@ impl ReActEngine {
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
     ) {
-        // Phase 7 / I2: persist phase span (message row write).
         let result = crate::persist_session_message(
             &self.executor,
             session_id,
@@ -142,7 +141,7 @@ impl ReActEngine {
             message_id,
             tool_call_id,
         )
-        .instrument(tracing::info_span!("persist", session_id, role))
+        .instrument(tracing::info_span!("project", session_id, role))
         .await;
         match result {
             Ok(msg) => {
@@ -150,7 +149,7 @@ impl ReActEngine {
             }
             Err(e) => {
                 tracing::warn!(
-                    "ReAct: failed to persist {} message for session {} (type={:?}): {}",
+                    "ReAct: failed to project {} message for session {} (type={:?}): {}",
                     role,
                     session_id,
                     message_type,
@@ -158,6 +157,28 @@ impl ReActEngine {
                 );
             }
         }
+    }
+
+    /// Recovery-only alias used by `persist_partial_on_error` (intentionally
+    /// outside the event log — see transcript module docs).
+    pub(super) async fn persist_session_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        tool_call_id: Option<&str>,
+        message_id: Option<&str>,
+    ) {
+        self.project_chat_message(
+            session_id,
+            role,
+            content,
+            message_type,
+            tool_call_id,
+            message_id,
+        )
+        .await;
     }
 
     /// Persist a compaction summary into episodic long-term memory
@@ -202,17 +223,14 @@ impl ReActEngine {
         }
     }
 
-    /// Finalize a turn: persist the assistant text, save the branch point
-    /// (when requested), snapshot the ReAct state, then mark the session with
-    /// the given status and notify the frontend + inference. Shared by all
-    /// pause/complete paths so the persist → branch-point → snapshot →
-    /// status → event ordering cannot drift between them. The snapshot is
-    /// taken after the branch point so it includes the newly added entry.
-    /// Callers pause with `SessionStatus::Paused` (scheduling) or
-    /// `SessionStatus::PausedAwaitingAnswer` (the `ask` tool is blocked on a
-    /// human reply — that flavor also blocks background-action auto-wake).
-    /// The step-budget checkpoint uses `pause_turn_budget` instead, which
-    /// skips the assistant-message persist (the notice is a notification).
+    /// Finalize a turn: save the branch point (when requested), snapshot the
+    /// ReAct state, then mark the session with the given status and notify the
+    /// frontend + inference.
+    ///
+    /// X12: chat content must already be projected via `apply_transcript`
+    /// before this call. `skip_message_persist` is retained as a safety latch
+    /// (always `true` for ask / turn-end after projection; legacy callers that
+    /// still pass `false` + `persist_message_id` get a one-shot project).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn pause_turn(
         &self,
@@ -224,15 +242,13 @@ impl ReActEngine {
         status: SessionStatus,
         final_text: &str,
         branch_point_step: Option<u32>,
-        // Pre-minted id of the streamed thought bubble this final text is the
-        // authoritative copy of (`None` mints a fresh id).
+        // Pre-minted id when a legacy caller still needs pause_turn to project
+        // (`None` mints a fresh id). Ignored when `skip_message_persist`.
         persist_message_id: Option<&str>,
-        // True when this pause follows an `ask` batch: the question message
-        // rows were already persisted by the caller (one per ask step, under
-        // the step ids), so the persist below is skipped.
-        is_ask: bool,
+        // True when content was already projected (ask / turn-end / confirm
+        // notice handled by caller). Prefer `true` after X12.
+        skip_message_persist: bool,
     ) -> anyhow::Result<()> {
-        // Phase 7 / I2: pause phase span covers persist → snapshot → status.
         let status_label = status.as_str();
         async {
             tracing::info!(
@@ -244,12 +260,12 @@ impl ReActEngine {
             );
             if std::env::var("HAVEN_DEBUG_PAUSE").is_ok() {
                 eprintln!(
-                    "DEBUG pause_turn persist ask={} id={:?} final={}",
-                    is_ask, persist_message_id, final_text
+                    "DEBUG pause_turn skip_persist={} id={:?} final={}",
+                    skip_message_persist, persist_message_id, final_text
                 );
             }
-            if !is_ask {
-                self.persist_session_message(
+            if !skip_message_persist {
+                self.project_chat_message(
                     session_id,
                     "assistant",
                     final_text,

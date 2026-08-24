@@ -686,46 +686,34 @@ impl ReActEngine {
             };
         }
 
-        // Text must match what `persist_session_message` stores (trimmed
-        // thought) or resume dedup fails on leading whitespace.
+        // Text matches Thought projection (trimmed). X12: apply ToolCall so
+        // events + canonical stay on the single writer path.
         let push_text = thought.as_deref().unwrap_or(&response.text);
         let reasoning = if response.thinking_blocks.is_empty() {
             response.reasoning.clone()
         } else {
             None
         };
-        events.push(TranscriptRecord::ToolCall {
-            step_number: ctx.step_num,
-            text: push_text.to_string(),
-            tool_calls: Vec::new(),
-            reasoning: reasoning.clone(),
-            web_search_calls: response.web_search_calls.clone(),
-            thinking_blocks: response.thinking_blocks.clone(),
-        });
-        canonical.push(CanonicalMessage::assistant(
-            vec![ContentPart::text(push_text.to_string())],
-            None,
-            reasoning,
-            response.web_search_calls.clone(),
-            response.thinking_blocks.clone(),
-        ));
+        // Thought already projected the messages row when present.
+        self.apply_transcript(
+            ctx,
+            TranscriptEvent::ToolCall {
+                text: push_text.to_string(),
+                tool_calls: Vec::new(),
+                reasoning,
+                web_search_calls: response.web_search_calls.clone(),
+                thinking_blocks: response.thinking_blocks.clone(),
+                action_cards: Vec::new(),
+                persist_text_id: None,
+            },
+            events,
+            canonical,
+        )
+        .await;
 
         if actions.is_empty() {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
-            if let Some(t) = thought {
-                let message_id =
-                    self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
-                self.persist_session_message(
-                    &ctx.session_id,
-                    "assistant",
-                    t,
-                    Some("text"),
-                    None,
-                    Some(&message_id),
-                )
-                .await;
-            }
             self.save_branch_point(
                 &ctx.session_id,
                 events,
