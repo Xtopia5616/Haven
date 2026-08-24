@@ -180,16 +180,20 @@ impl ReActEngine {
             (bus, due)
         };
 
-        // Heartbeat on the blocking pool, every step regardless of polling.
+        // Heartbeat on the blocking pool every step, but do not await it on
+        // the LLM critical path — last_seen freshness is best-effort. Skip
+        // when a prior heartbeat for this session is still queued/running so
+        // steps cannot unboundedly fill the blocking pool.
         let sid = session_id.to_string();
-        let hb_sid = sid.clone();
-        let hb_title = title.clone();
-        let hb_bus = bus.clone();
-        tokio::task::spawn_blocking(move || {
-            let _ = hb_bus.register_with_title(&hb_sid, &[], hb_title.as_deref());
-        })
-        .await
-        .ok();
+        if let Some(inflight) = self.messaging.try_begin_heartbeat(session_id) {
+            let hb_sid = sid.clone();
+            let hb_title = title.clone();
+            let hb_bus = bus.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = hb_bus.register_with_title(&hb_sid, &[], hb_title.as_deref());
+                inflight.lock().unwrap().remove(&hb_sid);
+            });
+        }
 
         if !due {
             return;

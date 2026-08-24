@@ -34,7 +34,7 @@ pub(crate) use hooks::{
 use identity::IdentityMap;
 use sidecars::{
     BalancedModelNotifier, ContextWindowCache, CumulativeUsage, MessagingPoller, SnapshotBufs,
-    TokenEstimateCache, ToolDefCache, UsageTracker,
+    LastMsgAtCache, TokenEstimateCache, ToolDefCache, UsageTracker,
 };
 use transcript::{ActionCard, ObservationCard, TranscriptEvent};
 
@@ -176,6 +176,8 @@ pub struct ReActEngine {
     usage: UsageTracker,
     /// Per-session tool-definition cache (catalog version keyed).
     tool_defs: ToolDefCache,
+    /// Newest message `created_at` per session (branch-point cutoff cache).
+    last_msg_at: LastMsgAtCache,
     /// Per-session incremental token-estimate cache.
     token_estimates: TokenEstimateCache,
     /// Snapshot serialization buffers.
@@ -269,6 +271,7 @@ impl ReActEngine {
             messaging: MessagingPoller::new(),
             usage: UsageTracker::new(),
             tool_defs: ToolDefCache::new(),
+            last_msg_at: LastMsgAtCache::new(),
             token_estimates: TokenEstimateCache::new(),
             snapshot_bufs: SnapshotBufs::new(),
             snapshot_store: Mutex::new(snapshot_io::SnapshotStore::default()),
@@ -400,23 +403,48 @@ impl ReActEngine {
     /// the registry query + JSON mapping is skipped on the vast majority of
     /// steps (the per-session registry query takes the global tools lock and
     /// rebuilds schema JSON on every step otherwise).
-    pub(super) async fn build_tool_definitions_for_session(&self, session_id: &str) -> Vec<ToolDefinition> {
+    pub(super) async fn build_tool_definitions_for_session(
+        &self,
+        session_id: &str,
+    ) -> Arc<Vec<ToolDefinition>> {
         let version = self.executor.get_tools().catalog_version();
         if let Some(cached) = self.tool_defs.get_if_version(session_id, version) {
             return cached;
         }
         // Structured defs from the manager; the LLM-boundary conversion is a
         // pure `From<ToolDef>` so nothing here re-parses loose schema JSON.
-        let defs: Vec<ToolDefinition> = self
-            .executor
-            .get_tools()
-            .list_defs_for_session(session_id)
-            .await
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        self.tool_defs.insert(session_id, version, defs.clone());
+        let defs: Arc<Vec<ToolDefinition>> = Arc::new(
+            self.executor
+                .get_tools()
+                .list_defs_for_session(session_id)
+                .await
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
+        self.tool_defs.insert(session_id, version, Arc::clone(&defs));
         defs
+    }
+
+    pub fn note_last_msg_at(&self, session_id: &str, created_at: Option<String>) {
+        self.last_msg_at.set(session_id, created_at);
+    }
+
+    /// Drop the cached newest-message timestamp (rollback / truncate).
+    pub fn clear_last_msg_at(&self, session_id: &str) {
+        self.last_msg_at.remove(session_id);
+    }
+
+    pub(super) async fn refresh_last_msg_at(&self, session_id: &str) -> Option<String> {
+        let db = self.db.clone();
+        let session_id_owned = session_id.to_string();
+        let fetched = db
+            .run_blocking(move |db| Ok(db.get_last_message_created_at(&session_id_owned)))
+            .await
+            .ok()
+            .flatten();
+        self.note_last_msg_at(session_id, fetched.clone());
+        fetched
     }
 
     /// Supplement missing or invalid fields on a tool call's arguments before
@@ -754,6 +782,7 @@ impl ReActEngine {
         self.reset_token_estimate(session_id);
         self.snapshot_store.lock().unwrap().clear_session(session_id);
         self.tool_defs.remove(session_id);
+        self.last_msg_at.remove(session_id);
         self.snapshot_bufs.remove(session_id);
         self.messaging.clear_session(session_id);
     }

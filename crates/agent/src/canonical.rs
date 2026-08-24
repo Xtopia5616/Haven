@@ -52,11 +52,44 @@ pub(crate) fn interrupted_result_text(tool_name: &str, arguments: &Value) -> Str
     }
 }
 
+/// True when the transcript already satisfies tool-call pairing invariants,
+/// so [`sanitize_canonical`] can skip the drain/rebuild (common healthy path).
+fn canonical_pairing_healthy(canonical: &[CanonicalMessage]) -> bool {
+    let mut pending = 0usize;
+    for m in canonical {
+        match m.role {
+            CanonicalRole::Tool => {
+                if pending == 0 {
+                    return false;
+                }
+                pending -= 1;
+            }
+            CanonicalRole::Assistant => {
+                if pending > 0 {
+                    return false;
+                }
+                pending = m.tool_calls.as_ref().map_or(0, |c| c.len());
+            }
+            _ => {
+                if pending > 0 {
+                    return false;
+                }
+            }
+        }
+    }
+    pending == 0
+}
+
 /// Sanitize the canonical transcript. Returns the number of synthetic
 /// "Interrupted" tool results inserted (Phase 7 / J2). Healthy step-head
 /// paths should see `0`; non-zero means an upstream interrupt/compaction
 /// left a dangling chain that the gate repaired.
 pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) -> usize {
+    // Healthy arrays are the steady-state step head: skip drain + rebuild +
+    // per-assistant `tool_calls` clones (O(n) alloc) when pairing already holds.
+    if canonical_pairing_healthy(canonical) {
+        return 0;
+    }
     let mut out: Vec<CanonicalMessage> = Vec::with_capacity(canonical.len());
     // Tool_calls declared by the most recent assistant that have not yet been
     // answered by a tool result. Orphaned tool messages (this is empty) are

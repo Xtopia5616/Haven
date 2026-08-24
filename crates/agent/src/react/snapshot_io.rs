@@ -144,14 +144,19 @@ impl ReActEngine {
         )
         .instrument(tracing::info_span!("persist", session_id, role))
         .await;
-        if let Err(e) = result {
-            tracing::warn!(
-                "ReAct: failed to persist {} message for session {} (type={:?}): {}",
-                role,
-                session_id,
-                message_type,
-                e
-            );
+        match result {
+            Ok(msg) => {
+                self.note_last_msg_at(session_id, Some(msg.created_at));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "ReAct: failed to persist {} message for session {} (type={:?}): {}",
+                    role,
+                    session_id,
+                    message_type,
+                    e
+                );
+            }
         }
     }
 
@@ -566,15 +571,19 @@ impl ReActEngine {
         branch_points: &mut HashMap<u32, BranchPoint>,
         force: bool,
     ) {
-        // `get_last_message_created_at` is a blocking SQLite read; run it on
-        // the blocking thread pool instead of the async runtime.
-        let db = self.db.clone();
-        let session_id_owned = session_id.to_string();
-        let last_msg_at = db
-            .run_blocking(move |db| Ok(db.get_last_message_created_at(&session_id_owned)))
-            .await
-            .ok()
-            .flatten();
+        // Mid-run (`force=false`): prefer the in-process cache filled by
+        // persist paths so throttled steps skip SQLite. Force paths
+        // (pause/error/cancel) always re-read so the snapshot cutoff matches
+        // the DB after concurrent truncations (rollback / continue).
+        let last_msg_at = if !force {
+            if let Some(cached) = self.last_msg_at.get(session_id) {
+                cached
+            } else {
+                self.refresh_last_msg_at(session_id).await
+            }
+        } else {
+            self.refresh_last_msg_at(session_id).await
+        };
         // Phase 8 / F4: store only an index into the parent events vec — no
         // Arc copies of transcript state.
         branch_points.insert(

@@ -615,7 +615,7 @@ impl EventDispatcher {
         step_number: u32,
         run_id: u64,
         message_id: &str,
-        db: &Database,
+        db: &Arc<Database>,
     ) {
         tracing::debug!(
             "emit_thought: session={} step={} run={} msg={} thought_len={}",
@@ -627,15 +627,25 @@ impl EventDispatcher {
         );
         // The step row shares the streamed bubble's id (the message row is
         // persisted under the same id) and stores no text: the thought text
-        // lives exclusively in the `messages` table.
-        if let Err(e) = db.create_thought_step(session_id, step_number as i32, message_id) {
-            tracing::warn!(
-                "create_thought_step failed (session={} step={}): {}",
-                session_id,
-                step_number,
-                e
-            );
-        }
+        // lives exclusively in the `messages` table. Run on the blocking pool
+        // so WAL fsync cannot stall the async runtime (same contract as
+        // UserInject thought-step writes).
+        let sid = session_id.to_string();
+        let mid = message_id.to_string();
+        let step = step_number;
+        let _ = db
+            .run_blocking(move |db| {
+                if let Err(e) = db.create_thought_step(&sid, step as i32, &mid) {
+                    tracing::warn!(
+                        "create_thought_step failed (session={} step={}): {}",
+                        sid,
+                        step,
+                        e
+                    );
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
         emitter
             .emit(AgentEvent::Thought {
                 session_id: session_id.into(),
@@ -978,7 +988,7 @@ mod tests {
         // emit_thought_from drives the installed emitter (the bus), which fans out.
         let mut p = std::env::temp_dir();
         p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
-        let db = Database::open(&p).unwrap();
+        let db = Arc::new(Database::open(&p).unwrap());
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
         EventDispatcher::emit_thought_from(&bus_dyn, "t", "hello", 1, 1, "msg-t-1", &db).await;
         assert_eq!(collector.events.lock().unwrap().len(), 1);

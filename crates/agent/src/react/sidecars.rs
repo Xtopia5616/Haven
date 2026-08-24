@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 
@@ -41,12 +42,16 @@ impl MessagingState {
 /// Sidecar wrapping [`MessagingState`] for cross-session inbox polling.
 pub(crate) struct MessagingPoller {
     inner: Mutex<MessagingState>,
+    /// Sessions with a heartbeat `spawn_blocking` already queued/running —
+    /// coalesce so steps cannot unboundedly fill the blocking pool.
+    heartbeat_inflight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl MessagingPoller {
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(MessagingState::new()),
+            heartbeat_inflight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -54,9 +59,24 @@ impl MessagingPoller {
         self.inner.lock().unwrap()
     }
 
+    /// Claim a heartbeat slot for `session_id`. Returns `None` when one is
+    /// already in flight; otherwise returns a clone of the inflight set so
+    /// the blocking task can release the slot when done.
+    pub(crate) fn try_begin_heartbeat(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<Mutex<HashSet<String>>>> {
+        let mut set = self.heartbeat_inflight.lock().unwrap();
+        if !set.insert(session_id.to_string()) {
+            return None;
+        }
+        Some(Arc::clone(&self.heartbeat_inflight))
+    }
+
     /// Drop per-session title cache so finished sessions do not accumulate.
     pub(crate) fn clear_session(&self, session_id: &str) {
         self.inner.lock().unwrap().title_cache.remove(session_id);
+        self.heartbeat_inflight.lock().unwrap().remove(session_id);
     }
 }
 
@@ -174,8 +194,9 @@ impl Default for UsageTracker {
 }
 
 /// Per-session tool-definition cache keyed by ToolsManager catalog version.
+/// Values are `Arc` so cache hits share one schema vec across steps.
 pub(crate) struct ToolDefCache {
-    cache: Mutex<HashMap<String, (u64, Vec<ToolDefinition>)>>,
+    cache: Mutex<HashMap<String, (u64, Arc<Vec<ToolDefinition>>)>>,
 }
 
 impl ToolDefCache {
@@ -189,16 +210,21 @@ impl ToolDefCache {
         &self,
         session_id: &str,
         version: u64,
-    ) -> Option<Vec<ToolDefinition>> {
+    ) -> Option<Arc<Vec<ToolDefinition>>> {
         self.cache
             .lock()
             .unwrap()
             .get(session_id)
             .filter(|(v, _)| *v == version)
-            .map(|(_, defs)| defs.clone())
+            .map(|(_, defs)| Arc::clone(defs))
     }
 
-    pub(super) fn insert(&self, session_id: &str, version: u64, defs: Vec<ToolDefinition>) {
+    pub(super) fn insert(
+        &self,
+        session_id: &str,
+        version: u64,
+        defs: Arc<Vec<ToolDefinition>>,
+    ) {
         self.cache
             .lock()
             .unwrap()
@@ -207,6 +233,42 @@ impl ToolDefCache {
 
     pub(crate) fn remove(&self, session_id: &str) {
         self.cache.lock().unwrap().remove(session_id);
+    }
+}
+
+/// Cached `messages.created_at` of the newest row per session, used by
+/// [`super::snapshot_io::ReActEngine::save_branch_point`] so mid-run branch
+/// points do not hit SQLite on every step when the snapshot write is throttled.
+pub(crate) struct LastMsgAtCache {
+    map: Mutex<HashMap<String, Option<String>>>,
+}
+
+impl LastMsgAtCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(super) fn get(&self, session_id: &str) -> Option<Option<String>> {
+        self.map.lock().unwrap().get(session_id).cloned()
+    }
+
+    pub(super) fn set(&self, session_id: &str, last_msg_at: Option<String>) {
+        self.map
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), last_msg_at);
+    }
+
+    pub(crate) fn remove(&self, session_id: &str) {
+        self.map.lock().unwrap().remove(session_id);
+    }
+}
+
+impl Default for LastMsgAtCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

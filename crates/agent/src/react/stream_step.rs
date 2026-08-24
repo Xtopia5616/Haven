@@ -45,9 +45,10 @@ impl<'a> StreamSession<'a> {
     }
 
     /// Primary step call including compaction retry / fatal paths.
+    /// Streams directly from `canonical` — no per-step deep clone on the
+    /// happy path; cut-off retries clone only when they append a nudge.
     pub(super) async fn run(
         &self,
-        llm_messages: &mut Vec<CanonicalMessage>,
         canonical: &mut Vec<CanonicalMessage>,
         events: &mut Vec<TranscriptRecord>,
         branch_points: &mut HashMap<u32, BranchPoint>,
@@ -58,7 +59,6 @@ impl<'a> StreamSession<'a> {
                 self.ctx,
                 self.router.clone(),
                 self.role,
-                llm_messages,
                 self.tools,
                 self.cancel.clone(),
                 canonical,
@@ -451,7 +451,6 @@ impl ReActEngine {
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
         role: EndpointRole,
-        llm_messages: &mut Vec<CanonicalMessage>,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         canonical: &mut Vec<CanonicalMessage>,
@@ -465,7 +464,7 @@ impl ReActEngine {
                 ctx,
                 router.clone(),
                 role,
-                llm_messages,
+                canonical,
                 tools,
                 cancel.clone(),
                 partial_thought,
@@ -525,11 +524,9 @@ impl ReActEngine {
                     // CompactSummary replaces the event log; drop BPs that
                     // pointed into the discarded prefix (same contract as loop).
                     branch_points.clear();
-                    // The retry must convert the *compacted* canonical
-                    // (the old messages are stale), and the role must be
-                    // re-resolved: summarizing away the last image-bearing
-                    // turn changes the routing for the retry.
-                    *llm_messages = canonical.clone();
+                    // Retry streams the *compacted* canonical in place; the
+                    // role must be re-resolved: summarizing away the last
+                    // image-bearing turn changes routing for the retry.
                     let retry_role = if canonical_has_image(canonical) {
                         router.vision_role().await
                     } else {
@@ -545,7 +542,7 @@ impl ReActEngine {
                             ctx,
                             router.clone(),
                             retry_role,
-                            llm_messages,
+                            canonical,
                             tools,
                             cancel,
                             partial_thought,

@@ -248,18 +248,15 @@ impl ReActEngine {
 
             // Rebuild tool definitions each step so that per-session tools
             // registered by `load_skill` / `load_mcp` are visible to the LLM.
-            let tools: Vec<ToolDefinition> =
-                self.build_tool_definitions_for_session(session_id).await;
+            // Cached as Arc — catalog version hits share one schema vec.
+            let tools = self.build_tool_definitions_for_session(session_id).await;
 
             let router = self.router();
             // Same cancellation token as the loop-head wait above; one
             // executor lookup per step instead of two.
             let cancel_res = cancel.clone();
-            // Convert once per step; retries below reuse the converted
-            // messages (the canonical is only replaced by the compaction
-            // path, which re-converts) instead of cloning the whole
-            // canonical and re-serializing every tool-call argument again.
-            let mut llm_messages = canonical.clone();
+            // Stream from `canonical` directly (no per-step deep clone).
+            // Cut-off retries clone only when they append a nudge message.
             let role = choose_agent_role(&router, has_image).await;
             // Accumulate streamed text locally so that if the LLM call fails
             // mid-stream, we can persist whatever was already received instead
@@ -272,13 +269,13 @@ impl ReActEngine {
                 "ReAct step {} session {} calling LLM, {} messages, {} tools",
                 step_num,
                 session_id,
-                llm_messages.len(),
+                canonical.len(),
                 tools.len()
             );
             tracing::trace!(
                 "ReAct step {} canonical messages: {:?}",
                 step_num,
-                llm_messages
+                canonical
                     .iter()
                     .map(|m| (m.role, m.content.len()))
                     .collect::<Vec<_>>()
@@ -290,13 +287,13 @@ impl ReActEngine {
                 &ctx,
                 router.clone(),
                 role,
-                &tools,
+                tools.as_slice(),
                 cancel_res.clone(),
                 &partial_thought,
                 &partial_reasoning,
             );
             let mut response = match stream
-                .run(&mut llm_messages, canonical, events, branch_points)
+                .run(canonical, events, branch_points)
                 .instrument(tracing::info_span!("llm", session_id, step_num))
                 .await
             {
@@ -432,7 +429,7 @@ impl ReActEngine {
                             session_id,
                             empty_retries_remaining
                         );
-                        match stream.retry(&llm_messages).await {
+                        match stream.retry(canonical).await {
                             Ok(retry_resp) => {
                                 let (t2, a2) =
                                     Self::parse_default_model_response(&retry_resp, step_num);
@@ -476,7 +473,7 @@ impl ReActEngine {
                             cut_off_retries,
                             limits.cut_off_retries
                         );
-                        let mut retry_messages = llm_messages.clone();
+                        let mut retry_messages = canonical.clone();
                         retry_messages.push(CanonicalMessage {
                             role: CanonicalRole::User,
                             content: vec![ContentPart::text(nudge)],

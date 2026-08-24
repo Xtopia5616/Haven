@@ -350,6 +350,7 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-24 | ReAct 热路径减负：heartbeat 不 await（per-session 合流）；`last_msg_at` 缓存（ingress 同步 + truncate 后清）；sanitize 健康快路径；thought step `run_blocking`；ToolDefCache `Arc`；去掉步头 `canonical.clone` |
 | 2026-08-24 | P3 落地：R6 lifecycle 窗口矩阵 + rollback/continue 硬化；R1 文档默认；R3 freeze+declare；R4 RunBudget；R5 窗口测 |
 | 2026-08-24 | 新增 R6：分支/重试在工具调用、模型流式、claim→spawn、ask/confirm、pause 等窗口期硬化 |
 | 2026-08-22 | P2 落地：M4 抽取视野含有界 assistant/tool；M5 embedding_lsh + ANN≥4096；M6 维护期 LLM 谓词合并 |

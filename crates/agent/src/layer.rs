@@ -126,7 +126,7 @@ impl AgentLayer {
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
-        persist_session_message(
+        let msg = persist_session_message(
             &self.executor,
             session_id,
             role,
@@ -137,7 +137,13 @@ impl AgentLayer {
             None,
             None,
         )
-        .await
+        .await?;
+        // Keep ReAct branch-point cutoff cache aligned with ingress writes
+        // (steering / follow-up) so mid-run `save_branch_point(force=false)`
+        // cannot embed a stale-low `last_msg_at`.
+        self.react_engine
+            .note_last_msg_at(session_id, Some(msg.created_at.clone()));
+        Ok(msg)
     }
 
     /// Update a session's status in the executor and notify the frontend.
@@ -449,8 +455,8 @@ impl AgentLayer {
                     // action produced. (Live/paused sessions get the result via the
                     // next ReAct step; awaiting-answer sessions keep it buffered
                     // until the user replies.)
-                    if (matches!(&state, Some(s) if s.is_terminal()) || state.is_none())
-                        && let Err(e) = crate::persist_session_message(
+                    if matches!(&state, Some(s) if s.is_terminal()) || state.is_none() {
+                        match crate::persist_session_message(
                             &agent.executor,
                             &tid,
                             "user",
@@ -462,12 +468,20 @@ impl AgentLayer {
                             None,
                         )
                         .await
-                    {
-                        tracing::warn!(
-                            "action-completion persist for ended session {} failed: {}",
-                            tid,
-                            e
-                        );
+                        {
+                            Ok(persisted) => {
+                                agent
+                                    .react_engine
+                                    .note_last_msg_at(&tid, Some(persisted.created_at));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "action-completion persist for ended session {} failed: {}",
+                                    tid,
+                                    e
+                                );
+                            }
+                        }
                     }
                     // Active push so the user never has to poll for status:
                     // a toast (in-app + Windows) announces the transition.

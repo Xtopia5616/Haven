@@ -111,6 +111,10 @@ impl AgentLayer {
                 } else if let Some(ts) = self.db.last_user_message_ts(session_id) {
                     let _ = self.db.delete_messages_after(session_id, &ts);
                 }
+                // After truncation (and after any in-flight run join above):
+                // drop the cutoff cache so a late persist cannot repopulate
+                // timestamps that no longer exist.
+                self.react_engine.clear_last_msg_at(session_id);
                 // Reload into memory and set status.
                 self.executor.ensure_session_loaded(session_id).await?;
                 self.set_session_status(
@@ -249,6 +253,9 @@ impl AgentLayer {
                 self.db.truncate_session_after(session_id, ts, false)?;
             }
         }
+        // Clear after join + truncation so unwind persists cannot leave a
+        // stale-high cutoff in the mid-run branch-point cache.
+        self.react_engine.clear_last_msg_at(session_id);
 
         // Drop any checkpointed partial stream text: the restored timeline
         // must not inherit a stale partial from the discarded run. Discard
@@ -430,6 +437,9 @@ impl AgentLayer {
                 self.db.truncate_session_after(session_id, &ts, false)?;
             }
         }
+        // Clear after join + truncation so unwind persists cannot leave a
+        // stale-high cutoff in the mid-run branch-point cache.
+        self.react_engine.clear_last_msg_at(session_id);
 
         // Drop any checkpointed partial stream text: the retry re-streams
         // from scratch, so a crash during the retry must not promote the
