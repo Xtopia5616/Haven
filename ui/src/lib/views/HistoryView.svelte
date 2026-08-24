@@ -41,7 +41,7 @@
 		{ id: 'facts', label: '事实' },
 	];
 
-	// Memory recall (moved from Settings): search stored facts / episodes.
+	// Memory recall (moved from Settings): search stored edges / items.
 	let memoryRecall = $state({ query: '', kind: 'fact', results: /** @type {any[]} */ ([]), loading: false });
 
 	// Facts management (moved from Settings): every stored fact plus the

@@ -14,21 +14,29 @@ pub struct EmbeddedText {
     pub updated_at: String,
 }
 
-/// Memory domain constants used as `entity_type`.
+/// Memory domain constants used as `memory_embeddings.entity_type`.
+///
+/// These are **embedding-domain aliases** for the graph tables. Unified FTS
+/// uses a separate vocabulary (`fts_kind`) — never mix the two in filters.
 pub mod entity_kind {
-    /// Embeddings of `facts` rows (subject/predicate/object).
+    /// Embedding domain for `memory_edges` SPO rows (alias kept as `fact`).
     pub const FACT: &str = "fact";
-    /// Embeddings of conversation events: user messages and compaction
-    /// summaries (the event-stream memory).
+    /// Embedding domain for `memory_items` rows (alias kept as `episode`).
     pub const EPISODE: &str = "episode";
+}
+
+/// `memory_fts.entity_type` vocabulary (X1 unified FTS). Maps to
+/// [`entity_kind`] as: `EDGE` ↔ `FACT`, `ITEM` ↔ `EPISODE`.
+pub mod fts_kind {
+    pub const EDGE: &str = "edge";
+    pub const ITEM: &str = "item";
 }
 
 /// Max unembedded facts returned per missing-ids scan (recent first).
 pub const FACT_EMBED_BACKLOG_LIMIT: usize = 128;
 
-/// Max unembedded episode entities (compaction summaries preferred, then
-/// recent user messages) returned per missing-ids scan. Prevents a single
-/// maintenance / hot-path embed pass from exploding after enabling or
+/// Max unembedded memory items returned per missing-ids scan. Prevents a
+/// single maintenance / hot-path embed pass from exploding after enabling or
 /// switching the embedding model on a large history.
 pub const EPISODE_EMBED_BACKLOG_LIMIT: usize = 64;
 
@@ -294,7 +302,7 @@ impl Database {
                 let mut out = Vec::new();
                 if model_filter {
                     let mut stmt = conn.prepare(
-                        "SELECT id FROM facts
+                        "SELECT id FROM memory_edges
                          WHERE id NOT IN (
                              SELECT entity_id FROM memory_embeddings
                              WHERE entity_type = ?1 AND model = ?2
@@ -310,7 +318,7 @@ impl Database {
                     }
                 } else {
                     let mut stmt = conn.prepare(
-                        "SELECT id FROM facts
+                        "SELECT id FROM memory_edges
                          WHERE id NOT IN (
                              SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
                          )
@@ -328,12 +336,10 @@ impl Database {
                 Ok(out)
             }
             entity_kind::EPISODE => {
-                // Summaries first, then recent user messages to fill the rest.
-                // Both queries share this connection guard (non-reentrant mutex).
                 let mut out: Vec<String> = Vec::new();
                 if model_filter {
                     let mut ep_stmt = conn.prepare(
-                        "SELECT id FROM memory_episodes
+                        "SELECT id FROM memory_items
                          WHERE id NOT IN (
                              SELECT entity_id FROM memory_embeddings
                              WHERE entity_type = ?1 AND model = ?2
@@ -349,7 +355,7 @@ impl Database {
                     }
                 } else {
                     let mut ep_stmt = conn.prepare(
-                        "SELECT id FROM memory_episodes
+                        "SELECT id FROM memory_items
                          WHERE id NOT IN (
                              SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
                          )
@@ -364,43 +370,6 @@ impl Database {
                         out.push(row?);
                     }
                 }
-                let remaining = limit.saturating_sub(out.len());
-                if remaining > 0 {
-                    if model_filter {
-                        let mut stmt = conn.prepare(
-                            "SELECT id FROM messages
-                             WHERE role = 'user'
-                               AND id NOT IN (
-                                   SELECT entity_id FROM memory_embeddings
-                                   WHERE entity_type = ?1 AND model = ?2
-                               )
-                             ORDER BY created_at DESC
-                             LIMIT ?3",
-                        )?;
-                        for row in stmt.query_map(
-                            rusqlite::params![entity_type, model, remaining as i64],
-                            |r| r.get::<_, String>(0),
-                        )? {
-                            out.push(row?);
-                        }
-                    } else {
-                        let mut stmt = conn.prepare(
-                            "SELECT id FROM messages
-                             WHERE role = 'user'
-                               AND id NOT IN (
-                                   SELECT entity_id FROM memory_embeddings WHERE entity_type = ?1
-                               )
-                             ORDER BY created_at DESC
-                             LIMIT ?2",
-                        )?;
-                        for row in stmt.query_map(
-                            rusqlite::params![entity_type, remaining as i64],
-                            |r| r.get::<_, String>(0),
-                        )? {
-                            out.push(row?);
-                        }
-                    }
-                }
                 Ok(out)
             }
             _ => Ok(Vec::new()),
@@ -411,7 +380,7 @@ impl Database {
     pub fn fact_text_by_id(&self, fact_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
         let text = match conn.query_row(
-            "SELECT subject || ' ' || predicate || ' ' || object FROM facts WHERE id = ?1",
+            "SELECT subject || ' ' || predicate || ' ' || object FROM memory_edges WHERE id = ?1",
             rusqlite::params![fact_id],
             |r| r.get(0),
         ) {
@@ -422,12 +391,11 @@ impl Database {
         Ok(text)
     }
 
-    /// Source text for an episode entity: the user message content, or the
-    /// compaction summary when the id belongs to a `memory_episodes` row.
+    /// Source text for an episode-domain entity: `memory_items.content`.
     pub fn episode_text(&self, entity_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
         let content = match conn.query_row(
-            "SELECT content FROM messages WHERE id = ?1",
+            "SELECT content FROM memory_items WHERE id = ?1",
             rusqlite::params![entity_id],
             |r| r.get::<_, String>(0),
         ) {
@@ -435,19 +403,7 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
             Err(e) => return Err(e.into()),
         };
-        if let Some(content) = content {
-            return Ok(Some(content));
-        }
-        let summary = match conn.query_row(
-            "SELECT summary FROM memory_episodes WHERE id = ?1",
-            rusqlite::params![entity_id],
-            |r| r.get::<_, String>(0),
-        ) {
-            Ok(s) => Some(s),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(e) => return Err(e.into()),
-        };
-        Ok(summary)
+        Ok(content)
     }
 
     /// Brute-force cosine search over one memory domain. Prefer
@@ -597,7 +553,7 @@ impl Database {
               AND l.model = e.model ",
         );
         if entity_type == entity_kind::FACT && fact_subject.is_some_and(|s| !s.is_empty()) {
-            sql.push_str("INNER JOIN facts f ON f.id = e.entity_id ");
+            sql.push_str("INNER JOIN memory_edges f ON f.id = e.entity_id ");
         }
         sql.push_str(&format!(
             "WHERE e.entity_type = ? AND e.model = ? AND l.bucket IN ({placeholders}) "
@@ -613,12 +569,9 @@ impl Database {
         {
             sql.push_str(
                 "AND e.entity_id NOT IN (
-                     SELECT id FROM messages WHERE session_id = ?
-                     UNION ALL
-                     SELECT id FROM memory_episodes WHERE session_id = ?
+                     SELECT id FROM memory_items WHERE session_id = ?
                  ) ",
             );
-            bind.push(Box::new(sid.to_string()));
             bind.push(Box::new(sid.to_string()));
         }
         sql.push_str("ORDER BY e.updated_at DESC LIMIT ?");
@@ -676,7 +629,7 @@ impl Database {
                     "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
                             e.created_at, e.updated_at
                      FROM memory_embeddings e
-                     INNER JOIN facts f ON f.id = e.entity_id
+                     INNER JOIN memory_edges f ON f.id = e.entity_id
                      WHERE e.entity_type = ?1 AND e.model = ?2 AND f.subject = ?3
                      ORDER BY e.updated_at DESC
                      LIMIT ?4",
@@ -698,9 +651,7 @@ impl Database {
                      FROM memory_embeddings e
                      WHERE e.entity_type = ?1 AND e.model = ?2
                        AND e.entity_id NOT IN (
-                           SELECT id FROM messages WHERE session_id = ?3
-                           UNION ALL
-                           SELECT id FROM memory_episodes WHERE session_id = ?3
+                           SELECT id FROM memory_items WHERE session_id = ?3
                        )
                      ORDER BY e.updated_at DESC
                      LIMIT ?4",
@@ -738,8 +689,7 @@ impl Database {
     /// Keyword search over the event-stream memory (user messages plus
     /// persisted compaction summaries), independent of the vector index — so
     /// cross-session recall works even when no `embedding_model` is configured.
-    /// Compaction summaries use `episodes_fts` (trigram) when available
-    /// (P2-10 / L6); user messages still use a bounded LIKE/substring scan.
+    /// Memory items use unified `memory_fts` (trigram) when available;
     /// Results are ranked by distinct term hits, then recency.
     ///
     /// When `exclude_session_id` is set (Phase 6 / S2), rows from that session
@@ -825,16 +775,6 @@ impl Database {
             }
         }
 
-        // User messages remain a bounded substring scan (not in episodes_fts).
-        for (content, created) in self.list_recent_user_messages(exclude_session_id, 1000)? {
-            Self::score_episode_candidate(
-                &content,
-                &created,
-                &lower_terms,
-                &mut scored,
-                &mut seen,
-            );
-        }
 
         scored.sort_by(|a, b| {
             b.0.cmp(&a.0)
@@ -842,18 +782,6 @@ impl Database {
         });
         scored.truncate(limit);
         Ok(scored.into_iter().map(|(_, t, _)| t).collect())
-    }
-
-    fn score_episode_candidate(
-        content: &str,
-        created: &str,
-        lower_terms: &[String],
-        scored: &mut Vec<(usize, String, String)>,
-        seen: &mut std::collections::HashSet<String>,
-    ) {
-        Self::score_episode_candidate_haystack(
-            content, content, created, lower_terms, scored, seen,
-        );
     }
 
     fn score_episode_candidate_haystack(
@@ -899,23 +827,26 @@ impl Database {
         }
         let match_expr = Self::build_episode_fts_query(terms);
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String)> {
-            let summary: String = r.get(0)?;
+            let content: String = r.get(0)?;
             let topics: String = r.get(1)?;
             let entities: String = r.get(2)?;
             let created: String = r.get(3)?;
-            let haystack = format!("{summary} {topics} {entities}");
-            Ok((summary, haystack, created))
+            let haystack = format!("{content} {topics} {entities}");
+            Ok((content, haystack, created))
         };
+        let item = fts_kind::ITEM;
         let conn = self.conn();
         let result = if let Some(sid) = exclude_session_id {
-            let mut stmt = conn.prepare(
-                "SELECT e.summary, e.topics, e.entities, e.created_at
-                 FROM episodes_fts
-                 JOIN memory_episodes e ON e.rowid = episodes_fts.rowid
-                 WHERE episodes_fts MATCH ?1 AND e.session_id != ?2
-                 ORDER BY bm25(episodes_fts), e.created_at DESC
-                 LIMIT ?3",
+            let sql = format!(
+                "SELECT e.content, e.topics, e.entities, e.created_at
+                 FROM memory_fts
+                 JOIN memory_items e ON e.id = memory_fts.entity_id
+                 WHERE memory_fts.entity_type = '{item}'
+                   AND memory_fts MATCH ?1 AND e.session_id != ?2
+                 ORDER BY bm25(memory_fts), e.created_at DESC
+                 LIMIT ?3"
             );
+            let mut stmt = conn.prepare(&sql);
             match stmt {
                 Ok(ref mut s) => s
                     .query_map(rusqlite::params![match_expr, sid, limit as i64], map_row)
@@ -923,14 +854,16 @@ impl Database {
                 Err(e) => Err(e),
             }
         } else {
-            let mut stmt = conn.prepare(
-                "SELECT e.summary, e.topics, e.entities, e.created_at
-                 FROM episodes_fts
-                 JOIN memory_episodes e ON e.rowid = episodes_fts.rowid
-                 WHERE episodes_fts MATCH ?1
-                 ORDER BY bm25(episodes_fts), e.created_at DESC
-                 LIMIT ?2",
+            let sql = format!(
+                "SELECT e.content, e.topics, e.entities, e.created_at
+                 FROM memory_fts
+                 JOIN memory_items e ON e.id = memory_fts.entity_id
+                 WHERE memory_fts.entity_type = '{item}'
+                   AND memory_fts MATCH ?1
+                 ORDER BY bm25(memory_fts), e.created_at DESC
+                 LIMIT ?2"
             );
+            let mut stmt = conn.prepare(&sql);
             match stmt {
                 Ok(ref mut s) => s
                     .query_map(rusqlite::params![match_expr, limit as i64], map_row)
@@ -953,16 +886,16 @@ impl Database {
     ) -> anyhow::Result<Vec<(String, String, String)>> {
         let conn = self.conn();
         let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(String, String, String)> {
-            let summary: String = r.get(0)?;
+            let content: String = r.get(0)?;
             let topics: String = r.get(1)?;
             let entities: String = r.get(2)?;
             let created: String = r.get(3)?;
-            let haystack = format!("{summary} {topics} {entities}");
-            Ok((summary, haystack, created))
+            let haystack = format!("{content} {topics} {entities}");
+            Ok((content, haystack, created))
         };
         if let Some(sid) = exclude_session_id {
             let mut stmt = conn.prepare(
-                "SELECT summary, topics, entities, created_at FROM memory_episodes
+                "SELECT content, topics, entities, created_at FROM memory_items
                  WHERE session_id != ?1
                  ORDER BY created_at DESC LIMIT ?2",
             )?;
@@ -971,7 +904,7 @@ impl Database {
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         } else {
             let mut stmt = conn.prepare(
-                "SELECT summary, topics, entities, created_at FROM memory_episodes
+                "SELECT content, topics, entities, created_at FROM memory_items
                  ORDER BY created_at DESC LIMIT ?1",
             )?;
             let rows = stmt.query_map(rusqlite::params![limit as i64], map_row)?;
@@ -979,34 +912,6 @@ impl Database {
         }
     }
 
-    fn list_recent_user_messages(
-        &self,
-        exclude_session_id: Option<&str>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<(String, String)>> {
-        let conn = self.conn();
-        if let Some(sid) = exclude_session_id {
-            let mut stmt = conn.prepare(
-                "SELECT content, created_at FROM messages
-                 WHERE role = 'user' AND session_id != ?1
-                 ORDER BY created_at DESC LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![sid, limit as i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            Ok(rows.collect::<Result<Vec<_>, _>>()?)
-        } else {
-            let mut stmt = conn.prepare(
-                "SELECT content, created_at FROM messages
-                 WHERE role = 'user'
-                 ORDER BY created_at DESC LIMIT ?1",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            Ok(rows.collect::<Result<Vec<_>, _>>()?)
-        }
-    }
 
     /// Distinct embedding model names currently in the vector index.
     pub fn list_embedding_models(&self) -> anyhow::Result<Vec<String>> {
@@ -1029,17 +934,15 @@ impl Database {
         Ok(deleted)
     }
 
-    /// Remove embeddings whose owning entity no longer exists (facts deleted,
-    /// messages pruned). Keeps the index from growing unbounded around
-    /// pruned memory.
+    /// Remove embeddings whose owning entity no longer exists (edges/items
+    /// deleted). Keeps the index from growing unbounded around pruned memory.
     pub fn prune_orphaned_embeddings(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
         let deleted = conn.execute(
             "DELETE FROM memory_embeddings WHERE
-                (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM facts))
+                (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM memory_edges))
              OR (entity_type = 'episode'
-                 AND entity_id NOT IN (SELECT id FROM messages)
-                 AND entity_id NOT IN (SELECT id FROM memory_episodes))",
+                 AND entity_id NOT IN (SELECT id FROM memory_items))",
             [],
         )? as u64;
         let _ = conn.execute(
@@ -1292,13 +1195,11 @@ mod tests {
     fn missing_embedding_ids_episodes() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        let msg = db
-            .add_message(&session.id, "user", "hello world", Some("text"), None)
-            .unwrap();
+        let ep = db.add_episode(&session.id, "hello world").unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 1);
-        assert!(missing.contains(&msg.id));
-        db.save_embedding(entity_kind::EPISODE, &msg.id, "m", &[1.0], "hello world")
+        assert!(missing.contains(&ep));
+        db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello world")
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 0);
@@ -1308,26 +1209,17 @@ mod tests {
     fn missing_embedding_ids_episodes_respects_limit_and_prefers_summaries() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        for i in 0..5 {
-            db.add_message(
-                &session.id,
-                "user",
-                &format!("msg-{i}"),
-                Some("text"),
-                None,
-            )
-            .unwrap();
-        }
         let ep_a = db.add_episode(&session.id, "summary-a").unwrap();
         let ep_b = db.add_episode(&session.id, "summary-b").unwrap();
+        let ep_c = db.add_episode(&session.id, "summary-c").unwrap();
 
         let missing = db
             .missing_embedding_ids_limited(entity_kind::EPISODE, "m", 2)
             .unwrap();
         assert_eq!(missing.len(), 2);
         assert!(
-            missing.contains(&ep_a) && missing.contains(&ep_b),
-            "summaries must fill the cap before raw user messages, got {:?}",
+            missing.iter().all(|id| id == &ep_a || id == &ep_b || id == &ep_c),
+            "only memory_items should be missing-index candidates, got {:?}",
             missing
         );
 
@@ -1335,26 +1227,16 @@ mod tests {
             .missing_embedding_ids_limited(entity_kind::EPISODE, "m", 3)
             .unwrap();
         assert_eq!(missing3.len(), 3);
-        assert!(missing3.contains(&ep_a) && missing3.contains(&ep_b));
-        // Third slot is a recent user message (not another summary).
-        assert_eq!(
-            missing3
-                .iter()
-                .filter(|id| *id != &ep_a && *id != &ep_b)
-                .count(),
-            1
-        );
+        assert!(missing3.contains(&ep_a) && missing3.contains(&ep_b) && missing3.contains(&ep_c));
     }
 
     #[test]
     fn episode_text_resolves_message() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        let msg = db
-            .add_message(&session.id, "user", "remember this", Some("text"), None)
-            .unwrap();
+        let ep = db.add_episode(&session.id, "remember this").unwrap();
         assert_eq!(
-            db.episode_text(&msg.id).unwrap(),
+            db.episode_text(&ep).unwrap(),
             Some("remember this".into())
         );
         assert_eq!(db.episode_text("nope").unwrap(), None);
@@ -1364,10 +1246,8 @@ mod tests {
     fn prune_removes_orphaned() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        let msg = db
-            .add_message(&session.id, "user", "hello", Some("text"), None)
-            .unwrap();
-        db.save_embedding(entity_kind::EPISODE, &msg.id, "m", &[1.0], "hello")
+        let ep = db.add_episode(&session.id, "hello").unwrap();
+        db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
             .unwrap();
         db.save_embedding(entity_kind::EPISODE, "ghost", "m", &[1.0], "gone")
             .unwrap();
@@ -1376,7 +1256,7 @@ mod tests {
         let deleted = db.prune_orphaned_embeddings().unwrap();
         assert_eq!(deleted, 2);
         assert!(
-            db.get_embedding(entity_kind::EPISODE, &msg.id)
+            db.get_embedding(entity_kind::EPISODE, &ep)
                 .unwrap()
                 .is_some()
         );
@@ -1414,22 +1294,13 @@ mod tests {
     fn search_episodes_by_keywords_ranks_matches() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        db.add_message(
+        db.add_episode(
             &session.id,
-            "user",
             "I discussed the dark theme preference earlier",
-            Some("text"),
-            None,
         )
         .unwrap();
-        db.add_message(
-            &session.id,
-            "user",
-            "unrelated note about groceries",
-            Some("text"),
-            None,
-        )
-        .unwrap();
+        db.add_episode(&session.id, "unrelated note about groceries")
+            .unwrap();
         let hits = db
             .search_episodes_by_keywords(&["dark", "theme"], 5)
             .unwrap();
@@ -1441,8 +1312,7 @@ mod tests {
     fn search_episodes_by_keywords_empty_terms_returns_nothing() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        db.add_message(&session.id, "user", "hello world", Some("text"), None)
-            .unwrap();
+        db.add_episode(&session.id, "hello world").unwrap();
         assert!(db.search_episodes_by_keywords(&[], 5).unwrap().is_empty());
     }
 
@@ -1451,22 +1321,13 @@ mod tests {
         let db = db();
         let current = db.create_session("current", "").unwrap();
         let past = db.create_session("past", "").unwrap();
-        db.add_message(
+        db.add_episode(
             &current.id,
-            "user",
             "I discussed the dark theme in this session",
-            Some("text"),
-            None,
         )
         .unwrap();
-        db.add_message(
-            &past.id,
-            "user",
-            "I discussed the dark theme last week",
-            Some("text"),
-            None,
-        )
-        .unwrap();
+        db.add_episode(&past.id, "I discussed the dark theme last week")
+            .unwrap();
         let hits = db
             .search_episodes_by_keywords_excluding(&["dark", "theme"], 5, Some(&current.id))
             .unwrap();
@@ -1479,29 +1340,22 @@ mod tests {
     fn episodes_include_compaction_summaries() {
         let db = db();
         let session = db.create_session("t", "").unwrap();
-        db.add_message(&session.id, "user", "plain message", Some("text"), None)
-            .unwrap();
         let ep = db
             .add_episode(&session.id, "user prefers the dark theme everywhere")
             .unwrap();
 
-        // Summaries are missing-index candidates and resolve their text.
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
-        assert!(missing.contains(&ep));
-        assert!(missing.iter().any(|m| m != &ep));
+        assert_eq!(missing, vec![ep.clone()]);
         assert_eq!(
             db.episode_text(&ep).unwrap().as_deref(),
             Some("user prefers the dark theme everywhere")
         );
 
-        // Keyword search surfaces the summary text.
         let hits = db
             .search_episodes_by_keywords(&["dark", "theme"], 5)
             .unwrap();
         assert!(hits.iter().any(|h| h.contains("dark theme")));
 
-        // Indexing the episode removes it from the missing set and pruning
-        // does not treat it as orphaned.
         db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0, 0.0], "x")
             .unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
@@ -1569,8 +1423,8 @@ mod tests {
             "user language English",
         )
         .unwrap();
-        // Single-valued correction: the old row is demoted by an UPDATE,
-        // which must drop its stale vector.
+        // Single-valued correction demotes confidence only — SPO text is
+        // unchanged, so the embedding must stay (invalidate only on SPO).
         db.upsert_fact_with_durability(
             "user",
             "language",
@@ -1585,8 +1439,23 @@ mod tests {
         assert!(
             db.get_embedding(entity_kind::FACT, &fact.id)
                 .unwrap()
+                .is_some(),
+            "confidence demotion must keep SPO embedding"
+        );
+        // SPO change drops the vector.
+        {
+            let conn = db.conn();
+            conn.execute(
+                "UPDATE memory_edges SET object = 'French' WHERE id = ?1",
+                rusqlite::params![fact.id],
+            )
+            .unwrap();
+        }
+        assert!(
+            db.get_embedding(entity_kind::FACT, &fact.id)
+                .unwrap()
                 .is_none(),
-            "corrected fact must lose its stale embedding"
+            "SPO UPDATE must drop the embedding"
         );
         // Re-embed, then DELETE drops it again.
         db.save_embedding(
@@ -1594,7 +1463,7 @@ mod tests {
             &fact.id,
             "m",
             &[1.0],
-            "user language English",
+            "user language French",
         )
         .unwrap();
         db.delete_fact(&fact.id).unwrap();

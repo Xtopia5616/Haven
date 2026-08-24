@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 //   - Every persisted entity id is a `{prefix}-{uuid32}` string (hyphen +
 //     lowercase-hex simple UUID), e.g. `ses-3f9a...`.
 //   - Prefixes: `ses-` (sessions), `msg-` (messages and memory episodes —
-//     memory_episodes shares the message id space), `step-` (session_steps),
+//     memory_items shares the message id space), `step-` (session_steps),
 //     `fact-` (facts), `act-` (actions — unified background actions and
 //     scheduled actions), `usage-` (llm_usage);
 //     `conf-` (safety-gateway confirmations), `rec-` (voice recording
@@ -439,7 +439,7 @@ pub struct CanonicalMessage {
     /// adapters; optional so legacy snapshots deserialize cleanly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<InjectSource>,
-    /// Stable `msg-*` identity shared with `memory_episodes` for compaction
+    /// Stable `msg-*` identity shared with `memory_items` for compaction
     /// summary bubbles (L1). Adapters ignore this; optional for legacy
     /// snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]

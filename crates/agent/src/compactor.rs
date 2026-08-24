@@ -60,7 +60,7 @@ pub struct CompactionResult {
     pub tokens_before: u32,
     /// Token count after compaction
     pub tokens_after: u32,
-    /// Stable `msg-*` shared by the summary bubble and `memory_episodes` (L1).
+    /// Stable `msg-*` shared by the summary bubble and `memory_items` (L1).
     pub episode_id: String,
 }
 

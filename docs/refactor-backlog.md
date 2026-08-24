@@ -33,18 +33,19 @@
 
 | 通道 | 表 | 要点 |
 |---|---|---|
-| 长期事实 | `facts` | SPO 三元组；confidence / durability / tags / source / `source_ref` |
-| 情景 | `memory_episodes` | compaction 摘要 + `topics`/`entities`；与压缩气泡共享 `msg-*` |
-| 向量 | `memory_embeddings` | `fact`/`episode`；查询 **必** `WHERE model=?` |
-| 全文 | `facts_fts` / `episodes_fts` | FTS5 `trigram`；仅短 term（&lt;3）LIKE 回退 |
+| 实体节点 | `memory_nodes` | kind/label/aliases；`node-*`；写入边时 `ensure_node` |
+| 长期边（原 facts） | `memory_edges` | SPO 一等边，保留 `fact-*`；confidence / durability / tags / source；`provenance_item_id`→`memory_items`，`provenance_record_id`=不透明 transcript id（msg-*/event id，无 FK messages） |
+| 情景条目（原 episodes） | `memory_items` | kind=`episode_summary`\|`utterance`\|`note`；compaction 摘要与气泡共享 `msg-*`；**不**默认索引每条 user message |
+| 向量 | `memory_embeddings` | entity_type 域别名 `fact`=edge / `episode`=item；查询 **必** `WHERE model=?` |
+| 全文 | `memory_fts` | 统一 contentless FTS5 `trigram`（edge+item）；仅短 term（&lt;3）LIKE 回退 |
 | 游标 | `kv_store` | `fact_extraction.*` 等 |
 
-Schema：`haven_memory::schema::init_schema`，`PRAGMA user_version` + `MIGRATIONS`（以代码 `SCHEMA_VERSION` 为准）。缺必需列的远古库拒绝打开（删库重建）。
+Schema：`haven_memory::schema::init_schema`，`PRAGMA user_version` + `MIGRATIONS`（当前 **v9** 记忆图谱；以代码 `SCHEMA_VERSION` 为准）。缺必需列的远古库拒绝打开（删库重建）。公开 API 仍可用 `Fact` / `add_episode*` 薄封装，内部走新表。
 
 **读写契约（已落地）**
 
 - **canonical** = 本会话 LLM 真源（含压缩摘要气泡）
-- **facts / episodes** = **跨会话**检索；同会话不进 Past excerpts（`exclude_session_id`）
+- **edges / items**（prompt 仍称 USER FACTS / Past excerpts）= **跨会话**检索；同会话不进 Past excerpts（`exclude_session_id`）；**不**默认索引每条 user message
 - **DB messages / session_steps** = events 的物化投影（X12）；抽取与 UI resume 读投影；Additional context 不与首条 user 重复
 - 记忆注入：开场写入 `canonical[0]` 的 `--- MEMORY ---` fence；**resume 入环前** 全量重建 system（X2 / `rebuild_canonical_system`）；步间 dirty 仅 patch MEMORY fence（M2）；`infer_session` **不**改 system
 - 抽取：ReAct 只 `enqueue_infer(session_id)` → outbox worker；维护走调度器（启动 + ~6h）
@@ -191,10 +192,11 @@ User/STT → AgentLayer (ingress/resume)
 
 > 下列原为否决项。现允许大改时记为 **可选史诗**；实施前仍要过产品/安全门，但**不再以兼容性否决**。
 
-#### X1. 记忆大表 / 知识图谱 `[可选·史诗]` · 原 memory §3.5
+#### X1. 记忆大表 / 知识图谱 `[完成归档]` · 原 memory §3.5 · 2026-08-24
 
-- 把 `facts` + `memory_episodes` + `messages` 合成统一记忆存储或图谱。
-- **代价**：schema、召回、UI、迁移全面重做。
+- Typed memory graph（SQLite-native）：`memory_nodes` + `memory_edges`（SPO，`fact-*`）+ `memory_items`（取代 episodes；不索引全量 messages）+ 统一 `memory_fts`；schema v9 迁移旧 `facts`/`memory_episodes`。
+- Provenance：`provenance_item_id` / `provenance_record_id`（稳定 transcript id，不对 messages 表形状死锁）；去掉 message-as-episode 双源。
+- **与 X12**：本项不改 ReAct events 写路径；合入时按 transcript record id 对齐即可。
 
 #### X2. Resume 全量重建 system prompt `[完成归档]` · 原 memory §3.5
 
@@ -270,7 +272,7 @@ User/STT → AgentLayer (ingress/resume)
 | R4 | 完成 | ReAct | snapshot 显式 RunBudget |
 | R5 | 完成 | ReAct | 薄循环/窗口矩阵单测加厚 |
 | R6 | 完成 | ReAct | 分支/重试跨生命周期窗口硬化 |
-| X1 | 可选·史诗 | 跨切 | 记忆大表/图谱 |
+| X1 | 完成 | 跨切 | 记忆图谱（nodes/edges/items） |
 | X2 | 完成 | Memory | resume 全量重建 system；G7→freeze-per-run |
 | X3 | 不推荐 | Resume | 内容比对去重 |
 | X4 | 不推荐 | Context | 出窗历史灌回 canonical |
@@ -284,7 +286,7 @@ User/STT → AgentLayer (ingress/resume)
 | X12 | 完成 | 跨切 | events 权威 + messages/steps 投影 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **0** · 可选 **6**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **15**（M1–M6、R1–R6、X2、X7、X12）· 史诗计入可选。
+**计数**：待办 **0** · 可选 **5**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **16**（M1–M6、R1–R6、X1、X2、X7、X12）· 史诗计入可选。
 
 ---
 
@@ -318,7 +320,7 @@ P3.1 X2 + G7 重订                                   ✅ 2026-08-24
 
 P4  史诗（单独立项）
     X12 DB↔events 统一（✓ 2026-08-24：统一 writer + 投影契约；blob→表仍属 X13）
-    X1  记忆图谱/大表
+    X1  记忆图谱/大表 ✅ 2026-08-24（nodes/edges/items + memory_fts；v9）
     X5  矛盾引擎
     X6  记忆 UI Tab
     X13 events 冷存储
@@ -356,6 +358,7 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-24 | **X1 完成**：typed memory graph — `memory_nodes` / `memory_edges` / `memory_items` + 统一 `memory_fts`；schema v9；去掉 message-as-episode 双源；公开 Fact/episode API 薄封装 |
 | 2026-08-24 | X12 落地：events 权威 + messages/steps 投影；`apply_transcript` 统一 writer；`TranscriptRecord::Reasoning`；文档/AGENTS 同步 |
 | 2026-08-24 | ReAct 热路径减负：heartbeat 不 await（per-session 合流）；`last_msg_at` 缓存（ingress 同步 + truncate 后清）；sanitize 健康快路径；thought step `run_blocking`；ToolDefCache `Arc`；去掉步头 `canonical.clone` |
 | 2026-08-24 | P3 落地：R6 lifecycle 窗口矩阵 + rollback/continue 硬化；R1 文档默认；R3 freeze+declare；R4 RunBudget；R5 窗口测 |
