@@ -76,6 +76,9 @@ struct SnapshotView<'a> {
     /// Explicit confirm-awaiting batch (Phase 5 / E3); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     awaiting_confirm: Option<&'a crate::types::ConfirmPending>,
+    /// Per-run step budget for observability (R4); see `ReActSnapshot`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_budget: Option<&'a crate::types::RunBudget>,
 }
 
 /// Update a session's status and emit the `SessionUpdated` event, in that order.
@@ -435,6 +438,7 @@ impl ReActEngine {
     ) {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
         let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
+        let run_budget = self.current_run_budget(session_id);
         let view = SnapshotView {
             events,
             step_number,
@@ -442,6 +446,7 @@ impl ReActEngine {
             saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             awaiting_answer: awaiting.as_ref(),
             awaiting_confirm: awaiting_confirm.as_ref(),
+            run_budget: run_budget.as_ref(),
         };
         // Serialize into the session's own buffer inside a scoped block so the
         // mutex guard is dropped before the await below (the guard is not

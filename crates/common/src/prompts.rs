@@ -98,6 +98,7 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 /// the one-line tool index so each tool can carry richer "when to use / when
 /// not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
+- Tool schemas: the per-step API `tools[]` list is the sole authority for names, parameters, and availability. The short tools/skills/MCP index in this system prompt is frozen at session open (load_skill / load_mcp appear in `tools[]` on the next step, not by rewriting this index).\n\
 - ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own. One question per ask call: put a single decision in `question`, and keep `options` as short answers to that question only. Do not combine two questions into one ask or mix unrelated options together; call ask again for the next question.\n\
 - http: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
 - memory: Use recall(query, kind=fact|episode) to look up stored facts or past conversation episodes (same path as History). Use remember/forget only when the user explicitly asks to store or delete a fact.\n\

@@ -127,6 +127,24 @@ impl ConfirmPending {
     }
 }
 
+/// Per-run step budget recorded on the snapshot for observability (R4 / J1).
+///
+/// Storage is diagnostic only — the live loop still reads `max_steps` /
+/// `session_max_steps` from the engine. Resume grants another full per-run
+/// budget; `session_max_steps` (when set) caps absolute `step_number`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RunBudget {
+    /// First step number this run will execute (`start_step`).
+    pub start_step: u32,
+    /// Inclusive last step this run may reach.
+    pub effective_max: u32,
+    /// Configured per-run `max_steps` at run start.
+    pub max_steps: u32,
+    /// Optional session-lifetime absolute step cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_max_steps: Option<u32>,
+}
+
 /// Serializable snapshot of the ReAct loop state for pause/resume.
 ///
 /// **Authority (Phase 8 / B1-3):** [`Self::events`] is the sole transcript.
@@ -147,6 +165,9 @@ pub struct ReActSnapshot {
     pub awaiting_answer: Option<AskPending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting_confirm: Option<ConfirmPending>,
+    /// Last run's effective step budget (R4). Omitted on legacy snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_budget: Option<RunBudget>,
     /// Filled only by legacy `from_json` for one-shot tool restore on resume.
     /// Never serialized.
     #[serde(skip)]
@@ -217,6 +238,7 @@ impl ReActSnapshot {
             saved_at: legacy.saved_at,
             awaiting_answer: legacy.awaiting_answer,
             awaiting_confirm: legacy.awaiting_confirm,
+            run_budget: None,
             upgrade_tool_rounds,
         })
     }
@@ -663,6 +685,29 @@ mod tests {
         let pending = back.awaiting_answer.expect("flag restored");
         assert_eq!(pending.question, "which file?");
         assert_eq!(pending.step_ids, vec!["step-abc".to_string()]);
+    }
+
+    #[test]
+    fn snapshot_run_budget_roundtrip() {
+        let snapshot = ReActSnapshot {
+            events: vec![],
+            step_number: 3,
+            run_budget: Some(RunBudget {
+                start_step: 1,
+                effective_max: 20,
+                max_steps: 20,
+                session_max_steps: Some(100),
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains("run_budget"));
+        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
+        let budget = back.run_budget.expect("budget restored");
+        assert_eq!(budget.start_step, 1);
+        assert_eq!(budget.effective_max, 20);
+        assert_eq!(budget.max_steps, 20);
+        assert_eq!(budget.session_max_steps, Some(100));
     }
 
     #[test]

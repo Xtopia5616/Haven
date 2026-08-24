@@ -93,6 +93,35 @@ impl AgentLayer {
             self.events.emit_session_updated(session_id, "running").await;
         }
 
+        // R6: direct callers (tests / continue without claim) register the same
+        // run slot the dispatcher would, so rollback can cancel+join before
+        // restore. When the dispatcher already claimed, this is a no-op and
+        // `unmark_running` owns the slot. Released via `DirectRunGuard` on every
+        // exit path (including `?` / early return).
+        let owns_direct_slot = self.executor.begin_direct_run(session_id).await;
+        struct DirectRunGuard {
+            executor: std::sync::Arc<crate::session::SessionExecutor>,
+            session_id: String,
+            owns: bool,
+        }
+        impl Drop for DirectRunGuard {
+            fn drop(&mut self) {
+                if !self.owns {
+                    return;
+                }
+                let exec = self.executor.clone();
+                let sid = self.session_id.clone();
+                tokio::spawn(async move {
+                    exec.end_direct_run(&sid).await;
+                });
+            }
+        }
+        let _direct_guard = DirectRunGuard {
+            executor: self.executor.clone(),
+            session_id: session_id.to_string(),
+            owns: owns_direct_slot,
+        };
+
         let run_id = self.react_engine.next_run_id();
 
         let description = if session.summary.is_empty() {

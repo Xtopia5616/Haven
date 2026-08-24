@@ -772,6 +772,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -842,6 +843,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -915,6 +917,7 @@
             saved_at: Some(saved_at),
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -1001,6 +1004,7 @@
             saved_at: Some(saved_at),
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -1095,6 +1099,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -1174,6 +1179,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -1478,6 +1484,7 @@
             saved_at: None,
             awaiting_answer: None,
             awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -3884,6 +3891,7 @@
             saved_at: None,
             awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -3996,6 +4004,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4098,6 +4107,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4196,6 +4206,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4284,6 +4295,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4374,6 +4386,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4550,6 +4563,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4672,6 +4686,7 @@
             saved_at: None,
                    awaiting_answer: None,
                     awaiting_confirm: None,
+            run_budget: None,
             upgrade_tool_rounds: Vec::new(),
         };
         agent
@@ -4716,5 +4731,295 @@
                         .iter()
                         .any(|p| matches!(p, ContentPart::Text(t) if t == "do it"))),
             "'do it' must stay in the canonical"
+        );
+    }
+
+    /// R6 W8×O1: rollback while `PausedAwaitingAnswer` must clear the ask gate
+    /// (memory + snapshot) so the next user input is not mis-routed as an answer.
+    #[tokio::test]
+    async fn rollback_while_ask_wait_clears_awaiting_answer_gate() {
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Need a choice.".into()),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "tc1".into(),
+                    name: "ask".into(),
+                    arguments: serde_json::json!({"question": "A or B?"}),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector);
+        let session = executor.create_session("ask then rollback").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer)
+        );
+        assert!(
+            executor.get_awaiting_answer(&session.id).await.is_some(),
+            "ask gate must be set before rollback"
+        );
+
+        let state_json = agent.db.get_react_state(&session.id).unwrap().unwrap();
+        let snap = ReActSnapshot::from_json(&state_json).unwrap();
+        assert!(snap.awaiting_answer.is_some());
+        let target_step = snap.step_number.max(1);
+
+        agent
+            .rollback_session(&session.id, target_step, false, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        assert!(
+            executor.get_awaiting_answer(&session.id).await.is_none(),
+            "ask gate must be cleared after rollback"
+        );
+        let restored = ReActSnapshot::from_json(
+            &agent.db.get_react_state(&session.id).unwrap().unwrap(),
+        )
+        .unwrap();
+        assert!(
+            restored.awaiting_answer.is_none(),
+            "snapshot must not resurrect awaiting_answer"
+        );
+        assert!(restored.awaiting_confirm.is_none());
+        assert!(restored.run_budget.is_none());
+    }
+
+    /// R6 W7×O1: rollback during an in-flight tool batch cancels, joins, and
+    /// restores from the pre-batch branch point without dangling tool_calls.
+    #[tokio::test]
+    async fn rollback_mid_tool_batch_joins_and_restores() {
+        let tools = Arc::new(ToolsManager::new());
+        let timing = Arc::new(TimingState::new());
+        tools
+            .registry
+            .register(Arc::new(TimingTool::new("delay_a", timing.clone())) as ToolBox)
+            .await;
+        tools
+            .registry
+            .register(Arc::new(TimingTool::new("delay_b", timing.clone())) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Running both.".into()),
+                tool_calls: vec![
+                    CanonicalToolCall {
+                        id: "tc1".into(),
+                        name: "delay_a".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    CanonicalToolCall {
+                        id: "tc2".into(),
+                        name: "delay_b".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                ],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            }),
+            ScriptedResponse::Chunk(StreamChunk {
+                text: Some("Should not run after rollback.".into()),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "final".into(),
+                    name: "final_answer".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                finish_reason: Some(FinishReason::Stop),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            }),
+        ]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector.clone());
+        let session = executor.create_session("rollback mid batch").await.unwrap();
+
+        let run = tokio::spawn({
+            let agent = agent.clone();
+            let session_id = session.id.clone();
+            async move { agent.run_session_from_id(&session_id).await }
+        });
+        for _ in 0..50 {
+            if collector.has_action("delay_a") && collector.has_action("delay_b") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            collector.has_action("delay_a") && collector.has_action("delay_b"),
+            "batch must have started before rollback"
+        );
+
+        agent
+            .rollback_session(&session.id, 1, false, None)
+            .await
+            .unwrap();
+        let _ = run.await;
+
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        assert!(
+            !executor.is_run_in_flight(&session.id).await,
+            "run slot must be released after rollback join"
+        );
+        let restored = ReActSnapshot::from_json(
+            &agent.db.get_react_state(&session.id).unwrap().unwrap(),
+        )
+        .unwrap();
+        let (canonical, _) = restored.project();
+        let dangling = canonical.iter().any(|m| {
+            m.role == CanonicalRole::Assistant
+                && m.tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| !calls.is_empty())
+        });
+        assert!(
+            !dangling,
+            "restored canonical must not end with dangling tool_calls"
+        );
+    }
+
+    /// R4: pause snapshots record the live per-run budget for observability.
+    #[tokio::test]
+    async fn pause_snapshot_includes_run_budget() {
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Asking.".into()),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "tc1".into(),
+                    name: "ask".into(),
+                    arguments: serde_json::json!({"question": "Ready?"}),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector);
+        agent.set_max_steps(12);
+        let session = executor.create_session("budget on pause").await.unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer)
+        );
+        let snap = ReActSnapshot::from_json(
+            &agent.db.get_react_state(&session.id).unwrap().unwrap(),
+        )
+        .unwrap();
+        let budget = snap.run_budget.expect("run_budget written on pause");
+        assert_eq!(budget.max_steps, 12);
+        assert!(budget.effective_max >= budget.start_step);
+        assert_eq!(budget.start_step, 1);
+    }
+
+    /// R6: user-edit rollback from ask-wait must reach plain Paused so the
+    /// next send is not mis-routed as an ask answer (status dual-track gate).
+    #[tokio::test]
+    async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
+        let tools = Arc::new(ToolsManager::new());
+        tools
+            .registry
+            .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+            .await;
+        let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+            StreamChunk {
+                text: Some("Need a choice.".into()),
+                tool_calls: vec![CanonicalToolCall {
+                    id: "tc1".into(),
+                    name: "ask".into(),
+                    arguments: serde_json::json!({"question": "A or B?"}),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+                model: None,
+                reasoning: None,
+                web_search: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            },
+        )]));
+        let (agent, executor) = make_test_agent_with(mock, tools);
+        let collector = Arc::new(EventCollector::new());
+        agent.set_emitter(collector);
+        let session = executor
+            .create_session("ask then user-edit rollback")
+            .await
+            .unwrap();
+        // create_session does not persist a messages row; user-edit rollback
+        // requires an explicit target_message_id.
+        let user = agent
+            .db
+            .add_message(
+                &session.id,
+                "user",
+                "ask then user-edit rollback",
+                Some("text"),
+                None,
+            )
+            .unwrap();
+        agent.run_session_from_id(&session.id).await.unwrap();
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::PausedAwaitingAnswer)
+        );
+        let snap = ReActSnapshot::from_json(
+            &agent.db.get_react_state(&session.id).unwrap().unwrap(),
+        )
+        .unwrap();
+        let target_step = snap.step_number.max(1);
+        agent
+            .rollback_session(&session.id, target_step, true, Some(&user.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            executor.get_session_state(&session.id).await,
+            Some(SessionStatus::Paused),
+            "user-edit rollback must leave plain Paused, not PausedAwaitingAnswer"
+        );
+        assert!(
+            !executor.is_ask_gated(&session.id).await,
+            "ask gate must be fully clear after user-edit rollback"
         );
     }

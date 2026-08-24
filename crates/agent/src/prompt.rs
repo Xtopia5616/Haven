@@ -12,12 +12,14 @@ use haven_tools::ToolsManager;
 
 /// Builds the system prompt, including a **short** tools / skills / MCP index.
 ///
-/// Phase 7 / G7: this index is intentionally **not** the schema authority.
+/// Phase 7 / G7 + R3 (P3 freeze+declare): this index is intentionally **not**
+/// the schema authority and is **permanently frozen** for the open session.
 /// Full parameter schemas live in the per-step API `tools[]` list
 /// (`ReActEngine::build_tool_definitions_for_session`). After `load_skill` /
 /// `load_mcp`, new adapters appear in that API list on the next step; the
 /// prompt index stays the open-session snapshot (resume patches only the
 /// MEMORY fence via [`Self::patch_system_memory`], never the tools sections).
+/// `TOOL_USAGE_NOTES` declares the same contract to the model.
 pub struct SystemPromptBuilder {
     tools: Arc<ToolsManager>,
     db: Arc<Database>,

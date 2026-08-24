@@ -134,10 +134,11 @@ impl SessionExecutor {
 
     /// Add a steering item for the next step boundary (Phase 7 / D3).
     ///
-    /// Steering does **not** interrupt in-flight tools: the current tool batch
-    /// finishes (unless the session is cancelled), then the drained text is
-    /// injected before the next LLM call. There is no `CancelToolsOnSteer`
-    /// policy yet.
+    /// Steering does **not** interrupt in-flight tools (R1 product default):
+    /// the current tool batch finishes (unless the session is cancelled /
+    /// rolled back), then the drained text is injected before the next LLM
+    /// call. `CancelToolsOnSteer` remains an optional product knob and is
+    /// **not** implemented — document UI honestly: steer waits for the batch.
     pub async fn add_steering(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
         self.add_steering_with_attachments(session_id, text, &[], None)
             .await

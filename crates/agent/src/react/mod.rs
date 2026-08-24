@@ -156,6 +156,7 @@ pub(super) struct RunMsgIdGuard<'a> {
 impl Drop for RunMsgIdGuard<'_> {
     fn drop(&mut self) {
         self.engine.clear_msg_ids_for_session(&self.session_id);
+        self.engine.clear_run_budget(&self.session_id);
     }
 }
 
@@ -192,6 +193,9 @@ pub struct ReActEngine {
     hooks: LoopHooksHandle,
     /// Optional fact engine for compaction-summary extraction (M3).
     inference: Option<Arc<crate::InferenceEngine>>,
+    /// Live per-run budget mirrored into snapshots (R4). Cleared when the
+    /// run exits so a later pause/resume cannot leak a stale budget.
+    run_budgets: Mutex<HashMap<String, crate::types::RunBudget>>,
 }
 
 /// Per-step context shared by the ReAct-loop helpers (context injection,
@@ -273,7 +277,26 @@ impl ReActEngine {
             identity: IdentityMap::new(),
             hooks: default_hooks(),
             inference: None,
+            run_budgets: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Record the live run budget so mid-run / pause snapshots include it (R4).
+    pub(super) fn set_run_budget(&self, session_id: &str, budget: crate::types::RunBudget) {
+        self.run_budgets
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), budget);
+    }
+
+    /// Drop the live run budget when the loop exits (any path).
+    pub(super) fn clear_run_budget(&self, session_id: &str) {
+        self.run_budgets.lock().unwrap().remove(session_id);
+    }
+
+    /// Snapshot of the live run budget for `session_id`, if any.
+    pub(super) fn current_run_budget(&self, session_id: &str) -> Option<crate::types::RunBudget> {
+        self.run_budgets.lock().unwrap().get(session_id).cloned()
     }
 
     /// Replace loop hooks (production: `default_hooks_with_infer`; tests:
@@ -363,13 +386,13 @@ impl ReActEngine {
     /// plus per-session skill/MCP adapters registered via `load_skill`/`load_mcp`.
     /// Called each step so freshly loaded tools are immediately visible.
     ///
-    /// Phase 7 / G7 — **API `tools[]` is the schema authority.** The system
-    /// prompt only embeds a short built-in / installable-skill / MCP-server
-    /// **index** (names + one-line descriptions), frozen for the run by
-    /// `patch_canonical_memory` / `SystemPromptBuilder` (no full rebuild on
-    /// resume or mid-run `load_skill`). After `load_skill` / `load_mcp`, new
-    /// tool schemas appear here on the next step; they are **not** spliced
-    /// into the prompt index.
+    /// Phase 7 / G7 + R3 — **API `tools[]` is the schema authority.** The
+    /// system prompt only embeds a short built-in / installable-skill /
+    /// MCP-server **index** (names + one-line descriptions), permanently
+    /// frozen for the open session (`TOOL_USAGE_NOTES` declares this; resume
+    /// / mid-run `load_skill` never rebuild the index). After `load_skill` /
+    /// `load_mcp`, new tool schemas appear here on the next step; they are
+    /// **not** spliced into the prompt index.
     ///
     /// The result is cached per session against the ToolsManager catalog version:
     /// the definitions only change when a per-session registration

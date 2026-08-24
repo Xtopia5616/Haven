@@ -9,6 +9,7 @@
 use haven_common::types::{CanonicalRole, ContentPart};
 
 use crate::AgentLayer;
+use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
 use crate::session::SessionStatus;
 use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
 
@@ -22,6 +23,10 @@ impl AgentLayer {
     /// never processed into the ReAct context). The id must resolve to a
     /// persisted session message when `pause` is true — an unresolvable id is
     /// an error, not a content-based guess.
+    ///
+    /// R6: when a dispatcher run slot is held (claim→spawn / stream / tools /
+    /// pause unwind), cancel + join before restore so late writes cannot
+    /// overwrite the restored snapshot. Ask/confirm gates are always cleared.
     pub async fn rollback_session(
         &self,
         session_id: &str,
@@ -29,25 +34,43 @@ impl AgentLayer {
         pause: bool,
         target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        // If the session is currently Running, cancel it first so the ReAct loop
-        // exits cleanly. Otherwise the loop's in-memory events would diverge
-        // from the restored snapshot and overwrite it on the next save.
-        // The loop observes the token at every wait point (step top, LLM call,
-        // tool batch drain) and exits without touching status, so no Error
-        // marking is needed — setting Error here would only emit a spurious
-        // "session interrupted" error event and trigger terminal cleanup.
         let state = self.executor.get_session_state(session_id).await;
-        if state == Some(SessionStatus::Running) {
-            let cancel = self.executor.cancellation_token(session_id).await;
-            cancel.cancel();
-            // Join the dispatcher run: `await_run_finished` resolves when
-            // `unmark_running` releases the slot (oneshot, not a timed poll).
-            self.executor.await_run_finished(session_id).await;
+        let run_in_flight = self.executor.is_run_in_flight(session_id).await;
+        let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
+        match decide(window, LifecycleOp::BranchRollback, state.as_ref()) {
+            crate::lifecycle::LifecycleDecision::CancelThenAllow => {
+                // Cancel even when status already left Running (pause unwind /
+                // claim→spawn / direct run): the loop observes the token at
+                // wait points and exits without Error marking. Join via
+                // `await_run_finished` (oneshot on slot release) so
+                // exit_cancelled cannot overwrite the restored snapshot.
+                let cancel = self.executor.cancellation_token(session_id).await;
+                cancel.cancel();
+                self.executor.await_run_finished(session_id).await;
+            }
+            crate::lifecycle::LifecycleDecision::AwaitThenAllow => {
+                self.executor.await_run_finished(session_id).await;
+            }
+            crate::lifecycle::LifecycleDecision::Deny => {
+                return Err(anyhow::anyhow!(
+                    "rollback_session {}: denied in lifecycle window {:?}",
+                    session_id,
+                    window
+                ));
+            }
+            crate::lifecycle::LifecycleDecision::Allow
+            | crate::lifecycle::LifecycleDecision::NotApplicable => {}
         }
 
         // Background actions spawned before the rollback are stale relative to
         // the restored snapshot: kill them so their children cannot leak.
         self.executor.cancel_session_actions(session_id).await;
+
+        // R6: drop ask/confirm gates before restore so ingress cannot mis-route
+        // the next user input as an answer to a gate that no longer exists.
+        // The restored snapshot also clears `awaiting_*` before save below.
+        self.executor.clear_awaiting_answer(session_id).await;
+        self.executor.clear_awaiting_confirm(session_id).await;
 
         let state_json = match self.db.get_react_state(session_id)? {
             Some(s) => s,
@@ -309,6 +332,13 @@ impl AgentLayer {
             }
         }
 
+        // R6: branch restore must not resurrect ask/confirm gates from the
+        // parent snapshot (continue clears them; rollback previously did not).
+        snapshot.awaiting_answer = None;
+        snapshot.awaiting_confirm = None;
+        // Budget is per-run observability; a restored branch starts a new run.
+        snapshot.run_budget = None;
+
         let json = serde_json::to_string(&snapshot)?;
         self.db.save_react_state(session_id, &json)?;
 
@@ -357,21 +387,24 @@ impl AgentLayer {
         self.executor.ensure_session_loaded(session_id).await?;
 
         let state = self.executor.get_session_state(session_id).await;
-        // Accept Error (directly after interruption), Paused (after
-        // reopen_session during review) and PausedAwaitingAnswer (blocked on an
-        // `ask` whose answer the user chose to skip). All indicate the session
-        // can be retried from its saved snapshot.
-        if !matches!(
-            state,
-            Some(SessionStatus::Error)
-                | Some(SessionStatus::Paused)
-                 | Some(SessionStatus::PausedAwaitingAnswer)
-                 | Some(SessionStatus::PausedAwaitingConfirm)
-        ) {
-            return Err(anyhow::anyhow!(
-                "session is not in a retryable state (current: {:?})",
-                state
-            ));
+        // R6: lifecycle matrix owns continue allow/deny (Error|Paused* only).
+        // If pause already flipped status but the handler is still unwinding,
+        // join before truncating messages / flipping to Pending.
+        let run_in_flight = self.executor.is_run_in_flight(session_id).await;
+        let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
+        match decide(window, LifecycleOp::ErroredContinue, state.as_ref()) {
+            crate::lifecycle::LifecycleDecision::AwaitThenAllow
+            | crate::lifecycle::LifecycleDecision::CancelThenAllow => {
+                self.executor.await_run_finished(session_id).await;
+            }
+            crate::lifecycle::LifecycleDecision::Deny => {
+                return Err(anyhow::anyhow!(
+                    "session is not in a retryable state (current: {:?})",
+                    state
+                ));
+            }
+            crate::lifecycle::LifecycleDecision::Allow
+            | crate::lifecycle::LifecycleDecision::NotApplicable => {}
         }
 
         // Load the snapshot saved on error to find the branch point's

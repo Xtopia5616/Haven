@@ -6,6 +6,7 @@ mod compactor;
 mod event;
 mod inference;
 mod ingress;
+mod lifecycle;
 mod partial;
 mod prompt;
 mod react;
@@ -27,8 +28,8 @@ pub use session::{
     ToolExecution,
 };
 pub use types::{
-    Action, BranchPoint, ProcessResult, ReActRound, ReActSnapshot, ToolRecord, TranscriptRecord,
-    project_transcript, seed_events_from_canonical,
+    Action, BranchPoint, ProcessResult, ReActRound, ReActSnapshot, RunBudget, ToolRecord,
+    TranscriptRecord, project_transcript, seed_events_from_canonical,
 };
 
 use haven_common::config::ContextLimitsConfig;

@@ -7,7 +7,7 @@ use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::stream_step::SearchContextOutcome;
 use super::tool_batch::ToolBatchOutcome;
 use super::*;
-use crate::types::{BranchPoint, TranscriptRecord};
+use crate::types::{BranchPoint, RunBudget, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,12 +49,22 @@ impl ReActEngine {
         // always get fresh ids (and stale entries never accumulate). The
         // guard clears them again on EVERY exit path (early returns, `?`
         // propagation, cancels), so a session whose last run ends keeps no
-        // entries in the engine-wide map.
+        // entries in the engine-wide map. Also clears the R4 run_budget.
         self.clear_msg_ids_for_session(session_id);
         let _msg_id_guard = RunMsgIdGuard {
             engine: self,
             session_id: session_id.to_string(),
         };
+        // R4: mirror the effective per-run budget into mid-run / pause snapshots.
+        self.set_run_budget(
+            session_id,
+            RunBudget {
+                start_step,
+                effective_max,
+                max_steps,
+                session_max_steps: session_cap,
+            },
+        );
         tracing::info!(
             "ReAct loop start: session={} run_id={} start_step={} max_steps={} effective_max={}",
             session_id,

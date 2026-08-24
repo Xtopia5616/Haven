@@ -239,8 +239,10 @@ impl SessionExecutor {
             // The `running_sessions` check prevents double-dispatch during the
             // claim→spawn window. Pause is exit-based (Phase 2 / C1): a paused
             // handler returns, `unmark_running` drops the set entry, and only
-            // then can Pending be claimed again. Only the dispatcher inserts
-            // into this set, so the check-then-insert below cannot race.
+            // then can Pending be claimed again. Inserts come from this claim
+            // path **or** `begin_direct_run` (direct `run_session_from_id`);
+            // promotion to Running under the session lock happens before
+            // either insert, so check-then-insert cannot double-dispatch.
             if self.running_sessions.lock().await.contains(&session_id) {
                 continue;
             }
@@ -329,6 +331,65 @@ impl SessionExecutor {
     /// Return a list of currently running session IDs.
     pub async fn running_actions_list(&self) -> Vec<String> {
         self.running_sessions.lock().await.iter().cloned().collect()
+    }
+
+    /// True while the dispatcher still holds the run slot for `session_id`
+    /// (claim→spawn through `unmark_running`). Status may already be
+    /// `Paused*` during pause-write unwind — R6 rollback/continue must join
+    /// on this flag, not only on `SessionStatus::Running`.
+    pub async fn is_run_in_flight(&self, session_id: &str) -> bool {
+        self.running_sessions.lock().await.contains(session_id)
+    }
+
+    /// Register a run slot for a direct `run_session_from_id` caller (tests /
+    /// continue without dispatcher claim) so R6 rollback can
+    /// `await_run_finished` the same way as the claim→spawn path.
+    ///
+    /// Returns `true` when this call inserted the slot (caller must
+    /// [`Self::end_direct_run`]). Returns `false` when the dispatcher already
+    /// holds the id — do **not** end in that case (`unmark_running` owns it).
+    pub async fn begin_direct_run(&self, session_id: &str) -> bool {
+        let mut running = self.running_sessions.lock().await;
+        if running.contains(session_id) {
+            return false;
+        }
+        running.insert(session_id.to_string());
+        drop(running);
+        let (tx, rx) = oneshot::channel();
+        self.run_exit.lock().await.insert(
+            session_id.to_string(),
+            RunExitGate {
+                tx,
+                rx: Some(rx),
+            },
+        );
+        // Ensure a cancel token exists for rollback/end_session.
+        let mut cancels = self.session_cancellations.lock().await;
+        cancels
+            .entry(session_id.to_string())
+            .or_insert_with(CancellationToken::new);
+        true
+    }
+
+    /// Release a direct-run slot previously inserted by [`Self::begin_direct_run`]
+    /// (when that call returned `true`). Signals `run_exit` so rollback's
+    /// `await_run_finished` unblocks.
+    ///
+    /// Mirrors [`Self::unmark_running`]'s Pending re-queue: ask with a
+    /// pre-queued answer may flip to Pending while the handler is still
+    /// alive; `try_claim_pending` can skip the id while the slot is held, so
+    /// cleanup must re-enqueue + wake or the session strands forever.
+    pub async fn end_direct_run(&self, session_id: &str) {
+        self.cleanup_session_maps(session_id).await;
+        let entry = { self.sessions.lock().await.get(session_id).cloned() };
+        let Some(entry) = entry else {
+            return;
+        };
+        let status = entry.lock().await.status.clone();
+        if status == SessionStatus::Pending {
+            self.enqueue_pending(session_id).await;
+            self.wake_dispatcher();
+        }
     }
 
     /// Wait until the dispatcher run handler for `session_id` has fully

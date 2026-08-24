@@ -153,42 +153,36 @@ User/STT → AgentLayer (ingress/resume)
 
 ### 3.2 ReAct — 残留与产品未决
 
-#### R1. `CancelToolsOnSteer` `[可选]` · 原 D3 产品支线
+#### R1. `CancelToolsOnSteer` `[完成归档]` · 原 D3 产品支线
 
-- **问题**：steering 仅 step 边界注入；工具批默认跑完。
-- **方向**：可选策略：steer 时 cancel 在途工具；默认保持现状并文档诚实。
-- **位置**：`tool_batch` / `queues` / hooks
-- **风险**：中（UX / cancel 语义）
+- **落地（P3 / 产品默认）**：保持「steer 不打断在途工具批」；`queues::add_steering` 文档诚实写明无 `CancelToolsOnSteer`。可选旋钮仍未实现。
+- **位置**：`session/queues.rs`
 
 #### R2. 清除调度路径遗留 `await_confirmation` `[完成归档]` · Phase 5 尾巴
 
 - **落地**：删除 `await_confirmation` / `confirm_waits`；`execute_gated` 缺 `pre_confirmed` 时 fail-closed；`ScheduleMode::Tool` 经 `request_scheduled_confirm` 非阻塞排队，`resolve_confirmation` / `SCHEDULED_CONFIRM_TIMEOUT` 后续执行或跳过。
 - **位置**：`session/{mod,tool_runner}.rs` / `layer.rs`
 
-#### R3. Skill/MCP 加载后刷新 prompt 工具短索引 `[可选]` · 原 G7 反向选择
+#### R3. Skill/MCP 加载后刷新 prompt 工具短索引 `[完成归档]` · 原 G7 反向选择
 
-- **问题**：API `tools[]` 已权威；prompt 短索引开场冻结，可能与热更新不一致。
-- **方向**：`load_skill` / `load_mcp` 经 hook **只** patch tools 短索引 section（不动 MEMORY）；或明确永久冻结并在 prompt 声明「以 API 为准」。
-- **风险**：低–中（token）
+- **落地（P3 / freeze+declare）**：永久冻结开场短索引；`TOOL_USAGE_NOTES` 声明 API `tools[]` 为唯一 schema 权威；`load_skill` / `load_mcp` 仅在下一步 `tools[]` 可见，不 patch prompt。
+- **位置**：`common::prompts::TOOL_USAGE_NOTES` / `prompt.rs` / `react/mod.rs`
 
-#### R4. `run_budget` 写入 snapshot（可观测） `[可选]` · 原 J1 未落地字段
+#### R4. `run_budget` 写入 snapshot（可观测） `[完成归档]` · 原 J1 未落地字段
 
-- **问题**：`session_max_steps` 已有；per-run 再预算语义靠代码/文档，snapshot 无显式 `RunBudget` 字段。
-- **方向**：snapshot 记录本 run 的 `effective_max` / 起点，便于调试与 UI。
-- **风险**：低
+- **落地**：`ReActSnapshot.run_budget: Option<RunBudget>`（`start_step` / `effective_max` / `max_steps` / `session_max_steps`）；loop 开场写入，pause/mid-run snapshot 镜像；rollback 清掉。
+- **位置**：`types.rs` / `react/{loop,snapshot_io,mod}.rs`
 
-#### R5. 薄循环黄金单测加厚 `[可选]` · 原 I1 深化
+#### R5. 薄循环黄金单测加厚 `[完成归档]` · 原 I1 深化
 
-- **问题**：模块启发式单测已有；全栈集成仍重。
-- **方向**：`run_turn` + mock Stream/Tools/Hooks 覆盖 pause/ask/steer/cancel；集成只留少数黄金路径。
-- **风险**：低
+- **落地**：`lifecycle` 窗口矩阵单测；集成：`rollback_while_ask_wait_clears_awaiting_answer_gate`、`rollback_mid_tool_batch_joins_and_restores`、`pause_snapshot_includes_run_budget`；既有 ask-after-retry / cut-off / mid-batch cancel 作基线。
+- **位置**：`lifecycle.rs` / `integration_tests.rs`
 
-#### R6. 分支 / 重试跨生命周期窗口硬化 `[待办]` · 2026-08-24
+#### R6. 分支 / 重试跨生命周期窗口硬化 `[完成归档]` · 2026-08-24
 
-- **问题**：`BranchPoint` rollback 与 empty/cut-off / continue 重试在「工具批执行中」「模型流式输入/输出中」「claim→spawn」「ask/confirm 等待」「pause 写 snapshot 退出」等窗口期，易与 cancel、PartialStore fencing、action 清理、状态机 flip 交错，出现期待外的竞态或脏 transcript。
-- **方向**：枚举窗口 ×（branch rollback / 截断重试 / errored continue）矩阵；明确各窗口允许/拒绝/排队语义；补集成测（工具中 rollback、流式中 retry、ask 后 retry 已有可作基线）；文档诚实写清不可用窗口。
-- **位置**：`session/{status,dispatcher,tool_runner}.rs` / `react/` / `partial.rs` / `canonical.rs` / `resume.rs`
-- **风险**：高（状态机 + 持久化 + UI 气泡一致性）
+- **落地**：`lifecycle::{LifecycleWindow,LifecycleOp,decide}` 矩阵；rollback：凡 run slot 在握（含 claim→spawn / 直跑 `begin_direct_run`）→ cancel+`await_run_finished`；始终清 ask/confirm gate + snapshot `awaiting_*`；continue 在 unwind 中 `AwaitThenAllow`；直跑与 dispatcher 共用 run slot。
+- **不可用窗口（诚实）**：continue 于 `Running`/`Pending`/`Completed`；`Completed`+`pause=false` branch（状态机禁 `Completed→Pending`）；steer 不 cancel 工具（R1）。
+- **位置**：`lifecycle.rs` / `rollback.rs` / `session/dispatcher.rs` / `resume.rs`
 
 ---
 
@@ -267,12 +261,12 @@ User/STT → AgentLayer (ingress/resume)
 | M4 | 完成 | Memory | 抽取视野对齐 canonical |
 | M5 | 完成 | Memory | 万级 LSH ANN（≥4096） |
 | M6 | 完成 | Memory | 维护期 LLM 谓词合并 |
-| R1 | 可选 | ReAct | CancelToolsOnSteer |
+| R1 | 完成 | ReAct | 文档默认：steer 不 cancel 工具 |
 | R2 | 完成 | ReAct | 去掉遗留 await_confirmation |
-| R3 | 可选 | ReAct | skill/mcp 后 patch 工具短索引 |
-| R4 | 可选 | ReAct | snapshot 显式 RunBudget |
-| R5 | 可选 | ReAct | 薄循环单测加厚 |
-| R6 | 待办 | ReAct | 分支/重试跨生命周期窗口硬化 |
+| R3 | 完成 | ReAct | 永久冻结短索引 + prompt 声明 |
+| R4 | 完成 | ReAct | snapshot 显式 RunBudget |
+| R5 | 完成 | ReAct | 薄循环/窗口矩阵单测加厚 |
+| R6 | 完成 | ReAct | 分支/重试跨生命周期窗口硬化 |
 | X1 | 可选·史诗 | 跨切 | 记忆大表/图谱 |
 | X2 | 可选 | Memory | resume 全量重建 system |
 | X3 | 不推荐 | Resume | 内容比对去重 |
@@ -287,7 +281,7 @@ User/STT → AgentLayer (ingress/resume)
 | X12 | 可选·史诗 | 跨切 | DB↔events 统一日志 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **1**（R6）· 可选 **8** · 不推荐 **6** · 完成归档本轮 **8**（M1–M6、R2、X7）· 史诗计入可选。
+**计数**：待办 **0** · 可选 **8**（X 史诗/产品）· 不推荐 **6** · 完成归档本轮 **13**（M1–M6、R1–R6、X7）· 史诗计入可选。
 
 ---
 
@@ -308,12 +302,12 @@ P2  抽取与检索增强                     ✅ 2026-08-22
     M5  万级向量（LSH ANN，≥4096 激活）
     M6  谓词 LLM 合并（门闩 + demote/极性保留）
 
-P3  ReAct 产品旋钮 + 窗口期硬化
-    R6  分支/重试跨生命周期窗口（工具中 / 流式中 / claim→spawn / ask·confirm / pause）
-    R1  CancelToolsOnSteer（产品拍板后）
-    R3  prompt 工具索引策略二选一落地
+P3  ReAct 产品旋钮 + 窗口期硬化                     ✅ 2026-08-24
+    R6  分支/重试跨生命周期窗口（lifecycle 矩阵 + cancel/join + 清 gate）
+    R1  文档默认：steer 不 cancel 工具（无 CancelToolsOnSteer）
+    R3  freeze+declare：短索引永久冻结，API tools[] 权威
     R4  RunBudget 入 snapshot
-    R5  薄循环单测加厚（含 R6 窗口矩阵）
+    R5  窗口矩阵单测 + 工具中/ask 等待 rollback 集成测
 
 P4  史诗（单独立项）
     X12 DB↔events 统一
@@ -356,6 +350,7 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-24 | P3 落地：R6 lifecycle 窗口矩阵 + rollback/continue 硬化；R1 文档默认；R3 freeze+declare；R4 RunBudget；R5 窗口测 |
 | 2026-08-24 | 新增 R6：分支/重试在工具调用、模型流式、claim→spawn、ask/confirm、pause 等窗口期硬化 |
 | 2026-08-22 | P2 落地：M4 抽取视野含有界 assistant/tool；M5 embedding_lsh + ANN≥4096；M6 维护期 LLM 谓词合并 |
 | 2026-08-22 | P0+P1 落地：R2 非阻塞调度确认；X7 删除 Steps so far；M1 确认轮次抽取；M2 节流 MEMORY patch；M3 摘要→facts |

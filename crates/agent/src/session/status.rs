@@ -468,6 +468,10 @@ impl SessionExecutor {
             (Paused, Pending)
             | (PausedAwaitingAnswer, Pending)
             | (PausedAwaitingConfirm, Pending) => true,
+            // R6: user-edit rollback (`pause=true`) from an ask/confirm wait
+            // must leave the gated flavor for plain Paused so ingress no
+            // longer treats the next send as an answer.
+            (PausedAwaitingAnswer, Paused) | (PausedAwaitingConfirm, Paused) => true,
             // Re-pause with an answer / confirm requirement.
             (Paused, PausedAwaitingAnswer) | (Paused, PausedAwaitingConfirm) => true,
             // Phase 7 / E4: Paused* → Running is illegal. Only the dispatcher
