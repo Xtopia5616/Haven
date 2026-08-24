@@ -1973,4 +1973,18 @@ mod tests {
         assert!(body.reasoning.is_none());
         assert_eq!(body.temperature, Some(0.4));
     }
+
+    #[test]
+    fn usage_parses_input_tokens_details_cached_tokens() {
+        let json = r#"{"input_tokens":100,"output_tokens":5,"total_tokens":105,"input_tokens_details":{"cached_tokens":80}}"#;
+        let usage: ResponsesUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.cached_tokens(), 80);
+    }
+
+    #[test]
+    fn usage_parses_deepseek_prompt_cache_hit_tokens() {
+        let json = r#"{"input_tokens":100,"output_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":70}"#;
+        let usage: ResponsesUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.cached_tokens(), 70);
+    }
 }

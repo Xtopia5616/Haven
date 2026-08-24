@@ -673,6 +673,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resolve_cached_tokens_prefers_larger_of_nested_and_flat() {
+        assert_eq!(resolve_cached_tokens(None, 0), 0);
+        assert_eq!(resolve_cached_tokens(Some(80), 0), 80);
+        assert_eq!(resolve_cached_tokens(None, 70), 70);
+        assert_eq!(resolve_cached_tokens(Some(80), 70), 80);
+        assert_eq!(resolve_cached_tokens(Some(60), 90), 90);
+    }
+
+    #[test]
     fn stream_header_timeout_bounds_only_unconfigured_endpoints() {
         // Endpoint configured with a streaming timeout: the request carries
         // its own total-duration `.timeout()`, so no separate header bound.

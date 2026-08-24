@@ -98,8 +98,8 @@ impl ReActEngine {
         // Deliver completed background-action results as context. Kept
         // separate from user queues so action output is never mistaken for a
         // user reply. Payload is self-labelled (`[Background action result]…`);
-        // InjectSource is set for structured origin without Supplement/DB
-        // side effects (see UserInject ActionResult arm).
+        // InjectSource is ActionResult — UI gets Supplement (in-chat wake
+        // card) but no thought-step DB row (see UserInject ActionResult arm).
         for s in &action_results {
             self.push_user_context(
                 ctx,

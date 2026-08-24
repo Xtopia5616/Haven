@@ -166,7 +166,11 @@
 					? data
 					: null;
 			case 'actions':
-				return Array.isArray(data.actions) || typeof data.status === 'string' ? data : null;
+				return Array.isArray(data.actions) ||
+					typeof data.status === 'string' ||
+					data.operation === 'result_injected'
+					? data
+					: null;
 			case 'schedule':
 				return Array.isArray(data.scheduled_actions) || (data.id && data.mode) ? data : null;
 			case 'file':
@@ -987,7 +991,18 @@
 					<p class="tool-card-empty">没有可见窗口</p>
 				{/if}
 			{:else if toolName === 'actions'}
-				{#if Array.isArray(data.actions)}
+				{#if data.operation === 'result_injected'}
+					<div class="tool-card-count">
+						后台结果已回灌，正在继续{#if data.action_id}
+							· {data.action_id}{/if}
+					</div>
+					{#if data.status}
+						<div class="action-row">
+							<span class="action-id">{data.action_id || '—'}</span>
+							<span class="status-badge status-{data.status}">{data.status}</span>
+						</div>
+					{/if}
+				{:else if Array.isArray(data.actions)}
 					<div class="tool-card-count">{data.actions.length} 个后台任务</div>
 					{#if data.actions.length > 0}
 						<div class="tool-card-list">

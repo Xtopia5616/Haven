@@ -313,6 +313,16 @@
 		backgroundActionEntries.filter((j) => j.status === 'running'),
 	);
 	const runningActionCount = $derived(runningBackgroundActions.length);
+	// Active chat is plain-paused while its own background action(s) still run
+	// — titlebar should say "等待后台" so it does not look idle/ready.
+	let activeSessionId = $state(/** @type {string | null} */ (null));
+	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
+	const awaitingBackgroundActive = $derived.by(() => {
+		if (!activeSessionId) return false;
+		const st = sessions.find((t) => t.id === activeSessionId)?.status;
+		if (st !== 'paused') return false;
+		return runningBackgroundActions.some((a) => a.session_id === activeSessionId);
+	});
 
 	// Completed-task history (terminal background rows + fired scheduled rows),
 	// fetched whenever the panel opens so it reflects the persisted table.
@@ -899,6 +909,9 @@
 								? '等待响应'
 								: `${busySessions.size} 个会话运行中`}</span
 						>
+					{:else if awaitingBackgroundActive}
+						<StatusDot color="tertiary" animate={true} />
+						<span class="status-text">等待后台</span>
 					{:else if runningActionCount > 0}
 						<StatusDot color="success" animate={true} />
 						<span class="status-text">后台任务</span>
@@ -949,9 +962,14 @@
 													class:running={t.status === 'running'}
 													>{t.status === 'running'
 														? '运行中'
-														: isPausedStatus(t.status)
-															? '已暂停'
-															: '等待中'}</span
+														: t.status === 'paused' &&
+															  runningBackgroundActions.some(
+																	(a) => a.session_id === t.id,
+															  )
+															? '等待后台'
+															: isPausedStatus(t.status)
+																? '已暂停'
+																: '等待中'}</span
 												>
 											</div>
 											<div class="action-item-sub">

@@ -238,16 +238,20 @@ impl ReActEngine {
                 attachments,
                 message_id,
             } => {
+                // Always notify the UI so auto-wake from a background action is
+                // visible in-chat (not only a toast). ActionResult still skips
+                // the thought-step DB write — it is producer-labelled context,
+                // not a human steering/answer turn.
+                ctx.emitter
+                    .emit(crate::event::AgentEvent::Supplement {
+                        session_id: ctx.session_id.clone(),
+                        additional_context: text.clone(),
+                        step_number: ctx.step_num,
+                        run_id: ctx.run_id,
+                        inject_source: Some(source),
+                    })
+                    .await;
                 if source != InjectSource::ActionResult {
-                    ctx.emitter
-                        .emit(crate::event::AgentEvent::Supplement {
-                            session_id: ctx.session_id.clone(),
-                            additional_context: text.clone(),
-                            step_number: ctx.step_num,
-                            run_id: ctx.run_id,
-                            inject_source: Some(source),
-                        })
-                        .await;
                     let step_id = message_id
                         .map(String::from)
                         .unwrap_or_else(|| haven_common::types::new_id("step"));
@@ -427,6 +431,54 @@ mod tests {
         };
         assert_eq!(text, body);
         assert!(!text.starts_with("Background action result: "));
+    }
+
+    #[tokio::test]
+    async fn apply_action_result_emits_supplement_without_thought_step() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_transcript_action_supp_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let session = db.create_session("t", "hi").unwrap();
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let engine = test_engine(db.clone());
+        let mut ctx = step_ctx(&session.id);
+        ctx.emitter = Arc::new(RecordingEmitter {
+            events: recorded.clone(),
+        });
+        let mut canonical = Vec::new();
+        let mut events = Vec::new();
+        let body = "[Background action result]\naction_id: act-9\nstatus: completed\n\nok";
+        engine
+            .apply_transcript(
+                &ctx,
+                TranscriptEvent::UserInject {
+                    source: InjectSource::ActionResult,
+                    text: body.into(),
+                    attachments: vec![],
+                    message_id: None,
+                },
+                &mut events,
+                &mut canonical,
+            )
+            .await;
+        let emitted = recorded.lock().unwrap().clone();
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                crate::event::AgentEvent::Supplement {
+                    inject_source: Some(InjectSource::ActionResult),
+                    ..
+                }
+            )),
+            "ActionResult must emit Supplement for in-chat wake visibility"
+        );
+        let steps = db.get_session_steps(&session.id).unwrap_or_default();
+        assert!(
+            steps.is_empty(),
+            "ActionResult must not create a thought step"
+        );
     }
 
     #[tokio::test]

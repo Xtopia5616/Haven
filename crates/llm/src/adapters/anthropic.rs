@@ -1831,6 +1831,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_response_usage_includes_cache_tokens_in_total() {
+        let json = AnthropicResponse {
+            content: vec![AnthropicResponseBlock {
+                block_type: Some("text".into()),
+                text: Some("cached".into()),
+                thinking: None,
+                id: None,
+                name: None,
+                input: None,
+                signature: None,
+                data: None,
+            }],
+            stop_reason: Some("end_turn".into()),
+            usage: Some(AnthropicUsage {
+                input_tokens: 100,
+                output_tokens: 5,
+                cache_read_input_tokens: 400,
+                cache_creation_input_tokens: 50,
+            }),
+            model: Some("claude-3".into()),
+        };
+        let ep = ModelEndpoint {
+            model_name: "claude-3".into(),
+            ..Default::default()
+        };
+        let client = AnthropicAdapter::new(ep);
+        let resp = client
+            .parse_response(json, Some("claude-3".into()))
+            .unwrap();
+        assert_eq!(resp.usage.prompt_tokens, 100);
+        assert_eq!(resp.usage.cached_tokens, 400);
+        assert_eq!(resp.usage.cache_creation_tokens, 50);
+        assert_eq!(resp.usage.total_tokens, 555);
+    }
+
+    #[test]
     fn parse_response_tool_use_blocks() {
         let json = AnthropicResponse {
             content: vec![

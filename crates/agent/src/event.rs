@@ -107,7 +107,8 @@ pub enum AgentEvent {
         step_number: u32,
         run_id: u64,
         /// Structured inject origin so the UI can render peer mail as an
-        /// `agent` tool card while still marking human steering as received.
+        /// `agent` tool card, background-action auto-wake as an `actions`
+        /// card, and still mark human steering as received.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inject_source: Option<haven_common::types::InjectSource>,
     },

@@ -8,6 +8,7 @@ import {
 	finalizeStreamBlocks,
 	newToolMessage,
 	actionIdFromObservation,
+	parseActionResultInject,
 } from './streaming.ts';
 
 const STEP_ID = 'msg-thought-1';
@@ -613,5 +614,33 @@ describe('actionIdFromObservation', () => {
 		expect(actionIdFromObservation('plain text')).toBeNull();
 		expect(actionIdFromObservation('')).toBeNull();
 		expect(actionIdFromObservation(null)).toBeNull();
+	});
+});
+
+describe('parseActionResultInject', () => {
+	it('parses producer-labelled background action result injects', () => {
+		expect(
+			parseActionResultInject(
+				'[Background action result]\naction_id: act-9\nstatus: completed\n\nok',
+			),
+		).toEqual({
+			operation: 'result_injected',
+			action_id: 'act-9',
+			status: 'completed',
+			auto: true,
+		});
+	});
+	it('defaults status and tolerates missing action_id', () => {
+		expect(parseActionResultInject('[Background action result]\n\njust output')).toEqual({
+			operation: 'result_injected',
+			action_id: null,
+			status: 'completed',
+			auto: true,
+		});
+	});
+	it('returns null for unrelated text', () => {
+		expect(parseActionResultInject('hello')).toBeNull();
+		expect(parseActionResultInject('')).toBeNull();
+		expect(parseActionResultInject(null)).toBeNull();
 	});
 });

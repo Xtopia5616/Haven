@@ -29,6 +29,7 @@
 		finalizeStreamBlocks,
 		newToolMessage,
 		actionIdFromObservation,
+		parseActionResultInject,
 	} from '$lib/streaming.ts';
 	import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
@@ -65,6 +66,7 @@
 		clearToolOutputPreview,
 		appendSessionLlmUsage,
 		finalizeBackgroundActionMessages,
+		actionStore,
 		DRAFT_KEY,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
@@ -282,6 +284,37 @@
 		sessions.filter((t) => isBusyStatus(t.status) || isPausedStatus(t.status)),
 	);
 	const showSessionMenu = $derived(menuSessions.length >= 2);
+
+	// Live action registry (for "waiting on background" banner). Synced from
+	// the global actionStore kept by +layout.
+	let actionsById = $state(/** @type {Record<string, any>} */ ({}));
+	$effect(() => syncStore(actionStore, (v) => (actionsById = v || {})));
+	const activeSessionStatus = $derived(
+		activeSessionId
+			? sessions.find((t) => t.id === activeSessionId)?.status
+			: undefined,
+	);
+	/** Plain paused (not ask/confirm) with still-running background actions for this session. */
+	const awaitingBackground = $derived.by(() => {
+		if (!activeSessionId || activeSessionStatus !== 'paused') return false;
+		return Object.values(actionsById).some(
+			(a) =>
+				a &&
+				a.kind !== 'scheduled' &&
+				a.status === 'running' &&
+				a.session_id === activeSessionId,
+		);
+	});
+	const awaitingBackgroundCount = $derived.by(() => {
+		if (!activeSessionId || activeSessionStatus !== 'paused') return 0;
+		return Object.values(actionsById).filter(
+			(a) =>
+				a &&
+				a.kind !== 'scheduled' &&
+				a.status === 'running' &&
+				a.session_id === activeSessionId,
+		).length;
+	});
 
 	/**
 	 * True when cache tokens are billed/counted outside `prompt` (Anthropic).
@@ -1642,6 +1675,9 @@
 					// Human steering/follow-up: mark the matching user bubble as
 					// received. Cross-session peer mail: insert an `agent` tool
 					// card in-chat (no separate tab) so collaboration is visible.
+					// Background action auto-wake: insert a compact `actions`
+					// card so the conversation shows the resume bridge (not
+					// only a toast / sudden model restart).
 					const data = event.payload || {};
 					const tid = data.session_id;
 					const ctx = (data.additional_context || '').trim();
@@ -1664,6 +1700,33 @@
 									id: cardId,
 									stepNumber: data.step_number ?? 0,
 									toolName: 'agent',
+									content,
+									time: new Date().toLocaleTimeString(),
+								}),
+							];
+						});
+						return;
+					}
+					if (source === 'action_result') {
+						const parsed = parseActionResultInject(ctx);
+						const actionId = parsed?.action_id || 'unknown';
+						const cardId = `action-result-${actionId}-${data.step_number ?? 0}-${data.run_id ?? 0}`;
+						const content = JSON.stringify(
+							parsed || {
+								operation: 'result_injected',
+								action_id: actionId,
+								status: 'completed',
+								auto: true,
+							},
+						);
+						updateSessionMessages(tid, (m) => {
+							if (m.some((x) => x.id === cardId)) return m;
+							return [
+								...m,
+								newToolMessage({
+									id: cardId,
+									stepNumber: data.step_number ?? 0,
+									toolName: 'actions',
 									content,
 									time: new Date().toLocaleTimeString(),
 								}),
@@ -2385,6 +2448,14 @@
 					{/each}
 				</div>
 			{/if}
+			{#if awaitingBackground && !activeSessionError}
+				<div class="awaiting-bg-banner" in:fly={{ y: 8, duration: 300 }} role="status">
+					<span class="awaiting-bg-dot" aria-hidden="true"></span>
+					<span class="awaiting-bg-text">
+						等待后台任务结果{#if awaitingBackgroundCount > 1}（{awaitingBackgroundCount}）{/if}，完成后将自动继续
+					</span>
+				</div>
+			{/if}
 			{#if activeSessionError}
 				<div class="continue-banner" in:fly={{ y: 8, duration: 300 }}>
 					<button
@@ -2506,9 +2577,18 @@
 									>
 										{t.status === 'running'
 											? '运行中'
-											: isPausedStatus(t.status)
-												? '已暂停'
-												: '等待中'}
+											: t.status === 'paused' &&
+												  Object.values(actionsById).some(
+														(a) =>
+															a &&
+															a.kind !== 'scheduled' &&
+															a.status === 'running' &&
+															a.session_id === t.id,
+												  )
+												? '等待后台'
+												: isPausedStatus(t.status)
+													? '已暂停'
+													: '等待中'}
 									</span>
 								</button>
 							{/each}
@@ -3077,5 +3157,39 @@
 	.continue-btn {
 		gap: var(--md-sys-space-xs);
 		font-size: 13px;
+	}
+
+	.awaiting-bg-banner {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		max-width: clamp(600px, 92vw, 800px);
+		margin: var(--md-sys-space-sm) auto 0;
+		width: 100%;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: 13px;
+	}
+	.awaiting-bg-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--md-sys-color-tertiary, #7c9cff);
+		flex-shrink: 0;
+		animation: awaiting-bg-pulse 1.2s ease-in-out infinite;
+	}
+	.awaiting-bg-text {
+		line-height: 1.4;
+	}
+	@keyframes awaiting-bg-pulse {
+		0%,
+		100% {
+			opacity: 0.35;
+			transform: scale(0.9);
+		}
+		50% {
+			opacity: 1;
+			transform: scale(1);
+		}
 	}
 </style>

@@ -132,6 +132,29 @@ export function actionIdFromObservation(observation: string | undefined | null):
 	return null;
 }
 
+/**
+ * Parse a producer-labelled `[Background action result]` inject body into a
+ * compact card payload for the chat UI (auto-wake bridge). Returns null when
+ * the text is not an action-result inject.
+ */
+export function parseActionResultInject(text: string | undefined | null): {
+	action_id: string | null;
+	status: string;
+	operation: 'result_injected';
+	auto: true;
+} | null {
+	if (!text || !text.startsWith('[Background action result]')) return null;
+	let actionId: string | null = null;
+	let status = 'completed';
+	for (const line of text.split('\n')) {
+		const mId = /^action_id:\s*(.+)\s*$/.exec(line);
+		if (mId) actionId = mId[1].trim();
+		const mSt = /^status:\s*(.+)\s*$/.exec(line);
+		if (mSt) status = mSt[1].trim();
+	}
+	return { operation: 'result_injected', action_id: actionId, status, auto: true };
+}
+
 // Streaming blocks always live at the tail of the conversation (or just in
 // front of the step's own thought message), so scanning backwards finds a
 // unique message id in O(tail-distance) instead of O(whole list) — a full
