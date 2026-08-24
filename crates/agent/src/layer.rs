@@ -424,14 +424,14 @@ impl AgentLayer {
                     }
                     agent.executor.add_action_completion(&tid, &msg).await;
                     let state = agent.executor.get_session_state(&tid).await;
-                    // Awaiting-answer pauses must not be auto-woken by
+                    // Awaiting-answer/confirm pauses must not be auto-woken by
                     // background-action completions (the model is blocked on the
-                    // user, not on action results). Check both DB/status flavor
-                    // and the C5 in-memory/snapshot flag (resume may restore
-                    // the flag before status is upgraded from legacy "paused").
-                    let awaiting = matches!(&state, Some(s) if s.blocks_auto_wake())
-                        || agent.executor.get_awaiting_answer(&tid).await.is_some()
-                        || agent.executor.get_awaiting_confirm(&tid).await.is_some();
+                    // user, not on action results). Dual-track gate covers status
+                    // flavor and the in-memory/snapshot flag.
+                    let awaiting = agent
+                        .executor
+                        .blocks_auto_wake_with(&tid, state.as_ref())
+                        .await;
                     if state == Some(SessionStatus::Paused) && !awaiting {
                         if let Err(e) = agent
                             .set_session_status(&tid, SessionStatus::Pending)
@@ -543,14 +543,14 @@ impl AgentLayer {
                                 )
                                 .await;
                             match gate {
-                                haven_tools::ConfirmationResult::Blocked => {
+                                haven_tools::ConfirmationResult::Blocked { reason } => {
                                     agent
                                         .events
                                         .emit_notification(
                                             &fired.title,
                                             &format!(
                                                 "Scheduled tool '{tool_name}' was NOT executed: \
-                                                 blocked by the security policy."
+                                                 blocked by the security policy ({reason})."
                                             ),
                                         )
                                         .await;
@@ -858,12 +858,13 @@ impl AgentLayer {
     /// in that order — the message (and its attachments) must be on disk
     /// BEFORE the session is registered with the executor, otherwise the
     /// dispatcher could start the ReAct loop and miss the first user turn.
+    /// Returns `(session, first_user_message_id)`.
     pub(crate) async fn create_session_with_first_message(
         &self,
         input: &str,
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
-    ) -> anyhow::Result<crate::session::SessionInfo> {
+    ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
         self.create_session_with_first_message_typed(input, attachments, voice, "text", true)
             .await
     }
@@ -872,6 +873,7 @@ impl AgentLayer {
     /// `message_type` (e.g. `peer_kickoff` for multi-agent spawn briefs).
     /// When `dispatch` is false, the session is loaded but left non-Pending so
     /// the caller can register inbox parent links before waking the dispatcher.
+    /// Returns `(session, first_user_message_id)`.
     pub(crate) async fn create_session_with_first_message_typed(
         &self,
         input: &str,
@@ -879,12 +881,12 @@ impl AgentLayer {
         voice: bool,
         message_type: &str,
         dispatch: bool,
-    ) -> anyhow::Result<crate::session::SessionInfo> {
+    ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
         let record = self.db.create_session(input, input)?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
         // the session row again so no input-less session ever gets dispatched.
-        if let Err(e) = self
+        let first_msg = match self
             .persist_message_parts(
                 &record.id,
                 "user",
@@ -895,9 +897,12 @@ impl AgentLayer {
             )
             .await
         {
-            let _ = self.db.delete_session(&record.id);
-            return Err(e);
-        }
+            Ok(msg) => msg,
+            Err(e) => {
+                let _ = self.db.delete_session(&record.id);
+                return Err(e);
+            }
+        };
         self.executor.ensure_session_loaded(&record.id).await?;
         if dispatch {
             // Wake the dispatcher now that the message is persisted.
@@ -910,7 +915,7 @@ impl AgentLayer {
             .get_session(&record.id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not registered", record.id))?;
-        Ok(session)
+        Ok((session, first_msg.id))
     }
 
     /// Spawn a peer agent session for multi-agent collaboration (Plan A).
@@ -957,7 +962,7 @@ impl AgentLayer {
         let queued = running >= max_concurrent;
         // Create without dispatch so parent/child inbox links exist before the
         // child can be claimed (cascade end must see `parent` immediately).
-        let mut session = self
+        let (mut session, _first_msg_id) = self
             .create_session_with_first_message_typed(&brief, &[], false, "peer_kickoff", false)
             .await?;
         if let Some(title) = req.title.as_deref().filter(|t| !t.is_empty()) {

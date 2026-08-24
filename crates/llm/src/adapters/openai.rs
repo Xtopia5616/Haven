@@ -164,6 +164,12 @@ struct OpenAiFunctionOut {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u32,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct OpenAiUsage {
     #[serde(default)]
     prompt_tokens: u32,
@@ -171,6 +177,21 @@ struct OpenAiUsage {
     completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+    /// OpenAI / compatible: nested cache hit count.
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+    /// DeepSeek Chat Completions flat alias for cache hits.
+    #[serde(default)]
+    prompt_cache_hit_tokens: u32,
+}
+
+impl OpenAiUsage {
+    fn cached_tokens(&self) -> u32 {
+        super::resolve_cached_tokens(
+            self.prompt_tokens_details.as_ref().map(|d| d.cached_tokens),
+            self.prompt_cache_hit_tokens,
+        )
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -578,6 +599,8 @@ impl OpenAiAdapter {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens(),
+                cache_creation_tokens: 0,
                 model_name: model.clone(),
                 cost: None,
             })
@@ -838,29 +861,36 @@ impl OpenAiAdapter {
                 let data = match state.rx.recv().await {
                     Some(d) => d,
                     None => {
-                        let chunk =
-                            if !state.has_finish_reason && !state.accumulated_text.is_empty() {
-                                Err(LlmError::StreamTruncated)
-                            } else {
-                                Ok(StreamChunk {
-                                    text: None,
-                                    tool_calls: std::mem::take(&mut state.tool_calls_acc)
-                                        .into_iter()
-                                        .map(|(id, name, args)| CanonicalToolCall {
-                                            id,
-                                            name,
-                                            arguments: CanonicalToolCall::from_wire_args(&args),
-                                        })
-                                        .collect(),
-                                    finish_reason: None,
-                                    usage: state.usage.take(),
-                                    model: state.last_model.clone(),
-                                    reasoning: None,
-                                    web_search: None,
-                                    web_search_calls: std::mem::take(&mut state.web_search_acc),
-                                    thinking_blocks: Vec::new(),
-                                })
-                            };
+                        // Interrupted mid-tool-call (no finish_reason): empty
+                        // args after a name, structural-only repair, or
+                        // mid-string JSON must not flush as executable calls.
+                        let unfinished_tools = state.tool_calls_acc.iter().any(|(_, name, args)| {
+                            CanonicalToolCall::stream_tool_args_unfinished(name, args)
+                        });
+                        let chunk = if !state.has_finish_reason
+                            && (!state.accumulated_text.is_empty() || unfinished_tools)
+                        {
+                            Err(LlmError::StreamTruncated)
+                        } else {
+                            Ok(StreamChunk {
+                                text: None,
+                                tool_calls: std::mem::take(&mut state.tool_calls_acc)
+                                    .into_iter()
+                                    .map(|(id, name, args)| CanonicalToolCall {
+                                        id,
+                                        name,
+                                        arguments: CanonicalToolCall::from_wire_args(&args),
+                                    })
+                                    .collect(),
+                                finish_reason: None,
+                                usage: state.usage.take(),
+                                model: state.last_model.clone(),
+                                reasoning: None,
+                                web_search: None,
+                                web_search_calls: std::mem::take(&mut state.web_search_acc),
+                                thinking_blocks: Vec::new(),
+                            })
+                        };
                         state.done = true;
                         return Some((chunk, state));
                     }
@@ -876,6 +906,8 @@ impl OpenAiAdapter {
                                 prompt_tokens: u.prompt_tokens,
                                 completion_tokens: u.completion_tokens,
                                 total_tokens: u.total_tokens,
+                                cached_tokens: u.cached_tokens(),
+                                cache_creation_tokens: 0,
                                 model_name: state.last_model.clone(),
                                 cost: None,
                             });
@@ -1121,6 +1153,8 @@ impl LlmClient for OpenAiAdapter {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.completion_tokens,
                 total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens(),
+                cache_creation_tokens: 0,
                 model_name: model.clone(),
                 cost: None,
             })
@@ -2052,6 +2086,21 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 10);
         assert_eq!(usage.completion_tokens, 5);
         assert_eq!(usage.total_tokens, 15);
+        assert_eq!(usage.cached_tokens(), 0);
+    }
+
+    #[test]
+    fn usage_parses_prompt_tokens_details_cached_tokens() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.cached_tokens(), 80);
+    }
+
+    #[test]
+    fn usage_parses_deepseek_prompt_cache_hit_tokens() {
+        let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":70}"#;
+        let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.cached_tokens(), 70);
     }
 
     #[test]

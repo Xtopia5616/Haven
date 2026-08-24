@@ -100,24 +100,30 @@ mod imp {
             _ => "unknown",
         };
 
-        let lifetime_min = if status.BatteryLifeTime != 0xFFFFFFFF {
+        // SYSTEM_POWER_STATUS battery life fields are seconds (0xFFFFFFFF = unknown).
+        let lifetime_secs = if status.BatteryLifeTime != 0xFFFFFFFF {
             Some(status.BatteryLifeTime)
         } else {
             None
         };
 
-        let full_lifetime_min = if status.BatteryFullLifeTime != 0xFFFFFFFF {
+        let full_lifetime_secs = if status.BatteryFullLifeTime != 0xFFFFFFFF {
             Some(status.BatteryFullLifeTime)
         } else {
             None
         };
 
+        let battery_saver = (status.SystemStatusFlag & 1) != 0;
+        let no_battery = (status.BatteryFlag & 128) != 0;
+
         Ok(serde_json::json!({
             "ac_power": ac_line,
             "battery_percent": battery_pct,
             "battery_status": battery_flag_str,
-            "battery_life_remaining_minutes": lifetime_min,
-            "battery_full_lifetime_minutes": full_lifetime_min,
+            "battery_present": !no_battery,
+            "battery_saver": battery_saver,
+            "battery_life_remaining_secs": lifetime_secs,
+            "battery_full_lifetime_secs": full_lifetime_secs,
         }))
     }
 

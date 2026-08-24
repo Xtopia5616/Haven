@@ -61,14 +61,27 @@
 		}
 		try {
 			const { invoke } = await import('$lib/tauri.ts');
+			// Do not bypass SafetyGateway — preview must respect the same
+			// confirmation / permanent-deny rules as agent-invoked skills.
 			const result = await invoke('execute_skill', {
 				name: skill.name,
 				params,
-				confirmed: true,
 			});
 			previewResult = JSON.stringify(result, null, 2);
 		} catch (err) {
-			previewResult = `Error: ${err}`;
+			const msg = String(err ?? '');
+			try {
+				const parsed = JSON.parse(msg);
+				if (parsed?.requires_confirmation) {
+					previewResult =
+						`需要确认才能执行（风险: ${parsed.risk_level || 'high'}）。` +
+						`请在对话中由 Agent 调用该技能，或在设置里将该技能加入永久允许。`;
+				} else {
+					previewResult = `Error: ${msg}`;
+				}
+			} catch {
+				previewResult = `Error: ${msg}`;
+			}
 		}
 		running = false;
 	}

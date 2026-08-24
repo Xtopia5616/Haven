@@ -275,7 +275,7 @@
 	];
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let memoryMaintenance = $state({ running: false, lastCount: null });
-	let security = $state({ confirmation_mode: 'always', min_risk_level: 'medium' });
+	let security = $state({ confirmation_mode: 'ask', min_risk_level: 'medium', permissions: /** @type {Array<{key: string, effect: string}>} */ ([]) });
 
 	let stt = $state({
 		provider: 'llm',
@@ -449,6 +449,7 @@
 			security: {
 				confirmation_mode: security.confirmation_mode,
 				min_risk_level: security.min_risk_level,
+				permissions: [],
 			},
 			context_limits: contextLimits,
 			media: {
@@ -565,9 +566,13 @@
 			if (snap.session) session = { ...session, ...snap.session };
 			if (snap.memory) memory = { ...memory, ...snap.memory };
 			if (snap.security) {
+				const mode = snap.security.confirmation_mode || security.confirmation_mode;
 				security = {
-					confirmation_mode: snap.security.confirmation_mode || security.confirmation_mode,
+					confirmation_mode: mode === 'always' ? 'ask' : mode,
 					min_risk_level: snap.security.min_risk_level || security.min_risk_level,
+					permissions: Array.isArray(snap.security.permissions)
+						? snap.security.permissions
+						: security.permissions,
 				};
 			}
 			if (snap.context_limits) contextLimits = { ...contextLimits, ...snap.context_limits };
@@ -780,10 +785,16 @@
 				session = settings.session || session;
 				contextLimits = settings.context_limits || contextLimits;
 				memory = settings.memory || memory;
-				security = {
-					confirmation_mode: settings.security?.confirmation_mode || 'always',
-					min_risk_level: settings.security?.min_risk_level || 'medium',
-				};
+				{
+					const mode = settings.security?.confirmation_mode || 'ask';
+					security = {
+						confirmation_mode: mode === 'always' ? 'ask' : mode,
+						min_risk_level: settings.security?.min_risk_level || 'medium',
+						permissions: Array.isArray(settings.security?.permissions)
+							? settings.security.permissions
+							: [],
+					};
+				}
 				const media = settings.media || {};
 				audio = media.audio || audio;
 				stt = {
@@ -899,7 +910,10 @@
 					security: {
 						confirmation_mode: security.confirmation_mode,
 						min_risk_level: security.min_risk_level,
-						encrypt_sensitive: true,
+						// permissions / encrypt_sensitive are owned by
+						// resolve_confirmation / revoke_permission / disk —
+						// loader preserves them on save.
+						permissions: [],
 					},
 					// Full object (loaded state kept intact) so fields the UI does
 					// not render are preserved; backend applies it wholesale.
@@ -1159,6 +1173,14 @@
 	<div class="section">
 		<h2>Security</h2>
 		<div class="form-row">
+			<label for="security-mode">Confirmation Mode</label>
+			<MaterialSelect id="security-mode" value={security.confirmation_mode} options={[
+				{ value: 'ask', label: 'Ask (by risk threshold)' },
+				{ value: 'paranoid', label: 'Paranoid (all non-safe)' },
+				{ value: 'autopilot', label: 'Autopilot (never ask)' },
+			]} onChange={(/** @type {string} */ v) => { security.confirmation_mode = v; }} />
+		</div>
+		<div class="form-row">
 			<label for="security-min-level">Minimum Confirmation Level</label>
 			<MaterialSelect id="security-min-level" value={security.min_risk_level} options={[
 				{ value: 'safe', label: 'None (all auto-approved)' },
@@ -1168,7 +1190,32 @@
 				{ value: 'critical', label: 'Critical only' },
 			]} onChange={(/** @type {string} */ v) => { security.min_risk_level = v; }} />
 		</div>
-		<p class="model-hint">Operations at or above this risk level will require your confirmation. Low-level operations (file read, window list) will auto-approve.</p>
+		<p class="model-hint">仅 Ask 模式使用风险阈值。永久允许/拒绝优先于阈值；禁用操作与路径沙箱始终拦截。Autopilot 仍会执行永久拒绝。</p>
+		{#if security.permissions.length > 0}
+			<div class="perm-list">
+				<div class="perm-list-title">永久权限</div>
+				{#each security.permissions as perm (perm.key)}
+					<div class="perm-row">
+						<code class="perm-key">{perm.key}</code>
+						<span class="perm-effect" class:deny={perm.effect === 'deny'}>{perm.effect === 'deny' ? '拒绝' : '允许'}</span>
+						<button
+							type="button"
+							class="perm-revoke"
+							onclick={async () => {
+								try {
+									await invoke('revoke_permission', { key: perm.key });
+									security.permissions = security.permissions.filter((p) => p.key !== perm.key);
+								} catch (e) {
+									addNotification(`撤销权限失败: ${e}`, 'error', 3000);
+								}
+							}}
+						>撤销</button>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="model-hint">暂无永久权限。确认弹窗中选「始终允许 / 始终拒绝」后会出现在这里。</p>
+		{/if}
 	</div>
 
 	<div class="section notification-section">
@@ -1450,6 +1497,50 @@
 	}
 	.llm-head h2 { margin: 0; }
 	.model-hint { font-size: 11px; color: var(--md-sys-color-on-surface-variant); margin-top: calc(-1 * var(--md-sys-space-sm)); margin-bottom: var(--md-sys-space-md); }
+	.perm-list {
+		margin-top: var(--md-sys-space-md);
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xs);
+	}
+	.perm-list-title {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--md-sys-color-on-surface);
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.perm-row {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-extra-small);
+		background: var(--md-sys-color-surface-container-low, rgba(0, 0, 0, 0.03));
+	}
+	.perm-key {
+		flex: 1;
+		font-size: 12px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.perm-effect {
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--md-sys-color-primary);
+		text-transform: capitalize;
+	}
+	.perm-effect.deny { color: var(--md-sys-color-error); }
+	.perm-revoke {
+		border: none;
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		font: inherit;
+		font-size: 12px;
+		cursor: pointer;
+		padding: 2px 6px;
+	}
+	.perm-revoke:hover { color: var(--md-sys-color-error); }
 	.shell-warning {
 		margin-top: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);

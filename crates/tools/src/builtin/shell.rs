@@ -106,13 +106,14 @@ impl ShellTool {
                 .actions
                 .spawn_shell(&cmd, &shell, max_chars, cwd)
                 .await?;
-            return Ok(ToolResult::ok(serde_json::json!({
-                "background": true,
-                "action_id": action_id,
-                "shell": shell,
-                "status": "running",
-                "hint": "The command is running in the background. Its output is pushed back to you automatically when it finishes — no need to poll. Use the actions tool to see all background actions at once, or the status tool with the action_id to inspect this one.",
-            })));
+            let mut body = haven_common::tools::background_wait_object(
+                "Background action started. If you have no independent foreground work left, END YOUR TURN now with a brief status for the user — do not poll with actions/status. You will be auto-woken with this action's output when it finishes.",
+            );
+            body.insert("background".into(), serde_json::json!(true));
+            body.insert("action_id".into(), serde_json::json!(action_id));
+            body.insert("shell".into(), serde_json::json!(shell));
+            body.insert("status".into(), serde_json::json!("running"));
+            return Ok(ToolResult::ok(serde_json::Value::Object(body)));
         }
 
         let mut std_cmd = bg::build_shell_command_silent(&shell, &cmd);
@@ -196,19 +197,19 @@ impl ShellTool {
             anyhow::bail!("cancelled");
         }
 
-        let mut combined = String::new();
+        let mut raw_combined = String::new();
         if !stdout.is_empty() {
-            combined.push_str(&stdout);
+            raw_combined.push_str(&stdout);
         }
         if !stderr.is_empty() {
-            if !combined.is_empty() {
-                combined.push('\n');
+            if !raw_combined.is_empty() {
+                raw_combined.push('\n');
             }
-            combined.push_str(&stderr);
+            raw_combined.push_str(&stderr);
         }
         // Strip PowerShell's NativeCommandError / CLIXML formatting noise so
         // the reported text carries the real output, not the wrapper.
-        combined = bg::sanitize_shell_output(&combined, &shell);
+        let combined = bg::sanitize_shell_output(&raw_combined, &shell);
 
         let (text, _) = haven_common::encoding::truncate_output(&combined, max_chars);
         let truncated = stdout_overflow || stderr_overflow;
@@ -223,23 +224,26 @@ impl ShellTool {
         if status.success() {
             Ok(ToolResult::ok(output))
         } else {
-            // Non-zero exit: report the failure. When the command produced no
-            // stderr, fall back to the combined output so the result is never
-            // an empty observation (the model would see a silent tool call).
-            // The error text is condensed (progress bars dropped, tail kept)
-            // so a multi-KB progress dump cannot hide the real error, and the
-            // exit code is stated up front. The full output is also written
-            // to a log file and the path attached, so the root cause is
-            // recoverable even when the condensed tail misses it. Finally a
-            // Windows-trap hint is appended when the error matches a common
-            // PowerShell/cmd pitfall (aliases, execution policy, `&&`, …).
-            let err_text = if stderr.trim().is_empty() {
-                text.clone()
+            // Non-zero exit: report the failure. Prefer sanitized stderr; if
+            // Progress-only CLIXML sanitized to empty, fall back to combined
+            // text, then raw stderr so a wiped truncated Error CLIXML is not
+            // a silent failure. The full output log is always the pre-sanitize
+            // capture so the root cause stays recoverable. Error text is
+            // condensed (progress bars dropped, tail kept) and a Windows-trap
+            // hint is appended when it matches a common pitfall.
+            let sanitized_stderr = bg::sanitize_shell_output(&stderr, &shell);
+            let err_source = if !sanitized_stderr.trim().is_empty() {
+                sanitized_stderr.as_str()
+            } else if !text.trim().is_empty() {
+                text.as_str()
+            } else if bg::is_progress_clixml(&stderr) {
+                // Progress-only CLIXML already sanitized to empty — do not
+                // reintroduce the noise via the raw stderr fallback.
+                ""
             } else {
-                stderr
+                stderr.as_str()
             };
-            let err_text = bg::sanitize_shell_output(&err_text, &shell);
-            let mut err_text = bg::summarize_error(&err_text, 2000);
+            let mut err_text = bg::summarize_error(err_source, 2000);
             let code_str = exit_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "unknown".into());
@@ -252,7 +256,7 @@ impl ShellTool {
                         .map(|d| d.as_secs())
                         .unwrap_or(0)
                 ),
-                &combined,
+                &raw_combined,
             );
             let log_path = log_path.to_string_lossy().into_owned();
             output["log_path"] = serde_json::Value::String(log_path.clone());
@@ -301,7 +305,7 @@ impl Tool for ShellTool {
                 "command": { "type": "string", "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": "Which shell to run the command in (default: the shell configured in app settings — powershell unless changed; pwsh requires PowerShell 7 installed). Remember: `&&` only works in cmd — PowerShell requires `;`." },
                 "silent": { "type": "boolean", "description": "If true, hide output from the user (agent always sees it)", "default": false },
-                "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. The result is pushed back to you automatically when the action finishes; list all actions with the actions tool.", "default": false },
+                "background": { "type": "boolean", "description": "Run the command in the background and return a action_id immediately. Prefer true for long-running work when later steps depend on the result. After launch, if nothing else useful can run in parallel, end your turn — the result is auto-pushed when the action finishes (do not poll).", "default": false },
                 "cwd": { "type": "string", "description": "Working directory to run the command in. Defaults to the shared Temp working directory.", "default": null }
             },
             "required": ["command"]
@@ -336,13 +340,14 @@ impl Tool for ShellTool {
             .spawn_shell(cmd, &shell, max_chars, cwd)
             .await
             .ok()?;
-        Some(ToolResult::ok(serde_json::json!({
-            "background": true,
-            "action_id": action_id,
-            "shell": shell,
-            "status": "running",
-            "hint": "The foreground command hit its timeout and was automatically moved to the background. Its output is pushed back to you when it finishes — no polling needed. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this action's result.",
-        })))
+        let mut body = haven_common::tools::background_wait_object(
+            "Foreground command timed out and was moved to the background. END YOUR TURN now if you have nothing else useful to do — do not poll. You will be auto-woken with the output when it finishes. Note: the timed-out first attempt was killed, but on Windows its child processes may linger; check for duplicate side effects (e.g. a second git clone) before relying on this action's result.",
+        );
+        body.insert("background".into(), serde_json::json!(true));
+        body.insert("action_id".into(), serde_json::json!(action_id));
+        body.insert("shell".into(), serde_json::json!(shell));
+        body.insert("status".into(), serde_json::json!("running"));
+        Some(ToolResult::ok(serde_json::Value::Object(body)))
     }
 
     /// Declare the background-action binding for `background: true` invocations

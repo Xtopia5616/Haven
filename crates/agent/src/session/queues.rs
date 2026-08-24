@@ -302,6 +302,55 @@ impl SessionExecutor {
         self.awaiting_answer.lock().await.get(session_id).cloned()
     }
 
+    /// Dual-track confirm gate: status flavor **or** in-memory/snapshot flag.
+    /// Prefer this over duplicating the OR at every ingress/wake call site —
+    /// status may already be `Pending` while the flag is still live (ask +
+    /// pre-queued answer / confirm race).
+    pub async fn is_confirm_gated_with(
+        &self,
+        session_id: &str,
+        state: Option<&SessionStatus>,
+    ) -> bool {
+        matches!(state, Some(s) if s.is_awaiting_confirm())
+            || self.get_awaiting_confirm(session_id).await.is_some()
+    }
+
+    /// Dual-track ask gate: status flavor **or** in-memory/snapshot flag.
+    pub async fn is_ask_gated_with(
+        &self,
+        session_id: &str,
+        state: Option<&SessionStatus>,
+    ) -> bool {
+        matches!(state, Some(s) if s.is_awaiting_answer())
+            || self.get_awaiting_answer(session_id).await.is_some()
+    }
+
+    /// Background auto-wake must not interrupt ask/confirm pauses.
+    pub async fn blocks_auto_wake_with(
+        &self,
+        session_id: &str,
+        state: Option<&SessionStatus>,
+    ) -> bool {
+        matches!(state, Some(s) if s.blocks_auto_wake())
+            || self.get_awaiting_answer(session_id).await.is_some()
+            || self.get_awaiting_confirm(session_id).await.is_some()
+    }
+
+    pub async fn is_confirm_gated(&self, session_id: &str) -> bool {
+        let state = self.get_session_state(session_id).await;
+        self.is_confirm_gated_with(session_id, state.as_ref()).await
+    }
+
+    pub async fn is_ask_gated(&self, session_id: &str) -> bool {
+        let state = self.get_session_state(session_id).await;
+        self.is_ask_gated_with(session_id, state.as_ref()).await
+    }
+
+    pub async fn blocks_auto_wake(&self, session_id: &str) -> bool {
+        let state = self.get_session_state(session_id).await;
+        self.blocks_auto_wake_with(session_id, state.as_ref()).await
+    }
+
     pub async fn clear_awaiting_answer(&self, session_id: &str) {
         self.awaiting_answer.lock().await.remove(session_id);
     }
@@ -389,10 +438,10 @@ impl SessionExecutor {
         &self,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-    ) -> Option<(RiskLevel, String)> {
+    ) -> Option<crate::session::ConfirmResolution> {
         let confirm_key = step_id.to_string();
         let mut map = self.awaiting_confirm.lock().await;
-        let mut found: Option<(String, RiskLevel)> = None;
+        let mut found: Option<crate::session::ConfirmResolution> = None;
         let mut persist: Option<(String, crate::types::ConfirmPending)> = None;
         let mut wake_sid: Option<String> = None;
         for (session_id, pending) in map.iter_mut() {
@@ -407,7 +456,11 @@ impl SessionExecutor {
                     return None;
                 }
                 tool.decision = Some(confirmed);
-                found = Some((session_id.clone(), tool.risk_level));
+                found = Some(crate::session::ConfirmResolution {
+                    session_id: Some(session_id.clone()),
+                    tool_name: tool.tool_name.clone(),
+                    tool_input: tool.tool_input.clone(),
+                });
                 persist = Some((session_id.clone(), pending.clone()));
                 if pending.all_decided() {
                     wake_sid = Some(session_id.clone());
@@ -432,7 +485,7 @@ impl SessionExecutor {
                 );
             }
         }
-        found.map(|(s, l)| (l, s))
+        found
     }
 
     /// Rewrite `react_state.awaiting_confirm` so confirm decisions survive
@@ -476,6 +529,7 @@ impl SessionExecutor {
                     session_id.to_string(),
                     tool.tool_name.clone(),
                     tool.risk_level,
+                    tool.tool_input.clone(),
                 );
             }
         }

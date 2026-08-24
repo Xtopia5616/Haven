@@ -365,14 +365,13 @@ impl SessionExecutor {
             .await
         {
             ConfirmationResult::AutoApproved => {}
-            ConfirmationResult::Blocked => {
+            ConfirmationResult::Blocked { reason } => {
                 return Ok(ToolExecution {
                     result: ToolResult {
                         success: false,
                         output: Value::Null,
                         error: Some(format!(
-                            "operation '{}' is blocked by the security policy. Do NOT retry it — ask the user what to do instead or choose a different approach.",
-                            tool_name
+                            "operation '{tool_name}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach."
                         )),
                         truncated: false,
                         signals: haven_tools::ToolSignals::default(),
@@ -451,10 +450,9 @@ impl SessionExecutor {
         self.scheduled_confirms.lock().await.insert(
             step_id.clone(),
             ScheduledConfirmPending {
-                risk_level,
                 session_id: session_id.map(str::to_string),
                 tool_name: tool_name.to_string(),
-                tool_args,
+                tool_args: tool_args.clone(),
                 title: title.to_string(),
             },
         );
@@ -464,6 +462,7 @@ impl SessionExecutor {
                 tid.clone(),
                 tool_name.to_string(),
                 risk_level,
+                tool_args,
             );
         }
         // Absolute fail-closed timer for closed/crashed UI. Interactive
@@ -490,9 +489,8 @@ impl SessionExecutor {
         Some(step_id)
     }
 
-    /// Resolve a pending safety-gateway confirmation and return the risk level
-    /// and the owning session id, so the caller can trust the level for the
-    /// right conversation.
+    /// Resolve a pending safety-gateway confirmation and return enough context
+    /// for the app layer to record a permission grant (tool + session).
     ///
     /// Handles (1) scheduled-tool pending (R2 — execute/skip asynchronously)
     /// and (2) ReAct pause-confirm (`awaiting_confirm`). An unknown id is stale.
@@ -500,21 +498,24 @@ impl SessionExecutor {
         self: &Arc<Self>,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-    ) -> anyhow::Result<Option<(RiskLevel, Option<String>)>> {
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         // Scheduled tool path: non-blocking request → resolve later.
         if let Some(pending) = self.scheduled_confirms.lock().await.remove(step_id) {
-            let level = pending.risk_level;
-            let session_id = pending.session_id.clone();
+            let resolution = crate::session::ConfirmResolution {
+                session_id: pending.session_id.clone(),
+                tool_name: pending.tool_name.clone(),
+                tool_input: pending.tool_args.clone(),
+            };
             let executor = Arc::clone(self);
             tokio::spawn(async move {
                 executor.finish_scheduled_confirm(pending, confirmed).await;
             });
-            return Ok(Some((level, session_id)));
+            return Ok(Some(resolution));
         }
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
-        if let Some((level, session_id)) = self.resolve_confirm_pause(step_id, confirmed).await {
-            return Ok(Some((level, Some(session_id))));
+        if let Some(resolution) = self.resolve_confirm_pause(step_id, confirmed).await {
+            return Ok(Some(resolution));
         }
         Ok(None)
     }

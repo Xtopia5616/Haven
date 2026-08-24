@@ -323,18 +323,30 @@ impl Default for MemoryConfig {
     }
 }
 
+/// One permanent (Always-scope) permission grant stored in config.toml.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoredPermission {
+    /// Permission key: `tool` or `tool:operation` (see `permission_key`).
+    pub key: String,
+    pub effect: crate::types::PermissionEffect,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct SecurityConfig {
     pub confirmation_mode: ConfirmationMode,
     pub min_risk_level: RiskLevel,
     pub encrypt_sensitive: bool,
+    /// Permanent allow/deny grants (Always scope). Session grants live only
+    /// in the in-memory SafetyGateway.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<StoredPermission>,
 }
 
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            confirmation_mode: ConfirmationMode::Always,
+            confirmation_mode: ConfirmationMode::Ask,
             // Medium: Safe and Low operations (file reads, window listing,
             // clipboard reads, ...) auto-approve in the agent loop, while
             // anything that mutates state (file edits, network, env vars,
@@ -343,6 +355,7 @@ impl Default for SecurityConfig {
             // existing autonomous sessions into per-step confirmation dialogs.
             min_risk_level: RiskLevel::Medium,
             encrypt_sensitive: true,
+            permissions: Vec::new(),
         }
     }
 }

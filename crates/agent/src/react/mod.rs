@@ -605,6 +605,8 @@ impl ReActEngine {
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.total_tokens,
+            usage.cached_tokens,
+            usage.cache_creation_tokens,
             step_cost,
             || {
                 // Seed from persisted counters when this session was resumed or
@@ -622,18 +624,22 @@ impl ReActEngine {
         let cum_prompt = totals.prompt_tokens;
         let cum_completion = totals.completion_tokens;
         let cum_total = totals.total_tokens;
+        let cum_cached = totals.cached_tokens;
+        let cum_cache_creation = totals.cache_creation_tokens;
         let cum_cost_opt = totals.cost_usd;
         let has_cost = totals.has_cost;
 
         let model = response.model.clone().or_else(|| usage.model_name.clone());
 
         tracing::debug!(
-            "ReAct step {} session {} LLM usage: {}/{}/{} tokens, {} ms, model={:?}",
+            "ReAct step {} session {} LLM usage: {}/{}/{} tokens (cache hit {} / write {}), {} ms, model={:?}",
             step_number,
             session_id,
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.total_tokens,
+            usage.cached_tokens,
+            usage.cache_creation_tokens,
             duration_ms.unwrap_or(0),
             model
         );
@@ -657,12 +663,16 @@ impl ReActEngine {
         let usage_prompt = usage.prompt_tokens;
         let usage_completion = usage.completion_tokens;
         let usage_total = usage.total_tokens;
+        let usage_cached = usage.cached_tokens;
+        let usage_cache_creation = usage.cache_creation_tokens;
         let persist = tokio::task::spawn_blocking(move || {
             let _ = db.update_session_usage(
                 &session_id_for_persist,
                 cum_prompt,
                 cum_completion,
                 cum_total,
+                cum_cached,
+                cum_cache_creation,
                 cum_cost,
                 has_cost,
             );
@@ -674,6 +684,8 @@ impl ReActEngine {
                 usage_prompt,
                 usage_completion,
                 usage_total,
+                usage_cached,
+                usage_cache_creation,
                 call_cost,
                 call_has_cost,
                 duration_ms,
@@ -690,11 +702,15 @@ impl ReActEngine {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
+                cached_tokens: usage.cached_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
                 cost_usd: step_cost,
                 model,
                 cumulative_prompt_tokens: cum_prompt,
                 cumulative_completion_tokens: cum_completion,
                 cumulative_total_tokens: cum_total,
+                cumulative_cached_tokens: cum_cached,
+                cumulative_cache_creation_tokens: cum_cache_creation,
                 cumulative_cost_usd: cum_cost_opt,
                 context_window,
                 step_number: Some(step_number as u32),

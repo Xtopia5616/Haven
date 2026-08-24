@@ -240,12 +240,14 @@ impl ToolsManager {
         tool_settings: HashMap<String, ToolConfig>,
         default_shell: ShellChoice,
         context_limits: ContextLimitsConfig,
+        confirmation_mode: haven_common::types::ConfirmationMode,
         min_risk_level: RiskLevel,
+        security_permissions: &[haven_common::config::StoredPermission],
         router: Arc<LlmRouter>,
         audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
         self_ctx: builtin::SelfToolContext,
     ) {
-        *self.tool_settings.write().await = tool_settings;
+        *self.tool_settings.write().await = tool_settings.clone();
         *self.default_shell.write().await = default_shell;
         self.mcp_manager.set_limits(&context_limits).await;
         self.skills_engine.set_limits(&context_limits).await;
@@ -254,7 +256,10 @@ impl ToolsManager {
         self.scheduled_actions.set_limits(&context_limits).await;
         *self.context_limits.write().await = context_limits;
         self.safety_gateway
-            .set_min_risk_level(min_risk_level)
+            .apply_security(confirmation_mode, min_risk_level, security_permissions)
+            .await;
+        self.safety_gateway
+            .set_tool_settings(tool_settings)
             .await;
         *self.router.write().await = Some(router);
         *self.audio_pipeline.write().await = audio_pipeline;
@@ -277,7 +282,8 @@ impl ToolsManager {
     }
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
-        *self.tool_settings.write().await = settings;
+        *self.tool_settings.write().await = settings.clone();
+        self.safety_gateway.set_tool_settings(settings).await;
         self.rebuild_catalog().await;
     }
 
@@ -923,10 +929,14 @@ impl ToolsManager {
         tool_name: &str,
         input: &Value,
     ) -> RiskLevel {
-        self.get_tool_for_session(session_id, tool_name)
+        let reported = self
+            .get_tool_for_session(session_id, tool_name)
             .await
             .map(|t| t.risk_level(input))
-            .unwrap_or(RiskLevel::Safe)
+            .unwrap_or(RiskLevel::Safe);
+        self.safety_gateway
+            .effective_risk(tool_name, reported)
+            .await
     }
 }
 

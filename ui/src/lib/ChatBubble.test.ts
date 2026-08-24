@@ -372,7 +372,7 @@ describe('ChatBubble', () => {
 		);
 		expect(document.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('你想怎么做？')).toBeTruthy();
-		expect(screen.getByText('等待你的回答...')).toBeTruthy();
+		expect(screen.getByText('选择后回车提交')).toBeTruthy();
 		expect(screen.getByText('方案 A')).toBeTruthy();
 		expect(screen.getByText('方案 B')).toBeTruthy();
 	});
@@ -393,8 +393,8 @@ describe('ChatBubble', () => {
 		expect(screen.queryByText('方案 A')).toBeNull();
 	});
 
-	it('triggers onQuickReply with the message id and clicked option', async () => {
-		const onQuickReply = vi.fn();
+	it('toggles option selection via onAskSelectionChange without submitting', async () => {
+		const onAskSelectionChange = vi.fn();
 		render(
 			ChatBubble,
 			base({
@@ -404,11 +404,11 @@ describe('ChatBubble', () => {
 				messageId: 'ask-42',
 				awaiting: true,
 				options: ['立即执行'],
-				onQuickReply,
+				onAskSelectionChange,
 			}),
 		);
 		await fireEvent.click(screen.getByText('立即执行'));
-		expect(onQuickReply).toHaveBeenCalledWith('ask-42', '立即执行');
+		expect(onAskSelectionChange).toHaveBeenCalledWith('ask-42', ['立即执行']);
 	});
 
 	it('triggers onIgnore with the message id', async () => {
@@ -442,7 +442,7 @@ describe('ChatBubble', () => {
 			}),
 		);
 		expect(screen.getByText('已选择：方案 A')).toBeTruthy();
-		expect(screen.queryByText('等待你的回答...')).toBeNull();
+		expect(screen.queryByText('选择后回车提交')).toBeNull();
 	});
 
 	it('calls onContextMenu with bubble metadata', async () => {

@@ -79,6 +79,20 @@ impl AgentLayer {
                 anyhow::anyhow!("session '{}' not found by dispatcher", session_id)
             })?;
 
+        // Claim flips Pending→Running in memory/DB without emitting. Direct
+        // callers (tests / continue) may still be Pending — promote, then always
+        // emit `running` so the UI busy chip tracks a real transition instead of
+        // treating Pending as a stand-in for Running.
+        if self.executor.get_session_state(session_id).await == Some(SessionStatus::Pending) {
+            let _ = self
+                .executor
+                .update_session_status(session_id, SessionStatus::Running)
+                .await;
+        }
+        if self.executor.get_session_state(session_id).await == Some(SessionStatus::Running) {
+            self.events.emit_session_updated(session_id, "running").await;
+        }
+
         let run_id = self.react_engine.next_run_id();
 
         let description = if session.summary.is_empty() {
@@ -399,11 +413,7 @@ impl AgentLayer {
                 if msg.role != "user" || !seen.insert(msg.id.as_str()) {
                     continue;
                 }
-                let is_answer = self.executor.get_awaiting_answer(session_id).await.is_some()
-                    || matches!(
-                        self.executor.get_session_state(session_id).await,
-                        Some(s) if s.is_awaiting_answer()
-                    );
+                let is_answer = self.executor.is_ask_gated(session_id).await;
                 let queued = if is_answer {
                     self.executor
                         .add_answer_with_attachments(

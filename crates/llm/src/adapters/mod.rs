@@ -307,6 +307,13 @@ pub(crate) async fn health_check_request(
 /// (verified accepted by DeepSeek); items that already carry a well-formed
 /// object `action` — e.g. an `output_item.done` payload — pass through
 /// untouched.
+/// Resolve prompt-cache hit tokens from nested details (`cached_tokens`) and
+/// optional flat aliases (e.g. DeepSeek `prompt_cache_hit_tokens`). Prefer the
+/// larger value so either reporting shape wins without double-counting.
+pub(crate) fn resolve_cached_tokens(nested: Option<u32>, flat_alias: u32) -> u32 {
+    nested.unwrap_or(0).max(flat_alias)
+}
+
 pub(crate) fn normalize_web_search_call_item(item: serde_json::Value) -> serde_json::Value {
     let mut item = item;
     if !item.is_object() {

@@ -11,6 +11,9 @@
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		isGenerating = false,
 		sessionRunning = false,
+		// When true, Enter may submit even with an empty draft (e.g. ask option
+		// chips are selected and the page will compose the answer).
+		allowEmptySubmit = false,
 		onsubmit,
 		onstop,
 		toolbarLeft,
@@ -52,9 +55,12 @@
 	let transcriptInput = $state('');
 	let transcriptTextarea = /** @type {HTMLTextAreaElement | null} */ ($state(null));
 
-	const hasInput = $derived(
+	const hasDraft = $derived(
 		transcriptInput.trim().length > 0 || pendingImages.length > 0 || pendingFiles.length > 0,
 	);
+	// Treat selected ask chips (allowEmptySubmit) as submit-ready input so the
+	// send button stays enabled and does not flip into stop mode.
+	const hasInput = $derived(hasDraft || allowEmptySubmit);
 	// While the agent is generating, a sent message is delivered immediately
 	// to the backend: the agent injects it in the gap between tool calls and
 	// the final content, so it can steer the answer instead of waiting for
@@ -304,7 +310,7 @@
 		const text = transcriptInput.trim();
 		const images = pendingImages;
 		const files = pendingFiles;
-		if (!text && images.length === 0 && files.length === 0) return;
+		if (!text && images.length === 0 && files.length === 0 && !allowEmptySubmit) return;
 		transcriptInput = '';
 		pendingImages = [];
 		pendingFiles = [];

@@ -68,14 +68,20 @@ pub async fn end_session(
     Ok(())
 }
 
+/// Resolve a confirm dialog.
+///
+/// Prefer `effect` (`allow`|`deny`) + `scope` (`once`|`session`|`always`).
+/// Legacy `trust_session=true` still maps to allow+session.
 #[tauri::command]
 pub async fn resolve_confirmation(
     state: State<'_, Arc<AppState>>,
     step_id: String,
     confirmed: bool,
     trust_session: Option<bool>,
+    effect: Option<String>,
+    scope: Option<String>,
 ) -> Result<(), String> {
-    // Resolve the confirmation and capture the step's risk level atomically
+    // Resolve the confirmation and capture tool/session context atomically
     // (under the executor's sessions lock). This avoids the previous race where
     // the resolution and a separate `list_sessions()` lookup could observe a
     // step that a concurrent `end_session`/rollback had already removed.
@@ -84,20 +90,126 @@ pub async fn resolve_confirmation(
         .resolve_confirmation(&step_id.into(), confirmed)
         .await
         .map_err(|e| log_err("resolve_confirmation", e))?;
-    if trust_session.unwrap_or(false)
-        && confirmed
-        && let Some((level, session_id)) = resolution
-    {
-        // Trust is recorded per conversation: it is scoped to the session that
-        // actually owns this confirmation (from the wait, not the caller), so
-        // an approval can never leak into other conversations. A None session
-        // (background action without a conversation) records nothing.
-        state
-            .tools
-            .safety_gateway
-            .trust_risk_level(session_id.as_deref(), level)
-            .await;
+
+    let Some(resolution) = resolution else {
+        return Ok(());
+    };
+
+    let (perm_effect, perm_scope) = parse_permission_decision(
+        confirmed,
+        trust_session,
+        effect.as_deref(),
+        scope.as_deref(),
+    )?;
+
+    // Once-scope (or no grant) — nothing to record beyond the one-shot resolve.
+    if matches!(perm_scope, haven_common::types::PermissionScope::Once) {
+        return Ok(());
     }
+
+    // Deny grants use the tool parent so「拒绝此工具」covers sibling ops;
+    // Allow stays on the precise key for least privilege.
+    let precise = haven_common::types::permission_key(&resolution.tool_name, &resolution.tool_input);
+    let key = match perm_effect {
+        haven_common::types::PermissionEffect::Deny => {
+            haven_common::types::permission_tool_root(&precise).to_string()
+        }
+        haven_common::types::PermissionEffect::Allow => precise,
+    };
+    state
+        .tools
+        .safety_gateway
+        .grant(
+            resolution.session_id.as_deref(),
+            &key,
+            perm_effect,
+            perm_scope,
+        )
+        .await;
+
+    if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
+        persist_permanent_permission(&state, &key, perm_effect).await?;
+    }
+    Ok(())
+}
+
+fn parse_permission_decision(
+    confirmed: bool,
+    trust_session: Option<bool>,
+    effect: Option<&str>,
+    scope: Option<&str>,
+) -> Result<
+    (
+        haven_common::types::PermissionEffect,
+        haven_common::types::PermissionScope,
+    ),
+    String,
+> {
+    use haven_common::types::{PermissionEffect, PermissionScope};
+
+    let perm_effect = match effect.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("allow") => PermissionEffect::Allow,
+        Some("deny") => PermissionEffect::Deny,
+        Some(other) => return Err(format!("invalid permission effect '{other}'")),
+        None => {
+            if confirmed {
+                PermissionEffect::Allow
+            } else {
+                PermissionEffect::Deny
+            }
+        }
+    };
+
+    // Reject client mismatch: deny this call cannot plant an Allow grant
+    // (and allow this call cannot plant a Deny grant).
+    let effect_is_allow = matches!(perm_effect, PermissionEffect::Allow);
+    if confirmed != effect_is_allow {
+        return Err(
+            "permission effect must match confirmed (allow↔true, deny↔false)".into(),
+        );
+    }
+
+    let perm_scope = match scope.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("once") => PermissionScope::Once,
+        Some("session") => PermissionScope::Session,
+        Some("always") => PermissionScope::Always,
+        Some(other) => return Err(format!("invalid permission scope '{other}'")),
+        None => {
+            // Legacy bridge: trust_session=true → session allow; else once.
+            if trust_session.unwrap_or(false) && confirmed {
+                PermissionScope::Session
+            } else {
+                PermissionScope::Once
+            }
+        }
+    };
+
+    Ok((perm_effect, perm_scope))
+}
+
+async fn persist_permanent_permission(
+    state: &AppState,
+    key: &str,
+    effect: haven_common::types::PermissionEffect,
+) -> Result<(), String> {
+    use haven_common::config::StoredPermission;
+    let mut loader = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("persist_permanent_permission", e))?;
+    let mut permissions = loader.config().security.permissions.clone();
+    if let Some(existing) = permissions.iter_mut().find(|p| p.key == key) {
+        existing.effect = effect;
+    } else {
+        permissions.push(StoredPermission {
+            key: key.to_string(),
+            effect,
+        });
+    }
+    loader.config_mut().security.permissions = permissions;
+    loader
+        .save()
+        .map_err(|e| log_err("persist_permanent_permission", e))?;
     Ok(())
 }
 
@@ -294,6 +406,8 @@ fn estimate_session_usage(
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: total,
+        cached_tokens: 0,
+        cache_creation_tokens: 0,
         cost_usd: 0.0,
         has_cost: false,
     }

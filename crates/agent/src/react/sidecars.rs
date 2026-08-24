@@ -71,6 +71,8 @@ pub(super) struct CumulativeUsage {
     pub(super) prompt_tokens: u32,
     pub(super) completion_tokens: u32,
     pub(super) total_tokens: u32,
+    pub(super) cached_tokens: u32,
+    pub(super) cache_creation_tokens: u32,
     pub(super) cost_usd: f64,
     pub(super) has_cost: bool,
 }
@@ -81,6 +83,8 @@ impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
             prompt_tokens: u.prompt_tokens,
             completion_tokens: u.completion_tokens,
             total_tokens: u.total_tokens,
+            cached_tokens: u.cached_tokens,
+            cache_creation_tokens: u.cache_creation_tokens,
             cost_usd: u.cost_usd,
             has_cost: u.has_cost,
         }
@@ -93,6 +97,8 @@ pub(super) struct CumulativeTotals {
     pub(super) prompt_tokens: u32,
     pub(super) completion_tokens: u32,
     pub(super) total_tokens: u32,
+    pub(super) cached_tokens: u32,
+    pub(super) cache_creation_tokens: u32,
     pub(super) cost_usd: Option<f64>,
     pub(super) has_cost: bool,
 }
@@ -110,12 +116,15 @@ impl UsageTracker {
     }
 
     /// Seed (if missing) then add one call's tokens/cost; returns running totals.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn record_with_seed<F>(
         &self,
         session_id: &str,
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
         step_cost: Option<f64>,
         seed: F,
     ) -> CumulativeTotals
@@ -129,6 +138,10 @@ impl UsageTracker {
             .completion_tokens
             .saturating_add(completion_tokens);
         entry.total_tokens = entry.total_tokens.saturating_add(total_tokens);
+        entry.cached_tokens = entry.cached_tokens.saturating_add(cached_tokens);
+        entry.cache_creation_tokens = entry
+            .cache_creation_tokens
+            .saturating_add(cache_creation_tokens);
         if let Some(c) = step_cost {
             entry.cost_usd += c;
             entry.has_cost = true;
@@ -142,6 +155,8 @@ impl UsageTracker {
             prompt_tokens: entry.prompt_tokens,
             completion_tokens: entry.completion_tokens,
             total_tokens: entry.total_tokens,
+            cached_tokens: entry.cached_tokens,
+            cache_creation_tokens: entry.cache_creation_tokens,
             cost_usd,
             has_cost: entry.has_cost,
         }

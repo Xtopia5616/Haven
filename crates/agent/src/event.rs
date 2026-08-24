@@ -147,12 +147,22 @@ pub enum AgentEvent {
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
+        /// Prompt-cache hit / read tokens for this call.
+        #[serde(default)]
+        cached_tokens: u32,
+        /// Prompt-cache write / creation tokens for this call.
+        #[serde(default)]
+        cache_creation_tokens: u32,
         cost_usd: Option<f64>,
         model: Option<String>,
         /// Cumulative totals across the entire session (incl. this step).
         cumulative_prompt_tokens: u32,
         cumulative_completion_tokens: u32,
         cumulative_total_tokens: u32,
+        #[serde(default)]
+        cumulative_cached_tokens: u32,
+        #[serde(default)]
+        cumulative_cache_creation_tokens: u32,
         cumulative_cost_usd: Option<f64>,
         /// Configured context window for the model (tokens). When `None`,
         /// the UI falls back to a generic budget indicator.
@@ -691,11 +701,15 @@ impl EventDispatcher {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
+                cached_tokens: usage.cached_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
                 cost_usd: usage.cost_usd,
                 model: usage.model,
                 cumulative_prompt_tokens: usage.cumulative_prompt_tokens,
                 cumulative_completion_tokens: usage.cumulative_completion_tokens,
                 cumulative_total_tokens: usage.cumulative_total_tokens,
+                cumulative_cached_tokens: usage.cumulative_cached_tokens,
+                cumulative_cache_creation_tokens: usage.cumulative_cache_creation_tokens,
                 cumulative_cost_usd: usage.cumulative_cost_usd,
                 context_window: usage.context_window,
                 step_number: usage.step_number,
@@ -716,11 +730,15 @@ pub struct UsagePayload {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    pub cached_tokens: u32,
+    pub cache_creation_tokens: u32,
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
     pub cumulative_prompt_tokens: u32,
     pub cumulative_completion_tokens: u32,
     pub cumulative_total_tokens: u32,
+    pub cumulative_cached_tokens: u32,
+    pub cumulative_cache_creation_tokens: u32,
     pub cumulative_cost_usd: Option<f64>,
     pub context_window: Option<u32>,
     pub step_number: Option<u32>,

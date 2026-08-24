@@ -11,6 +11,27 @@ use crate::types::RiskLevel;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// JSON key / value Haven tools emit when a background action is still running
+/// and the agent should end the turn to await auto-wake. Kept in common so
+/// producers (`haven-tools`) and the ReAct response policy (`haven-agent`)
+/// cannot drift.
+pub const BACKGROUND_WAIT_NEXT_STEP_KEY: &str = "next_step";
+pub const BACKGROUND_WAIT_NEXT_STEP: &str = "end_turn";
+
+/// Start a background-wait observation object with `next_step` first, then
+/// `hint`. Callers insert the rest (`background` / `action_id` / `actions`…).
+/// Centralized so producers cannot forget the wait marker the ReAct policy
+/// keys on.
+pub fn background_wait_object(hint: impl Into<String>) -> serde_json::Map<String, Value> {
+    let mut body = serde_json::Map::new();
+    body.insert(
+        BACKGROUND_WAIT_NEXT_STEP_KEY.into(),
+        Value::String(BACKGROUND_WAIT_NEXT_STEP.into()),
+    );
+    body.insert("hint".into(), Value::String(hint.into()));
+    body
+}
+
 /// Structured definition of a tool, independent of both the execution runtime
 /// (builtin / MCP / skill) and the LLM provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

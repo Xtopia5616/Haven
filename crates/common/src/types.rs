@@ -157,12 +157,121 @@ pub enum RiskLevel {
     Critical,
 }
 
-/// Confirmation handling strategy for high-risk operations.
+/// How the safety gateway decides when to prompt the user.
+///
+/// Legacy config value `"always"` deserializes as [`ConfirmationMode::Ask`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmationMode {
+    /// Ask when `risk >= min_risk_level` (default).
     #[default]
+    #[serde(alias = "always")]
+    Ask,
+    /// Ask for every non-`Safe` operation.
+    Paranoid,
+    /// Auto-approve everything except permanent/session denies and disabled ops.
+    Autopilot,
+}
+
+/// Allow or deny a permission grant.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionEffect {
+    Allow,
+    Deny,
+}
+
+/// How long a permission decision lasts.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionScope {
+    /// This invocation only — not recorded.
+    Once,
+    /// Remainder of the owning session.
+    Session,
+    /// Persisted across restarts (`SecurityConfig.permissions`).
     Always,
+}
+
+/// Tools whose Haven routing uses `scope` / `operation` params in the key.
+/// Other tools (MCP/skills/arbitrary args) use the bare tool name so a random
+/// `operation` field in args cannot fragment grants.
+const ROUTING_PARAM_TOOLS: &[&str] = &[
+    "files",
+    "process",
+    "window",
+    "system",
+    "clipboard",
+    "input",
+    "audio",
+    "memory",
+    "messaging",
+    "haven",
+    "scheduled_action",
+];
+
+/// Default `operation` when a routing tool omits it — must match execution
+/// defaults so Always grants cannot land on a bare `tool:scope` parent key
+/// that later auto-approves mutating sibling ops (e.g. `system:env` → set).
+fn default_routing_operation(tool_name: &str, scope: Option<&str>) -> Option<&'static str> {
+    if tool_name != "system" {
+        return None;
+    }
+    match scope.unwrap_or("info") {
+        "env" | "registry" => Some("list"),
+        "power" => Some("status"),
+        _ => None,
+    }
+}
+
+/// Build a permission key from tool name + optional routing params.
+///
+/// Examples: `shell`, `files:delete`, `system:power:lock`.
+/// Omitted `system` operations are canonicalized to the same defaults used
+/// by risk/execution (`env`/`registry` → `list`, `power` → `status`).
+pub fn permission_key(tool_name: &str, params: &serde_json::Value) -> String {
+    if !ROUTING_PARAM_TOOLS.contains(&tool_name) {
+        return tool_name.to_string();
+    }
+    let mut parts = vec![tool_name.to_string()];
+    let scope = params
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    if let Some(scope) = scope {
+        parts.push(scope.to_string());
+    }
+    let op = params
+        .get("operation")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| default_routing_operation(tool_name, scope));
+    if let Some(op) = op {
+        parts.push(op.to_string());
+    }
+    parts.join(":")
+}
+
+/// Tool root of a permission key (`system:power:lock` → `system`).
+pub fn permission_tool_root(key: &str) -> &str {
+    key.split_once(':').map(|(root, _)| root).unwrap_or(key)
+}
+
+/// Ancestor keys for grant matching: exact key first, then parents.
+///
+/// `files:delete` → `["files:delete", "files"]`
+/// `system:power:lock` → `["system:power:lock", "system:power", "system"]`
+pub fn permission_key_candidates(key: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut end = key.len();
+    loop {
+        out.push(&key[..end]);
+        match key[..end].rfind(':') {
+            Some(i) => end = i,
+            None => break,
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -430,11 +539,200 @@ impl CanonicalToolCall {
     }
 
     /// Parse a provider's wire arguments JSON string back into a canonical
-    /// value. Falls back to `Null` on malformed / empty input — providers are
-    /// unreliable about emitting valid JSON here.
+    /// value (finished-stream path).
+    ///
+    /// - Empty / whitespace → `{}` (tools with no args).
+    /// - Valid JSON → parsed value.
+    /// - Structural truncation repair (missing `}` / `]` / value after `:`) →
+    ///   repaired object — only safe after the provider finished cleanly.
+    /// - Mid-string cut or unrepairable → `Null` (ReAct retries).
     pub fn from_wire_args(args: &str) -> serde_json::Value {
-        serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
+        match Self::parse_wire_args(args) {
+            WireArgsParse::Empty => serde_json::json!({}),
+            WireArgsParse::Valid(v) | WireArgsParse::Repaired(v) => v,
+            WireArgsParse::Incomplete => serde_json::Value::Null,
+        }
     }
+
+    /// Classify wire argument JSON without losing Empty vs Valid vs Repaired.
+    pub fn parse_wire_args(args: &str) -> WireArgsParse {
+        let trimmed = args.trim();
+        if trimmed.is_empty() {
+            return WireArgsParse::Empty;
+        }
+        if let Ok(v) = serde_json::from_str(trimmed) {
+            return WireArgsParse::Valid(v);
+        }
+        match repair_truncated_json(trimmed) {
+            Some(RepairOutcome {
+                value,
+                closed_open_string: false,
+            }) => WireArgsParse::Repaired(value),
+            _ => WireArgsParse::Incomplete,
+        }
+    }
+
+    /// True when an in-flight tool call must not be flushed without a provider
+    /// finish signal: name present but args still empty, structurally repaired
+    /// only, or mid-string / unrepairable. Valid complete JSON is fine.
+    pub fn stream_tool_args_unfinished(name: &str, args: &str) -> bool {
+        if name.is_empty() {
+            return false;
+        }
+        match Self::parse_wire_args(args) {
+            WireArgsParse::Valid(_) => false,
+            WireArgsParse::Empty
+            | WireArgsParse::Repaired(_)
+            | WireArgsParse::Incomplete => true,
+        }
+    }
+}
+
+/// Result of parsing provider tool-call argument JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WireArgsParse {
+    /// No arguments text yet (or whitespace-only).
+    Empty,
+    /// Parsed without repair.
+    Valid(serde_json::Value),
+    /// Parsed only after structural truncation repair (missing closers / value).
+    Repaired(serde_json::Value),
+    /// Mid-string cut or still invalid after repair.
+    Incomplete,
+}
+
+struct RepairOutcome {
+    value: serde_json::Value,
+    /// True when the input ended inside a JSON string — the closed value is
+    /// a guess and must not be treated as complete arguments.
+    closed_open_string: bool,
+}
+
+/// Best-effort repair for tool-call argument JSON cut off mid-stream
+/// (cancel, idle timeout, or `finish_reason=length` while arguments were
+/// still being generated). Closes an open string, completes a bare object
+/// key with `:null`, fills a missing value with `null`, strips a trailing
+/// comma, and closes unmatched `{` / `[`.
+fn repair_truncated_json(input: &str) -> Option<RepairOutcome> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Expect {
+        ObjectKey,
+        ObjectColon,
+        ObjectValue,
+        ArrayValue,
+        CommaOrClose,
+    }
+
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut stack: Vec<char> = Vec::new();
+    let mut expect = Expect::ObjectValue;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut closed_open_string = false;
+
+    for ch in input.chars() {
+        if in_string {
+            out.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+                expect = if expect == Expect::ObjectKey {
+                    Expect::ObjectColon
+                } else {
+                    Expect::CommaOrClose
+                };
+            }
+            continue;
+        }
+        if ch.is_whitespace() {
+            out.push(ch);
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
+            '{' => {
+                stack.push('{');
+                expect = Expect::ObjectKey;
+                out.push(ch);
+            }
+            '[' => {
+                stack.push('[');
+                expect = Expect::ArrayValue;
+                out.push(ch);
+            }
+            '}' | ']' => {
+                let open = if ch == '}' { '{' } else { '[' };
+                if stack.last() != Some(&open) {
+                    return None;
+                }
+                stack.pop();
+                out.push(ch);
+                expect = Expect::CommaOrClose;
+            }
+            ':' => {
+                expect = Expect::ObjectValue;
+                out.push(ch);
+            }
+            ',' => {
+                expect = if stack.last() == Some(&'[') {
+                    Expect::ArrayValue
+                } else {
+                    Expect::ObjectKey
+                };
+                out.push(ch);
+            }
+            _ => {
+                out.push(ch);
+                expect = Expect::CommaOrClose;
+            }
+        }
+    }
+
+    if in_string {
+        closed_open_string = true;
+        if escape {
+            out.pop();
+        }
+        out.push('"');
+        expect = if expect == Expect::ObjectKey {
+            Expect::ObjectColon
+        } else {
+            Expect::CommaOrClose
+        };
+    }
+
+    // Strip trailing comma BEFORE filling missing values — otherwise
+    // `["a",` becomes `["a",null]`.
+    {
+        let trimmed_len = out.trim_end().len();
+        out.truncate(trimmed_len);
+        if out.ends_with(',') {
+            out.pop();
+            expect = Expect::CommaOrClose;
+        }
+    }
+
+    match expect {
+        Expect::ObjectColon => out.push_str(":null"),
+        Expect::ObjectValue | Expect::ArrayValue => out.push_str("null"),
+        Expect::ObjectKey | Expect::CommaOrClose => {}
+    }
+
+    while let Some(open) = stack.pop() {
+        out.push(if open == '{' { '}' } else { ']' });
+    }
+
+    let value = serde_json::from_str(&out).ok()?;
+    Some(RepairOutcome {
+        value,
+        closed_open_string,
+    })
 }
 
 /// A binary attachment on a message (e.g. a user-provided image or file).
@@ -605,6 +903,87 @@ mod tests {
         assert_eq!(CanonicalRole::Tool.as_str(), "tool");
         assert_eq!(CanonicalRole::System.to_string(), "system");
         assert_eq!(CanonicalRole::Tool.to_string(), "tool");
+    }
+
+    #[test]
+    fn from_wire_args_empty_becomes_object() {
+        assert_eq!(CanonicalToolCall::from_wire_args(""), serde_json::json!({}));
+        assert_eq!(CanonicalToolCall::from_wire_args("  "), serde_json::json!({}));
+        assert_eq!(
+            CanonicalToolCall::parse_wire_args(""),
+            WireArgsParse::Empty
+        );
+    }
+
+    #[test]
+    fn from_wire_args_repairs_structural_truncation_only() {
+        // Mid-string cut: value is unknown → Null / incomplete (retry).
+        assert_eq!(
+            CanonicalToolCall::from_wire_args(r#"{"path":"/tmp/fo"#),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            CanonicalToolCall::parse_wire_args(r#"{"path":"/tmp/fo"#),
+            WireArgsParse::Incomplete
+        );
+        assert_eq!(
+            CanonicalToolCall::from_wire_args(r#"{"a":1,"b"#),
+            serde_json::Value::Null
+        );
+
+        // Structural only: missing closers / missing value after `:`.
+        let v3 = CanonicalToolCall::from_wire_args(r#"{"a":"#);
+        assert!(v3["a"].is_null());
+        assert!(matches!(
+            CanonicalToolCall::parse_wire_args(r#"{"a":"#),
+            WireArgsParse::Repaired(_)
+        ));
+
+        let v4 = CanonicalToolCall::from_wire_args(r#"{"items":[1,2"#);
+        assert_eq!(v4["items"], serde_json::json!([1, 2]));
+
+        // Trailing comma must not invent a null element.
+        let v4c = CanonicalToolCall::from_wire_args(r#"{"items":[1,2,"#);
+        assert_eq!(v4c["items"], serde_json::json!([1, 2]));
+        assert!(matches!(
+            CanonicalToolCall::parse_wire_args(r#"{"items":[1,2,"#),
+            WireArgsParse::Repaired(_)
+        ));
+
+        let v5 = CanonicalToolCall::from_wire_args(r#"{"path":"/tmp/foo","mode":"r""#);
+        assert_eq!(v5["path"], "/tmp/foo");
+        assert_eq!(v5["mode"], "r");
+    }
+
+    #[test]
+    fn stream_tool_args_unfinished_blocks_empty_and_repaired() {
+        assert!(!CanonicalToolCall::stream_tool_args_unfinished("", ""));
+        assert!(CanonicalToolCall::stream_tool_args_unfinished("files", ""));
+        assert!(CanonicalToolCall::stream_tool_args_unfinished(
+            "files",
+            r#"{"path":"#
+        ));
+        assert!(CanonicalToolCall::stream_tool_args_unfinished(
+            "files",
+            r#"{"path":"/tm"#
+        ));
+        assert!(!CanonicalToolCall::stream_tool_args_unfinished(
+            "files",
+            r#"{"path":"/tmp"}"#
+        ));
+    }
+
+    #[test]
+    fn from_wire_args_unrepairable_stays_null_and_incomplete() {
+        // Truncated literal cannot be closed into valid JSON.
+        assert_eq!(
+            CanonicalToolCall::from_wire_args(r#"{"ok":tru"#),
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            CanonicalToolCall::parse_wire_args(r#"{"ok":tru"#),
+            WireArgsParse::Incomplete
+        );
     }
 
     #[test]
@@ -895,6 +1274,66 @@ mod tests {
     #[test]
     fn risk_level_default_is_safe() {
         assert_eq!(RiskLevel::default(), RiskLevel::Safe);
+    }
+
+    #[test]
+    fn confirmation_mode_legacy_always_deserializes_as_ask() {
+        let mode: ConfirmationMode = serde_json::from_str("\"always\"").unwrap();
+        assert_eq!(mode, ConfirmationMode::Ask);
+        let mode: ConfirmationMode = serde_json::from_str("\"ask\"").unwrap();
+        assert_eq!(mode, ConfirmationMode::Ask);
+    }
+
+    #[test]
+    fn permission_key_includes_scope_and_operation() {
+        assert_eq!(permission_key("shell", &serde_json::json!({})), "shell");
+        assert_eq!(
+            permission_key("files", &serde_json::json!({"operation": "delete"})),
+            "files:delete"
+        );
+        assert_eq!(
+            permission_key(
+                "system",
+                &serde_json::json!({"scope": "power", "operation": "lock"})
+            ),
+            "system:power:lock"
+        );
+        // Omitted operations must canonicalize to execution defaults so Always
+        // on a list/status call cannot parent-match mutating sibling ops.
+        assert_eq!(
+            permission_key("system", &serde_json::json!({"scope": "env"})),
+            "system:env:list"
+        );
+        assert_eq!(
+            permission_key("system", &serde_json::json!({"scope": "registry"})),
+            "system:registry:list"
+        );
+        assert_eq!(
+            permission_key("system", &serde_json::json!({"scope": "power"})),
+            "system:power:status"
+        );
+        assert_eq!(
+            permission_key("system", &serde_json::json!({"scope": "info"})),
+            "system:info"
+        );
+        // Non-routing tools ignore operation/scope in args.
+        assert_eq!(
+            permission_key(
+                "mcp_srv_tool",
+                &serde_json::json!({"operation": "run", "scope": "x"})
+            ),
+            "mcp_srv_tool"
+        );
+        assert_eq!(permission_tool_root("system:power:lock"), "system");
+    }
+
+    #[test]
+    fn permission_key_candidates_walk_parents() {
+        assert_eq!(
+            permission_key_candidates("system:power:lock"),
+            vec!["system:power:lock", "system:power", "system"]
+        );
+        assert_eq!(permission_key_candidates("shell"), vec!["shell"]);
     }
 
     #[test]

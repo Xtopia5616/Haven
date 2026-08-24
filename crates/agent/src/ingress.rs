@@ -223,61 +223,61 @@ impl AgentLayer {
                 // While a confirm gate is active (including confirm+ask
                 // batches that stash awaiting_answer early), do NOT treat
                 // free-text as the ask reply — confirm must finish first.
-                let confirm_pending = matches!(&state, Some(s) if s.is_awaiting_confirm())
-                    || self
-                        .executor
-                        .get_awaiting_confirm(&session_id)
-                        .await
-                        .is_some();
+                let confirm_pending = self
+                    .executor
+                    .is_confirm_gated_with(&session_id, state.as_ref())
+                    .await;
                 let is_answer = !confirm_pending
-                    && (matches!(&state, Some(s) if s.is_awaiting_answer())
-                        || self
-                            .executor
-                            .get_awaiting_answer(&session_id)
-                            .await
-                            .is_some());
+                    && self
+                        .executor
+                        .is_ask_gated_with(&session_id, state.as_ref())
+                        .await;
+                let message_id = persisted_msg.as_ref().map(|m| m.id.clone());
                 let was_in_memory = if is_answer {
                     self.executor
                         .add_answer_with_attachments(
                             &session_id,
                             transcript,
                             attachments,
-                            persisted_msg.as_ref().map(|m| m.id.clone()),
+                            message_id.clone(),
                         )
                         .await
                         .is_ok()
                 } else {
                     self.executor
-                        .add_supplement_with_attachments(
+                        .add_follow_up_with_attachments(
                             &session_id,
                             transcript,
                             attachments,
-                            persisted_msg.as_ref().map(|m| m.id.clone()),
+                            message_id.clone(),
                         )
                         .await
                         .is_ok()
                 };
                 if !was_in_memory {
-                    // Session may be stale/deleted ??fall back to creating a new session
+                    // Session may be stale/deleted — fall back to creating a new session
                     if self
                         .executor
                         .ensure_session_loaded(&session_id)
                         .await
                         .is_err()
                     {
-                        let session = self
+                        let (session, first_msg_id) = self
                             .create_session_with_first_message(transcript, attachments, voice)
                             .await?;
                         self.events.emit_session_created(&session).await;
-                        return Ok(ProcessResult::SessionCreated(session.id));
+                        return Ok(ProcessResult::session_created(
+                            session.id,
+                            Some(first_msg_id),
+                        ));
                     }
                     // Re-read state after ensure_session_loaded may have reloaded
                     // the session from DB (M3/H10 TOCTOU: end_session may have ended
                     // it between the get_session_state read above and the failed
-                    // add_supplement). Only non-terminal sessions may be
+                    // add_follow_up). Only non-terminal sessions may be
                     // reactivated by a follow-up message; Completed/Error sessions
                     // were ended on purpose and must be reopened explicitly via
-                    // the review flow ??auto-converting them would resurrect a
+                    // the review flow — auto-converting them would resurrect a
                     // ghost session.
                     let fresh_state = self.executor.get_session_state(&session_id).await;
                     if fresh_state == Some(SessionStatus::Completed)
@@ -318,8 +318,9 @@ impl AgentLayer {
                             .emit_session_updated(&session_id, fresh_status)
                             .await;
                         // Do not keep the reloaded terminal session in the working
-                        // set ??it was ended and should not be dispatchable.
+                        // set — it was ended and should not be dispatchable.
                         self.executor.remove_session(&session_id).await;
+                        return Ok(ProcessResult::supplemented(None));
                     } else {
                         if is_answer {
                             self.executor
@@ -327,54 +328,54 @@ impl AgentLayer {
                                     &session_id,
                                     transcript,
                                     attachments,
-                                    persisted_msg.as_ref().map(|m| m.id.clone()),
+                                    message_id.clone(),
                                 )
                                 .await?;
                         } else {
                             self.executor
-                                .add_supplement_with_attachments(
+                                .add_follow_up_with_attachments(
                                     &session_id,
                                     transcript,
                                     attachments,
-                                    persisted_msg.as_ref().map(|m| m.id.clone()),
+                                    message_id.clone(),
                                 )
                                 .await?;
                         }
                         // Confirm-awaiting: free-text must not wake — only
                         // resolve_confirmation finishes the gated batch.
-                        let confirm_blocked =
-                            matches!(&fresh_state, Some(s) if s.is_awaiting_confirm())
-                                || self
-                                    .executor
-                                    .get_awaiting_confirm(&session_id)
-                                    .await
-                                    .is_some();
+                        let confirm_blocked = self
+                            .executor
+                            .is_confirm_gated_with(&session_id, fresh_state.as_ref())
+                            .await;
                         if matches!(fresh_state, Some(s) if s.is_paused()) && !confirm_blocked {
                             self.set_session_status(&session_id, SessionStatus::Pending)
                                 .await?;
                         }
                     }
-                    return Ok(ProcessResult::Supplemented);
+                    return Ok(ProcessResult::supplemented(message_id));
                 }
-                let confirm_blocked = matches!(&state, Some(s) if s.is_awaiting_confirm())
-                    || self
-                        .executor
-                        .get_awaiting_confirm(&session_id)
-                        .await
-                        .is_some();
+                let confirm_blocked = self
+                    .executor
+                    .is_confirm_gated_with(&session_id, state.as_ref())
+                    .await;
                 if matches!(state.as_ref(), Some(s) if s.is_paused()) && !confirm_blocked {
                     self.set_session_status(&session_id, SessionStatus::Pending)
                         .await?;
                 }
             }
-            Ok(ProcessResult::Supplemented)
+            Ok(ProcessResult::supplemented(
+                persisted_msg.as_ref().map(|m| m.id.clone()),
+            ))
         } else {
-            let session = self
+            let (session, first_msg_id) = self
                 .create_session_with_first_message(transcript, attachments, voice)
                 .await?;
             tracing::info!("process_input created session: id={:?}", session.id);
             self.events.emit_session_created(&session).await;
-            Ok(ProcessResult::SessionCreated(session.id))
+            Ok(ProcessResult::session_created(
+                session.id,
+                Some(first_msg_id),
+            ))
         }
     }
 }

@@ -151,10 +151,17 @@ fn migrate_tool_settings_keys(config: &mut AppConfig) -> bool {
         };
         changed = true;
         if let Some(new_name) = new {
+            let mut cfg = old_cfg;
+            // Merged successors (system/agent) must not inherit a legacy
+            // single-tool risk_override — e.g. env→system with override=safe
+            // would suppress confirm for hibernate / registry set.
+            if matches!(new_name, "system" | "agent") {
+                cfg.risk_override = None;
+            }
             config
                 .tool_settings
                 .entry(new_name.to_string())
-                .or_insert(old_cfg);
+                .or_insert(cfg);
             tracing::info!("migrating tool_settings.{old} → tool_settings.{new_name}");
         } else {
             tracing::info!("dropping obsolete tool_settings.{old}");
@@ -310,7 +317,16 @@ impl ConfigLoader {
         // its default, which is the expected upgrade behavior for new keys.
         self.config.context_limits = settings.context_limits.clone();
         self.config.memory = settings.memory.clone();
+        // Permanent permissions are mutated by resolve_confirmation /
+        // revoke_permission, not the settings form. The form may hold a stale
+        // snapshot (Always grant while Settings was open) — overwriting would
+        // wipe live grants. Keep on-disk permissions; apply mode/threshold.
+        let prev_permissions = self.config.security.permissions.clone();
+        let prev_encrypt = self.config.security.encrypt_sensitive;
         self.config.security = settings.security.clone();
+        self.config.security.permissions = prev_permissions;
+        // encrypt_sensitive has no UI yet; don't let the form force `true`.
+        self.config.security.encrypt_sensitive = prev_encrypt;
         self.config.media = {
             let incoming = settings.media.clone();
             let prev = &self.config.media;

@@ -470,13 +470,7 @@
             text: "Session done.".into(),
             tool_calls: vec![],
             finish_reason: Some(FinishReason::Stop),
-            usage: haven_llm::Usage {
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-                model_name: None,
-                cost: None,
-            },
+            usage: haven_llm::Usage::default(),
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
@@ -499,13 +493,7 @@
                 arguments: serde_json::json!({"path": "/tmp/test"}),
             }],
             finish_reason: Some(FinishReason::ToolCalls),
-            usage: haven_llm::Usage {
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-                model_name: None,
-                cost: None,
-            },
+            usage: haven_llm::Usage::default(),
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
@@ -532,13 +520,7 @@
                 arguments: serde_json::json!({}),
             }],
             finish_reason: Some(FinishReason::Stop),
-            usage: haven_llm::Usage {
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-                model_name: None,
-                cost: None,
-            },
+            usage: haven_llm::Usage::default(),
             model: None,
             reasoning: None,
             web_search_calls: Vec::new(),
@@ -565,7 +547,7 @@
             .process_input("more context", Some(session.id.clone()))
             .await
             .unwrap();
-        assert_eq!(result, ProcessResult::Supplemented);
+        assert!(matches!(result, ProcessResult::Supplemented { .. }));
         // Session is not reloaded into the working set and never becomes Pending.
         assert_eq!(executor.get_session_state(&session.id).await, None);
         assert!(executor.get_supplements(&session.id).await.is_empty());
@@ -584,7 +566,7 @@
             .process_input("more context", Some(session.id.clone()))
             .await
             .unwrap();
-        assert_eq!(result, ProcessResult::Supplemented);
+        assert!(matches!(result, ProcessResult::Supplemented { .. }));
         assert_eq!(
             executor.get_session_state(&session.id).await,
             Some(SessionStatus::Pending)
@@ -615,7 +597,7 @@
             .process_input("the answer", Some(session.id.clone()))
             .await
             .unwrap();
-        assert_eq!(result, ProcessResult::Supplemented);
+        assert!(matches!(result, ProcessResult::Supplemented { .. }));
         assert_eq!(
             executor.get_session_state(&session.id).await,
             Some(SessionStatus::Pending)
@@ -734,7 +716,7 @@
             .process_input("follow up", Some(session.id.clone()))
             .await
             .unwrap();
-        assert_eq!(result, ProcessResult::Supplemented);
+        assert!(matches!(result, ProcessResult::Supplemented { .. }));
         let supps = executor.get_supplements(&session.id).await;
         assert_eq!(supps.len(), 1);
         assert!(
@@ -1965,7 +1947,7 @@
             )
             .await
             .unwrap();
-        assert_eq!(result, ProcessResult::Supplemented);
+        assert!(matches!(result, ProcessResult::Supplemented { .. }));
         assert_eq!(
             executor.get_session_state(&session.id).await,
             Some(SessionStatus::Pending)
@@ -1990,12 +1972,19 @@
         let (agent, executor) = make_test_agent();
         let result = agent.process_input("open notepad", None).await.unwrap();
         match result {
-            ProcessResult::SessionCreated(session_id) => {
+            ProcessResult::SessionCreated {
+                session_id,
+                message_id,
+            } => {
                 assert!(!session_id.is_empty());
+                assert!(
+                    message_id.as_deref().is_some_and(|id| id.starts_with("msg-")),
+                    "SessionCreated must return the persisted first-user msg id"
+                );
                 let state = executor.get_session_state(&session_id).await;
                 assert_eq!(state, Some(SessionStatus::Pending));
             }
-            ProcessResult::Supplemented => panic!("expected SessionCreated"),
+            ProcessResult::Supplemented { .. } => panic!("expected SessionCreated"),
         }
     }
 
@@ -2457,13 +2446,7 @@
                 text,
                 tool_calls: vec![],
                 finish_reason: Some(FinishReason::Stop),
-                usage: Usage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                    model_name: None,
-                    cost: None,
-                },
+                usage: Usage::default(),
                 model: None,
                 reasoning: None,
                 web_search_calls: Vec::new(),

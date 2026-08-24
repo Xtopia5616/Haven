@@ -61,6 +61,17 @@ impl ActionsTool {
         if let Some(f) = filter.as_deref() {
             rows.retain(|r| r["status"].as_str() == Some(f));
         }
+        let all_running = !rows.is_empty()
+            && rows
+                .iter()
+                .all(|r| r.get("status").and_then(|s| s.as_str()) == Some("running"));
+        if all_running {
+            let mut body = haven_common::tools::background_wait_object(
+                "All listed background actions are still running. END YOUR TURN if you have nothing else useful to do — do not poll. Results are auto-pushed and the session is auto-woken when they finish.",
+            );
+            body.insert("actions".into(), serde_json::json!(rows));
+            return Ok(ToolResult::ok(serde_json::Value::Object(body)));
+        }
         Ok(ToolResult::ok(serde_json::json!({ "actions": rows })))
     }
 }
@@ -71,7 +82,7 @@ impl Tool for ActionsTool {
         "actions".into()
     }
     fn description(&self) -> String {
-        "List background actions of the current session (action_id, status, timestamps, output preview), or pass action_id to inspect one. Completion results are pushed back automatically — do not poll.".into()
+        "List background actions of the current session (action_id, status, timestamps, output preview), or pass action_id to inspect one. One-shot awareness only — never poll in a wait loop. While actions are still running and you have no other foreground work, end your turn; completion results are auto-pushed and the session is auto-woken.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {

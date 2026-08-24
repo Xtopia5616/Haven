@@ -111,6 +111,12 @@ struct ResponsesContentPart {
 }
 
 #[derive(Debug, Deserialize, Default)]
+struct ResponsesInputTokensDetails {
+    #[serde(default)]
+    cached_tokens: u32,
+}
+
+#[derive(Debug, Deserialize, Default)]
 struct ResponsesUsage {
     #[serde(default)]
     input_tokens: u32,
@@ -118,6 +124,20 @@ struct ResponsesUsage {
     output_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+    #[serde(default)]
+    input_tokens_details: Option<ResponsesInputTokensDetails>,
+    /// DeepSeek Responses flat alias for cache hits.
+    #[serde(default)]
+    prompt_cache_hit_tokens: u32,
+}
+
+impl ResponsesUsage {
+    fn cached_tokens(&self) -> u32 {
+        super::resolve_cached_tokens(
+            self.input_tokens_details.as_ref().map(|d| d.cached_tokens),
+            self.prompt_cache_hit_tokens,
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -599,6 +619,8 @@ impl OpenAiResponsesAdapter {
                 prompt_tokens: u.input_tokens,
                 completion_tokens: u.output_tokens,
                 total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens(),
+                cache_creation_tokens: 0,
                 model_name: model.clone(),
                 cost: None,
             })
@@ -743,7 +765,13 @@ impl OpenAiResponsesAdapter {
                 let data = match state.rx.recv().await {
                     Some(d) => d,
                     None => {
-                        let chunk = if !state.saw_completed && !state.accumulated_text.is_empty() {
+                        let unfinished_tools =
+                            state.tool_calls.iter().any(|(_, _, name, args)| {
+                                CanonicalToolCall::stream_tool_args_unfinished(name, args)
+                            });
+                        let chunk = if !state.saw_completed
+                            && (!state.accumulated_text.is_empty() || unfinished_tools)
+                        {
                             Err(LlmError::StreamTruncated)
                         } else {
                             Ok(StreamChunk {
@@ -970,6 +998,8 @@ impl OpenAiResponsesAdapter {
                                     prompt_tokens: u.input_tokens,
                                     completion_tokens: u.output_tokens,
                                     total_tokens: u.total_tokens,
+                                    cached_tokens: u.cached_tokens(),
+                                    cache_creation_tokens: 0,
                                     model_name: state.last_model.clone(),
                                     cost: None,
                                 });
@@ -1705,6 +1735,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
                 total_tokens: 15,
+                ..Default::default()
             }),
             model: Some("gpt-5".into()),
             error: None,

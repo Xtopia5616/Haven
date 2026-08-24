@@ -151,6 +151,51 @@ Parent session                    Child session(s)
 
 协议约定：同伴消息 ≠ 用户指令；`in_reply_to` 对齐 request id；子会话默认工作目录仍为 Temp（全局约束）。
 
+### 2.4.2 内置 `system` 工具（机器信息与系统控制）
+
+统一入口：`haven-tools` `builtin/system.rs`（`env` / `registry` / `power` 子模块由 `scope=` 转发）。
+
+| scope | 能力 | 风险 |
+|---|---|---|
+| `info`（默认） | 只读机器快照；`category=` 细分 | Safe |
+| `env` | 环境变量 get/set/unset/list；list 可用 `name` 作前缀过滤 | get=Low；list/set/unset=High |
+| `registry` | Windows 注册表 get/set/delete/list | 读=Medium；写/删=High |
+| `power` | 电源 status / lock / sleep / hibernate | status=Safe；lock/sleep=High；hibernate=Critical |
+| `display` | 监视器几何 + DPI/缩放 + 刷新率 | Safe |
+
+`scope=info` 的 `category`：
+
+| category | 内容 |
+|---|---|
+| `overview`（默认） | os + user（当前）+ locale + cpu + memory + disks + network_summary |
+| `os` | 名称/版本/内核/发行版 id/主机名/架构/产品厂商与型号/uptime/boot |
+| `cpu` | 品牌/厂商/频率/物理·逻辑核/总占用 + `per_core` |
+| `memory` | total/used/available/free/swap + usage_pct |
+| `disk` | 挂载点/文件系统/kind(HDD\|SSD)/容量/占用/可移动/只读 |
+| `network` | 网卡名/MAC/IP/MTU/状态/累计收发（受 `max_output_chars` 截断） |
+| `user` | 当前用户/域/计算机名/home/temp/cwd + 本机用户列表 |
+| `locale` | 时区偏移/本地与 UTC 时间/系统 locale / UI 语言 |
+| `all` | 上述全量（网络仍按预算截断） |
+
+实现依赖：`sysinfo` + Windows `windows-sys`（Gdi / Globalization / Power）。电源寿命字段为秒（Win32 `SYSTEM_POWER_STATUS`）。
+
+### 2.4.3 权限 / 确认（SafetyGateway）
+
+决策顺序（fail-closed）：
+
+1. `tool_settings.disabled_operations` / `allowed_paths` → **Blocked**
+2. 永久拒绝（`SecurityConfig.permissions`，Always）→ **Blocked**
+3. 会话拒绝 → **Blocked**
+4. 永久允许 / 会话允许 → **AutoApproved**
+5. `ConfirmationMode`：`Ask`（`risk >= min_risk_level`）/ `Paranoid`（非 Safe）/ `Autopilot`（不弹窗，但仍对 Critical 弹窗；永久/会话拒绝始终生效）
+6. 否则 → `RequiresConfirmation`（事件带 `params` + `permission_key`）
+
+决策细化：永久拒绝 → 会话拒绝 → 永久允许 → 会话允许。拒绝授权写工具根键（覆盖同工具全部子操作）；允许写精确键。
+
+权限键：`permission_key(tool, params)` → `tool` / `tool:op` / `system:power:lock`；授予父键可覆盖子操作。
+
+确认 UI：拒绝 / 仅本次 / 本对话允许 / 始终允许；拒绝菜单含本对话拒绝、始终拒绝。永久授权写入 `config.toml`，设置页可撤销。
+
 ### 2.5 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 
 - `app_state.rs`：装配 `AppState`（db / router / tools / executor / agent / pipeline / shell /

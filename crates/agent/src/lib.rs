@@ -23,7 +23,8 @@ pub use inference::InferenceEngine;
 pub use prompt::{MemorySections, SystemPromptBuilder};
 pub use react::{LoopExit, PauseReason, ReActEngine};
 pub use session::{
-    RunHandler, SessionExecutor, SessionInfo, SessionStatus, StepInfo, ToolExecution,
+    ConfirmResolution, RunHandler, SessionExecutor, SessionInfo, SessionStatus, StepInfo,
+    ToolExecution,
 };
 pub use types::{
     Action, BranchPoint, ProcessResult, ReActRound, ReActSnapshot, ToolRecord, TranscriptRecord,

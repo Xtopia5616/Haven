@@ -209,7 +209,12 @@ async function doSubmit({
 			attachments: hasAttachments ? attachments : null,
 			voice,
 		});
-		if (result && result.SessionCreated && result.SessionCreated !== sessionId) {
+		const createdId = processResultSessionId(result);
+		const dbMsgId = processResultMessageId(result);
+		// Prefer the destination session after a SessionCreated migrate so the
+		// id rewrite lands on the bubble that was just moved.
+		let targetSessionId = sessionId;
+		if (createdId && createdId !== sessionId) {
 			// This submission created the new session. Clear the fresh-start intent
 			// ONLY if the fresh-start was already active when this submission was
 			// accepted — otherwise a 新对话 click that landed mid-flight must
@@ -221,12 +226,41 @@ async function doSubmit({
 				newSessionIntentStore.set(false);
 				if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			}
-			moveSessionMessages(sessionId, result.SessionCreated);
-			activeSessionIdStore.set(result.SessionCreated);
+			moveSessionMessages(sessionId, createdId);
+			activeSessionIdStore.set(createdId);
+			targetSessionId = createdId;
+		}
+		// Align the optimistic bubble with the persisted `msg-*` id so rollback
+		// / continue no longer need content+timestamp guessing.
+		if (dbMsgId && dbMsgId !== msg.id) {
+			updateSessionMessages(targetSessionId, (list) => {
+				const idx = list.findIndex((x) => x.id === msg.id);
+				if (idx < 0) return list;
+				const next = list.slice();
+				next[idx] = { ...next[idx], id: dbMsgId };
+				return next;
+			});
 		}
 		return result;
 	} catch (e) {
 		updateSessionMessages(sessionId, (list) => list.filter((x) => x.id !== msg.id));
 		throw e;
 	}
+}
+
+/** `ProcessResult::SessionCreated { session_id }` (struct variant). */
+export function processResultSessionId(result: any): string | null {
+	const created = result?.SessionCreated;
+	if (!created) return null;
+	if (typeof created === 'string') return created;
+	return typeof created.session_id === 'string' ? created.session_id : null;
+}
+
+/** Persisted user-message id from either ProcessResult variant. */
+export function processResultMessageId(result: any): string | null {
+	const fromCreated = result?.SessionCreated?.message_id;
+	if (typeof fromCreated === 'string' && fromCreated) return fromCreated;
+	const fromSupp = result?.Supplemented?.message_id;
+	if (typeof fromSupp === 'string' && fromSupp) return fromSupp;
+	return null;
 }

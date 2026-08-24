@@ -142,26 +142,30 @@ pub async fn execute_skill(
         return Err(format!("skill '{}' is not enabled", name));
     }
 
-    let risk_level = RiskLevel::Medium;
-    if !confirmed.unwrap_or(false) {
-        match state
-            .tools
-            .safety_gateway
-            .check(None, &format!("skill:{}", name), &params, risk_level)
-            .await
-        {
-            ConfirmationResult::AutoApproved => {}
-            ConfirmationResult::RequiresConfirmation {
-                tool_name,
-                params,
-                risk_level,
-            } => {
-                return Err(confirmation_error(tool_name, params, risk_level)
-                    .map_err(|e| log_err("execute_skill", e))?);
-            }
-            ConfirmationResult::Blocked => {
-                return Err("skill execution blocked by security policy".to_string());
-            }
+    // Always run SafetyGateway — `confirmed` must not bypass permanent deny /
+    // path/op blocks. Use the same qualified name as SkillToolAdapter so
+    // Always grants from agent confirms apply to UI preview.
+    let _ = confirmed; // ignored; kept for IPC compat
+    let tool_key = haven_tools::SkillToolAdapter::qualified_name_of(&name);
+    let risk_level = RiskLevel::High;
+    match state
+        .tools
+        .safety_gateway
+        .check(None, &tool_key, &params, risk_level)
+        .await
+    {
+        ConfirmationResult::AutoApproved => {}
+        ConfirmationResult::RequiresConfirmation {
+            tool_name,
+            params,
+            risk_level,
+            ..
+        } => {
+            return Err(confirmation_error(tool_name, params, risk_level)
+                .map_err(|e| log_err("execute_skill", e))?);
+        }
+        ConfirmationResult::Blocked { reason } => {
+            return Err(format!("skill execution blocked by security policy ({reason})"));
         }
     }
 

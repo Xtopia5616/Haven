@@ -213,9 +213,9 @@ impl LoopHooks for DefaultHooks {
             .await
         {
             ConfirmationResult::AutoApproved => BeforeToolAction::Proceed { confirmed: None },
-            ConfirmationResult::Blocked => BeforeToolAction::Block {
+            ConfirmationResult::Blocked { reason } => BeforeToolAction::Block {
                 error: format!(
-                    "operation '{}' is blocked by the security policy. Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                    "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                     tool_name
                 ),
             },

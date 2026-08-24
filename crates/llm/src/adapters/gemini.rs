@@ -140,6 +140,8 @@ struct GeminiUsage {
     candidates_tokens: u32,
     #[serde(default, alias = "totalTokenCount")]
     total_tokens: u32,
+    #[serde(default, alias = "cachedContentTokenCount")]
+    cached_tokens: u32,
 }
 
 /// Google Gemini API adapter (`generateContent` / `streamGenerateContent`).
@@ -511,6 +513,8 @@ impl GeminiAdapter {
                 prompt_tokens: u.prompt_tokens,
                 completion_tokens: u.candidates_tokens,
                 total_tokens: u.total_tokens,
+                cached_tokens: u.cached_tokens,
+                cache_creation_tokens: 0,
                 model_name: model.clone(),
                 cost: None,
             })
@@ -682,15 +686,33 @@ impl GeminiAdapter {
                 let data = match state.rx.recv().await {
                     Some(d) => d,
                     None => {
-                        let chunk = if !state.saw_finish && !state.accumulated_text.is_empty() {
+                        // Gemini delivers args as already-parsed JSON; a name
+                        // with Null args and no finish means the stream died
+                        // before arguments arrived. On a clean finish, omitted
+                        // args mean `{}` (empty-parameter tools) — not Null.
+                        let unfinished_tools = state.tool_calls_acc.iter().any(|tc| {
+                            !tc.name.is_empty() && tc.arguments.is_null()
+                        });
+                        let chunk = if !state.saw_finish
+                            && (!state.accumulated_text.is_empty() || unfinished_tools)
+                        {
                             Err(LlmError::StreamTruncated)
                         } else {
+                            let tool_calls = std::mem::take(&mut state.tool_calls_acc)
+                                .into_iter()
+                                .map(|mut tc| {
+                                    if tc.arguments.is_null() {
+                                        tc.arguments = serde_json::json!({});
+                                    }
+                                    tc
+                                })
+                                .collect();
                             Ok(StreamChunk {
                                 text: None,
                                 // Flush accumulated tool calls like the OpenAI
                                 // adapter: per-delta chunks carry none, the
                                 // final chunk carries all merged calls.
-                                tool_calls: std::mem::take(&mut state.tool_calls_acc),
+                                tool_calls,
                                 finish_reason: state.finish_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
@@ -715,6 +737,8 @@ impl GeminiAdapter {
                                 prompt_tokens: u.prompt_tokens,
                                 completion_tokens: u.candidates_tokens,
                                 total_tokens: u.total_tokens,
+                                cached_tokens: u.cached_tokens,
+                                cache_creation_tokens: 0,
                                 model_name: state.last_model.clone(),
                                 cost: None,
                             });
@@ -1397,6 +1421,7 @@ mod tests {
                 prompt_tokens: 10,
                 candidates_tokens: 5,
                 total_tokens: 15,
+                ..Default::default()
             }),
             model_version: Some("gemini-2.5-flash".into()),
         };

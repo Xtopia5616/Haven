@@ -473,6 +473,8 @@ export interface LlmUsage {
 	prompt_tokens?: number;
 	completion_tokens?: number;
 	total_tokens?: number;
+	cached_tokens?: number;
+	cache_creation_tokens?: number;
 	cost_usd?: number | null;
 	has_cost?: boolean;
 	duration_ms?: number | null;
@@ -513,12 +515,20 @@ export function clearSessionTokenStats(sessionId: string) {
  * predates usage persistence, `estimated` marks the restored totals as a
  * rough estimate derived from the persisted conversation text (no cost).
  * @param {string} sessionId
- * @param {object} usage - { prompt_tokens, completion_tokens, total_tokens, cost_usd, has_cost }
+ * @param {object} usage - { prompt_tokens, completion_tokens, total_tokens, cached_tokens, cache_creation_tokens, cost_usd, has_cost }
  * @param {boolean} [estimated]
  */
 export function restoreSessionTokenStats(
 	sessionId: string,
-	usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cost_usd?: number | null; has_cost?: boolean },
+	usage: {
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		total_tokens?: number;
+		cached_tokens?: number;
+		cache_creation_tokens?: number;
+		cost_usd?: number | null;
+		has_cost?: boolean;
+	},
 	estimated = false,
 ) {
 	if (!sessionId || !usage) return;
@@ -527,9 +537,13 @@ export function restoreSessionTokenStats(
 		promptTokens: 0,
 		completionTokens: 0,
 		totalTokens: 0,
+		cachedTokens: 0,
+		cacheCreationTokens: 0,
 		cumulativePromptTokens: usage.prompt_tokens || 0,
 		cumulativeCompletionTokens: usage.completion_tokens || 0,
 		cumulativeTotalTokens: usage.total_tokens || 0,
+		cumulativeCachedTokens: usage.cached_tokens || 0,
+		cumulativeCacheCreationTokens: usage.cache_creation_tokens || 0,
 		costUsd: null,
 		cumulativeCostUsd: hasCost ? usage.cost_usd : null,
 		contextWindow: null,

@@ -5,6 +5,7 @@ use haven_llm::LlmRouter;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
+use tauri::State;
 use tracing_subscriber::filter::EnvFilter;
 
 #[tauri::command]
@@ -106,7 +107,10 @@ pub async fn update_settings(
         llm_config,
         max_response_tokens,
         reasoning_echo_max_chars,
+        confirmation_mode,
         min_risk_level,
+        security_permissions,
+        tool_settings,
     ) = {
         let cfg = state
             .config_loader
@@ -122,7 +126,10 @@ pub async fn update_settings(
             config.llm.clone(),
             config.context_limits.max_response_tokens,
             config.context_limits.reasoning_echo_max_chars,
+            config.security.confirmation_mode,
             config.security.min_risk_level,
+            config.security.permissions.clone(),
+            config.tool_settings.clone(),
         )
     };
     state.tools.load_mcp_from_config(&mcp_servers).await;
@@ -145,7 +152,12 @@ pub async fn update_settings(
     state
         .tools
         .safety_gateway
-        .set_min_risk_level(min_risk_level)
+        .apply_security(confirmation_mode, min_risk_level, &security_permissions)
+        .await;
+    state
+        .tools
+        .safety_gateway
+        .set_tool_settings(tool_settings)
         .await;
 
     // Propagate log level to tracing subscriber (console + file)
@@ -236,6 +248,35 @@ pub async fn update_settings(
 /// Check whether a shell is available on this machine. The settings UI uses
 /// this to warn when the user picks PowerShell 7 (`pwsh`) without having it
 /// installed — `cmd` and the built-in `powershell` are always present.
+#[tauri::command]
+pub async fn list_permissions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<haven_common::config::StoredPermission>, String> {
+    Ok(state.tools.safety_gateway.list_permanent().await)
+}
+
+#[tauri::command]
+pub async fn revoke_permission(
+    state: State<'_, Arc<AppState>>,
+    key: String,
+) -> Result<(), String> {
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err("permission key cannot be empty".into());
+    }
+    state.tools.safety_gateway.revoke_permanent(&key).await;
+    let mut loader = state
+        .config_loader
+        .lock()
+        .map_err(|e| log_err("revoke_permission", e))?;
+    let perms = &mut loader.config_mut().security.permissions;
+    perms.retain(|p| p.key != key);
+    loader
+        .save()
+        .map_err(|e| log_err("revoke_permission", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn check_shell_available(shell: String) -> Result<serde_json::Value, String> {
     #[cfg(windows)]

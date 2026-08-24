@@ -43,6 +43,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Power",
     "Win32_Graphics_Gdi",
+    "Win32_Globalization",
 ] }
 windows = { version = "0.58", features = [
     "Win32_Foundation",

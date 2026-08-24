@@ -9,6 +9,16 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Prompt-cache hit / read tokens (OpenAI `cached_tokens`, Anthropic
+    /// `cache_read_input_tokens`, DeepSeek hit, Gemini `cachedContentTokenCount`).
+    /// Providers usually already include these inside `prompt_tokens` (OpenAI);
+    /// Anthropic reports them separately from `input_tokens`.
+    #[serde(default)]
+    pub cached_tokens: u32,
+    /// Prompt-cache write / creation tokens (Anthropic `cache_creation_input_tokens`).
+    /// Other providers typically leave this at 0.
+    #[serde(default)]
+    pub cache_creation_tokens: u32,
     // §2.14: model name and cost tracking
     pub model_name: Option<String>,
     pub cost: Option<f64>,
@@ -477,6 +487,8 @@ mod tests {
         assert_eq!(u.prompt_tokens, 0);
         assert_eq!(u.completion_tokens, 0);
         assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.cached_tokens, 0);
+        assert_eq!(u.cache_creation_tokens, 0);
         assert!(u.model_name.is_none());
         assert!(u.cost.is_none());
     }
@@ -594,8 +606,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
-                model_name: None,
-                cost: None,
+                ..Default::default()
             }),
             model: Some("gpt-4o".into()),
             reasoning: None,

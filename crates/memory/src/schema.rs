@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -44,6 +44,7 @@ struct Migration {
 /// - v6: `embedding_lsh` side table for large-partition ANN probing (M5).
 /// - v7: allow `peer_kickoff` on `messages.message_type` (Plan A multi-agent
 ///   spawn brief rows).
+/// - v8: prompt-cache token columns on `session_usage` / `llm_usage`.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -68,6 +69,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 7,
         apply: migrate_v7_peer_kickoff_message_type,
+    },
+    Migration {
+        version: 8,
+        apply: migrate_v8_usage_cache_tokens,
     },
 ];
 
@@ -284,6 +289,39 @@ fn migrate_v7_peer_kickoff_message_type(conn: &rusqlite::Connection) -> anyhow::
     Ok(())
 }
 
+/// Add prompt-cache hit/write token columns to usage tables.
+fn migrate_v8_usage_cache_tokens(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "session_usage")? {
+        if !column_exists(conn, "session_usage", "cached_tokens")? {
+            conn.execute(
+                "ALTER TABLE session_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !column_exists(conn, "session_usage", "cache_creation_tokens")? {
+            conn.execute(
+                "ALTER TABLE session_usage ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+    }
+    if table_exists(conn, "llm_usage")? {
+        if !column_exists(conn, "llm_usage", "cached_tokens")? {
+            conn.execute(
+                "ALTER TABLE llm_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !column_exists(conn, "llm_usage", "cache_creation_tokens")? {
+            conn.execute(
+                "ALTER TABLE llm_usage ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// P2-10 / L6: optional structured fields on episodes; P2-11: bare `company`
 /// → `works_at` for rows written before the alias was added.
 fn migrate_v5_episodes_structured_and_company_alias(
@@ -456,6 +494,8 @@ const SCHEMA_SQL: &[&str] = &[
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
         has_cost INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -473,6 +513,8 @@ const SCHEMA_SQL: &[&str] = &[
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
         has_cost INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER,

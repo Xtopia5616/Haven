@@ -71,7 +71,7 @@ impl Tool for AskTool {
     }
 
     fn description(&self) -> String {
-        "Ask the user a question when you need a decision or missing information".into()
+        "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.".into()
     }
 
     fn risk_level(&self, _input: &Value) -> RiskLevel {
@@ -85,12 +85,12 @@ impl Tool for AskTool {
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "The question to ask the human. Be specific and concise."
+                    "description": "A single question for the human. Be specific and concise. Never put two questions in one string — call ask again for the next question."
                 },
                 "options": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional short suggested answers. Each becomes a quick-reply button, so keep them terse (a few words)."
+                    "description": "Optional short suggested answers for THIS question only. Each becomes a selectable chip; keep them terse (a few words). Do not mix answers that belong to a different question."
                 },
                 "context": {
                     "type": "string",

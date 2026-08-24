@@ -1895,8 +1895,7 @@ mod tests {
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     total_tokens: 15,
-                    model_name: None,
-                    cost: None,
+                    ..Default::default()
                 }),
                 model: None,
                 reasoning: None,

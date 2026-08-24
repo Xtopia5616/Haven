@@ -12,7 +12,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.ts';
-	import { isPausedStatus } from '$lib/sessionStatus.ts';
+	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
@@ -339,12 +339,7 @@
 
 	// Foreground running tasks: active (non-terminal) conversations.
 	const runningSessions = $derived(
-		sessions.filter(
-			(t) =>
-				t.status === 'running' ||
-				t.status === 'pending' ||
-				isPausedStatus(t.status),
-		),
+		sessions.filter((t) => isBusyStatus(t.status) || isPausedStatus(t.status)),
 	);
 
 	// While the panel is open, re-render once a second so countdowns tick.
@@ -674,10 +669,9 @@
 				const title = data.title || data.session_id;
 				const tid = data.session_id;
 				const prev = tid ? lastSessionStatus.get(tid) : undefined;
-				if (data.status === 'running' || data.status === 'pending') {
-					// The backend flips Pending -> Running in memory without
-					// re-emitting, so treat both as busy. Any other status
-					// transition below removes the session from the busy set.
+				if (isBusyStatus(data.status)) {
+					// pending = queued; running = claimed (handler now emits
+					// running on claim). Both keep the session in the busy set.
 					if (tid) busySessions = new Set(busySessions).add(tid);
 				}
 				if (isPausedStatus(data.status)) {

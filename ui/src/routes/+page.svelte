@@ -19,7 +19,8 @@
 	import { formatError } from '$lib/formatError.ts';
 	import { buildReviewMessages, mergeLiveStreaming } from '$lib/reviewMessages.ts';
 	import { pickContinueStrategy, shouldResubmitOriginalUser } from '$lib/continueSession.ts';
-	import { isPausedStatus } from '$lib/sessionStatus.ts';
+	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
+	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import {
 		accumulateStreamChunk,
 		applyThoughtSnap,
@@ -68,7 +69,6 @@
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
 	} from '$lib/stores.ts';
-	import { submitTranscript } from '$lib/submit.ts';
 	import { syncStore, syncStoreImmediate } from '$lib/syncStore.ts';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
@@ -107,6 +107,8 @@
 		sessionId: '',
 		sessionTitle: '',
 		riskLevel: 'medium',
+		params: null,
+		permissionKey: '',
 		deadlineAt: null,
 	});
 	let activeSessionId = $state(get(activeSessionIdStore));
@@ -140,9 +142,13 @@
 	 * @property {number} promptTokens
 	 * @property {number} completionTokens
 	 * @property {number} totalTokens
+	 * @property {number} [cachedTokens]
+	 * @property {number} [cacheCreationTokens]
 	 * @property {number} cumulativePromptTokens
 	 * @property {number} cumulativeCompletionTokens
 	 * @property {number} cumulativeTotalTokens
+	 * @property {number} [cumulativeCachedTokens]
+	 * @property {number} [cumulativeCacheCreationTokens]
 	 * @property {number|null} costUsd
 	 * @property {number|null} cumulativeCostUsd
 	 * @property {number|null} contextWindow
@@ -175,7 +181,7 @@
 
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a review conversation opens). Used to render
-	// per-step token chips on tool cards and the widget's per-call tooltip.
+	// per-step token chips on tool cards and the tooltip call count.
 	/** @type {Array<import('$lib/stores.ts').LlmUsage>} */
 	let llmUsage = $state([]);
 	$effect(() =>
@@ -223,14 +229,21 @@
 
 	/**
 	 * Context-window utilization for the active session. Returns
-	 * `{ used, window, ratio }` where `used` is the last reported prompt
-	 * token count (per-step, not cumulative) and `window` is the model's
+	 * `{ used, window, ratio }` where `used` is the last reported context
+	 * input (prompt + exclusive cache tokens) and `window` is the model's
 	 * configured budget. Returns `null` when no data is available.
 	 */
 	const contextBudget = $derived.by(() => {
 		if (!tokenStats) return null;
 		const window = tokenStats.contextWindow || 0;
-		const used = tokenStats.promptTokens || 0;
+		const prompt = tokenStats.promptTokens || 0;
+		const cached = tokenStats.cachedTokens || 0;
+		const creation = tokenStats.cacheCreationTokens || 0;
+		const completion = tokenStats.completionTokens || 0;
+		const total = tokenStats.totalTokens || 0;
+		const used = cacheExclusiveOfPrompt(prompt, completion, total, cached, creation)
+			? prompt + cached + creation
+			: prompt;
 		if (!window) return null;
 		const ratio = Math.min(1, used / window);
 		return { used, window, ratio };
@@ -251,9 +264,7 @@
 	);
 	const sessionRunning = $derived(
 		!!activeSessionId &&
-			sessions.some(
-				(t) => t.id === activeSessionId && (t.status === 'running' || t.status === 'pending'),
-			),
+			sessions.some((t) => t.id === activeSessionId && isBusyStatus(t.status)),
 	);
 	// Tooltip for the idle token widget. While the active session is still
 	// running (streaming, tool-calling, or queued) more `agent:usage`
@@ -264,20 +275,55 @@
 	// Sessions executing in parallel (running or waiting). When 2+ exist, the
 	// new-session button turns into a switcher menu: switch to a parallel session
 	// or start a new one. Otherwise the button keeps its default behavior.
-	const parallelSessions = $derived(
-		sessions.filter((t) => t.status === 'running' || t.status === 'pending'),
-	);
+	const parallelSessions = $derived(sessions.filter((t) => isBusyStatus(t.status)));
 	// Menu source: parallel sessions plus paused ones — a paused session is
 	// otherwise invisible in the chat view (its conversation is not shown).
 	const menuSessions = $derived(
-		sessions.filter(
-			(t) =>
-				t.status === 'running' ||
-				t.status === 'pending' ||
-				isPausedStatus(t.status),
-		),
+		sessions.filter((t) => isBusyStatus(t.status) || isPausedStatus(t.status)),
 	);
 	const showSessionMenu = $derived(menuSessions.length >= 2);
+
+	/**
+	 * True when cache tokens are billed/counted outside `prompt` (Anthropic).
+	 * Detected via totals: exclusive ⇒ total ≈ prompt+cached+creation+completion;
+	 * inclusive (OpenAI) ⇒ total ≈ prompt+completion with cached already in prompt.
+	 * @param {number} prompt
+	 * @param {number} completion
+	 * @param {number} total
+	 * @param {number} cached
+	 * @param {number} creation
+	 */
+	function cacheExclusiveOfPrompt(prompt, completion, total, cached, creation) {
+		const cachePart = (cached || 0) + (creation || 0);
+		if (cachePart <= 0) return false;
+		const inclusiveTotal = (prompt || 0) + (completion || 0);
+		const exclusiveTotal = inclusiveTotal + cachePart;
+		if (!total) return false;
+		return Math.abs(total - exclusiveTotal) <= Math.abs(total - inclusiveTotal);
+	}
+
+	/**
+	 * Prompt-cache hit rate. Inclusive providers: cached/prompt.
+	 * Exclusive providers: cached/(prompt+cached+creation).
+	 * @param {number} prompt
+	 * @param {number} cached
+	 * @param {number} [creation]
+	 * @param {{completion?: number, total?: number}} [opts]
+	 * @returns {number|null} percent 0–100, or null when no cache data
+	 */
+	function cacheHitRatePercent(prompt, cached, creation = 0, opts = {}) {
+		if (!cached || cached <= 0) return null;
+		const exclusive = cacheExclusiveOfPrompt(
+			prompt,
+			opts.completion || 0,
+			opts.total || 0,
+			cached,
+			creation || 0,
+		);
+		const denom = exclusive ? (prompt || 0) + cached + (creation || 0) : prompt || 0;
+		if (!denom) return null;
+		return Math.min(100, (cached / denom) * 100);
+	}
 
 	function buildTokenTooltip(/** @type {SessionTokenStats} */ s) {
 		const parts = [];
@@ -296,38 +342,59 @@
 					`累计上传 ${s.cumulativePromptTokens} → 累计生成 ${s.cumulativeCompletionTokens} tokens`,
 				);
 		}
+		const liveCached = s.cachedTokens || 0;
+		const liveCreation = s.cacheCreationTokens || 0;
+		const cumCached = s.cumulativeCachedTokens || 0;
+		const cumCreation = s.cumulativeCacheCreationTokens || 0;
+		if (!s.restored && (liveCached > 0 || liveCreation > 0)) {
+			const rate = cacheHitRatePercent(s.promptTokens || 0, liveCached, liveCreation, {
+				completion: s.completionTokens || 0,
+				total: s.totalTokens || 0,
+			});
+			let line = `缓存命中 ${formatTokenCount(liveCached)}`;
+			if (rate != null) line += `（${rate.toFixed(0)}%）`;
+			if (liveCreation > 0) line += ` / 写入 ${formatTokenCount(liveCreation)}`;
+			parts.push(line);
+		}
+		if (cumCached > 0 || cumCreation > 0) {
+			const rate = cacheHitRatePercent(
+				s.cumulativePromptTokens || 0,
+				cumCached,
+				cumCreation,
+				{
+					completion: s.cumulativeCompletionTokens || 0,
+					total: s.cumulativeTotalTokens || 0,
+				},
+			);
+			let line = `累计缓存命中 ${formatTokenCount(cumCached)}`;
+			if (rate != null) line += `（${rate.toFixed(0)}%）`;
+			if (cumCreation > 0) line += ` / 写入 ${formatTokenCount(cumCreation)}`;
+			parts.push(line);
+		}
+		if (llmUsage.length > 0) {
+			parts.push(`调用 ${llmUsage.length} 次`);
+		}
 		if (s.model) parts.push(`模型 ${s.model}`);
 		if (s.contextWindow) {
-			const pct =
-				s.promptTokens && s.contextWindow
-					? `${((s.promptTokens / s.contextWindow) * 100).toFixed(0)}%`
-					: '?';
+			const prompt = s.promptTokens || 0;
+			const cached = s.cachedTokens || 0;
+			const creation = s.cacheCreationTokens || 0;
+			const used = cacheExclusiveOfPrompt(
+				prompt,
+				s.completionTokens || 0,
+				s.totalTokens || 0,
+				cached,
+				creation,
+			)
+				? prompt + cached + creation
+				: prompt;
+			const pct = used
+				? `${((used / s.contextWindow) * 100).toFixed(0)}%`
+				: '?';
 			parts.push(`上下文 ${pct} / ${formatTokenCount(s.contextWindow)}`);
 		}
 		if (s.cumulativeCostUsd != null) parts.push(`费用 ${formatCostUsd(s.cumulativeCostUsd)}`);
 		if (s.estimated) parts.push('估算值（历史对话，未计费）');
-		// Per-call breakdown from the persisted llm_usage detail (cap the
-		// list so a long session doesn't produce an unwieldy tooltip).
-		if (llmUsage.length > 0) {
-			parts.push(`— 每次调用 —`);
-			const shown = llmUsage.slice(-10);
-			for (const u of shown) {
-				const where = u.step_number != null ? `第${u.step_number}步` : '—';
-				let line = `${where} ${u.total_tokens || 0} tokens`;
-				if (u.prompt_tokens != null) {
-					line += ` (↑${u.prompt_tokens}→↓${u.completion_tokens || 0})`;
-				}
-				if (u.model) line += ` ${u.model}`;
-				if (u.duration_ms != null && u.duration_ms > 0) {
-					line += ` ${(u.duration_ms / 1000).toFixed(1)}s`;
-				}
-				if (u.has_cost && u.cost_usd != null) line += ` ${formatCostUsd(u.cost_usd)}`;
-				parts.push(line);
-			}
-			if (llmUsage.length > shown.length) {
-				parts.push(`…共 ${llmUsage.length} 次调用`);
-			}
-		}
 		return parts.join('\n');
 	}
 
@@ -523,17 +590,10 @@
 
 	// Merged into existing onMount/onDestroy below
 
-	// Resolve a live-view user message id to its persisted DB id. During a
-	// running session the optimistic user bubble keeps the locally-minted id
-	// (`Date.now()-random` from newMessage) until the message list is rebuilt
-	// from the DB; the backend requires a DB-resolvable targetMessageId (no
-	// content-based guessing), so map the clicked message to its DB row by
-	// content first (legacy fallback). The local id embeds the bubble's
-	// creation timestamp, so when several rows share the same content the one
-	// created closest to the clicked bubble wins (the backend persists the
-	// user message within milliseconds of the optimistic bubble). Returns the
-	// original id unchanged when it is already a DB id or cannot be resolved
-	// (the backend then reports the unresolvable id and deletes nothing).
+	// Resolve a live-view user message id to its persisted DB id. New submits
+	// rewrite the optimistic bubble to `msg-*` via ProcessResult.message_id;
+	// this path remains as a legacy fallback for bubbles that still carry a
+	// temp id (reload race / older builds). Prefer content + nearest `_ts`.
 	/** @param {string} sessionId @param {string} localMsgId @param {string} clickedContent */
 	async function resolveUserMessageDbId(sessionId, localMsgId, clickedContent) {
 		if (!localMsgId || /^(msg|step)-/.test(localMsgId)) return localMsgId;
@@ -1397,7 +1457,7 @@
 					if (
 						data.session_id &&
 						sessionErrorId === data.session_id &&
-						(data.status === 'pending' || data.status === 'running')
+						isBusyStatus(data.status)
 					) {
 						sessionErrorId = null;
 						activeSessionError = false;
@@ -1756,6 +1816,8 @@
 							sessionId: tid,
 							sessionTitle: session?.title || (tid || ''),
 							riskLevel: data.risk_level || 'medium',
+							params: data.params ?? null,
+							permissionKey: data.permission_key || data.tool_name || '',
 						},
 					];
 					showNextConfirm();
@@ -1768,9 +1830,13 @@
 						promptTokens: d.prompt_tokens || 0,
 						completionTokens: d.completion_tokens || 0,
 						totalTokens: d.total_tokens || 0,
+						cachedTokens: d.cached_tokens || 0,
+						cacheCreationTokens: d.cache_creation_tokens || 0,
 						cumulativePromptTokens: d.cumulative_prompt_tokens || 0,
 						cumulativeCompletionTokens: d.cumulative_completion_tokens || 0,
 						cumulativeTotalTokens: d.cumulative_total_tokens || 0,
+						cumulativeCachedTokens: d.cumulative_cached_tokens || 0,
+						cumulativeCacheCreationTokens: d.cumulative_cache_creation_tokens || 0,
 						costUsd: d.cost_usd ?? null,
 						cumulativeCostUsd: d.cumulative_cost_usd ?? null,
 						contextWindow: d.context_window ?? null,
@@ -1792,6 +1858,8 @@
 							prompt_tokens: d.prompt_tokens || 0,
 							completion_tokens: d.completion_tokens || 0,
 							total_tokens: d.total_tokens || 0,
+							cached_tokens: d.cached_tokens || 0,
+							cache_creation_tokens: d.cache_creation_tokens || 0,
 							cost_usd: d.cost_usd ?? null,
 							has_cost: !!d.has_cost,
 							duration_ms: d.duration_ms ?? null,
@@ -1909,9 +1977,7 @@
 					// hidden session and the end button would target it.
 					const firstActive = sessions.find(
 						(t) =>
-							(t.status === 'running' ||
-								t.status === 'pending' ||
-								isPausedStatus(t.status)) &&
+							(isBusyStatus(t.status) || isPausedStatus(t.status)) &&
 							(get(sessionMessagesStore)[t.id] || []).length > 0,
 					);
 					if (firstActive) {
@@ -2012,14 +2078,16 @@
 		// A resume/end also invalidates any locally-chosen quick-reply answers
 		// for the pending batch, so a later batch never inherits stale ones.
 		resolvedAskIds.delete(sessionId);
+		clearAskSelections(sessionId);
 	}
 
 	/** @param {string} text @param {any} [images] @param {any} [files] */
 	async function submitMessage(text, images, files) {
 		try {
 			const result = await submitTranscript(text, { images, files });
-			if (result && result.SessionCreated) {
-				activeSessionId = result.SessionCreated;
+			const createdId = processResultSessionId(result);
+			if (createdId) {
+				activeSessionId = createdId;
 				activeSessionIdStore.set(activeSessionId);
 				// The submission itself created the session (submitTranscript
 				// already cleared the intent store): nothing to do here.
@@ -2030,14 +2098,87 @@
 		}
 	}
 
+	// Selected ask option chips per session (msgId -> selected labels). Click
+	// toggles selection; Enter in the input box submits (see handleInputSubmit).
+	/** @type {Map<string, Map<string, string[]>>} */
+	let askSelections = new Map();
+
+	/** @param {string} sessionId */
+	function clearAskSelections(sessionId) {
+		askSelections.delete(sessionId);
+		askSelectionsReady = computeAskSelectionsReady();
+	}
+
+	/** @param {string} msgId @param {string[]} selected */
+	function handleAskSelectionChange(msgId, selected) {
+		if (!activeSessionId || !msgId) return;
+		const byMsg = askSelections.get(activeSessionId) || new Map();
+		if (!selected || selected.length === 0) byMsg.delete(msgId);
+		else byMsg.set(msgId, [...selected]);
+		if (byMsg.size === 0) askSelections.delete(activeSessionId);
+		else askSelections.set(activeSessionId, byMsg);
+		askSelectionsReady = computeAskSelectionsReady();
+	}
+
+	// True when every currently awaiting ask card has at least one selected
+	// option — InputRouter then allows Enter with an empty draft.
+	let askSelectionsReady = $state(false);
+
+	function computeAskSelectionsReady() {
+		if (!activeSessionId) return false;
+		const awaiting = (get(sessionMessagesStore)[activeSessionId] || []).filter(
+			(x) => x.type === 'ask' && x.awaiting,
+		);
+		if (awaiting.length === 0) return false;
+		const byMsg = askSelections.get(activeSessionId);
+		if (!byMsg) return false;
+		return awaiting.every((x) => (byMsg.get(x.id) || []).length > 0);
+	}
+
+	$effect(() => {
+		activeSessionId;
+		askSelectionsReady = computeAskSelectionsReady();
+	});
+
 	// Entry point for the InputRouter component: it normalizes every input
 	// format (typed text, pasted/picked images, attached files, voice) into a
 	// single payload and forwards it here. The router already cleared its
 	// draft, so the page just delivers the message and resumes auto-follow.
+	// When every pending ask has selected options, Enter composes those
+	// answers (space-joined) and appends any typed text; otherwise a typed
+	// message bypasses the ask batch and resumes immediately.
 	/** @param {{ text: string, images: any, files: any }} payload */
 	function handleInputSubmit({ text, images, files }) {
 		autoFollow = true;
+		if (activeSessionId && trySubmitAskSelections(activeSessionId, text, images, files)) {
+			return;
+		}
 		submitMessage(text, images, files);
+	}
+
+	/**
+	 * @param {string} sessionId
+	 * @param {string} extraText
+	 * @param {any} images
+	 * @param {any} files
+	 */
+	function trySubmitAskSelections(sessionId, extraText, images, files) {
+		const awaiting = (get(sessionMessagesStore)[sessionId] || []).filter(
+			(x) => x.type === 'ask' && x.awaiting,
+		);
+		if (awaiting.length === 0) return false;
+		const byMsg = askSelections.get(sessionId);
+		if (!byMsg) return false;
+		if (!awaiting.every((x) => (byMsg.get(x.id) || []).length > 0)) return false;
+		for (const ask of awaiting) {
+			const selected = byMsg.get(ask.id) || [];
+			resolveAsk(ask.id, { answer: selected.join(' ') }, { deferSubmit: true });
+		}
+		const submitted = resolvedAskIds.get(sessionId);
+		resolvedAskIds.delete(sessionId);
+		clearAskSelections(sessionId);
+		submitActionAnswers(sessionId, submitted, extraText, images, files);
+		return true;
 	}
 
 	// Quick-reply answers / ignores chosen for the CURRENT batch of pending
@@ -2046,13 +2187,14 @@
 	// paused until every question is resolved — answering only one would
 	// resume the session and silently discard the others. Once all are answered
 	// or ignored, a single composed reply is submitted. Typing a message in
-	// the input box bypasses this and resumes immediately.
+	// the input box bypasses this and resumes immediately (unless every ask
+	// already has selected options — then Enter merges selections + text).
 	let resolvedAskIds = new Map(); // sessionId -> Set<msgId>
 
-	// Mark one pending ask card as resolved (answered via quick reply or
+	// Mark one pending ask card as resolved (answered via option chips or
 	// ignored) and submit the composed answers once the batch is complete.
-	/** @param {string} msgId @param {any} resolved */
-	function resolveAsk(msgId, resolved) {
+	/** @param {string} msgId @param {any} resolved @param {{ deferSubmit?: boolean }} [opts] */
+	function resolveAsk(msgId, resolved, opts = {}) {
 		if (!activeSessionId || !msgId) return;
 		const ids = resolvedAskIds.get(activeSessionId) || new Set();
 		// Re-entry guard: a double-click / queued click on the same card (the
@@ -2068,6 +2210,13 @@
 		);
 		ids.add(msgId);
 		resolvedAskIds.set(activeSessionId, ids);
+		const byMsg = askSelections.get(activeSessionId);
+		if (byMsg) {
+			byMsg.delete(msgId);
+			if (byMsg.size === 0) askSelections.delete(activeSessionId);
+		}
+		askSelectionsReady = computeAskSelectionsReady();
+		if (opts.deferSubmit) return;
 		const remainingMessages = (get(sessionMessagesStore)[activeSessionId] || []).filter(
 			(x) => x.type === 'ask' && x.awaiting,
 		);
@@ -2082,32 +2231,26 @@
 	// message and deliver it, which resumes the paused session. A single
 	// question keeps the raw answer; multiple questions quote each one so the
 	// model can map answers back to its questions. Ignored questions are
-	// marked as 忽略.
-	/** @param {string} sessionId @param {any} resolvedIds */
-	function submitActionAnswers(sessionId, resolvedIds) {
+	// marked as 忽略. Optional typed text / attachments from the input box
+	// are appended when Enter submitted selected chips.
+	/** @param {string} sessionId @param {any} resolvedIds @param {string} [extraText] @param {any} [images] @param {any} [files] */
+	function submitActionAnswers(sessionId, resolvedIds, extraText = '', images = [], files = []) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
 		const asks = (get(sessionMessagesStore)[sessionId] || []).filter(
 			(x) => x.type === 'ask' && x.resolved && resolvedIds.has(x.id),
 		);
 		if (asks.length === 0) return;
 		const single = asks.length === 1;
-		const text = asks
+		let text = asks
 			.map((x, i) => {
 				const answer = x.resolved.ignored ? '忽略' : x.resolved.answer;
 				return single ? answer : `关于「${x.content || `问题 ${i + 1}`}」：${answer}`;
 			})
 			.join('\n');
+		const extra = (extraText || '').trim();
+		if (extra) text = text ? `${text} ${extra}` : extra;
 		autoFollow = true;
-		submitMessage(text, []);
-	}
-
-	// The agent asked a question and offered quick-reply buttons. The answer
-	// marks that question as resolved; the session resumes only when every
-	// pending question in the batch is answered or ignored (see resolveAsk).
-	/** @param {string} msgId @param {any} answer */
-	function handleQuickReply(msgId, answer) {
-		if (!activeSessionId || !answer) return;
-		resolveAsk(msgId, { answer });
+		submitMessage(text, images, files);
 	}
 
 	// The user chooses not to answer a pending question; counting as a
@@ -2133,8 +2276,8 @@
 		};
 	}
 
-	/** @param {{ stepId: string, approved: boolean, trustSession: boolean }} payload */
-	async function handleConfirm({ stepId, approved, trustSession }) {
+	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string, trustSession?: boolean }} payload */
+	async function handleConfirm({ stepId, approved, effect, scope, trustSession }) {
 		// Clear the dialog synchronously BEFORE awaiting the IPC round-trip.
 		// If we only cleared it after `await invoke(...)`, a new
 		// `confirm:requested` arriving during that window would find the old
@@ -2147,6 +2290,8 @@
 			sessionId: '',
 			sessionTitle: '',
 			riskLevel: 'medium',
+			params: null,
+			permissionKey: '',
 			deadlineAt: null,
 		};
 		// Surface the next queued confirmation immediately (before the IPC
@@ -2154,11 +2299,16 @@
 		// back-to-back instead of piling up behind the in-flight resolve.
 		showNextConfirm();
 		if (!resolvedStep) return;
+		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
+		const resolvedScope =
+			scope || (trustSession ? 'session' : 'once');
 		try {
 			await invoke('resolve_confirmation', {
 				stepId: resolvedStep,
 				confirmed: approved,
-				trustSession: trustSession || false,
+				trustSession: resolvedScope === 'session' && resolvedEffect === 'allow',
+				effect: resolvedEffect,
+				scope: resolvedScope,
 			});
 		} catch (e) {
 			addNotification(`确认失败: ${formatError(e)}`, 'error', 3000);
@@ -2173,6 +2323,8 @@
 		sessionId={confirmDialog.sessionId}
 		sessionTitle={confirmDialog.sessionTitle}
 		riskLevel={confirmDialog.riskLevel}
+		params={confirmDialog.params}
+		permissionKey={confirmDialog.permissionKey}
 		deadlineAt={confirmDialog.deadlineAt}
 		onConfirm={handleConfirm}
 	/>
@@ -2227,7 +2379,7 @@
 							resolved={msg.resolved ?? null}
 							actionId={msg.actionId ?? null}
 							onContextMenu={handleContextMenu}
-							onQuickReply={handleQuickReply}
+							onAskSelectionChange={handleAskSelectionChange}
 							onIgnore={handleIgnoreAsk}
 						/>
 					{/each}
@@ -2282,6 +2434,7 @@
 		{hotkeyBinding}
 		{isGenerating}
 		{sessionRunning}
+		allowEmptySubmit={askSelectionsReady}
 		{...inputLimits}
 		onsubmit={handleInputSubmit}
 		onstop={endSession}

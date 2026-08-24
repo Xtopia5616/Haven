@@ -1,7 +1,12 @@
-use haven_common::types::RiskLevel;
+use haven_common::config::{StoredPermission, ToolConfig};
+use haven_common::types::{
+    permission_key, permission_key_candidates, ConfirmationMode, PermissionEffect, PermissionScope,
+    RiskLevel,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -448,19 +453,34 @@ pub enum ConfirmationResult {
         tool_name: String,
         params: Value,
         risk_level: RiskLevel,
+        /// Stable key used for grant matching (`tool` / `tool:op`).
+        permission_key: String,
     },
-    Blocked,
+    /// Hard deny — permanent/session denylist, disabled operation, or path sandbox.
+    Blocked {
+        reason: String,
+    },
 }
 
-/// Combined safety config under a single RwLock so `check` reads both
-/// fields atomically and `set_min_risk_level` updates both atomically.
+/// Per-session allow/deny sets keyed by permission key.
+#[derive(Clone, Default)]
+struct SessionGrants {
+    allow: HashSet<String>,
+    deny: HashSet<String>,
+}
+
+/// Combined safety config under a single RwLock so `check` reads atomically.
 #[derive(Clone)]
 struct SafetyConfig {
+    confirmation_mode: ConfirmationMode,
     min_risk_level: RiskLevel,
-    /// Per-conversation trusted risk levels, keyed by session id. Trusting a
-    /// level only affects that one session — other conversations (and the
-    /// threshold check) are untouched.
-    session_trusted_levels: HashMap<String, HashSet<RiskLevel>>,
+    /// Permanent (Always) grants from `SecurityConfig.permissions`.
+    permanent: HashMap<String, PermissionEffect>,
+    /// Per-conversation grants keyed by session id.
+    session_grants: HashMap<String, SessionGrants>,
+    /// Live copy of `tool_settings` for disabled_operations / risk_override /
+    /// allowed_paths enforcement.
+    tool_settings: HashMap<String, ToolConfig>,
 }
 
 pub struct SafetyGateway {
@@ -471,19 +491,53 @@ impl SafetyGateway {
     pub fn new(min_risk_level: RiskLevel) -> Self {
         Self {
             config: RwLock::new(SafetyConfig {
+                confirmation_mode: ConfirmationMode::Ask,
                 min_risk_level,
-                session_trusted_levels: HashMap::new(),
+                permanent: HashMap::new(),
+                session_grants: HashMap::new(),
+                tool_settings: HashMap::new(),
             }),
         }
     }
 
-    /// Update the minimum risk level threshold.
-    /// Operations below this level auto-approve; at or above require confirmation.
-    /// Resets any session trusts on change.
+    /// Replace threshold + mode + permanent grants from settings. Clears
+    /// session grants so a policy change cannot leave stale trusts.
+    pub async fn apply_security(
+        &self,
+        mode: ConfirmationMode,
+        min_risk_level: RiskLevel,
+        permissions: &[StoredPermission],
+    ) {
+        let mut cfg = self.config.write().await;
+        cfg.confirmation_mode = mode;
+        cfg.min_risk_level = min_risk_level;
+        cfg.permanent.clear();
+        for p in permissions {
+            cfg.permanent.insert(p.key.clone(), p.effect);
+        }
+        cfg.session_grants.clear();
+    }
+
+    /// Update the minimum risk level threshold. Clears session grants.
     pub async fn set_min_risk_level(&self, level: RiskLevel) {
         let mut cfg = self.config.write().await;
         cfg.min_risk_level = level;
-        cfg.session_trusted_levels.clear();
+        cfg.session_grants.clear();
+    }
+
+    /// Refresh the live tool_settings mirror used by path/op/risk overrides.
+    pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
+        self.config.write().await.tool_settings = settings;
+    }
+
+    /// Effective risk after optional `tool_settings.risk_override`.
+    pub async fn effective_risk(
+        &self,
+        tool_name: &str,
+        reported: RiskLevel,
+    ) -> RiskLevel {
+        let cfg = self.config.read().await;
+        effective_risk_from(&cfg, tool_name, reported)
     }
 
     pub async fn check(
@@ -493,59 +547,289 @@ impl SafetyGateway {
         params: &Value,
         risk_level: RiskLevel,
     ) -> ConfirmationResult {
+        let key = permission_key(tool_name, params);
         let cfg = self.config.read().await;
+        let risk = effective_risk_from(&cfg, tool_name, risk_level);
 
-        // Below threshold → auto approved
-        if risk_level < cfg.min_risk_level {
+        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
+            return ConfirmationResult::Blocked { reason };
+        }
+        if let Some(reason) = path_sandbox_block(&cfg.tool_settings, tool_name, params) {
+            return ConfirmationResult::Blocked { reason };
+        }
+
+        // Deny always wins over Allow (permanent deny → session deny →
+        // permanent allow → session allow). Session deny can override a
+        // permanent allow for the rest of that conversation.
+        if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Deny) {
+            return ConfirmationResult::Blocked {
+                reason: format!("permanently denied: {key}"),
+            };
+        }
+        if let Some(sid) = session_id
+            && let Some(grants) = cfg.session_grants.get(sid)
+            && match_key_set(&grants.deny, &key)
+        {
+            return ConfirmationResult::Blocked {
+                reason: format!("denied for this session: {key}"),
+            };
+        }
+        if match_grant(&cfg.permanent, &key) == Some(PermissionEffect::Allow) {
+            return ConfirmationResult::AutoApproved;
+        }
+        if let Some(sid) = session_id
+            && let Some(grants) = cfg.session_grants.get(sid)
+            && match_key_set(&grants.allow, &key)
+        {
             return ConfirmationResult::AutoApproved;
         }
 
-        // Session-trusted risk levels → auto approved. Trust is recorded per
-        // conversation only; without a session id (e.g. a UI-invoked call
-        // outside any conversation) there is nothing to check.
-        if let Some(sid) = session_id
-            && cfg
-                .session_trusted_levels
-                .get(sid)
-                .is_some_and(|levels| levels.contains(&risk_level))
-        {
+        // Autopilot skips prompts except Critical — keep a hard floor for
+        // irreversible ops (e.g. power hibernate).
+        let needs_prompt = match cfg.confirmation_mode {
+            ConfirmationMode::Autopilot => risk >= RiskLevel::Critical,
+            ConfirmationMode::Paranoid => risk > RiskLevel::Safe,
+            ConfirmationMode::Ask => risk >= cfg.min_risk_level,
+        };
+
+        if !needs_prompt {
             return ConfirmationResult::AutoApproved;
         }
 
         ConfirmationResult::RequiresConfirmation {
             tool_name: tool_name.into(),
             params: params.clone(),
-            risk_level,
+            risk_level: risk,
+            permission_key: key,
         }
     }
 
-    /// Trust a risk level for the remainder of the given session only. A
-    /// `None` session id (no conversation context) records nothing — there is
-    /// no session scope the trust could apply to.
-    pub async fn trust_risk_level(&self, session_id: Option<&str>, level: RiskLevel) {
+    /// Record a grant. `Once` is a no-op (caller already approved this call).
+    /// `Always` updates the in-memory permanent map; the app layer must also
+    /// persist to `SecurityConfig.permissions`.
+    pub async fn grant(
+        &self,
+        session_id: Option<&str>,
+        key: &str,
+        effect: PermissionEffect,
+        scope: PermissionScope,
+    ) {
+        if matches!(scope, PermissionScope::Once) || key.is_empty() {
+            return;
+        }
         let mut cfg = self.config.write().await;
-        if let Some(sid) = session_id {
-            cfg.session_trusted_levels
-                .entry(sid.to_string())
-                .or_default()
-                .insert(level);
+        match scope {
+            PermissionScope::Always => {
+                cfg.permanent.insert(key.to_string(), effect);
+            }
+            PermissionScope::Session => {
+                let Some(sid) = session_id else {
+                    return;
+                };
+                let entry = cfg.session_grants.entry(sid.to_string()).or_default();
+                match effect {
+                    PermissionEffect::Allow => {
+                        entry.deny.remove(key);
+                        entry.allow.insert(key.to_string());
+                    }
+                    PermissionEffect::Deny => {
+                        entry.allow.remove(key);
+                        entry.deny.insert(key.to_string());
+                    }
+                }
+            }
+            PermissionScope::Once => {}
         }
     }
 
-    /// Drop one session's trusted levels (the conversation ended or was
-    /// deleted). Other sessions are unaffected.
+    /// Snapshot of permanent grants for the settings UI.
+    pub async fn list_permanent(&self) -> Vec<StoredPermission> {
+        let cfg = self.config.read().await;
+        let mut out: Vec<_> = cfg
+            .permanent
+            .iter()
+            .map(|(key, effect)| StoredPermission {
+                key: key.clone(),
+                effect: *effect,
+            })
+            .collect();
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        out
+    }
+
+    /// Remove one permanent grant from memory. App layer persists the change.
+    pub async fn revoke_permanent(&self, key: &str) -> bool {
+        self.config.write().await.permanent.remove(key).is_some()
+    }
+
+    /// Drop one session's grants (conversation ended / deleted).
     pub async fn clear_session_trust(&self, session_id: &str) {
         self.config
             .write()
             .await
-            .session_trusted_levels
+            .session_grants
             .remove(session_id);
     }
 
-    /// Drop every session's trusted levels (all history cleared / app reset).
+    /// Drop every session grant (history cleared / app reset).
     pub async fn clear_all_trust(&self) {
-        self.config.write().await.session_trusted_levels.clear();
+        self.config.write().await.session_grants.clear();
     }
+}
+
+fn effective_risk_from(cfg: &SafetyConfig, tool_name: &str, reported: RiskLevel) -> RiskLevel {
+    cfg.tool_settings
+        .get(tool_name)
+        .and_then(|t| t.risk_override.as_deref())
+        .and_then(parse_risk_override)
+        .unwrap_or(reported)
+}
+
+fn parse_risk_override(raw: &str) -> Option<RiskLevel> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "safe" => Some(RiskLevel::Safe),
+        "low" => Some(RiskLevel::Low),
+        "medium" => Some(RiskLevel::Medium),
+        "high" => Some(RiskLevel::High),
+        "critical" => Some(RiskLevel::Critical),
+        _ => None,
+    }
+}
+
+fn match_grant(map: &HashMap<String, PermissionEffect>, key: &str) -> Option<PermissionEffect> {
+    for candidate in permission_key_candidates(key) {
+        if let Some(effect) = map.get(candidate) {
+            return Some(*effect);
+        }
+    }
+    None
+}
+
+fn match_key_set(set: &HashSet<String>, key: &str) -> bool {
+    permission_key_candidates(key)
+        .into_iter()
+        .any(|c| set.contains(c))
+}
+
+fn disabled_operation_block(
+    settings: &HashMap<String, ToolConfig>,
+    tool_name: &str,
+    params: &Value,
+) -> Option<String> {
+    let cfg = settings.get(tool_name)?;
+    if cfg.disabled_operations.is_empty() {
+        return None;
+    }
+    let op = params
+        .get("operation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+    for disabled in &cfg.disabled_operations {
+        let d = disabled.trim();
+        if d.is_empty() {
+            continue;
+        }
+        if d == op || d == scope || (!scope.is_empty() && d == format!("{scope}:{op}")) {
+            return Some(format!("operation '{disabled}' is disabled for tool '{tool_name}'"));
+        }
+    }
+    None
+}
+
+fn path_sandbox_block(
+    settings: &HashMap<String, ToolConfig>,
+    tool_name: &str,
+    params: &Value,
+) -> Option<String> {
+    let cfg = settings.get(tool_name)?;
+    if cfg.allowed_paths.is_empty() {
+        return None;
+    }
+    let allowed: Vec<PathBuf> = cfg
+        .allowed_paths
+        .iter()
+        .map(|p| PathBuf::from(p))
+        .collect();
+    let paths = collect_path_params(params);
+    if paths.is_empty() {
+        return None;
+    }
+    for path in paths {
+        if !path_is_allowed(&path, &allowed) {
+            return Some(format!(
+                "path '{}' is outside allowed_paths for tool '{tool_name}'",
+                path.display()
+            ));
+        }
+    }
+    None
+}
+
+fn collect_path_params(params: &Value) -> Vec<PathBuf> {
+    const KEYS: &[&str] = &[
+        "path",
+        "paths",
+        "source",
+        "destination",
+        "target",
+        "cwd",
+        "file",
+        "dir",
+        "directory",
+    ];
+    let mut out = Vec::new();
+    let Some(obj) = params.as_object() else {
+        return out;
+    };
+    for key in KEYS {
+        match obj.get(*key) {
+            Some(Value::String(s)) if !s.is_empty() => out.push(PathBuf::from(s)),
+            Some(Value::Array(arr)) => {
+                for v in arr {
+                    if let Some(s) = v.as_str().filter(|s| !s.is_empty()) {
+                        out.push(PathBuf::from(s));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn path_is_allowed(path: &Path, allowed: &[PathBuf]) -> bool {
+    let Some(canon) = normalize_path(path) else {
+        return false;
+    };
+    for base in allowed {
+        let Some(base_abs) = normalize_path(base) else {
+            continue;
+        };
+        if canon.starts_with(&base_abs) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Lexically normalize `.` / `..` after making the path absolute so
+/// `allowed\..\Windows` cannot prefix-match `allowed`.
+fn normalize_path(path: &Path) -> Option<PathBuf> {
+    let abs = std::path::absolute(path).ok()?;
+    let mut out = PathBuf::new();
+    for comp in abs.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -891,9 +1175,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_trusted_risk_level_auto_approved() {
+    async fn test_safety_gateway_session_allow_tool_key() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
+        gw.grant(
+            Some("ses-a"),
+            "tool1",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
         let result = gw
             .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
             .await;
@@ -901,76 +1191,201 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_trust_is_per_session() {
+    async fn test_safety_gateway_session_allow_is_per_session_and_per_tool() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
-        // The trusted session is auto-approved…
+        gw.grant(
+            Some("ses-a"),
+            "tool1",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(matches!(
+            gw.check(Some("ses-b"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool2", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+        assert!(matches!(
+            gw.check(None, "tool1", &json!({}), RiskLevel::Medium).await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_permanent_deny_blocks() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(None, "shell", PermissionEffect::Deny, PermissionScope::Always)
+            .await;
+        let result = gw.check(None, "shell", &json!({}), RiskLevel::Safe).await;
+        assert!(matches!(
+            result,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_parent_key_matches_operation() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(
+            Some("ses-a"),
+            "files",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
         let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+            .check(
+                Some("ses-a"),
+                "files",
+                &json!({"operation": "delete"}),
+                RiskLevel::High,
+            )
             .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
-        // …but a different session is NOT: the trust must not leak across
-        // conversations.
-        let result = gw
-            .check(Some("ses-b"), "tool1", &json!({}), RiskLevel::Medium)
-            .await;
-        assert!(matches!(
-            result,
-            ConfirmationResult::RequiresConfirmation { .. }
-        ));
-        // A call with no session context is not trusted either.
-        let result = gw.check(None, "tool1", &json!({}), RiskLevel::Medium).await;
-        assert!(matches!(
-            result,
-            ConfirmationResult::RequiresConfirmation { .. }
-        ));
     }
 
     #[tokio::test]
     async fn test_safety_gateway_clear_session_trust() {
         let gw = SafetyGateway::new(RiskLevel::Medium);
-        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
-        let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-            .await;
-        assert!(matches!(result, ConfirmationResult::AutoApproved));
+        gw.grant(
+            Some("ses-a"),
+            "tool1",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
 
         gw.clear_session_trust("ses-a").await;
-        let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-            .await;
         assert!(matches!(
-            result,
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
 
     #[tokio::test]
-    async fn test_safety_gateway_set_threshold_clears_trust() {
+    async fn test_safety_gateway_set_threshold_clears_session_grants() {
         let gw = SafetyGateway::new(RiskLevel::Low);
-        gw.trust_risk_level(Some("ses-a"), RiskLevel::Medium).await;
-        // Medium is >= Low → check against threshold should pass since trusted
-        let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-            .await;
-        assert!(matches!(result, ConfirmationResult::AutoApproved));
-
-        // Raising threshold clears session trusts
-        gw.set_min_risk_level(RiskLevel::High).await;
-        // Medium is below High → auto approved anyway (below threshold)
-        let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
-            .await;
-        assert!(matches!(result, ConfirmationResult::AutoApproved));
-
-        // High is at threshold, trust was cleared → requires confirmation
-        let result = gw
-            .check(Some("ses-a"), "tool1", &json!({}), RiskLevel::High)
-            .await;
+        gw.grant(
+            Some("ses-a"),
+            "tool1",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
         assert!(matches!(
-            result,
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+
+        gw.set_min_risk_level(RiskLevel::High).await;
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::High)
+                .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_disabled_operation_blocks() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let mut settings = HashMap::new();
+        settings.insert(
+            "files".into(),
+            ToolConfig {
+                disabled_operations: vec!["delete".into()],
+                ..ToolConfig::default()
+            },
+        );
+        gw.set_tool_settings(settings).await;
+        let result = gw
+            .check(None, "files", &json!({"operation": "delete"}), RiskLevel::Low)
+            .await;
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_autopilot_skips_prompt_except_critical() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.apply_security(ConfirmationMode::Autopilot, RiskLevel::Medium, &[])
+            .await;
+        assert!(matches!(
+            gw.check(None, "shell", &json!({}), RiskLevel::High).await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(matches!(
+            gw.check(None, "system", &json!({"scope":"power","operation":"hibernate"}), RiskLevel::Critical)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_safety_gateway_session_deny_overrides_permanent_allow() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        gw.grant(None, "files", PermissionEffect::Allow, PermissionScope::Always)
+            .await;
+        gw.grant(
+            Some("ses-a"),
+            "files",
+            PermissionEffect::Deny,
+            PermissionScope::Session,
+        )
+        .await;
+        assert!(matches!(
+            gw.check(
+                Some("ses-a"),
+                "files",
+                &json!({"operation": "delete"}),
+                RiskLevel::High
+            )
+            .await,
+            ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_path_sandbox_rejects_parent_escape() {
+        let gw = SafetyGateway::new(RiskLevel::Medium);
+        let mut settings = HashMap::new();
+        settings.insert(
+            "files".into(),
+            ToolConfig {
+                allowed_paths: vec!["C:\\allowed".into()],
+                ..ToolConfig::default()
+            },
+        );
+        gw.set_tool_settings(settings).await;
+        let result = gw
+            .check(
+                None,
+                "files",
+                &json!({"operation": "read", "path": "C:\\allowed\\..\\Windows\\System32"}),
+                RiskLevel::Low,
+            )
+            .await;
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
     }
 
     #[test]

@@ -85,7 +85,7 @@ describe('ToolResultCard ask', () => {
 		expect(container.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('Haven 需要你确认')).toBeTruthy();
 		expect(screen.getByText('你想怎么做？')).toBeTruthy();
-		expect(screen.getByText('等待你的回答...')).toBeTruthy();
+		expect(screen.getByText('选择后回车提交')).toBeTruthy();
 		expect(screen.getByText('方案 A')).toBeTruthy();
 		expect(screen.getByText('方案 B')).toBeTruthy();
 	});
@@ -102,18 +102,34 @@ describe('ToolResultCard ask', () => {
 		expect(screen.queryByText('方案 A')).toBeNull();
 	});
 
-	it('fires onQuickReply with the message id and clicked option', async () => {
-		const onQuickReply = vi.fn();
+	it('shows waiting copy when ask has no options', () => {
 		render(ToolResultCard, {
 			type: 'ask',
+			content: '你怎么看？',
+			options: [],
+			awaiting: true,
+			messageId: 'ask-free',
+		});
+		expect(screen.getByText('等待你的回答...')).toBeTruthy();
+	});
+
+	it('toggles option selection and notifies onAskSelectionChange without submitting', async () => {
+		const onAskSelectionChange = vi.fn();
+		const { container } = render(ToolResultCard, {
+			type: 'ask',
 			content: '选择？',
-			options: ['立即执行'],
+			options: ['立即执行', '稍后'],
 			awaiting: true,
 			messageId: 'ask-42',
-			onQuickReply,
+			onAskSelectionChange,
 		});
 		await fireEvent.click(screen.getByText('立即执行'));
-		expect(onQuickReply).toHaveBeenCalledWith('ask-42', '立即执行');
+		expect(onAskSelectionChange).toHaveBeenCalledWith('ask-42', ['立即执行']);
+		expect(container.querySelector('.ask-option.selected')?.textContent).toBe('立即执行');
+		await fireEvent.click(screen.getByText('稍后'));
+		expect(onAskSelectionChange).toHaveBeenCalledWith('ask-42', ['立即执行', '稍后']);
+		await fireEvent.click(screen.getByText('立即执行'));
+		expect(onAskSelectionChange).toHaveBeenCalledWith('ask-42', ['稍后']);
 	});
 
 	it('fires onIgnore with the message id', async () => {

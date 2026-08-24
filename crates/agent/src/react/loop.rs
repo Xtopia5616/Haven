@@ -63,17 +63,14 @@ impl ReActEngine {
             max_steps,
             effective_max
         );
-        // Phase 7 / E4: tools may only run while status is Running. The
-        // dispatcher already flips Pending→Running via `try_claim_pending`;
-        // direct callers (tests, continue_session) may still be Pending —
-        // promote here so execute_step does not refuse. Never promote from
-        // Paused*/terminal (those exit at step head below).
-        if self.executor.get_session_state(session_id).await == Some(SessionStatus::Pending) {
-            let _ = self
-                .executor
-                .update_session_status(session_id, SessionStatus::Running)
-                .await;
-        }
+        // Phase 7 / E4: tools may only run while status is Running.
+        // Pending→Running + UI emit live in `run_session_from_id` (claim path
+        // and direct callers). Never promote from Paused*/terminal here.
+        debug_assert_ne!(
+            self.executor.get_session_state(session_id).await,
+            Some(SessionStatus::Pending),
+            "Pending→Running must be completed before run_react_loop"
+        );
         // Cut-off retry counter: a text-only response that looks truncated (or
         // is a mid-session narration that stopped without a tool call) is retried
         // up to `context_limits.cut_off_retries` times per run with a continuation nudge (the

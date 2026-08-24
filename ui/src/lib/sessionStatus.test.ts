@@ -1,23 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import {
 	ACTION_STATUSES,
+	SESSION_STATUSES,
+	isBusyStatus,
 	isPausedStatus,
 	statusColor,
 	statusVariant,
 } from './sessionStatus.ts';
 
-describe('ACTION_STATUSES', () => {
-	it('covers the canonical backend statuses', () => {
-		expect(ACTION_STATUSES).toEqual([
+describe('SESSION_STATUSES', () => {
+	it('covers the canonical backend session statuses', () => {
+		expect(SESSION_STATUSES).toEqual([
 			'pending',
 			'running',
 			'paused',
 			'paused_awaiting_answer',
 			'paused_awaiting_confirm',
 			'completed',
-			'failed',
 			'error',
 		]);
+		expect(ACTION_STATUSES).toEqual(SESSION_STATUSES);
 	});
 });
 
@@ -28,6 +30,17 @@ describe('isPausedStatus', () => {
 		expect(isPausedStatus('paused_awaiting_confirm')).toBe(true);
 		expect(isPausedStatus('pending')).toBe(false);
 		expect(isPausedStatus(undefined)).toBe(false);
+	});
+});
+
+describe('isBusyStatus', () => {
+	it('treats pending and running as busy', () => {
+		expect(isBusyStatus('pending')).toBe(true);
+		expect(isBusyStatus('running')).toBe(true);
+		expect(isBusyStatus('paused')).toBe(false);
+		expect(isBusyStatus('paused_awaiting_answer')).toBe(false);
+		expect(isBusyStatus('completed')).toBe(false);
+		expect(isBusyStatus(undefined)).toBe(false);
 	});
 });
 

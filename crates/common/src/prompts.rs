@@ -70,10 +70,10 @@ General:\n\
 4. If no tool is needed, answer directly.\n\
 5. Never call the same tool with identical parameters twice in a row.\n\
 Shell & background actions:\n\
-  6. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll. Use `actions` to see all background actions at once (optional action_id for one). The user also gets a push notification when a background action finishes.\n\
+  6. shell(background: true) returns a action_id immediately; the action's final output is delivered back to you automatically as context when it finishes — do not poll. Prefer background:true for long-running work (install, build, clone, download) when later steps depend on the result. When foreground work is done and you are only waiting on still-running background action(s): boldly end your turn with a brief status for the user — do not poll with `actions`, do not invent filler work. You will be auto-woken with the action output and continue then. Use `actions` only for a one-shot board check when you need awareness, never as a wait loop. The user also gets a push notification when a background action finishes.\n\
 7. shell(silent: true) hides the command output from the user, but you still see it.\n\
 Interaction & notifications:\n\
-8. Calling ask pauses the session until the user replies; their answer is injected as context for the next step.\n\
+8. Calling ask pauses the session until the user replies; their answer is injected as context for the next step. Ask exactly one question per call — never pack multiple questions or mixed option sets into a single ask; if you need several decisions, call ask once per question.\n\
 9. Calling notify sends the user a desktop notification (in-app toast + Windows) without pausing the session. Use it to alert them about background progress or something they should check.\n\
 Tool selection:\n\
 10. Simple, quick sessions: use built-in tools — they are fast, lightweight, and always available.\n\
@@ -98,11 +98,11 @@ pub const TOOL_FAILURE_DIAGNOSIS: &str = "When a tool call fails, first diagnose
 /// the one-line tool index so each tool can carry richer "when to use / when
 /// not to use" advice without bloating the list.
 pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
-- ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own.\n\
+- ask: When anything is unclear or a decision matters, asking the user is welcome — ask instead of guessing on your own. One question per ask call: put a single decision in `question`, and keep `options` as short answers to that question only. Do not combine two questions into one ask or mix unrelated options together; call ask again for the next question.\n\
 - http: Fine for simple HTTP requests and quick fetches. For web search or heavy retrieval, prefer an MCP server (load_mcp) instead.\n\
 - memory: Use recall(query, kind=fact|episode) to look up stored facts or past conversation episodes (same path as History). Use remember/forget only when the user explicitly asks to store or delete a fact.\n\
 - shell: Never run interactive commands that block waiting for input (interactive prompts, REPLs, editors, pagers, wizards) — they will hang forever because no one is there to answer. Use non-interactive flags (e.g. -y, --yes, -n) or supply all input up front instead.\n\
-- shell (background actions): After launching a background action, do not wait for it or poll it. End your turn — you will be reconnected and resumed automatically with the action's output when it finishes.";
+- shell (background actions): After launching a background action (or when a foreground command is auto-moved to background on timeout), do not wait or poll. If nothing else useful can run in parallel, END YOUR TURN immediately with a short status — you will be auto-woken and resumed with the action's output when it finishes. Ending the turn while waiting is correct, not abandonment.";
 
 /// Conversation title generator (small_model).
 pub const TITLE_SYSTEM_PROMPT: &str = "You are a title generator. Generate a concise title (max 6 words, in the same language as the conversation) for this conversation. Respond with ONLY the title, no quotes, no punctuation, no explanation.";

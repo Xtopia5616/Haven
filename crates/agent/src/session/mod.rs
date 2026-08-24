@@ -206,8 +206,16 @@ pub struct StepInfo {
     pub confirmed: Option<bool>,
 }
 
-type ConfirmRequestCallback =
-    OnceHandler<dyn Fn(haven_common::types::ConfirmId, String, String, RiskLevel) + Send + Sync>;
+type ConfirmRequestCallback = OnceHandler<
+    dyn Fn(
+            haven_common::types::ConfirmId,
+            String,
+            String,
+            RiskLevel,
+            Value,
+        ) + Send
+        + Sync,
+>;
 
 /// Terminal-failure callback: invoked when the dispatcher marks a session as
 /// Error on a path that bypasses the ReAct loop's normal error emission
@@ -216,12 +224,20 @@ type ConfirmRequestCallback =
 /// transition (busy indicators, status chip, session list refresh).
 type SessionErrorCallback = OnceHandler<dyn Fn(String, String) + Send + Sync>;
 
+/// Outcome of resolving a confirm request — enough for the app layer to
+/// record a permission grant (tool key + session scope).
+#[derive(Debug, Clone)]
+pub struct ConfirmResolution {
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    pub tool_input: Value,
+}
+
 /// Non-blocking scheduled-tool confirmation pending (R2). Keyed by `conf-*`
 /// in `SessionExecutor::scheduled_confirms`. The fired-action consumer emits
 /// `confirm:requested` and continues; `resolve_confirmation` (or the
 /// `SCHEDULED_CONFIRM_TIMEOUT` timer) later executes or skips the tool.
 struct ScheduledConfirmPending {
-    risk_level: RiskLevel,
     /// Owning session for trust-recording; `None` for headless fires.
     session_id: Option<String>,
     tool_name: String,

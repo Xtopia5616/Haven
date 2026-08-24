@@ -219,12 +219,34 @@
 		options = [],
 		awaiting = false,
 		messageId = '',
-		onQuickReply = null,
+		onAskSelectionChange = null,
 		onIgnore = null,
 		resolved = null,
 		streaming = false,
 		actionId = null,
 	} = $props();
+
+	// Local multi-select for ask option chips. Click toggles; Enter in the
+	// chat input submits (page composes selected options + any typed text).
+	/** @type {string[]} */
+	let selectedOptions = $state([]);
+
+	/** @param {string} opt */
+	function toggleAskOption(opt) {
+		if (!awaiting) return;
+		selectedOptions = selectedOptions.includes(opt)
+			? selectedOptions.filter((x) => x !== opt)
+			: [...selectedOptions, opt];
+		onAskSelectionChange?.(messageId, selectedOptions);
+	}
+
+	// Drop stale selections when the card leaves the awaiting state (answered,
+	// ignored, or session resumed) so a later ask never inherits them.
+	$effect(() => {
+		if (!awaiting && selectedOptions.length > 0) {
+			selectedOptions = [];
+		}
+	});
 
 	const TERMINAL_ACTION = new Set(['completed', 'failed', 'cancelled']);
 
@@ -436,7 +458,9 @@
 				{#each options as opt (opt)}
 					<button
 						class="ask-option"
-						onclick={() => onQuickReply?.(messageId, opt)}
+						class:selected={selectedOptions.includes(opt)}
+						aria-pressed={selectedOptions.includes(opt)}
+						onclick={() => toggleAskOption(opt)}
 						type="button">{opt}</button
 					>
 				{/each}
@@ -449,7 +473,11 @@
 				>
 				<span class="ask-waiting">
 					<span class="ask-waiting-dot"></span>
-					等待你的回答...
+					{#if options && options.length > 0}
+						选择后回车提交
+					{:else}
+						等待你的回答...
+					{/if}
 				</span>
 			</div>
 		{/if}
@@ -1225,10 +1253,20 @@
 		font-size: 12px;
 		font-weight: 600;
 		cursor: pointer;
-		transition: filter 0.15s ease;
+		transition:
+			filter 0.15s ease,
+			background 0.15s ease,
+			border-color 0.15s ease,
+			color 0.15s ease;
 	}
 	.ask-option:hover {
 		filter: brightness(0.95);
+	}
+	.ask-option.selected {
+		background: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-primary);
+		border-color: var(--md-sys-color-primary);
+		filter: none;
 	}
 	.ask-actions {
 		display: flex;

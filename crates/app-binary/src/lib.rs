@@ -690,12 +690,17 @@ pub fn run() {
                             move |step_id: haven_common::types::ConfirmId,
                                   session_id: String,
                                   tool_name: String,
-                                  risk_level: haven_common::types::RiskLevel| {
+                                  risk_level: haven_common::types::RiskLevel,
+                                  params: serde_json::Value| {
+                                let permission_key =
+                                    haven_common::types::permission_key(&tool_name, &params);
                                 let _ = app_h.emit("confirm:requested", serde_json::json!({
                                     "step_id": step_id,
                                     "tool_name": tool_name,
                                     "risk_level": risk_level,
                                     "session_id": session_id,
+                                    "params": params,
+                                    "permission_key": permission_key,
                                 }));
                             },
                         ));
@@ -860,6 +865,8 @@ pub fn run() {
             commands::memory::delete_fact,
             commands::settings::get_settings,
             commands::settings::update_settings,
+            commands::settings::list_permissions,
+            commands::settings::revoke_permission,
             commands::settings::check_shell_available,
             commands::history::export_history,
             commands::settings::enable_autostart,
@@ -1209,11 +1216,15 @@ mod tests {
                     prompt_tokens: 1,
                     completion_tokens: 2,
                     total_tokens: 3,
+                    cached_tokens: 0,
+                    cache_creation_tokens: 0,
                     cost_usd: None,
                     model: None,
                     cumulative_prompt_tokens: 1,
                     cumulative_completion_tokens: 2,
                     cumulative_total_tokens: 3,
+                    cumulative_cached_tokens: 0,
+                    cumulative_cache_creation_tokens: 0,
                     cumulative_cost_usd: None,
                     context_window: None,
                     step_number: Some(1),

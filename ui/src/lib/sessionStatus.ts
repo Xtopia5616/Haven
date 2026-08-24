@@ -4,17 +4,21 @@
 // statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the history page.
 // isPausedStatus() covers plain pause, ask-awaiting (F2), and confirm-awaiting (E3).
+// isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
-export const ACTION_STATUSES = [
+/** Session statuses only (not background-action `failed`). */
+export const SESSION_STATUSES = [
 	'pending',
 	'running',
 	'paused',
 	'paused_awaiting_answer',
 	'paused_awaiting_confirm',
 	'completed',
-	'failed',
 	'error',
 ];
+
+/** @deprecated Use SESSION_STATUSES; kept for older imports. */
+export const ACTION_STATUSES = SESSION_STATUSES;
 
 const COLOR_MAP: Record<string, string> = {
 	pending: '#666',
@@ -23,6 +27,7 @@ const COLOR_MAP: Record<string, string> = {
 	paused_awaiting_answer: '#ccaa44',
 	paused_awaiting_confirm: '#ccaa44',
 	completed: '#4488ff',
+	// Legacy / background-action status — sessions use `error`.
 	failed: '#ff4444',
 	error: '#ff4444',
 };
@@ -44,6 +49,11 @@ export function isPausedStatus(status: string | undefined | null): boolean {
 		status === 'paused_awaiting_answer' ||
 		status === 'paused_awaiting_confirm'
 	);
+}
+
+/** Queued (`pending`) or claimed (`running`) — both block "idle" UI. */
+export function isBusyStatus(status: string | undefined | null): boolean {
+	return status === 'pending' || status === 'running';
 }
 
 export function statusColor(status: string) {

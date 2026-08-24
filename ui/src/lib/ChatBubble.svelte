@@ -26,7 +26,7 @@
 		resolved = null,
 		actionId = null,
 		onContextMenu = null,
-		onQuickReply = null,
+		onAskSelectionChange = null,
 		onIgnore = null,
 	} = $props();
 
@@ -380,7 +380,7 @@
 				{awaiting}
 				{messageId}
 				{resolved}
-				{onQuickReply}
+				{onAskSelectionChange}
 				{onIgnore}
 			/>
 		{:else if msgType === 'supplement'}

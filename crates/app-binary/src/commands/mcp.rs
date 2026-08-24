@@ -223,18 +223,14 @@ pub async fn mcp_tool_call(
     tool: String,
     args: Value,
 ) -> Result<Value, String> {
-    // Check SafetyGateway (MCP tools default to Medium risk). No session
-    // context here — the call is invoked from the UI, not a conversation — so
-    // only the threshold applies, never per-session trust.
+    // Same qualified name + High risk as McpToolAdapter so Always grants from
+    // agent confirms apply to UI invoke. No session context — threshold +
+    // permanent grants only.
+    let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
     match state
         .tools
         .safety_gateway
-        .check(
-            None,
-            &format!("mcp:{}:{}", client, tool),
-            &args,
-            RiskLevel::Medium,
-        )
+        .check(None, &tool_key, &args, RiskLevel::High)
         .await
     {
         ConfirmationResult::AutoApproved => {}
@@ -242,12 +238,13 @@ pub async fn mcp_tool_call(
             tool_name,
             params,
             risk_level,
+            ..
         } => {
             return Err(confirmation_error(tool_name, params, risk_level)
                 .map_err(|e| log_err("mcp_tool_call", e))?);
         }
-        ConfirmationResult::Blocked => {
-            return Err("MCP tool call blocked by security policy".to_string());
+        ConfirmationResult::Blocked { reason } => {
+            return Err(format!("MCP tool call blocked by security policy ({reason})"));
         }
     }
 

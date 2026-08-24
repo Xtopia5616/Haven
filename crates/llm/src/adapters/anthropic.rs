@@ -94,6 +94,10 @@ struct AnthropicUsage {
     input_tokens: u32,
     #[serde(default)]
     output_tokens: u32,
+    #[serde(default)]
+    cache_read_input_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: u32,
 }
 
 // Streaming SSE events (https://docs.anthropic.com/en/api/messages-streaming)
@@ -678,7 +682,13 @@ impl AnthropicAdapter {
             .map(|u| Usage {
                 prompt_tokens: u.input_tokens,
                 completion_tokens: u.output_tokens,
-                total_tokens: u.input_tokens + u.output_tokens,
+                // Anthropic reports cache read/write separately from input_tokens.
+                total_tokens: u.input_tokens
+                    + u.cache_read_input_tokens
+                    + u.cache_creation_input_tokens
+                    + u.output_tokens,
+                cached_tokens: u.cache_read_input_tokens,
+                cache_creation_tokens: u.cache_creation_input_tokens,
                 model_name: model.clone(),
                 cost: None,
             })
@@ -843,7 +853,19 @@ impl AnthropicAdapter {
                 let data = match state.rx.recv().await {
                     Some(d) => d,
                     None => {
-                        let chunk = if !state.saw_message_stop && !state.accumulated_text.is_empty()
+                        // Open / unfinished tool_use blocks mean the stream
+                        // died mid-arguments — treat as truncated.
+                        let unfinished_tools = state.blocks.iter().any(|b| {
+                            matches!(b.kind, BlockKind::ToolUse)
+                                && (CanonicalToolCall::stream_tool_args_unfinished(
+                                    &b.tool_name,
+                                    &b.tool_input,
+                                ) || !state.layout.iter().any(|(k, pos, _)| {
+                                    *k == Self::LAYOUT_KIND_TOOL_USE && *pos == b.pos
+                                }))
+                        });
+                        let chunk = if !state.saw_message_stop
+                            && (!state.accumulated_text.is_empty() || unfinished_tools)
                         {
                             Err(LlmError::StreamTruncated)
                         } else {
@@ -879,7 +901,12 @@ impl AnthropicAdapter {
                             state.usage = Some(Usage {
                                 prompt_tokens: u.input_tokens,
                                 completion_tokens: u.output_tokens,
-                                total_tokens: u.input_tokens + u.output_tokens,
+                                total_tokens: u.input_tokens
+                                    + u.cache_read_input_tokens
+                                    + u.cache_creation_input_tokens
+                                    + u.output_tokens,
+                                cached_tokens: u.cache_read_input_tokens,
+                                cache_creation_tokens: u.cache_creation_input_tokens,
                                 model_name: state.last_model.clone(),
                                 cost: None,
                             });
@@ -1034,7 +1061,19 @@ impl AnthropicAdapter {
                         }
                         if let (Some(u), Some(existing)) = (usage, state.usage.as_mut()) {
                             existing.completion_tokens = u.output_tokens;
-                            existing.total_tokens = existing.prompt_tokens + u.output_tokens;
+                            if u.input_tokens > 0 {
+                                existing.prompt_tokens = u.input_tokens;
+                            }
+                            if u.cache_read_input_tokens > 0 {
+                                existing.cached_tokens = u.cache_read_input_tokens;
+                            }
+                            if u.cache_creation_input_tokens > 0 {
+                                existing.cache_creation_tokens = u.cache_creation_input_tokens;
+                            }
+                            existing.total_tokens = existing.prompt_tokens
+                                + existing.cached_tokens
+                                + existing.cache_creation_tokens
+                                + existing.completion_tokens;
                         }
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
@@ -1771,6 +1810,7 @@ mod tests {
             usage: Some(AnthropicUsage {
                 input_tokens: 10,
                 output_tokens: 5,
+                ..Default::default()
             }),
             model: Some("claude-3".into()),
         };

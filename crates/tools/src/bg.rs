@@ -45,8 +45,14 @@ pub fn build_shell_command_silent(shell: &str, command: &str) -> std::process::C
             // redirection writes UTF-16LE otherwise, and files the agent later
             // reads (`cat`, Get-Content) would come back as mangled UTF-16.
             let mut c = std::process::Command::new(shell);
+            // ProgressPreference: redirected stderr serializes ProgressRecords
+            // as CLIXML ("正在准备首次使用模块" / Completed). Large commands
+            // then surface that blob as the failure text after strip_xml_markup
+            // concatenates type names. Silence progress so only real errors
+            // reach the pipe.
             let ps = format!(
-                "$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+                "$ProgressPreference = 'SilentlyContinue'; \
+                 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
                  $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; {command}"
             );
             // Pass the whole script via -EncodedCommand (UTF-16LE base64)
@@ -789,11 +795,18 @@ impl BackgroundActions {
         };
         match &entry.state {
             BackgroundActionState::Running { .. } => {
-                let mut v = running_status_json(action_id, entry);
-                v["hint"] = json!(
-                    "The action is still running. Its result is pushed back to your session automatically when it finishes — no polling needed. Use the actions tool to see all background actions at once."
+                let body = running_status_json(action_id, entry);
+                let mut ordered = haven_common::tools::background_wait_object(
+                    "The action is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
                 );
-                v
+                // Move fields (including the live output tail) — do not clone
+                // the potentially large `output` string just to reorder keys.
+                if let Value::Object(obj) = body {
+                    for (k, val) in obj {
+                        ordered.insert(k, val);
+                    }
+                }
+                Value::Object(ordered)
             }
             _ => render_status_json(action_id, &entry.state),
         }
@@ -1113,6 +1126,13 @@ pub fn sanitize_shell_output(text: &str, shell: &str) -> String {
 /// human-readable messages inside it. Content before/after a document (e.g.
 /// real stdout lines captured next to a CLIXML stderr blob) is preserved —
 /// otherwise sanitizing would silently drop the actual command output.
+///
+/// Progress-only CLIXML (module first-use / Write-Progress) has no
+/// `<S S="Error">` segments; those documents are dropped entirely. Truncated
+/// captures (cap cut mid-document, no `</Objs>`) still extract complete and
+/// unfinished Error segments. Truncated progress-only markup is discarded;
+/// other truncated CLIXML without recoverable Error text keeps the raw
+/// remainder so a real failure is not silenced.
 fn replace_clixml_documents(text: &str) -> String {
     const HEADER: &str = "#< CLIXML";
     let mut out = String::with_capacity(text.len());
@@ -1120,54 +1140,87 @@ fn replace_clixml_documents(text: &str) -> String {
     while let Some(start) = rest.find(HEADER) {
         out.push_str(&rest[..start]);
         let doc_tail = &rest[start + HEADER.len()..];
-        let Some(end_rel) = doc_tail.find("</Objs>") else {
-            // Unterminated document (truncated capture): keep the remainder
-            // as-is so no content is silently dropped.
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let doc_end = start + HEADER.len() + end_rel + "</Objs>".len();
-        let doc = &rest[start..doc_end];
-        let messages = extract_clixml_messages(doc);
-        if !messages.is_empty() {
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push('\n');
+        match doc_tail.find("</Objs>") {
+            Some(end_rel) => {
+                let doc_end = HEADER.len() + end_rel + "</Objs>".len();
+                let doc = &rest[start..start + doc_end];
+                let messages = extract_clixml_messages(doc);
+                if !messages.is_empty() {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(&messages);
+                }
+                rest = &rest[start + doc_end..];
             }
-            out.push_str(&messages);
+            None => {
+                // Truncated: try to recover Error text; drop only clear progress.
+                let doc = &rest[start..];
+                let messages = extract_clixml_messages(doc);
+                if !messages.is_empty() {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(&messages);
+                } else if !is_progress_clixml(doc) {
+                    out.push_str(doc);
+                }
+                return out;
+            }
         }
-        rest = &rest[doc_end..];
     }
     out.push_str(rest);
     out
+}
+
+/// True when a CLIXML blob is a ProgressRecord stream (module first-use /
+/// Write-Progress), not an error document.
+pub fn is_progress_clixml(doc: &str) -> bool {
+    doc.contains("S=\"progress\"") || doc.contains("S='progress'")
 }
 
 /// Pull the human-readable messages out of a CLIXML stderr blob. Each native
 /// stderr / error-record line arrives as `<S S="Error">text</S>`; the text is
 /// XML-escaped (`&amp;`, `&gt;`) and PowerShell char-escaped (`_x000D_`,
 /// `_x000A_` for CR/LF), so both are decoded and newlines normalized before
-/// the messages are joined. Non-matching content falls back to the document's
-/// text content (markup and control chars removed).
+/// the messages are joined.
+///
+/// An unfinished trailing `<S S="Error">…` (truncated capture, no `</S>`) keeps
+/// its inner text so a mid-document cap does not wipe the only failure reason.
+/// Documents with no Error segments (ProgressRecords, empty wrappers) return
+/// an empty string — never markup stripping that concatenates type names into
+/// a fake error.
 fn extract_clixml_messages(text: &str) -> String {
     const TAG: &str = "<S S=\"Error\">";
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find(TAG) {
         let inner_start = start + TAG.len();
-        let Some(end_rel) = rest[inner_start..].find("</S>") else {
-            break;
-        };
-        let inner = &rest[inner_start..inner_start + end_rel];
-        if !inner.trim().is_empty() {
-            if !out.is_empty() {
-                out.push('\n');
+        match rest[inner_start..].find("</S>") {
+            Some(end_rel) => {
+                let inner = &rest[inner_start..inner_start + end_rel];
+                if !inner.trim().is_empty() {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&clixml_unescape(inner));
+                }
+                rest = &rest[inner_start + end_rel + 4..];
             }
-            out.push_str(&clixml_unescape(inner));
+            None => {
+                let inner = &rest[inner_start..];
+                if !inner.trim().is_empty() {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(&clixml_unescape(inner));
+                }
+                break;
+            }
         }
-        rest = &rest[inner_start + end_rel + 4..];
     }
     if out.is_empty() {
-        let stripped: String = text.chars().filter(|c| !c.is_control()).collect::<String>();
-        strip_xml_markup(&stripped)
+        String::new()
     } else {
         out.replace("\r\n", "\n").replace('\r', "\n")
     }
@@ -1206,22 +1259,6 @@ fn decode_x_escapes(text: &str) -> String {
         i += 1;
     }
     out
-}
-
-/// Keep only the text content between XML tags (used when a CLIXML doc has no
-/// `<S S="Error">` segments): skip markup and control characters.
-fn strip_xml_markup(text: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for c in text.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag && !c.is_control() => out.push(c),
-            _ => {}
-        }
-    }
-    out.trim().to_string()
 }
 
 /// Remove ANSI escape sequences (CSI, `ESC[…`) that pwsh 7 emits when it
@@ -2003,6 +2040,90 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_shell_output_drops_progress_clixml() {
+        // ProgressRecords (module first-use / Write-Progress) serialize as
+        // CLIXML with no <S S="Error">. The old strip_xml_markup fallback
+        // concatenated type names + Activity into a fake error like
+        // "System.Management.Automation.PSCustomObject…正在准备首次使用模块".
+        let text = concat!(
+            "#< CLIXML\r\n",
+            "<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">",
+            "<Obj S=\"progress\" RefId=\"0\">",
+            "<TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T>",
+            "<T>System.Object</T></TN>",
+            "<MS><S N=\"Activity\">正在准备首次使用模块。</S>",
+            "<S N=\"StatusDescription\">Completed</S>",
+            "<I32 N=\"PercentComplete\">100</I32></MS></Obj></Objs>"
+        );
+        let out = sanitize_shell_output(text, "powershell");
+        assert!(
+            out.is_empty(),
+            "progress-only CLIXML must be dropped, got: {out:?}"
+        );
+        assert!(!out.contains("PSCustomObject"));
+        assert!(!out.contains("正在准备首次使用模块"));
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_truncated_progress_clixml_dropped() {
+        // Large-output caps can cut mid-CLIXML (no </Objs>). Truncated
+        // progress markup must not leak as the failure text.
+        let text = concat!(
+            "real stdout\n",
+            "#< CLIXML\r\n",
+            "<Objs Version=\"1.1.0.1\">",
+            "<Obj S=\"progress\" RefId=\"0\">",
+            "<TN RefId=\"0\"><T>System.Management.Automation.PSCustomObject</T>",
+            "<T>System.Object</T></TN>",
+            "<MS><S N=\"Activity\">正在准备首次使用模块。</S>",
+            "<S N=\"StatusDescription\">Comp" // truncated
+        );
+        let out = sanitize_shell_output(text, "powershell");
+        assert_eq!(out, "real stdout");
+        assert!(!out.contains("PSCustomObject"));
+        assert!(!out.contains("CLIXML"));
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_truncated_clixml_keeps_complete_and_partial_errors() {
+        // Truncated doc keeps complete Error segments and unfinished trailing
+        // Error inner text (cap cut mid-</S>).
+        let text = concat!(
+            "#< CLIXML\r\n",
+            "<Objs Version=\"1.1.0.1\">",
+            "<S S=\"Error\">boom: connection refused _x000D__x000A_</S>",
+            "<S S=\"Error\">partially cut" // no closing </S> / </Objs>
+        );
+        let out = sanitize_shell_output(text, "powershell");
+        assert!(
+            out.contains("boom: connection refused"),
+            "complete Error segment must survive truncation, got: {out}"
+        );
+        assert!(
+            out.contains("partially cut"),
+            "unfinished Error inner must survive, got: {out}"
+        );
+        assert!(!out.contains("CLIXML"));
+    }
+
+    #[test]
+    fn test_sanitize_shell_output_truncated_unknown_clixml_kept() {
+        // Truncated non-progress CLIXML with no Error tags must not be wiped
+        // (raw remainder stays recoverable).
+        let text = concat!(
+            "stdout ok\n",
+            "#< CLIXML\r\n",
+            "<Objs Version=\"1.1.0.1\"><S S=\"Warning\">disk almost full"
+        );
+        let out = sanitize_shell_output(text, "powershell");
+        assert!(out.contains("stdout ok"), "got: {out}");
+        assert!(
+            out.contains("disk almost full") || out.contains("CLIXML"),
+            "non-progress truncated remainder must survive, got: {out}"
+        );
+    }
+
+    #[test]
     fn test_sanitize_shell_output_strips_ansi_escapes() {
         // pwsh 7 renders error records with $PSStyle ANSI colors even into a
         // pipe; the escapes must not reach the model.
@@ -2343,6 +2464,10 @@ mod tests {
         assert!(
             payload.contains("$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'"),
             "redirection must default to UTF-8, got: {payload}"
+        );
+        assert!(
+            payload.contains("$ProgressPreference = 'SilentlyContinue'"),
+            "progress must be silenced so CLIXML ProgressRecords never hit stderr, got: {payload}"
         );
         assert!(payload.ends_with("Write-Output hi"));
     }
