@@ -34,8 +34,8 @@ fn default_durability() -> f64 {
 }
 
 /// Reference back to the conversation message a fact was extracted from.
-/// Stored as a JSON object in the `source_ref` column for traceability and
-/// contradiction checks.
+/// Rehydrated from provenance_* columns on `memory_edges` for traceability
+/// and contradiction checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FactSourceRef {
     pub message_id: String,
@@ -82,16 +82,19 @@ fn serialize_tags(tags: &[&str]) -> String {
 /// order `fact_from_row` maps (index 0..11). Single source of truth: every
 /// facts SELECT is built from this const so a column add/remove cannot drift
 /// a query away from the row mapper (mirrors `EMBED_COLS` in embeddings.rs).
-const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, source_ref, durability";
+const FACT_COLS: &str = "id, subject, predicate, object, source, confidence, tags, created_at, mention_count, last_seen_at, provenance_item_id, provenance_record_id, provenance_snippet, durability";
 
 /// Aliased variant for queries that prefix columns with a table alias
 /// (FTS join).
-const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.source_ref, f.durability";
+const FACT_COLS_ALIASED: &str = "f.id, f.subject, f.predicate, f.object, f.source, f.confidence, f.tags, f.created_at, f.mention_count, f.last_seen_at, f.provenance_item_id, f.provenance_record_id, f.provenance_snippet, f.durability";
 
 /// Map a rusqlite Row (with the standard 12-column SELECT order) to a Fact.
 /// Shared by all query methods to avoid drift when columns change.
 fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
     let tags_str: String = row.get(6)?;
+    let provenance_item_id: Option<String> = row.get(10)?;
+    let provenance_record_id: Option<String> = row.get(11)?;
+    let provenance_snippet: Option<String> = row.get(12)?;
     Ok(Fact {
         id: row.get(0)?,
         subject: row.get(1)?,
@@ -103,19 +106,35 @@ fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<Fact> {
         created_at: row.get(7)?,
         mention_count: row.get(8)?,
         last_seen_at: row.get(9)?,
-        source_ref: parse_source_ref(row.get::<_, Option<String>>(10)?),
-        durability: row.get(11)?,
+        source_ref: source_ref_from_provenance(
+            provenance_item_id,
+            provenance_record_id,
+            provenance_snippet,
+        ),
+        durability: row.get(13)?,
     })
 }
 
-/// Parse a JSON-encoded source reference from a DB string column.
-fn parse_source_ref(raw: Option<String>) -> Option<FactSourceRef> {
-    raw.and_then(|v| serde_json::from_str(&v).ok())
+fn source_ref_from_provenance(
+    item_id: Option<String>,
+    record_id: Option<String>,
+    snippet: Option<String>,
+) -> Option<FactSourceRef> {
+    let message_id = item_id.or(record_id).unwrap_or_default();
+    let snippet = snippet.unwrap_or_default();
+    if message_id.is_empty() && snippet.is_empty() {
+        None
+    } else {
+        Some(FactSourceRef { message_id, snippet })
+    }
 }
 
-/// Serialize a source reference into its JSON string column form.
-fn serialize_source_ref(source_ref: Option<&FactSourceRef>) -> Option<String> {
-    source_ref.and_then(|r| serde_json::to_string(r).ok())
+fn node_kind_for_label(label: &str) -> &'static str {
+    if label.eq_ignore_ascii_case("user") {
+        "user"
+    } else {
+        "concept"
+    }
 }
 
 /// Predicates describing stable identity attributes: they never decay and
@@ -392,22 +411,32 @@ impl Database {
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
-        let source_ref_json = serialize_source_ref(source_ref);
+        let subject_id = self.ensure_node(node_kind_for_label(subject), subject)?;
+        let object_id = self.ensure_node(node_kind_for_label(object), object)?;
+        let (prov_item, prov_record, prov_snippet) =
+            self.provenance_cols_from_source_ref(source_ref)?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at, tags, mention_count, last_seen_at, source_ref, durability)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11)",
+            "INSERT INTO memory_edges (
+                id, subject, subject_id, predicate, object, object_id,
+                source, confidence, created_at, tags, mention_count, last_seen_at,
+                provenance_item_id, provenance_record_id, provenance_snippet, durability
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 id,
                 subject,
+                subject_id,
                 predicate,
                 object,
+                object_id,
                 source,
                 confidence,
                 now,
                 tags_json,
                 now,
-                source_ref_json,
+                prov_item,
+                prov_record,
+                prov_snippet,
                 durability
             ],
         )?;
@@ -427,6 +456,40 @@ impl Database {
             durability,
         })
     }
+
+    /// Map a public `FactSourceRef` onto provenance columns: item FK when the
+    /// message id exists in `memory_items`, otherwise an opaque transcript
+    /// `provenance_record_id`. Snippet is always stored.
+    fn provenance_cols_from_source_ref(
+        &self,
+        source_ref: Option<&FactSourceRef>,
+    ) -> anyhow::Result<(Option<String>, Option<String>, Option<String>)> {
+        let Some(refer) = source_ref else {
+            return Ok((None, None, None));
+        };
+        let snippet = if refer.snippet.is_empty() {
+            None
+        } else {
+            Some(refer.snippet.clone())
+        };
+        if refer.message_id.is_empty() {
+            return Ok((None, None, snippet));
+        }
+        let conn = self.conn();
+        let in_items = conn
+            .query_row(
+                "SELECT 1 FROM memory_items WHERE id = ?1",
+                rusqlite::params![refer.message_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if in_items {
+            Ok((Some(refer.message_id.clone()), None, snippet))
+        } else {
+            Ok((None, Some(refer.message_id.clone()), snippet))
+        }
+    }
+
 
     /// Store a fact the user explicitly stated (e.g. via the `remember_fact`
     /// tool or the settings UI). User-stated facts are authoritative:
@@ -456,7 +519,7 @@ impl Database {
         let triple_exists: Option<Fact> = {
             let conn = self.conn();
             conn.query_row(
-                &format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
+                &format!("SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
                 rusqlite::params![subject, predicate, object],
                 fact_from_row,
             )
@@ -468,7 +531,7 @@ impl Database {
                 {
                     let conn = self.conn();
                     conn.execute(
-                        "UPDATE facts
+                        "UPDATE memory_edges
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
                              durability = 1.0
                          WHERE id = ?2",
@@ -488,7 +551,7 @@ impl Database {
             {
                 let conn = self.conn();
                 conn.execute(
-                    "UPDATE facts SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0 WHERE id = ?2",
+                    "UPDATE memory_edges SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0 WHERE id = ?2",
                     rusqlite::params![Utc::now().to_rfc3339(), existing.id],
                 )?;
             }
@@ -504,7 +567,7 @@ impl Database {
         if is_single_valued_predicate(&predicate) {
             let conn = self.conn();
             conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
+                "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2",
                 rusqlite::params![subject, predicate],
             )?;
             self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
@@ -526,11 +589,11 @@ impl Database {
         let conn = self.conn();
         let deleted = match object {
             Some(obj) => conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
                 rusqlite::params![subject, predicate, obj],
             )?,
             None => conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
+                "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2",
                 rusqlite::params![subject, predicate],
             )?,
         };
@@ -554,7 +617,7 @@ impl Database {
         let existing: Option<Fact> = {
             let conn = self.conn();
             conn.query_row(
-                &format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
+                &format!("SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
                 rusqlite::params![subject, predicate, object],
                 fact_from_row,
             )
@@ -626,7 +689,7 @@ impl Database {
             let conn = self.conn();
             let existing: Option<Fact> = conn
                 .query_row(
-                    &format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
+                    &format!("SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"),
                     rusqlite::params![subject, predicate, object],
                     fact_from_row,
                 )
@@ -648,20 +711,31 @@ impl Database {
                     }
                 }
                 let tag_refs: Vec<&str> = merged_tags.iter().map(|s| s.as_str()).collect();
-                conn.execute(
-                    "UPDATE facts
-                     SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
-                         source_ref = ?3, tags = ?4, durability = ?5
-                     WHERE id = ?6",
-                    rusqlite::params![
-                        now,
-                        boosted,
-                        serialize_source_ref(merged_ref),
-                        serialize_tags(&tag_refs),
-                        merged_durability,
-                        existing.id
-                    ],
-                )?;
+                let tags_json = serialize_tags(&tag_refs);
+                let existing_id = existing.id.clone();
+                drop(conn);
+                let (prov_item, prov_record, prov_snippet) =
+                    self.provenance_cols_from_source_ref(merged_ref)?;
+                {
+                    let conn = self.conn();
+                    conn.execute(
+                        "UPDATE memory_edges
+                         SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
+                             provenance_item_id = ?3, provenance_record_id = ?4,
+                             provenance_snippet = ?5, tags = ?6, durability = ?7
+                         WHERE id = ?8",
+                        rusqlite::params![
+                            now,
+                            boosted,
+                            prov_item,
+                            prov_record,
+                            prov_snippet,
+                            tags_json,
+                            merged_durability,
+                            existing_id
+                        ],
+                    )?;
+                }
                 self.cache_invalidate_facts(subject);
                 self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
                 return Ok(UpsertOutcome::Reinforced);
@@ -672,7 +746,7 @@ impl Database {
                 // store a contradicting inferred value alongside it.
                 let has_user_value = conn
                     .query_row(
-                        "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 AND source = 'user' AND object <> ?3 LIMIT 1",
+                        "SELECT 1 FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND source = 'user' AND object <> ?3 LIMIT 1",
                         rusqlite::params![subject, predicate, object],
                         |r| r.get::<_, i32>(0),
                     )
@@ -682,7 +756,7 @@ impl Database {
                     return Ok(UpsertOutcome::Skipped);
                 }
                 let n = conn.execute(
-                    "UPDATE facts SET confidence = confidence * 0.5
+                    "UPDATE memory_edges SET confidence = confidence * 0.5
                      WHERE subject = ?1 AND predicate = ?2 AND object <> ?3 AND source = 'inferred'",
                     rusqlite::params![subject, predicate, object],
                 )?;
@@ -692,16 +766,15 @@ impl Database {
             if let Some(opp) = opposite {
                 let incoming_is_user = (source == "user") as i32;
                 let _ = conn.execute(
-                    "UPDATE facts SET confidence = confidence * 0.5
+                    "UPDATE memory_edges SET confidence = confidence * 0.5
                      WHERE subject = ?1 AND object = ?2 AND predicate = ?3
                        AND (?4 = 1 OR source = 'inferred')",
                     rusqlite::params![subject, object, opp, incoming_is_user],
                 )?;
             }
         }
-        // The demotion UPDATEs above fire the facts_embed_upd trigger (the
-        // only other non-insert path, reinforcement, returned early above).
-        // Invalidate the embeddings list cache accordingly.
+        // Demotion only touches confidence (SPO unchanged), so embed triggers
+        // do not fire; still bump the list cache when rows were rewritten.
         if corrected || opposite.is_some() {
             self.cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
@@ -720,7 +793,7 @@ impl Database {
     /// full facts for ranking and rendering.
     pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges WHERE id = ?1"))?;
         let mut rows = stmt.query(rusqlite::params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(fact_from_row(row)?)),
@@ -738,7 +811,7 @@ impl Database {
         let conn = self.conn();
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
-            "SELECT {FACT_COLS} FROM facts WHERE id IN ({})",
+            "SELECT {FACT_COLS} FROM memory_edges WHERE id IN ({})",
             placeholders.join(",")
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -759,7 +832,7 @@ impl Database {
         let cache_gen = self.cache_generation(&key);
         let conn = self.conn();
         let mut stmt =
-            conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1"))?;
+            conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![subject], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -781,7 +854,7 @@ impl Database {
         }
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM facts WHERE subject = ?1
+            "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
              LIMIT ?2"
         ))?;
@@ -806,7 +879,7 @@ impl Database {
         let placeholders = vec!["?"; subjects.len()].join(",");
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
+            "SELECT subject, predicate, object FROM memory_edges WHERE subject IN ({placeholders})"
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(subjects.iter().copied()), |r| {
             Ok((
@@ -836,7 +909,7 @@ impl Database {
         }
         let cache_gen = self.cache_generation("_facts_all");
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges"))?;
         let rows = stmt.query_map([], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -849,7 +922,7 @@ impl Database {
 
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE source = ?1"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges WHERE source = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![source], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -916,14 +989,16 @@ impl Database {
         limit: Option<usize>,
     ) -> anyhow::Result<Option<Vec<Fact>>> {
         let conn = self.conn();
+        let edge = crate::embeddings::fts_kind::EDGE;
         let (fts_sql, bind_limit) = if let Some(lim) = limit {
             (
                 format!(
                     "SELECT {FACT_COLS_ALIASED}
-                     FROM facts f
-                     JOIN facts_fts ON f.rowid = facts_fts.rowid
-                     WHERE facts_fts MATCH ?1
-                     ORDER BY bm25(facts_fts)
+                     FROM memory_edges f
+                     JOIN memory_fts ON memory_fts.entity_id = f.id
+                       AND memory_fts.entity_type = '{edge}'
+                     WHERE memory_fts MATCH ?1
+                     ORDER BY bm25(memory_fts)
                      LIMIT ?2"
                 ),
                 Some(lim as i64),
@@ -932,10 +1007,11 @@ impl Database {
             (
                 format!(
                     "SELECT {FACT_COLS_ALIASED}
-                     FROM facts f
-                     JOIN facts_fts ON f.rowid = facts_fts.rowid
-                     WHERE facts_fts MATCH ?1
-                     ORDER BY bm25(facts_fts)"
+                     FROM memory_edges f
+                     JOIN memory_fts ON memory_fts.entity_id = f.id
+                       AND memory_fts.entity_type = '{edge}'
+                     WHERE memory_fts MATCH ?1
+                     ORDER BY bm25(memory_fts)"
                 ),
                 None,
             )
@@ -979,7 +1055,7 @@ impl Database {
         }
         let limit_param = terms.len() + 1;
         let sql = format!(
-            "SELECT {FACT_COLS} FROM facts
+            "SELECT {FACT_COLS} FROM memory_edges
              WHERE {}
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
              LIMIT ?{limit_param}",
@@ -1056,7 +1132,7 @@ impl Database {
         let pattern = format!("%{}%", Self::escape_like_term(query));
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM facts
+            "SELECT {FACT_COLS} FROM memory_edges
              WHERE subject LIKE ?1 ESCAPE '\\' OR predicate LIKE ?1 ESCAPE '\\'
                 OR object LIKE ?1 ESCAPE '\\' OR tags LIKE ?1 ESCAPE '\\'"
         ))?;
@@ -1127,8 +1203,8 @@ impl Database {
     pub fn get_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM facts
-             WHERE EXISTS (SELECT 1 FROM json_each(facts.tags) AS te WHERE te.value = ?1)"
+            "SELECT {FACT_COLS} FROM memory_edges
+             WHERE EXISTS (SELECT 1 FROM json_each(memory_edges.tags) AS te WHERE te.value = ?1)"
         ))?;
         let rows = stmt.query_map(rusqlite::params![tag], fact_from_row)?;
         let mut facts = Vec::new();
@@ -1144,12 +1220,12 @@ impl Database {
         // Query subject before deletion so we can invalidate the right cache.
         let subject: Option<String> = conn
             .query_row(
-                "SELECT subject FROM facts WHERE id = ?1",
+                "SELECT subject FROM memory_edges WHERE id = ?1",
                 rusqlite::params![id],
                 |r| r.get(0),
             )
             .ok();
-        conn.execute("DELETE FROM facts WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute("DELETE FROM memory_edges WHERE id = ?1", rusqlite::params![id])?;
         if let Some(s) = subject {
             self.cache_invalidate_facts(&s);
         }
@@ -1161,7 +1237,7 @@ impl Database {
     pub fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT predicate, COUNT(*) AS n FROM facts
+            "SELECT predicate, COUNT(*) AS n FROM memory_edges
              GROUP BY predicate
              ORDER BY n DESC, predicate ASC",
         )?;
@@ -1181,7 +1257,7 @@ impl Database {
         let updated = {
             let conn = self.conn();
             conn.execute(
-                "UPDATE facts SET predicate = ?1 WHERE predicate = ?2",
+                "UPDATE memory_edges SET predicate = ?1 WHERE predicate = ?2",
                 rusqlite::params![to, from],
             )? as u64
         };
@@ -1200,9 +1276,9 @@ impl Database {
         // window DELETE used by migrate_v2.
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM facts
+            "SELECT {FACT_COLS} FROM memory_edges
              WHERE (subject, predicate, object) IN (
-                 SELECT subject, predicate, object FROM facts
+                 SELECT subject, predicate, object FROM memory_edges
                  GROUP BY subject, predicate, object
                  HAVING COUNT(*) > 1
              )"
@@ -1249,20 +1325,20 @@ impl Database {
         for (tags, id) in &keeper_updates {
             let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
             conn.execute(
-                "UPDATE facts SET tags = ?1 WHERE id = ?2",
+                "UPDATE memory_edges SET tags = ?1 WHERE id = ?2",
                 rusqlite::params![serialize_tags(&tag_refs), id],
             )?;
         }
 
         let deleted = if had_duplicate_groups {
             conn.execute(
-                "DELETE FROM facts
+                "DELETE FROM memory_edges
                  WHERE id NOT IN (
                      SELECT id FROM (
                          SELECT id, ROW_NUMBER() OVER (
                              PARTITION BY subject, predicate, object
                              ORDER BY confidence DESC, created_at DESC
-                         ) AS rn FROM facts
+                         ) AS rn FROM memory_edges
                      ) WHERE rn = 1
                  )",
                 [],
@@ -1284,7 +1360,7 @@ impl Database {
         // P1-6: single bulk DELETE mirroring is_sensitive_predicate / object.
         let conn = self.conn();
         let deleted = conn.execute(
-            "DELETE FROM facts WHERE
+            "DELETE FROM memory_edges WHERE
                 instr(lower(predicate), 'api_key') > 0
              OR instr(lower(predicate), 'apikey') > 0
              OR instr(lower(predicate), 'api-key') > 0
@@ -1334,7 +1410,7 @@ impl Database {
         let cutoff = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM facts
+            "SELECT {FACT_COLS} FROM memory_edges
              WHERE COALESCE(last_seen_at, created_at) <= ?1"
         ))?;
         let rows = stmt.query_map(rusqlite::params![cutoff], fact_from_row)?;
@@ -1350,7 +1426,7 @@ impl Database {
         }
         let placeholders = vec!["?"; stale_ids.len()].join(",");
         let count = conn.execute(
-            &format!("DELETE FROM facts WHERE id IN ({placeholders})"),
+            &format!("DELETE FROM memory_edges WHERE id IN ({placeholders})"),
             rusqlite::params_from_iter(stale_ids.iter().map(|s| s.as_str())),
         )? as u64;
         self.cache_invalidate_all_facts();
@@ -1358,48 +1434,22 @@ impl Database {
         Ok(count)
     }
 
-    /// Clear `source_ref.message_id` when the referenced message **and**
-    /// episode no longer exist; keep the snippet so “why we remember” still
-    /// works (L2 / P2-9). Compaction-summary facts (M3) store the episode
-    /// `msg-*` id, which lives in `memory_episodes` not `messages`.
+    /// Normalize empty provenance_record_id strings. Item provenance is
+    /// enforced by FK (`ON DELETE SET NULL`); opaque transcript record ids are
+    /// intentional stable refs and are left alone (no messages-table scan).
     pub fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, source_ref FROM facts
-             WHERE source_ref IS NOT NULL
-               AND json_extract(source_ref, '$.message_id') IS NOT NULL
-               AND json_extract(source_ref, '$.message_id') != ''
-               AND NOT EXISTS (
-                   SELECT 1 FROM messages
-                   WHERE id = json_extract(facts.source_ref, '$.message_id')
-               )
-               AND NOT EXISTS (
-                   SELECT 1 FROM memory_episodes
-                   WHERE id = json_extract(facts.source_ref, '$.message_id')
-               )",
-        )?;
-        let orphans: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        if orphans.is_empty() {
-            return Ok(0);
-        }
-        let mut updated = 0u64;
-        for (id, raw) in orphans {
-            let Some(mut refer) = parse_source_ref(Some(raw)) else {
-                continue;
-            };
-            refer.message_id.clear();
-            conn.execute(
-                "UPDATE facts SET source_ref = ?1 WHERE id = ?2",
-                rusqlite::params![serialize_source_ref(Some(&refer)), id],
-            )?;
-            updated += 1;
-        }
-        if updated > 0 {
+        let n = conn.execute(
+            "UPDATE memory_edges
+             SET provenance_record_id = NULL
+             WHERE provenance_record_id IS NOT NULL
+               AND TRIM(provenance_record_id) = ''",
+            [],
+        )? as u64;
+        if n > 0 {
             self.cache_invalidate_all_facts();
         }
-        Ok(updated)
+        Ok(n)
     }
 }
 
@@ -1948,7 +1998,7 @@ mod tests {
         // Bypass normalize_predicate to simulate legacy free-form rows (M6).
         let conn = db.conn();
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
+            "INSERT INTO memory_edges (id, subject, predicate, object, source, confidence, created_at)
              VALUES ('fact-a', 'user', 'fav_lang', 'Rust', 'inferred', 0.8, '2026-01-01T00:00:00Z'),
                     ('fact-b', 'user', 'language', 'Rust', 'inferred', 0.9, '2026-01-01T00:00:01Z'),
                     ('fact-c', 'user', 'fav_lang', 'Go', 'inferred', 0.7, '2026-01-01T00:00:02Z')",
@@ -1988,7 +2038,7 @@ mod tests {
         let old = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
         let conn = db.conn();
         conn.execute(
-            "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
+            "UPDATE memory_edges SET created_at = ?1, last_seen_at = ?1",
             rusqlite::params![old],
         )
         .unwrap();
@@ -2361,51 +2411,27 @@ mod tests {
     }
 
     #[test]
-    fn test_cleanup_orphan_source_refs_clears_message_id_keeps_snippet() {
+    fn test_cleanup_orphan_source_refs_clears_empty_record_id() {
         let db = create_db();
-        let session = db.create_session("t", "").unwrap();
-        let msg = db
-            .add_message(&session.id, "user", "I like Rust a lot", Some("text"), None)
+        let fact = db
+            .insert_fact("user", "likes", "Go", "inferred", 0.8, &["preference"])
             .unwrap();
-        let live = FactSourceRef::from_message(&msg.id, "I like Rust a lot");
-        let orphan = FactSourceRef {
-            message_id: "msg-deadbeefdeadbeefdeadbeefdeadbeef".into(),
-            snippet: "orphan snippet".into(),
-        };
-        db.upsert_fact(
-            "user",
-            "likes",
-            "Rust",
-            "inferred",
-            0.9,
-            &["preference"],
-            Some(&live),
-        )
-        .unwrap();
-        db.upsert_fact(
-            "user",
-            "likes",
-            "Go",
-            "inferred",
-            0.8,
-            &["preference"],
-            Some(&orphan),
-        )
-        .unwrap();
-
+        {
+            let conn = db.conn();
+            conn.execute(
+                "UPDATE memory_edges SET provenance_record_id = '   ' WHERE id = ?1",
+                rusqlite::params![fact.id],
+            )
+            .unwrap();
+        }
         let cleared = db.cleanup_orphan_source_refs().unwrap();
         assert_eq!(cleared, 1);
-        let facts = db.get_facts("user").unwrap();
-        let rust = facts.iter().find(|f| f.object == "Rust").unwrap();
-        assert_eq!(rust.source_ref.as_ref().unwrap().message_id, msg.id);
-        let go = facts.iter().find(|f| f.object == "Go").unwrap();
-        let go_ref = go.source_ref.as_ref().unwrap();
-        assert!(go_ref.message_id.is_empty());
-        assert_eq!(go_ref.snippet, "orphan snippet");
+        let got = db.get_fact_by_id(&fact.id).unwrap().unwrap();
+        assert!(got.source_ref.is_none() || got.source_ref.as_ref().unwrap().message_id.is_empty());
     }
 
     #[test]
-    fn test_cleanup_orphan_source_refs_keeps_episode_ids() {
+    fn test_cleanup_orphan_source_refs_keeps_transcript_and_item_ids() {
         let db = create_db();
         let session = db.create_session("t", "").unwrap();
         let episode_id = haven_common::types::new_id("msg");
@@ -2422,13 +2448,29 @@ mod tests {
             Some(&from_episode),
         )
         .unwrap();
+        let transcript = FactSourceRef {
+            message_id: "msg-deadbeefdeadbeefdeadbeefdeadbeef".into(),
+            snippet: "opaque transcript".into(),
+        };
+        db.upsert_fact(
+            "user",
+            "likes",
+            "Go",
+            "inferred",
+            0.8,
+            &["preference"],
+            Some(&transcript),
+        )
+        .unwrap();
         let cleared = db.cleanup_orphan_source_refs().unwrap();
         assert_eq!(cleared, 0);
         let facts = db.get_facts("user").unwrap();
         let theme = facts.iter().find(|f| f.predicate == "theme").unwrap();
+        assert_eq!(theme.source_ref.as_ref().unwrap().message_id, episode_id);
+        let go = facts.iter().find(|f| f.object == "Go").unwrap();
         assert_eq!(
-            theme.source_ref.as_ref().unwrap().message_id,
-            episode_id
+            go.source_ref.as_ref().unwrap().message_id,
+            transcript.message_id
         );
     }
 
@@ -2486,7 +2528,7 @@ mod tests {
         let old = "2024-01-01T00:00:00Z";
         let conn = db.conn();
         conn.execute(
-            "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
+            "UPDATE memory_edges SET created_at = ?1, last_seen_at = ?1",
             rusqlite::params![old],
         )
         .unwrap();
@@ -2525,7 +2567,7 @@ mod tests {
         .unwrap();
         let conn = db.conn();
         conn.execute(
-            "UPDATE facts SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'",
+            "UPDATE memory_edges SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'",
             [],
         )
         .unwrap();
@@ -2559,7 +2601,7 @@ mod tests {
         .unwrap();
         let conn = db.conn();
         conn.execute(
-            "UPDATE facts SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'
+            "UPDATE memory_edges SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'
              WHERE predicate = 'project_path'",
             [],
         )

@@ -28,7 +28,7 @@ pub fn new_memory_recall_slot() -> MemoryRecallSlot {
     Arc::new(RwLock::new(None))
 }
 
-/// Agent-facing entry to Haven's exclusive memory store (`haven.db` facts +
+/// Agent-facing entry to Haven's exclusive memory store (`haven.db` edges +
 /// episodes). Same channel as the History「记忆」page and the system MEMORY fence.
 ///
 /// Operations:
@@ -351,7 +351,7 @@ impl Tool for MemoryTool {
         "memory".into()
     }
     fn description(&self) -> String {
-        "Haven memory (facts + past conversation episodes). \
+        "Haven memory (SPO edges + past conversation items). \
          search/list/remember/forget manage SPO facts; \
          recall(query, kind=fact|episode) is the unified retrieval entry \
          (same path as History memory search: vector when configured, else keyword)."

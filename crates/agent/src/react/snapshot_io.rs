@@ -161,7 +161,7 @@ impl ReActEngine {
     }
 
     /// Persist a compaction summary into episodic long-term memory
-    /// (`memory_episodes`) so context that compaction summarized away stays
+    /// (`memory_items`) so context that compaction summarized away stays
     /// retrievable across sessions (embedding + keyword recall). Fire-and-forget:
     /// a dropped write only loses the summary episode, never the session itself.
     pub(super) async fn persist_compaction_summary(

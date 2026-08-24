@@ -692,6 +692,9 @@ impl InferenceEngine {
                         e
                     );
                 }
+                // provenance_item_id is FK ON DELETE SET NULL; opaque
+                // provenance_record_id values are intentional transcript refs.
+                // Still normalize empty record ids.
                 match db.cleanup_orphan_source_refs() {
                     Ok(n) => total += n,
                     Err(e) => tracing::warn!(

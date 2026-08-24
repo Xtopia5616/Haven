@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -45,6 +45,8 @@ struct Migration {
 /// - v7: allow `peer_kickoff` on `messages.message_type` (Plan A multi-agent
 ///   spawn brief rows).
 /// - v8: prompt-cache token columns on `session_usage` / `llm_usage`.
+/// - v9: typed memory graph — `memory_nodes` / `memory_edges` / `memory_items`
+///   replace `facts` / `memory_episodes`; unified contentless `memory_fts`.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -74,45 +76,60 @@ const MIGRATIONS: &[Migration] = &[
         version: 8,
         apply: migrate_v8_usage_cache_tokens,
     },
+    Migration {
+        version: 9,
+        apply: migrate_v9_memory_graph,
+    },
 ];
 
 /// Rewrite pre-normalization predicate spellings to the canonical alias (the
 /// same map as `haven_memory::repositories::facts::normalize_predicate`),
 /// then collapse rows that became duplicates on (subject, predicate, object).
 /// The keeper rule mirrors `dedup_facts`: highest confidence, then newest
-/// `created_at`. Guarded so it is a no-op on a genuinely fresh database that
-/// has not created the `facts` table yet.
+/// `created_at`. Operates on `facts` (pre-v9) or `memory_edges` (post-v9
+/// re-run / test stamp-back). No-op when neither table exists.
 fn migrate_v2_backfill_predicate_aliases(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    if !table_exists(conn, "facts")? {
+    let Some(table) = legacy_fact_table(conn)? else {
         return Ok(());
-    }
-    conn.execute_batch(
+    };
+    conn.execute_batch(&format!(
         r#"
-        UPDATE facts SET predicate = 'project_path'
+        UPDATE {table} SET predicate = 'project_path'
          WHERE predicate IN ('workspace','workspace_path','project_location','working_directory','working_dir');
-        UPDATE facts SET predicate = 'works_at'
+        UPDATE {table} SET predicate = 'works_at'
          WHERE predicate IN ('employer','company_name','company');
-        UPDATE facts SET predicate = 'language'
+        UPDATE {table} SET predicate = 'language'
          WHERE predicate IN ('favorite_language','preferred_language');
-        UPDATE facts SET predicate = 'verbosity'
+        UPDATE {table} SET predicate = 'verbosity'
          WHERE predicate IN ('preferred_verbosity','verbosity_level');
-        UPDATE facts SET predicate = 'shell'
+        UPDATE {table} SET predicate = 'shell'
          WHERE predicate IN ('preferred_shell','shell_choice');
-        UPDATE facts SET predicate = 'os'
+        UPDATE {table} SET predicate = 'os'
          WHERE predicate IN ('os_name','operating_system');
 
-        DELETE FROM facts
+        DELETE FROM {table}
          WHERE id NOT IN (
              SELECT id FROM (
                  SELECT id, ROW_NUMBER() OVER (
                      PARTITION BY subject, predicate, object
                      ORDER BY confidence DESC, created_at DESC
-                 ) AS rn FROM facts
+                 ) AS rn FROM {table}
              ) WHERE rn = 1
          );
-        "#,
-    )?;
+        "#
+    ))?;
     Ok(())
+}
+
+/// Pre-v9 `facts` or post-v9 `memory_edges` — whichever holds SPO rows.
+fn legacy_fact_table(conn: &rusqlite::Connection) -> anyhow::Result<Option<&'static str>> {
+    if table_exists(conn, "facts")? {
+        Ok(Some("facts"))
+    } else if table_exists(conn, "memory_edges")? {
+        Ok(Some("memory_edges"))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Expand `sessions.status` CHECK to include `paused_awaiting_answer`.
@@ -341,23 +358,368 @@ fn migrate_v5_episodes_structured_and_company_alias(
             )?;
         }
     }
-    if table_exists(conn, "facts")? {
+    if let Some(table) = legacy_fact_table(conn)? {
         // Collapse only the company→works_at alias collision; general dedup
         // stays in `dedup_facts`.
-        conn.execute_batch(
+        conn.execute_batch(&format!(
             r#"
-            UPDATE facts SET predicate = 'works_at' WHERE predicate = 'company';
-            DELETE FROM facts
+            UPDATE {table} SET predicate = 'works_at' WHERE predicate = 'company';
+            DELETE FROM {table}
              WHERE predicate = 'works_at'
                AND id NOT IN (
                  SELECT id FROM (
                    SELECT id, ROW_NUMBER() OVER (
                      PARTITION BY subject, predicate, object
                      ORDER BY confidence DESC, created_at DESC
-                   ) AS rn FROM facts WHERE predicate = 'works_at'
+                   ) AS rn FROM {table} WHERE predicate = 'works_at'
                  ) WHERE rn = 1
                );
+            "#
+        ))?;
+    }
+    Ok(())
+}
+
+/// X1: replace `facts` / `memory_episodes` with typed memory graph tables
+/// (`memory_nodes`, `memory_items`, `memory_edges`) and drop legacy FTS.
+/// Idempotent: no-op when `memory_edges` already exists (or `facts` is gone).
+fn migrate_v9_memory_graph(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let has_facts = table_exists(conn, "facts")?;
+    let has_edges = table_exists(conn, "memory_edges")?;
+    let has_episodes = table_exists(conn, "memory_episodes")?;
+    let has_items = table_exists(conn, "memory_items")?;
+
+    if has_edges && !has_facts && !has_episodes {
+        // Already on the graph shape; still drop any leftover legacy FTS.
+        drop_legacy_memory_fts(conn)?;
+        return Ok(());
+    }
+
+    // One transaction so a failed copy never commits DROP of legacy tables.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = migrate_v9_memory_graph_inner(conn, has_facts, has_edges, has_episodes, has_items);
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn migrate_v9_memory_graph_inner(
+    conn: &rusqlite::Connection,
+    has_facts: bool,
+    has_edges: bool,
+    has_episodes: bool,
+    has_items: bool,
+) -> anyhow::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            label TEXT NOT NULL,
+            aliases TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(kind, label)
+        );
+        CREATE TABLE IF NOT EXISTS memory_items (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN ('episode_summary','utterance','note')),
+            content TEXT NOT NULL,
+            topics TEXT NOT NULL DEFAULT '[]',
+            entities TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL
+        );
+        "#,
+    )?;
+
+    if has_episodes {
+        // Plain INSERT on first pass so FK failures abort; OR IGNORE only when
+        // retrying a partial prior attempt so already-copied ids are skipped.
+        let sql = if has_items {
+            r#"
+            INSERT OR IGNORE INTO memory_items
+                (id, session_id, kind, content, topics, entities, created_at)
+            SELECT
+                id, session_id, 'episode_summary', summary,
+                COALESCE(topics, '[]'), COALESCE(entities, '[]'), created_at
+            FROM memory_episodes;
+            "#
+        } else {
+            r#"
+            INSERT INTO memory_items
+                (id, session_id, kind, content, topics, entities, created_at)
+            SELECT
+                id, session_id, 'episode_summary', summary,
+                COALESCE(topics, '[]'), COALESCE(entities, '[]'), created_at
+            FROM memory_episodes;
+            "#
+        };
+        conn.execute_batch(sql)?;
+        let leftover: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_episodes e
+             WHERE NOT EXISTS (SELECT 1 FROM memory_items i WHERE i.id = e.id)",
+            [],
+            |r| r.get(0),
+        )?;
+        if leftover > 0 {
+            anyhow::bail!(
+                "migrate_v9: failed to copy {leftover} memory_episodes row(s) into memory_items \
+                 (likely FK / constraint errors); refusing to DROP legacy table"
+            );
+        }
+    }
+
+    if !has_edges {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE memory_edges (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                subject_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL,
+                object_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
+                source TEXT NOT NULL DEFAULT 'inferred'
+                    CHECK(source IN ('user','inferred')),
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '[]',
+                durability REAL NOT NULL DEFAULT 1.0,
+                mention_count INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT,
+                provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
+                provenance_record_id TEXT,
+                provenance_snippet TEXT
+            );
             "#,
+        )?;
+    }
+
+    if has_facts {
+        // Copy SPO rows; parse legacy source_ref JSON into provenance columns.
+        struct LegacyFactRow {
+            id: String,
+            subject: String,
+            predicate: String,
+            object: String,
+            source: String,
+            confidence: f64,
+            created_at: String,
+            tags: String,
+            durability: f64,
+            mention_count: i64,
+            last_seen_at: Option<String>,
+            source_ref: Option<String>,
+        }
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, subject, predicate, object, source, confidence, created_at,
+                   tags, durability, mention_count, last_seen_at, source_ref
+            FROM facts
+            "#,
+        )?;
+        let rows: Vec<LegacyFactRow> = stmt
+            .query_map([], |r| {
+                Ok(LegacyFactRow {
+                    id: r.get(0)?,
+                    subject: r.get(1)?,
+                    predicate: r.get(2)?,
+                    object: r.get(3)?,
+                    source: r.get(4)?,
+                    confidence: r.get(5)?,
+                    created_at: r.get(6)?,
+                    tags: r.get(7)?,
+                    durability: r.get(8)?,
+                    mention_count: r.get(9)?,
+                    last_seen_at: r.get(10)?,
+                    source_ref: r.get(11)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let insert_sql = if has_edges {
+            // Retry path: skip ids already copied.
+            r#"
+            INSERT OR IGNORE INTO memory_edges (
+                id, subject, predicate, object, source, confidence, created_at,
+                tags, durability, mention_count, last_seen_at,
+                provenance_item_id, provenance_record_id, provenance_snippet
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#
+        } else {
+            r#"
+            INSERT INTO memory_edges (
+                id, subject, predicate, object, source, confidence, created_at,
+                tags, durability, mention_count, last_seen_at,
+                provenance_item_id, provenance_record_id, provenance_snippet
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#
+        };
+        let mut insert = conn.prepare(insert_sql)?;
+        for row in rows {
+            let (prov_item, prov_record, prov_snippet) =
+                parse_legacy_source_ref(conn, row.source_ref.as_deref())?;
+            insert.execute(rusqlite::params![
+                row.id,
+                row.subject,
+                row.predicate,
+                row.object,
+                row.source,
+                row.confidence,
+                row.created_at,
+                row.tags,
+                row.durability,
+                row.mention_count,
+                row.last_seen_at,
+                prov_item,
+                prov_record,
+                prov_snippet,
+            ])?;
+        }
+        drop(insert);
+        let leftover: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM facts f
+             WHERE NOT EXISTS (SELECT 1 FROM memory_edges e WHERE e.id = f.id)",
+            [],
+            |r| r.get(0),
+        )?;
+        if leftover > 0 {
+            anyhow::bail!(
+                "migrate_v9: failed to copy {leftover} facts row(s) into memory_edges; \
+                 refusing to DROP legacy table"
+            );
+        }
+    }
+
+    // Backfill nodes from distinct edge labels.
+    backfill_memory_nodes_from_edges(conn)?;
+
+    // Drop legacy tables / FTS / triggers only after verified copy.
+    drop_legacy_memory_fts(conn)?;
+    conn.execute_batch(
+        r#"
+        DROP TRIGGER IF EXISTS facts_embed_del;
+        DROP TRIGGER IF EXISTS facts_embed_upd;
+        DROP TABLE IF EXISTS facts;
+        DROP TABLE IF EXISTS memory_episodes;
+        DROP INDEX IF EXISTS idx_facts_subject;
+        DROP INDEX IF EXISTS idx_facts_confidence;
+        DROP INDEX IF EXISTS idx_memory_episodes_session;
+        DROP INDEX IF EXISTS idx_memory_episodes_created;
+        "#,
+    )?;
+    Ok(())
+}
+
+fn parse_legacy_source_ref(
+    conn: &rusqlite::Connection,
+    raw: Option<&str>,
+) -> anyhow::Result<(Option<String>, Option<String>, Option<String>)> {
+    let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+        return Ok((None, None, None));
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Ok((None, None, None));
+    };
+    let message_id = value
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let snippet = value
+        .get("snippet")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if message_id.is_empty() {
+        return Ok((None, None, snippet));
+    }
+    let in_items: bool = conn
+        .query_row(
+            "SELECT 1 FROM memory_items WHERE id = ?1",
+            rusqlite::params![message_id],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if in_items {
+        Ok((Some(message_id), None, snippet))
+    } else {
+        Ok((None, Some(message_id), snippet))
+    }
+}
+
+fn backfill_memory_nodes_from_edges(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT DISTINCT subject AS label FROM memory_edges
+        UNION
+        SELECT DISTINCT object AS label FROM memory_edges
+        "#,
+    )?;
+    let labels: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for label in labels {
+        let kind = if label.eq_ignore_ascii_case("user") {
+            "user"
+        } else {
+            "concept"
+        };
+        let id = haven_common::types::new_id("node");
+        conn.execute(
+            r#"
+            INSERT INTO memory_nodes (id, kind, label, aliases, created_at, updated_at)
+            VALUES (?1, ?2, ?3, '[]', ?4, ?4)
+            ON CONFLICT(kind, label) DO NOTHING
+            "#,
+            rusqlite::params![id, kind, label, now],
+        )?;
+        let node_id: String = conn.query_row(
+            "SELECT id FROM memory_nodes WHERE kind = ?1 AND label = ?2",
+            rusqlite::params![kind, label],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "UPDATE memory_edges SET subject_id = ?1 WHERE subject = ?2 AND subject_id IS NULL",
+            rusqlite::params![node_id, label],
+        )?;
+        conn.execute(
+            "UPDATE memory_edges SET object_id = ?1 WHERE object = ?2 AND object_id IS NULL",
+            rusqlite::params![node_id, label],
+        )?;
+    }
+    Ok(())
+}
+
+fn drop_legacy_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        r#"
+        DROP TRIGGER IF EXISTS facts_ai;
+        DROP TRIGGER IF EXISTS facts_ad;
+        DROP TRIGGER IF EXISTS facts_au;
+        DROP TRIGGER IF EXISTS episodes_ai;
+        DROP TRIGGER IF EXISTS episodes_ad;
+        DROP TRIGGER IF EXISTS episodes_au;
+        DROP TABLE IF EXISTS facts_fts;
+        DROP TABLE IF EXISTS episodes_fts;
+        "#,
+    )?;
+    // Fresh DBs run migrations before SCHEMA_SQL creates kv_store.
+    if table_exists(conn, "kv_store")? {
+        conn.execute(
+            "DELETE FROM kv_store WHERE key IN ('facts_fts_tokenizer', 'episodes_fts_tokenizer')",
+            [],
         )?;
     }
     Ok(())
@@ -439,32 +801,48 @@ const SCHEMA_SQL: &[&str] = &[
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
-    // Episodic long-term memory: compaction summaries persisted when the
-    // react loop compresses a conversation. Indexed (embedding + keyword)
-    // as `episode` entities alongside user messages, so context that was
-    // summarized away remains retrievable across sessions.
-    "CREATE TABLE IF NOT EXISTS memory_episodes (
+    // Typed memory graph (X1): nodes + SPO edges + episodic items.
+    "CREATE TABLE IF NOT EXISTS memory_nodes (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        aliases TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(kind, label)
+    )",
+    // Episodic items (compaction summaries / notes). NOT all messages —
+    // only curated memory rows. Shares `msg-*` id space with transcript
+    // bubbles when a compaction summary is mirrored.
+    "CREATE TABLE IF NOT EXISTS memory_items (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        summary TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('episode_summary','utterance','note')),
+        content TEXT NOT NULL,
         topics TEXT NOT NULL DEFAULT '[]',
         entities TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL
     )",
-    "CREATE TABLE IF NOT EXISTS facts (
+    // Today's facts as SPO edges. Keeps `fact-*` ids. `entity_type='fact'`
+    // in memory_embeddings remains the domain alias for these edge rows.
+    "CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
         subject TEXT NOT NULL,
+        subject_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
         predicate TEXT NOT NULL,
         object TEXT NOT NULL,
+        object_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
         source TEXT NOT NULL DEFAULT 'inferred'
             CHECK(source IN ('user','inferred')),
         confidence REAL NOT NULL DEFAULT 1.0,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at TEXT NOT NULL,
         tags TEXT NOT NULL DEFAULT '[]',
         durability REAL NOT NULL DEFAULT 1.0,
         mention_count INTEGER NOT NULL DEFAULT 0,
         last_seen_at TEXT,
-        source_ref TEXT
+        provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
+        provenance_record_id TEXT,
+        provenance_snippet TEXT
     )",
     "CREATE TABLE IF NOT EXISTS actions (
         id TEXT PRIMARY KEY,
@@ -529,20 +907,22 @@ const SCHEMA_SQL: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_session_steps_session ON session_steps(session_id)",
-    "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)",
-    "CREATE INDEX IF NOT EXISTS idx_facts_confidence ON facts(confidence)",
-    "CREATE INDEX IF NOT EXISTS idx_memory_episodes_session ON memory_episodes(session_id)",
-    "CREATE INDEX IF NOT EXISTS idx_memory_episodes_created ON memory_episodes(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_edges_subject ON memory_edges(subject)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_edges_confidence ON memory_edges(confidence)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
 ];
 
 /// Vector index for semantic memory. `entity_type` selects the memory domain
-/// ('fact' = facts rows, 'episode' = conversation events / compaction
-/// summaries); `entity_id` references the owning row. `vector` is a
-/// little-endian f32 blob; `text` keeps the embedded surface text so keyword
-/// search and display don't need to re-derive it.
+/// ('fact' = memory_edges SPO rows, 'episode' = memory_items). Domain string
+/// values stay `fact`/`episode` as aliases for edge/item to limit caller churn.
+/// `entity_id` references the owning row. `vector` is a little-endian f32 blob;
+/// `text` keeps the embedded surface text so keyword search and display don't
+/// need to re-derive it.
 const MEMORY_EMBEDDINGS_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS memory_embeddings (
     entity_type TEXT NOT NULL,
@@ -568,18 +948,23 @@ CREATE INDEX IF NOT EXISTS idx_embedding_lsh_probe
     ON embedding_lsh(entity_type, model, bucket);
 ";
 
-/// Triggers that keep `memory_embeddings` in sync with the `facts` table: any
-/// fact row UPDATE or DELETE invalidates the fact's embedding, so the next
-/// embedding pass re-indexes the current surface text.
+/// Triggers that keep `memory_embeddings` in sync with `memory_edges`.
+/// Invalidate on DELETE, and on UPDATE only when SPO surface text changes
+/// (reinforcement of mention_count / confidence / provenance must not drop
+/// vectors).
 fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     conn.execute_batch(
         "DROP TRIGGER IF EXISTS facts_embed_del;
          DROP TRIGGER IF EXISTS facts_embed_upd;
-         CREATE TRIGGER facts_embed_del AFTER DELETE ON facts BEGIN
+         DROP TRIGGER IF EXISTS memory_edges_embed_del;
+         DROP TRIGGER IF EXISTS memory_edges_embed_upd;
+         CREATE TRIGGER memory_edges_embed_del AFTER DELETE ON memory_edges BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
              DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
          END;
-         CREATE TRIGGER facts_embed_upd AFTER UPDATE ON facts BEGIN
+         CREATE TRIGGER memory_edges_embed_upd
+         AFTER UPDATE OF subject, predicate, object ON memory_edges
+         BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
              DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
          END;",
@@ -587,24 +972,11 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
     Ok(())
 }
 
-/// FTS5 full-text index over facts so search_facts can rank by relevance
-/// (BM25) instead of doing LIKE scans. Uses an external-content table synced
-/// by triggers. Best-effort: bundled SQLite ships FTS5, but if it is ever
-/// unavailable the setup fails gracefully and search_facts falls back to the
-/// LIKE path. The whole block runs inside one transaction and the idempotency
-/// guard checks that the sync triggers exist too, so a crash partway through
-/// (table created but triggers missing) is repaired on the next startup.
-///
-/// Tokenizer: `trigram` (SQLite ≥ 3.34) instead of the default unicode61.
-/// unicode61 does not split CJK runs, so Chinese text was only findable via
-/// LIKE (a full scan). trigram indexes every 3-char window and matches
-/// substrings, which works for Chinese and keeps BM25 ranking. Short queries
-/// (1–2 chars / CJK digrams) still miss the trigram index — callers LIKE only
-/// those short terms (P2-14), not every empty-FTS long query. The applied
-/// tokenizer is recorded in `kv_store` so a tokenizer change rebuilds once.
+/// Unified contentless FTS5 over memory edges + items (trigram). Best-effort:
+/// if FTS5 is unavailable, callers fall back to LIKE. Tokenizer recorded in
+/// `kv_store` so a tokenizer change rebuilds once.
 const FTS_TOKENIZER: &str = "trigram";
-const FACTS_FTS_TOKENIZER_KV_KEY: &str = "facts_fts_tokenizer";
-const EPISODES_FTS_TOKENIZER_KV_KEY: &str = "episodes_fts_tokenizer";
+const MEMORY_FTS_TOKENIZER_KV_KEY: &str = "memory_fts_tokenizer";
 
 fn applied_fts_tokenizer(conn: &rusqlite::Connection, key: &str) -> Option<String> {
     conn.query_row(
@@ -623,127 +995,292 @@ fn record_fts_tokenizer(conn: &rusqlite::Connection, key: &str) {
     );
 }
 
-fn ensure_facts_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "memory_edges")? || !table_exists(conn, "memory_items")? {
+        return Ok(());
+    }
     let has_fts: bool = conn
-        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='facts_fts'")?
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_fts'")?
         .query_row([], |r| r.get::<_, i32>(0))
         .map(|c| c > 0)
         .unwrap_or(false);
-    let triggers_missing = ["facts_ai", "facts_ad", "facts_au"].iter().any(|name| {
+    let trigger_names = [
+        "memory_edges_ai",
+        "memory_edges_ad",
+        "memory_edges_au",
+        "memory_items_ai",
+        "memory_items_ad",
+        "memory_items_au",
+    ];
+    let triggers_missing = trigger_names.iter().any(|name| {
         conn.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
             .and_then(|mut stmt| stmt.query_row(rusqlite::params![name], |r| r.get::<_, i32>(0)))
             .map(|c| c == 0)
             .unwrap_or(true)
     });
     let tokenizer_stale =
-        applied_fts_tokenizer(conn, FACTS_FTS_TOKENIZER_KV_KEY).as_deref() != Some(FTS_TOKENIZER);
-    if !has_fts || triggers_missing || tokenizer_stale {
-        // DROP first so a partially-applied previous attempt (table present
-        // but triggers missing) is rebuilt cleanly; external-content tables
-        // re-index from the facts table via the 'rebuild' command.
-        let fts_sql = format!(
-            "BEGIN;
-            DROP TABLE IF EXISTS facts_fts;
-            DROP TRIGGER IF EXISTS facts_ai;
-            DROP TRIGGER IF EXISTS facts_ad;
-            DROP TRIGGER IF EXISTS facts_au;
-            CREATE VIRTUAL TABLE facts_fts USING fts5(
-                subject, predicate, object, tags,
-                content='facts', content_rowid='rowid',
-                tokenize='{FTS_TOKENIZER}'
-            );
-            CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
-                INSERT INTO facts_fts(rowid, subject, predicate, object, tags)
-                VALUES (new.rowid, new.subject, new.predicate, new.object, new.tags);
-            END;
-            CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
-                INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, tags)
-                VALUES ('delete', old.rowid, old.subject, old.predicate, old.object, old.tags);
-            END;
-            CREATE TRIGGER facts_au AFTER UPDATE ON facts BEGIN
-                INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, tags)
-                VALUES ('delete', old.rowid, old.subject, old.predicate, old.object, old.tags);
-                INSERT INTO facts_fts(rowid, subject, predicate, object, tags)
-                VALUES (new.rowid, new.subject, new.predicate, new.object, new.tags);
-            END;
-            INSERT INTO facts_fts(facts_fts) VALUES ('rebuild');
-            COMMIT;"
-        );
-        if let Err(e) = conn.execute_batch(&fts_sql) {
-            tracing::warn!("FTS5 unavailable, facts search falls back to LIKE: {}", e);
-            // execute_batch auto-commits each statement, but the explicit
-            // BEGIN above means a mid-batch failure leaves the transaction
-            // open — roll it back so the connection is left in a clean state.
-            let _ = conn.execute_batch("ROLLBACK");
-        } else {
-            record_fts_tokenizer(conn, FACTS_FTS_TOKENIZER_KV_KEY);
-        }
-    }
-    Ok(())
-}
-
-/// P2-10 / L6: FTS5 over episode summary + optional topics/entities JSON.
-/// Same trigram tokenizer as facts; short queries LIKE-fallback in embeddings.
-fn ensure_episodes_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    if !table_exists(conn, "memory_episodes")? {
-        return Ok(());
-    }
-    // Columns land via SCHEMA_SQL (fresh) or migrate_v5 (upgrade); skip until
-    // both exist so a mid-migration open does not build a broken FTS.
-    if !column_exists(conn, "memory_episodes", "topics")?
-        || !column_exists(conn, "memory_episodes", "entities")?
-    {
-        return Ok(());
-    }
-    let has_fts: bool = conn
-        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='episodes_fts'")?
-        .query_row([], |r| r.get::<_, i32>(0))
-        .map(|c| c > 0)
-        .unwrap_or(false);
-    let triggers_missing = ["episodes_ai", "episodes_ad", "episodes_au"]
-        .iter()
-        .any(|name| {
-            conn.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
-                .and_then(|mut stmt| stmt.query_row(rusqlite::params![name], |r| r.get::<_, i32>(0)))
-                .map(|c| c == 0)
-                .unwrap_or(true)
-        });
-    let tokenizer_stale = applied_fts_tokenizer(conn, EPISODES_FTS_TOKENIZER_KV_KEY).as_deref()
-        != Some(FTS_TOKENIZER);
+        applied_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY).as_deref() != Some(FTS_TOKENIZER);
     if !has_fts || triggers_missing || tokenizer_stale {
         let fts_sql = format!(
             "BEGIN;
-            DROP TABLE IF EXISTS episodes_fts;
-            DROP TRIGGER IF EXISTS episodes_ai;
-            DROP TRIGGER IF EXISTS episodes_ad;
-            DROP TRIGGER IF EXISTS episodes_au;
-            CREATE VIRTUAL TABLE episodes_fts USING fts5(
-                summary, topics, entities,
-                content='memory_episodes', content_rowid='rowid',
+            DROP TABLE IF EXISTS memory_fts;
+            DROP TRIGGER IF EXISTS memory_edges_ai;
+            DROP TRIGGER IF EXISTS memory_edges_ad;
+            DROP TRIGGER IF EXISTS memory_edges_au;
+            DROP TRIGGER IF EXISTS memory_items_ai;
+            DROP TRIGGER IF EXISTS memory_items_ad;
+            DROP TRIGGER IF EXISTS memory_items_au;
+            CREATE VIRTUAL TABLE memory_fts USING fts5(
+                body,
+                entity_type UNINDEXED,
+                entity_id UNINDEXED,
+                content='',
+                contentless_delete=1,
+                contentless_unindexed=1,
                 tokenize='{FTS_TOKENIZER}'
             );
-            CREATE TRIGGER episodes_ai AFTER INSERT ON memory_episodes BEGIN
-                INSERT INTO episodes_fts(rowid, summary, topics, entities)
-                VALUES (new.rowid, new.summary, new.topics, new.entities);
+            CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
+                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                VALUES (
+                    new.rowid,
+                    new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
+                    'edge',
+                    new.id
+                );
             END;
-            CREATE TRIGGER episodes_ad AFTER DELETE ON memory_episodes BEGIN
-                INSERT INTO episodes_fts(episodes_fts, rowid, summary, topics, entities)
-                VALUES ('delete', old.rowid, old.summary, old.topics, old.entities);
+            CREATE TRIGGER memory_edges_ad AFTER DELETE ON memory_edges BEGIN
+                DELETE FROM memory_fts WHERE rowid = old.rowid;
             END;
-            CREATE TRIGGER episodes_au AFTER UPDATE ON memory_episodes BEGIN
-                INSERT INTO episodes_fts(episodes_fts, rowid, summary, topics, entities)
-                VALUES ('delete', old.rowid, old.summary, old.topics, old.entities);
-                INSERT INTO episodes_fts(rowid, summary, topics, entities)
-                VALUES (new.rowid, new.summary, new.topics, new.entities);
+            CREATE TRIGGER memory_edges_au
+            AFTER UPDATE OF subject, predicate, object, tags ON memory_edges
+            BEGIN
+                DELETE FROM memory_fts WHERE rowid = old.rowid;
+                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                VALUES (
+                    new.rowid,
+                    new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
+                    'edge',
+                    new.id
+                );
             END;
-            INSERT INTO episodes_fts(episodes_fts) VALUES ('rebuild');
+            CREATE TRIGGER memory_items_ai AFTER INSERT ON memory_items BEGIN
+                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                VALUES (
+                    -new.rowid,
+                    new.content || ' ' || new.topics || ' ' || new.entities,
+                    'item',
+                    new.id
+                );
+            END;
+            CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
+                DELETE FROM memory_fts WHERE rowid = -old.rowid;
+            END;
+            CREATE TRIGGER memory_items_au
+            AFTER UPDATE OF content, topics, entities ON memory_items
+            BEGIN
+                DELETE FROM memory_fts WHERE rowid = -old.rowid;
+                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                VALUES (
+                    -new.rowid,
+                    new.content || ' ' || new.topics || ' ' || new.entities,
+                    'item',
+                    new.id
+                );
+            END;
+            INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+            SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'edge', id
+              FROM memory_edges;
+            INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+            SELECT -rowid, content || ' ' || topics || ' ' || entities, 'item', id
+              FROM memory_items;
             COMMIT;"
         );
         if let Err(e) = conn.execute_batch(&fts_sql) {
-            tracing::warn!("FTS5 unavailable, episode search falls back to LIKE: {}", e);
+            // Prefer contentless_delete=1 (DELETE FROM works). Older SQLite may
+            // lack it — fall back to classic contentless with full-column
+            // 'delete' commands, then to a content-storing FTS table.
+            tracing::warn!(
+                "contentless_delete memory_fts unavailable ({}), trying classic contentless",
+                e
+            );
             let _ = conn.execute_batch("ROLLBACK");
+            let classic_sql = format!(
+                "BEGIN;
+                DROP TABLE IF EXISTS memory_fts;
+                DROP TRIGGER IF EXISTS memory_edges_ai;
+                DROP TRIGGER IF EXISTS memory_edges_ad;
+                DROP TRIGGER IF EXISTS memory_edges_au;
+                DROP TRIGGER IF EXISTS memory_items_ai;
+                DROP TRIGGER IF EXISTS memory_items_ad;
+                DROP TRIGGER IF EXISTS memory_items_au;
+                CREATE VIRTUAL TABLE memory_fts USING fts5(
+                    body,
+                    entity_type UNINDEXED,
+                    entity_id UNINDEXED,
+                    content='',
+                    contentless_unindexed=1,
+                    tokenize='{FTS_TOKENIZER}'
+                );
+                CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
+                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                    VALUES (
+                        new.rowid,
+                        new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
+                        'edge',
+                        new.id
+                    );
+                END;
+                CREATE TRIGGER memory_edges_ad AFTER DELETE ON memory_edges BEGIN
+                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
+                    VALUES (
+                        'delete', old.rowid,
+                        old.subject || ' ' || old.predicate || ' ' || old.object || ' ' || old.tags,
+                        'edge', old.id
+                    );
+                END;
+                CREATE TRIGGER memory_edges_au
+                AFTER UPDATE OF subject, predicate, object, tags ON memory_edges
+                BEGIN
+                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
+                    VALUES (
+                        'delete', old.rowid,
+                        old.subject || ' ' || old.predicate || ' ' || old.object || ' ' || old.tags,
+                        'edge', old.id
+                    );
+                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                    VALUES (
+                        new.rowid,
+                        new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
+                        'edge',
+                        new.id
+                    );
+                END;
+                CREATE TRIGGER memory_items_ai AFTER INSERT ON memory_items BEGIN
+                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                    VALUES (
+                        -new.rowid,
+                        new.content || ' ' || new.topics || ' ' || new.entities,
+                        'item',
+                        new.id
+                    );
+                END;
+                CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
+                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
+                    VALUES (
+                        'delete', -old.rowid,
+                        old.content || ' ' || old.topics || ' ' || old.entities,
+                        'item', old.id
+                    );
+                END;
+                CREATE TRIGGER memory_items_au
+                AFTER UPDATE OF content, topics, entities ON memory_items
+                BEGIN
+                    INSERT INTO memory_fts(memory_fts, rowid, body, entity_type, entity_id)
+                    VALUES (
+                        'delete', -old.rowid,
+                        old.content || ' ' || old.topics || ' ' || old.entities,
+                        'item', old.id
+                    );
+                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                    VALUES (
+                        -new.rowid,
+                        new.content || ' ' || new.topics || ' ' || new.entities,
+                        'item',
+                        new.id
+                    );
+                END;
+                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'edge', id
+                  FROM memory_edges;
+                INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                SELECT -rowid, content || ' ' || topics || ' ' || entities, 'item', id
+                  FROM memory_items;
+                COMMIT;"
+            );
+            if conn.execute_batch(&classic_sql).is_ok() {
+                record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY);
+            } else {
+                let _ = conn.execute_batch("ROLLBACK");
+                let normal_sql = format!(
+                    "BEGIN;
+                    DROP TABLE IF EXISTS memory_fts;
+                    DROP TRIGGER IF EXISTS memory_edges_ai;
+                    DROP TRIGGER IF EXISTS memory_edges_ad;
+                    DROP TRIGGER IF EXISTS memory_edges_au;
+                    DROP TRIGGER IF EXISTS memory_items_ai;
+                    DROP TRIGGER IF EXISTS memory_items_ad;
+                    DROP TRIGGER IF EXISTS memory_items_au;
+                    CREATE VIRTUAL TABLE memory_fts USING fts5(
+                        body,
+                        entity_type UNINDEXED,
+                        entity_id UNINDEXED,
+                        tokenize='{FTS_TOKENIZER}'
+                    );
+                    CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
+                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                        VALUES (
+                            new.rowid,
+                            new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
+                            'edge',
+                            new.id
+                        );
+                    END;
+                    CREATE TRIGGER memory_edges_ad AFTER DELETE ON memory_edges BEGIN
+                        DELETE FROM memory_fts WHERE rowid = old.rowid;
+                    END;
+                    CREATE TRIGGER memory_edges_au
+                    AFTER UPDATE OF subject, predicate, object, tags ON memory_edges
+                    BEGIN
+                        DELETE FROM memory_fts WHERE rowid = old.rowid;
+                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                        VALUES (
+                            new.rowid,
+                            new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
+                            'edge',
+                            new.id
+                        );
+                    END;
+                    CREATE TRIGGER memory_items_ai AFTER INSERT ON memory_items BEGIN
+                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                        VALUES (
+                            -new.rowid,
+                            new.content || ' ' || new.topics || ' ' || new.entities,
+                            'item',
+                            new.id
+                        );
+                    END;
+                    CREATE TRIGGER memory_items_ad AFTER DELETE ON memory_items BEGIN
+                        DELETE FROM memory_fts WHERE rowid = -old.rowid;
+                    END;
+                    CREATE TRIGGER memory_items_au
+                    AFTER UPDATE OF content, topics, entities ON memory_items
+                    BEGIN
+                        DELETE FROM memory_fts WHERE rowid = -old.rowid;
+                        INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                        VALUES (
+                            -new.rowid,
+                            new.content || ' ' || new.topics || ' ' || new.entities,
+                            'item',
+                            new.id
+                        );
+                    END;
+                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                    SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'edge', id
+                      FROM memory_edges;
+                    INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
+                    SELECT -rowid, content || ' ' || topics || ' ' || entities, 'item', id
+                      FROM memory_items;
+                    COMMIT;"
+                );
+                if let Err(e2) = conn.execute_batch(&normal_sql) {
+                    tracing::warn!("FTS5 unavailable, memory search falls back to LIKE: {}", e2);
+                    let _ = conn.execute_batch("ROLLBACK");
+                } else {
+                    record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY);
+                }
+            }
         } else {
-            record_fts_tokenizer(conn, EPISODES_FTS_TOKENIZER_KV_KEY);
+            record_fts_tokenizer(conn, MEMORY_FTS_TOKENIZER_KV_KEY);
         }
     }
     Ok(())
@@ -755,8 +1292,11 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("sessions", "transcript"),
     ("messages", "voice"),
     ("session_steps", "thought"),
+    // Pre-v9 shape (still checked when the legacy table is present).
     ("facts", "tags"),
     ("facts", "durability"),
+    ("memory_edges", "tags"),
+    ("memory_edges", "durability"),
     ("actions", "kind"),
 ];
 
@@ -830,8 +1370,7 @@ pub fn init_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("schema SQL failed: {e}\n---\n{sql}"))?;
     }
     conn.execute_batch(MEMORY_EMBEDDINGS_SCHEMA)?;
-    ensure_facts_fts(conn)?;
-    ensure_episodes_fts(conn)?;
+    ensure_memory_fts(conn)?;
     ensure_fact_embedding_triggers(conn)?;
     if user_version(conn)? < SCHEMA_VERSION {
         set_user_version(conn, SCHEMA_VERSION)?;
@@ -880,11 +1419,12 @@ mod tests {
         let expected = &[
             "actions",
             "embedding_lsh",
-            "facts",
             "kv_store",
             "llm_usage",
+            "memory_edges",
             "memory_embeddings",
-            "memory_episodes",
+            "memory_items",
+            "memory_nodes",
             "messages",
             "partial_messages",
             "session_steps",
@@ -899,18 +1439,29 @@ mod tests {
                 tables
             );
         }
-        // FTS5 external-content indexes (plus shadow tables) are expected.
         assert!(
-            tables.iter().any(|n| n == "facts_fts"),
-            "facts_fts table should exist"
+            !tables.iter().any(|n| n == "facts"),
+            "legacy facts table must not exist"
         );
         assert!(
-            tables.iter().any(|n| n == "episodes_fts"),
-            "episodes_fts table should exist"
+            !tables.iter().any(|n| n == "memory_episodes"),
+            "legacy memory_episodes table must not exist"
+        );
+        assert!(
+            tables.iter().any(|n| n == "memory_fts"),
+            "memory_fts table should exist"
+        );
+        assert!(
+            !tables.iter().any(|n| n == "facts_fts"),
+            "facts_fts must be dropped"
+        );
+        assert!(
+            !tables.iter().any(|n| n == "episodes_fts"),
+            "episodes_fts must be dropped"
         );
         let core: Vec<_> = tables
             .iter()
-            .filter(|t| !t.starts_with("facts_fts") && !t.starts_with("episodes_fts"))
+            .filter(|t| !t.starts_with("memory_fts"))
             .collect();
         assert_eq!(core.len(), expected.len());
     }
@@ -923,13 +1474,14 @@ mod tests {
 
         let expected = &[
             "idx_embedding_lsh_probe",
-            "idx_facts_confidence",
-            "idx_facts_subject",
             "idx_llm_usage_session",
+            "idx_memory_edges_confidence",
+            "idx_memory_edges_subject",
             "idx_memory_embeddings_type",
             "idx_memory_embeddings_type_model",
-            "idx_memory_episodes_created",
-            "idx_memory_episodes_session",
+            "idx_memory_items_created",
+            "idx_memory_items_session",
+            "idx_memory_nodes_label",
             "idx_messages_created_at",
             "idx_session_steps_session",
             "idx_sessions_created_at",
@@ -945,7 +1497,7 @@ mod tests {
         }
         let core: Vec<_> = indexes
             .iter()
-            .filter(|n| !n.starts_with("facts_fts") && !n.starts_with("episodes_fts"))
+            .filter(|n| !n.starts_with("memory_fts"))
             .collect();
         assert_eq!(core.len(), expected.len());
     }
@@ -1034,22 +1586,22 @@ mod tests {
         // spellings plus a canonical row for the same concept.
         conn.execute_batch(
             r#"
-            INSERT INTO facts (id, subject, predicate, object) VALUES
-                ('f1', 'user', 'workspace', 'D:/proj'),
-                ('f2', 'user', 'workspace_path', 'D:/proj'),
-                ('f3', 'user', 'project_path', 'D:/proj'),
-                ('f4', 'user', 'employer', 'ACME'),
-                ('f5', 'user', 'works_at', 'ACME'),
-                ('f6', 'user', 'favorite_language', 'Rust');
+            INSERT INTO memory_edges (id, subject, predicate, object, created_at) VALUES
+                ('f1', 'user', 'workspace', 'D:/proj', '2026-01-01'),
+                ('f2', 'user', 'workspace_path', 'D:/proj', '2026-01-01'),
+                ('f3', 'user', 'project_path', 'D:/proj', '2026-01-01'),
+                ('f4', 'user', 'employer', 'ACME', '2026-01-01'),
+                ('f5', 'user', 'works_at', 'ACME', '2026-01-01'),
+                ('f6', 'user', 'favorite_language', 'Rust', '2026-01-01');
             "#,
         )
         .unwrap();
-        // Stamp as v1, then reopen: migration v2 must run.
+        // Stamp as v1, then reopen: migration v2 must run (on memory_edges).
         set_user_version(&conn, 1).unwrap();
         init_schema(&conn).unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT predicate, object FROM facts ORDER BY predicate")
+            .prepare("SELECT predicate, object FROM memory_edges ORDER BY predicate")
             .unwrap();
         let rows: Vec<(String, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -1270,21 +1822,39 @@ mod tests {
     fn v5_migration_adds_episode_columns_and_company_alias() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        // Simulate a v4 DB without topics/entities and with bare `company`.
+        // Simulate a v4 DB: pre-graph tables, episodes without topics/entities,
+        // and bare `company` facts. Stamp back and let v5..v9 upgrade.
         set_user_version(&conn, 4).unwrap();
         conn.execute_batch(
             r#"
-            DROP TABLE IF EXISTS episodes_fts;
-            CREATE TABLE memory_episodes_v4 (
+            DROP TABLE IF EXISTS memory_fts;
+            DROP TABLE IF EXISTS memory_edges;
+            DROP TABLE IF EXISTS memory_items;
+            DROP TABLE IF EXISTS memory_nodes;
+            CREATE TABLE memory_episodes (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
-            INSERT INTO memory_episodes_v4 (id, session_id, summary, created_at)
-            SELECT id, session_id, summary, created_at FROM memory_episodes;
-            DROP TABLE memory_episodes;
-            ALTER TABLE memory_episodes_v4 RENAME TO memory_episodes;
+            INSERT INTO sessions (id, input_text, status)
+            VALUES ('ses-v5', 'hi', 'pending');
+            INSERT INTO memory_episodes (id, session_id, summary, created_at)
+            VALUES ('msg-ep1', 'ses-v5', 'old summary', '2026-01-01');
+            CREATE TABLE facts (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'inferred',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                tags TEXT NOT NULL DEFAULT '[]',
+                durability REAL NOT NULL DEFAULT 1.0,
+                mention_count INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT,
+                source_ref TEXT
+            );
             INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
             VALUES
               ('c1', 'user', 'company', 'Acme', 'inferred', 0.9, '2026-01-01'),
@@ -1296,43 +1866,139 @@ mod tests {
         .unwrap();
         init_schema(&conn).unwrap();
 
-        assert!(column_exists(&conn, "memory_episodes", "topics").unwrap());
-        assert!(column_exists(&conn, "memory_episodes", "entities").unwrap());
+        assert!(column_exists(&conn, "memory_items", "topics").unwrap());
+        assert!(column_exists(&conn, "memory_items", "entities").unwrap());
+        let item_count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_items WHERE id = 'msg-ep1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(item_count, 1);
         let pred: String = conn
             .query_row(
-                "SELECT predicate FROM facts WHERE id = 'c1'",
+                "SELECT predicate FROM memory_edges WHERE id = 'c1'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(pred, "works_at");
-        // works_at collision collapsed to the higher-confidence row.
         let works_at: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM facts WHERE predicate = 'works_at'",
+                "SELECT COUNT(*) FROM memory_edges WHERE predicate = 'works_at'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(works_at, 1);
-        // Unrelated duplicate predicates are left for `dedup_facts`.
         let likes: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM facts WHERE predicate = 'likes'",
+                "SELECT COUNT(*) FROM memory_edges WHERE predicate = 'likes'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(likes, 2);
+        assert!(!table_exists(&conn, "facts").unwrap());
+        assert!(!table_exists(&conn, "memory_episodes").unwrap());
         let has_fts: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='episodes_fts'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_fts'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(has_fts, 1);
         assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v9_migration_copies_facts_and_episodes_into_graph() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        set_user_version(&conn, 8).unwrap();
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS memory_fts;
+            DROP TABLE IF EXISTS memory_edges;
+            DROP TABLE IF EXISTS memory_items;
+            DROP TABLE IF EXISTS memory_nodes;
+            CREATE TABLE memory_episodes (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                topics TEXT NOT NULL DEFAULT '[]',
+                entities TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE facts (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                object TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'inferred',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                tags TEXT NOT NULL DEFAULT '[]',
+                durability REAL NOT NULL DEFAULT 1.0,
+                mention_count INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT,
+                source_ref TEXT
+            );
+            INSERT INTO sessions (id, input_text, status)
+            VALUES ('ses-v9', 'hi', 'pending');
+            INSERT INTO memory_episodes (id, session_id, summary, topics, entities, created_at)
+            VALUES ('msg-sum', 'ses-v9', 'theme summary', '[\"ui\"]', '[\"Alice\"]', '2026-01-01');
+            INSERT INTO facts
+                (id, subject, predicate, object, source, confidence, created_at, source_ref)
+            VALUES
+                ('fact-1', 'user', 'likes', 'Rust', 'inferred', 0.9, '2026-01-01',
+                 '{"message_id":"msg-sum","snippet":"likes Rust"}'),
+                ('fact-2', 'Alice', 'role', 'dev', 'user', 1.0, '2026-01-02', NULL);
+            "#,
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(!table_exists(&conn, "facts").unwrap());
+        assert!(!table_exists(&conn, "memory_episodes").unwrap());
+        let (kind, content): (String, String) = conn
+            .query_row(
+                "SELECT kind, content FROM memory_items WHERE id = 'msg-sum'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "episode_summary");
+        assert_eq!(content, "theme summary");
+        let (subj, prov_item, snippet): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT subject, provenance_item_id, provenance_snippet
+                 FROM memory_edges WHERE id = 'fact-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(subj, "user");
+        assert_eq!(prov_item.as_deref(), Some("msg-sum"));
+        assert_eq!(snippet.as_deref(), Some("likes Rust"));
+        let node_kinds: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_nodes WHERE kind IN ('user','concept')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(node_kinds >= 2);
+        let user_kind: String = conn
+            .query_row(
+                "SELECT kind FROM memory_nodes WHERE label = 'user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(user_kind, "user");
     }
 
     #[test]
@@ -1385,7 +2051,7 @@ mod tests {
     fn fact_embedding_triggers_exist_after_init() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        for name in ["facts_embed_del", "facts_embed_upd"] {
+        for name in ["memory_edges_embed_del", "memory_edges_embed_upd"] {
             let count: i32 = conn
                 .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?1")
                 .unwrap()
@@ -1393,10 +2059,9 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "trigger {} must exist", name);
         }
-        // A fact UPDATE/DELETE invalidates its embedding through the trigger.
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object)
-             VALUES ('f1', 'user', 'likes', 'Rust')",
+            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+             VALUES ('f1', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
         .unwrap();
@@ -1406,8 +2071,12 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("UPDATE facts SET confidence = 0.5 WHERE id = 'f1'", [])
-            .unwrap();
+        // Confidence-only updates must keep the embedding (surface text unchanged).
+        conn.execute(
+            "UPDATE memory_edges SET confidence = 0.5 WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
         let count: i32 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id='f1'",
@@ -1415,14 +2084,27 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 0, "UPDATE must invalidate the embedding");
+        assert_eq!(count, 1, "reinforcement/demotion must not drop embeddings");
+        conn.execute(
+            "UPDATE memory_edges SET object = 'Golang' WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id='f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "SPO UPDATE must invalidate the embedding");
         conn.execute(
             "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
              VALUES ('fact', 'f1', 'm', X'0102', 'x')",
             [],
         )
         .unwrap();
-        conn.execute("DELETE FROM facts WHERE id = 'f1'", [])
+        conn.execute("DELETE FROM memory_edges WHERE id = 'f1'", [])
             .unwrap();
         let count: i32 = conn
             .query_row(
@@ -1435,18 +2117,18 @@ mod tests {
     }
 
     #[test]
-    fn facts_defaults_apply() {
+    fn memory_edges_defaults_apply() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object)
-             VALUES ('f1', 'user', 'likes', 'Rust')",
+            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+             VALUES ('f1', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
         .unwrap();
         let (durability, tags): (f64, String) = conn
             .query_row(
-                "SELECT durability, tags FROM facts WHERE id='f1'",
+                "SELECT durability, tags FROM memory_edges WHERE id='f1'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -1456,23 +2138,88 @@ mod tests {
     }
 
     #[test]
-    fn fts_triggers_sync_facts() {
+    fn fts_triggers_sync_edges() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object, tags)
-             VALUES ('f1', 'user', 'likes', 'Rust', '[\"dev\"]')",
+            "INSERT INTO memory_edges (id, subject, predicate, object, tags, created_at)
+             VALUES ('f1', 'user', 'likes', 'Rust', '[\"dev\"]', '2026-01-01')",
             [],
         )
         .unwrap();
         let hits: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH '\"Rust\"'",
+                "SELECT COUNT(*) FROM memory_fts
+                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Rust\"'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(hits, 1, "FTS index must contain the inserted fact");
+        assert_eq!(hits, 1, "FTS index must contain the inserted edge");
+    }
+
+    #[test]
+    fn fts_triggers_delete_and_update_surface_text() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+             VALUES ('f1', 'user', 'likes', 'Rust', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // Use ≥3-char tokens so trigram MATCH can hit.
+        conn.execute(
+            "UPDATE memory_edges SET object = 'Golang' WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
+        let rust_hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts
+                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Rust\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(rust_hits, 0, "old surface text must leave FTS after UPDATE");
+        let go_hits: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts
+                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Golang\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(go_hits, 1, "new surface text must be indexed after UPDATE");
+
+        // Reinforcement-only update must not drop the FTS row.
+        conn.execute(
+            "UPDATE memory_edges SET mention_count = 3, confidence = 0.95 WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
+        let still: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts
+                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Golang\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still, 1, "reinforcement must not rewrite/drop FTS");
+
+        conn.execute("DELETE FROM memory_edges WHERE id = 'f1'", [])
+            .unwrap();
+        let after_del: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts
+                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Golang\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(after_del, 0, "DELETE must remove FTS row");
     }
 
     #[test]
@@ -1480,16 +2227,15 @@ mod tests {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO facts (id, subject, predicate, object)
-             VALUES ('f1', 'user', 'likes', '喝咖啡和写代码')",
+            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+             VALUES ('f1', 'user', 'likes', '喝咖啡和写代码', '2026-01-01')",
             [],
         )
         .unwrap();
-        // trigram splits CJK into 3-char windows, so a 3+ char substring of a
-        // Chinese fact must match (unicode61 never matched CJK at all).
         let hits: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH '\"喝咖啡\"'",
+                "SELECT COUNT(*) FROM memory_fts
+                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"喝咖啡\"'",
                 [],
                 |r| r.get(0),
             )
@@ -1503,30 +2249,30 @@ mod tests {
         init_schema(&conn).unwrap();
         let recorded: String = conn
             .query_row(
-                "SELECT value FROM kv_store WHERE key = 'facts_fts_tokenizer'",
+                "SELECT value FROM kv_store WHERE key = 'memory_fts_tokenizer'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(recorded, FTS_TOKENIZER);
-        // Re-initialization must not rebuild or restamp the index.
         init_schema(&conn).unwrap();
         let table_count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='facts_fts'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_fts'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(table_count, 1);
-        // A stale tokenizer record triggers exactly one rebuild (the
-        // `tokenize=` change is honored on the rebuilt table).
-        conn.execute("DELETE FROM kv_store WHERE key = 'facts_fts_tokenizer'", [])
-            .unwrap();
+        conn.execute(
+            "DELETE FROM kv_store WHERE key = 'memory_fts_tokenizer'",
+            [],
+        )
+        .unwrap();
         init_schema(&conn).unwrap();
         let rebuilt: String = conn
             .query_row(
-                "SELECT value FROM kv_store WHERE key = 'facts_fts_tokenizer'",
+                "SELECT value FROM kv_store WHERE key = 'memory_fts_tokenizer'",
                 [],
                 |r| r.get(0),
             )

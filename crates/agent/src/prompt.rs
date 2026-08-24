@@ -850,14 +850,11 @@ mod tests {
             &["workspace"],
         )
         .unwrap();
-        // An episode from a past conversation mentioning the same topic.
+        // A past memory_item (episode_summary) mentioning the same topic.
         let session = db.create_session("past", "").unwrap();
-        db.add_message(
+        db.add_episode(
             &session.id,
-            "user",
             "I asked about the dark theme design last week",
-            Some("text"),
-            None,
         )
         .unwrap();
 
@@ -884,20 +881,14 @@ mod tests {
         let db = Arc::new(Database::open(&dir).unwrap());
         let current = db.create_session("current", "").unwrap();
         let past = db.create_session("past", "").unwrap();
-        db.add_message(
+        db.add_episode(
             &current.id,
-            "user",
             "dark theme preference in the CURRENT session only",
-            Some("text"),
-            None,
         )
         .unwrap();
-        db.add_message(
+        db.add_episode(
             &past.id,
-            "user",
             "dark theme preference from a PAST session",
-            Some("text"),
-            None,
         )
         .unwrap();
 
@@ -910,7 +901,7 @@ mod tests {
         assert!(prompt.contains("PAST session"));
         assert!(
             !prompt.contains("CURRENT session only"),
-            "same-session user text must not appear in Past excerpts; prompt={prompt}"
+            "same-session memory_items must not appear in Past excerpts; prompt={prompt}"
         );
     }
 
@@ -1005,14 +996,8 @@ mod tests {
         )
         .unwrap();
         let past = db.create_session("past", "").unwrap();
-        db.add_message(
-            &past.id,
-            "user",
-            "discussed dark theme last week",
-            Some("text"),
-            None,
-        )
-        .unwrap();
+        db.add_episode(&past.id, "discussed dark theme last week")
+            .unwrap();
         let tools = Arc::new(ToolsManager::new());
         let builder = SystemPromptBuilder::new(tools, db);
         let sections = builder

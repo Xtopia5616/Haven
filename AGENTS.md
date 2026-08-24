@@ -70,9 +70,10 @@ npm run check
 | 前缀 | 实体 | 位置 |
 |---|---|---|
 | `ses-` | 会话 sessions.id | `haven_memory` |
-| `msg-` | 消息 messages.id；记忆片段 memory_episodes.id 与消息共用该 ID 空间 | `haven_memory` |
+| `msg-` | 消息 messages.id；记忆条目 memory_items.id（compaction 摘要等）与 transcript 共用该 ID 空间 | `haven_memory` |
 | `step-` | 步骤 session_steps.id | `haven_memory` |
-| `fact-` | 长期记忆事实 facts.id | `haven_memory` |
+| `fact-` | 记忆边 memory_edges.id（SPO；原 facts） | `haven_memory` |
+| `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
 | `act-` | 工作单元 actions.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
 

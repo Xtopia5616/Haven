@@ -2,6 +2,7 @@ pub mod episodes;
 pub mod facts;
 pub mod kv_store;
 pub mod messages;
+pub mod nodes;
 pub mod partials;
 pub mod scheduled_actions;
 pub mod session_steps;

@@ -1,16 +1,12 @@
 use crate::db::Database;
 
 impl Database {
-    /// Persist a compaction summary as an episode. Returns the new row id.
-    /// Called from the react loop at every compaction (proactive or forced).
-    /// The row becomes part of the `episode` memory domain: the embedding
-    /// missing-index scan and the keyword search query `memory_episodes`
-    /// directly (see embeddings.rs), so no read API is needed here.
+    /// Persist a compaction summary as a memory item (`episode_summary`).
+    /// Returns the new row id.
     ///
-    /// Episodes live in the same id space as messages (`msg-{uuid32}`): the
-    /// `episode` memory domain covers user messages and these summaries alike,
-    /// and a single shared prefix keeps `entity_id` values unambiguous without
-    /// a separate `epi-` prefix.
+    /// Items live in the same id space as messages (`msg-{uuid32}`): the
+    /// `episode` embedding domain covers these summaries, and a single shared
+    /// prefix keeps `entity_id` values unambiguous without a separate prefix.
     pub fn add_episode(&self, session_id: &str, summary: &str) -> anyhow::Result<String> {
         let id = haven_common::types::new_id("msg");
         self.add_episode_with_id(session_id, summary, &id)?;
@@ -18,8 +14,8 @@ impl Database {
     }
 
     /// Persist a compaction summary under a caller-minted `msg-*` id so the
-    /// canonical summary bubble and `memory_episodes` row share one identity
-    /// (L1). `id` must already be a `msg-*` value from `new_id("msg")`.
+    /// canonical summary bubble and `memory_items` row share one identity.
+    /// `id` must already be a `msg-*` value from `new_id("msg")`.
     pub fn add_episode_with_id(
         &self,
         session_id: &str,
@@ -29,8 +25,8 @@ impl Database {
         self.add_episode_structured(session_id, summary, id, &[], &[])
     }
 
-    /// Like [`Self::add_episode_with_id`], with optional topic/entity tags
-    /// (P2-10 / L6). Stored as JSON string arrays for FTS + future filters.
+    /// Like [`Self::add_episode_with_id`], with optional topic/entity tags.
+    /// Stored as JSON string arrays for FTS + future filters.
     pub fn add_episode_structured(
         &self,
         session_id: &str,
@@ -44,8 +40,8 @@ impl Database {
         let entities_json = serde_json::to_string(entities).unwrap_or_else(|_| "[]".into());
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO memory_episodes (id, session_id, summary, topics, entities, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO memory_items (id, session_id, kind, content, topics, entities, created_at)
+             VALUES (?1, ?2, 'episode_summary', ?3, ?4, ?5, ?6)",
             rusqlite::params![id, session_id, summary, topics_json, entities_json, now],
         )?;
         self.cache_invalidate_embeddings(crate::embeddings::entity_kind::EPISODE);
@@ -63,16 +59,17 @@ mod tests {
         let session = db.create_session("t1", "").unwrap();
         let id = db.add_episode(&session.id, "a compaction summary").unwrap();
         assert!(id.starts_with("msg-"));
-        let (summary, session_id): (String, String) = db
+        let (content, session_id, kind): (String, String, String) = db
             .conn()
             .query_row(
-                "SELECT summary, session_id FROM memory_episodes WHERE id = ?1",
+                "SELECT content, session_id, kind FROM memory_items WHERE id = ?1",
                 rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!(summary, "a compaction summary");
+        assert_eq!(content, "a compaction summary");
         assert_eq!(session_id, session.id);
+        assert_eq!(kind, "episode_summary");
     }
 
     #[test]
@@ -85,7 +82,7 @@ mod tests {
         let got: String = db
             .conn()
             .query_row(
-                "SELECT id FROM memory_episodes WHERE summary = ?1",
+                "SELECT id FROM memory_items WHERE content = ?1",
                 rusqlite::params!["shared id summary"],
                 |r| r.get(0),
             )
@@ -109,7 +106,7 @@ mod tests {
         let (topics, entities): (String, String) = db
             .conn()
             .query_row(
-                "SELECT topics, entities FROM memory_episodes WHERE id = ?1",
+                "SELECT topics, entities FROM memory_items WHERE id = ?1",
                 rusqlite::params![id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
