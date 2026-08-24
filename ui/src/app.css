@@ -4,20 +4,170 @@
  * Theme is selected via [data-theme="light|dark"] on the <html> element.
  * ========================================================================== */
 
+/* ---------- Local typefaces (Material + coding) ---------- */
+/* Latin/latin-ext subsets only; CJK glyphs fall through to system sans. */
+@font-face {
+	font-family: 'Roboto';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('/fonts/roboto/latin-400-normal.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'Roboto';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('/fonts/roboto/latin-ext-400-normal.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+		U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+		U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Roboto';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 500;
+	src: url('/fonts/roboto/latin-500-normal.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'Roboto';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 500;
+	src: url('/fonts/roboto/latin-ext-500-normal.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+		U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+		U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Roboto';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 700;
+	src: url('/fonts/roboto/latin-700-normal.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'Roboto';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 700;
+	src: url('/fonts/roboto/latin-ext-700-normal.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+		U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+		U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('/fonts/jetbrains-mono/latin-400-normal.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('/fonts/jetbrains-mono/latin-ext-400-normal.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+		U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+		U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 500;
+	src: url('/fonts/jetbrains-mono/latin-500-normal.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 500;
+	src: url('/fonts/jetbrains-mono/latin-ext-500-normal.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+		U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+		U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 700;
+	src: url('/fonts/jetbrains-mono/latin-700-normal.woff2') format('woff2');
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+		U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+		U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+	font-family: 'JetBrains Mono';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 700;
+	src: url('/fonts/jetbrains-mono/latin-ext-700-normal.woff2') format('woff2');
+	unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+		U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+		U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
 	/* ---------- Typography ---------- */
-	/* Cross-platform CJK fallback chain:
-	 *   Windows: Segoe UI (Latin) + Microsoft YaHei (CJK)
-	 *   macOS  : -apple-system (SF) + PingFang SC
-	 *   Linux  : Noto Sans CJK / Source Han Sans / WenQuanYi
-	 * Instead of the dated SimSun / Droid Sans Fallback rendering. */
-	--md-sys-typescale-body: -apple-system, BlinkMacSystemFont, 'Segoe UI',
-		'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC',
-		'Source Han Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei',
-		Roboto, 'Helvetica Neue', Arial, sans-serif;
-	--md-sys-typescale-mono: 'Consolas', 'SF Mono', 'Courier New', monospace;
-	--md-ref-typeface-brand: 'Segoe UI Display', -apple-system, BlinkMacSystemFont, sans-serif;
-
+	/* Material Design 3 Latin = Roboto (bundled). CJK is intentionally
+	 * system-only — do NOT put SimSun / SimHei / MingLiU in the chain.
+	 *
+	 * Body / brand fallback order (glyph fallthrough):
+	 *   1. Roboto            — Latin UI
+	 *   2. Segoe UI*         — remaining Latin on Windows
+	 *   3. YaHei UI → YaHei  — Simplified Chinese (Win default UI face)
+	 *   4. JhengHei UI→Hei   — Traditional Chinese (TW/HK)
+	 *   5. PingFang SC/TC    — macOS
+	 *   6. Hiragino Sans GB  — older macOS SC
+	 *   7. Noto / Source Han — Linux & portable installs
+	 *   8. WenQuanYi Micro Hei — last-resort Linux bitmap-era face
+	 *
+	 * Mono: JetBrains Mono first; Cascadia on Win; Sarasa / Noto Sans Mono
+	 * CJK when installed; then YaHei/JhengHei so Chinese in tool output
+	 * never drops to tofu (metrics won't be mono, but readable). */
+	--md-sys-typescale-body:
+		'Roboto', 'Segoe UI', 'Segoe UI Variable Text', 'Segoe UI Variable',
+		'Microsoft YaHei UI', 'Microsoft YaHei',
+		'Microsoft JhengHei UI', 'Microsoft JhengHei',
+		'PingFang SC', 'PingFang TC', 'Hiragino Sans GB',
+		'Noto Sans SC', 'Noto Sans TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC',
+		'Source Han Sans SC', 'Source Han Sans TC',
+		'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif;
+	--md-sys-typescale-mono:
+		'JetBrains Mono', 'Cascadia Code', 'Cascadia Mono', 'Segoe UI Mono',
+		'Sarasa Mono SC', 'Sarasa Mono TC', 'Sarasa Gothic SC',
+		'Noto Sans Mono CJK SC', 'Noto Sans Mono CJK TC',
+		Consolas, 'SF Mono', 'Menlo',
+		'Microsoft YaHei UI', 'Microsoft YaHei',
+		'Microsoft JhengHei UI', 'Microsoft JhengHei',
+		monospace;
+	--md-ref-typeface-brand:
+		'Roboto', 'Segoe UI Display', 'Segoe UI Variable Display',
+		'Segoe UI Variable', 'Segoe UI',
+		'Microsoft YaHei UI', 'Microsoft YaHei',
+		'Microsoft JhengHei UI', 'Microsoft JhengHei',
+		'PingFang SC', 'PingFang TC', 'Hiragino Sans GB',
+		'Noto Sans SC', 'Noto Sans TC', 'Noto Sans CJK SC', sans-serif;
 	/* ---------- Shape scale (M3 expressive, large rounded) ---------- */
 	--md-sys-shape-extra-small: 4px;
 	--md-sys-shape-small: 8px;
@@ -254,6 +404,14 @@ body {
 	transition: background-color var(--md-sys-motion-duration-medium)
 			var(--md-sys-motion-easing-standard),
 		color var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
+}
+
+code,
+kbd,
+pre,
+samp {
+	font-family: var(--md-sys-typescale-mono);
+	font-feature-settings: 'liga' 1, 'calt' 1;
 }
 
 ::selection {

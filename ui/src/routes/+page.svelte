@@ -27,6 +27,7 @@
 		webSearchId,
 		webSearchLabel,
 		finalizeStreamBlocks,
+		insertAgentMessage,
 		newToolMessage,
 		actionIdFromObservation,
 		parseActionResultInject,
@@ -1637,8 +1638,8 @@
 						}
 						if (data.phase === 'completed') {
 							if (!existing) {
-								return [
-									...next,
+								return insertAgentMessage(
+									next,
 									newToolMessage({
 										id: wsId,
 										stepNumber: data.step_number,
@@ -1647,7 +1648,7 @@
 										content,
 										streaming: false,
 									}),
-								];
+								);
 							}
 							return next.map((x) =>
 								x.id === wsId ? { ...x, streaming: false, content } : x,
@@ -1658,8 +1659,8 @@
 								x.id === wsId ? { ...x, content, streaming: true } : x,
 							);
 						}
-						return [
-							...next,
+						return insertAgentMessage(
+							next,
 							newToolMessage({
 								id: wsId,
 								stepNumber: data.step_number,
@@ -1668,7 +1669,7 @@
 								content,
 								streaming: true,
 							}),
-						];
+						);
 					});
 				},
 				'agent:supplement': (event) => {
@@ -1694,8 +1695,8 @@
 							if (m.some((x) => x.id === cardId || (x.toolName === 'agent' && x.content === content))) {
 								return m;
 							}
-							return [
-								...m,
+							return insertAgentMessage(
+								m,
 								newToolMessage({
 									id: cardId,
 									stepNumber: data.step_number ?? 0,
@@ -1703,7 +1704,7 @@
 									content,
 									time: new Date().toLocaleTimeString(),
 								}),
-							];
+							);
 						});
 						return;
 					}
@@ -1721,8 +1722,8 @@
 						);
 						updateSessionMessages(tid, (m) => {
 							if (m.some((x) => x.id === cardId)) return m;
-							return [
-								...m,
+							return insertAgentMessage(
+								m,
 								newToolMessage({
 									id: cardId,
 									stepNumber: data.step_number ?? 0,
@@ -1730,7 +1731,7 @@
 									content,
 									time: new Date().toLocaleTimeString(),
 								}),
-							];
+							);
 						});
 						return;
 					}
@@ -1744,7 +1745,10 @@
 								!x.received &&
 								(x.content || '').trim() === ctx
 							) {
-								next[i] = { ...x, received: true };
+								// Injected into the turn: ✓ and release the
+								// "keep agent UI above me" anchor so post-steer
+								// output can land after this bubble.
+								next[i] = { ...x, received: true, steering: false };
 								marked = true;
 								break;
 							}
@@ -1786,8 +1790,8 @@
 						const fixed = finalizeStreamBlocks(m, reasoningId, thoughtId);
 						const existing = fixed.find((x) => x.id === toolMsgId);
 						if (existing) return fixed;
-						return [
-							...fixed,
+						return insertAgentMessage(
+							fixed,
 							newToolMessage({
 								id: toolMsgId,
 								stepNumber: data.step_number,
@@ -1795,7 +1799,7 @@
 								time: new Date().toLocaleTimeString(),
 								streaming: true,
 							}),
-						];
+						);
 					});
 				},
 				'agent:tool_output': (event) => {
@@ -1845,7 +1849,7 @@
 							next[idx] = { ...next[idx], ...msg, streaming: false };
 							return next;
 						}
-						return [...m, msg];
+						return insertAgentMessage(m, msg);
 					});
 				},
 				'action:finished': (event) => {
@@ -2422,15 +2426,14 @@
 				</div>
 			{:else}
 				<div class="message-list">
-					{#each messages as msg, i (msg.id)}
-						{@const isLast = i === messages.length - 1}
+					{#each messages as msg (msg.id)}
 						<ChatBubble
 							role={msg.role}
 							content={msg.content}
 							type={msg.type}
 							voice={msg.voice}
 							time={msg.time}
-							streaming={msg.type === 'tool' ? !!msg.streaming : !!(msg.streaming && isLast)}
+							streaming={!!msg.streaming}
 							toolName={msg.toolName ?? ''}
 							messageId={msg.id}
 							stepNumber={msg.stepNumber}

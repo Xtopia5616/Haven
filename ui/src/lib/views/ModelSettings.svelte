@@ -1047,13 +1047,17 @@
 				/>
 			</div>
 			<div class="model-field">
-				<span class="field-label">Context（可选）</span>
+				<span class="field-label">Context K（可选）</span>
 				<MaterialNumberField
 					id="{card.prefix}-context-window"
-					value={slot.context_window ?? 0}
-					step={1024}
+					value={slot.context_window != null && slot.context_window > 0
+						? Math.round(slot.context_window / 1000)
+						: 0}
+					step={1}
 					min={0}
-					onChange={(/** @type {number} */ v) => { slot.context_window = v > 0 ? Math.round(v) : null; }}
+					onChange={(/** @type {number} */ v) => {
+						slot.context_window = v > 0 ? Math.round(v * 1000) : null;
+					}}
 				/>
 			</div>
 			<div class="model-field">

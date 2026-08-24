@@ -403,8 +403,12 @@ function _moveMessages(m: Record<string, any[]>, fromKey: string, toKey: string)
 	// migrated user message(s) are already "received": mark them so the ✓
 	// shows on the very first bubble too (the `agent:supplement` event only
 	// covers mid-turn steering, never the opening message).
+	// Opening migrate: mark received and drop any sticky `steering` that a
+	// parallel busy session's global modelState may have stamped on draft.
 	next[toKey] = [
-		...list.map((x) => (x.role === 'user' ? { ...x, received: true } : x)),
+		...list.map((x) =>
+			x.role === 'user' ? { ...x, received: true, steering: false } : x,
+		),
 		...(next[toKey] || []),
 	];
 	return next;

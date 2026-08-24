@@ -753,31 +753,24 @@ impl BackgroundActions {
             }
         }.instrument(action_span));
 
-        // Live-output preview emitter: while the action runs, periodically push
-        // the bounded tail of the combined stdout/stderr as `action:output`
-        // events (only when it grew since the last tick). Stops as soon as
-        // the entry leaves the Running state (finished, cancelled, or reaped).
+        // Live-output preview: emit `action:output` when the bounded tail
+        // changes (by value — length alone freezes once the window is full).
         let emit_me = self.clone();
         let emit_tail = tail;
         tokio::spawn(async move {
-            let mut last_len = 0usize;
+            let mut last_output = String::new();
             loop {
                 tokio::time::sleep(emit_interval).await;
                 if emit_me.status(&emit_action_id).await["status"].as_str() != Some("running") {
                     return;
                 }
-                let t = emit_tail.lock().unwrap();
-                let len = t.len();
-                if len != last_len {
-                    last_len = len;
-                    let output = t.clone();
-                    drop(t);
+                if take_tail_if_changed(&emit_tail, &mut last_output) {
                     emit_me.emit(
                         "action:output",
                         json!({
                             "action_id": emit_action_id,
                             "status": "running",
-                            "output": output,
+                            "output": last_output.as_str(),
                         }),
                     );
                 }
@@ -1439,6 +1432,19 @@ async fn kill_process_tree(pid: u32) {
     let _ = pid;
 }
 
+/// Update `last` from the live-output tail when content changed. Returns
+/// true so callers can emit `action:output` / `agent:tool_output`. Compare
+/// by value so a sliding capped window (same length, new content) still
+/// notifies the UI.
+pub(crate) fn take_tail_if_changed(tail: &Mutex<String>, last: &mut String) -> bool {
+    let t = tail.lock().unwrap();
+    if t.as_str() == last.as_str() {
+        return false;
+    }
+    last.clone_from(&t);
+    true
+}
+
 /// Append a decoded chunk to the shared live-output tail, keeping it bounded
 /// to the last `max_chars` characters (dropping from the front). `max_chars`
 /// comes from `context_limits.background_job_tail_max_chars`.
@@ -1901,6 +1907,19 @@ mod tests {
             "got tail: {}",
             &t[t.len().saturating_sub(40)..]
         );
+    }
+
+    #[test]
+    fn test_take_tail_if_changed_detects_sliding_window() {
+        let tail = Mutex::new("a".repeat(100));
+        let mut last = String::new();
+        assert!(take_tail_if_changed(&tail, &mut last));
+        assert_eq!(last.len(), 100);
+        assert!(!take_tail_if_changed(&tail, &mut last));
+        // Same length, different content (capped-window slide).
+        *tail.lock().unwrap() = "b".repeat(100);
+        assert!(take_tail_if_changed(&tail, &mut last));
+        assert_eq!(last, "b".repeat(100));
     }
 
     #[test]

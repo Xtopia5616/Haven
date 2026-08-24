@@ -29,7 +29,35 @@ export interface StreamMessage {
 	url?: string;
 	awaiting?: boolean;
 	options?: string[];
+	/** Mid-turn user steer/queue: keep continuing agent output above this bubble. */
+	steering?: boolean;
+	received?: boolean;
 	_ts?: number;
+}
+
+/**
+ * Index at which continuing agent output should land: after the last non-steer
+ * bubble, before any trailing `steering` user messages. Blind tail-appends
+ * would push tools/thoughts below an optimistic steer and jump the pending
+ * user bubble around as the in-flight turn keeps producing UI.
+ */
+export function agentInsertIndex(
+	messages: Array<{ role?: string; steering?: boolean }>,
+): number {
+	let i = messages.length;
+	while (i > 0 && messages[i - 1].role === 'user' && messages[i - 1].steering) {
+		i--;
+	}
+	return i;
+}
+
+/** Append (or splice) an agent bubble before trailing steering user messages. */
+export function insertAgentMessage<T extends StreamMessage>(messages: T[], msg: T): T[] {
+	const at = agentInsertIndex(messages);
+	if (at >= messages.length) return [...messages, msg];
+	const next = messages.slice();
+	next.splice(at, 0, msg);
+	return next;
 }
 
 /** `tool-<sessionId>-<step>-<run>-web_search[-<callId>]` (provider built-in
@@ -246,7 +274,7 @@ function appendAfterFinalized(
 		runId,
 		time,
 	});
-	return [...messages, newMsg];
+	return insertAgentMessage(messages, newMsg);
 }
 
 export function accumulateStreamChunk(messages: StreamMessage[], opts: { messageId: string; delta: string; msgType: string | undefined; stepNumber: number; runId: number; time: string }): StreamMessage[] {
@@ -335,7 +363,7 @@ export function accumulateStreamChunk(messages: StreamMessage[], opts: { message
 			x.runId === runId,
 	);
 	const newMsg = newStreamMessage({ id: messageId, content: delta, msgType, stepNumber, runId, time });
-	if (insertAt < 0) return [...messages, newMsg];
+	if (insertAt < 0) return insertAgentMessage(messages, newMsg);
 	const next = [...messages];
 	next.splice(insertAt, 0, newMsg);
 	return next;
@@ -422,10 +450,9 @@ export function applyThoughtSnap(messages: StreamMessage[], opts: { messageId: s
 				time,
 		  });
 	if (firstSegIdx < 0) {
-		const out = [...rest];
-		if (reasoning) out.push(reasoning);
-		out.push(merged);
-		return out;
+		let out = [...rest];
+		if (reasoning) out = insertAgentMessage(out, reasoning);
+		return insertAgentMessage(out, merged);
 	}
 	// The merged thought replaces the first segment's slot. `rest` is the
 	// original list with the block + reasoning removed, so `firstSegIdx`

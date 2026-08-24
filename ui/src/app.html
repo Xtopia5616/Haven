@@ -1,10 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="color-scheme" content="dark light" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
+		<link
+			rel="preload"
+			href="%sveltekit.assets%/fonts/roboto/latin-400-normal.woff2"
+			as="font"
+			type="font/woff2"
+			crossorigin
+		/>
+		<link
+			rel="preload"
+			href="%sveltekit.assets%/fonts/jetbrains-mono/latin-400-normal.woff2"
+			as="font"
+			type="font/woff2"
+			crossorigin
+		/>
 		<title>Haven</title>
 		<script>
 			(function() {
@@ -79,9 +93,11 @@
 				flex-direction: column;
 				background: var(--boot-bg);
 				color: var(--boot-on);
-				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
+				font-family: 'Roboto', 'Segoe UI', 'Segoe UI Variable Text',
 					'Segoe UI Variable', 'Microsoft YaHei UI', 'Microsoft YaHei',
-					Roboto, 'Helvetica Neue', Arial, sans-serif;
+					'Microsoft JhengHei UI', 'Microsoft JhengHei', 'PingFang SC',
+					'PingFang TC', 'Hiragino Sans GB', 'Noto Sans SC',
+					'Noto Sans TC', 'Helvetica Neue', Arial, sans-serif;
 				-webkit-font-smoothing: antialiased;
 			}
 			#haven-boot .boot-bar {
@@ -106,7 +122,11 @@
 				height: 22px;
 			}
 			#haven-boot .boot-wordmark {
-				font-family: 'Segoe UI Display', -apple-system, BlinkMacSystemFont, sans-serif;
+				font-family: 'Roboto', 'Segoe UI Display',
+					'Segoe UI Variable Display', 'Segoe UI Variable',
+					'Microsoft YaHei UI', 'Microsoft YaHei',
+					'Microsoft JhengHei UI', 'Microsoft JhengHei', 'PingFang SC',
+					'PingFang TC', sans-serif;
 				font-size: 16px;
 				font-weight: 700;
 				letter-spacing: 0.4px;

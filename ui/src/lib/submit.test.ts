@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { activeSessionIdStore, sessionMessagesStore } from './stores.ts';
+import { activeSessionIdStore, modelStateStore, sessionMessagesStore } from './stores.ts';
 
 vi.mock('./tauri.ts', () => ({
 	invoke: vi.fn(),
@@ -16,6 +16,7 @@ describe('submitTranscript', () => {
 		invokeMock.mockReset();
 		activeSessionIdStore.set(null);
 		sessionMessagesStore.set({});
+		modelStateStore.set('ready');
 	});
 
 	it('appends an optimistic user message under the active session id', async () => {
@@ -178,6 +179,76 @@ describe('submitTranscript', () => {
 		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
 		expect(list).toHaveLength(1);
 		expect(list[0].id).toBe('msg-supp1');
+	});
+
+	it('marks a mid-turn send as steering so agent UI stays above it', async () => {
+		invokeMock.mockResolvedValue({
+			Supplemented: { message_id: 'msg-steer1' },
+		});
+		activeSessionIdStore.set('session-a');
+		sessionMessagesStore.set({
+			'session-a': [
+				{ id: 'msg-1', role: 'user', content: 'hi', received: true },
+				{ id: 'msg-2', role: 'assistant', content: '想', streaming: true },
+			],
+		});
+		modelStateStore.set('streaming');
+		await submitTranscript('补充', { voice: false });
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		expect(list).toHaveLength(3);
+		expect(list[2]).toMatchObject({
+			id: 'msg-steer1',
+			content: '补充',
+			steering: true,
+		});
+	});
+
+	it('does not mark an idle new-turn send as steering', async () => {
+		invokeMock.mockResolvedValue({});
+		activeSessionIdStore.set('session-a');
+		sessionMessagesStore.set({
+			'session-a': [
+				{ id: 'msg-1', role: 'user', content: 'hi', received: true },
+				{ id: 'msg-2', role: 'assistant', content: '好的', streaming: false },
+			],
+		});
+		modelStateStore.set('ready');
+		await submitTranscript('下一题', { voice: false });
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		expect(list[2].content).toBe('下一题');
+		expect(list[2].steering).toBeFalsy();
+	});
+
+	it('marks a follow-up as steering when the prior user is still awaiting agent UI', async () => {
+		invokeMock.mockResolvedValue({
+			Supplemented: { message_id: 'msg-steer2' },
+		});
+		activeSessionIdStore.set('session-a');
+		// First message accepted, modelState not flipped yet, no assistant bubble.
+		sessionMessagesStore.set({
+			'session-a': [{ id: 'msg-1', role: 'user', content: 'hi' }],
+		});
+		modelStateStore.set('ready');
+		await submitTranscript('再加一句', { voice: false });
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
+		expect(list[1]).toMatchObject({ id: 'msg-steer2', steering: true });
+	});
+
+	it('does not steal steering from a parallel busy session via global modelState', async () => {
+		invokeMock.mockResolvedValue({});
+		// Active session B is idle; global modelState still reflects busy session A.
+		activeSessionIdStore.set('session-b');
+		sessionMessagesStore.set({
+			'session-b': [
+				{ id: 'msg-b1', role: 'user', content: 'hi', received: true },
+				{ id: 'msg-b2', role: 'assistant', content: '好的', streaming: false },
+			],
+		});
+		modelStateStore.set('streaming');
+		await submitTranscript('下一题', { voice: false });
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-b']);
+		expect(list[2].content).toBe('下一题');
+		expect(list[2].steering).toBeFalsy();
 	});
 
 	it('removes the optimistic bubble and rethrows when invoke rejects', async () => {

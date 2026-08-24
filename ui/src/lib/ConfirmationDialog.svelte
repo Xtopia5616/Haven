@@ -197,7 +197,7 @@
 	}
 	.detail strong { color: var(--md-sys-color-on-surface); }
 	.detail code {
-		font-family: var(--md-sys-font-mono, ui-monospace, monospace);
+		font-family: var(--md-sys-typescale-mono);
 		font-size: 12px;
 	}
 	.params {
@@ -208,7 +208,7 @@
 		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-lowest, rgba(0, 0, 0, 0.04));
 		color: var(--md-sys-color-on-surface);
-		font-family: var(--md-sys-font-mono, ui-monospace, monospace);
+		font-family: var(--md-sys-typescale-mono);
 		font-size: 11px;
 		line-height: 1.45;
 		white-space: pre-wrap;

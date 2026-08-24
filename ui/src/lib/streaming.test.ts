@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import type { StreamMessage } from './streaming.ts';
 import {
 	accumulateStreamChunk,
+	agentInsertIndex,
 	applyThoughtSnap,
 	webSearchId,
 	webSearchLabel,
 	finalizeStreamBlocks,
+	insertAgentMessage,
 	newToolMessage,
 	actionIdFromObservation,
 	parseActionResultInject,
@@ -410,6 +412,64 @@ describe('webSearchLabel', () => {
 		expect(webSearchLabel('completed', 'open_page')).toBe('已打开网页');
 		expect(webSearchLabel('searching', 'find_in_page')).toBe('正在页内查找…');
 		expect(webSearchLabel('completed', 'find_in_page')).toBe('已页内查找');
+	});
+});
+
+describe('insertAgentMessage / steering anchors', () => {
+	it('inserts continuing agent output before trailing steering users', () => {
+		const list: StreamMessage[] = [
+			{ id: 'u1', role: 'user', content: 'hi' },
+			{ id: STEP_ID, role: 'assistant', content: '想', streaming: true },
+			{ id: 'u2', role: 'user', content: '补充', steering: true },
+		];
+		expect(agentInsertIndex(list)).toBe(2);
+		const out = insertAgentMessage(
+			list,
+			newToolMessage({
+				id: 'step-tool-1',
+				stepNumber: 1,
+				toolName: 'shell',
+				streaming: true,
+			}),
+		);
+		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'step-tool-1', 'u2']);
+	});
+
+	it('appends at the end when there is no trailing steering user', () => {
+		const list: StreamMessage[] = [
+			{ id: 'u1', role: 'user', content: 'hi' },
+			{ id: STEP_ID, role: 'assistant', content: '好', streaming: false },
+		];
+		const out = insertAgentMessage(list, {
+			id: 'msg-next',
+			role: 'assistant',
+			content: '下一轮',
+			streaming: true,
+		});
+		expect(out.map((x) => x.id)).toEqual(['u1', STEP_ID, 'msg-next']);
+	});
+
+	it('keeps a new stream segment above a mid-turn steer', () => {
+		let m: StreamMessage[] = [
+			{ id: 'u1', role: 'user', content: 'hi' },
+			{ id: STEP_ID, role: 'assistant', content: '先查', streaming: false },
+			newToolMessage({
+				id: webSearchId('t', 1, 0, 'ws_1'),
+				stepNumber: 1,
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			}),
+			{ id: 'u2', role: 'user', content: '补充一句', steering: true },
+		];
+		m = chunk(m, '根据搜索');
+		expect(m.map((x) => x.id)).toEqual([
+			'u1',
+			STEP_ID,
+			'tool-t-1-0-web_search-ws_1',
+			STEP_ID + '-1',
+			'u2',
+		]);
 	});
 });
 

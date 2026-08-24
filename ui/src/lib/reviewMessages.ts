@@ -107,31 +107,38 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 	// in `out` (the insertion point).
 	const dbOutIdx: Array<{ existingIdx: number; outIdx: number }> = [];
 	const emitted = new Set<string>();
+	const liveSteeringIds = new Set(
+		existing.filter((m) => m.role === 'user' && m.steering).map((m) => m.id),
+	);
 	for (const m of dbMessages) {
 		const live = liveAskById.get(m.id) ?? liveStreamingToolById.get(m.id);
 		if (live) {
 			out.push(live);
 			emitted.add(live.id);
 		} else {
-			out.push(m);
+			// DB has no `steering`; keep the live mid-turn anchor until
+			// agent:supplement clears it.
+			out.push(
+				m.role === 'user' && liveSteeringIds.has(m.id) ? { ...m, steering: true } : m,
+			);
 			emitted.add(m.id);
 		}
 		const existingIdx = existingIdxOf.get(m.id);
 		if (existingIdx != null) dbOutIdx.push({ existingIdx, outIdx: out.length - 1 });
 	}
-	// Live-only leftovers. STILL-STREAMING blocks always go last (the current
-	// step's tail). Finalized assistant bubbles (snap-finalized reasoning /
-	// thought whose DB write hasn't landed yet) and finalized `step-*`
-	// tool/ask cards are inserted at the position of the next DB row that
-	// follows them in the live list — otherwise a merge could reorder them
-	// after a later message, e.g. [user, thinking, user] collapsing to
-	// [user, user, thinking] for one frame.
-	const streamingTail: ReviewMessage[] = [];
-	const finalized: Array<{ item: ReviewMessage; existingIdx: number }> = [];
+	// Live-only leftovers (still-streaming OR snap-finalized assistant /
+	// step-* tool/ask whose DB write hasn't landed yet). Insert each at the
+	// position of the next DB row that follows it in the live list — otherwise
+	// a merge could reorder them after a later message, e.g. [user, thinking,
+	// user] collapsing to [user, user, thinking] for one frame. Streaming
+	// leftovers use the same rule (not an unconditional tail append) so a
+	// mid-turn steer that already landed in the DB cannot jump above the
+	// still-streaming thought.
+	const leftovers: Array<{ item: ReviewMessage; existingIdx: number }> = [];
 	existing.forEach((m, i) => {
 		if (emitted.has(m.id)) return;
 		if (m.streaming) {
-			streamingTail.push(m);
+			leftovers.push({ item: m, existingIdx: i });
 			return;
 		}
 		const isPersistedCard =
@@ -141,9 +148,9 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 		} else if (m.role !== 'assistant') {
 			return;
 		}
-		finalized.push({ item: m, existingIdx: i });
+		leftovers.push({ item: m, existingIdx: i });
 	});
-	for (const f of finalized) {
+	for (const f of leftovers) {
 		let nextDb: { existingIdx: number; outIdx: number } | null = null;
 		for (const d of dbOutIdx) {
 			if (d.existingIdx > f.existingIdx && (!nextDb || d.existingIdx < nextDb.existingIdx)) {
@@ -159,7 +166,6 @@ export function mergeLiveStreaming(dbMessages: ReviewMessage[], existing: Review
 			out.push(f.item);
 		}
 	}
-	out.push(...streamingTail);
 	return out;
 }
 

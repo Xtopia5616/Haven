@@ -91,19 +91,16 @@ impl LiveOutputHub {
         }
         let hub = Arc::clone(self);
         tokio::spawn(async move {
-            let mut last_len = 0usize;
+            // Compare by value: a capped sliding window can change content
+            // without changing length (same freeze as background actions).
+            let mut last_output = String::new();
             loop {
                 tokio::time::sleep(emit_interval).await;
                 if !running.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
-                let t = tail.lock().unwrap();
-                let len = t.len();
-                if len != last_len {
-                    last_len = len;
-                    let output = t.clone();
-                    drop(t);
-                    hub.emit_output(&session_id, &step_id, &output);
+                if crate::bg::take_tail_if_changed(&tail, &mut last_output) {
+                    hub.emit_output(&session_id, &step_id, &last_output);
                 }
             }
         });
@@ -173,5 +170,41 @@ mod tests {
             before,
             "emitter must stop once running is cleared"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_tail_emitter_pushes_when_content_slides_at_same_len() {
+        let hub = Arc::new(LiveOutputHub::new());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new(String::new()));
+        let hits2 = hits.clone();
+        let last2 = last.clone();
+        hub.set_event_sink(Arc::new(move |event, payload| {
+            assert_eq!(event, "agent:tool_output");
+            *last2.lock().unwrap() = payload["output"].as_str().unwrap().into();
+            hits2.fetch_add(1, Ordering::SeqCst);
+        }));
+        let tail = Arc::new(Mutex::new(String::new()));
+        let running = Arc::new(AtomicBool::new(true));
+        hub.spawn_tail_emitter(
+            "ses-1".into(),
+            "step-slide".into(),
+            tail.clone(),
+            running.clone(),
+            Duration::from_millis(30),
+        );
+        *tail.lock().unwrap() = "a".repeat(64);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(hits.load(Ordering::SeqCst) >= 1);
+        let after_first = hits.load(Ordering::SeqCst);
+        // Same length, different bytes — old len-only emitters would freeze here.
+        *tail.lock().unwrap() = "b".repeat(64);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            hits.load(Ordering::SeqCst) > after_first,
+            "capped-window slide must still emit"
+        );
+        assert_eq!(last.lock().unwrap().as_str(), "b".repeat(64));
+        running.store(false, Ordering::SeqCst);
     }
 }

@@ -5,12 +5,44 @@ import {
 	NEW_ACTION_INTENT_KEY,
 	addSessionMessage,
 	activeSessionIdStore,
+	modelStateStore,
 	moveSessionMessages,
 	newMessage,
 	newSessionIntentStore,
+	sessionMessagesStore,
+	sessionStore,
 	updateSessionMessages,
 } from './stores.ts';
+import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
+
+/** True when a send should be treated as mid-turn steering (keep agent UI above it). */
+function isMidTurnSubmit(sessionId: string): boolean {
+	const list = get(sessionMessagesStore)[sessionId] || [];
+	if (list.some((m) => m.streaming || m.steering)) return true;
+	// Prior user still awaiting first agent bubble (race before modelState flips).
+	for (let i = list.length - 1; i >= 0; i--) {
+		const m = list[i];
+		if (m.role === 'assistant' || m.type === 'tool' || m.type === 'ask') return false;
+		if (m.role === 'user' && !m.received) return true;
+	}
+	// This session's own status — never borrow another session's busy chip.
+	const st = get(sessionStore).find((t) => t.id === sessionId)?.status;
+	if (isBusyStatus(st) || isPausedStatus(st)) return true;
+	// Global modelState only applies to the active session.
+	if (get(activeSessionIdStore) === sessionId) {
+		const state = get(modelStateStore);
+		if (
+			state === 'streaming' ||
+			state === 'tool' ||
+			state === 'stalled' ||
+			state === 'waiting'
+		) {
+			return true;
+		}
+	}
+	return false;
+}
 
 /**
  * In-flight submission lock. The backend no longer deduplicates repeated
@@ -185,13 +217,17 @@ async function doSubmit({
 	// request is in flight, that older snapshot stays false — resolving must
 	// not clear the newer intent, or the blank draft would be hijacked.
 	const freshStartAtDispatch = freshStartAtEnqueue;
-	const msg = newMessage({
-		role: 'user',
-		content: text,
-		voice,
-		time: new Date().toLocaleTimeString(),
-		...(hasAttachments ? { attachments, idPrefix: 'u' } : {}),
-	});
+	const steering = isMidTurnSubmit(sessionId);
+	const msg = {
+		...newMessage({
+			role: 'user',
+			content: text,
+			voice,
+			time: new Date().toLocaleTimeString(),
+			...(hasAttachments ? { attachments, idPrefix: 'u' } : {}),
+		}),
+		...(steering ? { steering: true } : {}),
+	};
 	addSessionMessage(sessionId, msg);
 	// A reviewed conversation with no persisted messages yet (e.g. after
 	// rolling back the very first user message) is rebuilt with a
@@ -237,6 +273,8 @@ async function doSubmit({
 				const idx = list.findIndex((x) => x.id === msg.id);
 				if (idx < 0) return list;
 				const next = list.slice();
+				// Keep steering so in-flight agent cards stay above this bubble
+				// until agent:supplement clears it at inject time.
 				next[idx] = { ...next[idx], id: dbMsgId };
 				return next;
 			});

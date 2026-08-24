@@ -329,17 +329,17 @@
 	let actionHistory = /** @type {Array<any>} */ ($state([]));
 	$effect(() => {
 		if (!actionMenuOpen) return;
-		refreshActionHistory(null, 50).then((rows) => (actionHistory = rows));
+		// Fetch a wider window so per-session filtering still has enough rows.
+		refreshActionHistory(null, 200).then((rows) => (actionHistory = rows));
 	});
-	// Terminal background rows (not running) and fired scheduled rows only —
-	// pending scheduled actions stay in their own section, running background
-	// actions in the running section, so the completed list never duplicates.
+	// Terminal background / fired scheduled rows for the *active* session only —
+	// global history was flooding the panel with unrelated old completions.
 	const completedActions = $derived(
-		actionHistory.filter(
-			(h) =>
-				(h.kind === 'scheduled' && h.fired) ||
-				(h.kind !== 'scheduled' && h.status && h.status !== 'running'),
-		),
+		actionHistory.filter((h) => {
+			if (!activeSessionId || h.session_id !== activeSessionId) return false;
+			if (h.kind === 'scheduled') return !!h.fired;
+			return !!h.status && h.status !== 'running';
+		}),
 	);
 
 	// Session titles for background-action rows; mirrored from the chat page's
@@ -393,14 +393,24 @@
 			case 'running':
 				return 'var(--md-sys-color-success)';
 			case 'completed':
-				return '#4488ff';
+				return 'var(--md-sys-color-success)';
 			case 'failed':
-				return '#ff4444';
+				return 'var(--md-sys-color-error)';
 			case 'cancelled':
 				return '#888';
 			default:
 				return '#888';
 		}
+	}
+
+	/** Title tone for completed-history rows (success / fail / muted). */
+	/** @param {any} h */
+	function historyTitleTone(h) {
+		if (h?.kind === 'scheduled') return 'ok';
+		if (h?.status === 'completed') return 'ok';
+		if (h?.status === 'failed') return 'fail';
+		if (h?.status === 'cancelled') return 'muted';
+		return 'neutral';
 	}
 
 	/** @param {any} action */
@@ -437,7 +447,7 @@
 				// and block a later action:finished repair.
 				removeAction(actionId);
 				if (actionMenuOpen) {
-					refreshActionHistory(null, 50).then((rows) => (actionHistory = rows));
+					refreshActionHistory(null, 200).then((rows) => (actionHistory = rows));
 				}
 				addNotification(
 					kind === 'scheduled' ? '定时任务已触发或不存在' : '后台任务已结束，无需停止',
@@ -1045,21 +1055,23 @@
 								</div>
 							{/each}
 						{/if}
-						<div class="action-menu-title scheduled-menu-title">已完成</div>
+						<div class="action-menu-title scheduled-menu-title">本会话已完成</div>
 						{#if completedActions.length === 0}
-							<div class="action-menu-empty">暂无已完成的任务</div>
+							<div class="action-menu-empty"
+								>{activeSessionId ? '本会话暂无已完成的任务' : '请先打开一个会话'}</div
+							>
 						{:else}
 							{#each completedActions as h}
-								<div class="action-item scheduled-item">
-									<span class="scheduled-dot">&#9989;</span>
+								{@const tone = historyTitleTone(h)}
+								<div class="action-item scheduled-item history-item history-item--{tone}">
 									<div class="action-item-main">
 										<div class="action-item-top">
-											<span class="scheduled-title-text"
+											<span class="scheduled-title-text history-title history-title--{tone}"
 												>{h.kind === 'scheduled'
 													? h.title || h.body || '定时任务'
 													: h.command || h.id}</span
 											>
-											<span class="action-item-status"
+											<span class="action-item-status history-status history-status--{tone}"
 												>{h.kind === 'scheduled'
 													? h.mode === 'continue'
 														? '已续接会话'
@@ -1374,6 +1386,33 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.history-title--ok {
+		color: var(--md-sys-color-success);
+	}
+	.history-title--fail {
+		color: var(--md-sys-color-error);
+	}
+	.history-title--muted {
+		color: var(--md-sys-color-on-surface-variant);
+		opacity: 0.85;
+	}
+	.history-status--ok {
+		color: var(--md-sys-color-success);
+		font-weight: 600;
+	}
+	.history-status--fail {
+		color: var(--md-sys-color-error);
+		font-weight: 600;
+	}
+	.history-status--muted {
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	.history-item--fail {
+		background: color-mix(in srgb, var(--md-sys-color-error) 8%, transparent);
+	}
+	.history-item--ok {
+		background: color-mix(in srgb, var(--md-sys-color-success) 6%, transparent);
 	}
 	.scheduled-body {
 		font-size: 11px;

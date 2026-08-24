@@ -156,7 +156,7 @@
 	}
 
 	.api-key-mask {
-		font-family: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, monospace;
+		font-family: var(--md-sys-typescale-mono);
 		font-size: 14px;
 		letter-spacing: 0.12em;
 		color: var(--md-sys-color-on-surface);
@@ -178,7 +178,7 @@
 		outline: none;
 		background: transparent;
 		padding: 0 var(--md-sys-space-lg);
-		font-family: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, monospace;
+		font-family: var(--md-sys-typescale-mono);
 		font-size: 14px;
 		letter-spacing: 0.04em;
 		color: var(--md-sys-color-on-surface);
@@ -251,7 +251,7 @@
 		color: var(--md-sys-color-on-surface);
 	}
 	.api-key-badge-mask {
-		font-family: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Consolas, monospace;
+		font-family: var(--md-sys-typescale-mono);
 		letter-spacing: 0.1em;
 		opacity: 0.75;
 	}

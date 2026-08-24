@@ -2,7 +2,7 @@
 
 > 状态：`[待办]` / `[可选]` / `[完成归档]`  
 > 原则：**可大改、不向下兼容**（记忆与 ReAct 两边可一起重构；旧 dual-array snapshot / 远古 schema 可删库重建）。  
-> 更新日期：2026-08-22  
+> 更新日期：2026-08-24  
 > 取代：`docs/memory-architecture.md`、`docs/react-architecture-improvements.md`（已删除，内容并入本文）。
 
 ---
@@ -183,6 +183,13 @@ User/STT → AgentLayer (ingress/resume)
 - **方向**：`run_turn` + mock Stream/Tools/Hooks 覆盖 pause/ask/steer/cancel；集成只留少数黄金路径。
 - **风险**：低
 
+#### R6. 分支 / 重试跨生命周期窗口硬化 `[待办]` · 2026-08-24
+
+- **问题**：`BranchPoint` rollback 与 empty/cut-off / continue 重试在「工具批执行中」「模型流式输入/输出中」「claim→spawn」「ask/confirm 等待」「pause 写 snapshot 退出」等窗口期，易与 cancel、PartialStore fencing、action 清理、状态机 flip 交错，出现期待外的竞态或脏 transcript。
+- **方向**：枚举窗口 ×（branch rollback / 截断重试 / errored continue）矩阵；明确各窗口允许/拒绝/排队语义；补集成测（工具中 rollback、流式中 retry、ask 后 retry 已有可作基线）；文档诚实写清不可用窗口。
+- **位置**：`session/{status,dispatcher,tool_runner}.rs` / `react/` / `partial.rs` / `canonical.rs` / `resume.rs`
+- **风险**：高（状态机 + 持久化 + UI 气泡一致性）
+
 ---
 
 ### 3.3 原「明确不做」——现全部入册
@@ -265,6 +272,7 @@ User/STT → AgentLayer (ingress/resume)
 | R3 | 可选 | ReAct | skill/mcp 后 patch 工具短索引 |
 | R4 | 可选 | ReAct | snapshot 显式 RunBudget |
 | R5 | 可选 | ReAct | 薄循环单测加厚 |
+| R6 | 待办 | ReAct | 分支/重试跨生命周期窗口硬化 |
 | X1 | 可选·史诗 | 跨切 | 记忆大表/图谱 |
 | X2 | 可选 | Memory | resume 全量重建 system |
 | X3 | 不推荐 | Resume | 内容比对去重 |
@@ -279,7 +287,7 @@ User/STT → AgentLayer (ingress/resume)
 | X12 | 可选·史诗 | 跨切 | DB↔events 统一日志 |
 | X13 | 可选 | ReAct | BP/events 冷存储 |
 
-**计数**：待办 **0** · 可选 **8** · 不推荐 **6** · 完成归档本轮 **8**（M1–M6、R2、X7）· 史诗计入可选。
+**计数**：待办 **1**（R6）· 可选 **8** · 不推荐 **6** · 完成归档本轮 **8**（M1–M6、R2、X7）· 史诗计入可选。
 
 ---
 
@@ -300,11 +308,12 @@ P2  抽取与检索增强                     ✅ 2026-08-22
     M5  万级向量（LSH ANN，≥4096 激活）
     M6  谓词 LLM 合并（门闩 + demote/极性保留）
 
-P3  ReAct 产品旋钮
+P3  ReAct 产品旋钮 + 窗口期硬化
+    R6  分支/重试跨生命周期窗口（工具中 / 流式中 / claim→spawn / ask·confirm / pause）
     R1  CancelToolsOnSteer（产品拍板后）
     R3  prompt 工具索引策略二选一落地
     R4  RunBudget 入 snapshot
-    R5  薄循环单测加厚
+    R5  薄循环单测加厚（含 R6 窗口矩阵）
 
 P4  史诗（单独立项）
     X12 DB↔events 统一
@@ -329,6 +338,7 @@ P4  史诗（单独立项）
 - 静态：`cargo clippy -- -D warnings`；UI：`cd ui && npm run check`
 - 协作回归：同会话不进 Past excerpts；resume/pause 后记忆段可更新；中英会话各一条
 - ReAct 回归：pause 无残留 Running；ask/confirm 重启门闩仍在；并行工具无假 step 膨胀
+- 分支/重试窗口（R6）：工具批中 rollback；流式中 empty/cut-off 重试；ask 答后 continue；claim→spawn 竞态；pause 写 snapshot 后立刻 branch
 - 大改后：旧 `haven.db` / 旧 react_state **允许删库**；不必保留 dual-array / 无 fence 快照兼容，除非刻意留 `from_json` 只读迁移
 
 ---
@@ -346,6 +356,7 @@ P4  史诗（单独立项）
 
 | 日期 | 内容 |
 |---|---|
+| 2026-08-24 | 新增 R6：分支/重试在工具调用、模型流式、claim→spawn、ask/confirm、pause 等窗口期硬化 |
 | 2026-08-22 | P2 落地：M4 抽取视野含有界 assistant/tool；M5 embedding_lsh + ANN≥4096；M6 维护期 LLM 谓词合并 |
 | 2026-08-22 | P0+P1 落地：R2 非阻塞调度确认；X7 删除 Steps so far；M1 确认轮次抽取；M2 节流 MEMORY patch；M3 摘要→facts |
 | 2026-08-21 | 初版：合并并取代 `memory-architecture.md` 与 `react-architecture-improvements.md`；完成项归档；剩余项含原「明确不做」；原则改为可大改、不向下兼容 |

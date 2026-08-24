@@ -134,7 +134,7 @@
 			title: '上下文与压缩',
 			hint: '模型上下文窗口与自动压缩（compaction）行为的阈值。压缩阈值过高可能导致上下文溢出。',
 			fields: [
-				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'tokens', danger: true, hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口。调高会增大每次请求的成本与溢出风险。' },
+				{ key: 'default_context_window', label: '默认上下文窗口', unit: 'K', kTokens: true, step: 1, danger: true, hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 128 = 128K）。调高会增大每次请求的成本与溢出风险。' },
 				{ key: 'max_response_tokens', label: '回复输出 token 下限', unit: 'tokens', danger: false, hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大）。默认极大，长回复不会被截断；需要限制输出长度时调低此项。' },
 				{ key: 'compaction_ratio', label: '压缩触发比例', unit: '0–1', step: 0.01, min: 0.1, max: 0.95, danger: true, hint: '历史占用窗口的比例达到该值时开始压缩。调高 = 更晚压缩 = 更接近溢出。' },
 				{ key: 'compaction_reserve_tokens', label: '压缩保留 token', unit: 'tokens', danger: false, hint: '计算压缩阈值时为模型回复预留的 token 数。' },
@@ -247,6 +247,7 @@
 		if (!f) return value;
 		if (f.mb) return Math.round((value / 1048576) * 10) / 10;
 		if (f.kb) return Math.round((value / 1024) * 10) / 10;
+		if (f.kTokens) return Math.round(value / 1000);
 		if (f.days) return Math.round((value / 86400) * 10) / 10;
 		return value;
 	}
@@ -259,6 +260,7 @@
 		if (!f) return v;
 		if (f.mb) return Math.round(v * 1048576);
 		if (f.kb) return Math.round(v * 1024);
+		if (f.kTokens) return Math.round(v * 1000);
 		if (f.days) return Math.round(v * 86400);
 		return v;
 	}
@@ -1556,7 +1558,7 @@
 		padding: 2px 8px;
 		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-high);
-		font-family: ui-monospace, Consolas, monospace;
+		font-family: var(--md-sys-typescale-mono);
 		user-select: all;
 	}
 	.form-row {

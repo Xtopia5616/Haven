@@ -608,6 +608,39 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
 	});
 
+	it('keeps a still-streaming live thought before a DB steer that follows it', () => {
+		// Same reorder bug as the finalized case, but the leftover is still
+		// streaming — the old unconditional streamingTail append pushed it
+		// after the persisted steer for one frame.
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm2', role: 'user', content: 'second' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-8', role: 'assistant', content: '思考中', streaming: true },
+			{ id: 'm2', role: 'user', content: 'second', steering: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-8', 'm2']);
+		expect(merged.find((m) => m.id === 'msg-8')!.streaming).toBe(true);
+		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
+	});
+
+	it('preserves live steering on same-id user rows from the DB', () => {
+		const db = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'm2', role: 'user', content: '补充' },
+		];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi', received: true },
+			{ id: 'msg-t', role: 'assistant', content: '想', streaming: true },
+			{ id: 'm2', role: 'user', content: '补充', steering: true },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.find((m) => m.id === 'm2')!.steering).toBe(true);
+	});
+
 	it('keeps the interrupted partial reasoning after a continue resync', () => {
 		// After continue_session truncates the errored step's partial output
 		// from the DB, the resync must NOT clear the already-streamed

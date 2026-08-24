@@ -1202,8 +1202,9 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		min-width: 240px;
-		max-width: 420px;
+		width: 420px;
+		max-width: 100%;
+		box-sizing: border-box;
 		margin-top: var(--md-sys-space-xs);
 	}
 	.tool-card-header {
