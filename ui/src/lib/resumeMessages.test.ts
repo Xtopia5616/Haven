@@ -51,6 +51,26 @@ describe('buildResumeMessages', () => {
 		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'file', content: '{"ok":true}' });
 	});
 
+	it('normalizes persisted tool-role observations into tool cards', () => {
+		const items = buildResumeMessages({
+			session: sampleSession,
+			messages: [
+				{ id: 'm1', role: 'user', content: '检查', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{ id: 'step-s1', role: 'tool', content: '{"output":"ok"}', message_type: 'observation', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+			],
+			steps: [
+				{ id: 'step-s1', action_tool: 'shell', action_input: '{"cmd":"dir"}', observation: '{"output":"ok"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+			],
+		});
+		const tool = items.find((item) => item.id === 'step-s1');
+		expect(tool).toMatchObject({
+			role: 'assistant',
+			type: 'tool',
+			toolName: 'shell',
+			toolArgs: '{"cmd":"dir"}',
+		});
+	});
+
 	it('carries action_input onto tool cards as toolArgs', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,

@@ -185,6 +185,7 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 	const items: ResumeMessage[] = [];
 	const msgs = data.messages || [];
 	const session = data.session || {};
+	const stepById = new Map((data.steps || []).map((step) => [step.id, step]));
 
 	// Message rows persisted under a step row's id (ask questions on new
 	// records, thought/supplement content on new records) are the content
@@ -202,11 +203,27 @@ export function buildResumeMessages(data: ResumeData): ResumeMessage[] {
 		// records carry the `__ask__` sentinel — skip those too.
 		if (askStepIds.has(msg.id)) continue;
 		if (msg.tool_call_id === ASK_MSG_TOOL_CALL_ID) continue;
+		const step = stepById.get(msg.id);
+		const isToolObservation = msg.role === 'tool' || msg.message_type === 'observation';
 		items.push({
 			id: msg.id,
-			role: msg.role,
+			// Tool observations are rendered as assistant-side cards in chat, even
+			// though the persisted transcript uses the OpenAI `tool` role.
+			role: isToolObservation ? 'assistant' : msg.role,
 			content: msg.content,
-			type: msg.message_type === 'text' ? undefined : msg.message_type || undefined,
+			type: isToolObservation
+				? 'tool'
+				: msg.message_type === 'text'
+					? undefined
+					: msg.message_type || undefined,
+			...(isToolObservation
+				? {
+						toolName: step?.action_tool || 'tool',
+						...(step?.action_input != null && step.action_input !== ''
+							? { toolArgs: step.action_input }
+							: {}),
+					}
+				: {}),
 			voice: !!msg.voice,
 			time: formatMessageTime(msg.created_at),
 			_ts: Date.parse(msg.created_at) || 0,

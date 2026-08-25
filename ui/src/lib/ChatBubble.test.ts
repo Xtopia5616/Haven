@@ -275,6 +275,21 @@ describe('ChatBubble', () => {
 		expect(document.querySelector('details.observation-block')).toBeNull();
 	});
 
+	it('renders persisted observation messages through the same tool card', () => {
+		render(
+			ChatBubble,
+			base({
+				role: 'assistant',
+				content: '{"output":"ok"}',
+				type: 'tool',
+				toolName: 'shell',
+			}),
+		);
+		expect(document.querySelector('.tool-card')).toBeTruthy();
+		expect(screen.getByText('终端输出')).toBeTruthy();
+		expect(screen.getByText('ok')).toBeTruthy();
+	});
+
 	it('renders a tool result card collapsed once the observation is final', () => {
 		const { container } = render(
 			ChatBubble,

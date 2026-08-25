@@ -116,7 +116,19 @@
 		switch (toolName) {
 			case 'file_search':
 			case 'files':
-				return Array.isArray(data.results) ? data : null;
+				if (Array.isArray(data.results)) return data;
+				if (
+					data.written ||
+					data.edited ||
+					data.copied ||
+					data.moved ||
+					data.deleted ||
+					Array.isArray(data.entries) ||
+					'content' in data ||
+					'size' in data
+				)
+					return data;
+				return null;
 			case 'system':
 				return data.cpu ||
 					data.memory ||
@@ -149,7 +161,6 @@
 			case 'schedule':
 				return Array.isArray(data.scheduled_actions) || (data.id && data.mode) ? data : null;
 			case 'file':
-			case 'files':
 				return data.written ||
 					data.edited ||
 					data.copied ||
