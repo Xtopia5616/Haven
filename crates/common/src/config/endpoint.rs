@@ -64,6 +64,12 @@ pub struct ModelEndpoint {
     // are zero, cost is reported as None.
     pub cost_per_1k_input_tokens: f64,
     pub cost_per_1k_output_tokens: f64,
+    /// Optional discounted cache-read price. Falls back to normal input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_1k_cache_read_tokens: Option<f64>,
+    /// Optional cache-write/creation price. Falls back to normal input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_1k_cache_write_tokens: Option<f64>,
     /// True context window of the model in tokens. When unset (None), Haven
     /// falls back to `context_limits.default_context_window`. Prefer filling
     /// this from provider `/models` metadata when the user picks a model.
@@ -91,15 +97,25 @@ fn default_auth_header_prefix() -> String {
 /// Returns `None` when both pricing fields are zero (cost not configured).
 pub fn compute_cost_usd(
     endpoint: &ModelEndpoint,
-    prompt_tokens: u32,
+    cache_miss_tokens: u32,
+    cached_tokens: u32,
+    cache_creation_tokens: u32,
     completion_tokens: u32,
 ) -> Option<f64> {
     if endpoint.cost_per_1k_input_tokens <= 0.0 && endpoint.cost_per_1k_output_tokens <= 0.0 {
         return None;
     }
-    let input = (prompt_tokens as f64 / 1000.0) * endpoint.cost_per_1k_input_tokens;
+    let input = (cache_miss_tokens as f64 / 1000.0) * endpoint.cost_per_1k_input_tokens;
+    let cache_read = (cached_tokens as f64 / 1000.0)
+        * endpoint
+            .cost_per_1k_cache_read_tokens
+            .unwrap_or(endpoint.cost_per_1k_input_tokens);
+    let cache_write = (cache_creation_tokens as f64 / 1000.0)
+        * endpoint
+            .cost_per_1k_cache_write_tokens
+            .unwrap_or(endpoint.cost_per_1k_input_tokens);
     let output = (completion_tokens as f64 / 1000.0) * endpoint.cost_per_1k_output_tokens;
-    Some(input + output)
+    Some(input + cache_read + cache_write + output)
 }
 
 impl Default for ModelEndpoint {
@@ -129,6 +145,8 @@ impl Default for ModelEndpoint {
             web_search: None,
             cost_per_1k_input_tokens: 0.0,
             cost_per_1k_output_tokens: 0.0,
+            cost_per_1k_cache_read_tokens: None,
+            cost_per_1k_cache_write_tokens: None,
             context_window: None,
             reasoning_echo_max_chars: None,
         }
@@ -232,6 +250,10 @@ pub struct RoleConfig {
     pub cost_per_1k_input_tokens: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_per_1k_output_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_1k_cache_read_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_1k_cache_write_tokens: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,6 +498,8 @@ impl LlmConfig {
         if let Some(c) = slot.cost_per_1k_output_tokens {
             ep.cost_per_1k_output_tokens = c;
         }
+        ep.cost_per_1k_cache_read_tokens = slot.cost_per_1k_cache_read_tokens;
+        ep.cost_per_1k_cache_write_tokens = slot.cost_per_1k_cache_write_tokens;
         if let Some(m) = slot.max_tokens {
             ep.max_tokens = m;
         }

@@ -14,14 +14,15 @@ pub struct SessionUsage {
     pub cached_tokens: u32,
     #[serde(default)]
     pub cache_creation_tokens: u32,
+    #[serde(default)]
+    pub cache_miss_tokens: u32,
     pub cost_usd: f64,
     pub has_cost: bool,
 }
 
 impl SessionUsage {
-    /// Providers sometimes omit `total_tokens`. Reconstruct it with the same
-    /// rule as `haven_llm::types::Usage::normalize`: inclusive
-    /// `prompt + completion`, plus exclusive cache when `cached > prompt`.
+    /// Providers sometimes omit `total_tokens`. Session aggregates cannot
+    /// encode a single provider mode, so only a recorded total is authoritative.
     pub fn coalesce_total(&mut self) {
         self.total_tokens = coalesced_total(
             self.prompt_tokens,
@@ -29,6 +30,7 @@ impl SessionUsage {
             self.total_tokens,
             self.cached_tokens,
             self.cache_creation_tokens,
+            "unknown",
         );
     }
 }
@@ -39,11 +41,12 @@ fn coalesced_total(
     total_tokens: u32,
     cached_tokens: u32,
     cache_creation_tokens: u32,
+    cache_accounting: &str,
 ) -> u32 {
     if total_tokens != 0 {
         return total_tokens;
     }
-    let extra = if cached_tokens > prompt_tokens {
+    let extra = if cache_accounting == "exclusive" {
         cached_tokens.saturating_add(cache_creation_tokens)
     } else {
         0
@@ -59,7 +62,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT prompt_tokens, completion_tokens, total_tokens,
-                    cached_tokens, cache_creation_tokens, cost_usd, has_cost
+                    cached_tokens, cache_creation_tokens, cache_miss_tokens, cost_usd, has_cost
              FROM session_usage WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -69,8 +72,9 @@ impl Database {
                 total_tokens: row.get(2)?,
                 cached_tokens: row.get(3)?,
                 cache_creation_tokens: row.get(4)?,
-                cost_usd: row.get(5)?,
-                has_cost: row.get::<_, i32>(6)? != 0,
+                cache_miss_tokens: row.get(5)?,
+                cost_usd: row.get(6)?,
+                has_cost: row.get::<_, i32>(7)? != 0,
             })
         })?;
         match rows.next() {
@@ -104,6 +108,14 @@ pub struct LlmCallUsage {
     pub cached_tokens: u32,
     #[serde(default)]
     pub cache_creation_tokens: u32,
+    #[serde(default)]
+    pub cache_miss_tokens: u32,
+    /// `inclusive`, `exclusive`, or `unknown` for legacy rows. Only per-call
+    /// rows can safely express this when a session switches providers.
+    #[serde(default)]
+    pub cache_accounting: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_diagnostics: Option<serde_json::Value>,
     pub cost_usd: f64,
     pub has_cost: bool,
     /// Wall-clock duration of the LLM call in milliseconds.
@@ -119,6 +131,7 @@ impl LlmCallUsage {
             self.total_tokens,
             self.cached_tokens,
             self.cache_creation_tokens,
+            &self.cache_accounting,
         );
     }
 }
@@ -143,6 +156,45 @@ impl Database {
         has_cost: bool,
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmCallUsage> {
+        self.record_llm_call_usage_with_cache_accounting(
+            session_id,
+            step_number,
+            role,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            0,
+            "unknown",
+            None,
+            cost_usd,
+            has_cost,
+            duration_ms,
+        )
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_llm_call_usage_with_cache_accounting(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        role: &str,
+        model: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
+        cache_accounting: &str,
+        cache_diagnostics: Option<&str>,
+        cost_usd: f64,
+        has_cost: bool,
+        duration_ms: Option<u64>,
+    ) -> anyhow::Result<LlmCallUsage> {
         let id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
@@ -158,6 +210,9 @@ impl Database {
             total_tokens,
             cached_tokens,
             cache_creation_tokens,
+            cache_miss_tokens,
+            cache_accounting,
+            cache_diagnostics,
             cost_usd,
             has_cost,
             duration_ms,
@@ -174,6 +229,9 @@ impl Database {
             total_tokens,
             cached_tokens,
             cache_creation_tokens,
+            cache_miss_tokens,
+            cache_accounting: cache_accounting.into(),
+            cache_diagnostics: cache_diagnostics.and_then(|value| serde_json::from_str(value).ok()),
             cost_usd,
             has_cost,
             duration_ms,
@@ -204,6 +262,44 @@ impl Database {
         has_cost: bool,
         duration_ms: Option<u64>,
     ) -> anyhow::Result<LlmCallUsage> {
+        self.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
+            session_id,
+            step_number,
+            role,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            0,
+            "unknown",
+            None,
+            cost_usd,
+            has_cost,
+            duration_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn persist_llm_call_and_refresh_session_usage_with_cache_accounting(
+        &self,
+        session_id: &str,
+        step_number: Option<i32>,
+        role: &str,
+        model: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
+        cache_accounting: &str,
+        cache_diagnostics: Option<&str>,
+        cost_usd: f64,
+        has_cost: bool,
+        duration_ms: Option<u64>,
+    ) -> anyhow::Result<LlmCallUsage> {
         let id = haven_common::types::new_id("usage");
         let created_at = now_rfc3339_millis();
         let conn = self.conn();
@@ -221,6 +317,9 @@ impl Database {
                 total_tokens,
                 cached_tokens,
                 cache_creation_tokens,
+                cache_miss_tokens,
+                cache_accounting,
+                cache_diagnostics,
                 cost_usd,
                 has_cost,
                 duration_ms,
@@ -238,6 +337,9 @@ impl Database {
                 total_tokens,
                 cached_tokens,
                 cache_creation_tokens,
+                cache_miss_tokens,
+                cache_accounting: cache_accounting.into(),
+                cache_diagnostics: cache_diagnostics.and_then(|value| serde_json::from_str(value).ok()),
                 cost_usd,
                 has_cost,
                 duration_ms,
@@ -297,6 +399,9 @@ impl Database {
         total_tokens: u32,
         cached_tokens: u32,
         cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
+        cache_accounting: &str,
+        cache_diagnostics: Option<&str>,
         cost_usd: f64,
         has_cost: bool,
         duration_ms: Option<u64>,
@@ -308,13 +413,14 @@ impl Database {
             total_tokens,
             cached_tokens,
             cache_creation_tokens,
+            cache_accounting,
         );
         conn.execute(
             "INSERT INTO llm_usage
                  (id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
-                  total_tokens, cached_tokens, cache_creation_tokens, cost_usd, has_cost,
-                  duration_ms, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                   total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,
+                   cache_diagnostics, cost_usd, has_cost, duration_ms, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             rusqlite::params![
                 id,
                 session_id,
@@ -326,6 +432,9 @@ impl Database {
                 total_tokens,
                 cached_tokens,
                 cache_creation_tokens,
+                cache_miss_tokens,
+                cache_accounting,
+                cache_diagnostics,
                 cost_usd,
                 has_cost,
                 duration_ms,
@@ -339,7 +448,8 @@ impl Database {
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<()> {
-        let (prompt, completion, total, cached, creation, cost, has_cost): (
+        let (prompt, completion, total, cached, creation, miss, cost, has_cost): (
+            i64,
             i64,
             i64,
             i64,
@@ -350,9 +460,10 @@ impl Database {
         ) = conn.query_row(
             "SELECT COALESCE(SUM(prompt_tokens), 0),
                     COALESCE(SUM(completion_tokens), 0),
-                    COALESCE(SUM(CASE WHEN total_tokens > 0 THEN total_tokens ELSE prompt_tokens + completion_tokens + CASE WHEN cached_tokens > prompt_tokens THEN cached_tokens + cache_creation_tokens ELSE 0 END END), 0),
+                    COALESCE(SUM(CASE WHEN total_tokens > 0 THEN total_tokens ELSE prompt_tokens + completion_tokens + CASE WHEN cache_accounting = 'exclusive' THEN cached_tokens + cache_creation_tokens ELSE 0 END END), 0),
                     COALESCE(SUM(cached_tokens), 0),
                     COALESCE(SUM(cache_creation_tokens), 0),
+                    COALESCE(SUM(cache_miss_tokens), 0),
                     COALESCE(SUM(CASE WHEN has_cost != 0 THEN cost_usd ELSE 0 END), 0),
                     COALESCE(MAX(CASE WHEN has_cost != 0 THEN 1 ELSE 0 END), 0)
              FROM llm_usage WHERE session_id = ?1",
@@ -366,6 +477,7 @@ impl Database {
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )?;
@@ -375,14 +487,15 @@ impl Database {
         conn.execute(
             "INSERT INTO session_usage
                  (session_id, prompt_tokens, completion_tokens, total_tokens,
-                  cached_tokens, cache_creation_tokens, cost_usd, has_cost, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+                   cached_tokens, cache_creation_tokens, cache_miss_tokens, cost_usd, has_cost, updated_at)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
              ON CONFLICT(session_id) DO UPDATE SET
                  prompt_tokens = excluded.prompt_tokens,
                  completion_tokens = excluded.completion_tokens,
                  total_tokens = excluded.total_tokens,
                  cached_tokens = excluded.cached_tokens,
                  cache_creation_tokens = excluded.cache_creation_tokens,
+                 cache_miss_tokens = excluded.cache_miss_tokens,
                  cost_usd = excluded.cost_usd,
                  has_cost = excluded.has_cost,
                  updated_at = excluded.updated_at",
@@ -393,6 +506,7 @@ impl Database {
                 total as u32,
                 cached as u32,
                 creation as u32,
+                miss as u32,
                 cost,
                 has_cost != 0
             ],
@@ -406,8 +520,8 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, step_number, role, model, prompt_tokens, completion_tokens,
-                    total_tokens, cached_tokens, cache_creation_tokens, cost_usd, has_cost,
-                    duration_ms, created_at
+                    total_tokens, cached_tokens, cache_creation_tokens, cache_miss_tokens, cache_accounting,
+                    cache_diagnostics, cost_usd, has_cost, duration_ms, created_at
              FROM llm_usage WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
@@ -422,10 +536,15 @@ impl Database {
                 total_tokens: row.get(7)?,
                 cached_tokens: row.get(8)?,
                 cache_creation_tokens: row.get(9)?,
-                cost_usd: row.get(10)?,
-                has_cost: row.get::<_, i32>(11)? != 0,
-                duration_ms: row.get(12)?,
-                created_at: row.get(13)?,
+                cache_miss_tokens: row.get(10)?,
+                cache_accounting: row.get(11)?,
+                cache_diagnostics: row
+                    .get::<_, Option<String>>(12)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                cost_usd: row.get(13)?,
+                has_cost: row.get::<_, i32>(14)? != 0,
+                duration_ms: row.get(15)?,
+                created_at: row.get(16)?,
             })
         })?;
         let mut usage = Vec::new();
@@ -657,6 +776,57 @@ mod tests {
     }
 
     #[test]
+    fn persist_keeps_cache_accounting_per_call_for_mixed_providers() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
+            &session.id,
+            Some(1),
+            "default_model",
+            Some("gpt-test"),
+            100,
+            5,
+            105,
+            100,
+            0,
+            0,
+            "inclusive",
+            None,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+        db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
+            &session.id,
+            Some(2),
+            "default_model",
+            Some("claude-test"),
+            100,
+            5,
+            505,
+            400,
+            0,
+            0,
+            "exclusive",
+            None,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let calls = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].cache_accounting, "inclusive");
+        assert_eq!(calls[1].cache_accounting, "exclusive");
+        let total = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(total.prompt_tokens, 200);
+        assert_eq!(total.cached_tokens, 500);
+        assert_eq!(total.total_tokens, 610);
+    }
+
+    #[test]
     fn rebuild_session_usage_zeros_row_when_no_calls_remain() {
         let db = test_db();
         let session = db.create_session("hello", "").unwrap();
@@ -726,7 +896,7 @@ mod tests {
     fn persist_coalesces_exclusive_cache_into_omitted_total() {
         let db = test_db();
         let session = db.create_session("hello", "").unwrap();
-        db.persist_llm_call_and_refresh_session_usage(
+        db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             &session.id,
             Some(1),
             "default_model",
@@ -736,6 +906,9 @@ mod tests {
             0,
             400,
             50,
+            0,
+            "exclusive",
+            None,
             0.0,
             false,
             None,

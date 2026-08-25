@@ -70,6 +70,8 @@ struct SnapshotView<'a> {
     /// `ReActSnapshot::saved_at`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_partial_message_ids: Option<&'a [String]>,
     /// Explicit ask-awaiting flag (Phase 4 / C5); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     awaiting_answer: Option<&'a crate::types::AskPending>,
@@ -453,6 +455,28 @@ impl ReActEngine {
         step_number: u32,
         branch_points: &HashMap<u32, BranchPoint>,
     ) {
+        self.save_snapshot_with_error_partials(
+            session_id,
+            events,
+            step_number,
+            branch_points,
+            None,
+        )
+        .await;
+    }
+
+    /// Persist a snapshot carrying the recovery marker for a failed LLM
+    /// response. Normal snapshots pass `None`, which clears any marker
+    /// consumed by a prior Continue. `Some(&[])` still marks an error whose
+    /// stream produced no visible partial text.
+    async fn save_snapshot_with_error_partials(
+        &self,
+        session_id: &str,
+        events: &[TranscriptRecord],
+        step_number: u32,
+        branch_points: &HashMap<u32, BranchPoint>,
+        error_partial_message_ids: Option<&[String]>,
+    ) {
         let awaiting = self.executor.get_awaiting_answer(session_id).await;
         let awaiting_confirm = self.executor.get_awaiting_confirm(session_id).await;
         let run_budget = self.current_run_budget(session_id);
@@ -461,6 +485,7 @@ impl ReActEngine {
             step_number,
             branch_points,
             saved_at: Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            error_partial_message_ids,
             awaiting_answer: awaiting.as_ref(),
             awaiting_confirm: awaiting_confirm.as_ref(),
             run_budget: run_budget.as_ref(),
@@ -521,6 +546,7 @@ impl ReActEngine {
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
+        let mut error_partial_message_ids = Vec::with_capacity(2);
         if !reasoning_text.trim().is_empty() {
             let message_id =
                 self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
@@ -533,6 +559,7 @@ impl ReActEngine {
                 Some(&message_id),
             )
             .await;
+            error_partial_message_ids.push(message_id);
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
@@ -547,6 +574,7 @@ impl ReActEngine {
                 Some(&message_id),
             )
             .await;
+            error_partial_message_ids.push(message_id.clone());
             EventDispatcher::emit_thought_from(
                 &ctx.emitter,
                 &ctx.session_id,
@@ -558,6 +586,18 @@ impl ReActEngine {
             )
             .await;
         }
+        // The branch-point snapshot above is intentionally written before the
+        // recovery-only rows. Mark this follow-up write even when no visible
+        // text arrived: only this marker authorizes Continue to replace the
+        // failed step, never an ordinary periodic pre-crash snapshot.
+        self.save_snapshot_with_error_partials(
+            &ctx.session_id,
+            events,
+            ctx.step_num,
+            branch_points,
+            Some(&error_partial_message_ids),
+        )
+        .await;
         // The stream text now lives in the message stream (persisted above),
         // so any checkpointed partial row for this session is obsolete — and an
         // in-flight checkpoint write must not re-create it. Discard goes

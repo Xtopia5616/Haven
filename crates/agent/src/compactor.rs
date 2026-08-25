@@ -190,7 +190,11 @@ impl ContextCompactor {
             .count();
 
         let compactable = messages.len() - system_count;
-        if compactable < 3 {
+        // Preserve at least one immutable non-system turn as the cache-routing
+        // anchor, leave a middle worth summarizing, and retain a recent suffix.
+        // With only three non-system messages, compaction would otherwise
+        // replace the first user turn with a generated summary.
+        if compactable < 4 {
             return None;
         }
 
@@ -506,17 +510,13 @@ mod tests {
     }
 
     #[test]
-    fn compaction_range_no_sticky_on_short_sessions() {
+    fn compaction_range_keeps_session_anchor_on_short_sessions() {
         let msgs = vec![
             make_msg(CanonicalRole::System, "sys"),
             make_msg(CanonicalRole::User, "a"),
             make_msg(CanonicalRole::Assistant, "b"),
             make_msg(CanonicalRole::User, "c"),
         ];
-        let (system_count, start, end) = ContextCompactor::compaction_range(&msgs).unwrap();
-        assert_eq!(system_count, 1);
-        // compactable=3 → sticky=min(2,0)=0 → summarize from first non-system.
-        assert_eq!(start, 1);
-        assert!(end < msgs.len());
+        assert!(ContextCompactor::compaction_range(&msgs).is_none());
     }
 }

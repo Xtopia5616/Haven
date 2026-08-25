@@ -431,27 +431,29 @@ impl AgentLayer {
             | crate::lifecycle::LifecycleDecision::NotApplicable => {}
         }
 
-        // Load the snapshot saved on error to find the branch point's
-        // last_msg_at — the timestamp of the last message BEFORE the partial
-        // output. We delete everything after it so the retry starts clean.
+        // A normal branch point is a periodic checkpoint, not necessarily a
+        // boundary for this error (after an app restart it can be several
+        // completed steps old). Only an explicit failed-stream marker makes
+        // this attempt's branch point safe to truncate.
         if let Ok(Some(state_json)) = self.db.get_react_state(session_id)
             && let Ok(snapshot) = ReActSnapshot::from_json(&state_json)
         {
-            // The snapshot's step_number is the step that failed. Try to
-            // find a branch_point at that step; if none (the error
-            // happened before save_branch_point was called), fall back to
-            // the last user message's timestamp.
-            let cutoff = snapshot
-                .branch_points
-                .get(&snapshot.step_number)
-                .and_then(|bp| bp.last_msg_at.clone())
-                .or_else(|| self.db.last_user_message_ts(session_id));
-            if let Some(ts) = cutoff {
-                // Retry OVERWRITES the previous attempt: drop both messages
-                // and step rows (tool badges, thought entries) after the
-                // branch point so the resume history stays linear. Only
-                // branching creates separate timelines.
-                self.db.truncate_session_after(session_id, &ts, false)?;
+            if let Some(error_partial_message_ids) = snapshot.error_partial_message_ids {
+                if let Some(cutoff) = snapshot
+                    .branch_points
+                    .get(&snapshot.step_number)
+                    .and_then(|bp| bp.last_msg_at.as_deref())
+                {
+                    // The marker is saved immediately after save_branch_point
+                    // in persist_partial_on_error, so this range belongs to
+                    // the known failed attempt, including its step projection.
+                    self.db.truncate_session_after(session_id, cutoff, false)?;
+                } else {
+                    // A partially persisted legacy/error snapshot may lack a
+                    // branch point. Its explicit recovery IDs are still safe.
+                    self.db
+                        .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
+                }
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a

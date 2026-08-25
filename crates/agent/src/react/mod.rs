@@ -655,12 +655,7 @@ impl ReActEngine {
         }
 
         let router = self.router();
-        let billed_prompt = usage
-            .prompt_tokens
-            .saturating_add(usage.cache_creation_tokens);
-        let step_cost = router
-            .compute_cost(role, billed_prompt, usage.completion_tokens)
-            .await;
+        let step_cost = router.compute_cost(role, &usage).await;
         // `context_window_for_role` always yields Some; the cached resolver
         // avoids cloning the full LlmConfig on every step.
         let context_window = Some(self.cached_context_window(role).await);
@@ -672,6 +667,7 @@ impl ReActEngine {
             usage.total_tokens,
             usage.cached_tokens,
             usage.cache_creation_tokens,
+            usage.cache_miss_tokens(),
             step_cost,
             || {
                 // Seed from persisted counters when this session was resumed or
@@ -691,6 +687,7 @@ impl ReActEngine {
         let cum_total = totals.total_tokens;
         let cum_cached = totals.cached_tokens;
         let cum_cache_creation = totals.cache_creation_tokens;
+        let cum_cache_miss = totals.cache_miss_tokens;
         let cum_cost_opt = totals.cost_usd;
 
         let model = response.model.clone().or_else(|| usage.model_name.clone());
@@ -710,10 +707,9 @@ impl ReActEngine {
 
         // Persist one per-call detail row and rebuild `session_usage` from the
         // SUM of remaining detail rows (not the in-memory absolute totals).
-        // That keeps cumulative counters correct when fire-and-forget writes
-        // complete out of order, and matches what rollback rebuilds after a
-        // truncate. Detached on the blocking pool so the step loop is not
-        // stalled behind fsync; a hard kill can still drop the last call.
+        // Await the blocking write before emitting the usage event: a user can
+        // pause and immediately reopen a session after seeing that event, and
+        // resume must observe the same cumulative counters as the live UI.
         // An epoch captured here is checked inside the task so a rollback that
         // truncates usage after this spawn cannot be undone by a late insert.
         let db = self.db.clone();
@@ -726,9 +722,14 @@ impl ReActEngine {
         let usage_total = usage.total_tokens;
         let usage_cached = usage.cached_tokens;
         let usage_cache_creation = usage.cache_creation_tokens;
+        let usage_cache_miss = usage.cache_miss_tokens();
+        let usage_cache_diagnostics = usage
+            .cache_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| serde_json::to_string(diagnostics).ok());
         let persist_epoch = self.usage.epoch(session_id);
         let epochs = self.usage.epochs_handle();
-        let persist = tokio::task::spawn_blocking(move || {
+        let persist = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
             let epoch_now = || {
                 epochs
                     .lock()
@@ -738,9 +739,9 @@ impl ReActEngine {
                     .unwrap_or(0)
             };
             if epoch_now() != persist_epoch {
-                return;
+                return Ok(());
             }
-            let Ok(rec) = db.persist_llm_call_and_refresh_session_usage(
+            let rec = db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
                 &session_id_for_persist,
                 Some(step_number),
                 role.as_str(),
@@ -750,22 +751,36 @@ impl ReActEngine {
                 usage_total,
                 usage_cached,
                 usage_cache_creation,
+                usage_cache_miss,
+                usage.cache_accounting.as_str(),
+                usage_cache_diagnostics.as_deref(),
                 call_cost,
                 call_has_cost,
                 duration_ms,
-            ) else {
-                return;
-            };
+            )?;
             // Rollback may have truncated between the pre-check and the
             // insert; drop the phantom row and rebuild so totals stay true.
             if epoch_now() != persist_epoch {
                 let _ = db.delete_llm_usage_by_id(&rec.id);
                 let _ = db.rebuild_session_usage_from_calls(&session_id_for_persist);
             }
+            Ok(())
         });
-        // Detach: the write completes on the blocking pool without the step
-        // loop waiting for it.
-        drop(persist);
+        match persist.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                "ReAct: failed to persist usage for session {} step {}: {}",
+                session_id,
+                step_number,
+                e
+            ),
+            Err(e) => tracing::warn!(
+                "ReAct: usage persistence task failed for session {} step {}: {}",
+                session_id,
+                step_number,
+                e
+            ),
+        }
 
         EventDispatcher::emit_usage_from(
             emitter,
@@ -776,8 +791,10 @@ impl ReActEngine {
                 total_tokens: usage.total_tokens,
                 cached_tokens: usage.cached_tokens,
                 cache_creation_tokens: usage.cache_creation_tokens,
+                cache_miss_tokens: usage.cache_miss_tokens(),
                 context_tokens: usage.context_tokens(),
                 cache_exclusive: usage.cache_exclusive_of_prompt(),
+                cache_accounting: usage.cache_accounting.as_str().into(),
                 cost_usd: step_cost,
                 model,
                 cumulative_prompt_tokens: cum_prompt,
@@ -785,6 +802,8 @@ impl ReActEngine {
                 cumulative_total_tokens: cum_total,
                 cumulative_cached_tokens: cum_cached,
                 cumulative_cache_creation_tokens: cum_cache_creation,
+                cumulative_cache_miss_tokens: cum_cache_miss,
+                cache_diagnostics: usage.cache_diagnostics,
                 cumulative_cost_usd: cum_cost_opt,
                 context_window,
                 step_number: Some(step_number as u32),

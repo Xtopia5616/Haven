@@ -729,6 +729,16 @@ describe('mergeLiveStreaming', () => {
 		expect(merged.map((m) => m.id)).toEqual(['m1']);
 	});
 
+	it('keeps a finalized real user bubble until its DB row arrives', () => {
+		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
+		const existing = [
+			{ id: 'm1', role: 'user', content: 'hi' },
+			{ id: 'msg-pending', role: 'user', content: '补充说明', streaming: false },
+		];
+		const merged = mergeLiveStreaming(db, existing);
+		expect(merged.map((m) => m.id)).toEqual(['m1', 'msg-pending']);
+	});
+
 	it('prefers a live awaiting ask card over the DB ask card of the same id', () => {
 		// The DB build may lack quick-reply options/awaiting (the pause status
 		// can land after the observation); the awaiting live card wins for the

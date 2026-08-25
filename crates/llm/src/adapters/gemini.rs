@@ -16,7 +16,8 @@ use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition, Usage,
+    CacheAccounting, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, SttResult,
+    ToolDefinition, Usage,
 };
 use base64::Engine;
 use haven_common::config::ModelEndpoint;
@@ -161,12 +162,13 @@ impl GeminiUsage {
                 prompt = prompt.saturating_add(tool_use);
             }
         }
-        Usage::from_counts(
+        Usage::from_counts_with_accounting(
             prompt,
             completion,
             self.total_tokens,
             self.cached_tokens,
             0,
+            CacheAccounting::Inclusive,
             model_name,
         )
     }

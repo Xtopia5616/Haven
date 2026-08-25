@@ -17,7 +17,7 @@
 //! the migrations it has not seen yet.
 
 /// Current schema version. Bump whenever `MIGRATIONS` gains an entry.
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 11;
 
 /// A single forward migration: bumps the database from `version - 1` to
 /// `version`. Entries run in order on every open of an older database.
@@ -47,6 +47,9 @@ struct Migration {
 /// - v8: prompt-cache token columns on `session_usage` / `llm_usage`.
 /// - v9: typed memory graph — `memory_nodes` / `memory_edges` / `memory_items`
 ///   replace `facts` / `memory_episodes`; unified contentless `memory_fts`.
+/// - v10: per-call prompt-cache accounting provenance, so mixed providers do
+///   not infer cache-hit rates from aggregate token values.
+/// - v11: cache miss totals and non-sensitive per-call cache diagnostics.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
@@ -79,6 +82,14 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 9,
         apply: migrate_v9_memory_graph,
+    },
+    Migration {
+        version: 10,
+        apply: migrate_v10_llm_usage_cache_accounting,
+    },
+    Migration {
+        version: 11,
+        apply: migrate_v11_usage_cache_diagnostics,
     },
 ];
 
@@ -335,6 +346,34 @@ fn migrate_v8_usage_cache_tokens(conn: &rusqlite::Connection) -> anyhow::Result<
                 [],
             )?;
         }
+    }
+    Ok(())
+}
+
+/// Existing rows predate provider accounting provenance and remain `unknown`.
+/// Reconstructing their mode from token totals would recreate the cache-rate
+/// error this column prevents.
+fn migrate_v10_llm_usage_cache_accounting(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "llm_usage")? && !column_exists(conn, "llm_usage", "cache_accounting")? {
+        conn.execute(
+            "ALTER TABLE llm_usage ADD COLUMN cache_accounting TEXT NOT NULL DEFAULT 'unknown'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_v11_usage_cache_diagnostics(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    for table in ["session_usage", "llm_usage"] {
+        if table_exists(conn, table)? && !column_exists(conn, table, "cache_miss_tokens")? {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0"),
+                [],
+            )?;
+        }
+    }
+    if table_exists(conn, "llm_usage")? && !column_exists(conn, "llm_usage", "cache_diagnostics")? {
+        conn.execute("ALTER TABLE llm_usage ADD COLUMN cache_diagnostics TEXT", [])?;
     }
     Ok(())
 }
@@ -871,10 +910,11 @@ const SCHEMA_SQL: &[&str] = &[
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        cached_tokens INTEGER NOT NULL DEFAULT 0,
-        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-        cost_usd REAL NOT NULL DEFAULT 0,
+         total_tokens INTEGER NOT NULL DEFAULT 0,
+         cached_tokens INTEGER NOT NULL DEFAULT 0,
+         cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+         cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+         cost_usd REAL NOT NULL DEFAULT 0,
         has_cost INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
@@ -890,10 +930,13 @@ const SCHEMA_SQL: &[&str] = &[
         model TEXT,
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
         completion_tokens INTEGER NOT NULL DEFAULT 0,
-        total_tokens INTEGER NOT NULL DEFAULT 0,
-        cached_tokens INTEGER NOT NULL DEFAULT 0,
-        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-        cost_usd REAL NOT NULL DEFAULT 0,
+         total_tokens INTEGER NOT NULL DEFAULT 0,
+         cached_tokens INTEGER NOT NULL DEFAULT 0,
+         cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+         cache_accounting TEXT NOT NULL DEFAULT 'unknown',
+         cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+         cache_diagnostics TEXT,
+         cost_usd REAL NOT NULL DEFAULT 0,
         has_cost INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1520,6 +1563,32 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v10_migration_adds_unknown_cache_accounting_to_existing_usage() {
+        let conn = create_test_conn();
+        conn.execute_batch(
+            "CREATE TABLE llm_usage (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO llm_usage (id, session_id, prompt_tokens)
+            VALUES ('usage-old', 'ses-old', 42);",
+        )
+        .unwrap();
+
+        migrate_v10_llm_usage_cache_accounting(&conn).unwrap();
+        assert!(column_exists(&conn, "llm_usage", "cache_accounting").unwrap());
+        let accounting: String = conn
+            .query_row(
+                "SELECT cache_accounting FROM llm_usage WHERE id = 'usage-old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(accounting, "unknown");
     }
 
     #[test]

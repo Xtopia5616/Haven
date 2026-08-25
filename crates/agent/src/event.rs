@@ -161,6 +161,9 @@ pub enum AgentEvent {
         /// Prompt-cache write / creation tokens for this call.
         #[serde(default)]
         cache_creation_tokens: u32,
+        /// Prompt tokens processed outside the cache read path.
+        #[serde(default)]
+        cache_miss_tokens: u32,
         /// Tokens occupying the model context window for this call
         /// (prompt, plus exclusive cache tokens when the provider reports
         /// cache outside `prompt_tokens`).
@@ -169,6 +172,10 @@ pub enum AgentEvent {
         /// True when cache read/write tokens are counted outside `prompt_tokens`.
         #[serde(default)]
         cache_exclusive: bool,
+        /// Explicit per-call cache token accounting contract (`inclusive`,
+        /// `exclusive`, or `unknown` for legacy/unsupported providers).
+        #[serde(default)]
+        cache_accounting: String,
         cost_usd: Option<f64>,
         model: Option<String>,
         /// Cumulative totals across the entire session (incl. this step).
@@ -179,6 +186,11 @@ pub enum AgentEvent {
         cumulative_cached_tokens: u32,
         #[serde(default)]
         cumulative_cache_creation_tokens: u32,
+        #[serde(default)]
+        cumulative_cache_miss_tokens: u32,
+        /// Non-sensitive routing/outcome metadata; never includes cache key or prompt text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_diagnostics: Option<haven_llm::CacheDiagnostics>,
         cumulative_cost_usd: Option<f64>,
         /// Configured context window for the model (tokens). When `None`,
         /// the UI falls back to a generic budget indicator.
@@ -729,8 +741,10 @@ impl EventDispatcher {
                 total_tokens: usage.total_tokens,
                 cached_tokens: usage.cached_tokens,
                 cache_creation_tokens: usage.cache_creation_tokens,
+                cache_miss_tokens: usage.cache_miss_tokens,
                 context_tokens: usage.context_tokens,
                 cache_exclusive: usage.cache_exclusive,
+                cache_accounting: usage.cache_accounting,
                 cost_usd: usage.cost_usd,
                 model: usage.model,
                 cumulative_prompt_tokens: usage.cumulative_prompt_tokens,
@@ -738,6 +752,8 @@ impl EventDispatcher {
                 cumulative_total_tokens: usage.cumulative_total_tokens,
                 cumulative_cached_tokens: usage.cumulative_cached_tokens,
                 cumulative_cache_creation_tokens: usage.cumulative_cache_creation_tokens,
+                cumulative_cache_miss_tokens: usage.cumulative_cache_miss_tokens,
+                cache_diagnostics: usage.cache_diagnostics,
                 cumulative_cost_usd: usage.cumulative_cost_usd,
                 context_window: usage.context_window,
                 step_number: usage.step_number,
@@ -760,8 +776,10 @@ pub struct UsagePayload {
     pub total_tokens: u32,
     pub cached_tokens: u32,
     pub cache_creation_tokens: u32,
+    pub cache_miss_tokens: u32,
     pub context_tokens: u32,
     pub cache_exclusive: bool,
+    pub cache_accounting: String,
     pub cost_usd: Option<f64>,
     pub model: Option<String>,
     pub cumulative_prompt_tokens: u32,
@@ -769,6 +787,8 @@ pub struct UsagePayload {
     pub cumulative_total_tokens: u32,
     pub cumulative_cached_tokens: u32,
     pub cumulative_cache_creation_tokens: u32,
+    pub cumulative_cache_miss_tokens: u32,
+    pub cache_diagnostics: Option<haven_llm::CacheDiagnostics>,
     pub cumulative_cost_usd: Option<f64>,
     pub context_window: Option<u32>,
     pub step_number: Option<u32>,

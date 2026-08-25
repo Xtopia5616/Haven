@@ -595,7 +595,7 @@ impl ToolsManager {
         let configs = self.mcp_server_configs.read().await;
         let mut entries: Vec<Value> = Vec::new();
         for s in configs.values().filter(|s| s.enabled) {
-            let tool_names: Vec<String> = match self.mcp_manager.get_client(&s.name).await {
+            let mut tool_names: Vec<String> = match self.mcp_manager.get_client(&s.name).await {
                 Some(client) => client
                     .tools_cache()
                     .await
@@ -604,6 +604,10 @@ impl ToolsManager {
                     .collect(),
                 None => Vec::new(),
             };
+            // MCP servers may return an unchanged tool set in a different
+            // order after reconnect. Keep the cacheable prompt index stable.
+            tool_names.sort();
+            tool_names.dedup();
             let description = if tool_names.is_empty() {
                 format!(
                     "MCP server '{}' via {} ({})",

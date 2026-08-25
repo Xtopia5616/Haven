@@ -4,6 +4,83 @@ use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
 
+/// How a provider accounts for prompt-cache tokens in `prompt_tokens`.
+///
+/// This must travel with each usage row. Anthropic cache reads sit outside
+/// `input_tokens`, while OpenAI-style cache hits are already inside prompt
+/// tokens; aggregate token counts cannot safely recover that distinction.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheAccounting {
+    Inclusive,
+    Exclusive,
+    #[default]
+    Unknown,
+}
+
+impl CacheAccounting {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inclusive => "inclusive",
+            Self::Exclusive => "exclusive",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Non-sensitive prompt-cache request and provider outcome metadata. This is
+/// persisted per call for diagnostics, never with the cache key or prompt.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CacheDiagnostics {
+    /// `off`, `key`, or `split` describes the effective wire strategy.
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub key_requested: bool,
+    #[serde(default)]
+    pub system_split: bool,
+    /// True when an optional cache extension was rejected and retried safely.
+    #[serde(default)]
+    pub downgraded: bool,
+    /// `disabled`, `unknown`, `hit`, or `miss`; no provider-usage response is
+    /// deliberately kept as `unknown`, never guessed as a cache miss.
+    #[serde(default)]
+    pub outcome: String,
+}
+
+impl CacheDiagnostics {
+    pub fn for_request(key_requested: bool, system_split: bool) -> Self {
+        Self {
+            mode: if system_split {
+                "split".into()
+            } else if key_requested {
+                "key".into()
+            } else {
+                "off".into()
+            },
+            key_requested,
+            system_split,
+            downgraded: false,
+            outcome: if key_requested || system_split {
+                "unknown".into()
+            } else {
+                "disabled".into()
+            },
+        }
+    }
+
+    pub fn with_provider_usage(mut self, cached_tokens: u32) -> Self {
+        if self.key_requested || self.system_split {
+            self.outcome = if cached_tokens > 0 {
+                "hit".into()
+            } else {
+                "miss".into()
+            };
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     pub prompt_tokens: u32,
@@ -19,6 +96,14 @@ pub struct Usage {
     /// Other providers typically leave this at 0.
     #[serde(default)]
     pub cache_creation_tokens: u32,
+    /// Input tokens that were not read from prompt cache. Adapters compute
+    /// this from their explicit accounting contract before aggregation.
+    #[serde(default)]
+    pub cache_miss_tokens: u32,
+    #[serde(default)]
+    pub cache_accounting: CacheAccounting,
+    #[serde(default)]
+    pub cache_diagnostics: Option<CacheDiagnostics>,
     // §2.14: model name and cost tracking
     pub model_name: Option<String>,
     pub cost: Option<f64>,
@@ -34,26 +119,46 @@ impl Usage {
         cache_creation_tokens: u32,
         model_name: Option<String>,
     ) -> Self {
+        Self::from_counts_with_accounting(
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            CacheAccounting::Unknown,
+            model_name,
+        )
+    }
+
+    pub fn from_counts_with_accounting(
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_accounting: CacheAccounting,
+        model_name: Option<String>,
+    ) -> Self {
         Self {
             prompt_tokens,
             completion_tokens,
             total_tokens,
             cached_tokens,
             cache_creation_tokens,
+            cache_miss_tokens: 0,
+            cache_accounting,
+            cache_diagnostics: None,
             model_name,
             cost: None,
         }
         .normalize()
     }
 
-    /// Fill `total_tokens` when the provider omitted it. Inclusive providers
-    /// (OpenAI / Gemini / DeepSeek) report `total ≈ prompt + completion` with
-    /// cache hits already inside `prompt`. Exclusive providers (Anthropic)
-    /// report cache read/write beside `input_tokens`, so the filled total
-    /// adds those too when the cache cannot be a subset of prompt.
+    /// Fill `total_tokens` when the provider omitted it using the explicit
+    /// cache accounting contract supplied by the adapter.
     pub fn normalize(mut self) -> Self {
         if self.total_tokens == 0 {
-            let extra = if self.cache_exclusive_of_prompt() {
+            let extra = if self.cache_accounting == CacheAccounting::Exclusive {
                 self.cached_tokens
                     .saturating_add(self.cache_creation_tokens)
             } else {
@@ -67,20 +172,10 @@ impl Usage {
         self
     }
 
-    /// True when cache read/write tokens are counted outside `prompt_tokens`.
+    /// True when cache read/write tokens are declared outside `prompt_tokens`.
+    /// Unknown legacy records are not guessed from their numeric values.
     pub fn cache_exclusive_of_prompt(&self) -> bool {
-        let cache = self
-            .cached_tokens
-            .saturating_add(self.cache_creation_tokens);
-        if cache == 0 {
-            return false;
-        }
-        if self.total_tokens == 0 {
-            return self.cached_tokens > self.prompt_tokens;
-        }
-        let inclusive = self.prompt_tokens.saturating_add(self.completion_tokens);
-        let exclusive = inclusive.saturating_add(cache);
-        exclusive.abs_diff(self.total_tokens) <= inclusive.abs_diff(self.total_tokens)
+        self.cache_accounting == CacheAccounting::Exclusive
     }
 
     /// Tokens occupying the model context window for this call.
@@ -91,6 +186,20 @@ impl Usage {
                 .saturating_add(self.cache_creation_tokens)
         } else {
             self.prompt_tokens
+        }
+    }
+
+    /// Normal, non-cached input tokens used for cache-aware pricing.
+    pub fn cache_miss_tokens(&self) -> u32 {
+        if self.cache_miss_tokens > 0 {
+            return self.cache_miss_tokens;
+        }
+        match self.cache_accounting {
+            CacheAccounting::Inclusive => self
+                .prompt_tokens
+                .saturating_sub(self.cached_tokens)
+                .saturating_sub(self.cache_creation_tokens),
+            CacheAccounting::Exclusive | CacheAccounting::Unknown => self.prompt_tokens,
         }
     }
 }
@@ -572,13 +681,15 @@ mod tests {
         assert_eq!(u.total_tokens, 0);
         assert_eq!(u.cached_tokens, 0);
         assert_eq!(u.cache_creation_tokens, 0);
+        assert_eq!(u.cache_accounting, CacheAccounting::Unknown);
         assert!(u.model_name.is_none());
         assert!(u.cost.is_none());
     }
 
     #[test]
     fn usage_normalize_fills_omitted_total_inclusive() {
-        let u = Usage::from_counts(100, 20, 0, 80, 0, None);
+        let u =
+            Usage::from_counts_with_accounting(100, 20, 0, 80, 0, CacheAccounting::Inclusive, None);
         assert_eq!(u.total_tokens, 120);
         assert!(!u.cache_exclusive_of_prompt());
         assert_eq!(u.context_tokens(), 100);
@@ -586,7 +697,15 @@ mod tests {
 
     #[test]
     fn usage_normalize_fills_omitted_total_exclusive_cache() {
-        let u = Usage::from_counts(100, 20, 0, 400, 50, None);
+        let u = Usage::from_counts_with_accounting(
+            100,
+            20,
+            0,
+            400,
+            50,
+            CacheAccounting::Exclusive,
+            None,
+        );
         assert_eq!(u.total_tokens, 570);
         assert!(u.cache_exclusive_of_prompt());
         assert_eq!(u.context_tokens(), 550);

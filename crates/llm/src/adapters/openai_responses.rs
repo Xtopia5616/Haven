@@ -5,7 +5,10 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use crate::adapters::{
     LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
@@ -14,11 +17,12 @@ use crate::adapters::{
     spawn_line_reader, stream_header_timeout, upsert_web_search_call, web_search_result_of,
 };
 use crate::client::LlmClient;
+use haven_common::prompts::MEMORY_FENCE_START;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
-    WebSearchPhase, WebSearchUpdate,
+    CacheAccounting, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition,
+    Usage, WebSearchPhase, WebSearchUpdate,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -81,6 +85,10 @@ struct ResponsesRequest {
     /// OpenAI / DeepSeek Responses reasoning config: `{ "effort": "…" }`.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
+    /// Stable routing hint for Responses-compatible prompt caches. Unsupported
+    /// gateways are detected and retried once without this optional field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -114,6 +122,8 @@ struct ResponsesContentPart {
 struct ResponsesInputTokensDetails {
     #[serde(default)]
     cached_tokens: u32,
+    #[serde(default)]
+    cache_write_tokens: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -135,6 +145,10 @@ struct ResponsesUsage {
     prompt_cache_hit_tokens: u32,
     #[serde(default)]
     cached_tokens: u32,
+    #[serde(default)]
+    prompt_cache_miss_tokens: u32,
+    #[serde(default)]
+    cache_write_tokens: u32,
 }
 
 impl ResponsesUsage {
@@ -153,15 +167,28 @@ impl ResponsesUsage {
         )
     }
 
+    fn cache_created(&self) -> u32 {
+        self.input_tokens_details
+            .as_ref()
+            .map(|details| details.cache_write_tokens)
+            .unwrap_or(0)
+            .max(self.cache_write_tokens)
+    }
+
     fn to_usage(&self, model_name: Option<String>) -> Usage {
-        Usage::from_counts(
+        let mut usage = Usage::from_counts_with_accounting(
             self.prompt(),
             self.completion(),
             self.total_tokens,
             self.cached(),
-            0,
+            self.cache_created(),
+            CacheAccounting::Inclusive,
             model_name,
-        )
+        );
+        usage.cache_miss_tokens = self
+            .prompt_cache_miss_tokens
+            .max(usage.cache_miss_tokens());
+        usage
     }
 }
 
@@ -255,7 +282,12 @@ pub struct OpenAiResponsesAdapter {
     endpoint: ModelEndpoint,
     client: reqwest::Client,
     web_search_mode: WebSearchMode,
+    prompt_cache_key_state: AtomicU8,
 }
+
+const PROMPT_CACHE_KEY_UNKNOWN: u8 = 0;
+const PROMPT_CACHE_KEY_ENABLED: u8 = 1;
+const PROMPT_CACHE_KEY_UNSUPPORTED: u8 = 2;
 
 impl OpenAiResponsesAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
@@ -265,6 +297,7 @@ impl OpenAiResponsesAdapter {
             endpoint,
             client,
             web_search_mode,
+            prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
         }
     }
 
@@ -279,6 +312,71 @@ impl OpenAiResponsesAdapter {
         } else {
             format!("{}/v1/responses", base)
         }
+    }
+
+    /// Derive a deterministic routing key from the cacheable system-prompt
+    /// prefix and tool schema. Recalled MEMORY is intentionally excluded, as
+    /// it can refresh while the stable instructions remain reusable.
+    fn prompt_cache_key(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+    ) -> Option<String> {
+        if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
+            return None;
+        }
+
+        let system = messages
+            .iter()
+            .find(|message| message.role == CanonicalRole::System)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"haven-prompt-cache-v1\0");
+        hasher.update(self.endpoint.model_name.as_bytes());
+        hasher.update([0]);
+
+        let mut has_stable_system = false;
+        for part in &system.content {
+            if let ContentPart::Text(text) = part {
+                let stable = text.split(MEMORY_FENCE_START).next().unwrap_or_default();
+                if !stable.trim().is_empty() {
+                    hasher.update(stable.as_bytes());
+                    hasher.update([0]);
+                    has_stable_system = true;
+                }
+            }
+        }
+        if !has_stable_system {
+            return None;
+        }
+
+        hasher.update(serde_json::to_vec(tools).ok()?);
+        let digest = hasher.finalize();
+        let fingerprint = digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Some(format!("haven-v1-{fingerprint}"))
+    }
+
+    fn prompt_cache_key_rejected(error: &LlmError) -> bool {
+        let LlmError::RequestFailed(message) = error else {
+            return false;
+        };
+        let message = message.to_ascii_lowercase();
+        message.contains("prompt_cache_key")
+            && [
+                "unknown",
+                "unsupported",
+                "unrecognized",
+                "extra field",
+                "extra fields",
+                "additional propert",
+                "not allowed",
+                "unexpected",
+                "invalid parameter",
+            ]
+            .iter()
+            .any(|hint| message.contains(hint))
     }
 
     /// True when the endpoint is in the reasoning-echo class (DeepSeek /
@@ -522,6 +620,7 @@ impl OpenAiResponsesAdapter {
         stream: bool,
         web_search_mode: WebSearchMode,
     ) -> ResponsesRequest {
+        let prompt_cache_key = self.prompt_cache_key(&messages, &tools);
         let (input, instructions) = Self::convert_input(
             messages,
             self.endpoint
@@ -570,7 +669,71 @@ impl OpenAiResponsesAdapter {
             },
             tool_choice,
             reasoning,
+            prompt_cache_key,
         }
+    }
+
+    async fn send_request(
+        &self,
+        url: &str,
+        body: &mut ResponsesRequest,
+        stream: bool,
+    ) -> Result<reqwest::Response, LlmError> {
+        match self.send_request_once(url, body, stream).await {
+            Ok(response) => {
+                if body.prompt_cache_key.is_some() {
+                    let _ = self.prompt_cache_key_state.compare_exchange(
+                        PROMPT_CACHE_KEY_UNKNOWN,
+                        PROMPT_CACHE_KEY_ENABLED,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                }
+                Ok(response)
+            }
+            Err(error)
+                if body.prompt_cache_key.is_some() && Self::prompt_cache_key_rejected(&error) =>
+            {
+                self.prompt_cache_key_state
+                    .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+                body.prompt_cache_key = None;
+                tracing::warn!(
+                    endpoint = %self.endpoint.base_url,
+                    "endpoint rejected prompt_cache_key; disabled cache routing hint for this adapter"
+                );
+                self.send_request_once(url, body, stream).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn send_request_once(
+        &self,
+        url: &str,
+        body: &ResponsesRequest,
+        stream: bool,
+    ) -> Result<reqwest::Response, LlmError> {
+        let mut req = self
+            .client
+            .post(url)
+            .headers(self.build_headers())
+            .json(body);
+        if stream {
+            if let Some(timeout) = self.endpoint.timeout_streaming_secs {
+                req = req.timeout(Duration::from_secs(timeout));
+            }
+        } else {
+            req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        }
+        send_request(
+            req,
+            if stream {
+                stream_header_timeout(self.endpoint.timeout_streaming_secs)
+            } else {
+                None
+            },
+        )
+        .await
     }
 
     fn finish_reason_of(status: &str) -> Option<FinishReason> {
@@ -664,7 +827,7 @@ impl OpenAiResponsesAdapter {
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
-        let body = self.build_request_body(messages, tools, stream);
+        let mut body = self.build_request_body(messages, tools, stream);
         let url = self.responses_url();
         tracing::debug!("POST {} (model: {})", url, body.model);
         tracing::debug!(
@@ -672,14 +835,7 @@ impl OpenAiResponsesAdapter {
             url,
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers())
-            .json(&body);
-        // §2.9: per-request timeout for non-streaming
-        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req, None).await?;
+        let resp = self.send_request(&url, &mut body, stream).await?;
 
         let txt = resp
             .text()
@@ -697,7 +853,7 @@ impl OpenAiResponsesAdapter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let body = self.build_request_body(messages, tools, true);
+        let mut body = self.build_request_body(messages, tools, true);
         let url = self.responses_url();
         tracing::debug!(
             "chat_stream_inner: url={} model={} api_key={}",
@@ -715,25 +871,7 @@ impl OpenAiResponsesAdapter {
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers())
-            .json(&body);
-        // For streaming, only apply an HTTP-level timeout when explicitly configured.
-        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
-        // response-header wait (a provider that accepts the connection but never
-        // responds would otherwise stall silently until the router-level
-        // max_total_duration_secs) while leaving the body stream to the router's
-        // per-chunk idle timeouts.
-        if let Some(timeout) = self.endpoint.timeout_streaming_secs {
-            req = req.timeout(Duration::from_secs(timeout));
-        }
-        let resp = send_request(
-            req,
-            stream_header_timeout(self.endpoint.timeout_streaming_secs),
-        )
-        .await?;
+        let resp = self.send_request(&url, &mut body, true).await?;
 
         use tokio::sync::mpsc;
 
@@ -2008,6 +2146,169 @@ mod tests {
         );
         assert!(body.reasoning.is_none());
         assert_eq!(body.temperature, Some(0.4));
+    }
+
+    #[test]
+    fn prompt_cache_key_is_stable_across_memory_refreshes() {
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint {
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let stable = "You are Haven.\nCurrent session: inspect cache\n";
+        let first_system = CanonicalMessage::system(vec![ContentPart::text(format!(
+            "{stable}{MEMORY_FENCE_START}first recalled fact"
+        ))]);
+        let refreshed_system = CanonicalMessage::system(vec![ContentPart::text(format!(
+            "{stable}{MEMORY_FENCE_START}refreshed recalled fact"
+        ))]);
+        let user = CanonicalMessage::user_text("continue");
+
+        let first = client
+            .build_request_body(vec![first_system, user.clone()], Vec::new(), false)
+            .prompt_cache_key;
+        let refreshed = client
+            .build_request_body(vec![refreshed_system, user], Vec::new(), false)
+            .prompt_cache_key;
+
+        assert!(first.is_some());
+        assert_eq!(first, refreshed);
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+        let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+        let user = CanonicalMessage::user_text("session input");
+        let one_tool = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: crate::types::ToolFunction {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters: json!({"type":"object"}),
+            },
+        }];
+        let two_tools = vec![
+            one_tool[0].clone(),
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: crate::types::ToolFunction {
+                    name: "write".into(),
+                    description: "write a file".into(),
+                    parameters: json!({"type":"object"}),
+                },
+            },
+        ];
+
+        let first = client
+            .build_request_body(vec![system.clone(), user.clone()], one_tool, false)
+            .prompt_cache_key
+            .unwrap();
+        let changed = client
+            .build_request_body(vec![system.clone(), user.clone()], two_tools, false)
+            .prompt_cache_key
+            .unwrap();
+        assert_ne!(first, changed);
+
+        client
+            .prompt_cache_key_state
+            .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+        assert!(
+            client
+                .build_request_body(vec![system, user], Vec::new(), false)
+                .prompt_cache_key
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_rejection_detection_is_specific() {
+        assert!(OpenAiResponsesAdapter::prompt_cache_key_rejected(
+            &LlmError::RequestFailed("400: Unknown parameter: prompt_cache_key".into())
+        ));
+        assert!(!OpenAiResponsesAdapter::prompt_cache_key_rejected(
+            &LlmError::RequestFailed("400: maximum context length exceeded".into())
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejected_prompt_cache_key_retries_without_key_and_disables_it() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen_keys = Arc::new(Mutex::new(Vec::new()));
+        let seen_keys_server = Arc::clone(&seen_keys);
+        let server = tokio::spawn(async move {
+            for request_number in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+                let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+                let body = String::from_utf8_lossy(&buf[header_end + 4..]);
+                seen_keys_server
+                    .lock()
+                    .unwrap()
+                    .push(body.contains("prompt_cache_key"));
+                let (status, response) = if request_number == 0 {
+                    (
+                        "400 Bad Request",
+                        r#"{"error":{"message":"Unknown parameter: prompt_cache_key"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"status":"completed","output":[{"type":"message","content":[{"text":"ok"}]}],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11},"model":"gpt-test"}"#,
+                    )
+                };
+                let wire = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                );
+                socket.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = OpenAiResponsesAdapter::new(ModelEndpoint {
+            base_url: format!("http://{addr}"),
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let messages = vec![
+            CanonicalMessage::system(vec![ContentPart::text("stable system")]),
+            CanonicalMessage::user_text("session input"),
+        ];
+        let response = client.chat(messages.clone()).await.unwrap();
+        assert_eq!(response.text, "ok");
+        assert!(
+            client
+                .build_request_body(messages, Vec::new(), false)
+                .prompt_cache_key
+                .is_none()
+        );
+        server.await.unwrap();
+        assert_eq!(*seen_keys.lock().unwrap(), vec![true, false]);
     }
 
     #[test]

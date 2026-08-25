@@ -168,6 +168,12 @@ pub struct ReActSnapshot {
     /// submitted AFTER this by timestamp.
     #[serde(default)]
     pub saved_at: Option<String>,
+    /// Present only when the ReAct loop itself recorded a failed LLM stream.
+    /// Continue may then use this step's branch point to replace the failed
+    /// attempt. A normal periodic snapshot leaves this `None`, so an app or
+    /// process interruption cannot truncate later completed history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_partial_message_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting_answer: Option<AskPending>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,6 +248,7 @@ impl ReActSnapshot {
             step_number: legacy.step_number,
             branch_points,
             saved_at: legacy.saved_at,
+            error_partial_message_ids: None,
             awaiting_answer: legacy.awaiting_answer,
             awaiting_confirm: legacy.awaiting_confirm,
             run_budget: None,

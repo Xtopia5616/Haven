@@ -25,6 +25,7 @@ import {
 	formatTokenCount,
 	formatCostUsd,
 	coalesceTokenTotal,
+	cumulativeCacheHitRatePercent,
 	actionStore,
 	upsertAction,
 	removeAction,
@@ -546,7 +547,7 @@ describe('sessionTokenStatsStore', () => {
 		expect(statsMap().t1.cumulativeTotalTokens).toBe(150);
 	});
 
-	it('restoreSessionTokenStats coalesces exclusive cache into omitted total', () => {
+	it('restoreSessionTokenStats does not guess an omitted legacy cache total', () => {
 		restoreSessionTokenStats('t1', {
 			prompt_tokens: 100,
 			completion_tokens: 20,
@@ -556,7 +557,7 @@ describe('sessionTokenStatsStore', () => {
 			cost_usd: 0.0,
 			has_cost: false,
 		});
-		expect(statsMap().t1.cumulativeTotalTokens).toBe(570);
+		expect(statsMap().t1.cumulativeTotalTokens).toBe(120);
 	});
 });
 
@@ -568,9 +569,33 @@ describe('token usage helpers', () => {
 	});
 
 	it('coalesceTokenTotal adds exclusive cache when total is omitted', () => {
-		expect(coalesceTokenTotal(100, 20, 0, 400, 50)).toBe(570);
+		expect(coalesceTokenTotal(100, 20, 0, 400, 50, 'exclusive')).toBe(570);
 		expect(coalesceTokenTotal(100, 20, 0, 80, 0)).toBe(120);
 		expect(coalesceTokenTotal(100, 20, 125, 80, 0)).toBe(125);
+	});
+
+	it('calculates a mixed-provider cache rate from each call contract', () => {
+		const rate = cumulativeCacheHitRatePercent([
+			{
+				prompt_tokens: 100,
+				cached_tokens: 100,
+				cache_accounting: 'inclusive',
+			},
+			{
+				prompt_tokens: 100,
+				cached_tokens: 400,
+				cache_accounting: 'exclusive',
+			},
+		]);
+		expect(rate).toBeCloseTo(500 / 600 * 100, 6);
+	});
+
+	it('does not guess a cache rate for unknown legacy calls', () => {
+		expect(
+			cumulativeCacheHitRatePercent([
+				{ prompt_tokens: 100, cached_tokens: 80, cache_accounting: 'unknown' },
+			]),
+		).toBeNull();
 	});
 });
 

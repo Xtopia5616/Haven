@@ -1601,17 +1601,21 @@ impl LlmRouter {
         self.config.read().await
     }
 
-    /// Compute USD cost for a given role + token counts based on the
-    /// currently configured `cost_per_1k_*` rates. Returns `None` when the
-    /// role is unpriced (both rates zero).
+    /// Compute USD cost with provider-normalized cache accounting. Unset
+    /// cache-lane prices fall back to the ordinary input rate.
     pub async fn compute_cost(
         &self,
         role: EndpointRole,
-        prompt_tokens: u32,
-        completion_tokens: u32,
+        usage: &Usage,
     ) -> Option<f64> {
         let cfg = self.config.read().await;
-        compute_cost_usd(cfg.endpoint(role), prompt_tokens, completion_tokens)
+        compute_cost_usd(
+            cfg.endpoint(role),
+            usage.cache_miss_tokens(),
+            usage.cached_tokens,
+            usage.cache_creation_tokens,
+            usage.completion_tokens,
+        )
     }
 
     pub fn balanced_model_active(&self) -> bool {

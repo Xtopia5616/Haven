@@ -15,7 +15,9 @@ use crate::adapters::{
 use crate::client::LlmClient;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
-use crate::types::{FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage};
+use crate::types::{
+    CacheAccounting, FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition, Usage,
+};
 use haven_common::config::ModelEndpoint;
 
 /// Anthropic server-side web search tool type id (Messages API).
@@ -769,7 +771,7 @@ impl AnthropicAdapter {
         let usage = json
             .usage
             .map(|u| {
-                Usage::from_counts(
+                Usage::from_counts_with_accounting(
                     u.input_tokens,
                     u.output_tokens,
                     u.input_tokens
@@ -778,6 +780,7 @@ impl AnthropicAdapter {
                         .saturating_add(u.output_tokens),
                     u.cache_read_input_tokens,
                     u.cache_creation_input_tokens,
+                    CacheAccounting::Exclusive,
                     model.clone(),
                 )
             })
@@ -989,7 +992,7 @@ impl AnthropicAdapter {
                             state.last_model = Some(m.clone());
                         }
                         if let Some(u) = message.usage {
-                            state.usage = Some(Usage::from_counts(
+                            state.usage = Some(Usage::from_counts_with_accounting(
                                 u.input_tokens,
                                 u.output_tokens,
                                 u.input_tokens
@@ -998,6 +1001,7 @@ impl AnthropicAdapter {
                                     .saturating_add(u.output_tokens),
                                 u.cache_read_input_tokens,
                                 u.cache_creation_input_tokens,
+                                CacheAccounting::Exclusive,
                                 state.last_model.clone(),
                             ));
                         }

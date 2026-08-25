@@ -815,6 +815,10 @@
 						`上传 ${usage.prompt} → 生成 ${usage.completion} tokens`,
 						usage.durationMs > 0 ? `耗时 ${(usage.durationMs / 1000).toFixed(1)}s` : null,
 						usage.hasCost ? `费用 ${usage.cost.toFixed(6)} USD` : null,
+						usage.cacheMiss > 0 ? `缓存未命中 ${formatTokenCount(usage.cacheMiss)}` : null,
+						usage.cacheDiagnostics
+							? `缓存策略 ${usage.cacheDiagnostics.mode || 'off'} / ${usage.cacheDiagnostics.outcome || 'unknown'}${usage.cacheDiagnostics.downgraded ? '（已兼容降级）' : ''}`
+							: null,
 						usage.calls > 1 ? `${usage.calls} 次调用合并` : null,
 					]
 						.filter(Boolean)

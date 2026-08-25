@@ -407,6 +407,7 @@ fn estimate_session_usage(
         total_tokens: total,
         cached_tokens: 0,
         cache_creation_tokens: 0,
+        cache_miss_tokens: 0,
         cost_usd: 0.0,
         has_cost: false,
     }

@@ -27,6 +27,6 @@ pub use router::{EndpointRole, LlmRouter};
 pub use stt::{McpToolCaller, McpToolOutcome, SttClient, build_stt_client, resolve_stt_config};
 pub use tts::{TtsClient, build_tts_client, resolve_tts_config};
 pub use types::{
-    FinishReason, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, SttResult,
-    ToolDefinition, ToolFunction, Usage,
+    CacheAccounting, CacheDiagnostics, FinishReason, LlmConnectionStatus, LlmError, LlmResponse,
+    StreamChunk, SttResult, ToolDefinition, ToolFunction, Usage,
 };

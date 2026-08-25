@@ -478,7 +478,12 @@ impl SkillsEngine {
 
     pub async fn list(&self) -> Vec<SkillInfo> {
         let g = self.inner.read().await;
-        g.skills.values().map(SkillInfo::from).collect()
+        let mut skills: Vec<_> = g.skills.values().map(SkillInfo::from).collect();
+        // The short skill index is part of the cacheable system-prompt prefix.
+        // Never let HashMap iteration order create a semantically identical but
+        // byte-different prompt after a refresh or restart.
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        skills
     }
 
     pub async fn get(&self, name: &str) -> Option<SkillInfo> {
@@ -935,6 +940,34 @@ mod tests {
         assert!(list.iter().all(|s| s.enabled));
         let filter = eng.enabled_filter().await;
         assert_eq!(filter, Some(vec!["b".to_string(), "a".to_string()]));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn engine_list_is_sorted_for_prompt_stability() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["zeta", "alpha", "middle"] {
+            write_skill(
+                &dir,
+                name,
+                &format!(
+                    "# Skill: {name}\n## Metadata\n- description: {name}\n## Instructions\ni\n"
+                ),
+                false,
+            );
+        }
+
+        let eng = SkillsEngine::new();
+        eng.set_config(Some(dir.clone()), None).await.unwrap();
+        let names: Vec<String> = eng
+            .list()
+            .await
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect();
+        assert_eq!(names, ["alpha", "middle", "zeta"]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

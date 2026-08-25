@@ -771,6 +771,7 @@ async fn resume_dedups_conversation_prefix_against_canonical() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -842,6 +843,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -916,6 +918,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -1003,6 +1006,7 @@ async fn resume_does_not_recover_messages_before_saved_at() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -1098,6 +1102,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -1178,6 +1183,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -1483,6 +1489,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -3891,7 +3898,7 @@ async fn continue_session_resumes_errored_session() {
         .update_session_status(&session.id, SessionStatus::Error)
         .await
         .unwrap();
-    let snapshot = ReActSnapshot {
+    let mut snapshot = ReActSnapshot {
         events: seed_events_from_canonical(vec![CanonicalMessage {
             role: CanonicalRole::User,
             content: vec![ContentPart::text("hello")],
@@ -3909,21 +3916,15 @@ async fn continue_session_resumes_errored_session() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
     // Add a partial assistant message that should be cleaned up.
     agent
         .db
         .add_message(&session.id, "user", "hello", Some("text"), None)
         .unwrap();
-    // The partial lands strictly AFTER the user row (the continue
-    // truncation deletes rows created_at > the last user message).
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    agent
+    let partial = agent
         .db
         .add_message(
             &session.id,
@@ -3933,16 +3934,102 @@ async fn continue_session_resumes_errored_session() {
             None,
         )
         .unwrap();
+    snapshot.error_partial_message_ids = Some(vec![partial.id]);
+    agent
+        .db
+        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
+        .unwrap();
 
     agent.continue_session(&session.id).await.unwrap();
     assert_eq!(
         executor.get_session_state(&session.id).await,
         Some(SessionStatus::Pending)
     );
-    // The partial output should have been deleted (only the user message remains).
+    // The explicitly marked partial output should have been deleted.
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].content, "hello");
+}
+
+#[tokio::test]
+async fn continue_session_preserves_history_without_an_error_partial_marker() {
+    // App/process interruption can leave a periodic snapshot whose branch
+    // point predates several already-persisted rounds. That snapshot is valid
+    // for model resume, but it is not authorization to delete chat history.
+    let (agent, executor) = make_test_agent();
+    let session = executor
+        .create_session("interrupted after checkpoints")
+        .await
+        .unwrap();
+    agent
+        .db
+        .update_session_status(&session.id, "error")
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Error)
+        .await
+        .unwrap();
+
+    let opening = agent
+        .db
+        .add_message(&session.id, "user", "opening", Some("text"), None)
+        .unwrap();
+    let completed = agent
+        .db
+        .add_message(
+            &session.id,
+            "assistant",
+            "completed before the interruption",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+    let visible_partial = agent
+        .db
+        .add_message(
+            &session.id,
+            "assistant",
+            "text flushed before the app closed",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+    let mut branch_points = HashMap::new();
+    branch_points.insert(
+        1,
+        BranchPoint {
+            event_cursor: 1,
+            step_number: 1,
+            last_msg_at: Some(opening.created_at),
+            legacy_canonical: None,
+        },
+    );
+    let snapshot = ReActSnapshot {
+        events: seed_events_from_canonical(vec![CanonicalMessage::user_text("opening")]),
+        step_number: 1,
+        branch_points,
+        saved_at: None,
+        error_partial_message_ids: None,
+        awaiting_answer: None,
+        awaiting_confirm: None,
+        run_budget: None,
+        upgrade_tool_rounds: Vec::new(),
+    };
+    agent
+        .db
+        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
+        .unwrap();
+
+    agent.continue_session(&session.id).await.unwrap();
+
+    let ids: Vec<String> = agent
+        .db
+        .get_session_messages(&session.id)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(ids, vec![opening.id, completed.id, visible_partial.id]);
 }
 
 #[tokio::test]
@@ -4022,6 +4109,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -4125,6 +4213,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -4224,6 +4313,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -4313,6 +4403,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -4404,6 +4495,7 @@ fn seed_hello_snapshot(
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -4581,6 +4673,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent
@@ -4704,6 +4797,7 @@ async fn rollback_pause_matches_prefixed_supplement_in_canonical() {
         awaiting_answer: None,
         awaiting_confirm: None,
         run_budget: None,
+        error_partial_message_ids: None,
         upgrade_tool_rounds: Vec::new(),
     };
     agent

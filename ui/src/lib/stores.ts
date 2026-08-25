@@ -471,6 +471,7 @@ export const sessionTokenStatsStore = writable<Record<string, any>>({});
 
 /** One LLM call's usage detail row. */
 export interface LlmUsage {
+	id?: string;
 	step_number?: number | null;
 	role?: string;
 	model?: string | null;
@@ -479,6 +480,15 @@ export interface LlmUsage {
 	total_tokens?: number;
 	cached_tokens?: number;
 	cache_creation_tokens?: number;
+	cache_miss_tokens?: number;
+	cache_accounting?: 'inclusive' | 'exclusive' | 'unknown' | string;
+	cache_diagnostics?: {
+		mode?: string;
+		key_requested?: boolean;
+		system_split?: boolean;
+		downgraded?: boolean;
+		outcome?: string;
+	};
 	cost_usd?: number | null;
 	has_cost?: boolean;
 	duration_ms?: number | null;
@@ -530,6 +540,7 @@ export function restoreSessionTokenStats(
 		total_tokens?: number;
 		cached_tokens?: number;
 		cache_creation_tokens?: number;
+		cache_miss_tokens?: number;
 		cost_usd?: number | null;
 		has_cost?: boolean;
 	},
@@ -541,12 +552,14 @@ export function restoreSessionTokenStats(
 	const completion = usage.completion_tokens || 0;
 	const cached = usage.cached_tokens || 0;
 	const creation = usage.cache_creation_tokens || 0;
+	const miss = usage.cache_miss_tokens || 0;
 	updateSessionTokenStats(sessionId, {
 		promptTokens: 0,
 		completionTokens: 0,
 		totalTokens: 0,
 		cachedTokens: 0,
 		cacheCreationTokens: 0,
+		cacheMissTokens: 0,
 		contextTokens: 0,
 		cacheExclusive: false,
 		cumulativePromptTokens: prompt,
@@ -560,6 +573,7 @@ export function restoreSessionTokenStats(
 		),
 		cumulativeCachedTokens: cached,
 		cumulativeCacheCreationTokens: creation,
+		cumulativeCacheMissTokens: miss,
 		costUsd: null,
 		cumulativeCostUsd: hasCost ? usage.cost_usd : null,
 		contextWindow: null,
@@ -617,8 +631,9 @@ export function clearSessionLlmUsage(sessionId: string) {
 
 /**
  * Reconstruct `total` when a provider omitted it. Matches
- * `Usage::normalize`: inclusive `prompt + completion`, plus exclusive
- * cache when `cached > prompt` (Anthropic).
+ * `Usage::normalize`: inclusive `prompt + completion`, plus an explicitly
+ * exclusive cache read/write bucket. Unknown legacy rows never guess from
+ * cache token values.
  * @param {number} [prompt]
  * @param {number} [completion]
  * @param {number} [total]
@@ -631,10 +646,38 @@ export function coalesceTokenTotal(
 	total = 0,
 	cached = 0,
 	creation = 0,
+	cacheAccounting: string = 'unknown',
 ) {
 	if (total) return total;
-	const extra = cached > prompt ? cached + creation : 0;
+	const extra = cacheAccounting === 'exclusive' ? cached + creation : 0;
 	return prompt + completion + extra || 0;
+}
+
+/**
+ * Calculate a session's cache-hit rate from per-call provider contracts.
+ * `prompt_tokens` already contains cache reads for inclusive providers, while
+ * exclusive providers report them beside prompt tokens. Unknown legacy rows
+ * return null rather than silently using an incorrect aggregate denominator.
+ */
+export function cumulativeCacheHitRatePercent(calls: LlmUsage[]): number | null {
+	if (
+		!calls.length ||
+		calls.some((call) => !['inclusive', 'exclusive'].includes(call.cache_accounting || 'unknown'))
+	) {
+		return null;
+	}
+	let cached = 0;
+	let eligibleInput = 0;
+	for (const call of calls) {
+		const prompt = call.prompt_tokens || 0;
+		const read = call.cached_tokens || 0;
+		const creation = call.cache_creation_tokens || 0;
+		cached += read;
+		eligibleInput +=
+			call.cache_accounting === 'exclusive' ? prompt + read + creation : prompt;
+	}
+	if (!cached || !eligibleInput) return null;
+	return Math.min(100, (cached / eligibleInput) * 100);
 }
 
 /**

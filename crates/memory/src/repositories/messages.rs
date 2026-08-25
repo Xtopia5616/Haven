@@ -354,6 +354,31 @@ impl Database {
         Ok(())
     }
 
+    /// Delete the recovery-only partial-output rows for one failed LLM stream.
+    ///
+    /// Error snapshots retain these exact IDs so a later Continue never has to
+    /// infer a broad deletion boundary from an older periodic branch point.
+    pub fn delete_messages_by_ids(
+        &self,
+        session_id: &str,
+        message_ids: &[String],
+    ) -> anyhow::Result<()> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn();
+        let placeholders = std::iter::repeat_n("?", message_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("DELETE FROM messages WHERE session_id = ?1 AND id IN ({placeholders})");
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
+        params.push(&session_id);
+        params.extend(message_ids.iter().map(|id| id as &dyn rusqlite::ToSql));
+        conn.execute(&sql, rusqlite::params_from_iter(params))?;
+        self.cache_invalidate_messages(session_id);
+        Ok(())
+    }
+
     /// `created_at` of the most recent user-role message for a session, or
     /// `None` if the session has no user messages yet. Implemented in SQL so
     /// rollback does not have to load the entire message list just to find
@@ -735,7 +760,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let cutoff = chrono::Utc::now().to_rfc3339();
+        // Usage rows use fixed-width millisecond RFC3339 timestamps. Use the
+        // same representation for lexicographic SQL cutoff comparisons; a
+        // whole-second timestamp sorts after fractional timestamps in that
+        // second and would incorrectly delete the first row too.
+        let cutoff = now_rfc3339_millis();
         std::thread::sleep(std::time::Duration::from_millis(5));
         db.persist_llm_call_and_refresh_session_usage(
             &tid,

@@ -93,6 +93,7 @@ pub(super) struct CumulativeUsage {
     pub(super) total_tokens: u32,
     pub(super) cached_tokens: u32,
     pub(super) cache_creation_tokens: u32,
+    pub(super) cache_miss_tokens: u32,
     pub(super) cost_usd: f64,
     pub(super) has_cost: bool,
 }
@@ -105,6 +106,7 @@ impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
             total_tokens: u.total_tokens,
             cached_tokens: u.cached_tokens,
             cache_creation_tokens: u.cache_creation_tokens,
+            cache_miss_tokens: u.cache_miss_tokens,
             cost_usd: u.cost_usd,
             has_cost: u.has_cost,
         }
@@ -119,6 +121,7 @@ pub(super) struct CumulativeTotals {
     pub(super) total_tokens: u32,
     pub(super) cached_tokens: u32,
     pub(super) cache_creation_tokens: u32,
+    pub(super) cache_miss_tokens: u32,
     pub(super) cost_usd: Option<f64>,
 }
 
@@ -164,6 +167,7 @@ impl UsageTracker {
         total_tokens: u32,
         cached_tokens: u32,
         cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
         step_cost: Option<f64>,
         seed: F,
     ) -> CumulativeTotals
@@ -179,6 +183,7 @@ impl UsageTracker {
         entry.cache_creation_tokens = entry
             .cache_creation_tokens
             .saturating_add(cache_creation_tokens);
+        entry.cache_miss_tokens = entry.cache_miss_tokens.saturating_add(cache_miss_tokens);
         if let Some(c) = step_cost {
             entry.cost_usd += c;
             entry.has_cost = true;
@@ -194,6 +199,7 @@ impl UsageTracker {
             total_tokens: entry.total_tokens,
             cached_tokens: entry.cached_tokens,
             cache_creation_tokens: entry.cache_creation_tokens,
+            cache_miss_tokens: entry.cache_miss_tokens,
             cost_usd,
         }
     }
@@ -506,12 +512,12 @@ mod tests {
     fn usage_tracker_invalidate_bumps_epoch_and_clears_map() {
         let tracker = UsageTracker::new();
         assert_eq!(tracker.epoch("ses-a"), 0);
-        let _ = tracker.record_with_seed("ses-a", 10, 5, 15, 0, 0, None, CumulativeUsage::default);
+        let _ = tracker.record_with_seed("ses-a", 10, 5, 15, 0, 0, 10, None, CumulativeUsage::default);
         tracker.invalidate_after_truncate("ses-a");
         assert_eq!(tracker.epoch("ses-a"), 1);
         // Next record must re-seed (map was cleared), not keep the old 15.
         let totals =
-            tracker.record_with_seed("ses-a", 1, 1, 2, 0, 0, None, CumulativeUsage::default);
+            tracker.record_with_seed("ses-a", 1, 1, 2, 0, 0, 1, None, CumulativeUsage::default);
         assert_eq!(totals.total_tokens, 2);
     }
 }

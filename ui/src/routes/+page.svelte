@@ -60,6 +60,7 @@
 		formatTokenCount,
 		formatCostUsd,
 		coalesceTokenTotal,
+		cumulativeCacheHitRatePercent,
 		seqLastSeen,
 		pruneSeq,
 		updateModelState,
@@ -148,7 +149,8 @@
 	 * @property {number} completionTokens
 	 * @property {number} totalTokens
  	 * @property {number} [cachedTokens]
- 	 * @property {number} [cacheCreationTokens]
+	 * @property {number} [cacheCreationTokens]
+	 * @property {number} [cacheMissTokens]
  	 * @property {number} [contextTokens]
  	 * @property {boolean} [cacheExclusive]
  	 * @property {number} cumulativePromptTokens
@@ -210,7 +212,7 @@
 	 * tool bubble on every streaming flush, and a fresh object per call would
 	 * churn child component updates across the whole long conversation.
 	 * @param {number|null} stepNumber
-	 * @returns {{prompt: number, completion: number, total: number, cost: number, hasCost: boolean, durationMs: number, model: string|null, calls: number}|null}
+	 * @returns {{prompt: number, completion: number, total: number, cost: number, hasCost: boolean, durationMs: number, model: string|null, cacheMiss: number, cacheDiagnostics: any, calls: number}|null}
 	 */
 	const stepUsageCache = new Map();
 	/** @param {number|null} stepNumber */
@@ -231,6 +233,7 @@
 					u.total_tokens || 0,
 					u.cached_tokens || 0,
 					u.cache_creation_tokens || 0,
+					u.cache_accounting || 'unknown',
 				),
 			0,
 		);
@@ -242,6 +245,8 @@
 			hasCost: calls.some((u) => u.has_cost),
 			durationMs: calls.reduce((s, u) => s + (u.duration_ms || 0), 0),
 			model: calls.map((u) => u.model).filter(Boolean).at(-1) || null,
+			cacheMiss: calls.reduce((s, u) => s + (u.cache_miss_tokens || 0), 0),
+			cacheDiagnostics: calls.map((u) => u.cache_diagnostics).filter(Boolean).at(-1) || null,
 			calls: calls.length,
 		};
 		stepUsageCache.set(stepNumber, value);
@@ -280,16 +285,15 @@
 		!!activeSessionId &&
 			sessions.some((t) => t.id === activeSessionId && isBusyStatus(t.status)),
 	);
-	// Tooltip for the idle token widget. While the active session is still
-	// running (streaming, tool-calling, or queued) more `agent:usage`
-	// events are expected, so "waiting" is accurate. A finished or
-	// history-opened conversation with no persisted usage will never
-	// receive events — show a neutral hint instead of waiting forever.
+	// Tooltip for the token widget. While the active session is still running
+	// (streaming, tool-calling, or queued) more `agent:usage` events are
+	// expected. A finished or history-opened conversation with no persisted
+	// usage will never receive events, so show a neutral hint instead.
 	const tokenStatsHint = $derived(isGenerating || sessionRunning ? '等待 LLM 统计' : '暂无统计');
-	const showCumulativeTokens = $derived.by(() => {
-		if (!tokenStats) return false;
-		return !!(tokenStats.restored || !(isGenerating || sessionRunning));
-	});
+	// The primary number must retain its meaning across pause/resume. Context
+	// usage is only the latest request and changes after the next response;
+	// cumulative usage is persisted and represents the whole conversation.
+	const showCumulativeTokens = true;
 	// Sessions executing in parallel (running or waiting). When 2+ exist, the
 	// new-session button turns into a switcher menu: switch to a parallel session
 	// or start a new one. Otherwise the button keeps its default behavior.
@@ -364,10 +368,6 @@
 			cumCached,
 			cumCreation,
 		);
-		const cumExclusive =
-			!!s.cacheExclusive ||
-			(cumCached + cumCreation > 0 &&
-				cumTotal === cumPrompt + cumCompletion + cumCached + cumCreation);
 		if (s.restored) {
 			parts.push(
 				`累计上传 ${s.cumulativePromptTokens || 0} → 累计生成 ${s.cumulativeCompletionTokens || 0} tokens`,
@@ -385,20 +385,20 @@
 		}
 		const liveCached = s.cachedTokens || 0;
 		const liveCreation = s.cacheCreationTokens || 0;
+		const liveMiss = s.cacheMissTokens || 0;
 		if (!s.restored && (liveCached > 0 || liveCreation > 0)) {
 			const rate = cacheHitRatePercent(s.promptTokens || 0, liveCached, liveCreation, {
 				exclusive: !!s.cacheExclusive,
 			});
-			let line = `缓存命中 ${formatTokenCount(liveCached)}`;
+			let line = `本次缓存命中 ${formatTokenCount(liveCached)}`;
 			if (rate != null) line += `（${rate.toFixed(0)}%）`;
 			if (liveCreation > 0) line += ` / 写入 ${formatTokenCount(liveCreation)}`;
+			if (liveMiss > 0) line += ` / 未命中 ${formatTokenCount(liveMiss)}`;
 			parts.push(line);
 		}
 		if (cumCached > 0 || cumCreation > 0) {
-			const rate = cacheHitRatePercent(cumPrompt, cumCached, cumCreation, {
-				exclusive: cumExclusive,
-			});
-			let line = `缓存命中 ${formatTokenCount(cumCached)}`;
+			const rate = cumulativeCacheHitRatePercent(llmUsage);
+			let line = `累计缓存命中 ${formatTokenCount(cumCached)}`;
 			if (rate != null) line += `（${rate.toFixed(0)}%）`;
 			if (cumCreation > 0) line += ` / 写入 ${formatTokenCount(cumCreation)}`;
 			parts.push(line);
@@ -839,34 +839,16 @@
 	async function handleContinue() {
 		if (!activeSessionId) return;
 		const tid = activeSessionId;
-		// Capture the ids of the trailing assistant messages BEFORE invoking
-		// continue_session. These are the partial outputs from the interrupted
-		// step that the backend will delete from the DB. We must remove them
-		// from the UI too, but only these — the dispatcher may start the retry
-		// before this function resumes and append NEW assistant messages
-		// (different run_id in their ids) that must NOT be dropped.
 		const currentMessages = get(sessionMessagesStore)[tid] || [];
+		// A retry can begin as soon as continue_session resolves. Keep only
+		// bubbles created after this point when merging its DB snapshot: every
+		// pre-existing bubble is either represented by the DB or was explicitly
+		// removed there as a failed-stream partial. Classifying a whole trailing
+		// assistant suffix as partial erased completed tool rounds after errors.
+		const preContinueMessageIds = new Set(currentMessages.map((m) => m.id));
 		// Strategy must be picked before truncate: mid-generation partials are
 		// what distinguish "send 继续" from "pass the original user message".
 		const strategy = pickContinueStrategy(currentMessages);
-		let trailingIdx = currentMessages.length;
-		while (trailingIdx > 0 && currentMessages[trailingIdx - 1].role === 'assistant') {
-			trailingIdx--;
-		}
-		// continue_session truncates the interrupted step's partial output from
-		// the DB for a clean retry, so those trailing assistant messages would
-		// otherwise be dropped on resync. But the partial REASONING ("Thinking…")
-		// already streamed before the error is valuable context and must not
-		// vanish — keep it so the user keeps seeing the thinking they watched.
-		// Only the partial thought (final answer text) and stale tool/final
-		// messages are dropped: the backend truncates them and the retry
-		// regenerates them.
-		const partialIds = new Set(
-			currentMessages
-				.slice(trailingIdx)
-				.filter((m) => m.type !== 'reasoning')
-				.map((m) => m.id),
-		);
 		try {
 			// First unblock the errored session: continue_session truncates the
 			// partial output and sets the session to Pending so a follow-up user
@@ -875,31 +857,19 @@
 			await invoke('continue_session', { sessionId: tid });
 			sessionErrorId = null;
 			activeSessionError = false;
-			// Re-sync from the authoritative post-truncate DB state instead of
-			// guessing which trailing messages to drop. Every streamed message
-			// (reasoning/thought/tool/final) carries role 'assistant', so a
-			// naive "drop trailing assistants" sweep would clear completed tool
-			// cards + observations that continue_session actually KEEPS — it only
-			// truncates the interrupted final answer. Rebuilding from the DB
-			// reproduces that exactly. Any NEW retry streaming that arrived
-			// during the await is merged in on top; the old captured partials
-			// are dropped from the existing store so they aren't re-added.
+			// Re-sync from the authoritative post-continue DB state. Any retry
+			// stream that won the race with this request has a fresh id and is
+			// retained; stale pre-continue UI entries cannot leak back in.
 			try {
 				const result = await invoke('get_session_for_resume', { sessionId: tid });
 				updateSessionMessages(tid, (existing) => {
-				const dbMessages = buildResumeMessages(result);
-				const keptExistingMessages = existing.filter((m) => !partialIds.has(m.id));
-				return mergeLiveStreaming(dbMessages, keptExistingMessages);
+					const dbMessages = buildResumeMessages(result);
+					const retryMessages = existing.filter((m) => !preContinueMessageIds.has(m.id));
+					return mergeLiveStreaming(dbMessages, retryMessages);
 				});
 			} catch (e) {
-				// Fallback: if the resync fails, at least drop the captured
-				// partials so the stale interrupted output is removed.
-				if (partialIds.size > 0) {
-					updateSessionMessages(tid, (m) => {
-						const filteredMessages = m.filter((x) => !partialIds.has(x.id));
-						return filteredMessages.length !== m.length ? filteredMessages : m;
-					});
-				}
+				// Keep the current view until a later sync succeeds. A failed read
+				// is not evidence that any visible history is a failed partial.
 			}
 			clearSeqMap(tid);
 			clearStepBlockIds(tid);
@@ -1902,23 +1872,28 @@
 					const completion = d.completion_tokens || 0;
 					const cached = d.cached_tokens || 0;
 					const creation = d.cache_creation_tokens || 0;
+					const miss = d.cache_miss_tokens || 0;
 					const total = coalesceTokenTotal(
 						prompt,
 						completion,
 						d.total_tokens || 0,
 						cached,
 						creation,
+						d.cache_accounting || 'unknown',
 					);
 					const cumPrompt = d.cumulative_prompt_tokens || 0;
 					const cumCompletion = d.cumulative_completion_tokens || 0;
 					const cumCached = d.cumulative_cached_tokens || 0;
 					const cumCreation = d.cumulative_cache_creation_tokens || 0;
+					const cumMiss = d.cumulative_cache_miss_tokens || 0;
 					updateSessionTokenStats(d.session_id, {
 						promptTokens: prompt,
 						completionTokens: completion,
 						totalTokens: total,
 						cachedTokens: cached,
 						cacheCreationTokens: creation,
+						cacheMissTokens: miss,
+						cacheAccounting: d.cache_accounting || 'unknown',
 						contextTokens: d.context_tokens || 0,
 						cacheExclusive: !!d.cache_exclusive,
 						cumulativePromptTokens: cumPrompt,
@@ -1932,6 +1907,7 @@
 						),
 						cumulativeCachedTokens: cumCached,
 						cumulativeCacheCreationTokens: cumCreation,
+						cumulativeCacheMissTokens: cumMiss,
 						costUsd: d.cost_usd ?? null,
 						cumulativeCostUsd: d.cumulative_cost_usd ?? null,
 						contextWindow: d.context_window ?? null,
@@ -1955,6 +1931,9 @@
 							total_tokens: total,
 							cached_tokens: cached,
 							cache_creation_tokens: creation,
+							cache_miss_tokens: miss,
+							cache_accounting: d.cache_accounting || 'unknown',
+							cache_diagnostics: d.cache_diagnostics || undefined,
 							cost_usd: d.cost_usd ?? null,
 							has_cost: !!d.has_cost,
 							duration_ms: d.duration_ms ?? null,
@@ -2136,7 +2115,9 @@
 		// history page; the window starts blank instead.
 		if (last.session.status === 'completed') return;
 		const wasError = last.session.status === 'error' || last.session.status === 'failed';
-		updateSessionMessages(last.session.id, () => buildResumeMessages(last));
+		updateSessionMessages(last.session.id, (existing) =>
+			mergeLiveStreaming(buildResumeMessages(last), existing),
+		);
 		restoreSessionTokenStats(last.session.id, last.usage, last.usage_estimated);
 		restoreSessionLlmUsage(last.session.id, last.llm_usage);
 		activeSessionId = last.session.id;

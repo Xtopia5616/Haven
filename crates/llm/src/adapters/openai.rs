@@ -6,7 +6,10 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use crate::adapters::{
     WebSearchMode, build_client, build_headers, chat_thinking_extras, health_check_request,
@@ -15,10 +18,12 @@ use crate::adapters::{
     xai_search_mode,
 };
 use crate::client::LlmClient;
+use haven_common::prompts::MEMORY_FENCE_START;
 use haven_common::types::{CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart};
 
 use crate::types::{
-    Embedding, FinishReason, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition, Usage,
+    CacheAccounting, CacheDiagnostics, Embedding, FinishReason, LlmError, LlmResponse, StreamChunk,
+    SttResult, ToolDefinition, Usage,
 };
 use haven_common::config::ModelEndpoint;
 
@@ -104,6 +109,13 @@ struct OpenAiRequest {
     /// when web search mode is `off`.
     #[serde(skip_serializing_if = "Option::is_none")]
     search_parameters: Option<Value>,
+    /// Stable routing hint for OpenAI-compatible prompt caches. It does not
+    /// alter the prompt; providers use it to keep matching prefixes on a cache
+    /// shard. Unsupported gateways are detected and downgraded at runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip)]
+    cache_diagnostics: CacheDiagnostics,
 }
 
 #[derive(Debug, Serialize)]
@@ -167,6 +179,10 @@ struct OpenAiFunctionOut {
 struct OpenAiPromptTokensDetails {
     #[serde(default)]
     cached_tokens: u32,
+    #[serde(default)]
+    cache_write_tokens: u32,
+    #[serde(default)]
+    cache_creation_tokens: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -191,6 +207,11 @@ struct OpenAiUsage {
     /// Kimi / Moonshot top-level cache hit count.
     #[serde(default)]
     cached_tokens: u32,
+    /// DeepSeek's reported normal (non-cache) input tokens.
+    #[serde(default)]
+    prompt_cache_miss_tokens: u32,
+    #[serde(default)]
+    cache_write_tokens: u32,
 }
 
 impl OpenAiUsage {
@@ -209,15 +230,32 @@ impl OpenAiUsage {
         )
     }
 
+    fn cache_created(&self) -> u32 {
+        self.prompt_tokens_details
+            .as_ref()
+            .map(|details| {
+                details
+                    .cache_write_tokens
+                    .max(details.cache_creation_tokens)
+            })
+            .unwrap_or(0)
+            .max(self.cache_write_tokens)
+    }
+
     fn to_usage(&self, model_name: Option<String>) -> Usage {
-        Usage::from_counts(
+        let mut usage = Usage::from_counts_with_accounting(
             self.prompt(),
             self.completion(),
             self.total_tokens,
             self.cached(),
-            0,
+            self.cache_created(),
+            CacheAccounting::Inclusive,
             model_name,
-        )
+        );
+        usage.cache_miss_tokens = self
+            .prompt_cache_miss_tokens
+            .max(usage.cache_miss_tokens());
+        usage
     }
 }
 
@@ -268,7 +306,15 @@ pub struct OpenAiAdapter {
     /// Reported `LlmClient::style()` — `"openai-chat"` (default) or `"xai"`.
     style: &'static str,
     web_search_mode: WebSearchMode,
+    /// Whether this endpoint accepts OpenAI's optional `prompt_cache_key`.
+    /// A gateway rejection is remembered for this adapter so we only pay one
+    /// compatibility retry instead of failing every request.
+    prompt_cache_key_state: AtomicU8,
 }
+
+const PROMPT_CACHE_KEY_UNKNOWN: u8 = 0;
+const PROMPT_CACHE_KEY_ENABLED: u8 = 1;
+const PROMPT_CACHE_KEY_UNSUPPORTED: u8 = 2;
 
 impl OpenAiAdapter {
     pub fn new(endpoint: ModelEndpoint) -> Self {
@@ -283,6 +329,7 @@ impl OpenAiAdapter {
             client,
             style,
             web_search_mode,
+            prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
         }
     }
 
@@ -295,6 +342,90 @@ impl OpenAiAdapter {
     /// history (DeepSeek / Kimi / MiMo: `reasoning_content`).
     fn requires_reasoning_echo(&self) -> bool {
         requires_reasoning_echo(&self.endpoint)
+    }
+
+    /// Derive a compact, deterministic cache routing key from the stable part
+    /// of a ReAct conversation. The volatile MEMORY suffix is intentionally
+    /// excluded, while the first non-system message anchors the key to one
+    /// session. That first message survives compaction as the sticky prefix.
+    fn prompt_cache_key(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+    ) -> Option<String> {
+        if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
+            return None;
+        }
+
+        let system = messages
+            .iter()
+            .find(|message| message.role == CanonicalRole::System)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"haven-prompt-cache-v1\0");
+        hasher.update(self.endpoint.model_name.as_bytes());
+        hasher.update([0]);
+
+        let mut has_stable_system = false;
+        for part in &system.content {
+            if let ContentPart::Text(text) = part {
+                let stable = text.split(MEMORY_FENCE_START).next().unwrap_or_default();
+                if !stable.trim().is_empty() {
+                    hasher.update(stable.as_bytes());
+                    hasher.update([0]);
+                    has_stable_system = true;
+                }
+            }
+        }
+        if !has_stable_system {
+            return None;
+        }
+
+        // Do not route unrelated conversations with identical system prompts
+        // to one shard. The first user turn is immutable for a session and is
+        // deliberately retained by ContextCompactor's sticky prefix.
+        let session_anchor = messages
+            .iter()
+            .find(|message| message.role == CanonicalRole::User)?;
+        let anchor_content = crate::adapters::apply_wire_inject_prefix(
+            session_anchor.source,
+            session_anchor.content.clone(),
+        );
+        hasher.update(serde_json::to_vec(&anchor_content).ok()?);
+        hasher.update([0]);
+
+        // Tool schemas are part of the provider cache key. Changing a loaded
+        // MCP/Skill therefore gets a new routing key rather than contaminating
+        // the old cache shard.
+        let tool_bytes = serde_json::to_vec(tools).ok()?;
+        hasher.update(tool_bytes);
+
+        let digest = hasher.finalize();
+        let fingerprint = digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Some(format!("haven-v1-{fingerprint}"))
+    }
+
+    fn prompt_cache_key_rejected(error: &LlmError) -> bool {
+        let LlmError::RequestFailed(message) = error else {
+            return false;
+        };
+        let message = message.to_ascii_lowercase();
+        message.contains("prompt_cache_key")
+            && [
+                "unknown",
+                "unsupported",
+                "unrecognized",
+                "extra field",
+                "extra fields",
+                "additional propert",
+                "not allowed",
+                "unexpected",
+                "invalid parameter",
+            ]
+            .iter()
+            .any(|hint| message.contains(hint))
     }
 
     /// `requires_reasoning_echo` is set for endpoints whose thinking mode
@@ -446,6 +577,37 @@ impl OpenAiAdapter {
             .collect()
     }
 
+    /// Keep the stable system prefix byte-identical when cross-session memory
+    /// refreshes. Canonical state remains one message; only the OpenAI wire
+    /// representation receives the second, volatile system segment.
+    fn split_system_memory(mut messages: Vec<CanonicalMessage>) -> (Vec<CanonicalMessage>, bool) {
+        let Some(index) = messages
+            .iter()
+            .position(|message| message.role == CanonicalRole::System)
+        else {
+            return (messages, false);
+        };
+        let Some(ContentPart::Text(text)) = messages[index].content.first() else {
+            return (messages, false);
+        };
+        let Some((stable, volatile)) = text.split_once(MEMORY_FENCE_START) else {
+            return (messages, false);
+        };
+        if stable.trim().is_empty() || volatile.is_empty() {
+            return (messages, false);
+        }
+        let stable = stable.to_string();
+        let volatile = volatile.to_string();
+        messages[index].content = vec![ContentPart::text(stable)];
+        messages.insert(
+            index + 1,
+            CanonicalMessage::system(vec![ContentPart::text(format!(
+                "{MEMORY_FENCE_START}{volatile}"
+            ))]),
+        );
+        (messages, true)
+    }
+
     fn extract_tool_calls(choice: &OpenAiChoice) -> Vec<CanonicalToolCall> {
         let mut out = Vec::new();
         if let Some(msg) = choice.message.as_ref().or(choice.delta.as_ref())
@@ -500,6 +662,10 @@ impl OpenAiAdapter {
         web_search_mode: WebSearchMode,
     ) -> OpenAiRequest {
         let has_tools = !tools.is_empty();
+        let prompt_cache_key = self.prompt_cache_key(&messages, &tools);
+        let (messages, system_split) = Self::split_system_memory(messages);
+        let cache_diagnostics =
+            CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split);
         let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
         let omit_temperature = reasoning_effort.is_some() || thinking.is_some();
         let search_parameters = if self.style == "xai" {
@@ -553,6 +719,8 @@ impl OpenAiAdapter {
                 None
             },
             search_parameters,
+            prompt_cache_key,
+            cache_diagnostics,
         }
     }
 
@@ -560,6 +728,7 @@ impl OpenAiAdapter {
         &self,
         json: OpenAiResponse,
         model: Option<String>,
+        cache_diagnostics: CacheDiagnostics,
     ) -> Result<LlmResponse, LlmError> {
         let choice = json
             .choices
@@ -602,10 +771,12 @@ impl OpenAiAdapter {
             })));
         }
 
-        let usage = json
+        let mut usage = json
             .usage
             .map(|u| u.to_usage(model.clone()))
             .unwrap_or_default();
+        usage.cache_miss_tokens = usage.cache_miss_tokens();
+        usage.cache_diagnostics = Some(cache_diagnostics.with_provider_usage(usage.cached_tokens));
 
         let response = LlmResponse {
             text,
@@ -631,13 +802,84 @@ impl OpenAiAdapter {
         Ok(response)
     }
 
+    async fn send_chat_request(
+        &self,
+        url: &str,
+        body: &mut OpenAiRequest,
+        stream: bool,
+    ) -> Result<reqwest::Response, LlmError> {
+        match self.send_chat_request_once(url, body, stream).await {
+            Ok(response) => {
+                if body.prompt_cache_key.is_some() {
+                    let _ = self.prompt_cache_key_state.compare_exchange(
+                        PROMPT_CACHE_KEY_UNKNOWN,
+                        PROMPT_CACHE_KEY_ENABLED,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                }
+                Ok(response)
+            }
+            Err(error)
+                if body.prompt_cache_key.is_some() && Self::prompt_cache_key_rejected(&error) =>
+            {
+                self.prompt_cache_key_state
+                    .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+                body.prompt_cache_key = None;
+                body.cache_diagnostics.key_requested = false;
+                body.cache_diagnostics.downgraded = true;
+                body.cache_diagnostics.mode = if body.cache_diagnostics.system_split {
+                    "split".into()
+                } else {
+                    "off".into()
+                };
+                tracing::warn!(
+                    endpoint = %self.endpoint.base_url,
+                    "endpoint rejected prompt_cache_key; disabled cache routing hint for this adapter"
+                );
+                self.send_chat_request_once(url, body, stream).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn send_chat_request_once(
+        &self,
+        url: &str,
+        body: &OpenAiRequest,
+        stream: bool,
+    ) -> Result<reqwest::Response, LlmError> {
+        let mut req = self
+            .client
+            .post(url)
+            .headers(self.build_headers())
+            .json(body);
+        if stream {
+            if let Some(timeout) = self.endpoint.timeout_streaming_secs {
+                tracing::trace!("chat_stream_inner: {}s streaming timeout", timeout);
+                req = req.timeout(Duration::from_secs(timeout));
+            }
+        } else {
+            req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
+        }
+        send_request(
+            req,
+            if stream {
+                stream_header_timeout(self.endpoint.timeout_streaming_secs)
+            } else {
+                None
+            },
+        )
+        .await
+    }
+
     async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         stream: bool,
     ) -> Result<LlmResponse, LlmError> {
-        let body = self.build_request_body(messages, tools, stream);
+        let mut body = self.build_request_body(messages, tools, stream);
         let url = format!(
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
@@ -649,14 +891,7 @@ impl OpenAiAdapter {
             url,
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers())
-            .json(&body);
-        // §2.9: per-request timeout for non-streaming
-        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req, None).await?;
+        let resp = self.send_chat_request(&url, &mut body, stream).await?;
 
         let txt = resp
             .text()
@@ -666,7 +901,7 @@ impl OpenAiAdapter {
         let json: OpenAiResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
-        self.parse_openai_response(json, model)
+        self.parse_openai_response(json, model, body.cache_diagnostics)
     }
 
     async fn chat_stream_inner(
@@ -674,7 +909,7 @@ impl OpenAiAdapter {
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let body = self.build_request_body(messages, tools, true);
+        let mut body = self.build_request_body(messages, tools, true);
         let url = format!(
             "{}/chat/completions",
             self.endpoint.base_url.trim_end_matches('/')
@@ -696,32 +931,15 @@ impl OpenAiAdapter {
             url,
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
-
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers())
-            .json(&body);
-        // For streaming, only apply an HTTP-level timeout when explicitly configured.
-        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
-        // response-header wait (a provider that accepts the connection but never
-        // responds would otherwise stall silently until the router-level
-        // max_total_duration_secs) while leaving the body stream to the router's
-        // per-chunk idle timeouts.
-        if let Some(timeout) = self.endpoint.timeout_streaming_secs {
-            tracing::trace!("chat_stream_inner: {}s streaming timeout", timeout);
-            req = req.timeout(Duration::from_secs(timeout));
-        }
-        let resp = send_request(
-            req,
-            stream_header_timeout(self.endpoint.timeout_streaming_secs),
-        )
-        .await
-        .map_err(|e| {
-            tracing::debug!("chat_stream_inner: send() error: {:?}", e);
-            e
-        })?;
+        let resp = self
+            .send_chat_request(&url, &mut body, true)
+            .await
+            .map_err(|e| {
+                tracing::debug!("chat_stream_inner: send() error: {:?}", e);
+                e
+            })?;
         tracing::debug!("chat_stream_inner response status: {}", resp.status());
+        let cache_diagnostics = body.cache_diagnostics;
 
         use tokio::sync::mpsc;
 
@@ -842,6 +1060,7 @@ impl OpenAiAdapter {
             last_model: Option<String>,
             has_finish_reason: bool,
             usage: Option<Usage>,
+            cache_diagnostics: CacheDiagnostics,
         }
 
         let mapped = futures_util::stream::unfold(
@@ -854,6 +1073,7 @@ impl OpenAiAdapter {
                 last_model: None,
                 has_finish_reason: false,
                 usage: None,
+                cache_diagnostics,
             },
             move |mut state| async move {
                 if state.done {
@@ -904,7 +1124,15 @@ impl OpenAiAdapter {
                             state.last_model = Some(model.clone());
                         }
                         if let Some(u) = resp.usage {
-                            state.usage = Some(u.to_usage(state.last_model.clone()));
+                            let mut usage = u.to_usage(state.last_model.clone());
+                            usage.cache_miss_tokens = usage.cache_miss_tokens();
+                            usage.cache_diagnostics = Some(
+                                state
+                                    .cache_diagnostics
+                                    .clone()
+                                    .with_provider_usage(usage.cached_tokens),
+                            );
+                            state.usage = Some(usage);
                         }
                         if !resp.citations.is_empty() {
                             crate::adapters::upsert_web_search_call(
@@ -1217,7 +1445,9 @@ mod tests {
         };
         let ep = ModelEndpoint::default();
         let adapter = OpenAiAdapter::new(ep);
-        let resp = adapter.parse_openai_response(json, None).unwrap();
+        let resp = adapter
+            .parse_openai_response(json, None, CacheDiagnostics::default())
+            .unwrap();
         assert_eq!(resp.web_search_calls.len(), 1);
         assert_eq!(resp.web_search_calls[0]["type"], "web_search_call");
         assert_eq!(
@@ -1495,6 +1725,209 @@ mod tests {
         assert!(opts.include_usage);
         let body_no_stream = client.build_request_body(vec![], vec![], false);
         assert!(body_no_stream.stream_options.is_none());
+    }
+
+    #[test]
+    fn prompt_cache_key_is_stable_across_memory_refreshes() {
+        let client = OpenAiAdapter::new(ModelEndpoint {
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let stable = "You are Haven.\nCurrent session: investigate cache\n";
+        let first_system = CanonicalMessage::system(vec![ContentPart::text(format!(
+            "{stable}{MEMORY_FENCE_START}first recalled fact"
+        ))]);
+        let refreshed_system = CanonicalMessage::system(vec![ContentPart::text(format!(
+            "{stable}{MEMORY_FENCE_START}refreshed recalled fact"
+        ))]);
+        let user = CanonicalMessage::user_text("continue");
+        let tools = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+        }];
+
+        let first = client
+            .build_request_body(vec![first_system, user.clone()], tools.clone(), false)
+            .prompt_cache_key;
+        let refreshed = client
+            .build_request_body(vec![refreshed_system, user], tools, false)
+            .prompt_cache_key;
+
+        assert!(first.is_some());
+        assert_eq!(first, refreshed);
+    }
+
+    #[test]
+    fn prompt_cache_key_isolated_by_session_anchor() {
+        let client = OpenAiAdapter::new(ModelEndpoint::default());
+        let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+        let first = client
+            .build_request_body(
+                vec![system.clone(), CanonicalMessage::user_text("first session")],
+                Vec::new(),
+                false,
+            )
+            .prompt_cache_key
+            .unwrap();
+        let second = client
+            .build_request_body(
+                vec![system, CanonicalMessage::user_text("second session")],
+                Vec::new(),
+                false,
+            )
+            .prompt_cache_key
+            .unwrap();
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
+        let client = OpenAiAdapter::new(ModelEndpoint::default());
+        let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+        let user = CanonicalMessage::user_text("session anchor");
+        let one_tool = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "read".into(),
+                description: "read a file".into(),
+                parameters: serde_json::json!({"type":"object"}),
+            },
+        }];
+        let two_tools = vec![
+            one_tool[0].clone(),
+            ToolDefinition {
+                tool_type: "function".into(),
+                function: ToolFunction {
+                    name: "write".into(),
+                    description: "write a file".into(),
+                    parameters: serde_json::json!({"type":"object"}),
+                },
+            },
+        ];
+
+        let first = client
+            .build_request_body(vec![system.clone(), user.clone()], one_tool, false)
+            .prompt_cache_key
+            .unwrap();
+        let changed = client
+            .build_request_body(vec![system.clone(), user.clone()], two_tools, false)
+            .prompt_cache_key
+            .unwrap();
+        assert_ne!(first, changed);
+
+        client
+            .prompt_cache_key_state
+            .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+        assert!(
+            client
+                .build_request_body(vec![system, user], Vec::new(), false)
+                .prompt_cache_key
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_rejection_detection_is_specific() {
+        assert!(OpenAiAdapter::prompt_cache_key_rejected(
+            &LlmError::RequestFailed("400: Unknown parameter: prompt_cache_key".into())
+        ));
+        assert!(OpenAiAdapter::prompt_cache_key_rejected(
+            &LlmError::RequestFailed("invalid parameter 'prompt_cache_key'".into())
+        ));
+        assert!(OpenAiAdapter::prompt_cache_key_rejected(
+            &LlmError::RequestFailed(
+                "Additional properties are not allowed ('prompt_cache_key' was unexpected)".into()
+            )
+        ));
+        assert!(!OpenAiAdapter::prompt_cache_key_rejected(
+            &LlmError::RequestFailed("400: maximum context length exceeded".into())
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejected_prompt_cache_key_retries_without_key_and_disables_it() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen_keys = Arc::new(Mutex::new(Vec::new()));
+        let seen_keys_server = Arc::clone(&seen_keys);
+        let server = tokio::spawn(async move {
+            for request_number in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+                let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+                let body = String::from_utf8_lossy(&buf[header_end + 4..]);
+                seen_keys_server
+                    .lock()
+                    .unwrap()
+                    .push(body.contains("prompt_cache_key"));
+                let (status, response) = if request_number == 0 {
+                    (
+                        "400 Bad Request",
+                        r#"{"error":{"message":"Unknown parameter: prompt_cache_key"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11},"model":"gpt-test"}"#,
+                    )
+                };
+                let wire = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
+                );
+                socket.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = OpenAiAdapter::new(ModelEndpoint {
+            base_url: format!("http://{addr}"),
+            model_name: "gpt-test".into(),
+            ..Default::default()
+        });
+        let messages = vec![
+            CanonicalMessage::system(vec![ContentPart::text("stable system")]),
+            CanonicalMessage::user_text("session anchor"),
+        ];
+        let response = client.chat(messages.clone()).await.unwrap();
+        assert_eq!(response.text, "ok");
+        assert!(
+            client
+                .build_request_body(messages, Vec::new(), false)
+                .prompt_cache_key
+                .is_none()
+        );
+        server.await.unwrap();
+        assert_eq!(*seen_keys.lock().unwrap(), vec![true, false]);
     }
 
     #[test]

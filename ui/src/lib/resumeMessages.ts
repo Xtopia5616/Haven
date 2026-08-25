@@ -88,7 +88,8 @@ interface ResumeData {
  *   Persisted tool/ask cards (`step-*` ids) are kept the same way: Continue
  *   resync can race the retry's Action/Observation and briefly miss the
  *   pending row, and dropping them made post-resume tool calls vanish.
- *   Transient cards (e.g. `web_search`) and user bubbles still drop.
+ *   Transient cards (e.g. `web_search`) and display-only placeholder user
+ *   bubbles still drop. A real live user bubble stays until its DB row lands.
  *
  * @param {Array<object>} dbMessages   buildResumeMessages() result
  * @param {Array<object>} existing     current sessionMessages entry
@@ -152,7 +153,9 @@ export function mergeLiveStreaming(dbMessages: ResumeMessage[], existing: Resume
 			(m.type === 'tool' || m.type === 'ask') && String(m.id || '').startsWith('step-');
 		if (m.type === 'tool' || m.type === 'ask') {
 			if (!isPersistedCard) return;
-		} else if (m.role !== 'assistant') {
+		} else if (m.role === 'user' && String(m.id || '').startsWith('placeholder-')) {
+			return;
+		} else if (m.role !== 'assistant' && m.role !== 'user') {
 			return;
 		}
 		leftovers.push({ item: m, existingIdx: i });
